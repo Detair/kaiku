@@ -50,25 +50,34 @@ import {
 import Avatar from "@/components/ui/Avatar";
 import TableRowSkeleton from "./TableRowSkeleton";
 import { showToast } from "@/components/ui/Toast";
+import ConfirmActionDialog from "./ConfirmActionDialog";
+import { actionErrorText } from "./actionErrors";
+import { formatDay } from "./formatDate";
 import CreateAccountModal from "./CreateAccountModal";
 import UserSecurityPanel from "./UserSecurityPanel";
 import AdminRequestsPanel from "./AdminRequestsPanel";
 import { currentUser } from "@/stores/auth";
-import { t } from "@/i18n";
+import { formatList } from "@/i18n/format";
+import { plural, t } from "@/i18n";
+import type { UserSummary } from "@/lib/types";
 
 const PAGE_SIZE = 20;
 
 const DEBOUNCE_MS = 300;
 
 const UsersPanel: Component = () => {
-  const [searchQuery, setSearchQuery] = createSignal("");
+  // The field starts from the stored search, so it never hides an active filter (ADMIN-18).
+  const [searchQuery, setSearchQuery] = createSignal(adminState.usersSearch);
   const [banReason, setBanReason] = createSignal("");
   const [showBanDialog, setShowBanDialog] = createSignal(false);
   const [showBulkBanDialog, setShowBulkBanDialog] = createSignal(false);
+  const [showUnbanDialog, setShowUnbanDialog] = createSignal(false);
   const [bulkBanReason, setBulkBanReason] = createSignal("");
   const [showDeleteDialog, setShowDeleteDialog] = createSignal(false);
   const [deleteConfirmText, setDeleteConfirmText] = createSignal("");
-  const [actionLoading, setActionLoading] = createSignal(false);
+  const [bulkFailures, setBulkFailures] = createSignal<string[]>([]);
+  // Names of the selected people, captured when the bulk dialog opens.
+  const [bulkTargets, setBulkTargets] = createSignal<UserSummary[]>([]);
   const [focusedIndex, setFocusedIndex] = createSignal(-1);
   const [showCreateAccount, setShowCreateAccount] = createSignal(false);
 
@@ -86,20 +95,32 @@ const UsersPanel: Component = () => {
     await exportUsersCsv();
   };
 
-  // Handle bulk ban
-  const handleBulkBan = async () => {
-    if (!bulkBanReason().trim()) return;
+  const nameOf = (u: Pick<UserSummary, "display_name" | "username">) =>
+    u.display_name || u.username;
 
-    setActionLoading(true);
-    try {
-      const result = await bulkBanUsers(bulkBanReason());
-      if (result) {
-        setShowBulkBanDialog(false);
-        setBulkBanReason("");
-      }
-    } finally {
-      setActionLoading(false);
-    }
+  const openBulkBan = () => {
+    setBulkTargets(adminState.users.filter((u) => isUserSelected(u.id)));
+    setBulkFailures([]);
+    setShowBulkBanDialog(true);
+  };
+
+  // Bulk ban: names everyone, reports who could not be banned (ADMIN-7).
+  const handleBulkBan = async () => {
+    const targets = bulkTargets();
+    const result = await bulkBanUsers(bulkBanReason());
+    const failedIds = new Set(result.failed.map((f) => f.id));
+    const failedNames = targets.filter((u) => failedIds.has(u.id)).map(nameOf);
+    setBulkFailures(failedNames);
+    setBulkBanReason("");
+    showToast({
+      type: failedNames.length > 0 ? "warning" : "success",
+      title: plural(result.banned_count, { one: "admin.users.bulkBanned.one", other: "admin.users.bulkBanned.other" }),
+      message:
+        failedNames.length > 0
+          ? t("admin.users.bulkFailed", { names: formatList(failedNames) })
+          : undefined,
+      duration: failedNames.length > 0 ? 10000 : 4000,
+    });
   };
 
   // Load users on mount
@@ -154,94 +175,41 @@ const UsersPanel: Component = () => {
     }
   };
 
-  // Handle ban action
-  const handleBan = async () => {
-    const user = selectedUser();
-    if (!user || !banReason().trim()) return;
-
-    setActionLoading(true);
-    try {
-      await banUser(user.id, banReason());
-      setShowBanDialog(false);
-      setBanReason("");
-
-      // Show undo toast
-      const username = user.username;
-      const userId = user.id;
-      showToast({
-        id: `ban-undo-${userId}`,
-        type: "success",
-        title: "User banned",
-        message: `@${username} has been banned`,
-        duration: 5000,
-        action: {
-          label: "Undo",
-          onClick: async () => {
+  // Ban: the dialog closes and the toast appears only after the server
+  // banned the person; otherwise the dialog says why (ADMIN-1).
+  const handleBan = async (user: UserSummary) => {
+    await banUser(user.id, banReason());
+    setBanReason("");
+    const userId = user.id;
+    const name = nameOf(user);
+    showToast({
+      id: `ban-undo-${userId}`,
+      type: "success",
+      title: t("admin.users.banned", { name }),
+      duration: 5000,
+      action: {
+        label: t("admin.users.undo"),
+        onClick: async () => {
+          try {
             await unbanUser(userId);
-            showToast({
-              type: "info",
-              title: "Ban reversed",
-              message: `@${username} has been unbanned`,
-              duration: 3000,
-            });
-          },
+            showToast({ type: "info", title: t("admin.users.unbanned", { name }), duration: 3000 });
+          } catch (err) {
+            showToast({ type: "error", title: t("admin.users.unbanFailed", { name }), message: actionErrorText(err, "admin.action.failed"), duration: 8000 });
+          }
         },
-      });
-    } finally {
-      setActionLoading(false);
-    }
-  };
-
-  // Handle unban action
-  const handleUnban = async () => {
-    const user = selectedUser();
-    if (!user) return;
-
-    setActionLoading(true);
-    try {
-      await unbanUser(user.id);
-      showToast({
-        type: "success",
-        title: "User unbanned",
-        message: `@${user.username} has been unbanned`,
-        duration: 3000,
-      });
-    } finally {
-      setActionLoading(false);
-    }
-  };
-
-  // Handle delete action
-  const handleDelete = async () => {
-    const user = selectedUser();
-    if (!user) return;
-
-    setActionLoading(true);
-    try {
-      const success = await deleteUser(user.id);
-      if (success) {
-        setShowDeleteDialog(false);
-        setDeleteConfirmText("");
-        showToast({
-          type: "success",
-          title: "User deleted",
-          message: `@${user.username} has been permanently deleted`,
-          duration: 5000,
-        });
-      }
-    } finally {
-      setActionLoading(false);
-    }
-  };
-
-  // Format date for display
-  const formatDate = (dateStr: string): string => {
-    const date = new Date(dateStr);
-    return date.toLocaleDateString("en-US", {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
+      },
     });
+  };
+
+  const handleUnban = async (user: UserSummary) => {
+    await unbanUser(user.id);
+    showToast({ type: "success", title: t("admin.users.unbanned", { name: nameOf(user) }), duration: 3000 });
+  };
+
+  const handleDelete = async (user: UserSummary) => {
+    await deleteUser(user.id);
+    setDeleteConfirmText("");
+    showToast({ type: "success", title: t("admin.users.deleted", { name: nameOf(user) }), duration: 5000 });
   };
 
   // Handle keyboard navigation
@@ -278,6 +246,23 @@ const UsersPanel: Component = () => {
     }
   };
 
+  const statusBadge = (banned: boolean) => (
+    <Show
+      when={banned}
+      fallback={
+        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-status-success/20 text-text-primary">
+          <CheckCircle class="w-3 h-3" />
+          {t("admin.users.status.active")}
+        </span>
+      }
+    >
+      <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-status-error/20 text-text-primary">
+        <Ban class="w-3 h-3" />
+        {t("admin.users.status.banned")}
+      </span>
+    </Show>
+  );
+
   return (
     <div class="flex flex-1 h-full overflow-hidden">
       {/* User List */}
@@ -287,11 +272,10 @@ const UsersPanel: Component = () => {
           <AdminRequestsPanel />
         </Show>
         {/* Header */}
-        <div class="flex items-center justify-between p-4 border-b border-white/10">
-          <h2 class="text-lg font-bold text-text-primary">Users</h2>
+        <div class="flex flex-wrap items-center justify-between gap-3 p-4 border-b border-white/10">
+          <h2 class="text-lg font-bold text-text-primary">{t("admin.users.title")}</h2>
 
-          <div class="flex items-center gap-3">
-            {/* Create Account Button */}
+          <div class="flex flex-wrap items-center gap-3">
             <button
               onClick={() => setShowCreateAccount(true)}
               class="flex items-center gap-2 px-3 py-2 rounded-lg bg-accent-primary hover:bg-accent-primary/80 text-on-accent transition-colors text-sm font-medium"
@@ -299,7 +283,6 @@ const UsersPanel: Component = () => {
               {t("admin.createAccount.title")}
             </button>
 
-            {/* Export Button */}
             <button
               onClick={handleExport}
               disabled={adminState.isExporting}
@@ -311,18 +294,18 @@ const UsersPanel: Component = () => {
               >
                 <Download class="w-4 h-4" />
               </Show>
-              Export CSV
+              {t("admin.users.export")}
             </button>
 
-            {/* Search Input */}
             <div class="relative">
               <Search class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-secondary" />
               <input
-                type="text"
-                placeholder="Search users..."
+                type="search"
+                aria-label={t("admin.users.search")}
+                placeholder={t("admin.users.search")}
                 value={searchQuery()}
                 onInput={(e) => handleSearchInput(e.currentTarget.value)}
-                class="pl-9 pr-4 py-2 w-64 rounded-lg bg-white/5 border border-white/10 text-text-primary placeholder-text-placeholder focus:outline-none focus:border-accent-primary text-sm"
+                class="pl-9 pr-4 py-2 w-64 max-w-full rounded-lg bg-white/5 border border-white/10 text-text-primary placeholder-text-placeholder focus:outline-none focus:border-accent-primary text-sm"
               />
               <Show when={adminState.isUsersLoading && searchQuery()}>
                 <div class="absolute right-3 top-1/2 -translate-y-1/2">
@@ -338,33 +321,33 @@ const UsersPanel: Component = () => {
           ref={listRef}
           class="flex-1 overflow-auto focus:outline-none"
           tabIndex={0}
+          aria-label={t("admin.users.listLabel")}
           onKeyDown={handleKeyDown}
         >
           {/* Bulk Action Bar */}
           <Show when={getSelectedUserCount() > 0}>
-            <div class="flex items-center justify-between px-4 py-3 bg-accent-primary/20 border-b border-accent-primary/30">
+            <div class="flex flex-wrap items-center justify-between gap-2 px-4 py-3 bg-accent-primary/20 border-b border-accent-primary/30">
               <div class="flex items-center gap-3">
                 <span class="text-sm font-medium text-text-primary">
-                  {getSelectedUserCount()} user
-                  {getSelectedUserCount() !== 1 ? "s" : ""} selected
+                  {plural(getSelectedUserCount(), { one: "admin.users.selected.one", other: "admin.users.selected.other" })}
                 </span>
                 <button
                   onClick={clearUserSelection}
                   class="text-sm text-text-secondary hover:text-text-primary transition-colors"
                 >
-                  Clear selection
+                  {t("admin.users.clearSelection")}
                 </button>
               </div>
               <div class="flex items-center gap-2">
                 <button
-                  onClick={() => setShowBulkBanDialog(true)}
+                  onClick={openBulkBan}
                   disabled={
                     !adminState.isElevated || adminState.isBulkActionLoading
                   }
                   class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-accent-danger-fill text-on-danger text-sm font-medium transition-colors hover:bg-accent-danger-fill/90 state-disabled"
                 >
                   <Ban class="w-4 h-4" />
-                  Bulk Ban
+                  {t("admin.users.bulkBan")}
                 </button>
               </div>
             </div>
@@ -378,7 +361,9 @@ const UsersPanel: Component = () => {
                   allSelected() ? clearUserSelection() : selectAllUsers()
                 }
                 class="p-1 text-text-secondary hover:text-text-primary transition-colors"
-                title={allSelected() ? "Deselect all" : "Select all"}
+                title={allSelected() ? t("admin.users.deselectPage") : t("admin.users.selectPage")}
+                aria-label={allSelected() ? t("admin.users.deselectPage") : t("admin.users.selectPage")}
+                aria-pressed={allSelected()}
               >
                 <Show
                   when={allSelected()}
@@ -388,10 +373,10 @@ const UsersPanel: Component = () => {
                 </Show>
               </button>
             </div>
-            <div>Username</div>
-            <div>Email</div>
-            <div>Joined</div>
-            <div>Status</div>
+            <div>{t("admin.users.col.name")}</div>
+            <div>{t("admin.users.col.email")}</div>
+            <div>{t("admin.users.col.joined")}</div>
+            <div>{t("admin.users.col.status")}</div>
           </div>
 
           {/* Loading State */}
@@ -399,13 +384,28 @@ const UsersPanel: Component = () => {
             <TableRowSkeleton columns={4} rows={8} showAvatar />
           </Show>
 
+          {/* A failed load is not an empty list (ADMIN-18). */}
+          <Show when={!adminState.isUsersLoading && adminState.usersLoadFailed}>
+            <div role="alert" class="flex flex-col items-center gap-3 py-12 text-text-primary">
+              <div>{t("admin.users.loadFailed")}</div>
+              <button
+                onClick={() => loadUsers(adminState.usersPagination.page)}
+                class="px-3 py-1.5 rounded-lg bg-white/10 text-sm hover:bg-white/20"
+              >
+                {t("common.tryAgain")}
+              </button>
+            </div>
+          </Show>
+
           {/* User Rows */}
-          <Show when={!adminState.isUsersLoading}>
+          <Show when={!adminState.isUsersLoading && !adminState.usersLoadFailed}>
             <For
               each={filteredUsers()}
               fallback={
                 <div class="flex items-center justify-center py-12">
-                  <div class="text-text-secondary">No users found</div>
+                  <div class="text-text-secondary">
+                    {adminState.usersSearch ? t("admin.users.noMatch", { query: adminState.usersSearch }) : t("admin.users.empty")}
+                  </div>
                 </div>
               }
             >
@@ -432,6 +432,8 @@ const UsersPanel: Component = () => {
                         e.stopPropagation();
                         toggleUserSelection(user.id);
                       }}
+                      aria-label={t("admin.users.selectNamed", { name: nameOf(user) })}
+                      aria-pressed={isUserSelected(user.id)}
                       class="p-1 text-text-secondary hover:text-text-primary transition-colors"
                     >
                       <Show
@@ -447,13 +449,21 @@ const UsersPanel: Component = () => {
                   <div class="flex items-center gap-3 min-w-0 relative z-10">
                     <Avatar
                       src={user.avatar_url}
-                      alt={user.display_name || user.username}
+                      alt={nameOf(user)}
                       size="sm"
                     />
                     <div class="min-w-0">
-                      <div class="text-sm font-medium text-text-primary truncate">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          selectUser(user.id);
+                          setFocusedIndex(index());
+                        }}
+                        class="block text-left text-sm font-medium text-text-primary truncate max-w-full hover:underline"
+                      >
                         {user.display_name}
-                      </div>
+                      </button>
                       <div
                         class="text-xs truncate"
                         classList={{
@@ -491,26 +501,11 @@ const UsersPanel: Component = () => {
                         adminState.selectedUserId !== user.id,
                     }}
                   >
-                    {formatDate(user.created_at)}
+                    {formatDay(user.created_at)}
                   </div>
 
                   {/* Status */}
-                  <div class="flex items-center">
-                    <Show
-                      when={user.is_banned}
-                      fallback={
-                        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-status-success/20 text-text-primary">
-                          <CheckCircle class="w-3 h-3" />
-                          Active
-                        </span>
-                      }
-                    >
-                      <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-status-error/20 text-text-primary">
-                        <Ban class="w-3 h-3" />
-                        Banned
-                      </span>
-                    </Show>
-                  </div>
+                  <div class="flex items-center">{statusBadge(user.is_banned)}</div>
                 </div>
               )}
             </For>
@@ -520,22 +515,24 @@ const UsersPanel: Component = () => {
         {/* Pagination */}
         <div class="flex items-center justify-between px-4 py-3 border-t border-white/10">
           <div class="text-sm text-text-secondary">
-            {adminState.usersPagination.total} total users
+            {plural(adminState.usersPagination.total, { one: "admin.users.total.one", other: "admin.users.total.other" })}
           </div>
           <div class="flex items-center gap-2">
             <button
               onClick={() => goToPage(adminState.usersPagination.page - 1)}
               disabled={adminState.usersPagination.page <= 1}
+              aria-label={t("admin.users.prevPage")}
               class="p-2 rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/10 transition-colors state-disabled-quiet"
             >
               <ChevronLeft class="w-4 h-4" />
             </button>
             <span class="text-sm text-text-primary">
-              Page {adminState.usersPagination.page} of {totalPages()}
+              {t("admin.users.page", { page: adminState.usersPagination.page, total: totalPages() })}
             </span>
             <button
               onClick={() => goToPage(adminState.usersPagination.page + 1)}
               disabled={adminState.usersPagination.page >= totalPages()}
+              aria-label={t("admin.users.nextPage")}
               class="p-2 rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/10 transition-colors state-disabled-quiet"
             >
               <ChevronRight class="w-4 h-4" />
@@ -548,26 +545,24 @@ const UsersPanel: Component = () => {
       <Show when={selectedUser()}>
         {(user) => (
           <div class="w-80 flex-shrink-0 border-l border-white/10 flex flex-col">
-            {/* Detail Header */}
             <div class="flex items-center justify-between p-4 border-b border-white/10">
               <h3 class="text-sm font-medium text-text-secondary uppercase tracking-wide">
-                User Details
+                {t("admin.users.details")}
               </h3>
               <button
                 onClick={() => selectUser(null)}
+                aria-label={t("common.close")}
                 class="p-1 text-text-secondary hover:text-text-primary hover:bg-white/10 rounded transition-colors"
               >
                 <X class="w-4 h-4" />
               </button>
             </div>
 
-            {/* Detail Content */}
             <div class="flex-1 p-4 space-y-6 overflow-auto">
-              {/* Profile Section */}
               <div class="flex flex-col items-center text-center space-y-3">
                 <Avatar
                   src={user().avatar_url}
-                  alt={user().display_name || user().username}
+                  alt={nameOf(user())}
                   size="lg"
                 />
                 <div>
@@ -580,52 +575,35 @@ const UsersPanel: Component = () => {
                 </div>
               </div>
 
-              {/* Info Section */}
               <div class="space-y-4">
                 <div class="space-y-1">
                   <div class="text-xs font-medium text-text-secondary uppercase tracking-wide">
-                    Email
+                    {t("admin.users.col.email")}
                   </div>
                   <div class="text-sm text-text-primary">
-                    {user().email || "Not provided"}
+                    {user().email || t("admin.users.noEmail")}
                   </div>
                 </div>
 
                 <div class="space-y-1">
                   <div class="text-xs font-medium text-text-secondary uppercase tracking-wide">
-                    Joined
+                    {t("admin.users.col.joined")}
                   </div>
                   <div class="text-sm text-text-primary">
-                    {formatDate(user().created_at)}
+                    {formatDay(user().created_at)}
                   </div>
                 </div>
 
                 <div class="space-y-1">
                   <div class="text-xs font-medium text-text-secondary uppercase tracking-wide">
-                    Status
+                    {t("admin.users.col.status")}
                   </div>
-                  <div>
-                    <Show
-                      when={user().is_banned}
-                      fallback={
-                        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-status-success/20 text-text-primary">
-                          <CheckCircle class="w-3 h-3" />
-                          Active
-                        </span>
-                      }
-                    >
-                      <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-status-error/20 text-text-primary">
-                        <Ban class="w-3 h-3" />
-                        Banned
-                      </span>
-                    </Show>
-                  </div>
+                  <div>{statusBadge(user().is_banned)}</div>
                 </div>
 
-                {/* Last Login - from user details */}
                 <div class="space-y-1">
                   <div class="text-xs font-medium text-text-secondary uppercase tracking-wide">
-                    Last Login
+                    {t("admin.users.lastLogin")}
                   </div>
                   <div class="flex items-center gap-2 text-sm text-text-primary">
                     <Clock class="w-4 h-4 text-text-secondary" />
@@ -636,17 +614,15 @@ const UsersPanel: Component = () => {
                       }
                     >
                       {adminState.selectedUserDetails?.last_login
-                        ? formatDate(adminState.selectedUserDetails.last_login)
-                        : "Never"}
+                        ? formatDay(adminState.selectedUserDetails.last_login)
+                        : t("admin.users.never")}
                     </Show>
                   </div>
                 </div>
 
-                {/* Guild Memberships - from user details */}
                 <div class="space-y-2">
                   <div class="text-xs font-medium text-text-secondary uppercase tracking-wide">
-                    Guilds ({adminState.selectedUserDetails?.guild_count ?? "-"}
-                    )
+                    {t("admin.users.servers", { count: adminState.selectedUserDetails?.guild_count ?? "-" })}
                   </div>
                   <Show
                     when={!adminState.isUserDetailsLoading}
@@ -658,7 +634,7 @@ const UsersPanel: Component = () => {
                       when={adminState.selectedUserDetails?.guilds.length}
                       fallback={
                         <div class="text-sm text-text-secondary">
-                          No guild memberships
+                          {t("admin.users.noServers")}
                         </div>
                       }
                     >
@@ -677,11 +653,14 @@ const UsersPanel: Component = () => {
                                     {guild.guild_name}
                                   </span>
                                   <Show when={guild.is_owner}>
-                                    <Crown class="w-3 h-3 text-amber-400 flex-shrink-0" />
+                                    <Crown
+                                      class="w-3 h-3 text-status-warning flex-shrink-0"
+                                      aria-label={t("admin.users.owner")}
+                                    />
                                   </Show>
                                 </div>
                                 <div class="text-xs text-text-secondary">
-                                  Joined {formatDate(guild.joined_at)}
+                                  {t("admin.users.joinedOn", { date: formatDay(guild.joined_at) })}
                                 </div>
                               </div>
                             </div>
@@ -702,12 +681,12 @@ const UsersPanel: Component = () => {
               {/* Actions Section */}
               <div class="space-y-3 pt-4 border-t border-white/10">
                 <div class="text-xs font-medium text-text-secondary uppercase tracking-wide">
-                  Actions
+                  {t("admin.users.actions")}
                 </div>
 
                 <Show when={!adminState.isElevated}>
                   <div class="p-3 rounded-lg bg-status-warning/10 border border-status-warning/30 text-text-primary text-xs">
-                    Requires elevation to perform actions
+                    {t("admin.mode.needed")}
                   </div>
                 </Show>
 
@@ -716,31 +695,31 @@ const UsersPanel: Component = () => {
                   fallback={
                     <button
                       onClick={() => setShowBanDialog(true)}
-                      disabled={!adminState.isElevated || actionLoading()}
+                      disabled={!adminState.isElevated}
                       class="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-accent-danger-fill text-on-danger font-medium transition-colors hover:bg-accent-danger-fill/90 state-disabled"
                     >
                       <Ban class="w-4 h-4" />
-                      Ban User
+                      {t("admin.users.ban")}
                     </button>
                   }
                 >
                   <button
-                    onClick={handleUnban}
-                    disabled={!adminState.isElevated || actionLoading()}
+                    onClick={() => setShowUnbanDialog(true)}
+                    disabled={!adminState.isElevated}
                     class="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-status-success text-on-success font-medium transition-colors hover:bg-status-success/90 state-disabled"
                   >
                     <CheckCircle class="w-4 h-4" />
-                    {actionLoading() ? "Processing..." : "Unban User"}
+                    {t("admin.users.unban")}
                   </button>
                 </Show>
 
                 <button
                   onClick={() => setShowDeleteDialog(true)}
-                  disabled={!adminState.isElevated || actionLoading()}
-                  class="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-status-error/50 text-status-error font-medium transition-colors hover:bg-status-error/10 state-disabled-quiet"
+                  disabled={!adminState.isElevated}
+                  class="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-status-error/50 text-text-primary font-medium transition-colors hover:bg-status-error/10 state-disabled-quiet"
                 >
                   <Trash2 class="w-4 h-4" />
-                  Delete User
+                  {t("admin.users.delete")}
                 </button>
               </div>
             </div>
@@ -748,205 +727,140 @@ const UsersPanel: Component = () => {
         )}
       </Show>
 
-      {/* Ban Dialog */}
-      <Show when={showBanDialog()}>
-        <div class="fixed inset-0 z-50 flex items-center justify-center">
-          {/* Backdrop */}
-          <div
-            class="absolute inset-0 bg-black/60 backdrop-blur-sm"
-            onClick={() => setShowBanDialog(false)}
-          />
-
-          {/* Dialog */}
-          <div
-            class="relative rounded-xl border border-white/10 w-[400px] shadow-2xl animate-[fadeIn_0.15s_ease-out]"
-            style={{"background-color":"var(--color-surface-layer1)"}}
+      {/* Ban: stays open with the reason when it fails (ADMIN-1). */}
+      <Show when={showBanDialog() && selectedUser()}>
+        {(user) => (
+          <ConfirmActionDialog
+            title={t("admin.users.banTitle", { name: nameOf(user()) })}
+            message={t("admin.users.banBody", { name: nameOf(user()) })}
+            confirmLabel={t("admin.users.ban")}
+            danger
+            confirmDisabled={!banReason().trim()}
+            failureFallback="admin.action.failed"
+            onConfirm={() => handleBan(user())}
+            onDone={() => setShowBanDialog(false)}
+            onCancel={() => {
+              setShowBanDialog(false);
+              setBanReason("");
+            }}
+            testId="ban-dialog"
           >
-            <div class="p-5 space-y-4">
-              <h3 class="text-lg font-bold text-text-primary">Ban User</h3>
-
-              <p class="text-sm text-text-secondary">
-                Are you sure you want to ban{" "}
-                <span class="font-medium text-text-primary">
-                  @{selectedUser()?.username}
-                </span>
-                ? They will be unable to access the platform.
-              </p>
-
-              <div class="space-y-2">
-                <label class="text-sm font-medium text-text-secondary">
-                  Reason for ban
-                </label>
-                <textarea
-                  value={banReason()}
-                  onInput={(e) => setBanReason(e.currentTarget.value)}
-                  placeholder="Enter reason..."
-                  rows={3}
-                  class="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-text-primary placeholder-text-placeholder focus:outline-none focus:border-accent-primary text-sm resize-none"
-                />
-              </div>
-
-              <div class="flex gap-3 pt-2">
-                <button
-                  onClick={() => {
-                    setShowBanDialog(false);
-                    setBanReason("");
-                  }}
-                  class="flex-1 px-4 py-2 rounded-lg bg-white/10 text-text-primary font-medium transition-colors hover:bg-white/20"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleBan}
-                  disabled={!banReason().trim() || actionLoading()}
-                  class="flex-1 px-4 py-2 rounded-lg bg-accent-danger-fill text-on-danger font-medium transition-colors hover:bg-accent-danger-fill/90 state-disabled"
-                >
-                  {actionLoading() ? "Banning..." : "Confirm Ban"}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
+            <label class="block space-y-2">
+              <span class="text-sm font-medium text-text-secondary">{t("admin.users.reason")}</span>
+              <textarea
+                value={banReason()}
+                onInput={(e) => setBanReason(e.currentTarget.value)}
+                placeholder={t("admin.users.reasonPlaceholder")}
+                rows={3}
+                class="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-text-primary placeholder-text-placeholder focus:outline-none focus:border-accent-primary text-sm resize-none"
+              />
+            </label>
+          </ConfirmActionDialog>
+        )}
       </Show>
 
-      {/* Bulk Ban Dialog */}
+      {/* Unban asks too, so every admin action reads the same (ADMIN-13). */}
+      <Show when={showUnbanDialog() && selectedUser()}>
+        {(user) => (
+          <ConfirmActionDialog
+            title={t("admin.users.unbanTitle", { name: nameOf(user()) })}
+            message={t("admin.users.unbanBody", { name: nameOf(user()) })}
+            confirmLabel={t("admin.users.unban")}
+            failureFallback="admin.action.failed"
+            onConfirm={() => handleUnban(user())}
+            onDone={() => setShowUnbanDialog(false)}
+            onCancel={() => setShowUnbanDialog(false)}
+            testId="unban-dialog"
+          />
+        )}
+      </Show>
+
+      {/* Bulk ban: names everyone it hits (ADMIN-7). */}
       <Show when={showBulkBanDialog()}>
-        <div class="fixed inset-0 z-50 flex items-center justify-center">
-          {/* Backdrop */}
-          <div
-            class="absolute inset-0 bg-black/60 backdrop-blur-sm"
-            onClick={() => setShowBulkBanDialog(false)}
-          />
-
-          {/* Dialog */}
-          <div
-            class="relative rounded-xl border border-white/10 w-[400px] shadow-2xl animate-[fadeIn_0.15s_ease-out]"
-            style={{"background-color":"var(--color-surface-layer1)"}}
-          >
-            <div class="p-5 space-y-4">
-              <h3 class="text-lg font-bold text-text-primary">
-                Bulk Ban Users
-              </h3>
-
-              <p class="text-sm text-text-secondary">
-                Are you sure you want to ban{" "}
-                <span class="font-medium text-text-primary">
-                  {getSelectedUserCount()} user
-                  {getSelectedUserCount() !== 1 ? "s" : ""}
-                </span>
-                ? They will be unable to access the platform.
-              </p>
-
-              <div class="space-y-2">
-                <label class="text-sm font-medium text-text-secondary">
-                  Reason for ban (applies to all)
-                </label>
-                <textarea
-                  value={bulkBanReason()}
-                  onInput={(e) => setBulkBanReason(e.currentTarget.value)}
-                  placeholder="Enter reason..."
-                  rows={3}
-                  class="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-text-primary placeholder-text-placeholder focus:outline-none focus:border-accent-primary text-sm resize-none"
-                />
-              </div>
-
-              <div class="flex gap-3 pt-2">
-                <button
-                  onClick={() => {
-                    setShowBulkBanDialog(false);
-                    setBulkBanReason("");
-                  }}
-                  class="flex-1 px-4 py-2 rounded-lg bg-white/10 text-text-primary font-medium transition-colors hover:bg-white/20"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleBulkBan}
-                  disabled={!bulkBanReason().trim() || actionLoading()}
-                  class="flex-1 px-4 py-2 rounded-lg bg-accent-danger-fill text-on-danger font-medium transition-colors hover:bg-accent-danger-fill/90 state-disabled"
-                >
-                  {actionLoading()
-                    ? "Banning..."
-                    : `Ban ${getSelectedUserCount()} Users`}
-                </button>
-              </div>
+        <ConfirmActionDialog
+          title={plural(bulkTargets().length, { one: "admin.users.bulkTitle.one", other: "admin.users.bulkTitle.other" })}
+          message={
+            <div class="space-y-2">
+              <p>{t("admin.users.bulkBody")}</p>
+              <ul class="max-h-40 overflow-y-auto list-disc pl-5" data-testid="bulk-ban-names">
+                <For each={bulkTargets()}>
+                  {(u) => <li>{nameOf(u)} (@{u.username})</li>}
+                </For>
+              </ul>
             </div>
+          }
+          confirmLabel={plural(bulkTargets().length, { one: "admin.users.bulkConfirm.one", other: "admin.users.bulkConfirm.other" })}
+          danger
+          confirmDisabled={!bulkBanReason().trim() || bulkTargets().length === 0}
+          failureFallback="admin.action.failed"
+          onConfirm={handleBulkBan}
+          onDone={() => setShowBulkBanDialog(false)}
+          onCancel={() => {
+            setShowBulkBanDialog(false);
+            setBulkBanReason("");
+          }}
+          testId="bulk-ban-dialog"
+        >
+          <label class="block space-y-2">
+            <span class="text-sm font-medium text-text-secondary">{t("admin.users.reasonAll")}</span>
+            <textarea
+              value={bulkBanReason()}
+              onInput={(e) => setBulkBanReason(e.currentTarget.value)}
+              placeholder={t("admin.users.reasonPlaceholder")}
+              rows={3}
+              class="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-text-primary placeholder-text-placeholder focus:outline-none focus:border-accent-primary text-sm resize-none"
+            />
+          </label>
+        </ConfirmActionDialog>
+      </Show>
+
+      <Show when={bulkFailures().length > 0}>
+        <div
+          role="alert"
+          data-testid="bulk-ban-failures"
+          class="fixed bottom-4 left-1/2 -translate-x-1/2 z-40 max-w-md p-3 rounded-lg bg-status-error/15 border border-status-error/50 text-sm text-text-primary shadow-xl"
+          style={{ "background-color": "var(--color-surface-layer1)" }}
+        >
+          <div class="flex items-start gap-3">
+            <span>{t("admin.users.bulkFailed", { names: formatList(bulkFailures()) })}</span>
+            <button onClick={() => setBulkFailures([])} aria-label={t("common.close")}>
+              <X class="w-4 h-4" />
+            </button>
           </div>
         </div>
       </Show>
 
-      {/* Delete User Dialog */}
-      <Show when={showDeleteDialog()}>
-        <div class="fixed inset-0 z-50 flex items-center justify-center">
-          {/* Backdrop */}
-          <div
-            class="absolute inset-0 bg-black/60 backdrop-blur-sm"
-            onClick={() => {
+      {/* Delete: the username must be typed. */}
+      <Show when={showDeleteDialog() && selectedUser()}>
+        {(user) => (
+          <ConfirmActionDialog
+            title={t("admin.users.deleteTitle", { name: nameOf(user()) })}
+            message={t("admin.users.deleteBody", { name: nameOf(user()) })}
+            confirmLabel={t("admin.users.deleteConfirm")}
+            danger
+            confirmDisabled={deleteConfirmText() !== user().username}
+            failureFallback="admin.action.failed"
+            onConfirm={() => handleDelete(user())}
+            onDone={() => setShowDeleteDialog(false)}
+            onCancel={() => {
               setShowDeleteDialog(false);
               setDeleteConfirmText("");
             }}
-          />
-
-          {/* Dialog */}
-          <div
-            class="relative rounded-xl border border-white/10 w-[400px] shadow-2xl animate-[fadeIn_0.15s_ease-out]"
-            style={{"background-color":"var(--color-surface-layer1)"}}
           >
-            <div class="p-5 space-y-4">
-              <h3 class="text-lg font-bold text-status-error">Delete User</h3>
-
-              <p class="text-sm text-text-secondary">
-                Are you sure you want to permanently delete{" "}
-                <span class="font-medium text-text-primary">
-                  @{selectedUser()?.username}
-                </span>
-                ? This action is{" "}
-                <span class="font-bold text-status-error">irreversible</span>{" "}
-                and will remove all their data including messages, guild
-                memberships, and sessions.
-              </p>
-
-              <div class="space-y-2">
-                <label class="text-sm font-medium text-text-secondary">
-                  Type{" "}
-                  <span class="font-mono text-text-primary">
-                    {selectedUser()?.username}
-                  </span>{" "}
-                  to confirm
-                </label>
-                <input
-                  type="text"
-                  value={deleteConfirmText()}
-                  onInput={(e) => setDeleteConfirmText(e.currentTarget.value)}
-                  placeholder={selectedUser()?.username}
-                  class="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-text-primary placeholder-text-placeholder focus:outline-none focus:border-status-error text-sm"
-                />
-              </div>
-
-              <div class="flex gap-3 pt-2">
-                <button
-                  onClick={() => {
-                    setShowDeleteDialog(false);
-                    setDeleteConfirmText("");
-                  }}
-                  class="flex-1 px-4 py-2 rounded-lg bg-white/10 text-text-primary font-medium transition-colors hover:bg-white/20"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleDelete}
-                  disabled={
-                    deleteConfirmText() !== selectedUser()?.username ||
-                    actionLoading()
-                  }
-                  class="flex-1 px-4 py-2 rounded-lg bg-accent-danger-fill text-on-danger font-medium transition-colors hover:bg-accent-danger-fill/90 state-disabled"
-                >
-                  {actionLoading() ? "Deleting..." : "Delete Permanently"}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
+            <label class="block space-y-2">
+              <span class="text-sm font-medium text-text-secondary">
+                {t("admin.users.typeToConfirm", { username: user().username })}
+              </span>
+              <input
+                type="text"
+                value={deleteConfirmText()}
+                onInput={(e) => setDeleteConfirmText(e.currentTarget.value)}
+                placeholder={user().username}
+                class="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-text-primary placeholder-text-placeholder focus:outline-none focus:border-status-error text-sm"
+              />
+            </label>
+          </ConfirmActionDialog>
+        )}
       </Show>
 
       <Show when={showCreateAccount()}>

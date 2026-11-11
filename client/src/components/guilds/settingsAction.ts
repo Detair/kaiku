@@ -8,7 +8,7 @@ import { actionErrorText } from "@/components/admin/actionErrors";
 
 /** Show why `title` did not work. */
 export function reportFailure(title: string, err: unknown): void {
-  console.error(`[guild settings] ${title}`, err);
+  console.error("[guild settings]", title, err);
   showToast({ type: "error", title, message: actionErrorText(err), duration: 8000 });
 }
 
