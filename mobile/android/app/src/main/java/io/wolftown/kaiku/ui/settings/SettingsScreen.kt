@@ -7,6 +7,8 @@ import android.net.Uri
 import android.provider.Settings
 import androidx.browser.customtabs.CustomTabsIntent
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.*
@@ -52,6 +54,7 @@ fun SettingsScreen(
 ) {
     val user by viewModel.user.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
+    val profileError by viewModel.error.collectAsState()
     val serverUrl = viewModel.serverUrl
     val notificationState by viewModel.notificationState.collectAsState()
     val context = LocalContext.current
@@ -81,10 +84,13 @@ fun SettingsScreen(
             )
         }
     ) { paddingValues ->
+        // Scrolls (AND-B-10): with large text, a small phone or the admin and UnifiedPush
+        // rows, "Log out" and the version must stay reachable.
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 16.dp)
         ) {
             // Account section
@@ -102,6 +108,22 @@ fun SettingsScreen(
                         .padding(16.dp),
                     strokeWidth = 2.dp
                 )
+            } else if (profileError != null && user == null) {
+                // AND-B-23: say that the profile did not load, and offer to try again.
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = stringResource(profileError ?: R.string.settings_profile_load_failed),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = viewModel::retryLoadUser) {
+                        Text(stringResource(R.string.common_retry))
+                    }
+                }
             } else if (user != null) {
                 SettingsRow(label = stringResource(R.string.common_username), value = user!!.username)
                 SettingsRow(label = stringResource(R.string.settings_display_name), value = user!!.displayName)
@@ -169,8 +191,6 @@ fun SettingsScreen(
 
             SettingsRow(label = stringResource(R.string.settings_app_version), value = appVersion)
 
-            Spacer(modifier = Modifier.weight(1f))
-
             // Logout button
             Button(
                 onClick = { showLogoutDialog = true },
@@ -178,7 +198,8 @@ fun SettingsScreen(
                     .fillMaxWidth()
                     .padding(vertical = 16.dp),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.error
+                    containerColor = MaterialTheme.colorScheme.error,
+                    contentColor = MaterialTheme.colorScheme.onError
                 )
             ) {
                 Text(stringResource(R.string.home_user_panel_logout))
@@ -223,10 +244,13 @@ private fun SettingsRow(label: String, value: String) {
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+        // A long value (server address) wraps on its own side instead of overlapping the label.
         Text(
             text = value,
             style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurface
+            color = MaterialTheme.colorScheme.onSurface,
+            textAlign = androidx.compose.ui.text.style.TextAlign.End,
+            modifier = Modifier.weight(1f).padding(start = 16.dp)
         )
     }
 }

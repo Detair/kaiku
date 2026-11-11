@@ -113,7 +113,14 @@ class SettingsViewModel @Inject constructor(
         loadUser()
     }
 
+    /** "Retry" under the profile-load error (AND-B-23). Ignored while a load runs. */
+    fun retryLoadUser() {
+        if (_isLoading.value) return
+        loadUser()
+    }
+
     private fun loadUser() {
+        _error.value = null
         viewModelScope.launch {
             _isLoading.value = true
             try {
