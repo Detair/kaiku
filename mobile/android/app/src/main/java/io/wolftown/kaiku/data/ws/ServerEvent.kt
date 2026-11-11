@@ -207,7 +207,8 @@ sealed class ServerEvent {
     @SerialName("voice_removed")
     data class VoiceRemoved(
         val channelId: String? = null,
-        val reason: String = "kicked",
+        // Nullable: a JSON `null` must not drop the event (unknown/missing = kicked).
+        val reason: String? = null,
     ) : ServerEvent() {
         val removedReason: VoiceRemovedReason get() = VoiceRemovedReason.fromWire(reason)
     }

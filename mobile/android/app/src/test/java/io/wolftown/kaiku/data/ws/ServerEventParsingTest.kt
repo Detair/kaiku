@@ -557,6 +557,15 @@ class ServerEventParsingTest {
     }
 
     @Test
+    fun `voice_removed with a null reason is treated like kicked`() {
+        val event = WsJson.decodeFromString<ServerEvent>(
+            """{"type":"voice_removed","channel_id":"ch-1","reason":null}"""
+        )
+        assertIs<ServerEvent.VoiceRemoved>(event)
+        assertEquals(VoiceRemovedReason.Kicked, event.removedReason)
+    }
+
+    @Test
     fun `voice_removed without a channel id still parses and names no channel`() {
         val event = WsJson.decodeFromString<ServerEvent>("""{"type":"voice_removed","reason":"banned"}""")
         assertIs<ServerEvent.VoiceRemoved>(event)
