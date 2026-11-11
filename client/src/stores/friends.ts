@@ -8,6 +8,7 @@ import { createStore } from "solid-js/store";
 import type { Friend } from "@/lib/types";
 import * as tauri from "@/lib/tauri";
 import { showToast } from "@/components/ui/Toast";
+import { t } from "@/i18n";
 
 /**
  * Friends store state
@@ -50,14 +51,54 @@ export async function loadFriends(): Promise<void> {
   } catch (err) {
     console.error("Failed to load friends:", err);
     setFriendsState({
-      error: err instanceof Error ? err.message : "Failed to load friends",
+      error: t("home.friends.loadFailed"),
       isLoading: false,
     });
   }
 }
 
+// Incoming requests already seen, so a reload only announces new ones.
+// null until the first load: requests waiting at startup show as a count,
+// not as a burst of notices.
+let knownIncomingIds: Set<string> | null = null;
+
+/** Start over: the next load counts as the first (another account signs in). */
+export function forgetSeenRequests(): void {
+  knownIncomingIds = null;
+}
+
+function announceNewIncoming(pending: Friend[]): void {
+  const incoming = pending.filter((f) => f.direction === "incoming");
+  const previous = knownIncomingIds;
+  knownIncomingIds = new Set(incoming.map((f) => f.friendship_id));
+  if (!previous) return;
+  for (const request of incoming) {
+    if (previous.has(request.friendship_id)) continue;
+    showToast({
+      type: "info",
+      title: t("home.friends.toast.requestTitle"),
+      message: t("home.friends.toast.requestMessage", { name: request.display_name }),
+      duration: 8000,
+      id: `friend-request-${request.friendship_id}`,
+      action: {
+        label: t("home.friends.toast.requestShow"),
+        onClick: () => {
+          void Promise.all([import("./guilds"), import("./dms")]).then(
+            ([guilds, dms]) => {
+              if (guilds.guildsState.activeGuildId !== null) void guilds.selectHome();
+              dms.selectFriendsTab();
+            },
+          );
+        },
+      },
+    });
+  }
+}
+
 /**
- * Load pending friend requests
+ * Load pending friend requests. A request that arrived since the last load
+ * shows a notice (NAV-4): the server only says "reload", so the store spots
+ * what is new.
  */
 export async function loadPendingRequests(): Promise<void> {
   setFriendsState({ isPendingLoading: true });
@@ -65,6 +106,7 @@ export async function loadPendingRequests(): Promise<void> {
   try {
     const pending = await tauri.getPendingFriends();
     setFriendsState({ pendingRequests: pending, isPendingLoading: false });
+    announceNewIncoming(pending);
   } catch (err) {
     console.error("Failed to load pending requests:", err);
     setFriendsState({ isPendingLoading: false });
@@ -98,8 +140,8 @@ export async function sendFriendRequest(username: string): Promise<void> {
     console.error("Failed to send friend request:", err);
     showToast({
       type: "error",
-      title: "Friend Request Failed",
-      message: "Could not send request. Please try again.",
+      title: t("home.friends.toast.sendFailedTitle"),
+      message: t("home.friends.toast.sendFailed"),
       duration: 8000,
     });
     throw err;
@@ -128,8 +170,10 @@ export async function acceptFriendRequest(friendshipId: string): Promise<void> {
 
     showToast({
       type: "success",
-      title: "Friend Request Accepted",
-      message: `${acceptedRequest?.display_name ?? "Friend"} is now in your friends list.`,
+      title: t("home.friends.toast.acceptedTitle"),
+      message: acceptedRequest
+        ? t("home.friends.toast.accepted", { name: acceptedRequest.display_name })
+        : t("home.friends.toast.acceptedNoName"),
       duration: 3000,
     });
 
@@ -147,8 +191,8 @@ export async function acceptFriendRequest(friendshipId: string): Promise<void> {
     console.error("Failed to accept friend request:", err);
     showToast({
       type: "error",
-      title: "Accept Failed",
-      message: "Could not accept friend request. Please try again.",
+      title: t("home.friends.toast.acceptFailedTitle"),
+      message: t("home.friends.toast.acceptFailed"),
       duration: 8000,
     });
     throw err;
@@ -167,8 +211,8 @@ export async function rejectFriendRequest(friendshipId: string): Promise<void> {
     console.error("Failed to reject friend request:", err);
     showToast({
       type: "error",
-      title: "Reject Failed",
-      message: "Could not reject friend request. Please try again.",
+      title: t("home.friends.toast.rejectFailedTitle"),
+      message: t("home.friends.toast.rejectFailed"),
       duration: 8000,
     });
     throw err;
@@ -186,8 +230,8 @@ export async function cancelFriendRequest(friendshipId: string): Promise<void> {
     console.error("Failed to cancel friend request:", err);
     showToast({
       type: "error",
-      title: "Cancel Failed",
-      message: "Could not cancel friend request. Please try again.",
+      title: t("home.friends.toast.cancelFailedTitle"),
+      message: t("home.friends.toast.cancelFailed"),
       duration: 8000,
     });
     throw err;
@@ -210,8 +254,8 @@ export async function removeFriend(friendshipId: string): Promise<void> {
     console.error("Failed to remove friend:", err);
     showToast({
       type: "error",
-      title: "Remove Failed",
-      message: "Could not remove friend. Please try again.",
+      title: t("home.friends.toast.removeFailedTitle"),
+      message: t("home.friends.toast.removeFailed"),
       duration: 8000,
     });
     throw err;
@@ -230,8 +274,8 @@ export async function blockUser(userId: string): Promise<void> {
     console.error("Failed to block user:", err);
     showToast({
       type: "error",
-      title: "Block Failed",
-      message: "Could not block user. Please try again.",
+      title: t("home.friends.toast.blockFailedTitle"),
+      message: t("home.friends.toast.blockFailed"),
       duration: 8000,
     });
     throw err;
@@ -252,8 +296,8 @@ export async function unblockUser(userId: string): Promise<void> {
     console.error("Failed to unblock user:", err);
     showToast({
       type: "error",
-      title: "Unblock Failed",
-      message: "Could not unblock user. Please try again.",
+      title: t("home.friends.toast.unblockFailedTitle"),
+      message: t("home.friends.toast.unblockFailed"),
       duration: 8000,
     });
     throw err;
@@ -283,6 +327,13 @@ export function handleUserUnblocked(userId: string): void {
   setFriendsState({
     blocked: friendsState.blocked.filter((f) => f.user_id !== userId),
   });
+}
+
+/**
+ * Friend requests waiting for my answer (shown as a count on Home).
+ */
+export function getIncomingRequestCount(): number {
+  return friendsState.pendingRequests.filter((f) => f.direction === "incoming").length;
 }
 
 /**

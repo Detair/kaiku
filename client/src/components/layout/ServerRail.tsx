@@ -14,8 +14,8 @@
  * - Bottom: "Create Server" (+) button, "Join Server" button
  */
 
-import { Component, createSignal, For, Show, lazy, Suspense } from "solid-js";
-import { t } from "@/i18n";
+import { Component, createSignal, For, Show, lazy, Suspense, onMount } from "solid-js";
+import { t, plural } from "@/i18n";
 import { Home, Plus, UserPlus, Compass } from "lucide-solid";
 import {
   guildsState,
@@ -28,6 +28,12 @@ import {
 } from "@/stores/guilds";
 import { ModalFallback, LazyErrorBoundary } from "@/components/ui/LazyFallback";
 import { isGuildDiscoveryOff } from "@/stores/serverFeatures";
+import { dmsState, loadDMs, getTotalUnreadCount } from "@/stores/dms";
+import {
+  forgetSeenRequests,
+  getIncomingRequestCount,
+  loadPendingRequests,
+} from "@/stores/friends";
 
 const CreateGuildModal = lazy(
   () => import("@/components/guilds/CreateGuildModal"),
@@ -61,12 +67,42 @@ const ServerRail: Component<ServerRailProps> = (props) => {
     return isActive(id) || isHovered(id) ? "16px" : "50%";
   };
 
+  // Home counts unread direct messages plus friend requests waiting for an
+  // answer (NAV-4, NAV-5): the app lands in a server after sign-in, so this
+  // is where a new private message must show.
+  const homeCount = () => getTotalUnreadCount() + getIncomingRequestCount();
+
+  const unreadCount = (id: string) =>
+    id === "home" ? homeCount() : getGuildUnreadCount(id);
+
   /**
-   * Calculate pill indicator height based on active state
+   * Pill indicator: tall when active, a short dot only when there is
+   * something unread, hidden otherwise (LIVE-1: an always-on dot read as
+   * "unread").
    */
   const getPillHeight = (id: string) => {
-    return isActive(id) ? "40px" : "8px";
+    if (isActive(id)) return "40px";
+    return unreadCount(id) > 0 ? "8px" : "0px";
   };
+
+  /** The pill sits on the rail's left edge (12px margin, 10px when compact). */
+  const pillClass = () =>
+    `absolute ${props.compact ? "-left-2.5" : "-left-3"} top-1/2 -translate-y-1/2 w-1 bg-white rounded-r-full transition-all duration-200`;
+
+  const badgeText = (count: number) => (count > 99 ? "99+" : String(count));
+
+  /** Accessible name: the place plus how much is unread (NAV-15, NAV-21). */
+  const labelWithCount = (name: string, count: number) =>
+    count > 0
+      ? `${name}, ${plural(count, { one: "home.rail.unread.one", other: "home.rail.unread.other" })}`
+      : name;
+
+  onMount(() => {
+    // Counts for the Home badge must exist before Home is ever opened.
+    forgetSeenRequests();
+    void loadPendingRequests();
+    if (dmsState.dms.length === 0 && !dmsState.isLoading) void loadDMs();
+  });
 
   /** Icon button size classes based on compact prop */
   const iconSize = () => (props.compact ? "w-9 h-9" : "w-12 h-12");
@@ -87,7 +123,8 @@ const ServerRail: Component<ServerRailProps> = (props) => {
       <div class="relative">
         {/* Pill Indicator */}
         <div
-          class="absolute -left-3 top-1/2 -translate-y-1/2 w-1 bg-white rounded-r-full transition-all duration-200"
+          class={pillClass()}
+          aria-hidden="true"
           style={{ height: getPillHeight("home") }}
         />
 
@@ -104,16 +141,36 @@ const ServerRail: Component<ServerRailProps> = (props) => {
           onMouseLeave={() => setHoveredServerId(null)}
           onClick={() => selectHome()}
           title={t("home.rail.home")}
+          aria-label={labelWithCount(t("home.rail.home"), homeCount())}
         >
-          <Home class="w-6 h-6 text-accent-primary" />
+          <Home class="w-6 h-6 text-accent-primary" aria-hidden="true" />
         </button>
+        <Show when={homeCount() > 0}>
+          <div
+            data-testid="home-unread-badge"
+            aria-hidden="true"
+            class="absolute -bottom-0.5 -right-0.5 min-w-5 h-5 px-1 bg-accent-primary text-on-accent text-xs font-bold rounded-full flex items-center justify-center pointer-events-none"
+          >
+            {badgeText(homeCount())}
+          </div>
+        </Show>
       </div>
 
       {/* Separator */}
       <div class={separatorClass()} />
 
       {/* Server Icons - Scrollable List */}
-      <div class="flex-1 flex flex-col items-center gap-2 overflow-y-auto scrollbar-none">
+      {/* Full rail width, so the pill at the rail's left edge is not clipped
+          by the scroll box (LIVE-1) */}
+      <div class="flex-1 w-full flex flex-col items-center gap-2 overflow-y-auto overflow-x-hidden scrollbar-none">
+        <Show when={guildsState.isLoading && guildsState.guilds.length === 0}>
+          <div
+            data-testid="guilds-loading"
+            class={`${iconSize()} rounded-full bg-surface-layer2 animate-pulse`}
+            aria-label={t("common.loading")}
+            role="status"
+          />
+        </Show>
         <For each={guildsState.guilds}>
           {(guild) => {
             // Compute initials from guild name (e.g., "Gaming Squad" -> "GS")
@@ -128,7 +185,8 @@ const ServerRail: Component<ServerRailProps> = (props) => {
               <div class="relative">
                 {/* Pill Indicator */}
                 <div
-                  class="absolute -left-3 top-1/2 -translate-y-1/2 w-1 bg-white rounded-r-full transition-all duration-200"
+                  class={pillClass()}
+          aria-hidden="true"
                   style={{ height: getPillHeight(guild.id) }}
                 />
 
@@ -146,15 +204,16 @@ const ServerRail: Component<ServerRailProps> = (props) => {
                   onMouseLeave={() => setHoveredServerId(null)}
                   onClick={() => selectGuild(guild.id)}
                   title={guild.name}
+                  aria-label={labelWithCount(guild.name, getGuildUnreadCount(guild.id))}
                 >
                   {guild.icon_url ? (
                     <img
                       src={guild.icon_url}
-                      alt={guild.name}
+                      alt=""
                       class="w-full h-full object-cover"
                     />
                   ) : (
-                    <span class="text-sm font-semibold text-text-primary">
+                    <span class="text-sm font-semibold text-text-primary" aria-hidden="true">
                       {initials}
                     </span>
                   )}
@@ -162,10 +221,11 @@ const ServerRail: Component<ServerRailProps> = (props) => {
 
                 {/* Unread badge */}
                 <Show when={getGuildUnreadCount(guild.id) > 0}>
-                  <div class="absolute -bottom-0.5 -right-0.5 min-w-4 h-4 px-1 bg-accent-primary text-on-accent text-[10px] font-bold rounded-full flex items-center justify-center pointer-events-none">
-                    {getGuildUnreadCount(guild.id) > 99
-                      ? "99+"
-                      : getGuildUnreadCount(guild.id)}
+                  <div
+                    aria-hidden="true"
+                    class="absolute -bottom-0.5 -right-0.5 min-w-5 h-5 px-1 bg-accent-primary text-on-accent text-xs font-bold rounded-full flex items-center justify-center pointer-events-none"
+                  >
+                    {badgeText(getGuildUnreadCount(guild.id))}
                   </div>
                 </Show>
               </div>
@@ -175,12 +235,16 @@ const ServerRail: Component<ServerRailProps> = (props) => {
 
         {/* Guild load error */}
         <Show when={guildsState.error}>
+          {/* NAV-24: say it in words, not just "!" */}
           <button
-            class={`${iconSize()} flex items-center justify-center bg-error-bg/20 rounded-full cursor-pointer text-error-text hover:bg-error-bg/30 transition-colors`}
+            data-testid="guilds-retry"
+            class={`${iconSize()} h-auto py-1 flex flex-col items-center justify-center gap-0.5 bg-error-bg/20 rounded-xl cursor-pointer text-error-text hover:bg-error-bg/30 transition-colors`}
             title={t("home.rail.loadFailed")}
+            aria-label={t("home.rail.loadFailed")}
             onClick={() => loadGuilds()}
           >
-            !
+            <span aria-hidden="true" class="font-bold">!</span>
+            <span aria-hidden="true" class="text-xs leading-tight">{t("common.retry")}</span>
           </button>
         </Show>
       </div>
@@ -195,7 +259,8 @@ const ServerRail: Component<ServerRailProps> = (props) => {
         {/* Pill Indicator */}
         <Show when={isDiscoveryActive()}>
           <div
-            class="absolute -left-3 top-1/2 -translate-y-1/2 w-1 bg-white rounded-r-full transition-all duration-200"
+            class={pillClass()}
+          aria-hidden="true"
             style={{ height: "40px" }}
           />
         </Show>

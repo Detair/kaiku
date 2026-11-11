@@ -80,6 +80,33 @@ export function selectDM(channelId: string): void {
 }
 
 /**
+ * Open the conversation with these people: reuse an existing 1:1 DM, else
+ * create one (the server allows DMs with anyone who has not blocked you), then
+ * switch to Home and show it. Throws when the server refuses; callers show
+ * the reason.
+ */
+export async function openDirectMessage(userIds: string[]): Promise<string> {
+  let channelId: string | undefined;
+  if (userIds.length === 1) {
+    const me = currentUser()?.id;
+    channelId = dmsState.dms.find((dm) => {
+      const others = dm.participants.filter((p) => p.user_id !== me);
+      return others.length === 1 && others[0].user_id === userIds[0];
+    })?.id;
+  }
+  if (!channelId) {
+    const dm = await tauri.createDM(userIds);
+    channelId = dm.channel?.id ?? (dm as { id?: string }).id;
+    if (!channelId) throw new Error("DM creation response missing channel id");
+    await loadDMs();
+  }
+  const { guildsState, selectHome } = await import("./guilds");
+  if (guildsState.activeGuildId !== null) void selectHome();
+  selectDM(channelId);
+  return channelId;
+}
+
+/**
  * Switch to Friends tab
  */
 export function selectFriendsTab(): void {

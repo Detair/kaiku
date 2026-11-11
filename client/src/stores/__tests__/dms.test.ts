@@ -5,6 +5,7 @@ vi.mock("@/lib/tauri", () => ({
   wsStatus: vi.fn(),
   markDMAsRead: vi.fn(),
   markAllDMsRead: vi.fn(),
+  createDM: vi.fn(),
 }));
 
 vi.mock("@/stores/websocket", () => ({
@@ -35,6 +36,7 @@ import {
   isDMUnread,
   getDMLastReadMessageId,
   handleDmCreated,
+  openDirectMessage,
 } from "../dms";
 
 function createDM(overrides: Partial<DMListItem> = {}): DMListItem {
@@ -413,5 +415,29 @@ describe("dms store", () => {
 
       expect(subscribeChannel).toHaveBeenCalledWith("dm-new");
     });
+  });
+});
+
+describe("openDirectMessage", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setDmsState({ dms: [], selectedDMId: null, isShowingFriends: true });
+  });
+
+  it("opens the existing conversation without creating a new one", async () => {
+    setDmsState({ dms: [createDM({ id: "dm-anna" })] });
+    await openDirectMessage(["user-1"]);
+    expect(tauri.createDM).not.toHaveBeenCalled();
+    expect(dmsState.selectedDMId).toBe("dm-anna");
+    expect(dmsState.isShowingFriends).toBe(false);
+  });
+
+  it("creates a conversation with someone who is not a friend", async () => {
+    vi.mocked(tauri.createDM).mockResolvedValue({ channel: { id: "dm-new" } } as never);
+    vi.mocked(tauri.getDMList).mockResolvedValue([createDM({ id: "dm-new" })]);
+    vi.mocked(waitForConnection).mockResolvedValue(false);
+    await openDirectMessage(["user-9"]);
+    expect(tauri.createDM).toHaveBeenCalledWith(["user-9"]);
+    expect(dmsState.selectedDMId).toBe("dm-new");
   });
 });
