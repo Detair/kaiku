@@ -23,6 +23,9 @@ vi.mock("@/components/ui/Toast", () => ({
   showToast: vi.fn(),
 }));
 
+const markChannelAsRead = vi.hoisted(() => vi.fn());
+vi.mock("@/stores/channels", () => ({ markChannelAsRead }));
+
 import * as tauri from "@/lib/tauri";
 import { t } from "@/i18n";
 import { HttpError } from "@/lib/tauri/common";
@@ -891,3 +894,82 @@ describe("editingMessageId", () => {
     });
   });
 });
+
+describe("fix round 3", () => {
+  const at = (id: string, minute: number, content = `content-${id}`): Message => ({
+    ...createMessage(id),
+    content,
+    created_at: new Date(Date.UTC(2026, 0, 1, 0, minute)).toISOString(),
+  });
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setMessagesState({ byChannel: {}, loadingChannels: {}, hasMore: {}, loadError: null, sendError: null, newerAfter: {} });
+  });
+
+  it("sending leaves the read marker to the visible list", async () => {
+    setMessagesState("newerAfter", "ch-1", "m-10");
+    vi.mocked(tauri.sendMessageWithStatus).mockResolvedValueOnce({
+      message: at("m-99", 99, "hi"),
+      status: 201,
+    } as Awaited<ReturnType<typeof tauri.sendMessageWithStatus>>);
+    await sendMessage("ch-1", "hi");
+    await new Promise((r) => setTimeout(r, 0));
+    expect(markChannelAsRead).not.toHaveBeenCalled();
+  });
+
+  it("an edit or deletion during a forward load wins over the page", async () => {
+    setMessagesState("byChannel", "ch-1", [at("m-10", 10)]);
+    setMessagesState("newerAfter", "ch-1", "m-10");
+    let release!: () => void;
+    vi.mocked(tauri.getMessagesAfter).mockImplementationOnce(
+      () =>
+        new Promise((r) => {
+          release = () =>
+            r({
+              items: [at("m-11", 11, "old text"), at("m-12", 12)],
+              has_more: false,
+              next_cursor: null,
+            } as PaginatedMessages);
+        }),
+    );
+    const load = loadNewerMessages("ch-1");
+    await Promise.resolve();
+    updateMessage(at("m-11", 11, "edited text"));
+    removeMessage("ch-1", "m-12");
+    release();
+    await load;
+    const list = messagesState.byChannel["ch-1"];
+    expect(list.map((m) => m.id)).toEqual(["m-10", "m-11"]);
+    expect(list[1].content).toBe("edited text");
+  });
+
+  it("an edit or deletion during a jump wins over the loaded pages", async () => {
+    setMessagesState("byChannel", "ch-1", [at("m-50", 50)]);
+    let release!: () => void;
+    vi.mocked(tauri.getMessages).mockImplementationOnce(
+      () =>
+        new Promise((r) => {
+          release = () =>
+            r({
+              items: [at("m-09", 9), at("m-10", 10, "old")],
+              has_more: true,
+              next_cursor: null,
+            } as PaginatedMessages);
+        }),
+    );
+    vi.mocked(tauri.getMessagesAfter).mockResolvedValueOnce({
+      items: [at("m-50", 50)], has_more: false, next_cursor: null,
+    } as PaginatedMessages);
+    const jump = loadMessagesForJump("ch-1", "m-10");
+    await Promise.resolve();
+    updateMessage(at("m-10", 10, "new"));
+    removeMessage("ch-1", "m-09");
+    release();
+    await expect(jump).resolves.toBe(true);
+    const list = messagesState.byChannel["ch-1"];
+    expect(list.map((m) => m.id)).toEqual(["m-10", "m-50"]);
+    expect(list[0].content).toBe("new");
+  });
+});
+

@@ -306,5 +306,47 @@ describe("MessageList", () => {
       vi.useRealTimers();
     }
   });
+
+  it("a message I send while at the bottom marks the channel read once it is confirmed", async () => {
+    vi.useFakeTimers();
+    try {
+      store.set("byChannel", "send", [msg("s1", "2026-01-01T10:00:00Z", "a", "x", "send")]);
+      render(() => <MessageList channelId="send" />);
+      await vi.advanceTimersByTimeAsync(3500);
+      markChannelAsRead.mockClear();
+      store.set("byChannel", "send", [
+        ...store.state.byChannel.send,
+        msg("pending:1", "2026-01-01T10:01:00Z", "me", "hi", "send"),
+      ]);
+      await vi.advanceTimersByTimeAsync(100);
+      // Confirmed by the server before the timer runs.
+      store.set("byChannel", "send", [
+        store.state.byChannel.send[0],
+        msg("s2", "2026-01-01T10:01:00Z", "me", "hi", "send"),
+      ]);
+      await vi.advanceTimersByTimeAsync(3500);
+      expect(markChannelAsRead).toHaveBeenCalledWith("send", "s2");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a message I send after a far jump does not mark the unseen newer stretch read", async () => {
+    vi.useFakeTimers();
+    try {
+      newer.channels.add("far");
+      store.set("byChannel", "far", [msg("f1", "2025-01-01T10:00:00Z", "a", "x", "far")]);
+      render(() => <MessageList channelId="far" />);
+      await vi.advanceTimersByTimeAsync(10);
+      store.set("byChannel", "far", [
+        ...store.state.byChannel.far,
+        msg("f2", "2026-01-01T10:01:00Z", "me", "hi", "far"),
+      ]);
+      await vi.advanceTimersByTimeAsync(3500);
+      expect(markChannelAsRead).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 

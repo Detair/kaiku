@@ -614,7 +614,13 @@ const MessageList: Component<MessageListProps> = (props) => {
       if (appended > 0) queueAnnouncement(msgs.slice(msgs.length - appended));
 
       if (appended > 0 && (isOwnSend || isAtBottom())) {
-        requestAnimationFrame(() => scrollToBottom(true));
+        // The new message is on screen: mark read through the guarded timer
+        // (no scroll event fires when the list already was at the bottom).
+        // This is also where a sent message marks the channel read.
+        requestAnimationFrame(() => {
+          scrollToBottom(true);
+          scheduleMarkAsRead();
+        });
       } else if (appended > 0) {
         setHasNewMessages(true);
         setNewMessageCount((count) => count + appended);
