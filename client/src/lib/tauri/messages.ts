@@ -14,6 +14,7 @@ import type {
 import {
   fetchApi,
   getUploadAuth,
+  HttpError,
   httpRequest,
   httpRequestWithStatus,
   validateFileSize,
@@ -211,28 +212,73 @@ export async function uploadFile(messageId: string, file: File): Promise<any> {
   }
 }
 
+/** Progress and cancellation for {@link uploadMessageWithFile}. */
+export interface UploadOptions {
+  /** Bytes sent so far and the total, as the browser reports them. */
+  onProgress?: (loaded: number, total: number) => void;
+  /** Aborting rejects with a `DOMException` named `AbortError`. */
+  signal?: AbortSignal;
+}
+
+/** True for the rejection of an upload cancelled through its signal. */
+export function isUploadAborted(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    (err as { name?: unknown }).name === "AbortError"
+  );
+}
+
+function abortError(): DOMException {
+  return new DOMException("Upload cancelled", "AbortError");
+}
+
+/** Error body `{ error, message }` (contract C16) as an `HttpError`. */
+function uploadHttpError(status: number, statusText: string, rawBody: string): HttpError {
+  let code: string | undefined;
+  let message = statusText || `HTTP ${status}`;
+  const details: Record<string, unknown> = {};
+  try {
+    const body = rawBody ? JSON.parse(rawBody) : null;
+    if (body && typeof body === "object") {
+      if (typeof body.error === "string") code = body.error;
+      if (typeof body.message === "string" && body.message) message = body.message;
+      else if (code) message = code;
+      for (const [key, value] of Object.entries(body)) {
+        if (key !== "error" && key !== "message") details[key] = value;
+      }
+    }
+  } catch {
+    // Not JSON (a proxy's 413 page, for example): status alone decides.
+  }
+  return new HttpError(status, message, code, details);
+}
+
 /**
  * Upload a file and create a message in one request.
  * Uses the combined endpoint that creates the message and attaches the file.
+ *
+ * Failures reject with an `HttpError` carrying the server code
+ * (`INVALID_MIME_TYPE`, `FILE_TOO_LARGE`, …) so `errorText` can name the
+ * reason; a lost connection rejects with a `TypeError`, a cancelled upload
+ * with an `AbortError`.
  */
 export async function uploadMessageWithFile(
   channelId: string,
   file: File,
   content?: string,
+  options: UploadOptions = {},
 ): Promise<Message> {
   // Frontend validation
   const error = validateFileSize(file, "attachment");
   if (error) {
     console.warn("[uploadMessageWithFile] Frontend validation failed:", error);
-    throw new Error(error);
+    throw new HttpError(413, error, "FILE_TOO_LARGE");
   }
+  if (options.signal?.aborted) throw abortError();
 
   const { token, baseUrl } = await getUploadAuth();
-
-  const headers: Record<string, string> = {};
-  if (token) {
-    headers["Authorization"] = `Bearer ${token}`;
-  }
+  if (options.signal?.aborted) throw abortError();
 
   const formData = new FormData();
   formData.append("file", file);
@@ -240,49 +286,56 @@ export async function uploadMessageWithFile(
     formData.append("content", content);
   }
 
-  const response = await fetch(
-    `${baseUrl}/api/messages/channel/${channelId}/upload`,
-    {
-      method: "POST",
-      headers,
-      body: formData,
-    },
-  );
+  const url = `${baseUrl}/api/messages/channel/${channelId}/upload`;
 
-  if (!response.ok) {
-    let errorMessage = `Upload failed (HTTP ${response.status})`;
+  return new Promise<Message>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    const onAbort = () => xhr.abort();
+    const done = () => options.signal?.removeEventListener("abort", onAbort);
 
-    try {
-      const errorBody = await response.json();
-      errorMessage = errorBody.message || errorBody.error || errorMessage;
-    } catch (parseError) {
-      console.warn(
-        "[uploadMessageWithFile] Failed to parse error response:",
-        parseError,
-      );
-      errorMessage = response.statusText || errorMessage;
+    xhr.open("POST", url);
+    if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+
+    if (options.onProgress && xhr.upload) {
+      const report = options.onProgress;
+      xhr.upload.onprogress = (e: ProgressEvent) => {
+        report(e.loaded, e.lengthComputable ? e.total : file.size);
+      };
     }
 
-    console.error("[uploadMessageWithFile] Upload failed:", {
-      status: response.status,
-      error: errorMessage,
-      channelId,
-      fileSize: file.size,
-      fileName: file.name,
-    });
+    xhr.onload = () => {
+      done();
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          resolve(JSON.parse(xhr.responseText) as Message);
+        } catch (parseError) {
+          console.error("[uploadMessageWithFile] Failed to parse success response:", parseError);
+          reject(new Error("Server returned invalid response", { cause: parseError }));
+        }
+        return;
+      }
+      const httpError = uploadHttpError(xhr.status, xhr.statusText, xhr.responseText);
+      console.error("[uploadMessageWithFile] Upload failed:", {
+        status: xhr.status,
+        code: httpError.code,
+        channelId,
+        fileSize: file.size,
+      });
+      reject(httpError);
+    };
+    // Same shape as a failed fetch, so errorText says "check your connection".
+    xhr.onerror = () => {
+      done();
+      reject(new TypeError("Network request failed"));
+    };
+    xhr.onabort = () => {
+      done();
+      reject(abortError());
+    };
 
-    throw new Error(errorMessage);
-  }
-
-  try {
-    return await response.json();
-  } catch (parseError) {
-    console.error(
-      "[uploadMessageWithFile] Failed to parse success response:",
-      parseError,
-    );
-    throw new Error("Server returned invalid response", { cause: parseError });
-  }
+    options.signal?.addEventListener("abort", onAbort, { once: true });
+    xhr.send(formData);
+  });
 }
 
 // ============================================================================

@@ -16,6 +16,7 @@ import {
   sendThreadReply,
 } from "@/stores/threads";
 import { areThreadsEnabled } from "@/stores/guilds";
+import { t } from "@/i18n";
 
 interface ThreadSidebarProps {
   channelId: string;
@@ -70,11 +71,14 @@ const ThreadSidebar: Component<ThreadSidebarProps> = (props) => {
 
     setSending(true);
     try {
-      await sendThreadReply(parentId, props.channelId, content);
-      setReplyContent("");
-      // Reset textarea height
-      if (textareaRef) {
-        textareaRef.style.height = "auto";
+      const sent = await sendThreadReply(parentId, props.channelId, content);
+      // A failed reply keeps its text (the store shows why it failed).
+      if (sent && replyContent().trim() === content) {
+        setReplyContent("");
+        // Reset textarea height
+        if (textareaRef) {
+          textareaRef.style.height = "auto";
+        }
       }
     } finally {
       setSending(false);
@@ -111,15 +115,20 @@ const ThreadSidebar: Component<ThreadSidebarProps> = (props) => {
   };
 
   return (
-    <div data-testid="thread-sidebar" class="w-[400px] flex-shrink-0 flex flex-col border-l border-white/5 bg-surface-layer1">
+    <div
+      data-testid="thread-sidebar"
+      role="complementary"
+      aria-label={t("chat.thread.title")}
+      class="fixed inset-0 z-40 w-full flex flex-col bg-surface-layer1 md:static md:inset-auto md:z-auto md:w-[400px] md:flex-shrink-0 md:border-l md:border-white/5"
+    >
       {/* Header */}
       <header class="h-12 px-4 flex items-center justify-between border-b border-white/5 shadow-sm">
-        <span class="font-semibold text-text-primary">Thread</span>
+        <span class="font-semibold text-text-primary">{t("chat.thread.title")}</span>
         <button
           onClick={closeThread}
           class="w-7 h-7 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary hover:text-text-primary transition-colors"
-          title="Close thread"
-          aria-label="Close thread"
+          title={t("chat.thread.close")}
+          aria-label={t("chat.thread.close")}
         >
           <X class="w-4 h-4" />
         </button>
@@ -156,7 +165,7 @@ const ThreadSidebar: Component<ThreadSidebarProps> = (props) => {
           fallback={
             <Show when={!isLoading()}>
               <div class="flex items-center justify-center py-8 text-text-secondary text-sm">
-                No replies yet. Start the conversation!
+                {t("chat.thread.empty")}
               </div>
             </Show>
           }
@@ -190,7 +199,8 @@ const ThreadSidebar: Component<ThreadSidebarProps> = (props) => {
               value={replyContent()}
               onInput={handleInput}
               onKeyDown={handleKeyDown}
-              placeholder="Reply in thread..."
+              placeholder={t("chat.thread.replyPlaceholder")}
+              aria-label={t("chat.thread.replyPlaceholder")}
               rows={1}
               class="flex-1 bg-transparent text-text-primary text-sm placeholder-text-placeholder resize-none outline-none max-h-[120px]"
             />
@@ -198,8 +208,8 @@ const ThreadSidebar: Component<ThreadSidebarProps> = (props) => {
               onClick={handleSend}
               disabled={!replyContent().trim() || sending()}
               class="w-8 h-8 flex items-center justify-center rounded-lg text-text-secondary hover:text-accent-primary hover:bg-white/5 transition-colors flex-shrink-0 state-disabled-quiet"
-              title="Send reply"
-              aria-label="Send reply"
+              title={t("chat.thread.send")}
+              aria-label={t("chat.thread.send")}
             >
               <Send class="w-4 h-4" />
             </button>

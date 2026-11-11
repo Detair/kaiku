@@ -1,32 +1,40 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
-import { render, screen, fireEvent, cleanup } from "@solidjs/testing-library";
+import { render, screen, fireEvent, cleanup, waitFor } from "@solidjs/testing-library";
+import { HttpError } from "@/lib/tauri/common";
 
 const sendMessage = vi.fn();
 const uploadMessageWithFile = vi.fn();
 const validateFileSize = vi.fn((): string | null => null);
+const clearDraft = vi.fn();
+const addMessage = vi.fn();
 
 vi.mock("@/stores/messages", () => ({
   sendMessage: (...a: unknown[]) => sendMessage(...a),
   messagesState: { error: null, sendError: null },
-  addMessage: vi.fn(),
+  addMessage: (...a: unknown[]) => addMessage(...a),
 }));
 vi.mock("@/stores/websocket", () => ({ stopTyping: vi.fn(), sendTyping: vi.fn() }));
 vi.mock("@/lib/tauri", () => ({
   uploadMessageWithFile: (...a: unknown[]) => uploadMessageWithFile(...a),
   validateFileSize: () => validateFileSize(),
   getUploadLimitText: () => "10 MB",
+  isUploadAborted: (e: unknown) => (e as { name?: string })?.name === "AbortError",
 }));
 vi.mock("@/components/ui/Toast", () => ({ showToast: vi.fn() }));
 vi.mock("@/stores/drafts", () => ({
   getDraft: () => "hello draft",
   saveDraft: vi.fn(),
-  clearDraft: vi.fn(),
+  clearDraft: (...a: unknown[]) => clearDraft(...a),
 }));
 vi.mock("@/stores/guilds", () => ({ guildsState: { members: {}, guilds: [] } }));
 vi.mock("@/stores/channels", () => ({ channelsState: { channels: [] } }));
 vi.mock("@/lib/api/bots", () => ({ listGuildCommands: vi.fn(async () => []) }));
 vi.mock("@/components/emoji/PositionedEmojiPicker", () => ({ default: () => null }));
-vi.mock("../AutocompletePopup", () => ({ default: () => null }));
+vi.mock("../AutocompletePopup", () => ({
+  default: (p: { query: string; type: string }) => (
+    <div data-testid="autocomplete">{`${p.type}:${p.query}`}</div>
+  ),
+}));
 
 import MessageInput from "../MessageInput";
 
@@ -37,6 +45,7 @@ const dropFiles = (form: Element, files: File[]) => {
 };
 
 beforeEach(() => {
+  vi.clearAllMocks();
   validateFileSize.mockReturnValue(null);
   URL.createObjectURL = vi.fn(() => "blob:x");
   URL.revokeObjectURL = vi.fn();
@@ -74,7 +83,7 @@ describe("MessageInput", () => {
   });
 
   it("placeholder carries the channel name", () => {
-    render(() => <MessageInput channelId="c1" channelName="general" />);
+    render(() => <MessageInput channelId="c1" channelName="general" guildId="g1" />);
     expect(screen.getByPlaceholderText("Message #general")).toBeTruthy();
   });
 
@@ -92,5 +101,158 @@ describe("MessageInput", () => {
     fireEvent.input(ta);
     fireEvent.keyDown(ta, { key: "Enter" });
     expect(sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the text and the draft when sending fails", async () => {
+    sendMessage.mockResolvedValueOnce(null);
+    render(() => <MessageInput channelId="c1" channelName="general" guildId="g1" />);
+    const ta = screen.getByPlaceholderText("Message #general") as HTMLTextAreaElement;
+    fireEvent.keyDown(ta, { key: "Enter" });
+    await waitFor(() => expect(sendMessage).toHaveBeenCalledWith("c1", "hello draft"));
+    await Promise.resolve();
+    expect(ta.value).toBe("hello draft");
+    expect(clearDraft).not.toHaveBeenCalled();
+  });
+
+  it("clears the text and the draft once the message is sent", async () => {
+    sendMessage.mockResolvedValueOnce({ id: "m1" });
+    render(() => <MessageInput channelId="c1" channelName="general" guildId="g1" />);
+    const ta = screen.getByPlaceholderText("Message #general") as HTMLTextAreaElement;
+    fireEvent.keyDown(ta, { key: "Enter" });
+    await waitFor(() => expect(clearDraft).toHaveBeenCalledWith("c1"));
+    expect(ta.value).toBe("");
+  });
+
+  it("does not lock the text box while sending", async () => {
+    sendMessage.mockReturnValueOnce(new Promise(() => {}));
+    render(() => <MessageInput channelId="c1" channelName="general" guildId="g1" />);
+    const ta = screen.getByPlaceholderText("Message #general") as HTMLTextAreaElement;
+    fireEvent.keyDown(ta, { key: "Enter" });
+    await waitFor(() => expect(sendMessage).toHaveBeenCalled());
+    expect(ta.disabled).toBe(false);
+  });
+
+  it("names the reason for a rejected file and keeps it, without resending sent files", async () => {
+    uploadMessageWithFile
+      .mockResolvedValueOnce({ id: "m1" })
+      .mockRejectedValueOnce(new HttpError(415, "Invalid file type", "INVALID_MIME_TYPE"));
+    const { container } = render(() => (
+      <MessageInput channelId="c1" channelName="general" guildId="g1" />
+    ));
+    const form = container.querySelector("form")!;
+    dropFiles(form, [new File(["a"], "a.png", { type: "image/png" }), new File(["b"], "b.heic")]);
+    fireEvent.submit(form);
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("b.heic was not sent.");
+    expect(alert.textContent).toContain("This kind of file can't be sent.");
+    // a.png went out (with the text) and left the tray; b.heic stays.
+    expect(uploadMessageWithFile.mock.calls[0][2]).toBe("hello draft");
+    expect(uploadMessageWithFile.mock.calls[1][2]).toBeUndefined();
+    const tiles = screen.getAllByTestId("pending-file");
+    expect(tiles).toHaveLength(1);
+    expect(tiles[0].getAttribute("title")).toContain("This kind of file can't be sent.");
+    expect(addMessage).toHaveBeenCalledTimes(1);
+    expect(clearDraft).toHaveBeenCalledWith("c1");
+
+    // Sending again only retries the rejected file.
+    uploadMessageWithFile.mockResolvedValueOnce({ id: "m2" });
+    fireEvent.submit(form);
+    await waitFor(() => expect(uploadMessageWithFile).toHaveBeenCalledTimes(3));
+    expect((uploadMessageWithFile.mock.calls[2][1] as File).name).toBe("b.heic");
+  });
+
+  it("keeps the text when every file fails", async () => {
+    uploadMessageWithFile.mockRejectedValueOnce(new HttpError(413, "too big", "FILE_TOO_LARGE"));
+    const { container } = render(() => (
+      <MessageInput channelId="c1" channelName="general" guildId="g1" />
+    ));
+    const form = container.querySelector("form")!;
+    dropFiles(form, [new File(["a"], "a.mp4", { type: "video/mp4" })]);
+    fireEvent.submit(form);
+    expect((await screen.findByRole("alert")).textContent).toContain("This file is too big to send.");
+    const ta = screen.getByPlaceholderText("Message #general") as HTMLTextAreaElement;
+    expect(ta.value).toBe("hello draft");
+    expect(clearDraft).not.toHaveBeenCalled();
+  });
+
+  it("shows progress and cancels an upload", async () => {
+    let signal: AbortSignal | undefined;
+    let progress: ((l: number, t: number) => void) | undefined;
+    uploadMessageWithFile.mockImplementationOnce(
+      (_c: string, _f: File, _t: string, opts: { signal: AbortSignal; onProgress: (l: number, t: number) => void }) =>
+        new Promise((_, reject) => {
+          signal = opts.signal;
+          progress = opts.onProgress;
+          opts.signal.addEventListener("abort", () =>
+            reject(new DOMException("Upload cancelled", "AbortError")),
+          );
+        }),
+    );
+    const { container } = render(() => (
+      <MessageInput channelId="c1" channelName="general" guildId="g1" />
+    ));
+    const form = container.querySelector("form")!;
+    dropFiles(form, [new File(["a"], "a.mp4", { type: "video/mp4" })]);
+    fireEvent.submit(form);
+    await waitFor(() => expect(progress).toBeDefined());
+    progress!(50, 100);
+    const bar = await screen.findByRole("progressbar");
+    expect(bar.getAttribute("aria-valuenow")).toBe("50");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(signal!.aborted).toBe(true);
+    await waitFor(() => expect(screen.queryByRole("progressbar")).toBeNull());
+    expect(screen.getAllByTestId("pending-file")).toHaveLength(1);
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(clearDraft).not.toHaveBeenCalled();
+  });
+
+  it("names the allowed file types next to the files", async () => {
+    const { container } = render(() => <MessageInput channelId="c1" channelName="general" />);
+    dropFiles(container.querySelector("form")!, [new File(["a"], "a.txt")]);
+    expect(await screen.findByText(/You can send photos, videos/)).toBeTruthy();
+  });
+
+  it("an oversized file is refused with a translated sentence", async () => {
+    validateFileSize.mockReturnValue("File too large");
+    const { container } = render(() => <MessageInput channelId="c1" channelName="general" />);
+    dropFiles(container.querySelector("form")!, [new File(["a"], "huge.mov")]);
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      "huge.mov is too big. Files can be up to 10 MB.",
+    );
+  });
+
+  it("pasting an image adds it as an attachment", async () => {
+    render(() => <MessageInput channelId="c1" channelName="general" />);
+    const ta = screen.getByPlaceholderText("Message general") as HTMLTextAreaElement;
+    const ev = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(ev, "clipboardData", {
+      value: { files: [new File(["x"], "image.png", { type: "image/png" })] },
+    });
+    ta.dispatchEvent(ev);
+    expect(ev.defaultPrevented).toBe(true);
+    expect(await screen.findByText("1 file ready to send")).toBeTruthy();
+  });
+
+  it("pasting text only leaves the paste alone", () => {
+    render(() => <MessageInput channelId="c1" channelName="general" />);
+    const ta = screen.getByPlaceholderText("Message general") as HTMLTextAreaElement;
+    const ev = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(ev, "clipboardData", { value: { files: [] } });
+    ta.dispatchEvent(ev);
+    expect(ev.defaultPrevented).toBe(false);
+  });
+
+  it("direct messages get a placeholder without the channel sign", () => {
+    render(() => <MessageInput channelId="c1" channelName="Oma" />);
+    expect(screen.getByPlaceholderText("Message Oma")).toBeTruthy();
+  });
+
+  it("@ mentions with umlauts keep the suggestions open", async () => {
+    render(() => <MessageInput channelId="c1" channelName="general" guildId="g1" />);
+    const ta = screen.getByPlaceholderText("Message #general") as HTMLTextAreaElement;
+    ta.value = "hi @Jö";
+    ta.setSelectionRange(ta.value.length, ta.value.length);
+    fireEvent.input(ta);
+    expect((await screen.findByTestId("autocomplete")).textContent).toBe("user:Jö");
   });
 });

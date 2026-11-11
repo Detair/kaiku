@@ -37,9 +37,14 @@ export const CHAT_SEND_ERRORS: { byCode: ByCode; byStatus: ByStatus } = {
     BLOCKED: "chat.send.blocked",
     CONTENT_FILTERED: "chat.send.contentFiltered",
     FILE_TOO_LARGE: "chat.send.fileTooLarge",
+    INVALID_MIME_TYPE: "chat.send.fileTypeNotAllowed",
+    NO_FILE: "chat.send.fileEmpty",
+    INVALID_FILENAME: "chat.send.fileNameInvalid",
+    STORAGE_NOT_CONFIGURED: "chat.send.uploadsUnavailable",
     CHANNEL_NOT_FOUND: "chat.send.channelGone",
+    CHANNEL_READ_ONLY: "chat.send.readOnly",
   },
-  byStatus: { 413: "chat.send.fileTooLarge" },
+  byStatus: { 413: "chat.send.fileTooLarge", 415: "chat.send.fileTypeNotAllowed" },
 };
 
 /** Reasons starting a DM call can fail (server answers 403 BLOCKED). */

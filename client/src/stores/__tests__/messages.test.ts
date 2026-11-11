@@ -491,7 +491,7 @@ describe("messages store", () => {
       expect(showToast).toHaveBeenCalledWith(
         expect.objectContaining({ type: "error", title: "Send Failed" }),
       );
-      expect(messagesState.sendError).toBe("Could not send message. Please try again.");
+      expect(messagesState.sendError).toBe("Your message was not sent. It is still in the box, so you can try again.");
       expect(messagesState.loadError).toBeNull();
     });
 
@@ -513,7 +513,7 @@ describe("messages store", () => {
 
       await sendMessage("ch-1", "hello");
 
-      expect(messagesState.sendError).toBe("A file is too large to send.");
+      expect(messagesState.sendError).toBe("This file is too big to send.");
     });
   });
 
