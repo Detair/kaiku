@@ -46,6 +46,7 @@ import {
   setEditingMessageId,
   decryptMessageIfNeeded,
   catchUpChannel,
+  loadMessagesForJump,
 } from "../messages";
 
 function createMessage(id: string, channelId = "ch-1"): Message {
@@ -742,5 +743,76 @@ describe("editingMessageId", () => {
     setEditingMessageId("msg-1");
     setEditingMessageId("msg-2");
     expect(editingMessageId()).toBe("msg-2");
+  });
+
+  describe("loadMessagesForJump", () => {
+    beforeEach(() => {
+      vi.resetAllMocks();
+      setMessagesState({ byChannel: {}, loadingChannels: {}, hasMore: {}, loadError: null, sendError: null });
+    });
+
+    const at = (id: string, minute: number) => ({
+      ...createMessage(id),
+      created_at: new Date(Date.UTC(2026, 0, 1, 0, minute)).toISOString(),
+    });
+
+    it("loads the page around an old message and bridges to the loaded ones", async () => {
+      setMessagesState("byChannel", "ch-1", [at("m-50", 50), at("m-51", 51)]);
+      vi.mocked(tauri.getMessages).mockResolvedValueOnce({
+        items: [at("m-09", 9), at("m-10", 10), at("m-11", 11)],
+        has_more: true,
+        next_cursor: null,
+      } as PaginatedMessages);
+      vi.mocked(tauri.getMessagesAfter).mockResolvedValueOnce({
+        items: [at("m-12", 12), at("m-50", 50), at("m-51", 51)],
+        has_more: false,
+        next_cursor: null,
+      } as PaginatedMessages);
+
+      await expect(loadMessagesForJump("ch-1", "m-10")).resolves.toBe(true);
+
+      expect(tauri.getMessages).toHaveBeenCalledWith("ch-1", undefined, 50, "m-10");
+      expect(tauri.getMessagesAfter).toHaveBeenCalledWith("ch-1", "m-11", 100);
+      expect(messagesState.byChannel["ch-1"].map((m) => m.id)).toEqual([
+        "m-09", "m-10", "m-11", "m-12", "m-50", "m-51",
+      ]);
+      expect(messagesState.hasMore["ch-1"]).toBe(true);
+      expect(messagesState.loadingChannels["ch-1"]).toBe(false);
+    });
+
+    it("does nothing when the message is already loaded", async () => {
+      setMessagesState("byChannel", "ch-1", [at("m-10", 10)]);
+      await expect(loadMessagesForJump("ch-1", "m-10")).resolves.toBe(true);
+      expect(tauri.getMessages).not.toHaveBeenCalled();
+    });
+
+    it("keeps the list when the message is gone", async () => {
+      setMessagesState("byChannel", "ch-1", [at("m-50", 50)]);
+      vi.mocked(tauri.getMessages).mockResolvedValueOnce({
+        items: [], has_more: false, next_cursor: null,
+      } as PaginatedMessages);
+      await expect(loadMessagesForJump("ch-1", "m-10")).resolves.toBe(false);
+      expect(messagesState.byChannel["ch-1"].map((m) => m.id)).toEqual(["m-50"]);
+      expect(messagesState.loadingChannels["ch-1"]).toBe(false);
+    });
+
+    it("shows the window alone when it is too far back to bridge", async () => {
+      setMessagesState("byChannel", "ch-1", [at("m-50", 50)]);
+      vi.mocked(tauri.getMessages).mockResolvedValueOnce({
+        items: [at("m-10", 10)], has_more: true, next_cursor: null,
+      } as PaginatedMessages);
+      vi.mocked(tauri.getMessagesAfter).mockResolvedValue({
+        items: [at("m-11", 11)], has_more: true, next_cursor: "m-11",
+      } as PaginatedMessages);
+      await expect(loadMessagesForJump("ch-1", "m-10", 2)).resolves.toBe(true);
+      expect(messagesState.byChannel["ch-1"].map((m) => m.id)).toEqual(["m-10"]);
+    });
+
+    it("reports a failed load without touching the list", async () => {
+      setMessagesState("byChannel", "ch-1", [at("m-50", 50)]);
+      vi.mocked(tauri.getMessages).mockRejectedValueOnce(new TypeError("Failed to fetch"));
+      await expect(loadMessagesForJump("ch-1", "m-10")).resolves.toBe(false);
+      expect(messagesState.byChannel["ch-1"].map((m) => m.id)).toEqual(["m-50"]);
+    });
   });
 });

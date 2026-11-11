@@ -281,6 +281,47 @@ export async function loadMessagesAround(channelId: string, aroundMessageId: str
   }
 }
 
+/**
+ * Make `messageId` part of the loaded messages so the list can jump to it
+ * (search result, pinned message). Loads the page around it plus every newer
+ * page and merges them with what is loaded, so scrolling down still reaches
+ * the newest message. With more than `maxPages` newer pages the window alone
+ * replaces the loaded messages. Resolves `true` once the message is loaded,
+ * `false` when it is gone or could not be loaded (the list stays as it was).
+ */
+export async function loadMessagesForJump(
+  channelId: string,
+  messageId: string,
+  maxPages = 10,
+): Promise<boolean> {
+  if ((messagesState.byChannel[channelId] ?? []).some((m) => m.id === messageId)) return true;
+  if (messagesState.loadingChannels[channelId]) return false;
+
+  setMessagesState("loadingChannels", channelId, true);
+  try {
+    const window = await fetchAroundWindow(channelId, messageId);
+    if (!window.items.some((m) => m.id === messageId)) return false;
+
+    const anchor = window.items[window.items.length - 1].id;
+    const newer = await fetchMessagesAfter(channelId, anchor, maxPages);
+    const current = messagesState.byChannel[channelId] ?? [];
+    if (newer) {
+      setMessagesState("byChannel", channelId, mergeAscending(current, [...window.items, ...newer]));
+    } else {
+      // Too far back to bridge: show the window, keep messages sent meanwhile.
+      const pending = current.filter(isPendingMessage);
+      setMessagesState("byChannel", channelId, [...window.items, ...pending]);
+    }
+    setMessagesState("hasMore", channelId, window.hasMore);
+    return true;
+  } catch (err) {
+    console.error("Failed to load messages for jump:", err);
+    return false;
+  } finally {
+    setMessagesState("loadingChannels", channelId, false);
+  }
+}
+
 function reportLoadError(channelId: string, label: string, err: unknown): void {
   const error = err instanceof Error ? err.message : String(err);
   console.error(label, error);

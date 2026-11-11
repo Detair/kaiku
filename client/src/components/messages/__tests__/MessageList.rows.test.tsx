@@ -34,6 +34,7 @@ vi.mock("@/stores/messages", () => {
 });
 
 vi.mock("@/stores/channels", () => ({
+  channelsState: { channels: [] },
   markChannelAsRead: vi.fn(),
   getChannelLastReadMessageId: () => null,
   isChannelUnread: () => false,
@@ -41,6 +42,9 @@ vi.mock("@/stores/channels", () => ({
 }));
 
 vi.mock("@/stores/guilds", () => ({ areThreadsEnabled: () => true }));
+vi.mock("@/stores/dms", () => ({ dmsState: { dms: [] } }));
+vi.mock("@/stores/auth", () => ({ currentUser: () => ({ id: "me" }) }));
+vi.mock("@/components/ui/Toast", () => ({ showToast: vi.fn() }));
 vi.mock("@solidjs/router", () => ({ useSearchParams: () => [{}, vi.fn()] }));
 
 // The hazard: a row's MessageItem reads its message prop during cleanup.

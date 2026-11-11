@@ -1,10 +1,18 @@
 export const chat = {
   "chat.pins.title": "Pinned Messages",
+  "chat.pins.close": "Close pinned messages",
+  "chat.pins.empty": "No pinned messages",
+  "chat.pins.jump": "Show in chat",
+  "chat.pins.unpin": "Unpin",
+  "chat.pins.unpinFailed": "Could not unpin the message",
+  "chat.pins.unpinFailedHint": "Please try again.",
   "chat.noChannel.title": "Select a channel to start chatting",
   "chat.noChannel.hint": "Or press Ctrl+K to search",
 
   "chat.typing.one": "Someone is typing...",
   "chat.typing.other": "{{count}} people are typing...",
+  "chat.typing.name": "{{name}} is typing...",
+  "chat.typing.twoNames": "{{first}} and {{second}} are typing...",
 
   "chat.composer.placeholder": "Message #{{channel}}",
   "chat.composer.placeholderDm": "Message {{name}}",
@@ -108,5 +116,12 @@ export const chat = {
   "chat.list.newMessages": "New Messages",
   "chat.list.newCount.one": "{{count}} new message",
   "chat.list.newCount.other": "{{count}} new messages",
+  "chat.list.empty.hintDm": "Write the first message.",
+  "chat.list.jumpToLatest": "Jump to newest",
+  "chat.list.jumpFailed": "That message could not be found. It may have been deleted.",
+  "chat.list.day.today": "Today",
+  "chat.list.day.yesterday": "Yesterday",
+  "chat.list.announce.message": "{{name}}: {{text}}",
+  "chat.list.announce.file": "{{name}} sent a file",
   "chat.message.encryptedPlaceholder": "Encrypted message — it can't be shown on this device.",
 } as const satisfies Record<`chat.${string}`, string>;

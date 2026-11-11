@@ -9,6 +9,7 @@ import {
   createSignal,
   onCleanup,
   onMount,
+  untrack,
 } from "solid-js";
 import { useSearchParams } from "@solidjs/router";
 import { createVirtualizer } from "@/lib/virtualizer";
@@ -27,18 +28,25 @@ import {
   setMessagesState,
   loadInitialMessages,
   loadMessages,
+  loadMessagesForJump,
   hasMoreMessages,
 } from "@/stores/messages";
 import {
+  channelsState,
   markChannelAsRead,
   getChannelLastReadMessageId,
   isChannelUnread,
   getUnreadCount,
 } from "@/stores/channels";
 import { areThreadsEnabled } from "@/stores/guilds";
+import { dmsState } from "@/stores/dms";
+import { currentUser } from "@/stores/auth";
+import { showToast } from "@/components/ui/Toast";
 import { shouldGroupWithPrevious } from "@/lib/utils";
 import { isEscapeForOverlay } from "@/lib/a11y/dialog";
 import { plural, t } from "@/i18n";
+import type { Message } from "@/lib/types";
+import { announcementFor, dayKey, dayLabel, threadsEnabledFor } from "./listHelpers";
 
 interface MessageListProps {
   channelId: string;
@@ -74,6 +82,44 @@ const MessageList: Component<MessageListProps> = (props) => {
   /** Message ID we want to scroll to once messages finish loading */
   let pendingHighlightId: string | null = null;
   let highlightTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Channel the list last (re)loaded; a highlight for another one waits for its load. */
+  let loadedChannelId: string | undefined;
+
+  // --- Screen reader announcements for new messages from others ---
+  const [announcement, setAnnouncement] = createSignal("");
+  let announceQueue: Message[] = [];
+  let announceTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Collect arrivals for a moment so a burst is one short sentence. */
+  const queueAnnouncement = (arrived: Message[]) => {
+    const me = currentUser()?.id;
+    const fromOthers = arrived.filter(
+      (m) => !m.id.startsWith("pending:") && m.author.id !== me && m.message_type !== "system",
+    );
+    if (fromOthers.length === 0) return;
+    announceQueue.push(...fromOthers);
+    if (announceTimer) return;
+    announceTimer = setTimeout(() => {
+      announceTimer = null;
+      const text = announcementFor(announceQueue);
+      announceQueue = [];
+      if (text) setAnnouncement(text);
+    }, 1500);
+  };
+  onCleanup(() => {
+    if (announceTimer) clearTimeout(announceTimer);
+  });
+
+  // --- Direct message or server channel ---
+  const isDirectMessage = createMemo(() => dmsState.dms.some((dm) => dm.id === props.channelId));
+  const guildIdForChannel = createMemo(
+    () =>
+      props.guildId ??
+      channelsState.channels.find((c) => c.id === props.channelId)?.guild_id ??
+      undefined,
+  );
+  const threadsEnabled = createMemo(() =>
+    threadsEnabledFor(isDirectMessage(), guildIdForChannel(), areThreadsEnabled),
+  );
 
   // Use createMemo for proper reactive tracking of store values
   const messages = createMemo(() => {
@@ -90,7 +136,8 @@ const MessageList: Component<MessageListProps> = (props) => {
 
     return msgs.map((message, idx) => {
       const prev = idx > 0 ? msgs[idx - 1] : null;
-      const isCompact = prev
+      const isNewDay = !prev || dayKey(prev.created_at) !== dayKey(message.created_at);
+      const isCompact = prev && !isNewDay
         ? shouldGroupWithPrevious(
             message.created_at,
             prev.created_at,
@@ -105,7 +152,7 @@ const MessageList: Component<MessageListProps> = (props) => {
         foundLastRead = true;
       }
 
-      return { message, isCompact, isFirstUnread };
+      return { message, isCompact, isFirstUnread, isNewDay };
     });
   });
 
@@ -168,8 +215,9 @@ const MessageList: Component<MessageListProps> = (props) => {
       if (msg.reactions?.length) estimate += 36;
       if (msg.thread_reply_count) estimate += 28;
 
-      // "New Messages" divider (~32px)
+      // "New Messages" divider and day separator (~32px each)
       if (item?.isFirstUnread) estimate += 32;
+      if (item?.isNewDay) estimate += 32;
 
       return estimate + 16; // padding
     },
@@ -281,6 +329,24 @@ const MessageList: Component<MessageListProps> = (props) => {
     }
 
     return false;
+  };
+
+  /**
+   * Scroll to `messageId`, loading the messages around it first when it is
+   * not loaded (an old search result or pinned message).
+   */
+  const jumpTo = async (messageId: string) => {
+    pendingHighlightId = messageId;
+    if (scrollToMessage(messageId)) return;
+    const channelId = props.channelId;
+    const loaded = await loadMessagesForJump(channelId, messageId);
+    if (pendingHighlightId !== messageId || props.channelId !== channelId) return;
+    requestAnimationFrame(() => {
+      if (pendingHighlightId !== messageId) return;
+      if (loaded && scrollToMessage(messageId)) return;
+      pendingHighlightId = null;
+      showToast({ type: "info", title: t("chat.list.jumpFailed") });
+    });
   };
 
   // --- Infinite scroll: load older messages ---
@@ -431,11 +497,11 @@ const MessageList: Component<MessageListProps> = (props) => {
       pendingHighlightId = highlightId;
       setSearchParams({ highlight: undefined }, { replace: true });
 
-      // Try to scroll immediately if messages are already loaded
-      const found = scrollToMessage(highlightId);
-      if (!found) {
-        // Messages may not be loaded yet; the pending ID will be
-        // picked up by the message-count tracking effect below.
+      // Channel already shown: jump now (loading the message if needed).
+      // A channel that is about to load picks the pending ID up in the
+      // message-count tracking effect below.
+      if (untrack(() => props.channelId) === loadedChannelId && !untrack(loading)) {
+        void jumpTo(highlightId);
       }
     }
   });
@@ -446,6 +512,7 @@ const MessageList: Component<MessageListProps> = (props) => {
       () => props.channelId,
       (channelId, prevChannelId) => {
         if (channelId && channelId !== prevChannelId) {
+          loadedChannelId = channelId;
           setIsAtBottom(true);
           setHasNewMessages(false);
           setNewMessageCount(0);
@@ -490,6 +557,8 @@ const MessageList: Component<MessageListProps> = (props) => {
       // Always scroll when the user sends a message (optimistic messages have pending: prefix)
       const isOwnSend = lastMsg?.id?.startsWith("pending:");
 
+      if (appended > 0) queueAnnouncement(msgs.slice(msgs.length - appended));
+
       if (appended > 0 && (isOwnSend || isAtBottom())) {
         requestAnimationFrame(() => scrollToBottom(true));
       } else if (appended > 0) {
@@ -501,10 +570,10 @@ const MessageList: Component<MessageListProps> = (props) => {
       if (pendingHighlightId) {
         requestAnimationFrame(() => {
           if (pendingHighlightId) {
-            const found = scrollToMessage(pendingHighlightId);
-            if (!found) {
-              pendingHighlightId = null;
+            const id = pendingHighlightId;
+            if (!scrollToMessage(id)) {
               scrollToBottom(true);
+              void jumpTo(id);
             }
           }
         });
@@ -545,6 +614,7 @@ const MessageList: Component<MessageListProps> = (props) => {
   });
 
   return (
+    <>
     <div
       ref={containerRef}
       class="flex-1 overflow-y-auto relative"
@@ -627,7 +697,7 @@ const MessageList: Component<MessageListProps> = (props) => {
             {t("chat.list.empty.title")}
           </h3>
           <p class="text-text-secondary max-w-sm">
-            {t("chat.list.empty.hint")}
+            {isDirectMessage() ? t("chat.list.empty.hintDm") : t("chat.list.empty.hint")}
           </p>
         </div>
       </Show>
@@ -659,7 +729,8 @@ const MessageList: Component<MessageListProps> = (props) => {
                 equals: (a, b) =>
                   a?.message === b?.message &&
                   a?.isCompact === b?.isCompact &&
-                  a?.isFirstUnread === b?.isFirstUnread,
+                  a?.isFirstUnread === b?.isFirstUnread &&
+                  a?.isNewDay === b?.isNewDay,
               },
             );
             // virtual-core caches each measured element by key and only
@@ -688,6 +759,19 @@ const MessageList: Component<MessageListProps> = (props) => {
                 <Show when={item()}>
                   {(data) => (
                     <>
+                      <Show when={data().isNewDay}>
+                        <div
+                          role="separator"
+                          aria-label={dayLabel(data().message.created_at)}
+                          class="flex items-center gap-2 px-4 py-1 my-1"
+                        >
+                          <div class="flex-1 h-px bg-white/10" />
+                          <span class="text-xs font-semibold text-text-secondary">
+                            {dayLabel(data().message.created_at)}
+                          </span>
+                          <div class="flex-1 h-px bg-white/10" />
+                        </div>
+                      </Show>
                       <Show when={data().isFirstUnread}>
                         <div class="flex items-center gap-2 px-4 py-1 my-1">
                           <div class="flex-1 h-px bg-accent-danger" />
@@ -701,7 +785,7 @@ const MessageList: Component<MessageListProps> = (props) => {
                         message={data().message}
                         compact={data().isCompact}
                         guildId={props.guildId}
-                        threadsEnabled={areThreadsEnabled(props.guildId)}
+                        threadsEnabled={threadsEnabled()}
                       />
                     </>
                   )}
@@ -712,25 +796,43 @@ const MessageList: Component<MessageListProps> = (props) => {
         </For>
       </div>
 
-      {/* New messages indicator */}
-      <Show when={hasNewMessages()}>
-        <button
-          onClick={() => scrollToBottom(true)}
-          class="fixed bottom-24 left-1/2 transform -translate-x-1/2 bg-accent-primary hover:bg-accent-primary/90 text-on-accent px-5 py-2.5 rounded-full shadow-2xl flex items-center gap-2 transition-all z-10 font-medium"
-        >
-          <ChevronDown class="w-4 h-4" />
-          <span>
-            {plural(newMessageCount(), {
-              one: "chat.list.newCount.one",
-              other: "chat.list.newCount.other",
-            })}
-          </span>
-        </button>
+      {/* Back to the newest message: shown whenever the list is scrolled up.
+          A zero-height sticky strip keeps it at the bottom of the chat (not
+          of the window), centred over the messages. */}
+      <Show when={hasNewMessages() || (!isAtBottom() && messages().length > 0)}>
+        <div class="sticky bottom-0 h-0 z-10 flex justify-center pointer-events-none">
+          <button
+            data-testid="jump-to-latest"
+            onClick={() => scrollToBottom(true)}
+            class={`absolute bottom-4 pointer-events-auto rounded-full shadow-2xl flex items-center gap-2 transition-all font-medium ${
+              hasNewMessages()
+                ? "bg-accent-primary hover:bg-accent-primary/90 text-on-accent px-5 py-2.5"
+                : "bg-surface-layer2 hover:bg-surface-layer1 text-text-primary border border-white/10 px-4 py-2 text-sm"
+            }`}
+          >
+            <ChevronDown class="w-4 h-4" />
+            <span>
+              {hasNewMessages()
+                ? plural(newMessageCount(), {
+                    one: "chat.list.newCount.one",
+                    other: "chat.list.newCount.other",
+                  })
+                : t("chat.list.jumpToLatest")}
+            </span>
+          </button>
+        </div>
       </Show>
 
       {/* Image lightbox (rendered via Portal) */}
       <MessageImageLightbox />
     </div>
+
+    {/* Screen reader: new messages from others, one short sentence at a time.
+        Outside the list so the list holds only its rows. */}
+    <div class="sr-only" role="status" aria-live="polite" aria-atomic="true" data-testid="new-message-announcer">
+      {announcement()}
+    </div>
+    </>
   );
 };
 
