@@ -155,6 +155,8 @@ export const voice = {
   "voice.toast.shareStopped.message": "Server may still show you as sharing. Reconnect if needed.",
   "voice.status.connecting": "Connecting...",
   "voice.status.reconnecting": "Reconnecting...",
+  "voice.channel.reconnecting": "Connection lost. Reconnecting, you are still in this channel.",
+  "voice.participants.reconnecting": "reconnecting",
   "voice.rejoin.lost": "Voice connection lost",
   "voice.rejoin.button": "Rejoin",
   "voice.removed.kicked": "You were removed from the voice channel.",

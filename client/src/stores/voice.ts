@@ -1356,10 +1356,14 @@ export function isInVoice(): boolean {
 }
 
 /**
- * Check if connected to a specific channel.
+ * Check if in a specific channel (connected or reconnecting).
  */
 export function isInChannel(channelId: string): boolean {
-  return voiceState.state === "connected" && voiceState.channelId === channelId;
+  // Reconnecting is still the same voice session (R2).
+  return (
+    (voiceState.state === "connected" || voiceState.state === "reconnecting") &&
+    voiceState.channelId === channelId
+  );
 }
 
 /**

@@ -20,9 +20,12 @@ interface Props {
  */
 const VoiceParticipants: Component<Props> = (props) => {
   // Check if we're connected or connecting to this channel
+  // Reconnecting keeps the list (R2); the own row says so in plain words.
   const isActiveInChannel = () =>
     voiceState.channelId === props.channelId &&
-    (voiceState.state === "connected" || voiceState.state === "connecting");
+    (voiceState.state === "connected" ||
+      voiceState.state === "connecting" ||
+      voiceState.state === "reconnecting");
 
   // Remote participants from server (exclude current user, they're shown separately)
   const remoteParticipants = () => {
@@ -63,6 +66,11 @@ const VoiceParticipants: Component<Props> = (props) => {
           <span class="flex-1 truncate text-accent-primary font-medium">
             {authState.user?.display_name || authState.user?.username || t("voice.participants.you")}
           </span>
+          <Show when={voiceState.state === "reconnecting"}>
+            <span data-testid="voice-self-reconnecting" class="text-text-secondary">
+              {t("voice.participants.reconnecting")}
+            </span>
+          </Show>
 
           <div
             class="relative"
