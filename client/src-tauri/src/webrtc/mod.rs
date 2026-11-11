@@ -95,7 +95,7 @@ pub enum ConnectionState {
 /// `Disconnected` is a short ICE outage, not the end of the call: it becomes
 /// `Reconnecting` so the UI keeps its state (A8). Only `Closed` (own leave)
 /// ends the call; `Failed` lets the UI run its rejoin flow.
-pub fn publisher_state(state: RTCPeerConnectionState) -> ConnectionState {
+pub const fn publisher_state(state: RTCPeerConnectionState) -> ConnectionState {
     match state {
         RTCPeerConnectionState::Connected => ConnectionState::Connected,
         RTCPeerConnectionState::Disconnected => ConnectionState::Reconnecting,
