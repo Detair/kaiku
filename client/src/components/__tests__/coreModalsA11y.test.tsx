@@ -38,6 +38,7 @@ vi.mock("@/stores/permissions", () => ({
   getGuildRoles: () => [],
   getMemberRoleIds: () => [],
   getChannelOverrides: () => [],
+  getLoadedChannelOverrides: () => [],
   loadChannelOverrides: vi.fn(),
 }));
 vi.mock("@/stores/guilds", () => ({
