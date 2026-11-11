@@ -20,6 +20,7 @@ mod peer;
 mod quality;
 mod queries;
 pub mod rate_limit;
+pub mod revoke;
 pub mod screen_share;
 pub mod sfu;
 mod stats;

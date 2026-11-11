@@ -31,9 +31,10 @@ use tokio::sync::RwLock;
 use tracing::{debug, warn};
 use uuid::Uuid;
 
-use super::events::channels;
+use super::events::{channels, VoiceRemovedReason};
 use crate::api::AppState;
 use crate::permissions::PermissionError;
+use crate::voice::revoke::VoiceAccessScope;
 
 /// Upper bound for one re-check of a socket's subscriptions.
 pub const ACCESS_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
@@ -74,6 +75,50 @@ pub enum AccessChange {
 }
 
 impl AccessChange {
+    /// Which voice participants to check, and the reason they are told.
+    const fn voice(self) -> (VoiceAccessScope, VoiceRemovedReason) {
+        match self {
+            Self::MemberKicked { guild_id, user_id } => (
+                VoiceAccessScope::User {
+                    user_id,
+                    guild_id: Some(guild_id),
+                },
+                VoiceRemovedReason::Kicked,
+            ),
+            Self::MemberLeft { guild_id, user_id }
+            | Self::MemberRolesChanged { guild_id, user_id } => (
+                VoiceAccessScope::User {
+                    user_id,
+                    guild_id: Some(guild_id),
+                },
+                VoiceRemovedReason::PermissionLost,
+            ),
+            Self::UserBanned { user_id } => (
+                VoiceAccessScope::User {
+                    user_id,
+                    guild_id: None,
+                },
+                VoiceRemovedReason::Banned,
+            ),
+            Self::GuildRolesChanged { guild_id } => (
+                VoiceAccessScope::Guild(guild_id),
+                VoiceRemovedReason::PermissionLost,
+            ),
+            Self::ChannelPermissionsChanged { channel_id } => (
+                VoiceAccessScope::Channel(channel_id),
+                VoiceRemovedReason::PermissionLost,
+            ),
+            Self::ChannelDeleted { channel_id } => (
+                VoiceAccessScope::Channel(channel_id),
+                VoiceRemovedReason::ChannelDeleted,
+            ),
+            Self::GuildDeleted { .. } => (
+                VoiceAccessScope::DeletedChannels,
+                VoiceRemovedReason::ChannelDeleted,
+            ),
+        }
+    }
+
     /// Where the notice goes and what it names.
     fn notice(self) -> (String, AccessNotice) {
         let all = AccessNotice::AccessChanged { channel_id: None };
@@ -103,6 +148,17 @@ impl AccessChange {
 pub async fn access_changed(state: &AppState, change: AccessChange) {
     let (channel, notice) = change.notice();
     publish_notice(&state.redis, &channel, &notice).await;
+
+    // Voice rooms are in this process: remove whoever lost access now.
+    let (scope, reason) = change.voice();
+    crate::voice::revoke::enforce_voice_access(
+        &state.sfu,
+        &state.db,
+        state.screen_share_limiter.as_ref(),
+        scope,
+        reason,
+    )
+    .await;
 }
 
 async fn publish_notice(redis: &Client, channel: &str, notice: &AccessNotice) {

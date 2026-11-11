@@ -898,6 +898,7 @@ async fn handle_socket(
                                 session_id,
                                 &subscribed_channels,
                                 &admin_subscribed,
+                                &tx,
                             )
                             .await
                             {
@@ -1159,14 +1160,16 @@ async fn admin_events_allowed(state: &AppState, user_id: Uuid, session_id: Optio
 }
 
 /// Periodic backstop for access changes whose notice was lost: re-check every
-/// channel subscription and the admin event subscription. A database error
-/// ends the socket (1011) so the client reconnects with fresh checks.
+/// channel subscription, the admin event subscription and this socket's voice
+/// peer. A database error on the subscriptions ends the socket (1011) so the
+/// client reconnects with fresh checks.
 async fn recheck_access(
     state: &AppState,
     user_id: Uuid,
     session_id: Option<Uuid>,
     subscribed_channels: &tokio::sync::RwLock<HashSet<Uuid>>,
     admin_subscribed: &tokio::sync::RwLock<bool>,
+    tx: &mpsc::Sender<OutboundMsg>,
 ) -> Result<(), PubsubExit> {
     super::access::revalidate_subscriptions(&state.db, user_id, subscribed_channels, None)
         .await
@@ -1175,6 +1178,15 @@ async fn recheck_access(
         *admin_subscribed.write().await = false;
         debug!("Admin {} lost admin events (no longer elevated)", user_id);
     }
+    // This socket's voice peer, if any, must still have voice access.
+    crate::voice::revoke::recheck_socket_peer(
+        &state.sfu,
+        &state.db,
+        state.screen_share_limiter.as_ref(),
+        user_id,
+        tx,
+    )
+    .await;
     Ok(())
 }
 

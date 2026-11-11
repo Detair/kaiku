@@ -756,6 +756,11 @@ impl SfuServer {
         room
     }
 
+    /// All current rooms.
+    pub async fn rooms_snapshot(&self) -> Vec<Arc<Room>> {
+        self.rooms.read().await.values().cloned().collect()
+    }
+
     /// Get a room by channel ID.
     pub async fn get_room(&self, channel_id: Uuid) -> Option<Arc<Room>> {
         let rooms = self.rooms.read().await;

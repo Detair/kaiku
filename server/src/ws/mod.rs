@@ -39,7 +39,7 @@ pub use events::{
     broadcast_admin_event, broadcast_guild_patch, broadcast_member_patch, broadcast_to_channel,
     broadcast_to_guild, broadcast_to_user, broadcast_to_users, broadcast_user_patch, channels,
     ActivityState, ClientEvent, ClientMessageState, CustomStatusState, OutboundMsg, ServerEvent,
-    VoiceParticipant,
+    VoiceParticipant, VoiceRemovedReason,
 };
 pub use handlers::{handle_client_message, handler, spawn_custom_status_sweep};
 
@@ -123,6 +123,31 @@ mod tests {
                 assert_eq!(pc_type, PcType::Subscriber);
             }
             _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn voice_removed_wire_format() {
+        for (reason, wire) in [
+            (super::VoiceRemovedReason::Kicked, "kicked"),
+            (super::VoiceRemovedReason::Banned, "banned"),
+            (super::VoiceRemovedReason::PermissionLost, "permission_lost"),
+            (super::VoiceRemovedReason::ChannelDeleted, "channel_deleted"),
+        ] {
+            let event = ServerEvent::VoiceRemoved {
+                channel_id: Uuid::nil(),
+                reason,
+            };
+            let json: serde_json::Value = serde_json::to_value(&event).unwrap();
+            assert_eq!(
+                json,
+                serde_json::json!({
+                    "type": "voice_removed",
+                    "channel_id": "00000000-0000-0000-0000-000000000000",
+                    "reason": wire,
+                })
+            );
+            assert_eq!(reason.as_str(), wire);
         }
     }
 

@@ -1,6 +1,6 @@
 //! Losing access takes effect on open connections: kick, leave, role and
 //! override changes and channel deletion drop the affected WebSocket channel
-//! subscriptions.
+//! subscriptions and remove the member from voice (`voice_removed`, C31).
 
 use std::time::Duration;
 
@@ -15,8 +15,8 @@ use vc_server::ws::ServerEvent;
 
 use super::helpers::{
     add_guild_member, create_channel, create_elevated_session, create_guild_with_default_role,
-    create_test_user, expect_no_ws_event, generate_access_token, make_admin, next_ws_event,
-    spawn_test_server, ws_connect, TestApp, TestServer, WsClient,
+    create_test_user, create_voice_channel, expect_no_ws_event, generate_access_token, make_admin,
+    next_ws_event, spawn_test_server, ws_connect, TestApp, TestServer, WsClient,
 };
 
 const EVENT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -329,4 +329,166 @@ async fn admin_subscription_dropped_on_backstop(pool: PgPool) {
         .await
         .expect("publish");
     expect_no_ws_event(&mut ws, "admin_user_unbanned", QUIET).await;
+}
+
+// ---------------------------------------------------------------------------
+// A5: voice
+// ---------------------------------------------------------------------------
+
+async fn join_voice(ws: &mut WsClient, channel: Uuid) {
+    send(ws, json!({ "type": "voice_join", "channel_id": channel })).await;
+    next_ws_event(ws, "voice_room_state", EVENT_TIMEOUT).await;
+}
+
+async fn in_room(fx: &Fixture, channel: Uuid, user: Uuid) -> bool {
+    match fx.app.state.sfu.get_room(channel).await {
+        Some(room) => room.get_peer(user).await.is_some(),
+        None => false,
+    }
+}
+
+#[sqlx::test]
+async fn kicked_voice_member_is_removed_with_voice_removed(pool: PgPool) {
+    let fx = fixture(&pool).await;
+    let voice = create_voice_channel(&pool, fx.guild, "voice").await;
+    let mut owner_ws = connect_ready(&fx.server, &fx.owner_token).await;
+    let mut member_ws = connect_ready(&fx.server, &fx.member_token).await;
+    join_voice(&mut owner_ws, voice).await;
+    join_voice(&mut member_ws, voice).await;
+    assert!(in_room(&fx, voice, fx.member).await);
+
+    owner_request(
+        &fx,
+        reqwest::Method::DELETE,
+        &format!("/api/guilds/{}/members/{}", fx.guild, fx.member),
+        None,
+    )
+    .await;
+
+    assert!(
+        !in_room(&fx, voice, fx.member).await,
+        "kicked member still in the room"
+    );
+    assert!(in_room(&fx, voice, fx.owner).await, "owner was removed too");
+    let removed = next_ws_event(&mut member_ws, "voice_removed", EVENT_TIMEOUT).await;
+    assert_eq!(
+        removed,
+        json!({ "type": "voice_removed", "channel_id": voice, "reason": "kicked" })
+    );
+    let left = next_ws_event(&mut owner_ws, "voice_user_left", EVENT_TIMEOUT).await;
+    assert_eq!(left["user_id"], fx.member.to_string());
+}
+
+#[sqlx::test]
+async fn channel_delete_removes_everyone(pool: PgPool) {
+    let fx = fixture(&pool).await;
+    let voice = create_voice_channel(&pool, fx.guild, "voice").await;
+    let mut owner_ws = connect_ready(&fx.server, &fx.owner_token).await;
+    let mut member_ws = connect_ready(&fx.server, &fx.member_token).await;
+    join_voice(&mut owner_ws, voice).await;
+    join_voice(&mut member_ws, voice).await;
+
+    owner_request(
+        &fx,
+        reqwest::Method::DELETE,
+        &format!("/api/channels/{voice}"),
+        None,
+    )
+    .await;
+
+    assert!(
+        fx.app.state.sfu.get_room(voice).await.is_none(),
+        "room of the deleted channel still exists"
+    );
+    for ws in [&mut owner_ws, &mut member_ws] {
+        let removed = next_ws_event(ws, "voice_removed", EVENT_TIMEOUT).await;
+        assert_eq!(removed["reason"], "channel_deleted");
+        assert_eq!(removed["channel_id"], voice.to_string());
+    }
+}
+
+#[sqlx::test]
+async fn role_loss_removes_from_voice(pool: PgPool) {
+    let fx = fixture(&pool).await;
+    let voice = create_voice_channel(&pool, fx.guild, "voice").await;
+    let everyone = everyone_role(&pool, fx.guild).await;
+    let role = create_role(&pool, fx.guild, "speakers").await;
+    set_override(
+        &pool,
+        voice,
+        everyone,
+        GuildPermissions::empty(),
+        GuildPermissions::VOICE_CONNECT,
+    )
+    .await;
+    set_override(
+        &pool,
+        voice,
+        role,
+        GuildPermissions::VOICE_CONNECT,
+        GuildPermissions::empty(),
+    )
+    .await;
+    assign_role(&pool, fx.guild, fx.member, role).await;
+
+    let mut member_ws = connect_ready(&fx.server, &fx.member_token).await;
+    join_voice(&mut member_ws, voice).await;
+
+    owner_request(
+        &fx,
+        reqwest::Method::DELETE,
+        &format!(
+            "/api/guilds/{}/members/{}/roles/{role}",
+            fx.guild, fx.member
+        ),
+        None,
+    )
+    .await;
+
+    assert!(!in_room(&fx, voice, fx.member).await);
+    let removed = next_ws_event(&mut member_ws, "voice_removed", EVENT_TIMEOUT).await;
+    assert_eq!(removed["reason"], "permission_lost");
+}
+
+/// A member who keeps access stays in voice when someone else is kicked.
+#[sqlx::test]
+async fn unaffected_member_stays_in_voice(pool: PgPool) {
+    let fx = fixture(&pool).await;
+    let (other, _) = create_test_user(&pool).await;
+    add_guild_member(&pool, fx.guild, other).await;
+    let voice = create_voice_channel(&pool, fx.guild, "voice").await;
+    let mut member_ws = connect_ready(&fx.server, &fx.member_token).await;
+    join_voice(&mut member_ws, voice).await;
+
+    owner_request(
+        &fx,
+        reqwest::Method::DELETE,
+        &format!("/api/guilds/{}/members/{other}", fx.guild),
+        None,
+    )
+    .await;
+    assert!(in_room(&fx, voice, fx.member).await);
+    expect_no_ws_event(&mut member_ws, "voice_removed", QUIET).await;
+}
+
+/// A voice participant whose access went away without a notice (here: written
+/// straight to the database) is removed by the socket's periodic re-check.
+#[sqlx::test]
+async fn backstop_removes_voice_participant_without_notice(pool: PgPool) {
+    let mut config = Config::default_for_test();
+    config.session_recheck_secs = 1;
+    let fx = fixture_with_config(&pool, config).await;
+    let voice = create_voice_channel(&pool, fx.guild, "voice").await;
+    let mut member_ws = connect_ready(&fx.server, &fx.member_token).await;
+    join_voice(&mut member_ws, voice).await;
+
+    sqlx::query("DELETE FROM guild_members WHERE guild_id = $1 AND user_id = $2")
+        .bind(fx.guild)
+        .bind(fx.member)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let removed = next_ws_event(&mut member_ws, "voice_removed", EVENT_TIMEOUT).await;
+    assert_eq!(removed["reason"], "permission_lost");
+    assert!(!in_room(&fx, voice, fx.member).await);
 }

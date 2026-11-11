@@ -318,6 +318,34 @@ impl ClientEvent {
     }
 }
 
+/// Why the server removed a user from a voice room (`voice_removed`, C31).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VoiceRemovedReason {
+    /// Kicked from the server.
+    Kicked,
+    /// The account was banned.
+    Banned,
+    /// No longer allowed to view or connect to the channel (role,
+    /// permission or override change, or the user left the server).
+    PermissionLost,
+    /// The channel (or its server) was deleted.
+    ChannelDeleted,
+}
+
+impl VoiceRemovedReason {
+    /// The wire value.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Kicked => "kicked",
+            Self::Banned => "banned",
+            Self::PermissionLost => "permission_lost",
+            Self::ChannelDeleted => "channel_deleted",
+        }
+    }
+}
+
 /// Participant info for voice room state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VoiceParticipant {
@@ -567,6 +595,15 @@ pub enum ServerEvent {
         channel_id: Uuid,
         /// User who left.
         user_id: Uuid,
+    },
+    /// The server removed this user from the voice room (C31): sent only to
+    /// the socket that owned the voice peer. The others get
+    /// `voice_user_left`. Clients tear down and do not rejoin on their own.
+    VoiceRemoved {
+        /// Voice channel.
+        channel_id: Uuid,
+        /// Why the user was removed.
+        reason: VoiceRemovedReason,
     },
     /// User muted in voice channel
     VoiceUserMuted {

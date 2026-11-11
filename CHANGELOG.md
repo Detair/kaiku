@@ -147,6 +147,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Password and single sign-on sign-ins on a second phone are confirmed by scanning with your key phone.
 
 ### Security
+- Losing access now also ends a running voice call: a member who is kicked, banned, leaves the server, loses the permission to see or join the voice channel, or whose channel is deleted is removed from the voice channel at once. Their app gets the new `voice_removed` event with the reason; the others see them leave.
 - Removing a member, taking a role away, changing a role's permissions or a channel's permissions, and deleting a channel now take effect immediately on open connections: a member who can no longer see a channel stops receiving its messages and typing at once. Every connection also re-checks its channels and admin events at least once a minute.
 - An account can hold at most 10 open WebSocket connections and a client address at most 30 (IPv6 per /64); further connections are refused. Both caps are configurable with `WS_MAX_CONNECTIONS_PER_USER` and `WS_MAX_CONNECTIONS_PER_IP`. Behind a reverse proxy, set `RATE_LIMIT_TRUSTED_PROXIES` so clients are counted by their own address. New WebSocket connection attempts are also rate limited per address.
 - Repeated wrong passwords or codes for one account slow further tries (from the 5th: 30 seconds, doubling up to an hour) and are reported to the account and the admins; after 100 the password or code is blocked. Signing in with a passkey or your phone is never blocked by this.
