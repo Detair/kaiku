@@ -200,39 +200,123 @@ describe("TauriVoiceAdapter native events", () => {
 });
 
 describe("TauriVoiceAdapter join epoch (C32 cancellation)", () => {
-  it("passes the epoch to join_voice and to leave/teardown", async () => {
+  beforeEach(async () => {
     const { invoke } = await import("@tauri-apps/api/core");
-    const { currentVoiceEpoch } = await import("../voiceSession");
-    const adapter = new TauriVoiceAdapter();
-    const epoch = currentVoiceEpoch();
-    await adapter.join("ch", { epoch });
-    expect(invoke).toHaveBeenCalledWith("join_voice", { channelId: "ch", epoch });
-    await adapter.teardown();
-    expect(invoke).toHaveBeenCalledWith("leave_voice", { silent: true, epoch });
+    vi.mocked(invoke).mockClear();
   });
 
-  it("a native VOICE_JOIN_CANCELLED is a cancelled result, not an error", async () => {
+  /** Native epoch allocator as the Rust process would run it. */
+  async function nativeCounter(): Promise<() => number> {
+    const { invoke } = await import("@tauri-apps/api/core");
+    let last = 100;
+    vi.mocked(invoke).mockImplementation((async (cmd: string) => {
+      if (cmd === "begin_voice_session") return ++last;
+      return undefined;
+    }) as typeof invoke);
+    return () => last;
+  }
+
+  it("asks native for the session epoch and joins under it; leave sends no JS epoch", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const last = await nativeCounter();
+    const { currentVoiceEpoch } = await import("../voiceSession");
+    const adapter = new TauriVoiceAdapter();
+    await adapter.join("ch", { epoch: currentVoiceEpoch() });
+    expect(invoke).toHaveBeenCalledWith("begin_voice_session");
+    expect(invoke).toHaveBeenCalledWith("join_voice", { channelId: "ch", epoch: last() });
+    await adapter.teardown();
+    expect(invoke).toHaveBeenCalledWith("leave_voice", { silent: true });
+  });
+
+  it("a leave while native allocates the epoch: join_voice is never invoked", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const { currentVoiceEpoch, bumpVoiceEpoch } = await import("../voiceSession");
+    let release!: (v: number) => void;
+    vi.mocked(invoke).mockImplementation(((cmd: string) =>
+      cmd === "begin_voice_session"
+        ? new Promise<number>((r) => (release = r))
+        : Promise.resolve(undefined)) as typeof invoke);
+    const adapter = new TauriVoiceAdapter();
+    const join = adapter.join("ch", { epoch: currentVoiceEpoch() });
+    await Promise.resolve();
+    bumpVoiceEpoch();
+    release(7);
+    expect((await join).ok).toBe(false);
+    expect(invoke).not.toHaveBeenCalledWith("join_voice", expect.anything());
+  });
+
+  it("native VOICE_JOIN_CANCELLED for a stale session is a silent cancel", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const { currentVoiceEpoch, bumpVoiceEpoch } = await import("../voiceSession");
+    const epoch = currentVoiceEpoch();
+    vi.mocked(invoke).mockImplementation((async (cmd: string) => {
+      if (cmd === "begin_voice_session") return 1;
+      bumpVoiceEpoch();
+      throw "VOICE_JOIN_CANCELLED";
+    }) as typeof invoke);
+    const result = await new TauriVoiceAdapter().join("ch", { epoch });
+    expect(result).toEqual({ ok: false, error: expect.objectContaining({ type: "cancelled" }) });
+  });
+
+  it("native VOICE_JOIN_CANCELLED while this window still wants the join is a failure (W1-N4)", async () => {
     const { invoke } = await import("@tauri-apps/api/core");
     const { currentVoiceEpoch } = await import("../voiceSession");
-    vi.mocked(invoke).mockRejectedValueOnce("VOICE_JOIN_CANCELLED");
+    vi.mocked(invoke).mockImplementation((async (cmd: string) => {
+      if (cmd === "begin_voice_session") return 1;
+      throw "VOICE_JOIN_CANCELLED";
+    }) as typeof invoke);
     const adapter = new TauriVoiceAdapter();
     const result = await adapter.join("ch", { epoch: currentVoiceEpoch() });
-    expect(result).toEqual({ ok: false, error: expect.objectContaining({ type: "cancelled" }) });
-    expect(adapter.getState()).toBe("disconnected");
+    expect(result).toEqual({ ok: false, error: expect.objectContaining({ type: "connection_failed" }) });
   });
 
   it("a join that returns after its session ended does not claim the channel", async () => {
     const { invoke } = await import("@tauri-apps/api/core");
     const { currentVoiceEpoch, bumpVoiceEpoch } = await import("../voiceSession");
     let release!: () => void;
-    vi.mocked(invoke).mockImplementationOnce(
-      () => new Promise<undefined>((r) => (release = () => r(undefined))),
-    );
+    vi.mocked(invoke).mockImplementation(((cmd: string) =>
+      cmd === "join_voice"
+        ? new Promise<undefined>((r) => (release = () => r(undefined)))
+        : Promise.resolve(1)) as typeof invoke);
     const adapter = new TauriVoiceAdapter();
     const join = adapter.join("ch", { epoch: currentVoiceEpoch() });
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
     bumpVoiceEpoch();
     release();
     expect((await join).ok).toBe(false);
     expect(adapter.getChannelId()).toBeNull();
+  });
+
+  it("leave ends the local session even when native leave fails", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockImplementation((async (cmd: string) => {
+      if (cmd === "begin_voice_session") return 1;
+      if (cmd === "leave_voice") throw "boom";
+      return undefined;
+    }) as typeof invoke);
+    const adapter = new TauriVoiceAdapter();
+    await adapter.join("ch");
+    expect(adapter.getChannelId()).toBe("ch");
+    await adapter.leave();
+    expect(adapter.getChannelId()).toBeNull();
+    expect(adapter.getState()).toBe("disconnected");
+  });
+
+  it("a reloaded window (new JS context) joins under the native order", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const last = await nativeCounter();
+    // Old window: a few sessions and a leave.
+    const before = new TauriVoiceAdapter();
+    await before.join("ch");
+    await before.leave();
+    // Reload: fresh JS modules (epoch counter starts over), same native process.
+    vi.resetModules();
+    const fresh = await import("../tauri");
+    const session = await import("../voiceSession");
+    expect(session.currentVoiceEpoch()).toBe(0);
+    const after = new fresh.TauriVoiceAdapter();
+    const result = await after.join("ch", { epoch: session.currentVoiceEpoch() });
+    expect(result.ok).toBe(true);
+    expect(invoke).toHaveBeenLastCalledWith("join_voice", { channelId: "ch", epoch: last() });
   });
 });

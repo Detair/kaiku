@@ -24,18 +24,13 @@ import type {
 import type { VoiceJoinOptions } from "./types";
 import { buildConnectionMetrics, deltaLossPercent } from "./types";
 import {
-  currentVoiceEpoch,
+  isNativeJoinCancelled,
   isVoiceEpochStale,
   VOICE_JOIN_CANCELLED,
 } from "./voiceSession";
 
-/** Error text of a native `join_voice` whose epoch went stale (Rust). */
-export const NATIVE_JOIN_CANCELLED = "VOICE_JOIN_CANCELLED";
+export { isNativeJoinCancelled, NATIVE_JOIN_CANCELLED } from "./voiceSession";
 
-/** Whether a native join failed only because its session was cancelled. */
-export function isNativeJoinCancelled(err: unknown): boolean {
-  return (typeof err === "string" ? err : String(err)).includes(NATIVE_JOIN_CANCELLED);
-}
 import * as Sentry from "@sentry/browser";
 
 /** Audio device as returned by the `get_audio_devices` command. */
@@ -117,20 +112,33 @@ export class TauriVoiceAdapter implements VoiceAdapter {
   ): Promise<VoiceResult<void>> {
     console.log(`[TauriVoiceAdapter] Joining channel: ${channelId}`);
     const epoch = opts?.epoch;
+    const cancelled = (): VoiceResult<void> => ({
+      ok: false,
+      error: { ...VOICE_JOIN_CANCELLED },
+    });
 
     try {
-      // Native checks the epoch after every await and before sending
-      // VoiceJoin (`join_voice`); a leave raises its floor first.
-      await invoke("join_voice", { channelId, epoch });
+      // The native process allocates the session epoch (one order across
+      // reloads and windows); `join_voice` checks it after every await and
+      // before each message, and every native leave cancels it.
+      const nativeEpoch = await invoke<number>("begin_voice_session");
+      if (isVoiceEpochStale(epoch)) return cancelled();
+      await invoke("join_voice", { channelId, epoch: nativeEpoch });
       // Cancelled after native finished: the leave or teardown that
       // cancelled us runs after this join on the native side.
-      if (isVoiceEpochStale(epoch)) return { ok: false, error: { ...VOICE_JOIN_CANCELLED } };
+      if (isVoiceEpochStale(epoch)) return cancelled();
       this.channelId = channelId;
       this.setState("connecting");
       return { ok: true, value: undefined };
     } catch (err) {
-      if (isNativeJoinCancelled(err) || isVoiceEpochStale(epoch)) {
-        return { ok: false, error: { ...VOICE_JOIN_CANCELLED } };
+      if (isVoiceEpochStale(epoch)) return cancelled();
+      if (isNativeJoinCancelled(err)) {
+        // Native cancelled a join this window still wants (e.g. a leave in
+        // another window): a failure the user sees, not a silent cancel.
+        return {
+          ok: false,
+          error: { type: "connection_failed", reason: "voice session ended", retriable: true },
+        };
       }
       return { ok: false, error: this.mapTauriError(err) };
     }
@@ -152,12 +160,14 @@ export class TauriVoiceAdapter implements VoiceAdapter {
     }
 
     try {
-      await invoke("leave_voice", { epoch: currentVoiceEpoch() });
-      this.channelId = null;
-      this.setState("disconnected");
+      await invoke("leave_voice");
       return { ok: true, value: undefined };
     } catch (err) {
       return { ok: false, error: this.mapTauriError(err) };
+    } finally {
+      // Leaving always ends the local session, even if native failed.
+      this.channelId = null;
+      this.setState("disconnected");
     }
   }
 
@@ -166,7 +176,7 @@ export class TauriVoiceAdapter implements VoiceAdapter {
     // Native leave_voice also stops every share and the webcam.
     this.activeScreenShares.clear();
     try {
-      await invoke("leave_voice", { silent: true, epoch: currentVoiceEpoch() });
+      await invoke("leave_voice", { silent: true });
       return { ok: true, value: undefined };
     } catch (err) {
       return { ok: false, error: this.mapTauriError(err) };

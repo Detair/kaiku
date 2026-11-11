@@ -157,6 +157,7 @@ pub fn run() {
             commands::passkey::passkey_step_up,
             commands::passkey::passkey_cancel,
             // Voice commands
+            commands::voice::begin_voice_session,
             commands::voice::join_voice,
             commands::voice::leave_voice,
             commands::voice::set_mute,

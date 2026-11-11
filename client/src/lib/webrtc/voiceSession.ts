@@ -8,11 +8,13 @@
  * `voice_removed` bump the epoch first; a join that finds its epoch stale
  * after an await releases what it acquired and reports `cancelled`.
  *
- * The counter starts at the wall clock (ms) so a reloaded window starts
- * above every epoch the native side saw before the reload.
+ * This counter only orders work inside this window (JS). In the desktop
+ * app the native process allocates its own session epoch for each join
+ * (`begin_voice_session`), so reloads and several windows share one order
+ * there; the browser has no surviving native state and needs nothing more.
  */
 
-let epoch = Date.now();
+let epoch = 0;
 
 /** The epoch of the voice session that may currently acquire resources. */
 export function currentVoiceEpoch(): number {
@@ -30,6 +32,26 @@ export function isVoiceEpochStale(joinEpoch: number | undefined): boolean {
   return joinEpoch !== undefined && joinEpoch !== epoch;
 }
 
+/** DM-call joins: the epoch captured when the call was started/accepted. */
+const callJoinEpochs = new Map<string, number>();
+
+/**
+ * Capture the session epoch for the DM call in `channelId` right now (call
+ * started or accepted, before any await). A leave before the native join
+ * makes it stale, and the join then does nothing.
+ */
+export function captureCallJoinEpoch(channelId: string): number {
+  callJoinEpochs.set(channelId, epoch);
+  return epoch;
+}
+
+/** The epoch captured for `channelId` (consumed), if any. */
+export function takeCallJoinEpoch(channelId: string): number | undefined {
+  const captured = callJoinEpochs.get(channelId);
+  callJoinEpochs.delete(channelId);
+  return captured;
+}
+
 /** Error a join returns when its epoch went stale; nobody shows it. */
 export const VOICE_JOIN_CANCELLED = {
   type: "cancelled",
@@ -39,4 +61,12 @@ export const VOICE_JOIN_CANCELLED = {
 /** Whether a join error is the cancellation above (not a failure). */
 export function isJoinCancelled(error: { type: string } | null | undefined): boolean {
   return error?.type === "cancelled";
+}
+
+/** Error text of a native `join_voice` whose epoch went stale (Rust). */
+export const NATIVE_JOIN_CANCELLED = "VOICE_JOIN_CANCELLED";
+
+/** Whether a native join failed only because its session was cancelled. */
+export function isNativeJoinCancelled(err: unknown): boolean {
+  return (typeof err === "string" ? err : String(err)).includes(NATIVE_JOIN_CANCELLED);
 }
