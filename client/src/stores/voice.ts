@@ -913,7 +913,8 @@ function channelSession(channelId: string): RecoverySession {
       if (!adapter) return;
       // The latest choice wins: mute/deafen may have changed while
       // reconnecting (R2).
-      const { muted, deafened } = voiceState;
+      const muted = voiceState.muted;
+      const deafened = voiceState.deafened;
       await adapter.setDeafen(deafened);
       await adapter.setMute(muted || deafened);
       if (isVoiceEpochStale(epoch)) return;

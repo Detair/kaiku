@@ -391,15 +391,16 @@ export function onNativeCallVoiceState(payload: string): void {
   }
 }
 
+/** Native event callback (not a reactive scope). */
+function onNativeVoiceStateEvent(event: { payload: string }): void {
+  onNativeCallVoiceState(event.payload);
+}
+
 /** Listen to the native voice state once (DM calls bypass the voice store). */
 function watchNativeCallVoice(): Promise<void> {
   if (!isTauri()) return Promise.resolve();
   nativeWatch ??= import("@tauri-apps/api/event")
-    .then(({ listen }) =>
-      listen<string>("voice:state_change", (event) =>
-        onNativeCallVoiceState(event.payload),
-      ),
-    )
+    .then(({ listen }) => listen<string>("voice:state_change", onNativeVoiceStateEvent))
     .then(() => undefined)
     .catch((err: unknown) => {
       nativeWatch = null;
