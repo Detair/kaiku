@@ -141,6 +141,7 @@ import {
   leaveVoice,
   handleVoiceRemoved,
   isPttActive,
+  updatePttFromSettings,
   noteSignallingLost,
   noteSignallingUp,
   rejoinVoiceAfterReconnect,
@@ -299,6 +300,33 @@ describe("voice store steps are bound to their session", () => {
     expect(mockAdapter.setDeafen).not.toHaveBeenCalled();
     expect(voiceState.muted).toBe(false);
     expect(voiceState.channelId).toBe("B");
+  });
+
+  it("two overlapping push-to-talk settings changes and a leave: no shortcut stays registered", async () => {
+    await joinVoice("A");
+    connected();
+    expect(ptt.listeners).toHaveLength(1);
+
+    // The user changes the key twice in a row; the first registration is slow.
+    const firstRegistration = deferred();
+    ptt.slowRegistration = firstRegistration.promise;
+    const first = updatePttFromSettings();
+    await flush();
+    const second = updatePttFromSettings();
+    await flush();
+    firstRegistration.resolve();
+    await first;
+    await second;
+
+    // Exactly one shortcut is registered now: the last one.
+    const registered = () => ptt.listeners.filter((l) => l.unregister.mock.calls.length === 0);
+    expect(registered()).toHaveLength(1);
+    expect(isPttActive()).toBe(true);
+
+    await leaveVoice();
+    expect(registered()).toHaveLength(0);
+    expect(ptt.controllers.every((c) => !c.active)).toBe(true);
+    expect(isPttActive()).toBe(false);
   });
 
   it("signing out in a voice channel: left at once, and the next account gets nothing of it", async () => {

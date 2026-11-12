@@ -58,8 +58,18 @@ const adapter = {
 
 /** The handlers the owner installed on the adapter. */
 let mediaEvents: {
+  onStateChange?: (state: string, session: Session | null) => void;
   onConnectionLost?: (session: Session | null) => void;
 } = {};
+
+/** A monotonic clock the tests move by hand (it does not follow the wall clock). */
+let mono = 0;
+
+/** Time passes normally: timers run, both clocks move. */
+async function pass(ms: number): Promise<void> {
+  mono += ms;
+  await vi.advanceTimersByTimeAsync(ms);
+}
 
 async function settle(): Promise<void> {
   await vi.advanceTimersByTimeAsync(0);
@@ -72,6 +82,8 @@ describe("voice owner", () => {
     gates = new Map();
     owner = new VoiceOwner();
     owner.useAdapter(async () => adapter);
+    mono = 0;
+    owner.useClock(() => ({ wall: Date.now(), mono }));
     vi.spyOn(console, "warn").mockImplementation(() => {});
   });
 
@@ -263,7 +275,7 @@ describe("voice owner", () => {
       expect(log).toEqual(["join:A", "teardown:A"]);
     });
 
-    it("resume after 5 minutes without any socket event: the wake-up check gives up", async () => {
+    it("resume after 5 minutes, publisher not connected, no socket event: the wake-up check gives up", async () => {
       const gaveUp = vi.fn();
       const a = owner.wish("channel", "A", { gaveUp });
       await owner.request(a);
@@ -274,7 +286,7 @@ describe("voice owner", () => {
       expect(log).toEqual(["join:A", "teardown:A"]);
     });
 
-    it("the next heartbeat after a long gap gives up by itself", async () => {
+    it("publisher not connected: the next heartbeat after a long gap gives up by itself", async () => {
       const gaveUp = vi.fn();
       const a = owner.wish("channel", "A", { gaveUp });
       await owner.request(a);
@@ -320,6 +332,131 @@ describe("voice owner", () => {
       expect(gaveUp).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(5_000); // t = 60 s of real time
       expect(gaveUp).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("a healthy session and the clock", () => {
+    /** Join A and have its publisher connected: socket and media carry it. */
+    async function healthy(hooks: { gaveUp?: () => void } = {}) {
+      const a = owner.wish("channel", "A", hooks);
+      await owner.request(a);
+      mediaEvents.onStateChange!("connected", { token: a.token, channelId: "A" });
+      await pass(20_000);
+      return a;
+    }
+    const session = (a: { token: number }) => ({ token: a.token, channelId: "A" });
+
+    it("the wall clock jumps forward 10 minutes: the call stays up", async () => {
+      const gaveUp = vi.fn();
+      const a = await healthy({ gaveUp });
+      vi.setSystemTime(Date.now() + 10 * 60_000); // e.g. a time sync; the device is awake
+      await pass(5 * 60_000);
+      expect(gaveUp).not.toHaveBeenCalled();
+      expect(log).toEqual(["join:A"]);
+      expect(owner.wants(a)).toBe(true);
+      expect(owner.isRecovering()).toBe(false);
+    });
+
+    it("timers held back for 5 minutes, then running again: the call stays up", async () => {
+      const gaveUp = vi.fn();
+      const a = await healthy({ gaveUp });
+      // Real time passes on both clocks, but no timer runs (a throttled tab).
+      mono += 5 * 60_000;
+      vi.setSystemTime(Date.now() + 5 * 60_000);
+      owner.wake();
+      await pass(5 * 60_000);
+      expect(gaveUp).not.toHaveBeenCalled();
+      expect(log).toEqual(["join:A"]);
+      expect(owner.wants(a)).toBe(true);
+    });
+
+    it("heartbeats only once a minute for a long time: still up, and a short outage is still recovered", async () => {
+      const gaveUp = vi.fn();
+      await healthy({ gaveUp });
+      for (let minute = 0; minute < 10; minute++) {
+        mono += 60_000;
+        vi.setSystemTime(Date.now() + 60_000);
+        owner.wake(); // the only thing that runs in that minute
+      }
+      expect(gaveUp).not.toHaveBeenCalled();
+      // A real, short outage now is recovered as usual.
+      await pass(10_000);
+      owner.socketLost();
+      owner.socketReady();
+      await pass(1000);
+      expect(log).toEqual(["join:A", "teardown:A", "join:A"]);
+      expect(gaveUp).not.toHaveBeenCalled();
+    });
+
+    it("not carried and the wall clock is set back an hour: still gives up after 60 s", async () => {
+      const gaveUp = vi.fn();
+      await healthy({ gaveUp });
+      owner.socketLost();
+      vi.setSystemTime(Date.now() - 3_600_000);
+      await pass(59_999);
+      expect(gaveUp).not.toHaveBeenCalled();
+      await pass(1);
+      expect(gaveUp).toHaveBeenCalledTimes(1);
+    });
+
+    it("after a sleep the stale state looks fine; the loss reported later ends it without a rejoin", async () => {
+      const gaveUp = vi.fn();
+      await healthy({ gaveUp });
+      vi.setSystemTime(Date.now() + 5 * 60_000); // lid closed; nothing reported yet
+      owner.wake();
+      expect(gaveUp).not.toHaveBeenCalled(); // nothing proves it dead yet
+      await pass(20_000); // the dead socket is noticed a little later
+      owner.socketLost();
+      expect(gaveUp).toHaveBeenCalledTimes(1);
+      owner.socketReady();
+      await pass(30_000);
+      expect(log).toEqual(["join:A", "teardown:A"]);
+    });
+
+    it("after a sleep the media failing first ends it without a rejoin", async () => {
+      const gaveUp = vi.fn();
+      const a = await healthy({ gaveUp });
+      vi.setSystemTime(Date.now() + 5 * 60_000);
+      await pass(10_000); // heartbeats run again, flags still look fine
+      expect(gaveUp).not.toHaveBeenCalled();
+      mediaEvents.onStateChange!("reconnecting", session(a)); // ICE notices
+      expect(gaveUp).toHaveBeenCalledTimes(1);
+      await pass(30_000);
+      expect(log).toEqual(["join:A", "teardown:A"]);
+    });
+
+    it("a clean minute awake after a long gap proves the session; a later loss is recovered", async () => {
+      const gaveUp = vi.fn();
+      await healthy({ gaveUp });
+      vi.setSystemTime(Date.now() + 10 * 60_000); // the clock was corrected
+      await pass(65_000); // more than a minute awake, everything fine
+      owner.socketLost();
+      expect(gaveUp).not.toHaveBeenCalled();
+      owner.socketReady();
+      await pass(1000);
+      expect(log).toEqual(["join:A", "teardown:A", "join:A"]);
+    });
+
+    it("suspended 20 s: the 20 s count, give-up comes 60 s after the last proof", async () => {
+      const gaveUp = vi.fn();
+      await healthy({ gaveUp });
+      vi.setSystemTime(Date.now() + 20_000);
+      owner.socketLost(); // noticed on resume; the socket does not come back
+      await pass(39_000);
+      expect(gaveUp).not.toHaveBeenCalled();
+      await pass(2_000); // 61 s after the last heartbeat before the sleep
+      expect(gaveUp).toHaveBeenCalledTimes(1);
+    });
+
+    it("suspended 20 s and the socket returns: rejoined", async () => {
+      const gaveUp = vi.fn();
+      await healthy({ gaveUp });
+      vi.setSystemTime(Date.now() + 20_000);
+      owner.socketLost();
+      owner.socketReady();
+      await pass(1000);
+      expect(log).toEqual(["join:A", "teardown:A", "join:A"]);
+      expect(gaveUp).not.toHaveBeenCalled();
     });
   });
 

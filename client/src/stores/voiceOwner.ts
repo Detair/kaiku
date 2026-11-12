@@ -32,13 +32,19 @@
  *   that CARRIES this session's `voice_join`: it starts when the socket
  *   that carried the join is lost and is met only when a rejoin's
  *   `voice_join` went out. A socket that merely comes back does not reset
- *   it. It is measured in real elapsed time, including time the device
- *   was suspended: the owner compares timestamps whenever it wakes up
- *   (socket events, its heartbeat, `wake()`), it does not rely on a timer
- *   having fired. A heartbeat every few seconds records the last moment
- *   the session was provably carried; more than 60 s since then (or a gap
- *   that long between two heartbeats: the device slept) means the owner
- *   gives up instead of rejoining, exactly as after the third failure;
+ *   it. Only a session that is NOT carried is ever measured: one whose
+ *   socket carries its join and whose publisher is connected is never
+ *   ended by a clock gap, a heartbeat gap or held-back timers. The time is
+ *   real elapsed time including time the device was suspended, taken as
+ *   the larger of the wall-clock and the monotonic difference since the
+ *   last proof that the session was carried (so setting the wall clock
+ *   back cannot extend it). The owner compares the clocks whenever it
+ *   wakes up and does not rely on a timer having fired. After a long gap
+ *   between wake-ups it looks at the actual state first: not carried means
+ *   the rule applies at once (after a night's sleep: give up, no rejoin);
+ *   apparently fine means it carries on, but the old proof stays the last
+ *   one until a full minute awake has passed without a failure, so a loss
+ *   noticed shortly after the wake-up still counts the whole gap;
  * - a change of intent (leave, switch, hang-up, `voice_removed`) ends the
  *   recovery like any other work of a replaced intent.
  *
@@ -213,11 +219,16 @@ interface Held {
   /** Recovery may run (see `VoiceHooks.needsConfirmation`). */
   confirmed: boolean;
   /**
-   * Last moment (wall clock) the session was provably carried by an
-   * authenticated socket: its join went out, or a heartbeat ran while it
-   * was live with the socket up.
+   * Last moment the session was provably carried: its join went out, or a
+   * heartbeat ran while the socket was up and the publisher connected.
    */
-  aliveAt: number;
+  aliveAt: Stamp;
+  /**
+   * A long gap between wake-ups was seen while everything still looked
+   * fine. Until a minute awake has passed without a failure, `aliveAt` is
+   * not renewed: what looks fine right after a sleep is usually stale.
+   */
+  suspectSince: Stamp | null;
   /**
    * The 60 s deadline applies (the socket that carried the join is gone).
    * The timer only wakes the owner; the deadline itself is `aliveAt`.
@@ -225,6 +236,14 @@ interface Held {
   offline: { timer: ReturnType<typeof setTimeout> } | null;
   /** An end of the session started outside the runner's turn (`releaseNow`). */
   ending: Promise<unknown> | null;
+}
+
+/** A moment on both clocks. */
+export interface Stamp {
+  /** Wall clock (`Date.now()`): moves on while the device sleeps. */
+  wall: number;
+  /** Monotonic clock (`performance.now()`): never steps back. */
+  mono: number;
 }
 
 interface Tick {
@@ -263,8 +282,11 @@ export class VoiceOwner {
   private identity: () => string | null = () => null;
   private shutdownListeners: Array<() => void> = [];
   private heartbeat: ReturnType<typeof setInterval> | null = null;
-  /** Wall clock of the last heartbeat or wake-up check. */
-  private lastBeat = Date.now();
+  private clock: () => Stamp = () => ({ wall: Date.now(), mono: performance.now() });
+  /** Whether the signalling socket is in fact open, asked when it matters. */
+  private socketProbe: () => boolean = () => true;
+  /** The last heartbeat or wake-up check. */
+  private lastBeat: Stamp = this.clock();
 
   // --- intent (synchronous) -------------------------------------------------
 
@@ -406,8 +428,14 @@ export class VoiceOwner {
       // right away (the heartbeat is recent) it carried the session until
       // now; reported after a silence (the device slept) nobody knows when
       // it went, and the last heartbeat stays the last proof.
-      const now = Date.now();
-      if (held.phase === "live" && now - held.aliveAt <= 2 * HEARTBEAT_MS) held.aliveAt = now;
+      if (
+        held.phase === "live" &&
+        held.connected &&
+        !held.suspectSince &&
+        this.since(held.aliveAt) <= 2 * HEARTBEAT_MS
+      ) {
+        held.aliveAt = this.clock();
+      }
       this.armOffline(held);
       if (held.wish.hooks.needsConfirmation) held.confirmed = false;
       this.startRecovery(held);
@@ -447,27 +475,74 @@ export class VoiceOwner {
   }
 
   /**
-   * Compare the clocks: called by the heartbeat, and by whoever notices
-   * that the device may have been away (the page becomes visible, the
-   * network is back). Timers do not run while a device sleeps, so the
-   * deadline is checked against real time here.
+   * Compare the clocks and look at the facts: called by the heartbeat, and
+   * by whoever notices that the device may have been away (the page becomes
+   * visible, the network is back). Timers do not run while a device sleeps.
+   *
+   * A session that is carried (socket up, publisher connected) is never
+   * ended here. After a long gap it only becomes "suspect": the last proof
+   * is not renewed until a minute awake has passed without a failure. A
+   * session that turns out not to be carried after such a gap is measured
+   * at once.
    */
   wake(): void {
-    const now = Date.now();
-    const gap = now - this.lastBeat;
+    const now = this.clock();
+    const gap = this.since(this.lastBeat);
     this.lastBeat = now;
     if (this.endIfForeign()) return;
     const held = this.held;
     if (!held || held.wish !== this.intent || held.phase === "joining") return;
-    if (gap >= RECOVERY_OFFLINE_CAP_MS) {
-      // Nothing ran for a minute or more: the device slept, and whatever
-      // carried the session is long gone, reported or not.
-      this.armOffline(held);
-      this.startRecovery(held);
-    } else if (held.phase === "live" && this.socketUp) {
-      held.aliveAt = now;
+    const longGap = gap >= RECOVERY_OFFLINE_CAP_MS;
+    if (this.carried(held)) {
+      if (held.suspectSince && this.since(held.suspectSince) >= RECOVERY_OFFLINE_CAP_MS) {
+        // A whole minute awake and still fine: that is a new proof.
+        held.suspectSince = null;
+        held.aliveAt = now;
+      }
+      if (longGap) held.suspectSince ??= now;
+      else if (!held.suspectSince) held.aliveAt = now;
+    } else if (longGap || held.suspectSince) {
+      // Not carried after a long gap (a failure may not have been reported
+      // yet, or a recovery was under way): the rule applies.
+      this.notCarried(held);
     }
     if (this.checkDeadline(held)) this.kick();
+  }
+
+  /**
+   * Whether the session is carried right now: the socket is up (flag and
+   * probe) and the publisher is connected (reported state and the adapter's
+   * own).
+   */
+  private carried(held: Held): boolean {
+    if (held.phase !== "live" || !this.socketUp || !held.connected) return false;
+    if (!this.socketProbe()) return false;
+    const adapter = this.adapter;
+    const state = typeof adapter?.getState === "function" ? adapter.getState() : "connected";
+    return state === "connected";
+  }
+
+  /** The session is not carried: the 60 s rule applies from the last proof. */
+  private notCarried(held: Held): void {
+    this.armOffline(held);
+    this.startRecovery(held);
+  }
+
+  /** Real time elapsed since `stamp`: the larger of both clocks' differences. */
+  private since(stamp: Stamp): number {
+    const now = this.clock();
+    return Math.max(now.wall - stamp.wall, now.mono - stamp.mono);
+  }
+
+  /** The clocks the owner reads (tests). */
+  useClock(clock: () => Stamp): void {
+    this.clock = clock;
+    this.lastBeat = clock();
+  }
+
+  /** How to ask whether the signalling socket is in fact open. */
+  useSocketProbe(probe: () => boolean): void {
+    this.socketProbe = probe;
   }
 
   /** The recovery of `wish` may run on the current socket (C33 resync). */
@@ -542,9 +617,14 @@ export class VoiceOwner {
     const held = this.held;
     // A state of a session the owner does not hold (an ended one) is nothing.
     if (!held || !isSameSession(session, held.session)) return;
-    if (state === "connected") held.connected = true;
+    held.connected = state === "connected";
     if (held.wish === this.intent && held.phase !== "recovering") {
       this.tell(() => held.wish.hooks.media?.(state));
+    }
+    if (!held.connected && held.suspectSince && held.phase === "live" && held.wish === this.intent) {
+      // What looked fine after a long gap was stale: measure from the old proof.
+      this.notCarried(held);
+      this.checkDeadline(held);
     }
     this.kick();
   }
@@ -554,13 +634,16 @@ export class VoiceOwner {
     this.checkClock();
     const held = this.held;
     if (!held || !isSameSession(session, held.session) || held.wish !== this.intent) return;
+    held.connected = false;
+    if (held.suspectSince) this.armOffline(held);
     this.startRecovery(held);
+    this.checkDeadline(held);
     this.kick();
   }
 
-  /** If no heartbeat ran for a minute or more, the device slept: see `wake()`. */
+  /** If no heartbeat ran for a minute or more, look at the clocks now: see `wake()`. */
   private checkClock(): void {
-    if (this.heartbeat && Date.now() - this.lastBeat >= RECOVERY_OFFLINE_CAP_MS) this.wake();
+    if (this.heartbeat && this.since(this.lastBeat) >= RECOVERY_OFFLINE_CAP_MS) this.wake();
   }
 
   // --- the runner -----------------------------------------------------------
@@ -693,7 +776,8 @@ export class VoiceOwner {
       connected: false,
       used: 0,
       confirmed: true,
-      aliveAt: Date.now(),
+      aliveAt: this.clock(),
+      suspectSince: null,
       offline: null,
       ending: null,
     };
@@ -737,7 +821,7 @@ export class VoiceOwner {
     }
 
     held.phase = "live";
-    held.aliveAt = Date.now(); // its `voice_join` went out just now
+    held.aliveAt = this.clock(); // its `voice_join` went out just now
     this.startHeartbeat();
     try {
       // Wish-level `mine`: what `established` sets up (push-to-talk) stays
@@ -832,7 +916,7 @@ export class VoiceOwner {
 
   private startHeartbeat(): void {
     if (this.heartbeat) return;
-    this.lastBeat = Date.now();
+    this.lastBeat = this.clock();
     this.heartbeat = setInterval(() => this.wake(), HEARTBEAT_MS);
   }
 
@@ -844,7 +928,7 @@ export class VoiceOwner {
 
   /** The deadline applies and 60 s of real time have passed since the last proof. */
   private expired(held: Held): boolean {
-    return !!held.offline && Date.now() - held.aliveAt >= RECOVERY_OFFLINE_CAP_MS;
+    return !!held.offline && this.since(held.aliveAt) >= RECOVERY_OFFLINE_CAP_MS;
   }
 
   /** Give up if the deadline has passed. Safe to call from any event. */
@@ -868,7 +952,7 @@ export class VoiceOwner {
     // restart it. The timer is only a wake-up for the case that the device
     // stays awake; the deadline itself is compared against the clock.
     if (held.offline) return;
-    const remaining = Math.max(0, held.aliveAt + RECOVERY_OFFLINE_CAP_MS - Date.now());
+    const remaining = Math.max(0, RECOVERY_OFFLINE_CAP_MS - this.since(held.aliveAt));
     held.offline = {
       timer: setTimeout(() => {
         if (this.held === held) this.checkDeadline(held);
@@ -994,7 +1078,8 @@ export class VoiceOwner {
       if (interrupted()) return "interrupted";
       // This session's `voice_join` went out on an authenticated socket:
       // the deadline that runs since the loss is met.
-      held.aliveAt = Date.now();
+      held.aliveAt = this.clock();
+      held.suspectSince = null;
       this.clearOffline(held);
       if (hooks.rejoined) {
         await this.until(
@@ -1029,7 +1114,7 @@ export class VoiceOwner {
 
     held.phase = "live";
     held.used = 0;
-    held.aliveAt = Date.now();
+    held.aliveAt = this.clock();
     this.tell(() => hooks.recovered?.(adapter, session));
     return "connected";
   }

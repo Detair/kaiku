@@ -118,6 +118,12 @@ interface PttBinding {
 
 /** What one channel session owns besides its adapter session. */
 interface ChannelSessionOwn {
+  /**
+   * Changes to this session's push-to-talk run one after the other (set-up,
+   * a settings change, release), so no two bindings exist side by side and
+   * none is left behind.
+   */
+  pttQueue: Promise<void>;
   ptt: PttBinding | null;
   adapter: VoiceAdapter | null;
   /** Whether this session is still the one the voice owner holds. */
@@ -143,6 +149,19 @@ let channelWish: VoiceWish | null = null;
 // The owner uses the same adapter instance as this store (already loaded
 // here, so the owner does not wait for a module to load before a join).
 voiceOwner.useAdapter(createVoiceAdapter);
+
+// On a wake-up after a long gap the owner asks whether the socket is in
+// fact still open. The browser knows from the socket itself; the desktop
+// app's socket lives in the native process, which reports its state.
+voiceOwner.useSocketProbe(() => {
+  if (isTauri()) return true;
+  try {
+    const socket = tauri.getBrowserWebSocket();
+    return !socket || socket.readyState === WebSocket.OPEN;
+  } catch {
+    return true;
+  }
+});
 
 // The signed-in session ends: nothing of its voice stays on screen, and
 // the offer to rejoin does not reach whoever signs in next.
@@ -605,7 +624,12 @@ function channelHooks(channelId: string): VoiceHooks {
   /** Browser: the microphone stored in settings when the join began. */
   let storedInput: string | null = null;
   /** What this session owns; no other session reads or changes it. */
-  const own: ChannelSessionOwn = { ptt: null, adapter: null, mine: () => false };
+  const own: ChannelSessionOwn = {
+    pttQueue: Promise.resolve(),
+    ptt: null,
+    adapter: null,
+    mine: () => false,
+  };
   return {
     prepare: async (adapter, mine) => {
       own.adapter = adapter;
@@ -636,7 +660,7 @@ function channelHooks(channelId: string): VoiceHooks {
       }
       if (!mine()) return;
       // Activate PTT/PTM if configured (also handles VAD disable when PTT active)
-      await bindPtt(own);
+      await inPttOrder(own, () => bindPtt(own));
     },
     live: (adapter) => {
       liveChannel = own;
@@ -711,6 +735,9 @@ function channelHooks(channelId: string): VoiceHooks {
       if (liveChannel === own) liveChannel = null;
       // After the adapter session ended: with PTT active this restores open
       // mic locally only (the adapter has no channel any more).
+      // Not queued behind a set-up or settings change that is still under
+      // way: the binding is marked released at once, and whatever is still
+      // registering takes its shortcut back when it resumes.
       await releasePtt(own.ptt, adapter, mine);
       if (!mine()) return;
       // After the streams stopped, so an error raised while leaving is cleared too.
@@ -915,6 +942,16 @@ function getPttConfig(): PttFullConfig | null {
 }
 
 /**
+ * Run `step` after every earlier push-to-talk step of this session has
+ * finished (whether it succeeded or not).
+ */
+function inPttOrder(own: ChannelSessionOwn, step: () => Promise<void>): Promise<void> {
+  const run = own.pttQueue.then(step, step);
+  own.pttQueue = run.catch(() => undefined);
+  return run;
+}
+
+/**
  * Give the session `own` its push-to-talk / push-to-mute, if configured:
  * a controller and shortcut listeners of its own. The controller mutes and
  * unmutes only while its session is the held one. If the session ends
@@ -934,6 +971,9 @@ async function bindPtt(own: ChannelSessionOwn): Promise<void> {
     unregister: null,
     released: false,
   };
+  // An earlier binding of this session is never just overwritten.
+  await releasePtt(own.ptt, adapter, own.mine);
+  if (!own.mine()) return;
   own.ptt = binding;
   binding.controller.activate(config);
   const unregister = await createTauriPttListeners(binding.controller, config);
@@ -991,8 +1031,12 @@ function syncVadConfig(adapter: import("@/lib/webrtc/types").VoiceAdapter): void
 export async function updatePttFromSettings(): Promise<void> {
   const own = liveChannel;
   if (voiceState.state !== "connected" || !own) return;
-  await releasePtt(own.ptt, own.adapter, own.mine);
-  if (own.mine()) await bindPtt(own);
+  // One change at a time: an update that overlaps an earlier one waits for
+  // it, releases its binding and only then registers the new shortcut.
+  await inPttOrder(own, async () => {
+    await releasePtt(own.ptt, own.adapter, own.mine);
+    if (own.mine()) await bindPtt(own);
+  });
 }
 
 /** Re-sync VAD config when settings change mid-call. */

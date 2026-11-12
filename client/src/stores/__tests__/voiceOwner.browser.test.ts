@@ -560,6 +560,36 @@ describe("one owner for the voice session (browser adapter)", () => {
     expect(openPcs()).toHaveLength(0);
   });
 
+  it("a clock correction during a healthy call changes nothing", async () => {
+    await inChannel("A");
+    await vi.advanceTimersByTimeAsync(20_000);
+    vi.setSystemTime(Date.now() + 10 * 60_000); // the clock is set forward; the device is awake
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    await settle();
+
+    expect(voiceState.state).toBe("connected");
+    expect(voiceState.channelId).toBe("A");
+    expect(voiceState.lostChannelId).toBeNull();
+    expect(openMics()).toHaveLength(1);
+    expect(openPcs()).toHaveLength(2);
+    expect(sentOf("voice_join")).toHaveLength(1);
+    expect(sentOf("voice_leave")).toHaveLength(0);
+  });
+
+  it("slept twenty seconds and the socket stays away: given up 60 s after the last proof, not after the report", async () => {
+    await inChannel("A");
+    await vi.advanceTimersByTimeAsync(20_000);
+    vi.setSystemTime(Date.now() + 20_000);
+    noteSignallingLost();
+    await vi.advanceTimersByTimeAsync(39_000);
+    expect(voiceState.state).toBe("reconnecting");
+    await vi.advanceTimersByTimeAsync(2_000);
+    await settle();
+    expect(voiceState.state).toBe("disconnected");
+    expect(voiceState.lostChannelId).toBe("A");
+    expect(openMics()).toHaveLength(0);
+  });
+
   it("the device slept for twenty seconds: back in the channel", async () => {
     await inChannel("A");
     await vi.advanceTimersByTimeAsync(20_000);
