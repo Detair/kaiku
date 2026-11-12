@@ -239,13 +239,15 @@ async fn sigterm_stops_server_within_five_seconds(pool: PgPool) {
     assert!(elapsed < Duration::from_secs(5), "took {elapsed:?}");
 }
 
-/// Open, authenticated sockets in a voice room: SIGTERM leaves the room
-/// through the normal path (the other participant hears `voice_user_left`,
-/// the sessions are finalized), every socket gets Close 1012, and the process
-/// exits 0 within the bound.
+/// Open, authenticated sockets in a voice room: on SIGTERM every socket gets
+/// Close 1012 at once (telling the sockets is the first thing the shutdown
+/// does), both leave the room through the normal path (sessions finalized),
+/// and the process exits 0 within the bound. Whether a socket still hears
+/// `voice_user_left` for the other before its own close frame is not
+/// promised: the clients reconnect and rejoin (C32).
 #[cfg(unix)]
 #[sqlx::test]
-async fn sigterm_closes_sockets_with_1012_after_leaving_voice(pool: PgPool) {
+async fn sigterm_closes_sockets_with_1012_and_ends_voice_sessions(pool: PgPool) {
     let config = Config::default_for_test();
     let (owner, _) = create_test_user(&pool).await;
     let (member, _) = create_test_user(&pool).await;
@@ -290,8 +292,12 @@ async fn sigterm_closes_sockets_with_1012_after_leaving_voice(pool: PgPool) {
                 .map(|e| e["user_id"].as_str().unwrap_or_default().to_string()),
         );
     }
-    // The first peer removed is announced to the one still in the room.
-    assert_eq!(left.len(), 1, "voice_user_left seen: {left:?}");
+    assert!(left.len() <= 1, "voice_user_left seen: {left:?}");
+    assert!(
+        sent.elapsed() < Duration::from_secs(2),
+        "close frames took {:?}",
+        sent.elapsed()
+    );
     let (elapsed, logs) = server.exit_within(sent, Duration::from_secs(8)).await;
     assert!(elapsed < Duration::from_secs(8), "took {elapsed:?}");
     assert!(

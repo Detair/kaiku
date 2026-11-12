@@ -9,6 +9,10 @@ use vc_server::{api, chat, config, db, email, voice};
 /// Upper bound for draining the telemetry ingestion workers on shutdown.
 const INGESTION_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// Upper bound for the aborted background tasks to end, and (separately) for
+/// the database pool to close, on shutdown.
+const EXIT_STEP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize rustls crypto provider (required for WebRTC)
@@ -480,9 +484,10 @@ async fn main() -> Result<()> {
     let listener = tokio::net::TcpListener::bind(&config.bind_address).await?;
     info!(address = %config.bind_address, "Server listening");
 
-    // Graceful shutdown on Ctrl-C or SIGTERM (container stop): HTTP and
-    // WebSocket drain start together at the signal, each bounded (5 s); then
-    // the background tasks below are cleaned up.
+    // Graceful shutdown on Ctrl-C or SIGTERM (container stop): the sockets
+    // are told first, then voice rooms, sockets and HTTP requests drain
+    // concurrently under one bound of 5 s from the signal (`shutdown::serve`).
+    // Everything below is bounded too and waits for no request handler.
     vc_server::shutdown::serve(
         listener,
         app,
@@ -510,21 +515,29 @@ async fn main() -> Result<()> {
     cpu_sampler_handle.abort();
     custom_status_sweep_handle.abort();
     presence_sweep_handle.abort();
-    let _ = voice_cleanup_handle.await;
-    let _ = stale_peer_reaper_handle.await;
-    let _ = db_cleanup_handle.await;
-    let _ = webhook_worker_handle.await;
-    let _ = rtp_flush_handle.await;
-    let _ = retention_handle.await;
-    let _ = voice_health_handle.await;
-    let _ = cpu_sampler_handle.await;
-    let _ = custom_status_sweep_handle.await;
-    let _ = presence_sweep_handle.await;
-    info!("Background cleanup tasks stopped");
+    let stopped = tokio::time::timeout(EXIT_STEP_TIMEOUT, async {
+        let _ = voice_cleanup_handle.await;
+        let _ = stale_peer_reaper_handle.await;
+        let _ = db_cleanup_handle.await;
+        let _ = webhook_worker_handle.await;
+        let _ = rtp_flush_handle.await;
+        let _ = retention_handle.await;
+        let _ = voice_health_handle.await;
+        let _ = cpu_sampler_handle.await;
+        let _ = custom_status_sweep_handle.await;
+        let _ = presence_sweep_handle.await;
+    })
+    .await;
+    if stopped.is_ok() {
+        info!("Background cleanup tasks stopped");
+    } else {
+        tracing::warn!("Background tasks did not stop in time; proceeding");
+    }
 
     // 2. Flush and shut down OTel providers. Dropping these closes the channel senders
     //    (NativeLogLayer, NativeSpanProcessor, NativeMetricExporter), which lets the ingestion
-    //    workers drain remaining items and terminate naturally.
+    //    workers drain remaining items and terminate naturally. Bounded by the SDK: each provider
+    //    gives its exporter 5 s (only relevant with OTLP export enabled).
     drop(otel_guard);
     drop(meter_provider);
     info!("OTel providers shut down, draining ingestion channels...");
@@ -554,9 +567,16 @@ async fn main() -> Result<()> {
         );
     }
 
-    // 4. Close database pool gracefully
-    db_pool.close().await;
-    info!("Database pool closed");
+    // 4. Close database pool gracefully. `close` waits for every connection that is checked out; a
+    //    request that was still running at the shutdown bound must not hold the exit.
+    if tokio::time::timeout(EXIT_STEP_TIMEOUT, db_pool.close())
+        .await
+        .is_ok()
+    {
+        info!("Database pool closed");
+    } else {
+        tracing::warn!("Database pool still in use; proceeding");
+    }
 
     // 5. Close Redis connection
     drop(redis);

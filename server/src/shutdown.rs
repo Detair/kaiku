@@ -1,7 +1,18 @@
-//! Process shutdown signal.
+//! Process shutdown: the signal, and what happens after it.
 //!
 //! The server stops gracefully on Ctrl-C (SIGINT) and, on unix, on SIGTERM,
 //! which container runtimes and Kubernetes send to stop a pod.
+//!
+//! # Bounds
+//!
+//! [`serve`] returns at most [`SHUTDOWN_DEADLINE`] (5 s) after the signal;
+//! telling the web sockets is its first action. Request handlers still
+//! running shortly before the deadline are cancelled, connections that have
+//! not ended by then are not waited for: they end with the runtime when
+//! `main` returns. What `main` does afterwards is bounded as well (see
+//! there): background tasks 1 s, telemetry exporters 5 s each (only with
+//! OTLP export enabled and a collector that does not answer), telemetry
+//! ingestion 2 s, database pool 1 s.
 
 use tracing::info;
 
@@ -40,12 +51,13 @@ pub async fn shutdown_signal() {
     info!("Received shutdown signal, initiating graceful shutdown...");
 }
 
-/// Upper bound for the HTTP drain after the signal.
-pub const HTTP_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+/// The whole graceful shutdown, measured from the signal: after it,
+/// [`serve`] returns whatever is still running.
+pub const SHUTDOWN_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// Upper bound for closing the open web sockets after the signal (voice
-/// leave, close frames 1012, per-socket cleanup).
-pub const SOCKET_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+/// How long before the deadline the request handlers that are still running
+/// are cancelled, so their connections can answer and close within it.
+pub const REQUEST_CANCEL_LEAD: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// What the shutdown needs besides the router (which owns the app state).
 pub struct SocketDrain {
@@ -66,43 +78,55 @@ impl SocketDrain {
         }
     }
 
-    /// Remove every voice peer through the normal leave path (the others hear
-    /// `voice_user_left` while their sockets are still open), then tell every
-    /// socket to close with 1012 and run its own cleanup, and wait for them —
-    /// all within [`SOCKET_DRAIN_TIMEOUT`].
-    async fn run(&self) {
-        let drain = async {
-            let left = crate::voice::leave::leave_all(
-                &self.sfu,
-                &self.db,
-                self.screen_share_limiter.as_ref(),
-            )
-            .await;
-            self.ws_connections.begin_shutdown();
-            let open = self.ws_connections.wait_closed(SOCKET_DRAIN_TIMEOUT).await;
-            (left, open)
-        };
-        match tokio::time::timeout(SOCKET_DRAIN_TIMEOUT, drain).await {
-            Ok((left, 0)) => info!(voice_peers = left, "WebSockets closed"),
-            Ok((left, open)) => tracing::warn!(
-                voice_peers = left,
-                open,
-                "WebSockets still open after the shutdown bound"
-            ),
-            Err(_) => {
-                self.ws_connections.begin_shutdown();
-                tracing::warn!("WebSocket shutdown did not finish in time");
-            }
+    /// Remove every voice peer through the normal leave path (sessions
+    /// finalized, DM calls ended, share slots released). Each closing socket
+    /// removes its own peer too; this covers peers without a live socket.
+    async fn leave_voice(&self) -> usize {
+        crate::voice::leave::leave_all(&self.sfu, &self.db, self.screen_share_limiter.as_ref())
+            .await
+    }
+
+    /// Wait until every socket has finished its cleanup, at most until
+    /// `deadline`. Returns how many are still open.
+    async fn wait_sockets(&self, deadline: tokio::time::Instant) -> usize {
+        self.ws_connections
+            .wait_closed(deadline.saturating_duration_since(tokio::time::Instant::now()))
+            .await
+    }
+}
+
+/// Answers 503 for a request whose handler is still running when `cancel`
+/// fires; the handler's future is dropped (cancelled) at that moment.
+async fn cancel_with_shutdown(
+    axum::extract::State(cancel): axum::extract::State<tokio_util::sync::CancellationToken>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    tokio::select! {
+        biased;
+        response = next.run(request) => response,
+        () = cancel.cancelled() => {
+            axum::response::IntoResponse::into_response(crate::auth::AuthError::ServiceUnavailable)
         }
     }
 }
 
-/// Serve `app` on `listener` until `signal` resolves, then shut down.
+/// Serve `app` on `listener` until `signal` resolves, then shut down within
+/// [`SHUTDOWN_DEADLINE`], measured from the signal.
 ///
-/// The bound counts from the signal: the HTTP drain (at most
-/// [`HTTP_DRAIN_TIMEOUT`]; requests still running are dropped) and the web
-/// socket drain ([`SocketDrain`]) run **at the same time**, so a slow HTTP
-/// request never delays the sockets' close frames.
+/// 1. **First**, with nothing awaited before it: every web socket task is told to close
+///    (`WsConnectionTracker::begin_shutdown`; each sends Close 1012 and runs its normal cleanup,
+///    which also removes its voice peer), and the listener stops accepting.
+/// 2. **Concurrently**, under the one deadline: the voice rooms are emptied
+///    ([`SocketDrain::leave_voice`]), the sockets finish, and HTTP requests in flight complete.
+///    None of the three waits for another: a stalled voice departure or a slow request delays no
+///    close frame.
+/// 3. [`REQUEST_CANCEL_LEAD`] before the deadline, request handlers that are still running are
+///    **cancelled**: their futures are dropped and the client gets 503. (A response body that is
+///    still streaming is not a handler; its connection ends with the process.)
+/// 4. At the deadline this returns. Nothing after it waits for a connection or a handler: tasks
+///    that did not finish end with the runtime when `main` returns (see the bounded exit path
+///    there).
 pub async fn serve(
     listener: tokio::net::TcpListener,
     app: axum::Router,
@@ -112,6 +136,11 @@ pub async fn serve(
     use std::future::IntoFuture;
 
     let stop = tokio_util::sync::CancellationToken::new();
+    let cancel_requests = tokio_util::sync::CancellationToken::new();
+    let app = app.layer(axum::middleware::from_fn_with_state(
+        cancel_requests.clone(),
+        cancel_with_shutdown,
+    ));
     let server = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
@@ -123,16 +152,46 @@ pub async fn serve(
         served = &mut server => return served,
         () = signal => {}
     }
+
+    // Nothing is awaited between the signal and these two (both synchronous).
+    let deadline = tokio::time::Instant::now() + SHUTDOWN_DEADLINE;
+    drain.ws_connections.begin_shutdown();
     stop.cancel();
+
     let http = async {
-        tokio::time::timeout(HTTP_DRAIN_TIMEOUT, &mut server)
-            .await
-            .unwrap_or_else(|_| {
-                tracing::warn!("HTTP requests still running after the shutdown bound; dropped");
-                Ok(())
-            })
+        let drained = tokio::time::timeout_at(deadline - REQUEST_CANCEL_LEAD, &mut server).await;
+        if let Ok(served) = drained {
+            served
+        } else {
+            tracing::warn!("HTTP requests still running near the shutdown bound; cancelled");
+            cancel_requests.cancel();
+            (&mut server).await
+        }
     };
-    let (served, ()) = tokio::join!(http, drain.run());
+    let all = async { tokio::join!(http, drain.leave_voice(), drain.wait_sockets(deadline)) };
+    let served = match tokio::time::timeout_at(deadline, all).await {
+        Ok((served, left, 0)) => {
+            info!(voice_peers = left, "WebSockets closed");
+            served
+        }
+        Ok((served, left, open)) => {
+            tracing::warn!(
+                voice_peers = left,
+                open,
+                "WebSockets still open at the shutdown bound"
+            );
+            served
+        }
+        Err(_) => {
+            // Also when the lead was not enough for the connections to end.
+            cancel_requests.cancel();
+            tracing::warn!(
+                open = drain.ws_connections.open_sockets(),
+                "Shutdown did not finish within its bound; proceeding"
+            );
+            Ok(())
+        }
+    };
     info!("HTTP server stopped");
     served
 }
