@@ -694,6 +694,8 @@ pub async fn delete_user(
         return Err(AdminError::NotFound("User".to_string()));
     }
     tx.commit().await?;
+    // The user's files were queued in the transaction; delete them now.
+    crate::chat::storage_cleanup::spawn_drain(&state);
 
     // Log the action
     let ip_address = addr.ip().to_string();

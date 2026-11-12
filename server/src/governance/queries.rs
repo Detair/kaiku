@@ -450,13 +450,7 @@ pub async fn list_user_export_s3_keys(pool: &PgPool, user_id: Uuid) -> sqlx::Res
 #[tracing::instrument(skip(pool))]
 pub async fn delete_user(pool: &PgPool, user_id: Uuid) -> sqlx::Result<u64> {
     let mut tx = pool.begin().await?;
-    sqlx::query(
-        "DELETE FROM file_attachments fa USING messages m
-         WHERE m.id = fa.message_id AND m.user_id = $1",
-    )
-    .bind(user_id)
-    .execute(&mut *tx)
-    .await?;
+    crate::chat::storage_cleanup::remove_attachments_of_user(&mut tx, user_id).await?;
     let result = sqlx::query("DELETE FROM users WHERE id = $1")
         .bind(user_id)
         .execute(&mut *tx)

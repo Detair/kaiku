@@ -379,6 +379,43 @@ async fn channel_delete_queues_objects(pool: PgPool) {
     );
 }
 
+/// Hard deletes queue objects too: a forum post (message row deleted,
+/// replies cascade) and a whole server (channels, messages cascade).
+#[sqlx::test]
+async fn hard_deletes_queue_objects(pool: PgPool) {
+    let _app = TestApp::with_pool(pool.clone()).await;
+    let (owner, _) = create_test_user(&pool).await;
+    let guild = create_guild_with_default_role(&pool, owner, member_perms()).await;
+    let channel = create_channel(&pool, guild, "general").await;
+    let post = insert_message(&pool, channel, owner, "post").await;
+    let other = insert_message(&pool, channel, owner, "other").await;
+    for (message, key) in [(post, "k/post.png"), (other, "k/other.png")] {
+        sqlx::query(
+            "INSERT INTO file_attachments (message_id, filename, mime_type, size_bytes, s3_key)
+             VALUES ($1, 'a.png', 'image/png', 1, $2)",
+        )
+        .bind(message)
+        .bind(key)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+
+    sqlx::query("DELETE FROM messages WHERE id = $1")
+        .bind(post)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(pending_keys(&pool).await, vec!["k/post.png"]);
+
+    sqlx::query("DELETE FROM guilds WHERE id = $1")
+        .bind(guild)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(pending_keys(&pool).await, vec!["k/other.png", "k/post.png"]);
+}
+
 /// A failed object delete is logged and stays queued for a later tick.
 #[sqlx::test]
 async fn failed_object_delete_stays_queued(pool: PgPool) {
@@ -438,6 +475,61 @@ async fn account_deletion_removes_files(pool: PgPool) {
 
     assert_eq!(attachment_rows(&pool, message).await, 0);
     assert_eq!(pending_keys(&pool).await, vec!["uploads/test.png"]);
+}
+
+/// Waits until the outbox is empty (the post-commit drain ran).
+async fn wait_queue_empty(pool: &PgPool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !pending_keys(pool).await.is_empty() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "objects still queued: {:?}",
+            pending_keys(pool).await
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}
+
+/// An admin deleting an account removes the files of its (anonymized)
+/// messages too: rows in the deleting transaction, objects right after.
+#[sqlx::test]
+async fn admin_account_deletion_removes_files(pool: PgPool) {
+    if !rustfs_available().await {
+        return;
+    }
+    let (app, _bucket) = fresh_test_app_with_s3_and_pool(pool.clone()).await;
+    let (admin, _) = create_test_user(&pool).await;
+    super::helpers::make_admin(&pool, admin).await;
+    let admin_token = super::helpers::create_elevated_session(&pool, &app.config, admin).await;
+    let (leaver, _) = create_test_user(&pool).await;
+    let guild = create_guild_with_default_role(&pool, admin, member_perms()).await;
+    add_guild_member(&pool, guild, leaver).await;
+    let channel = create_channel(&pool, guild, "general").await;
+    let message = insert_message(&pool, channel, leaver, "file").await;
+    let (attachment, keys) = stored_attachment(&app, message).await;
+
+    let req =
+        super::helpers::login::peer_request(Method::DELETE, &format!("/api/admin/users/{leaver}"))
+            .header("Authorization", format!("Bearer {admin_token}"))
+            .body(Body::empty())
+            .unwrap();
+    let resp = app.oneshot(req).await;
+    assert_eq!(resp.status(), 200);
+
+    assert_eq!(attachment_rows(&pool, message).await, 0, "rows removed");
+    wait_queue_empty(&pool).await;
+    let s3 = app.state.s3.as_ref().unwrap();
+    for key in &keys {
+        assert!(
+            s3.get_object_stream(key).await.is_err(),
+            "object {key} still stored"
+        );
+    }
+    let owner_token = generate_access_token(&app.config, admin);
+    assert_eq!(
+        read_statuses(&app, &owner_token, attachment).await,
+        [403, 403, 403]
+    );
 }
 
 // ---------------------------------------------------------------------------

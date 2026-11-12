@@ -330,6 +330,24 @@ pub async fn run_tick<S: ObjectStore>(pool: &PgPool, store: Option<&S>) {
     }
 }
 
+/// Remove the attachment rows of every message `user_id` wrote; the
+/// trigger queues their objects. For account deletion (self-service and
+/// admin): the messages stay anonymized, their files go. Call in the
+/// transaction that deletes the user row.
+pub async fn remove_attachments_of_user(
+    conn: &mut sqlx::PgConnection,
+    user_id: uuid::Uuid,
+) -> sqlx::Result<u64> {
+    Ok(sqlx::query(
+        "DELETE FROM file_attachments fa USING messages m
+         WHERE m.id = fa.message_id AND m.user_id = $1",
+    )
+    .bind(user_id)
+    .execute(conn)
+    .await?
+    .rows_affected())
+}
+
 /// Start the object-cleanup worker (its own task, every [`TICK_INTERVAL`]).
 pub fn spawn(state: &AppState) -> tokio::task::JoinHandle<()> {
     let pool = state.db.clone();
