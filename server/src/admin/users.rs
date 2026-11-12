@@ -692,10 +692,16 @@ pub async fn delete_user(
     if deleted == 0 {
         return Err(AdminError::NotFound("User".to_string()));
     }
-    tx.commit().await?;
-    // The account's sessions ended above (its sockets close); its access
-    // epoch cell goes with it.
-    crate::ws::access::registry().forget_user(user_id);
+    // The account's memberships, roles and conversations go with it: open
+    // connections are fenced in the poll in which the delete commits (its
+    // sessions ended above, so its sockets close as well), and it leaves
+    // voice.
+    let ((), bumped) = crate::ws::access::bump_after(
+        crate::ws::access::AccessChange::AccountDeleted { user_id },
+        tx.commit(),
+    )
+    .await?;
+    crate::ws::access::access_changed(&state, bumped).await;
     // The user's files were queued in the transaction; delete them now.
     crate::chat::storage_cleanup::spawn_drain(&state, keys);
 

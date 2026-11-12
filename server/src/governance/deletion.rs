@@ -89,13 +89,21 @@ pub async fn process_pending_deletions(pool: &PgPool, s3: &Option<S3Client>) -> 
         //            mfa_backup_codes, password_reset_tokens, device_transfers,
         //            prekeys, user_blocks, user_reports, bot_installations, etc.
         //   SET NULL: messages.user_id, content filters, audit logs, etc.
-        let rows_affected = queries::delete_user(pool, *user_id).await?;
+        // Open connections of the account are fenced in the poll in which
+        // the delete commits. This job has no room registry at hand: a voice
+        // peer of the account is removed by its own socket, which the bump
+        // wakes.
+        let (rows_affected, _fenced) = crate::ws::access::bump_after_if(
+            Some(crate::ws::access::AccessChange::AccountDeleted { user_id: *user_id }),
+            queries::delete_user(pool, *user_id),
+            |rows| *rows > 0,
+        )
+        .await?;
 
         if rows_affected == 0 {
             tracing::warn!(user_id = %user_id, "User already deleted, skipping");
             continue;
         }
-        crate::ws::access::registry().forget_user(*user_id);
 
         // Clean up S3 objects (best-effort, logged on failure)
         if let Some(s3) = s3 {

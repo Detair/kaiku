@@ -19,8 +19,8 @@
 //! - **Guild epoch**: role permissions, role deletion, channel overrides, channel deletion, server
 //!   deletion. Affects every member's channels of that server.
 //! - **User epoch**: membership of that user (join, leave, kick, ban), the user's roles (incl.
-//!   reaction roles), group-DM membership, admin elevation. Affects all of that user's channels and
-//!   the admin event subscription.
+//!   reaction roles), group-DM membership, admin elevation, account deletion. Affects all of that
+//!   user's channels and the admin event subscription.
 //!
 //! Every write that can change access goes through [`bump_after`] or
 //! [`bump_after_if`]: the epoch is bumped in the poll in which the write's
@@ -217,12 +217,13 @@ impl AccessRegistry {
 
     /// Drop the cell of a deleted server (after its final bump). Sockets that
     /// still hold the old cell see it moved and revalidate.
-    pub fn forget_guild(&self, guild_id: Uuid) {
+    fn forget_guild(&self, guild_id: Uuid) {
         self.guilds.remove(&guild_id);
     }
 
-    /// Drop the cell of a deleted account (its sockets are closed).
-    pub fn forget_user(&self, user_id: Uuid) {
+    /// Drop the cell of a deleted account (after its final bump; sockets
+    /// that still hold the old cell see it moved).
+    fn forget_user(&self, user_id: Uuid) {
         if let Some((_, cell)) = self.users.remove(&user_id) {
             cell.store(next_epoch(), Ordering::SeqCst);
         }
@@ -297,6 +298,9 @@ pub enum AccessChange {
     DmLeft { user_id: Uuid, channel_id: Uuid },
     /// The user's admin elevation ended (admin event subscription).
     AdminAccessChanged { user_id: Uuid },
+    /// The account was deleted (memberships, roles and DM participations
+    /// went with it; its sessions ended).
+    AccountDeleted { user_id: Uuid },
 }
 
 /// Which epoch a change bumps.
@@ -326,7 +330,8 @@ impl AccessChange {
             | Self::UserBanned { user_id }
             | Self::MemberRolesChanged { user_id, .. }
             | Self::DmLeft { user_id, .. }
-            | Self::AdminAccessChanged { user_id } => Some((NoticeScope::User, user_id)),
+            | Self::AdminAccessChanged { user_id }
+            | Self::AccountDeleted { user_id } => Some((NoticeScope::User, user_id)),
             Self::GuildRolesChanged { guild_id }
             | Self::ChannelPermissionsChanged { guild_id, .. }
             | Self::GuildDeleted { guild_id }
@@ -363,6 +368,13 @@ impl AccessChange {
                     guild_id: None,
                 },
                 VoiceRemovedReason::Banned,
+            ),
+            Self::AccountDeleted { user_id } => (
+                VoiceAccessScope::User {
+                    user_id,
+                    guild_id: None,
+                },
+                VoiceRemovedReason::PermissionLost,
             ),
             Self::GuildRolesChanged { guild_id } => (
                 VoiceAccessScope::Guild(guild_id),
@@ -412,8 +424,10 @@ impl AccessChange {
     /// made anywhere else.
     fn bump(self) -> Bumped {
         self.bump_epoch();
-        if let Self::GuildDeleted { guild_id } = self {
-            registry().forget_guild(guild_id);
+        match self {
+            Self::GuildDeleted { guild_id } => registry().forget_guild(guild_id),
+            Self::AccountDeleted { user_id } => registry().forget_user(user_id),
+            _ => {}
         }
         Bumped(self)
     }
@@ -1643,6 +1657,10 @@ mod tests {
             .scope(),
             None
         );
+        assert_eq!(
+            AccessChange::AccountDeleted { user_id: u }.scope(),
+            Some((NoticeScope::User, u))
+        );
 
         let before = registry().snapshot(u, Some(g));
         let _ = AccessChange::GuildRolesChanged { guild_id: g }.bump();
@@ -1668,8 +1686,11 @@ mod tests {
             seen_guild,
             "holders see the bump"
         );
-        registry().forget_user(u);
-        assert!(!registry().users.contains_key(&u));
+        let _ = AccessChange::AccountDeleted { user_id: u }.bump();
+        assert!(
+            !registry().users.contains_key(&u),
+            "cell of a deleted account kept"
+        );
         assert_ne!(old_user.load(Ordering::SeqCst), seen_user);
         // A re-created cell starts at a value nobody has stored.
         let again = registry().guild_epoch(g).load(Ordering::SeqCst);
@@ -2041,7 +2062,7 @@ mod tests {
         ("auth/queries.rs", 1, "first-admin bootstrap: grant, admin flag re-checked on subscribe"),
         ("auth/revocation.rs", 1, "elevation ends with the session: the socket closes (1008)"),
         ("chat/messages.rs", 6, "test fixtures"),
-        ("chat/queries.rs", 9, "channel create, DM create (new participants auto-subscribe), DM rename/icon: no access change; DM leave: access_changed; overrides: access_changed"),
+        ("chat/queries.rs", 9, "channel create, DM rename/icon: no access change; DM and group-DM create (after the block check): a grant into a channel that did not exist, so no socket can hold it as requested, and every participant's sockets record it undecided on dm_created and confirm by a read (participants are only ever added at creation); DM leave: access_changed; overrides: access_changed"),
         ("cli/recovery.rs", 2, "CLI admin demote runs in another process: socket backstop (<= 60 s)"),
         ("db/queries.rs", 3, "channel create/update: no access change; channel delete: access_changed"),
         ("db/tests.rs", 13, "test fixtures"),
@@ -2049,14 +2070,14 @@ mod tests {
         ("guild/core.rs", 1, "guild settings (name, icon, ...): not an access input"),
         ("guild/screening.rs", 3, "screening disabled (promotes pending) and accepted: access_changed (grant); enabling never demotes"),
         ("guild/settings.rs", 1, "guild settings: not an access input"),
-        ("guild/queries/core.rs", 8, "guild create (no sockets yet), banner, position, prompt: not access inputs; guild delete, member delete (kick/leave): access_changed"),
+        ("guild/queries/core.rs", 9, "guild create (no sockets yet), banner, position, prompt: not access inputs; guild delete, member delete (kick/leave): access_changed; bot uninstall removes the bot's roles in its transaction: bump_after_if(MemberRolesChanged) in guild/bots.rs (bots hold no chat socket; their visibility is read from the database for every event)"),
         ("guild/queries/invites.rs", 1, "invite join: access_changed (grant); admin-created account has no sockets"),
         ("guild/queries/reaction_roles.rs", 2, "reaction role add/remove/swap: access_changed"),
-        ("guild/queries/roles.rs", 5, "role create (no members): none; role update with permissions, role delete, assign, remove: access_changed"),
+        ("guild/queries/roles.rs", 5, "role create (no members): none; role update with permissions, role delete, assign, remove: access_changed; assigning to an installed bot is the same handler and write"),
         ("permissions/queries.rs", 12, "helpers without a production caller (admin grant/revoke, elevation, role CRUD, member roles); role creation is grant only"),
         ("system_account.rs", 2, "Kaiku DM creation for a new user: grant only"),
         ("voice/ws_handler_test.rs", 9, "test fixtures"),
-        ("ws/bot_gateway.rs", 2, "test fixtures"),
+        ("ws/bot_gateway.rs", 6, "test fixtures"),
     ];
 
     #[test]
