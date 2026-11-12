@@ -41,6 +41,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.sizeIn
+import androidx.compose.ui.platform.LocalDensity
 import kotlin.math.ln
 import kotlin.math.roundToInt
 import kotlin.math.pow
@@ -72,83 +75,110 @@ internal const val PREVIEW_MAX_DP = 240
 internal const val PREVIEW_MIN_WIDTH_DP = 160
 internal const val PREVIEW_MIN_HEIGHT_DP = 120
 
-/** Size of a photo's tile in the chat, in dp. */
+/** A size in the chat, in dp. */
 internal data class PreviewTile(val widthDp: Int, val heightDp: Int)
 
 /**
- * The tile a photo of [width] x [height] px takes in the chat: its shape,
- * fitted into [PREVIEW_MAX_DP] square and never larger than the photo, but at
- * least [PREVIEW_MIN_WIDTH_DP] x [PREVIEW_MIN_HEIGHT_DP] so the "couldn't load"
- * text and Retry fit. Known before loading, so the list does not jump.
+ * The size a loaded photo of [width] x [height] px is drawn at: its own shape,
+ * fitted into [PREVIEW_MAX_DP] square and never larger than its own pixels at
+ * [density] (px per dp). Null when the dimensions are unknown.
  */
-internal fun previewTile(width: Int?, height: Int?): PreviewTile {
-    if (width == null || height == null || width <= 0 || height <= 0) {
-        return PreviewTile(PREVIEW_MAX_DP, PREVIEW_MAX_DP * 2 / 3)
-    }
-    val factor = minOf(1.0, PREVIEW_MAX_DP.toDouble() / maxOf(width, height))
+internal fun photoSize(width: Int?, height: Int?, density: Float): PreviewTile? {
+    if (width == null || height == null || width <= 0 || height <= 0) return null
+    val dpPerPx = minOf(PREVIEW_MAX_DP.toDouble() / maxOf(width, height), 1.0 / density.coerceAtLeast(1f))
     return PreviewTile(
-        (width * factor).roundToInt().coerceAtLeast(PREVIEW_MIN_WIDTH_DP),
-        (height * factor).roundToInt().coerceAtLeast(PREVIEW_MIN_HEIGHT_DP),
+        (width * dpPerPx).roundToInt().coerceAtLeast(1),
+        (height * dpPerPx).roundToInt().coerceAtLeast(1),
     )
 }
 
 /**
- * A photo in the chat (the small variant). The tile has its final size while
- * loading; when loading fails it shows the file name, a short reason and Retry.
+ * The tile shown while a photo loads or after it failed: the photo's size,
+ * known before loading so the list does not jump, but at least
+ * [PREVIEW_MIN_WIDTH_DP] x [PREVIEW_MIN_HEIGHT_DP] so the "couldn't load"
+ * text and Retry have room.
+ */
+internal fun placeholderTile(photo: PreviewTile?): PreviewTile {
+    if (photo == null) return PreviewTile(PREVIEW_MAX_DP, PREVIEW_MAX_DP * 2 / 3)
+    return PreviewTile(
+        photo.widthDp.coerceAtLeast(PREVIEW_MIN_WIDTH_DP),
+        photo.heightDp.coerceAtLeast(PREVIEW_MIN_HEIGHT_DP),
+    )
+}
+
+private enum class LoadState { LOADING, LOADED, FAILED }
+
+/**
+ * A photo in the chat (the small variant). While loading it holds a grey tile
+ * of [placeholderTile]; loaded, it is drawn at [photoSize] without bands; when
+ * loading fails it shows the file name, a short reason and Retry. The failed
+ * tile grows with large fonts so Retry stays reachable.
  */
 @Composable
 private fun ImagePreview(att: Attachment, onOpen: (Attachment) -> Unit) {
-    val tile = previewTile(att.width, att.height)
+    val photo = photoSize(att.width, att.height, LocalDensity.current.density)
+    val placeholder = placeholderTile(photo)
     val url = resolveServerUrl(att.mediumUrl ?: att.url)
     // A new attempt number composes a new image, which starts the request again.
     var attempt by remember(url) { mutableIntStateOf(0) }
-    var failed by remember(url) { mutableStateOf(false) }
-    Box(
-        modifier = Modifier
-            .padding(vertical = 2.dp)
-            .size(tile.widthDp.dp, tile.heightDp.dp)
-            .clip(RoundedCornerShape(8.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant),
-        contentAlignment = Alignment.Center,
-    ) {
-        if (failed) {
-            Column(
-                modifier = Modifier.fillMaxSize().padding(8.dp),
-                verticalArrangement = Arrangement.Center,
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                Text(
-                    text = att.filename,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Text(
-                    text = stringResource(R.string.chat_attachment_load_failed),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center,
-                )
-                TextButton(onClick = {
-                    failed = false
-                    attempt++
-                }) {
-                    Text(stringResource(R.string.common_retry))
-                }
+    var state by remember(url) { mutableStateOf(LoadState.LOADING) }
+    val shape = RoundedCornerShape(8.dp)
+    val tileColor = MaterialTheme.colorScheme.surfaceVariant
+    when (state) {
+        LoadState.FAILED -> Column(
+            modifier = Modifier
+                .padding(vertical = 2.dp)
+                .width(placeholder.widthDp.dp)
+                .heightIn(min = placeholder.heightDp.dp)
+                .clip(shape)
+                .background(tileColor)
+                .padding(8.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(
+                text = att.filename,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = stringResource(R.string.chat_attachment_load_failed),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+            )
+            TextButton(onClick = {
+                state = LoadState.LOADING
+                attempt++
+            }) {
+                Text(stringResource(R.string.common_retry))
             }
-        } else {
+        }
+
+        else -> {
+            val loaded = state == LoadState.LOADED
+            val boxModifier = when {
+                !loaded -> Modifier.size(placeholder.widthDp.dp, placeholder.heightDp.dp).clip(shape).background(tileColor)
+                photo != null -> Modifier.size(photo.widthDp.dp, photo.heightDp.dp).clip(shape)
+                // Unknown dimensions: the photo's own shape, at most 240 dp.
+                else -> Modifier.sizeIn(maxWidth = PREVIEW_MAX_DP.dp, maxHeight = PREVIEW_MAX_DP.dp).clip(shape)
+            }
             val openLabel = stringResource(R.string.chat_attachment_view_photo)
-            key(attempt) {
-                AsyncImage(
-                    model = url,
-                    contentDescription = att.filename,
-                    contentScale = ContentScale.Fit,
-                    onError = { failed = true },
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .clickable(onClickLabel = openLabel, role = Role.Image) { onOpen(att) },
-                )
+            Box(modifier = Modifier.padding(vertical = 2.dp).then(boxModifier)) {
+                key(attempt) {
+                    AsyncImage(
+                        model = url,
+                        contentDescription = att.filename,
+                        contentScale = ContentScale.Fit,
+                        onLoading = { state = LoadState.LOADING },
+                        onSuccess = { state = LoadState.LOADED },
+                        onError = { state = LoadState.FAILED },
+                        modifier = (if (loaded && photo == null) Modifier else Modifier.fillMaxSize())
+                            .clickable(onClickLabel = openLabel, role = Role.Image) { onOpen(att) },
+                    )
+                }
             }
         }
     }
