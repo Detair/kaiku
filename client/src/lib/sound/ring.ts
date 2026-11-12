@@ -78,9 +78,29 @@ export async function primeRingAudio(): Promise<void> {
     const ctx = getAudioContext();
     if (ctx.state === "suspended") await ctx.resume();
     await loadRingBuffer();
+    // Unlocked by the gesture; it may be resumed again later without one.
+    suspendWhenIdle();
   } catch (error) {
     console.warn("[Ring] Could not prepare ring audio:", error);
   }
+}
+
+/**
+ * Let the audio context rest while nothing rings: a running context keeps
+ * an audio device open and costs idle CPU. A ring resumes it.
+ */
+function suspendWhenIdle(): void {
+  const ctx = audioContext;
+  if (!ctx || ringInterval || ctx.state !== "running" || typeof ctx.suspend !== "function") {
+    return;
+  }
+  ctx
+    .suspend()
+    .then(() => {
+      // A ring that started while the context was going to sleep.
+      if (ringInterval) return ctx.resume();
+    })
+    .catch((error: unknown) => console.warn("[Ring] Could not suspend ring audio:", error));
 }
 
 function onFirstGesture(): void {
@@ -194,6 +214,7 @@ export function stopRinging(): void {
     }
     currentSource = null;
   }
+  suspendWhenIdle();
 
   console.log("[Ring] Stopped ringing");
 }

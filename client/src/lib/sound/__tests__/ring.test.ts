@@ -17,7 +17,13 @@ class FakeAudioContext {
   resume = vi.fn(async () => {
     this.state = "running";
   });
+  suspend = vi.fn(async () => {
+    this.state = "suspended";
+  });
   decodeAudioData = vi.fn(async () => ({}) as AudioBuffer);
+  destination = {};
+  createBufferSource = vi.fn(() => ({ connect: vi.fn(), start: vi.fn(), stop: vi.fn(), buffer: null }));
+  createGain = vi.fn(() => ({ connect: vi.fn(), gain: { value: 1 } }));
   constructor() {
     contexts.push(this);
   }
@@ -41,13 +47,27 @@ describe("ring audio unlock", () => {
     document.dispatchEvent(new Event("pointerdown"));
     await vi.waitFor(() => expect(contexts).toHaveLength(1));
     await vi.waitFor(() => expect(contexts[0].resume).toHaveBeenCalledTimes(1));
-    expect(contexts[0].state).toBe("running");
 
     // Later gestures do not prepare it again.
     document.dispatchEvent(new Event("keydown"));
     await Promise.resolve();
     expect(contexts).toHaveLength(1);
     expect(contexts[0].resume).toHaveBeenCalledTimes(1);
+  });
+
+  it("the context rests while nothing rings and wakes up for a ring", async () => {
+    const ring = await import("../ring");
+    await ring.primeRingAudio();
+    // Unlocked and loaded, then put to rest: no audio device held open.
+    await vi.waitFor(() => expect(contexts[0].suspend).toHaveBeenCalledTimes(1));
+    expect(contexts[0].state).toBe("suspended");
+
+    ring.startRinging();
+    await vi.waitFor(() => expect(contexts[0].createBufferSource).toHaveBeenCalled());
+    expect(contexts[0].state).toBe("running");
+
+    ring.stopRinging();
+    await vi.waitFor(() => expect(contexts[0].state).toBe("suspended"));
   });
 
   it("primeRingAudio resumes a suspended context and loads the sound", async () => {
