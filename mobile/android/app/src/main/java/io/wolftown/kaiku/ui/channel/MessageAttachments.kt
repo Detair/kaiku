@@ -106,7 +106,8 @@ internal fun placeholderTile(photo: PreviewTile?): PreviewTile {
     )
 }
 
-private enum class LoadState { LOADING, LOADED, FAILED }
+/** Where loading a photo stands (chat preview and viewer). */
+internal enum class LoadState { LOADING, LOADED, FAILED }
 
 /**
  * A photo in the chat (the small variant). While loading it holds a grey tile

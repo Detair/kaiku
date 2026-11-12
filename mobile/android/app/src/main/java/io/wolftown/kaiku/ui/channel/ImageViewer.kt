@@ -22,7 +22,12 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.foundation.layout.Column
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -87,7 +92,8 @@ internal fun clampZoom(current: Float, factor: Float): Float = (current * factor
  * zoomed; "Save" and "Share" in the bar. Back or the close button leaves.
  * "Save" is disabled while a save runs; its result is shown (and announced
  * politely) in [snackbarHostState] inside the viewer, not behind it.
- * Always on black, so the bar uses white text and icons (21:1).
+ * A spinner shows while the photo loads; if it fails, "Couldn't load this
+ * picture." with Retry. Always on black, so text and icons are white (21:1).
  */
 @Composable
 fun ImageViewer(
@@ -124,36 +130,68 @@ fun ImageViewer(
                     .maxBitmapSize(CoilSize(MAX_VIEWER_DECODE_PX, MAX_VIEWER_DECODE_PX))
                     .build()
             }
-            AsyncImage(
-                model = request,
-                contentDescription = attachment.filename,
-                contentScale = ContentScale.Fit,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .pointerInput(Unit) {
-                        detectTapGestures(onDoubleTap = { tap ->
-                            if (scale > 1f) {
-                                scale = 1f
-                                offset = Offset.Zero
-                            } else {
-                                scale = DOUBLE_TAP_ZOOM
-                                offset = (Offset(size.width / 2f, size.height / 2f) - tap) * (DOUBLE_TAP_ZOOM - 1f)
-                            }
-                        })
-                    }
-                    .pointerInput(Unit) {
-                        detectTransformGestures { _, pan, zoom, _ ->
-                            scale = clampZoom(scale, zoom)
-                            offset = if (scale == 1f) Offset.Zero else offset + pan
+            // A new attempt number composes a new image, which starts the request again.
+            var attempt by remember(url) { mutableIntStateOf(0) }
+            var loadState by remember(url) { mutableStateOf(LoadState.LOADING) }
+            key(attempt) {
+                AsyncImage(
+                    model = request,
+                    contentDescription = attachment.filename,
+                    contentScale = ContentScale.Fit,
+                    onLoading = { loadState = LoadState.LOADING },
+                    onSuccess = { loadState = LoadState.LOADED },
+                    onError = { loadState = LoadState.FAILED },
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .pointerInput(Unit) {
+                            detectTapGestures(onDoubleTap = { tap ->
+                                if (scale > 1f) {
+                                    scale = 1f
+                                    offset = Offset.Zero
+                                } else {
+                                    scale = DOUBLE_TAP_ZOOM
+                                    offset = (Offset(size.width / 2f, size.height / 2f) - tap) * (DOUBLE_TAP_ZOOM - 1f)
+                                }
+                            })
                         }
-                    }
-                    .graphicsLayer(
-                        scaleX = scale,
-                        scaleY = scale,
-                        translationX = offset.x,
-                        translationY = offset.y,
+                        .pointerInput(Unit) {
+                            detectTransformGestures { _, pan, zoom, _ ->
+                                scale = clampZoom(scale, zoom)
+                                offset = if (scale == 1f) Offset.Zero else offset + pan
+                            }
+                        }
+                        .graphicsLayer(
+                            scaleX = scale,
+                            scaleY = scale,
+                            translationX = offset.x,
+                            translationY = offset.y,
+                        )
+                )
+            }
+            when (loadState) {
+                LoadState.LOADING -> CircularProgressIndicator(
+                    color = Color.White,
+                    modifier = Modifier.align(Alignment.Center),
+                )
+                LoadState.FAILED -> Column(
+                    modifier = Modifier.align(Alignment.Center).padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text(
+                        text = stringResource(R.string.chat_attachment_load_failed),
+                        color = Color.White,
+                        style = MaterialTheme.typography.bodyLarge,
+                        textAlign = TextAlign.Center,
                     )
-            )
+                    TextButton(onClick = {
+                        loadState = LoadState.LOADING
+                        attempt++
+                    }) {
+                        Text(stringResource(R.string.common_retry), color = Color.White)
+                    }
+                }
+                LoadState.LOADED -> Unit
+            }
 
             Row(
                 modifier = Modifier
