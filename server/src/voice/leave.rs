@@ -210,6 +210,45 @@ pub async fn leave_voice_internal(
     Ok(removed)
 }
 
+/// Remove every peer from every room (server shutdown).
+///
+/// Uses the normal leave path: the others in each room get `voice_user_left`
+/// while their sockets are still open, sessions are finalized and DM calls
+/// end. Returns how many peers were removed.
+pub async fn leave_all(
+    sfu: &Arc<SfuServer>,
+    pool: &PgPool,
+    screen_share_limiter: Option<&ScreenShareLimiter>,
+) -> usize {
+    let mut removed = 0;
+    for room in sfu.rooms_snapshot().await {
+        let peers: Vec<(Uuid, Uuid)> = room
+            .peers
+            .read()
+            .await
+            .values()
+            .map(|p| (p.user_id, p.session_id))
+            .collect();
+        for (user_id, session_id) in peers {
+            match leave_voice_internal(
+                sfu,
+                pool,
+                user_id,
+                room.channel_id,
+                screen_share_limiter,
+                Some(session_id),
+            )
+            .await
+            {
+                Ok(true) => removed += 1,
+                Ok(false) => {}
+                Err(e) => warn!(user_id = %user_id, error = %e, "Voice leave on shutdown failed"),
+            }
+        }
+    }
+    removed
+}
+
 /// Remove the voice peer that belongs to a closing WebSocket.
 ///
 /// Only the peer whose signaling queue is `tx` is removed, so closing one of

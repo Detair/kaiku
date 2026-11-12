@@ -11,6 +11,10 @@ use vc_server::{api, chat, config, db, email, voice};
 /// Upper bound for draining the telemetry ingestion workers on shutdown.
 const INGESTION_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// Upper bound for closing the open web sockets on shutdown (voice leave,
+/// close frames 1012, per-socket cleanup).
+const SOCKET_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize rustls crypto provider (required for WebRTC)
@@ -462,6 +466,20 @@ async fn main() -> Result<()> {
         .sfu
         .spawn_stale_peer_reaper(state.db.clone(), state.screen_share_limiter.clone());
 
+    // Kept for the shutdown of the open WebSockets (the router owns `state`).
+    let ws_connections = state.ws_connections.clone();
+    let voice_sfu = state.sfu.clone();
+    let voice_limiter = state.screen_share_limiter.clone();
+    if ws_connections.proxy_warning_applies(&config.bind_address) {
+        tracing::warn!(
+            per_ip = ws_connections.limits().per_ip,
+            "WebSocket connections are capped per client address, and no trusted reverse \
+             proxy is configured (RATE_LIMIT_TRUSTED_PROXIES). Behind a reverse proxy every \
+             client then counts as the proxy's address and the cap applies to the whole server: \
+             set RATE_LIMIT_TRUSTED_PROXIES to the proxy's address"
+        );
+    }
+
     // Build router
     let app = api::create_router(state);
 
@@ -482,7 +500,33 @@ async fn main() -> Result<()> {
     // Graceful shutdown: clean up background tasks
     // =========================================================================
 
-    info!("HTTP server stopped, cleaning up background tasks...");
+    info!("HTTP server stopped, closing WebSockets...");
+
+    // Upgraded WebSockets are not tracked by axum's graceful shutdown. First
+    // remove every voice peer through the normal leave path (the others are
+    // told `voice_user_left` while their sockets are still open), then tell
+    // each socket to close with 1012 and run its own cleanup (presence,
+    // connection slots, rate-limit buckets), and wait for them, bounded.
+    let socket_drain = async {
+        let left = voice::leave::leave_all(&voice_sfu, &db_pool, voice_limiter.as_ref()).await;
+        ws_connections.begin_shutdown();
+        let open = ws_connections.wait_closed(SOCKET_DRAIN_TIMEOUT).await;
+        (left, open)
+    };
+    match tokio::time::timeout(SOCKET_DRAIN_TIMEOUT, socket_drain).await {
+        Ok((left, 0)) => info!(voice_peers = left, "WebSockets closed"),
+        Ok((left, open)) => tracing::warn!(
+            voice_peers = left,
+            open,
+            "WebSockets still open after the shutdown bound"
+        ),
+        Err(_) => {
+            ws_connections.begin_shutdown();
+            tracing::warn!("WebSocket shutdown did not finish in time");
+        }
+    }
+
+    info!("Cleaning up background tasks...");
 
     // 1. Abort non-draining background tasks
     voice_cleanup_handle.abort();
@@ -516,10 +560,10 @@ async fn main() -> Result<()> {
     drop(meter_provider);
     info!("OTel providers shut down, draining ingestion channels...");
 
-    // 3. Wait for ingestion workers to drain. They exit when their channel senders are dropped, but
-    //    the global tracing subscriber keeps the log sender alive, so the wait is bounded and
-    //    whatever is still running is aborted (the process must stop within the container's grace
-    //    period).
+    // 3. Let the ingestion workers write what is buffered and stop. Their channels never close on
+    //    their own (the global tracing subscriber keeps the log sender alive), so they are told to
+    //    stop; the wait stays bounded so the process stops within the container's grace period.
+    ingestion_handles.stop.cancel();
     let mut log_handle = ingestion_handles.log_handle;
     let mut span_handle = ingestion_handles.span_handle;
     let mut metric_handle = ingestion_handles.metric_handle;
