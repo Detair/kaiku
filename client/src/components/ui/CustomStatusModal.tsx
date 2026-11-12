@@ -30,6 +30,7 @@ const expiryOptions: { value: number | null; label: MessageKey }[] = [
 
 const CustomStatusModal: Component<CustomStatusModalProps> = (props) => {
   const titleId = createUniqueId();
+  let textRef: HTMLInputElement | undefined;
   const expiryId = createUniqueId();
 
   const [text, setText] = createSignal(props.currentStatus?.text ?? "");
@@ -61,6 +62,7 @@ const CustomStatusModal: Component<CustomStatusModalProps> = (props) => {
     <Modal
       onClose={() => props.onClose()}
       labelledBy={titleId}
+      initialFocus={() => textRef}
       backdropClass="fixed inset-0 bg-black/50 flex items-center justify-center p-4"
       class="bg-surface-layer2 rounded-xl p-4 w-96 max-w-full shadow-xl border border-white/10"
       testId="custom-status-dialog"
@@ -81,6 +83,7 @@ const CustomStatusModal: Component<CustomStatusModalProps> = (props) => {
           />
           <input
             type="text"
+            ref={textRef}
             placeholder={t("home.customStatus.placeholder")}
             aria-label={t("home.customStatus.textLabel")}
             value={text()}

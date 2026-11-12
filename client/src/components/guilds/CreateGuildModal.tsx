@@ -31,6 +31,7 @@ const MAX_TAGS = 5;
 const CreateGuildModal: Component<CreateGuildModalProps> = (props) => {
   const titleId = createUniqueId();
   const nameId = createUniqueId();
+  let nameRef: HTMLInputElement | undefined;
   const descriptionId = createUniqueId();
   const tagInputId = createUniqueId();
   const bannerUrlId = createUniqueId();
@@ -194,6 +195,7 @@ const CreateGuildModal: Component<CreateGuildModalProps> = (props) => {
     <Modal
       onClose={() => props.onClose()}
       labelledBy={titleId}
+      initialFocus={() => nameRef}
       closeOnBackdrop={false}
       class="border border-white/10 rounded-2xl w-[480px] max-w-[calc(100vw-2rem)] max-h-[min(640px,calc(100dvh-2rem))] flex flex-col shadow-2xl"
       style={{ "background-color": "var(--color-surface-base)" }}
@@ -246,6 +248,7 @@ const CreateGuildModal: Component<CreateGuildModalProps> = (props) => {
                     {t("guilds.create.name")} <span class="text-accent-danger" aria-hidden="true">*</span>
                   </label>
                   <input
+                    ref={nameRef}
                     id={nameId}
                     required
                     type="text"

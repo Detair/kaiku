@@ -73,7 +73,9 @@ interface CreateChannelModalProps {
 }
 
 const CreateChannelModal: Component<CreateChannelModalProps> = (props) => {
-  const dialog = createDialog({ onClose: () => props.onClose() });
+  let nameRef: HTMLInputElement | undefined;
+  // Focus starts in the name field, not on the close button (K1).
+  const dialog = createDialog({ onClose: () => props.onClose(), initialFocus: () => nameRef });
   const layer = createModalLayer(MODAL_LAYER.dialog);
   const nameId = createUniqueId();
   const typeLabelId = createUniqueId();
@@ -223,6 +225,7 @@ const CreateChannelModal: Component<CreateChannelModalProps> = (props) => {
                     )}
                   </div>
                   <input
+                    ref={nameRef}
                     id={nameId}
                     type="text"
                     required

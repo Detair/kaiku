@@ -238,6 +238,20 @@ describe("CreateAccountModal success view", () => {
   });
 });
 
+describe("start focus (K1)", () => {
+  it.each([
+    ["Create a server", () => <CreateGuildModal onClose={() => {}} />, /^Server name/],
+    ["Create channel", () => <CreateChannelModal guildId="g1" onClose={() => {}} />, /^Channel name/],
+    ["Set Custom Status", () => <CustomStatusModal onSave={() => {}} onClose={() => {}} />, /^Your status$/],
+  ] as const)("%s starts in its main field", async (name, mount, field) => {
+    document.body.innerHTML = "";
+    render(mount);
+    await tick();
+    screen.getByRole("dialog", { name });
+    expect(document.activeElement).toBe(screen.getByLabelText(field));
+  });
+});
+
 describe("modal contract: focus in, Tab stays, Escape from anywhere, focus back", () => {
   it("ReportModal", async () => {
     await expectModalContract("Report message", (onClose) => (
