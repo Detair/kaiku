@@ -65,6 +65,8 @@ pub struct SocketDrain {
     pub sfu: std::sync::Arc<crate::voice::SfuServer>,
     pub db: sqlx::PgPool,
     pub screen_share_limiter: Option<crate::voice::ScreenShareLimiter>,
+    /// The object clean-up worker, if one runs: stopped with the rest.
+    pub storage_cleanup: Option<crate::chat::storage_cleanup::CleanupWorker>,
 }
 
 impl SocketDrain {
@@ -75,6 +77,7 @@ impl SocketDrain {
             sfu: state.sfu.clone(),
             db: state.db.clone(),
             screen_share_limiter: state.screen_share_limiter.clone(),
+            storage_cleanup: None,
         }
     }
 
@@ -118,9 +121,10 @@ async fn cancel_with_shutdown(
 ///    (`WsConnectionTracker::begin_shutdown`; each sends Close 1012 and runs its normal cleanup,
 ///    which also removes its voice peer), and the listener stops accepting.
 /// 2. **Concurrently**, under the one deadline: the voice rooms are emptied
-///    ([`SocketDrain::leave_voice`]), the sockets finish, and HTTP requests in flight complete.
-///    None of the three waits for another: a stalled voice departure or a slow request delays no
-///    close frame.
+///    ([`SocketDrain::leave_voice`]), the sockets finish, HTTP requests in flight complete, and the
+///    object clean-up worker stops after the store call it is in (keys it did not reach stay
+///    queued). None of them waits for another: a stalled voice departure, a slow request or a slow
+///    object store delays no close frame.
 /// 3. [`REQUEST_CANCEL_LEAD`] before the deadline, request handlers that are still running are
 ///    **cancelled**: their futures are dropped and the client gets 503. (A response body that is
 ///    still streaming is not a handler; its connection ends with the process.)
@@ -130,7 +134,7 @@ async fn cancel_with_shutdown(
 pub async fn serve(
     listener: tokio::net::TcpListener,
     app: axum::Router,
-    drain: SocketDrain,
+    mut drain: SocketDrain,
     signal: impl std::future::Future<Output = ()> + Send,
 ) -> std::io::Result<()> {
     use std::future::IntoFuture;
@@ -168,13 +172,29 @@ pub async fn serve(
             (&mut server).await
         }
     };
-    let all = async { tokio::join!(http, drain.leave_voice(), drain.wait_sockets(deadline)) };
+    // Not finished at the deadline: the handle is dropped, the worker ends
+    // after its current store call on its own, and nothing is lost (the keys
+    // it claimed come back when their lease runs out).
+    let storage_cleanup = drain.storage_cleanup.take();
+    let stop_cleanup = async {
+        if let Some(worker) = storage_cleanup {
+            worker.shutdown().await;
+        }
+    };
+    let all = async {
+        tokio::join!(
+            http,
+            drain.leave_voice(),
+            drain.wait_sockets(deadline),
+            stop_cleanup
+        )
+    };
     let served = match tokio::time::timeout_at(deadline, all).await {
-        Ok((served, left, 0)) => {
+        Ok((served, left, 0, ())) => {
             info!(voice_peers = left, "WebSockets closed");
             served
         }
-        Ok((served, left, open)) => {
+        Ok((served, left, open, ())) => {
             tracing::warn!(
                 voice_peers = left,
                 open,

@@ -453,7 +453,9 @@ async fn main() -> Result<()> {
 
     // Minute sweep of the login state machines (notice outbox, timers).
     let auth_timers_handle = vc_server::auth::timers::spawn(state.clone());
-    let _storage_cleanup = vc_server::chat::storage_cleanup::spawn(&state);
+    // Deletes the files of removed messages in the background; stopped in
+    // the shutdown sequence (`shutdown::serve`), under its deadline.
+    let storage_cleanup = vc_server::chat::storage_cleanup::spawn(&state);
     // Committed session ends close their sockets (DC5).
     let session_end_listener_handle = vc_server::auth::revocation::spawn_session_end_listener(
         state.db.clone(),
@@ -466,7 +468,8 @@ async fn main() -> Result<()> {
         .spawn_stale_peer_reaper(state.db.clone(), state.screen_share_limiter.clone());
 
     // Kept for the shutdown of the open WebSockets (the router owns `state`).
-    let socket_drain = vc_server::shutdown::SocketDrain::from_state(&state);
+    let mut socket_drain = vc_server::shutdown::SocketDrain::from_state(&state);
+    socket_drain.storage_cleanup = Some(storage_cleanup);
     let ws_connections = state.ws_connections.clone();
     if ws_connections.proxy_warning_applies(&config.bind_address) {
         tracing::warn!(
