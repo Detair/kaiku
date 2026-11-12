@@ -613,6 +613,8 @@ async fn two_mb_json_on_normal_route_is_413(pool: PgPool) {
     assert_eq!(app.oneshot(req).await.status(), 413);
 }
 
+/// Regression guard: passes on the code before this change too (the earlier body limit was 50 MB
+/// everywhere; pins that uploads keep it).
 #[sqlx::test]
 async fn twenty_mb_upload_still_works(pool: PgPool) {
     if !rustfs_available().await {
@@ -644,6 +646,9 @@ async fn twenty_mb_upload_still_works(pool: PgPool) {
 
 /// The encrypted key backup (up to 1 MiB, base64 in JSON) is above the
 /// 1 MiB default and keeps its own limit.
+///
+/// Regression guard: passes on the code before this change too (the earlier body limit was 50 MB
+/// everywhere; pins the 2 MiB key backup limit).
 #[sqlx::test]
 async fn key_backup_of_one_mib_is_accepted(pool: PgPool) {
     use base64::Engine;

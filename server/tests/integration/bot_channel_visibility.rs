@@ -172,6 +172,8 @@ async fn next_message(
     }
 }
 
+/// Regression guard: passes on the code before this change too (positive control for the visibility
+/// filter; delivery to public channels worked before).
 #[sqlx::test]
 async fn public_channel_delivers_to_bot(pool: PgPool) {
     let fx = fixture(&pool).await;
@@ -310,6 +312,8 @@ async fn uninstalled_bot_loses_roles(pool: PgPool) {
     let _ = fx.owner;
 }
 
+/// Regression guard: passes on the code before this change too (role assignment refused non-members
+/// before bots could hold roles).
 #[sqlx::test]
 async fn role_for_user_outside_guild_is_rejected(pool: PgPool) {
     let fx = fixture(&pool).await;

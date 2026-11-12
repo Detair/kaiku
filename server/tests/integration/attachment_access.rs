@@ -170,6 +170,9 @@ async fn role_loss_blocks_download_variant_and_url(pool: PgPool) {
 }
 
 /// A user outside a DM cannot read its attachments; both participants can.
+///
+/// Regression guard: passes on the code before this change too (the earlier attachment check
+/// already required DM participation).
 #[sqlx::test]
 async fn dm_non_participant_is_refused(pool: PgPool) {
     if !rustfs_available().await {
@@ -198,6 +201,9 @@ async fn dm_non_participant_is_refused(pool: PgPool) {
 }
 
 /// A participant who left a group DM loses its attachments; the others keep them.
+///
+/// Regression guard: passes on the code before this change too (the earlier attachment check
+/// already required DM participation).
 #[sqlx::test]
 async fn group_dm_leaver_is_refused(pool: PgPool) {
     if !rustfs_available().await {

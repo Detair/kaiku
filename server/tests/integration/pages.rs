@@ -348,6 +348,8 @@ mod membership {
         assert_eq!(accepted, 0);
     }
 
+    /// Regression guard: passes on the code before this change too (members could read pages
+    /// before; pins that the membership check lets them in).
     #[sqlx::test]
     async fn member_and_pending_member_can_read_guild_pages(pool: PgPool) {
         let app = TestApp::with_all_features(pool.clone()).await;

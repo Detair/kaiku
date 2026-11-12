@@ -352,6 +352,9 @@ async fn group_dm_with_user_caller_blocked_is_refused(pool: PgPool) {
 
 /// A block between two invited people is theirs: the caller may still
 /// create the group (it would reveal a third party's block otherwise).
+///
+/// Regression guard: passes on the code before this change too (group DMs ignored all blocks
+/// before; pins that only caller and invitee blocks count).
 #[sqlx::test]
 async fn group_dm_ignores_blocks_between_other_participants(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
