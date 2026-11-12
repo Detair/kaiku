@@ -16,7 +16,7 @@ use super::rate_limit::EventClass;
 use super::screen_share::{
     validate_source_label, ScreenShareError, ScreenShareInfo, ScreenShareLimiter,
 };
-use super::sfu::SfuServer;
+use super::sfu::{ReplacedMedia, Room, SfuServer};
 use super::stats::VoiceStats;
 use super::track::spawn_subscriber_remb_reader;
 use super::track_types::{LayerPreference, TrackSource};
@@ -84,7 +84,8 @@ pub async fn handle_voice_event(
 
     match event {
         ClientEvent::VoiceJoin { channel_id } => {
-            let result = handle_join(sfu, pool, user_id, channel_id, tx).await;
+            let result =
+                handle_join(sfu, pool, user_id, channel_id, tx, screen_share_limiter).await;
             crate::observability::metrics::record_voice_join(result.is_ok());
             result
         }
@@ -189,8 +190,17 @@ async fn handle_join(
     user_id: Uuid,
     channel_id: Uuid,
     tx: &mpsc::Sender<OutboundMsg>,
+    screen_share_limiter: Option<&ScreenShareLimiter>,
 ) -> Result<(), VoiceError> {
     info!(user_id = %user_id, channel_id = %channel_id, "User joining voice channel");
+
+    // The access epochs this join is decided at (`ws::access`): checked
+    // again once the peer is in the room.
+    let guild_id = crate::db::find_channel_by_id(pool, channel_id)
+        .await
+        .map_err(|e| VoiceError::Signaling(format!("Failed to load channel: {e}")))?
+        .and_then(|c| c.guild_id);
+    let epochs = crate::ws::access::registry().snapshot(user_id, guild_id);
 
     // Check if user has VIEW_CHANNEL and VOICE_CONNECT permissions
     let ctx = crate::permissions::require_channel_access(pool, user_id, channel_id)
@@ -202,6 +212,7 @@ async fn handle_join(
     }
 
     sfu.check_rate_limit(user_id).await?;
+    crate::ws::test_hooks::voice_join_after_check(user_id).await;
 
     let (username, display_name) = queries::find_user_username_display_name(pool, user_id)
         .await
@@ -221,8 +232,34 @@ async fn handle_join(
 
     sfu.setup_ice_handler(&peer);
     sfu.setup_track_handler(&peer, &room);
+    // What the owning socket's writes are fenced by: room content reaches it
+    // only while these epochs hold, or after a new check.
+    peer.set_admission(crate::ws::access::VoiceAdmission { guild_id, epochs });
 
-    room.add_peer(peer.clone()).await?;
+    if let Some(replaced) = room.add_peer(peer.clone()).await? {
+        release_replaced_media(&room, user_id, replaced, screen_share_limiter).await;
+    }
+
+    // An access change that bumped its epoch before this point may have
+    // looked at the rooms before the peer was in: re-check now. A change
+    // after this point sees the peer (it bumps, then looks), so no join can
+    // slip past a revocation.
+    if crate::ws::access::registry().snapshot(user_id, guild_id) != epochs
+        && !super::revoke::has_voice_access(pool, user_id, channel_id)
+            .await
+            .unwrap_or(false)
+    {
+        super::leave::leave_voice_internal(
+            sfu,
+            pool,
+            user_id,
+            channel_id,
+            screen_share_limiter,
+            Some(peer.session_id),
+        )
+        .await?;
+        return Err(VoiceError::Unauthorized);
+    }
 
     // In the dual-PC model, the server does NOT send an initial offer.
     // The client will send a VoicePublisherOffer after joining, which
@@ -247,12 +284,15 @@ async fn handle_join(
 
     crate::ws::handlers::send_outbound(
         tx,
-        OutboundMsg::Event(ServerEvent::VoiceRoomState {
+        OutboundMsg::voice(
             channel_id,
-            participants,
-            screen_shares,
-            webcams,
-        }),
+            ServerEvent::VoiceRoomState {
+                channel_id,
+                participants,
+                screen_shares,
+                webcams,
+            },
+        ),
     )
     .await?;
 
@@ -275,6 +315,50 @@ async fn handle_join(
     crate::observability::metrics::record_voice_session_start();
 
     Ok(())
+}
+
+/// End the screen shares and webcam of a peer that a new join of the same
+/// user replaced: release their slots and tell the other participants, so no
+/// ghost share remains.
+async fn release_replaced_media(
+    room: &Room,
+    user_id: Uuid,
+    replaced: ReplacedMedia,
+    screen_share_limiter: Option<&ScreenShareLimiter>,
+) {
+    let channel_id = room.channel_id;
+    if !replaced.screen_shares.is_empty() {
+        if let Some(limiter) = screen_share_limiter {
+            limiter
+                .stop_n(channel_id, replaced.screen_shares.len())
+                .await;
+        } else {
+            warn!("Screen share limiter unavailable — replaced shares not released");
+        }
+    }
+    for share in &replaced.screen_shares {
+        room.broadcast_except(
+            user_id,
+            ServerEvent::ScreenShareStopped {
+                channel_id,
+                user_id,
+                stream_id: share.stream_id,
+                reason: "replaced".to_string(),
+            },
+        )
+        .await;
+    }
+    if replaced.webcam.is_some() {
+        room.broadcast_except(
+            user_id,
+            ServerEvent::WebcamStopped {
+                channel_id,
+                user_id,
+                reason: "replaced".to_string(),
+            },
+        )
+        .await;
+    }
 }
 
 /// Handle a user leaving a voice channel.
@@ -320,10 +404,13 @@ async fn handle_publisher_offer(
         Ok(answer_sdp) => {
             if let Err(e) = crate::ws::handlers::send_outbound(
                 &peer.signal_tx,
-                OutboundMsg::Event(ServerEvent::VoicePublisherAnswer {
+                OutboundMsg::voice(
                     channel_id,
-                    sdp: answer_sdp,
-                }),
+                    ServerEvent::VoicePublisherAnswer {
+                        channel_id,
+                        sdp: answer_sdp,
+                    },
+                ),
             )
             .await
             {
@@ -1025,12 +1112,15 @@ async fn handle_set_layer_preference(
         // Notify the viewer of the layer change
         crate::ws::handlers::send_outbound(
             tx,
-            OutboundMsg::Event(ServerEvent::VoiceLayerChanged {
+            OutboundMsg::voice(
                 channel_id,
-                source_user_id: target_user_id,
-                track_source,
-                active_layer: new_layer,
-            }),
+                ServerEvent::VoiceLayerChanged {
+                    channel_id,
+                    source_user_id: target_user_id,
+                    track_source,
+                    active_layer: new_layer,
+                },
+            ),
         )
         .await?;
     }

@@ -220,3 +220,111 @@ async fn test_link_authorize_is_rate_limited(pool: PgPool) {
         "4th link-authorize request should be rate limited (429)"
     );
 }
+
+/// Status of a bot gateway WebSocket handshake with `Authorization: Bot <token>`.
+async fn bot_gateway_status(server: &super::helpers::TestServer, token: &str) -> u16 {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let mut req = format!("ws://{}/api/gateway/bot", server.addr)
+        .into_client_request()
+        .unwrap();
+    req.headers_mut()
+        .insert("Authorization", format!("Bot {token}").parse().unwrap());
+    match tokio_tungstenite::connect_async(req).await {
+        Ok(_) => 101,
+        Err(tokio_tungstenite::tungstenite::Error::Http(resp)) => resp.status().as_u16(),
+        Err(e) => panic!("unexpected handshake error: {e}"),
+    }
+}
+
+/// Wrong bot tokens count as failed sign-ins: after the configured number
+/// the address is blocked like after wrong passwords.
+#[sqlx::test]
+async fn bot_gateway_login_blocked_after_failures(pool: PgPool) {
+    let limits = RateLimits {
+        auth_login: LimitConfig {
+            requests: 100,
+            window_secs: 60,
+        },
+        failed_auth: vc_server::ratelimit::FailedAuthConfig {
+            max_failures: 3,
+            block_duration_secs: 60,
+            window_secs: 60,
+        },
+        ..RateLimits::default()
+    };
+    let (server, _config) = create_rate_limited_app(pool, limits).await;
+    let wrong = format!("{}.wrong_secret", uuid::Uuid::now_v7());
+
+    for _ in 0..3 {
+        assert_eq!(bot_gateway_status(&server, &wrong).await, 401);
+    }
+    assert_eq!(bot_gateway_status(&server, &wrong).await, 429);
+}
+
+/// Bot gateway sign-ins have the per-address login limit (own bucket).
+#[sqlx::test]
+async fn bot_gateway_login_is_rate_limited(pool: PgPool) {
+    let limits = RateLimits {
+        auth_login: LimitConfig {
+            requests: 2,
+            window_secs: 60,
+        },
+        ..RateLimits::default()
+    };
+    let (server, _config) = create_rate_limited_app(pool, limits).await;
+    let token = "not-a-token";
+    assert_eq!(bot_gateway_status(&server, token).await, 401);
+    assert_eq!(bot_gateway_status(&server, token).await, 401);
+    assert_eq!(bot_gateway_status(&server, token).await, 429);
+}
+
+/// Bot gateway failures and human sign-in failures have separate counters
+/// and blocks: a broken bot behind a shared address cannot block people
+/// signing in from it, and failed sign-ins of people cannot block the bot.
+#[sqlx::test]
+async fn bot_and_login_failures_block_separately(_pool: PgPool) {
+    let config = Config::default_for_test();
+    let redis = vc_server::db::create_redis_client(&config.redis_url)
+        .await
+        .expect("Failed to connect to test Redis");
+    let mut limiter = RateLimiter::new(
+        redis,
+        RateLimitConfig {
+            enabled: true,
+            redis_key_prefix: format!("test:rl:{}", uuid::Uuid::new_v4()),
+            fail_open: false,
+            trusted_proxies: vc_server::ratelimit::TrustedProxies::default(),
+            allowlist: HashSet::new(),
+            limits: RateLimits {
+                failed_auth: vc_server::ratelimit::FailedAuthConfig {
+                    max_failures: 3,
+                    block_duration_secs: 60,
+                    window_secs: 60,
+                },
+                ..RateLimits::default()
+            },
+        },
+    );
+    limiter.init().await.expect("Failed to initialize limiter");
+
+    for _ in 0..3 {
+        limiter
+            .record_bot_gateway_failure("10.0.0.1")
+            .await
+            .unwrap();
+    }
+    assert!(limiter.is_bot_gateway_blocked("10.0.0.1").await.unwrap());
+    assert!(
+        !limiter.is_blocked("10.0.0.1").await.unwrap(),
+        "people stay unblocked"
+    );
+
+    for _ in 0..3 {
+        limiter.record_failed_auth("10.0.0.2").await.unwrap();
+    }
+    assert!(limiter.is_blocked("10.0.0.2").await.unwrap());
+    assert!(
+        !limiter.is_bot_gateway_blocked("10.0.0.2").await.unwrap(),
+        "bots stay unblocked"
+    );
+}

@@ -415,21 +415,65 @@ pub async fn filter_accessible_channels(
 /// can view, with the same rules as [`require_channel_access`].
 ///
 /// `channels` are `(guild_id, channel_id)` pairs. Everything is loaded in at
-/// most four queries in total, independent of the number of guilds and
-/// channels (membership + owner, `@everyone` roles, member roles, channel
-/// overrides); the permissions are then resolved in memory per guild. Channels
-/// in guilds the user is not a member of are dropped.
+/// most five queries in total, independent of the number of guilds and
+/// channels (channel existence, membership + owner, `@everyone` roles, member
+/// roles, channel overrides); the permissions are then resolved in memory per
+/// guild. Channels that no longer exist (or are not in the named guild) and
+/// channels in guilds the user is not a member of are dropped.
 #[tracing::instrument(skip(pool, channels), fields(channels = channels.len()))]
 pub async fn filter_viewable_channels_in_guilds(
     pool: &PgPool,
     user_id: Uuid,
     channels: &[(Uuid, Uuid)],
 ) -> sqlx::Result<std::collections::HashSet<Uuid>> {
+    Ok(viewable_and_existing_channels(pool, user_id, channels)
+        .await?
+        .0)
+}
+
+/// [`filter_viewable_channels_in_guilds`], also returning which of the
+/// channels still exist in their named guild: `(viewable, existing)`, with
+/// `viewable ⊆ existing`.
+#[tracing::instrument(skip(pool, channels), fields(channels = channels.len()))]
+pub async fn viewable_and_existing_channels(
+    pool: &PgPool,
+    user_id: Uuid,
+    channels: &[(Uuid, Uuid)],
+) -> sqlx::Result<(
+    std::collections::HashSet<Uuid>,
+    std::collections::HashSet<Uuid>,
+)> {
     use std::collections::{HashMap, HashSet};
 
     let mut viewable = HashSet::new();
     if channels.is_empty() {
-        return Ok(viewable);
+        return Ok((viewable, HashSet::new()));
+    }
+    // 0. Which channels still exist in the guild they are named with. A
+    // deleted channel's overrides are gone, so it must never be resolved.
+    let (guild_col, channel_col): (Vec<Uuid>, Vec<Uuid>) = channels.iter().copied().unzip();
+    let existing: HashSet<Uuid> = sqlx::query_scalar::<_, Uuid>(
+        r"
+        SELECT c.id
+        FROM channels c
+        INNER JOIN UNNEST($1::uuid[], $2::uuid[]) AS p(guild_id, channel_id)
+            ON c.id = p.channel_id AND c.guild_id = p.guild_id
+        ",
+    )
+    .bind(&guild_col)
+    .bind(&channel_col)
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .collect();
+    let channels: Vec<(Uuid, Uuid)> = channels
+        .iter()
+        .copied()
+        .filter(|(_, c)| existing.contains(c))
+        .collect();
+    let channels = channels.as_slice();
+    if channels.is_empty() {
+        return Ok((viewable, existing));
     }
     let mut guild_ids: Vec<Uuid> = channels.iter().map(|(g, _)| *g).collect();
     guild_ids.sort_unstable();
@@ -549,7 +593,220 @@ pub async fn filter_viewable_channels_in_guilds(
             viewable.insert(*channel_id);
         }
     }
-    Ok(viewable)
+    Ok((viewable, existing))
+}
+
+/// Guild-level permission context of an installed bot.
+///
+/// Bots are not guild members: their rights come from the installation of
+/// their application, the `@everyone` role, the roles assigned to the bot
+/// user and (per channel) the overrides. A bot is never owner and never
+/// pending. `None` when the bot's application is not installed in the guild,
+/// and always for the system account.
+#[tracing::instrument(skip(pool))]
+pub async fn bot_guild_context(
+    pool: &PgPool,
+    guild_id: Uuid,
+    bot_user_id: Uuid,
+) -> sqlx::Result<Option<MemberPermissionContext>> {
+    let owner: Option<Uuid> = sqlx::query_scalar(
+        r"
+        SELECT g.owner_id
+        FROM guilds g
+        JOIN guild_bot_installations gbi ON gbi.guild_id = g.id
+        JOIN bot_applications ba ON ba.id = gbi.application_id
+        JOIN users u ON u.id = ba.bot_user_id
+        WHERE g.id = $1 AND ba.bot_user_id = $2 AND NOT u.is_system
+        ",
+    )
+    .bind(guild_id)
+    .bind(bot_user_id)
+    .fetch_optional(pool)
+    .await?;
+    let Some(guild_owner_id) = owner else {
+        return Ok(None);
+    };
+    let everyone_role: Option<GuildRole> = sqlx::query_as(
+        r"
+        SELECT id, guild_id, name, color, permissions, position, is_default, created_at, updated_at
+        FROM guild_roles
+        WHERE guild_id = $1 AND is_default = true
+        ",
+    )
+    .bind(guild_id)
+    .fetch_optional(pool)
+    .await?;
+    let roles: Vec<GuildRole> = sqlx::query_as(
+        r"
+        SELECT r.id, r.guild_id, r.name, r.color, r.permissions, r.position, r.is_default, r.created_at, r.updated_at
+        FROM guild_roles r
+        INNER JOIN guild_member_roles gmr ON gmr.role_id = r.id
+        WHERE gmr.guild_id = $1 AND gmr.user_id = $2
+        ",
+    )
+    .bind(guild_id)
+    .bind(bot_user_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(Some(bot_context(
+        bot_user_id,
+        guild_owner_id,
+        everyone_role.as_ref(),
+        roles,
+    )))
+}
+
+/// A bot's context: like a member's, but never owner and never pending
+/// (even if the bot user owned the guild row).
+fn bot_context(
+    bot_user_id: Uuid,
+    guild_owner_id: Uuid,
+    everyone_role: Option<&GuildRole>,
+    roles: Vec<GuildRole>,
+) -> MemberPermissionContext {
+    let info = GuildInfo {
+        // A bot never gets the owner bypass.
+        guild_owner_id: if guild_owner_id == bot_user_id {
+            Uuid::nil()
+        } else {
+            guild_owner_id
+        },
+        membership_state: "active".to_string(),
+    };
+    assemble_context(bot_user_id, &info, everyone_role, roles)
+}
+
+/// The installed bot's permissions in one channel (overrides applied), or
+/// `None` when the bot is not installed in the channel's guild or the
+/// channel is not a guild channel.
+pub async fn bot_channel_permissions(
+    pool: &PgPool,
+    bot_user_id: Uuid,
+    channel_id: Uuid,
+) -> sqlx::Result<Option<GuildPermissions>> {
+    let Some(channel) = crate::db::get_channel_by_id(pool, channel_id).await? else {
+        return Ok(None);
+    };
+    let Some(guild_id) = channel.guild_id else {
+        return Ok(None);
+    };
+    let Some(ctx) = bot_guild_context(pool, guild_id, bot_user_id).await? else {
+        return Ok(None);
+    };
+    let overrides = crate::db::get_channel_overrides(pool, channel_id).await?;
+    Ok(Some(channel_permissions(
+        &ctx,
+        bot_user_id,
+        Some(&overrides),
+    )))
+}
+
+/// Whether the bot is installed in the channel's guild and holds
+/// `VIEW_CHANNEL` plus every flag in `required` there (overrides applied).
+///
+/// The one check for every bot-triggered read or write of a channel:
+/// command and component dispatch, command responses, gateway sends.
+pub async fn bot_can_use_channel(
+    pool: &PgPool,
+    bot_user_id: Uuid,
+    channel_id: Uuid,
+    required: GuildPermissions,
+) -> sqlx::Result<bool> {
+    Ok(bot_channel_permissions(pool, bot_user_id, channel_id)
+        .await?
+        .is_some_and(|p| p.contains(GuildPermissions::VIEW_CHANNEL | required)))
+}
+
+/// Installed bots among `bot_user_ids` that can view `channel_id`.
+///
+/// `VIEW_CHANNEL` after overrides, evaluated exactly like a member's access.
+/// Four queries regardless of the number of bots.
+#[tracing::instrument(skip(pool, bot_user_ids), fields(bots = bot_user_ids.len()))]
+pub async fn bots_viewing_channel(
+    pool: &PgPool,
+    guild_id: Uuid,
+    channel_id: Uuid,
+    bot_user_ids: &[Uuid],
+) -> sqlx::Result<std::collections::HashSet<Uuid>> {
+    use std::collections::{HashMap, HashSet};
+
+    let mut viewing = HashSet::new();
+    if bot_user_ids.is_empty() {
+        return Ok(viewing);
+    }
+
+    // 1. Installed, non-system bots among the candidates, with the owner.
+    let installed: Vec<(Uuid, Uuid)> = sqlx::query_as(
+        r"
+        SELECT ba.bot_user_id, g.owner_id
+        FROM guild_bot_installations gbi
+        JOIN bot_applications ba ON ba.id = gbi.application_id
+        JOIN users u ON u.id = ba.bot_user_id
+        JOIN guilds g ON g.id = gbi.guild_id
+        WHERE gbi.guild_id = $1 AND ba.bot_user_id = ANY($2) AND NOT u.is_system
+        ",
+    )
+    .bind(guild_id)
+    .bind(bot_user_ids)
+    .fetch_all(pool)
+    .await?;
+    if installed.is_empty() {
+        return Ok(viewing);
+    }
+    let installed_ids: Vec<Uuid> = installed.iter().map(|(b, _)| *b).collect();
+
+    // 2. @everyone and every role held by those bots in this guild.
+    let everyone: Option<GuildRole> = sqlx::query_as(
+        r"
+        SELECT id, guild_id, name, color, permissions, position, is_default, created_at, updated_at
+        FROM guild_roles
+        WHERE guild_id = $1 AND is_default = true
+        ",
+    )
+    .bind(guild_id)
+    .fetch_optional(pool)
+    .await?;
+    let held: Vec<BotRoleRow> = sqlx::query_as(
+        r"
+        SELECT gmr.user_id AS holder, r.id, r.guild_id, r.name, r.color, r.permissions,
+               r.position, r.is_default, r.created_at, r.updated_at
+        FROM guild_roles r
+        JOIN guild_member_roles gmr ON gmr.role_id = r.id
+        WHERE gmr.guild_id = $1 AND gmr.user_id = ANY($2)
+        ",
+    )
+    .bind(guild_id)
+    .bind(&installed_ids)
+    .fetch_all(pool)
+    .await?;
+    let mut by_bot: HashMap<Uuid, Vec<GuildRole>> = HashMap::new();
+    for row in held {
+        by_bot.entry(row.holder).or_default().push(row.role);
+    }
+
+    // 3. The channel's overrides.
+    let overrides = crate::db::get_channel_overrides(pool, channel_id).await?;
+
+    for (bot, owner) in installed {
+        let ctx = bot_context(
+            bot,
+            owner,
+            everyone.as_ref(),
+            by_bot.remove(&bot).unwrap_or_default(),
+        );
+        if channel_permissions(&ctx, bot, Some(&overrides)).has(GuildPermissions::VIEW_CHANNEL) {
+            viewing.insert(bot);
+        }
+    }
+    Ok(viewing)
+}
+
+/// A role together with the bot user holding it.
+#[derive(Debug, sqlx::FromRow)]
+struct BotRoleRow {
+    holder: Uuid,
+    #[sqlx(flatten)]
+    role: GuildRole,
 }
 
 /// Internal struct for guild membership query.

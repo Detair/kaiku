@@ -79,20 +79,6 @@ pub struct UpdateChannelRequest {
     pub position: Option<i32>,
 }
 
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-pub struct AddMemberRequest {
-    pub user_id: Uuid,
-    pub role_id: Option<Uuid>,
-}
-
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct MemberResponse {
-    pub user_id: Uuid,
-    pub username: String,
-    pub display_name: String,
-    pub avatar_url: Option<String>,
-}
-
 /// Request body for marking a guild channel as read.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct MarkChannelAsReadRequest {
@@ -570,12 +556,12 @@ pub struct SignedUrlResponse {
 }
 
 /// Query parameters for download endpoint.
+///
+/// The deprecated `token` parameter never reaches this struct: it is taken
+/// off the URI by `uploads::strip_download_token` and handed over as a
+/// request extension.
 #[derive(Debug, Deserialize)]
 pub struct DownloadQuery {
-    /// **Deprecated:** Use `GET /api/messages/attachments/<id>/url` with Authorization header
-    /// instead. When present, authenticates via this JWT token instead of the Authorization
-    /// header.
-    pub token: Option<String>,
     /// Optional variant to download: "thumbnail" (256px) or "medium" (1024px).
     pub variant: Option<String>,
 }

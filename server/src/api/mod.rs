@@ -64,6 +64,8 @@ pub struct AppState {
     pub http_client: reqwest::Client,
     /// Configured push transports (FCM only with a service account)
     pub push: Arc<crate::push::PushService>,
+    /// Open WebSocket connections per user and per client IP (caps).
+    pub ws_connections: Arc<crate::ws::connection_limit::WsConnectionTracker>,
 }
 
 impl FromRef<AppState> for PgPool {
@@ -92,7 +94,22 @@ impl AppState {
     pub fn new(cfg: AppStateConfig) -> Self {
         let push = Arc::new(crate::push::PushService::from_config(&cfg.config));
         crate::features::set_screening_enforced(cfg.config.optional_features.screening);
+        // Client IPs for the connection caps come from the same trusted
+        // proxies as rate limiting (`RATE_LIMIT_TRUSTED_PROXIES`), also when
+        // rate limiting itself is off.
+        let trusted = cfg.rate_limiter.as_ref().map_or_else(
+            || crate::ratelimit::RateLimitConfig::from_env().trusted_proxies,
+            |limiter| limiter.config().trusted_proxies.clone(),
+        );
+        let ws_connections = Arc::new(crate::ws::connection_limit::WsConnectionTracker::new(
+            crate::ws::connection_limit::ConnectionLimits {
+                per_user: cfg.config.ws_max_connections_per_user,
+                per_ip: cfg.config.ws_max_connections_per_ip,
+            },
+            trusted,
+        ));
         Self {
+            ws_connections,
             push: push.clone(),
             db: cfg.db,
             redis: cfg.redis.clone(),
@@ -189,7 +206,8 @@ pub fn create_router(state: AppState) -> Router {
         }
     };
 
-    // Get max upload size from config (default 50MB)
+    // Body limit of the routes that accept files (default 50MB); every other
+    // route gets DEFAULT_BODY_LIMIT.
     let max_upload_size = state.config.max_upload_size;
 
     // Social routes with Social rate limit category (20 req/60s)
@@ -207,7 +225,7 @@ pub fn create_router(state: AppState) -> Router {
     // Other API routes with Write rate limit category (30 req/60s)
     let api_routes = Router::new()
         .nest("/api/channels", chat::channels_router(&state))
-        .nest("/api/messages", chat::messages_router())
+        .nest("/api/messages", chat::messages_router(max_upload_size))
         .nest("/api/forum", chat::forum_router(&state))
         .nest("/api/guilds", guild::router(&state))
         .nest(
@@ -216,7 +234,7 @@ pub fn create_router(state: AppState) -> Router {
         )
         .nest("/api/invites", guild::invite_router())
         .nest("/api/pages", pages::platform_pages_router())
-        .nest("/api/dm", chat::dm_router())
+        .nest("/api/dm", chat::dm_router(max_upload_size))
         .nest("/api/dm", voice::call_handlers::call_router())
         .nest("/api/voice", voice::router())
         .route(
@@ -372,13 +390,25 @@ pub fn create_router(state: AppState) -> Router {
         // Public file redirect (presigned S3 URLs)
         .route("/api/files/{*key}", get(chat::files::serve))
         // Public message routes (download handles its own auth via query param)
-        .nest("/api/messages", chat::messages_public_router())
-        // WebSocket
-        .route("/ws", get(ws::handler))
-        // Bot Gateway WebSocket (uses bot token auth)
+        .nest("/api/messages", chat::messages_public_router(&state))
+        // WebSocket (connection attempts rate limited per IP; concurrent
+        // connections are capped in the handler)
+        .route(
+            "/ws",
+            get(ws::handler)
+                .layer(from_fn_with_state(state.clone(), rate_limit_by_ip))
+                .layer(from_fn(with_category(RateLimitCategory::WsConnect))),
+        )
+        // Bot Gateway WebSocket (uses bot token auth). The login's IP limit
+        // and failed-auth block, but in their own bucket and block (the
+        // handler checks it): bots and people behind one address cannot
+        // lock each other out. The token check runs Argon2, so
+        // unauthenticated attempts must be bounded.
         .route(
             "/api/gateway/bot",
-            get(ws::bot_gateway::bot_gateway_handler),
+            get(ws::bot_gateway::bot_gateway_handler)
+                .layer(from_fn_with_state(state.clone(), rate_limit_by_ip))
+                .layer(from_fn(with_category(RateLimitCategory::BotGateway))),
         )
         // API documentation
         .merge(api_docs(state.config.enable_api_docs))
@@ -402,11 +432,22 @@ pub fn create_router(state: AppState) -> Router {
         // Request ID for tracing correlation
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
-        // Increase body limit for file uploads (default is 2MB)
-        .layer(DefaultBodyLimit::max(max_upload_size))
+        // Small default body limit; the file upload routes (messages, DM
+        // icon, guild banner, emoji, avatar) and the key backup set their own.
+        .layer(DefaultBodyLimit::max(DEFAULT_BODY_LIMIT))
+        // Outermost: take a deprecated `?token=` off the download URI before
+        // the trace, metrics and request-id layers record it.
+        .layer(from_fn(chat::uploads::strip_download_token))
         // State
         .with_state(state)
 }
+
+/// Request body limit of every route that does not set its own (1 MiB).
+///
+/// Routes that accept files raise it to `MAX_UPLOAD_SIZE` (`max_upload_size`)
+/// or their own limit: message uploads, DM icon, guild banner, emoji,
+/// avatar (`max_avatar_size`) and the encrypted key backup (2 MiB).
+pub const DEFAULT_BODY_LIMIT: usize = 1024 * 1024;
 
 /// Health check response.
 #[derive(Serialize, utoipa::ToSchema)]

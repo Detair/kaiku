@@ -236,10 +236,12 @@ async fn chat_codes_are_upper_snake() {
         ChatError::FileTooLarge { max_size: 1 },
         ChatError::InvalidMimeType { mime_type: s() },
         ChatError::NoFile,
+        ChatError::TooManyAttachments { max: 10 },
         ChatError::InvalidFilename,
         ChatError::Storage(s()),
         ChatError::RoleNotFound,
         ChatError::NotMember,
+        ChatError::BotNotAllowedInChannel,
         ChatError::InvalidQuery(s()),
         ChatError::Database(db()),
     ];
@@ -708,21 +710,27 @@ async fn rate_limit_voice_and_call_codes_are_upper_snake() {
     )
     .await;
 
-    assert_codes(
-        "ScreenShareError",
-        "error",
-        [
-            ScreenShareError::NoPermission,
-            ScreenShareError::LimitReached,
-            ScreenShareError::NotInChannel,
-            ScreenShareError::QualityNotAllowed,
-            ScreenShareError::RenegotiationFailed,
-            ScreenShareError::InternalError,
-            ScreenShareError::InvalidSourceLabel,
-            ScreenShareError::AlreadySharing,
-        ],
-    )
-    .await;
+    // Not an HTTP response any more (the REST routes are gone); its codes
+    // still travel in serialized payloads.
+    for e in [
+        ScreenShareError::NoPermission,
+        ScreenShareError::LimitReached,
+        ScreenShareError::NotInChannel,
+        ScreenShareError::QualityNotAllowed,
+        ScreenShareError::RenegotiationFailed,
+        ScreenShareError::InternalError,
+        ScreenShareError::InvalidSourceLabel,
+        ScreenShareError::AlreadySharing,
+    ] {
+        let code = e.code();
+        assert!(
+            !code.is_empty()
+                && code
+                    .chars()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'),
+            "ScreenShareError code {code:?} is not UPPER_SNAKE"
+        );
+    }
 
     // The call API carries its machine code in `code`; `error` is free text.
     assert_codes(
@@ -760,6 +768,7 @@ const NON_CODE_ALLOWLIST: &[&str] = &[
     "DM channel not found",
     "Not a participant of this DM",
     "Cannot call this user",
+    "Internal server error",
 ];
 
 fn rust_sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
@@ -834,4 +843,42 @@ fn source_scan_detects_lowercase_codes() {
     assert_eq!(lowercase_code_literals(planted).len(), 5);
     let ok = r#"json!({"error": "NOT_ADMIN"}) (StatusCode::NOT_FOUND, "File not found") code: 4"#;
     assert!(lowercase_code_literals(ok).is_empty());
+}
+
+/// Internal and storage failures never put their detail (storage, database
+/// or library error text) into the response body.
+#[tokio::test]
+async fn internal_detail_stays_out_of_responses() {
+    const DETAIL: &str = "S3 upload failed: dispatch failure at 10.0.0.5";
+    let responses = vec![
+        (
+            "GuildError",
+            GuildError::Internal(DETAIL.into()).into_response(),
+        ),
+        (
+            "AdminError",
+            AdminError::Internal(DETAIL.into()).into_response(),
+        ),
+        (
+            "PagesError",
+            PagesError::Internal(DETAIL.into()).into_response(),
+        ),
+        (
+            "EmojiError",
+            EmojiError::Storage(DETAIL.into()).into_response(),
+        ),
+        (
+            "ChatError",
+            ChatError::Storage(DETAIL.into()).into_response(),
+        ),
+    ];
+    for (name, resp) in responses {
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR, "{name}");
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8_lossy(&bytes);
+        assert!(!body.contains("S3"), "{name} leaks detail: {body}");
+        assert!(!body.contains("10.0.0.5"), "{name} leaks detail: {body}");
+    }
 }

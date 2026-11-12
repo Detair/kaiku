@@ -377,9 +377,10 @@ pub async fn bulk_suspend_guilds(
                         suspended_count += 1;
                     }
                     Err(e) => {
+                        tracing::error!(guild_id = %guild_id, error = %e, "Bulk suspend failed");
                         failed.push(BulkActionFailure {
                             id: *guild_id,
-                            reason: format!("Database error: {e}"),
+                            reason: "Internal error".to_string(),
                         });
                     }
                 }
@@ -443,12 +444,26 @@ pub async fn delete_guild(
     let revocation =
         crate::presence::connections::begin_user_revocation(&state.redis, guild_id, None, &members)
             .await;
-    let deleted = queries::delete_guild(&state.db, guild_id).await;
+    let deleted = crate::ws::access::bump_after_if(
+        Some(crate::ws::access::AccessChange::GuildDeleted { guild_id }),
+        queries::delete_guild(&state.db, guild_id),
+        |n| *n > 0,
+    )
+    .await;
+    // Voice follows the bump before the presence cleanup (Valkey).
+    let deleted = match deleted {
+        Ok((n, bumped)) => {
+            if let Some(bumped) = bumped {
+                crate::ws::access::access_changed(&state, bumped).await;
+            }
+            Ok(n)
+        }
+        Err(e) => Err(e),
+    };
     crate::presence::connections::finish_guild_revocation(&state.redis, revocation, guild_id, None)
         .await;
-    let deleted = deleted?;
 
-    if deleted == 0 {
+    if deleted? == 0 {
         return Err(AdminError::NotFound("Guild".to_string()));
     }
 

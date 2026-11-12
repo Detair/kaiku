@@ -135,8 +135,15 @@ pub async fn set_override(
     let allow = body.allow.unwrap_or(0) as i64;
     let deny = body.deny.unwrap_or(0) as i64;
 
-    let override_entry =
-        queries::upsert_channel_override(&state.db, channel_id, role_id, allow, deny).await?;
+    let (override_entry, bumped) = crate::ws::access::bump_after(
+        crate::ws::access::AccessChange::ChannelPermissionsChanged {
+            guild_id,
+            channel_id,
+        },
+        queries::upsert_channel_override(&state.db, channel_id, role_id, allow, deny),
+    )
+    .await?;
+    crate::ws::access::access_changed(&state, bumped).await;
 
     Ok(Json(OverrideResponse {
         id: override_entry.0,
@@ -184,8 +191,25 @@ pub async fn delete_override(
         )));
     }
 
-    if !queries::delete_channel_override(&state.db, channel_id, role_id).await? {
+    let guild_id = queries::find_channel_guild_id(&state.db, channel_id)
+        .await?
+        .flatten();
+    let (deleted, bumped) = crate::ws::access::bump_after_if(
+        guild_id.map(
+            |guild_id| crate::ws::access::AccessChange::ChannelPermissionsChanged {
+                guild_id,
+                channel_id,
+            },
+        ),
+        queries::delete_channel_override(&state.db, channel_id, role_id),
+        |deleted| *deleted,
+    )
+    .await?;
+    if !deleted {
         return Err(ChatError::RoleNotFound);
+    }
+    if let Some(bumped) = bumped {
+        crate::ws::access::access_changed(&state, bumped).await;
     }
 
     Ok(Json(

@@ -2,6 +2,14 @@
 //!
 //! Publishes events to `bot:{bot_user_id}` Redis channels for all bots
 //! installed in a guild that have the matching intent declared.
+//!
+//! What a bot may see is decided **when an event is dispatched**: its
+//! visibility of the channel is read from the database for every event,
+//! here, before the publish. That is the rule for bots — there is no access
+//! epoch for bot sockets and no second check when the gateway writes a
+//! message event, so an event already on its way when a bot's role is
+//! removed is still delivered; everything dispatched after that commit is
+//! not. (Interactions are checked once more at the gateway.)
 
 use fred::interfaces::PubsubInterface;
 use fred::prelude::*;
@@ -35,7 +43,8 @@ async fn bots_with_intent(
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 
-/// Publish a `MessageCreated` event to all bots with `messages` intent in a guild.
+/// Publish a `MessageCreated` event to the bots with `messages` intent in a
+/// guild that can view `channel_id`.
 pub async fn publish_message_created(
     db: &PgPool,
     redis: &Client,
@@ -53,6 +62,25 @@ pub async fn publish_message_created(
         }
     };
 
+    if bot_ids.is_empty() {
+        return;
+    }
+
+    // Only bots that can view the channel (roles + overrides, like a member).
+    // Fails closed: no delivery if the check fails.
+    let viewing =
+        match crate::permissions::bots_viewing_channel(db, guild_id, channel_id, &bot_ids).await {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(channel_id = %channel_id, error = %e,
+                    "Bot visibility check failed; message not delivered to bots");
+                return;
+            }
+        };
+    let bot_ids: Vec<Uuid> = bot_ids
+        .into_iter()
+        .filter(|id| viewing.contains(id))
+        .collect();
     if bot_ids.is_empty() {
         return;
     }

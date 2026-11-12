@@ -67,6 +67,11 @@ pub struct Peer {
     /// Whether this peer has already subscribed to existing tracks.
     /// Used for robust first-offer detection instead of checking `outgoing_tracks_count`.
     pub has_subscribed: AtomicBool,
+    /// The access epochs the join check let this peer in at (set once, by
+    /// the join, before the peer enters its room). The owning socket writes
+    /// room content only while they hold or after a new check
+    /// (`ws::access`); a peer without it gets none.
+    admission: std::sync::OnceLock<crate::ws::access::VoiceAdmission>,
 }
 
 impl Peer {
@@ -96,7 +101,18 @@ impl Peer {
             connected_at: Utc::now(),
             pending_track_sources: RwLock::new(Vec::new()),
             has_subscribed: AtomicBool::new(false),
+            admission: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Record the access epochs of the join check (first call wins).
+    pub fn set_admission(&self, admission: crate::ws::access::VoiceAdmission) {
+        let _ = self.admission.set(admission);
+    }
+
+    /// The access epochs of the join check, if the peer came through it.
+    pub fn admission(&self) -> Option<crate::ws::access::VoiceAdmission> {
+        self.admission.get().copied()
     }
 
     /// Set an incoming track from this peer.

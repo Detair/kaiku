@@ -283,7 +283,8 @@ pub async fn dispatch_new_message(state: &AppState, d: NewMessageDispatch<'_>) {
 
 /// Dispatch a new message to the bot ecosystem (non-blocking, fire-and-forget).
 ///
-/// Only guild channels and non-encrypted messages are dispatched.
+/// Only guild channels and non-encrypted messages are dispatched, and only
+/// to bots (and their applications' webhooks) that can view the channel.
 pub fn dispatch_bot_events(
     state: &AppState,
     channel: &db::Channel,
@@ -305,10 +306,11 @@ pub fn dispatch_bot_events(
                     &db, &redis, guild_id, ch_id, msg_id, uid, &content,
                 )
                 .await;
-                crate::webhooks::dispatch::dispatch_guild_event(
+                crate::webhooks::dispatch::dispatch_channel_message_event(
                     &db,
                     &redis,
                     guild_id,
+                    ch_id,
                     crate::webhooks::events::BotEventType::MessageCreated,
                     serde_json::json!({
                         "guild_id": guild_id,

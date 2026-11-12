@@ -280,3 +280,103 @@ async fn test_db_only_block_refuses_dm_send(pool: PgPool) {
         assert_eq!(body_to_json(resp).await["error"], "BLOCKED");
     }
 }
+
+// ============================================================================
+// Group DMs follow the same block rule as 1:1 DMs
+// ============================================================================
+
+async fn db_block(pool: &PgPool, blocker: uuid::Uuid, blocked: uuid::Uuid) {
+    sqlx::query(
+        "INSERT INTO friendships (requester_id, addressee_id, status) VALUES ($1, $2, 'blocked')",
+    )
+    .bind(blocker)
+    .bind(blocked)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+async fn create_dm(
+    app: &TestApp,
+    token: &str,
+    participants: &[uuid::Uuid],
+) -> (u16, serde_json::Value) {
+    let req = TestApp::request(Method::POST, "/api/dm")
+        .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {token}"))
+        .body(Body::from(
+            serde_json::json!({ "participant_ids": participants }).to_string(),
+        ))
+        .unwrap();
+    let resp = app.oneshot(req).await;
+    let status = resp.status().as_u16();
+    (status, body_to_json(resp).await)
+}
+
+/// Inviting someone who blocked you into a group DM is refused like a 1:1 DM.
+#[sqlx::test]
+async fn group_dm_with_user_who_blocked_caller_is_refused(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (caller, _) = create_test_user(&pool).await;
+    let (blocker, _) = create_test_user(&pool).await;
+    let (friend, _) = create_test_user(&pool).await;
+    db_block(&pool, blocker, caller).await;
+    let token = generate_access_token(&app.config, caller);
+
+    let (status, json) = create_dm(&app, &token, &[blocker, friend]).await;
+    assert_eq!(status, 400);
+    assert!(json["message"]
+        .as_str()
+        .unwrap_or("")
+        .contains("Cannot create DM"));
+    let groups: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM channels WHERE channel_type = 'dm'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(groups, 0);
+}
+
+/// Inviting someone you blocked is refused too.
+#[sqlx::test]
+async fn group_dm_with_user_caller_blocked_is_refused(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (caller, _) = create_test_user(&pool).await;
+    let (blocked, _) = create_test_user(&pool).await;
+    let (friend, _) = create_test_user(&pool).await;
+    db_block(&pool, caller, blocked).await;
+    let token = generate_access_token(&app.config, caller);
+
+    let (status, _) = create_dm(&app, &token, &[friend, blocked]).await;
+    assert_eq!(status, 400);
+}
+
+/// A block between two invited people is theirs: the caller may still
+/// create the group (it would reveal a third party's block otherwise).
+///
+/// Regression guard: passes on the code before this change too (group DMs ignored all blocks
+/// before; pins that only caller and invitee blocks count).
+#[sqlx::test]
+async fn group_dm_ignores_blocks_between_other_participants(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (caller, _) = create_test_user(&pool).await;
+    let (b, _) = create_test_user(&pool).await;
+    let (c, _) = create_test_user(&pool).await;
+    db_block(&pool, b, c).await;
+    let token = generate_access_token(&app.config, caller);
+
+    let (status, _) = create_dm(&app, &token, &[b, c]).await;
+    assert_eq!(status, 201);
+}
+
+/// A 1:1 DM is also refused when only Postgres knows the block.
+#[sqlx::test]
+async fn dm_with_db_only_block_is_refused(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (caller, _) = create_test_user(&pool).await;
+    let (blocker, _) = create_test_user(&pool).await;
+    db_block(&pool, blocker, caller).await;
+    let token = generate_access_token(&app.config, caller);
+
+    let (status, _) = create_dm(&app, &token, &[blocker]).await;
+    assert_eq!(status, 400);
+}

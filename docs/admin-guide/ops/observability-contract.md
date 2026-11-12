@@ -198,6 +198,9 @@ These follow [OTel DB semantic conventions](https://opentelemetry.io/docs/specs/
 | `kaiku_http_errors_total` | Counter | requests | HTTP 4xx/5xx responses, by `http.response.status_code` and `error.type` (the status code). Error-rate source. |
 | `kaiku_ws_connections_active` | UpDownCounter | connections | Current open WebSocket connections. |
 | `kaiku_ws_reconnects_total` | Counter | reconnects | WebSocket reconnection attempts. |
+| `kaiku_ws_refused_total` | Counter | connections | WebSocket connections refused by a connection cap, by `outcome` (`per_address_limit`, `per_account_limit`). Many `per_address_limit` behind a reverse proxy: check `RATE_LIMIT_TRUSTED_PROXIES`. |
+| `kaiku_ws_resync_closes_total` | Counter | closes | WebSockets the server closed with 1011/1013 so the client reconnects and catches up, by `outcome` (the cause, e.g. `access_resync`, `access_check_failed`, `slow_client`, `lagged`). |
+| `kaiku_ws_access_check_failures_total` | Counter | checks | Failed revalidations of a socket's channel access (database error or timeout). |
 | `kaiku_ws_messages_total` | Counter | messages | WebSocket messages dispatched, by event type. |
 | `kaiku_voice_joins_total` | Counter | joins | Total voice join attempts, by outcome (`success`, `failure`). |
 | `kaiku_voice_sessions_active` | UpDownCounter | sessions | Current active voice sessions. |

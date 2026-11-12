@@ -743,6 +743,8 @@ pub struct IngestionHandles {
     pub log_handle: tokio::task::JoinHandle<()>,
     pub span_handle: tokio::task::JoinHandle<()>,
     pub metric_handle: tokio::task::JoinHandle<()>,
+    /// Cancel to make the workers write what is buffered and stop.
+    pub stop: tokio_util::sync::CancellationToken,
 }
 
 /// Max items to accumulate before flushing a batch INSERT.
@@ -761,14 +763,24 @@ pub fn spawn_ingestion_workers(
     mut span_rx: mpsc::Receiver<CapturedSpan>,
     mut metric_rx: mpsc::Receiver<CapturedMetricSample>,
 ) -> IngestionHandles {
+    let stop = tokio_util::sync::CancellationToken::new();
     let log_pool = pool.clone();
+    let log_stop = stop.clone();
     let log_handle = tokio::spawn(async move {
+        let stop = log_stop;
         let empty_attrs = serde_json::Value::Object(serde_json::Map::new());
         let mut batch = Vec::with_capacity(BATCH_CAPACITY);
         loop {
             batch.clear();
             // Wait for at least one message (blocks until available or closed)
-            let Some(first) = log_rx.recv().await else {
+            // After `stop`, only what is already buffered is written: the
+            // global tracing subscriber keeps the log sender alive, so the
+            // channel would never close on its own.
+            let first = tokio::select! {
+                first = log_rx.recv() => first,
+                () = stop.cancelled() => log_rx.try_recv().ok(),
+            };
+            let Some(first) = first else {
                 break;
             };
             batch.push(first);
@@ -802,11 +814,20 @@ pub fn spawn_ingestion_workers(
     });
 
     let span_pool = pool.clone();
+    let span_stop = stop.clone();
     let span_handle = tokio::spawn(async move {
+        let stop = span_stop;
         let mut batch = Vec::with_capacity(BATCH_CAPACITY);
         loop {
             batch.clear();
-            let Some(first) = span_rx.recv().await else {
+            // After `stop`, only what is already buffered is written: the
+            // global tracing subscriber keeps the log sender alive, so the
+            // channel would never close on its own.
+            let first = tokio::select! {
+                first = span_rx.recv() => first,
+                () = stop.cancelled() => span_rx.try_recv().ok(),
+            };
+            let Some(first) = first else {
                 break;
             };
             batch.push(first);
@@ -836,11 +857,20 @@ pub fn spawn_ingestion_workers(
         }
     });
 
+    let metric_stop = stop.clone();
     let metric_handle = tokio::spawn(async move {
+        let stop = metric_stop;
         let mut batch = Vec::with_capacity(BATCH_CAPACITY);
         loop {
             batch.clear();
-            let Some(first) = metric_rx.recv().await else {
+            // After `stop`, only what is already buffered is written: the
+            // global tracing subscriber keeps the log sender alive, so the
+            // channel would never close on its own.
+            let first = tokio::select! {
+                first = metric_rx.recv() => first,
+                () = stop.cancelled() => metric_rx.try_recv().ok(),
+            };
+            let Some(first) = first else {
                 break;
             };
             batch.push(first);
@@ -875,6 +905,7 @@ pub fn spawn_ingestion_workers(
         log_handle,
         span_handle,
         metric_handle,
+        stop,
     }
 }
 

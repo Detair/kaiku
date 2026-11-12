@@ -162,7 +162,16 @@ pub async fn update_screening(
         .execute(&mut *tx)
         .await?;
     }
-    tx.commit().await?;
+    // Pending members promoted above can view channels now.
+    let ((), bumped) = crate::ws::access::bump_after_if(
+        (!body.enabled).then_some(crate::ws::access::AccessChange::GuildRolesChanged { guild_id }),
+        tx.commit(),
+        |()| true,
+    )
+    .await?;
+    if let Some(bumped) = bumped {
+        crate::ws::access::access_changed(&state, bumped).await;
+    }
 
     Ok(Json(
         serde_json::json!({ "screening_enabled": body.enabled }),
@@ -178,19 +187,28 @@ pub async fn accept_screening(
 ) -> Result<Json<serde_json::Value>, ScreeningError> {
     // Flip pending → active only if the guild is screening-enabled and the
     // caller is currently pending.
-    let affected = sqlx::query(
-        "UPDATE guild_members SET membership_state = 'active', accepted_rules_at = NOW()
-         WHERE guild_id = $1 AND user_id = $2 AND membership_state = 'pending'
-           AND EXISTS (SELECT 1 FROM guilds WHERE id = $1 AND screening_enabled = true)",
+    let (result, bumped) = crate::ws::access::bump_after_if(
+        Some(crate::ws::access::AccessChange::MemberJoined {
+            guild_id,
+            user_id: auth.id,
+        }),
+        sqlx::query(
+            "UPDATE guild_members SET membership_state = 'active', accepted_rules_at = NOW()
+             WHERE guild_id = $1 AND user_id = $2 AND membership_state = 'pending'
+               AND EXISTS (SELECT 1 FROM guilds WHERE id = $1 AND screening_enabled = true)",
+        )
+        .bind(guild_id)
+        .bind(auth.id)
+        .execute(&state.db),
+        |result| result.rows_affected() > 0,
     )
-    .bind(guild_id)
-    .bind(auth.id)
-    .execute(&state.db)
-    .await?
-    .rows_affected();
+    .await?;
 
-    if affected == 0 {
+    if result.rows_affected() == 0 {
         return Err(ScreeningError::NotPending);
+    }
+    if let Some(bumped) = bumped {
+        crate::ws::access::access_changed(&state, bumped).await;
     }
 
     if let Err(e) = crate::ws::broadcast_to_guild(

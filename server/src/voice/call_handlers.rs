@@ -51,8 +51,16 @@ impl IntoResponse for CallError {
             }
         };
 
+        // The detail of a Valkey, serialization or internal failure is for
+        // the log only.
+        let error = if status == StatusCode::INTERNAL_SERVER_ERROR {
+            tracing::error!(error = %self, "Call request failed");
+            "Internal server error".to_string()
+        } else {
+            self.to_string()
+        };
         let body = Json(CallApiError {
-            error: self.to_string(),
+            error,
             code: code.to_string(),
         });
 
@@ -98,14 +106,17 @@ impl IntoResponse for CallHandlerError {
                 }),
             )
                 .into_response(),
-            Self::Database(e) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(CallApiError {
-                    error: format!("Database error: {e}"),
-                    code: "INTERNAL_ERROR".to_string(),
-                }),
-            )
-                .into_response(),
+            Self::Database(e) => {
+                tracing::error!(error = %e, "Call request failed: database error");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(CallApiError {
+                        error: "Internal server error".to_string(),
+                        code: "INTERNAL_ERROR".to_string(),
+                    }),
+                )
+                    .into_response()
+            }
         }
     }
 }
@@ -403,4 +414,46 @@ pub fn call_router() -> axum::Router<AppState> {
         .route("/{id}/call/join", post(join_call))
         .route("/{id}/call/decline", post(decline_call))
         .route("/{id}/call/leave", post(leave_call))
+}
+
+#[cfg(test)]
+mod error_body_tests {
+    use axum::response::IntoResponse;
+
+    use super::{CallError, CallHandlerError};
+
+    async fn body_of(response: axum::response::Response) -> (u16, serde_json::Value) {
+        let status = response.status().as_u16();
+        let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .expect("body");
+        (status, serde_json::from_slice(&bytes).expect("JSON body"))
+    }
+
+    /// Database and internal failures answer with a fixed text; the detail
+    /// stays in the log.
+    #[tokio::test]
+    async fn internal_failures_do_not_echo_their_detail() {
+        const DETAIL: &str = "relation \"dm_participants\" at 10.0.0.5";
+        let failures = [
+            CallHandlerError::Database(DETAIL.to_string()).into_response(),
+            CallHandlerError::Call(CallError::Internal(DETAIL.to_string())).into_response(),
+        ];
+        for response in failures {
+            let (status, body) = body_of(response).await;
+            assert_eq!(status, 500);
+            assert_eq!(body["code"], "INTERNAL_ERROR");
+            assert_eq!(body["error"], "Internal server error");
+            assert!(!body.to_string().contains("dm_participants"), "{body}");
+        }
+    }
+
+    /// Errors the caller can act on keep their text.
+    #[tokio::test]
+    async fn client_errors_keep_their_text() {
+        let (status, body) = body_of(CallError::CallNotFound.into_response()).await;
+        assert_eq!(status, 404);
+        assert_eq!(body["code"], "CALL_NOT_FOUND");
+        assert_ne!(body["error"], "Internal server error");
+    }
 }

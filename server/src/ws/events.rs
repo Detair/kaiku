@@ -102,9 +102,6 @@ pub struct ClientMessageState {
     pub last_typing: HashMap<Uuid, Instant>,
     /// Per-connection flood ceiling across all inbound message types.
     pub flood: FloodBucket,
-    /// Session of the socket's token (`sid`); admin event subscription needs
-    /// this session to be elevated.
-    pub session_id: Option<Uuid>,
 }
 
 /// Default `pc_type` for backward compatibility with old clients.
@@ -311,6 +308,34 @@ impl ClientEvent {
             Self::AdminSubscribe => "admin_subscribe",
             Self::AdminUnsubscribe => "admin_unsubscribe",
             Self::ComponentInteraction { .. } => "component_interaction",
+        }
+    }
+}
+
+/// Why the server removed a user from a voice room (`voice_removed`, C31).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VoiceRemovedReason {
+    /// Kicked from the server.
+    Kicked,
+    /// The account was banned.
+    Banned,
+    /// No longer allowed to view or connect to the channel (role,
+    /// permission or override change, or the user left the server).
+    PermissionLost,
+    /// The channel (or its server) was deleted.
+    ChannelDeleted,
+}
+
+impl VoiceRemovedReason {
+    /// The wire value.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Kicked => "kicked",
+            Self::Banned => "banned",
+            Self::PermissionLost => "permission_lost",
+            Self::ChannelDeleted => "channel_deleted",
         }
     }
 }
@@ -564,6 +589,15 @@ pub enum ServerEvent {
         channel_id: Uuid,
         /// User who left.
         user_id: Uuid,
+    },
+    /// The server removed this user from the voice room (C31): sent only to
+    /// the socket that owned the voice peer. The others get
+    /// `voice_user_left`. Clients tear down and do not rejoin on their own.
+    VoiceRemoved {
+        /// Voice channel.
+        channel_id: Uuid,
+        /// Why the user was removed.
+        reason: VoiceRemovedReason,
     },
     /// User muted in voice channel
     VoiceUserMuted {
@@ -1107,15 +1141,68 @@ pub enum ServerEvent {
 
 /// Internal outbound message envelope for the WebSocket sender task.
 /// Separates serializable server events from raw WS control frames (Ping, Close).
+///
+/// The variant says what must hold when the frame is **written** (see
+/// [`super::access`]); the sender task decides then, so an access change
+/// also stops what was queued before it.
 #[derive(Debug)]
 pub enum OutboundMsg {
+    /// Written as is: a reply to the socket's own request, or an event
+    /// addressed to this user that carries no channel, server or room
+    /// content.
     Event(ServerEvent),
+    /// An event of a chat channel: written only if the socket may still view
+    /// the channel.
+    Channel {
+        channel_id: Uuid,
+        event: ServerEvent,
+    },
+    /// An event that is bound to a chat channel but reached the socket on
+    /// the user's own feed (a bot's answer to the user's command): written
+    /// only if the user may view the channel then, whether or not the client
+    /// ever asked for that channel.
+    ChannelBound {
+        channel_id: Uuid,
+        event: ServerEvent,
+    },
+    /// An event of a server's own feed (`guild:{id}`: members, roles,
+    /// scheduled events, emoji) or one that is bound to a server (an event
+    /// reminder): written only while the user is a member.
+    Guild {
+        guild_id: Uuid,
+        event: ServerEvent,
+    },
+    /// An event of the voice room `channel_id` (participants, media state,
+    /// signalling, departures): written only if this socket still owns a
+    /// peer in that room **and** its authorization for the room is current.
+    /// Build it with [`Self::voice`].
+    Voice {
+        channel_id: Uuid,
+        event: ServerEvent,
+    },
+    /// An admin event: written only while the socket's admin subscription
+    /// holds at the current access epoch.
+    Admin(ServerEvent),
     Ping,
     /// Send a Close frame with this code and reason, then stop the sender task.
     Close {
         code: u16,
         reason: &'static str,
     },
+}
+
+impl OutboundMsg {
+    /// An event of the voice room `channel_id` for one of its peers.
+    ///
+    /// Every room event is fenced, departures (`voice_user_left`,
+    /// `screen_share_stopped`, `webcam_stopped`) included: they say who was
+    /// in the room. What a socket is told about its **own** removal
+    /// (`voice_removed`) and errors answering its own requests
+    /// (`voice_error`) are plain [`Self::Event`]s.
+    #[must_use]
+    pub const fn voice(channel_id: Uuid, event: ServerEvent) -> Self {
+        Self::Voice { channel_id, event }
+    }
 }
 
 /// Redis pub/sub channels.

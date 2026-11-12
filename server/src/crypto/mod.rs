@@ -149,6 +149,10 @@ pub struct BackupStatusResponse {
 /// Prevents denial-of-service attacks by limiting the amount of work per request.
 const MAX_PREKEYS_PER_UPLOAD: usize = 100;
 
+/// Body limit of `POST /api/keys/backup`: base64 of the 1 MiB ciphertext cap
+/// plus the JSON around it.
+const KEY_BACKUP_BODY_LIMIT: usize = 2 * 1024 * 1024;
+
 /// Maximum number of devices a single user can register.
 /// Prevents ghost device attacks where an attacker registers many devices
 /// to intercept E2EE messages.
@@ -683,7 +687,14 @@ pub async fn get_backup_status(
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/upload", post(upload_keys))
-        .route("/backup", get(get_backup).post(upload_backup))
+        // The backup ciphertext may be 1 MiB, base64 in JSON: above the
+        // server-wide 1 MiB default.
+        .route(
+            "/backup",
+            get(get_backup)
+                .post(upload_backup)
+                .layer(axum::extract::DefaultBodyLimit::max(KEY_BACKUP_BODY_LIMIT)),
+        )
         .route("/backup/status", get(get_backup_status))
         .route("/devices", get(get_own_devices))
 }

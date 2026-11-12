@@ -2,11 +2,16 @@
 //!
 //! Self-hosted voice and text chat platform backend.
 
-use std::net::SocketAddr;
-
 use anyhow::Result;
 use tracing::info;
 use vc_server::{api, chat, config, db, email, voice};
+
+/// Upper bound for draining the telemetry ingestion workers on shutdown.
+const INGESTION_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Upper bound for the aborted background tasks to end, and (separately) for
+/// the database pool to close, on shutdown.
+const EXIT_STEP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -169,6 +174,15 @@ async fn main() -> Result<()> {
         match limiter.init().await {
             Ok(()) => {
                 info!("Screen share limiter initialized");
+                // Single node: voice rooms start empty, so every slot counter
+                // left by the previous process is stale.
+                match limiter.clear_all().await {
+                    Ok(n) => info!(cleared = n, "Cleared stale screen share slots"),
+                    Err(e) => tracing::warn!(
+                        error = %e,
+                        "Failed to clear stale screen share slots"
+                    ),
+                }
                 Some(limiter)
             }
             Err(e) => {
@@ -439,6 +453,9 @@ async fn main() -> Result<()> {
 
     // Minute sweep of the login state machines (notice outbox, timers).
     let auth_timers_handle = vc_server::auth::timers::spawn(state.clone());
+    // Deletes the files of removed messages in the background; stopped in
+    // the shutdown sequence (`shutdown::serve`), under its deadline.
+    let storage_cleanup = vc_server::chat::storage_cleanup::spawn(&state);
     // Committed session ends close their sockets (DC5).
     let session_end_listener_handle = vc_server::auth::revocation::spawn_session_end_listener(
         state.db.clone(),
@@ -450,6 +467,20 @@ async fn main() -> Result<()> {
         .sfu
         .spawn_stale_peer_reaper(state.db.clone(), state.screen_share_limiter.clone());
 
+    // Kept for the shutdown of the open WebSockets (the router owns `state`).
+    let mut socket_drain = vc_server::shutdown::SocketDrain::from_state(&state);
+    socket_drain.storage_cleanup = Some(storage_cleanup);
+    let ws_connections = state.ws_connections.clone();
+    if ws_connections.proxy_warning_applies(&config.bind_address) {
+        tracing::warn!(
+            per_ip = ws_connections.limits().per_ip,
+            "WebSocket connections are capped per client address, and no trusted reverse \
+             proxy is configured (RATE_LIMIT_TRUSTED_PROXIES). Behind a reverse proxy every \
+             client then counts as the proxy's address and the cap applies to the whole server: \
+             set RATE_LIMIT_TRUSTED_PROXIES to the proxy's address"
+        );
+    }
+
     // Build router
     let app = api::create_router(state);
 
@@ -457,26 +488,23 @@ async fn main() -> Result<()> {
     let listener = tokio::net::TcpListener::bind(&config.bind_address).await?;
     info!(address = %config.bind_address, "Server listening");
 
-    // Graceful shutdown handler with proper cleanup
-    let shutdown_signal = async {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("Failed to install CTRL+C signal handler");
-        info!("Received shutdown signal, initiating graceful shutdown...");
-    };
-
-    axum::serve(
+    // Graceful shutdown on Ctrl-C or SIGTERM (container stop): the sockets
+    // are told first, then voice rooms, sockets and HTTP requests drain
+    // concurrently under one bound of 5 s from the signal (`shutdown::serve`).
+    // Everything below is bounded too and waits for no request handler.
+    vc_server::shutdown::serve(
         listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
+        app,
+        socket_drain,
+        vc_server::shutdown::shutdown_signal(),
     )
-    .with_graceful_shutdown(shutdown_signal)
     .await?;
 
     // =========================================================================
     // Graceful shutdown: clean up background tasks
     // =========================================================================
 
-    info!("HTTP server stopped, cleaning up background tasks...");
+    info!("Cleaning up background tasks...");
 
     // 1. Abort non-draining background tasks
     voice_cleanup_handle.abort();
@@ -491,35 +519,68 @@ async fn main() -> Result<()> {
     cpu_sampler_handle.abort();
     custom_status_sweep_handle.abort();
     presence_sweep_handle.abort();
-    let _ = voice_cleanup_handle.await;
-    let _ = stale_peer_reaper_handle.await;
-    let _ = db_cleanup_handle.await;
-    let _ = webhook_worker_handle.await;
-    let _ = rtp_flush_handle.await;
-    let _ = retention_handle.await;
-    let _ = voice_health_handle.await;
-    let _ = cpu_sampler_handle.await;
-    let _ = custom_status_sweep_handle.await;
-    let _ = presence_sweep_handle.await;
-    info!("Background cleanup tasks stopped");
+    let stopped = tokio::time::timeout(EXIT_STEP_TIMEOUT, async {
+        let _ = voice_cleanup_handle.await;
+        let _ = stale_peer_reaper_handle.await;
+        let _ = db_cleanup_handle.await;
+        let _ = webhook_worker_handle.await;
+        let _ = rtp_flush_handle.await;
+        let _ = retention_handle.await;
+        let _ = voice_health_handle.await;
+        let _ = cpu_sampler_handle.await;
+        let _ = custom_status_sweep_handle.await;
+        let _ = presence_sweep_handle.await;
+    })
+    .await;
+    if stopped.is_ok() {
+        info!("Background cleanup tasks stopped");
+    } else {
+        tracing::warn!("Background tasks did not stop in time; proceeding");
+    }
 
     // 2. Flush and shut down OTel providers. Dropping these closes the channel senders
     //    (NativeLogLayer, NativeSpanProcessor, NativeMetricExporter), which lets the ingestion
-    //    workers drain remaining items and terminate naturally.
+    //    workers drain remaining items and terminate naturally. Bounded by the SDK: each provider
+    //    gives its exporter 5 s (only relevant with OTLP export enabled).
     drop(otel_guard);
     drop(meter_provider);
     info!("OTel providers shut down, draining ingestion channels...");
 
-    // 3. Wait for ingestion workers to drain (no abort — they exit when their channel senders are
-    //    dropped above).
-    let _ = ingestion_handles.log_handle.await;
-    let _ = ingestion_handles.span_handle.await;
-    let _ = ingestion_handles.metric_handle.await;
-    info!("Ingestion workers drained");
+    // 3. Let the ingestion workers write what is buffered and stop. Their channels never close on
+    //    their own (the global tracing subscriber keeps the log sender alive), so they are told to
+    //    stop; the wait stays bounded so the process stops within the container's grace period.
+    ingestion_handles.stop.cancel();
+    let mut log_handle = ingestion_handles.log_handle;
+    let mut span_handle = ingestion_handles.span_handle;
+    let mut metric_handle = ingestion_handles.metric_handle;
+    let drained = tokio::time::timeout(INGESTION_DRAIN_TIMEOUT, async {
+        let _ = (&mut log_handle).await;
+        let _ = (&mut span_handle).await;
+        let _ = (&mut metric_handle).await;
+    })
+    .await;
+    if drained.is_ok() {
+        info!("Ingestion workers drained");
+    } else {
+        log_handle.abort();
+        span_handle.abort();
+        metric_handle.abort();
+        tracing::warn!(
+            timeout = ?INGESTION_DRAIN_TIMEOUT,
+            "Ingestion workers did not drain in time; stopped"
+        );
+    }
 
-    // 4. Close database pool gracefully
-    db_pool.close().await;
-    info!("Database pool closed");
+    // 4. Close database pool gracefully. `close` waits for every connection that is checked out; a
+    //    request that was still running at the shutdown bound must not hold the exit.
+    if tokio::time::timeout(EXIT_STEP_TIMEOUT, db_pool.close())
+        .await
+        .is_ok()
+    {
+        info!("Database pool closed");
+    } else {
+        tracing::warn!("Database pool still in use; proceeding");
+    }
 
     // 5. Close Redis connection
     drop(redis);

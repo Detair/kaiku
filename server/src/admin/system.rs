@@ -259,7 +259,17 @@ pub async fn elevate_session(
         Some(&client_ip),
     )
     .await?;
-    tx.commit().await?;
+    // Gaining the elevation moves the admin's access epoch like losing it
+    // does: a re-check that read "not elevated" just before is discarded
+    // instead of ending the admin event subscription of this session.
+    let ((), bumped) = crate::ws::access::bump_after(
+        crate::ws::access::AccessChange::AdminAccessChanged {
+            user_id: admin.user_id,
+        },
+        tx.commit(),
+    )
+    .await?;
+    crate::ws::access::access_changed(&state, bumped).await;
     super::cache_elevated_status(&state.redis, session_id, true, ELEVATION_MINUTES * 60).await;
 
     Ok(Json(ElevateResponse {
@@ -295,9 +305,23 @@ pub async fn de_elevate_session(
 
     // De-elevate only the caller's session (C24: an elevation belongs to one
     // session); other sessions of the same admin keep theirs.
+    // The admin's sockets are fenced right after the commit (`bump_after`):
+    // their admin flag is re-checked against the database, not the cache
+    // updated below.
     let removed_sessions = match auth.session_id {
         Some(session_id) => {
-            queries::delete_elevated_session(&state.db, admin.user_id, session_id).await?
+            let (removed, bumped) = crate::ws::access::bump_after_if(
+                Some(crate::ws::access::AccessChange::AdminAccessChanged {
+                    user_id: admin.user_id,
+                }),
+                queries::delete_elevated_session(&state.db, admin.user_id, session_id),
+                |removed: &Vec<_>| !removed.is_empty(),
+            )
+            .await?;
+            if let Some(bumped) = bumped {
+                crate::ws::access::access_changed(&state, bumped).await;
+            }
+            removed
         }
         None => Vec::new(),
     };
