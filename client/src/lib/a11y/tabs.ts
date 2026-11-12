@@ -11,7 +11,7 @@
  * `panelProps()` on the content area.
  */
 
-import { createUniqueId } from "solid-js";
+import { createEffect, createUniqueId, on } from "solid-js";
 
 export interface TabsOptions<T extends string> {
   /** Visible tabs in order. */
@@ -30,7 +30,11 @@ export function createTabs<T extends string>(opts: TabsOptions<T>) {
   const panelId = `${prefix}-panel`;
   const vertical = opts.orientation === "vertical";
 
+  const focusTab = (id: T) => document.getElementById(tabId(id))?.focus();
+
   const onKeyDown = (e: KeyboardEvent) => {
+    // Alt+Left (browser back), Ctrl+Home and the like are not tab keys (K4).
+    if (e.altKey || e.ctrlKey || e.metaKey) return;
     const ids = opts.ids();
     if (ids.length === 0) return;
     const focused = (e.target as HTMLElement | null)?.closest<HTMLElement>("[role=tab]");
@@ -46,9 +50,31 @@ export function createTabs<T extends string>(opts: TabsOptions<T>) {
     else return;
     e.preventDefault();
     const id = ids[to];
-    document.getElementById(tabId(id))?.focus();
+    // Select first, move focus after: if the owner refuses or asks first
+    // (unsaved changes), focus stays on the open tab and returns there when
+    // the question is cancelled (K3).
     opts.onSelect(id);
+    if (opts.active() === id) focusTab(id);
   };
+
+  // A tab that opens later (after "Discard changes") takes focus from the
+  // tab that was focused, so focus is never on an unselected tab.
+  createEffect(
+    on(
+      () => opts.active(),
+      (id) => {
+        // After the current update: a closing question gives focus back to
+        // its opener first, then the new tab takes it over.
+        queueMicrotask(() => {
+          const focused = document.activeElement;
+          if (focused?.getAttribute("role") === "tab" && focused.id.startsWith(`${prefix}-tab-`)) {
+            if (focused.id !== tabId(id)) focusTab(id);
+          }
+        });
+      },
+      { defer: true },
+    ),
+  );
 
   return {
     listProps: {

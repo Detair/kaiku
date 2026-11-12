@@ -147,6 +147,28 @@ describe("GuildSettingsModal", () => {
     expect(screen.getByRole("dialog", { name: "Familie" })).toBeTruthy();
   });
 
+  it("arrow keys ask too; after Cancel focus is back on the open tab, after Discard on the new one (K3)", async () => {
+    becomeOwner();
+    render(() => <GuildSettingsModal guildId="g1" onClose={vi.fn()} />);
+    const filter = screen.getByRole("tab", { name: "Word filter" });
+    fireEvent.click(filter);
+    fireEvent.click(screen.getByRole("button", { name: "make a change" }));
+    filter.focus();
+    fireEvent.keyDown(filter, { key: "ArrowDown" });
+    expect(screen.getByTestId("guild-settings-unsaved")).toBeTruthy();
+    expect(filter.getAttribute("aria-selected")).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(document.activeElement).toBe(filter));
+    expect(filter.getAttribute("aria-selected")).toBe("true");
+
+    // Home: the first tab (General); other tabs are not mocked here.
+    fireEvent.keyDown(filter, { key: "Home" });
+    fireEvent.click(screen.getByRole("button", { name: "Discard changes" }));
+    const general = screen.getByRole("tab", { name: "General" });
+    await waitFor(() => expect(document.activeElement).toBe(general));
+    expect(general.getAttribute("aria-selected")).toBe("true");
+  });
+
   it("asks before switching tabs with unsaved changes, and switches only after discarding (W3)", async () => {
     becomeOwner();
     render(() => <GuildSettingsModal guildId="g1" onClose={vi.fn()} />);

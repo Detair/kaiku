@@ -414,6 +414,33 @@ describe("tabs (KONTO-10)", () => {
     expect(list.contains(document.activeElement)).toBe(true);
   });
 
+  it("keys with Alt, Ctrl or Meta are left to the browser (K4)", () => {
+    document.body.innerHTML = "";
+    render(() => <SettingsModal onClose={() => {}} />);
+    const account = screen.getByRole("tab", { name: "My Account" });
+    account.focus();
+    for (const mod of [{ altKey: true }, { ctrlKey: true }, { metaKey: true }]) {
+      fireEvent.keyDown(account, { key: "ArrowDown", ...mod });
+      fireEvent.keyDown(account, { key: "End", ...mod });
+    }
+    expect(account.getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("channel settings: arrow keys switch between overview and permissions", () => {
+    document.body.innerHTML = "";
+    render(() => <ChannelSettingsModal channelId="c1" guildId="g1" onClose={() => {}} />);
+    const tabs = screen.queryAllByRole("tab");
+    expect(tabs.length).toBeGreaterThanOrEqual(1);
+    expect(tabs[0].getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("tabpanel", { name: tabs[0].textContent!.trim() })).toBeTruthy();
+    if (tabs.length > 1) {
+      tabs[0].focus();
+      fireEvent.keyDown(tabs[0], { key: "ArrowRight" });
+      expect(tabs[1].getAttribute("aria-selected")).toBe("true");
+      expect(document.activeElement).toBe(tabs[1]);
+    }
+  });
+
   it("server settings: tabs with arrow keys, advanced tabs say so", () => {
     document.body.innerHTML = "";
     render(() => <GuildSettingsModal guildId="g1" onClose={() => {}} />);
