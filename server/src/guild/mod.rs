@@ -60,7 +60,11 @@ pub fn router(state: &AppState) -> Router<AppState> {
             post(settings::dismiss_discovery_prompt),
         )
         // Banner upload
-        .route("/{id}/banner", post(settings::upload_guild_banner))
+        .route(
+            "/{id}/banner",
+            post(settings::upload_guild_banner)
+                .layer(axum::extract::DefaultBodyLimit::max(state.config.max_upload_size)),
+        )
         // Role routes
         .route(
             "/{id}/roles",
@@ -138,7 +142,7 @@ pub fn router(state: &AppState) -> Router<AppState> {
             pages::guild_page_categories_router(),
         )
         // Emoji routes
-        .nest("/{id}/emojis", emojis::router())
+        .nest("/{id}/emojis", emojis::router(state.config.max_upload_size))
 }
 
 /// Create the invite join router (separate for public access pattern)

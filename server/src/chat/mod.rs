@@ -27,6 +27,7 @@ pub mod types;
 pub mod unread;
 pub(crate) mod uploads;
 
+use axum::extract::DefaultBodyLimit;
 use axum::routing::{delete, get, patch, post, put};
 use axum::Router;
 pub use error::ChatError;
@@ -93,7 +94,10 @@ pub fn forum_router(state: &AppState) -> Router<AppState> {
 }
 
 /// Create messages router (protected routes).
-pub fn messages_router() -> Router<AppState> {
+///
+/// `max_upload_size` is the body limit of the two file upload routes; every
+/// other route keeps the server-wide default (`api::DEFAULT_BODY_LIMIT`).
+pub fn messages_router(max_upload_size: usize) -> Router<AppState> {
     Router::new()
         .route(
             "/channel/{channel_id}",
@@ -101,12 +105,16 @@ pub fn messages_router() -> Router<AppState> {
         )
         .route(
             "/channel/{channel_id}/upload",
-            post(uploads::upload_message_with_file),
+            post(uploads::upload_message_with_file)
+                .layer(DefaultBodyLimit::max(max_upload_size)),
         )
         .route("/{id}", patch(messages::update).delete(messages::delete))
         .route("/{parent_id}/thread", get(messages::list_thread_replies))
         .route("/{parent_id}/thread/read", post(messages::mark_thread_read))
-        .route("/upload", post(uploads::upload_file))
+        .route(
+            "/upload",
+            post(uploads::upload_file).layer(DefaultBodyLimit::max(max_upload_size)),
+        )
         .route("/attachments/{id}", get(uploads::get_attachment))
         .route("/attachments/{id}/url", get(uploads::get_signed_url))
 }
@@ -117,8 +125,9 @@ pub fn messages_public_router() -> Router<AppState> {
     Router::new().route("/attachments/{id}/download", get(uploads::download))
 }
 
-/// Create DM (Direct Message) router.
-pub fn dm_router() -> Router<AppState> {
+/// Create DM (Direct Message) router (`max_upload_size`: body limit of the
+/// icon upload).
+pub fn dm_router(max_upload_size: usize) -> Router<AppState> {
     Router::new()
         .route("/", get(dm::list_dms).post(dm::create_dm))
         .route("/read-all", post(dm::mark_all_dms_read))
@@ -126,5 +135,10 @@ pub fn dm_router() -> Router<AppState> {
         .route("/{id}/leave", post(dm::leave_dm))
         .route("/{id}/name", patch(dm::update_dm_name))
         .route("/{id}/read", post(dm::mark_as_read))
-        .route("/{id}/icon", get(dm::get_dm_icon).post(dm::upload_dm_icon))
+        .route(
+            "/{id}/icon",
+            get(dm::get_dm_icon)
+                .post(dm::upload_dm_icon)
+                .layer(DefaultBodyLimit::max(max_upload_size)),
+        )
 }

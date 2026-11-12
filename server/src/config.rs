@@ -111,7 +111,9 @@ pub struct Config {
 
     /// Maximum file upload size in bytes (default: 50MB)
     ///
-    /// Used by `DefaultBodyLimit` middleware as final safety net for all uploads.
+    /// Request body limit (`DefaultBodyLimit`) of the routes that accept files
+    /// (message uploads, DM icon, guild banner, emoji); all other routes use
+    /// `api::DEFAULT_BODY_LIMIT` (1 MiB).
     /// Should be ≥ all specific upload limits (avatar, emoji).
     pub max_upload_size: usize,
 

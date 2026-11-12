@@ -98,6 +98,20 @@ fn validate_file_content(data: &[u8], claimed_mime: &str) -> Result<String, Chat
     })
 }
 
+/// Most attachments one message can carry.
+pub const MAX_ATTACHMENTS_PER_MESSAGE: i64 = 10;
+
+/// Number of attachments on `message_id`.
+async fn attachment_count<'e, E: sqlx::PgExecutor<'e>>(
+    exec: E,
+    message_id: Uuid,
+) -> sqlx::Result<i64> {
+    sqlx::query_scalar("SELECT COUNT(*) FROM file_attachments WHERE message_id = $1")
+        .bind(message_id)
+        .fetch_one(exec)
+        .await
+}
+
 // ============================================================================
 // Handlers
 // ============================================================================
@@ -125,9 +139,6 @@ pub async fn upload_file(
     auth_user: AuthUser,
     mut multipart: Multipart,
 ) -> Result<(StatusCode, Json<UploadedFile>), ChatError> {
-    // Check S3 is configured
-    let s3 = state.s3.as_ref().ok_or(ChatError::StorageNotConfigured)?;
-
     let mut file_data: Option<Vec<u8>> = None;
     let mut filename: Option<String> = None;
     let mut content_type: Option<String> = None;
@@ -208,15 +219,40 @@ pub async fn upload_file(
     // Validate actual file content matches claimed MIME type (magic byte check)
     let content_type = validate_file_content(&file_data, &content_type)?;
 
-    // Verify message exists and user has access
+    // Verify message exists (and is not deleted)
     let message = db::find_message_by_id(&state.db, message_id)
         .await?
+        .filter(|m| m.deleted_at.is_none())
         .ok_or(ChatError::MessageNotFound)?;
 
     // Only message author can attach files (anonymized messages cannot have files added)
     if message.user_id != Some(auth_user.id) {
         return Err(ChatError::Forbidden);
     }
+
+    // Same rules as sending a message with a file, checked now (the author
+    // may have lost access, `ATTACH_FILES` or been blocked since).
+    super::send::authorize_send(
+        &state,
+        auth_user.id,
+        message.channel_id,
+        &super::send::SendIntent {
+            content: "",
+            encrypted: false,
+            has_attachment: true,
+        },
+    )
+    .await?;
+
+    // Early refusal; re-checked under the message lock when storing.
+    if attachment_count(&state.db, message_id).await? >= MAX_ATTACHMENTS_PER_MESSAGE {
+        return Err(ChatError::TooManyAttachments {
+            max: MAX_ATTACHMENTS_PER_MESSAGE,
+        });
+    }
+
+    // Check S3 is configured
+    let s3 = state.s3.as_ref().ok_or(ChatError::StorageNotConfigured)?;
 
     // Generate S3 key
     let file_id = Uuid::now_v7();
@@ -249,23 +285,43 @@ pub async fn upload_file(
         return Err(ChatError::Storage(e.to_string()));
     }
 
-    // Save metadata to database
-    let attachment = db::create_file_attachment(
-        &state.db,
-        message_id,
-        &safe_filename,
-        &content_type,
-        file_size,
-        &s3_key,
-        media.width,
-        media.height,
-        media.blurhash.as_deref(),
-        media.thumb_key.as_deref(),
-        media.medium_key.as_deref(),
-        media.processing_status,
-    )
-    .await
-    .map_err(|e| {
+    // Save metadata to database: lock the message, re-check the cap.
+    let stored = async {
+        let mut tx = state.db.begin().await?;
+        let live: Option<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM messages WHERE id = $1 AND deleted_at IS NULL FOR UPDATE",
+        )
+        .bind(message_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if live.is_none() {
+            return Err(ChatError::MessageNotFound);
+        }
+        if attachment_count(&mut *tx, message_id).await? >= MAX_ATTACHMENTS_PER_MESSAGE {
+            return Err(ChatError::TooManyAttachments {
+                max: MAX_ATTACHMENTS_PER_MESSAGE,
+            });
+        }
+        let attachment = db::create_file_attachment(
+            &mut *tx,
+            message_id,
+            &safe_filename,
+            &content_type,
+            file_size,
+            &s3_key,
+            media.width,
+            media.height,
+            media.blurhash.as_deref(),
+            media.thumb_key.as_deref(),
+            media.medium_key.as_deref(),
+            media.processing_status,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(attachment)
+    }
+    .await;
+    let attachment = stored.map_err(|e| {
         // Clean up orphaned S3 objects (original + variants)
         let mut keys = vec![s3_key.clone()];
         if let Some(k) = media.thumb_key.clone() {
@@ -275,9 +331,9 @@ pub async fn upload_file(
             keys.push(k);
         }
         cleanup_s3_objects(s3.clone(), keys);
-        tracing::error!(
+        tracing::warn!(
             message_id = %message_id,
-            "Failed to create attachment record, cleaning up S3 objects: {e}"
+            "Attachment not stored, cleaning up S3 objects: {e}"
         );
         e
     })?;

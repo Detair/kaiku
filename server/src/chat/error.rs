@@ -66,6 +66,9 @@ pub enum ChatError {
     #[error("No file provided")]
     NoFile,
 
+    #[error("A message can carry at most {max} files")]
+    TooManyAttachments { max: i64 },
+
     #[error("Invalid filename")]
     InvalidFilename,
 
@@ -140,6 +143,11 @@ impl IntoResponse for ChatError {
                 self.to_string(),
             ),
             Self::NoFile => (StatusCode::BAD_REQUEST, "NO_FILE", self.to_string()),
+            Self::TooManyAttachments { .. } => (
+                StatusCode::BAD_REQUEST,
+                "TOO_MANY_ATTACHMENTS",
+                self.to_string(),
+            ),
             Self::InvalidFilename => (
                 StatusCode::BAD_REQUEST,
                 "INVALID_FILENAME",

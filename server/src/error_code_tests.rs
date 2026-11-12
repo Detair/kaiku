@@ -236,6 +236,7 @@ async fn chat_codes_are_upper_snake() {
         ChatError::FileTooLarge { max_size: 1 },
         ChatError::InvalidMimeType { mime_type: s() },
         ChatError::NoFile,
+        ChatError::TooManyAttachments { max: 10 },
         ChatError::InvalidFilename,
         ChatError::Storage(s()),
         ChatError::RoleNotFound,

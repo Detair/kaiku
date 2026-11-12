@@ -206,7 +206,8 @@ pub fn create_router(state: AppState) -> Router {
         }
     };
 
-    // Get max upload size from config (default 50MB)
+    // Body limit of the routes that accept files (default 50MB); every other
+    // route gets DEFAULT_BODY_LIMIT.
     let max_upload_size = state.config.max_upload_size;
 
     // Social routes with Social rate limit category (20 req/60s)
@@ -224,7 +225,7 @@ pub fn create_router(state: AppState) -> Router {
     // Other API routes with Write rate limit category (30 req/60s)
     let api_routes = Router::new()
         .nest("/api/channels", chat::channels_router(&state))
-        .nest("/api/messages", chat::messages_router())
+        .nest("/api/messages", chat::messages_router(max_upload_size))
         .nest("/api/forum", chat::forum_router(&state))
         .nest("/api/guilds", guild::router(&state))
         .nest(
@@ -233,7 +234,7 @@ pub fn create_router(state: AppState) -> Router {
         )
         .nest("/api/invites", guild::invite_router())
         .nest("/api/pages", pages::platform_pages_router())
-        .nest("/api/dm", chat::dm_router())
+        .nest("/api/dm", chat::dm_router(max_upload_size))
         .nest("/api/dm", voice::call_handlers::call_router())
         .nest("/api/voice", voice::router())
         .route(
@@ -425,11 +426,19 @@ pub fn create_router(state: AppState) -> Router {
         // Request ID for tracing correlation
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
-        // Increase body limit for file uploads (default is 2MB)
-        .layer(DefaultBodyLimit::max(max_upload_size))
+        // Small default body limit; the file upload routes (messages, DM
+        // icon, guild banner, emoji, avatar) and the key backup set their own.
+        .layer(DefaultBodyLimit::max(DEFAULT_BODY_LIMIT))
         // State
         .with_state(state)
 }
+
+/// Request body limit of every route that does not set its own (1 MiB).
+///
+/// Routes that accept files raise it to `MAX_UPLOAD_SIZE` (`max_upload_size`)
+/// or their own limit: message uploads, DM icon, guild banner, emoji,
+/// avatar (`max_avatar_size`) and the encrypted key backup (2 MiB).
+pub const DEFAULT_BODY_LIMIT: usize = 1024 * 1024;
 
 /// Health check response.
 #[derive(Serialize, utoipa::ToSchema)]

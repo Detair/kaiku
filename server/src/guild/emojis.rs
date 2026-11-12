@@ -128,9 +128,16 @@ async fn check_guild_membership(
 // Router
 // ============================================================================
 
-pub fn router() -> Router<AppState> {
+///
+/// `max_upload_size` is the body limit of emoji creation (multipart).
+pub fn router(max_upload_size: usize) -> Router<AppState> {
     Router::new()
-        .route("/", get(list_emojis).post(create_emoji))
+        .route(
+            "/",
+            get(list_emojis)
+                .post(create_emoji)
+                .layer(axum::extract::DefaultBodyLimit::max(max_upload_size)),
+        )
         .route(
             "/{emoji_id}",
             get(get_emoji).patch(update_emoji).delete(delete_emoji),
