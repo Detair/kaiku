@@ -657,9 +657,10 @@ pub async fn bot_channel_permissions(
     )))
 }
 
-/// The subset of `bot_user_ids` that are installed in `guild_id` and have
-/// `VIEW_CHANNEL` in `channel_id` after overrides, evaluated exactly like a
-/// member's access. Three queries regardless of the number of bots.
+/// Installed bots among `bot_user_ids` that can view `channel_id`.
+///
+/// `VIEW_CHANNEL` after overrides, evaluated exactly like a member's access.
+/// Four queries regardless of the number of bots.
 #[tracing::instrument(skip(pool, bot_user_ids), fields(bots = bot_user_ids.len()))]
 pub async fn bots_viewing_channel(
     pool: &PgPool,
