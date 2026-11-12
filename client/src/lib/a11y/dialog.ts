@@ -83,10 +83,12 @@ function unregister(d: OpenDialog) {
 export function createDialog(opts: DialogOptions): DialogHandle {
   const titleId = `dialog-title-${createUniqueId()}`;
   // Component setup runs while the opener (button, menu item) still has focus.
+  // Focus on the page itself is no opener: a window whose code loads on
+  // demand mounts after its menu item is gone, and "back to the page" would
+  // leave the focus nowhere. Closing then uses the fallback below.
+  const focused = typeof document !== "undefined" ? document.activeElement : null;
   const opener =
-    typeof document !== "undefined" && document.activeElement instanceof HTMLElement
-      ? document.activeElement
-      : null;
+    focused instanceof HTMLElement && focused !== document.body ? focused : null;
   let el: HTMLElement | undefined;
 
   const handleKey = (e: KeyboardEvent) => {

@@ -81,6 +81,20 @@ describe("SearchPanel", () => {
     opener.remove();
   });
 
+  it("leaves focus to the dialog in the global search", () => {
+    const opener = document.createElement("button");
+    document.body.appendChild(opener);
+    opener.focus();
+    const back = vi.spyOn(opener, "focus");
+    const view = render(() => <SearchPanel mode="global" onClose={vi.fn()} />);
+    // Rendered bare, without its dialog: the panel neither takes the focus
+    // nor hands it back.
+    expect(document.activeElement).toBe(opener);
+    view.unmount();
+    expect(back).not.toHaveBeenCalled();
+    opener.remove();
+  });
+
   it("leaves the focus alone on close when it has moved elsewhere", () => {
     const opener = document.createElement("button");
     const elsewhere = document.createElement("input");

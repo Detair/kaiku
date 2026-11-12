@@ -46,6 +46,7 @@ import { showToast } from "@/components/ui/Toast";
 import type { DiscoverableGuild } from "@/lib/types";
 import { discoverGuilds, joinDiscoverable } from "@/lib/tauri";
 import { createDialog } from "@/lib/a11y/dialog";
+import { createModalLayer, MODAL_LAYER } from "@/lib/a11y/modalLayer";
 import { isGuildDiscoveryOff } from "@/stores/serverFeatures";
 import { t } from "@/i18n";
 import { formatNumber } from "@/i18n/format";
@@ -70,6 +71,10 @@ const OnboardingDialog: Component = () => {
     onClose: () => {},
     initialFocus: () => displayNameRef,
   });
+  // The tour loads on demand and can appear after another window (a page to
+  // accept). It takes the keyboard when it opens, so it has to be in front
+  // as well: the shared layer puts it above whatever is already open.
+  const layer = createModalLayer(MODAL_LAYER.dialog);
 
   // The dialog is mounted only while the wizard is shown, so initial values
   // here are the (re)start state. Do not re-initialise from an effect: it would
@@ -282,7 +287,8 @@ const OnboardingDialog: Component = () => {
 
   return (
     <div
-      class="fixed inset-0 bg-black/80 flex items-center justify-center z-50"
+      class="fixed inset-0 bg-black/80 flex items-center justify-center"
+      style={{ "z-index": layer }}
       data-testid="onboarding-wizard"
     >
       <div
