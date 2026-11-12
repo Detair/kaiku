@@ -131,13 +131,13 @@ auth.user = Some(user);
 Commands can emit events to frontend:
 
 ```rust
-app.emit("voice:state_change", "Connected")?;
+app.emit("voice:session_state", SessionStateEvent { epoch, state })?;
 ```
 
 Frontend listens:
 ```typescript
 import { listen } from '@tauri-apps/api/event';
-listen('voice:state_change', (event) => console.log(event.payload));
+listen('voice:session_state', (event) => console.log(event.payload));
 ```
 
 ## Module Details
@@ -176,8 +176,8 @@ Failures with a server code are returned as the bare code (`OIDC_CLIENT_OUTDATED
 
 **Key Commands:**
 - `begin_voice_session()`: next voice session epoch (native counter, shared by reloads and windows); allocating one cancels nothing
-- `join_voice(channel_id, epoch?)`: Initialize WebRTC + Audio, send `VoiceJoin` event. Cancelled (`VOICE_JOIN_CANCELLED`) once the leave of its session raised the floor (`VoiceEpochGate`); rechecked after the socket lock and before each send. Emits `voice:session_state {epoch, state}` (and the older `voice:state_change`)
-- `leave_voice(silent?, epoch?)`: Stop audio, disconnect WebRTC, send `VoiceLeave` event (not when `silent`). `epoch` names the session to end: its join (and older ones) is cancelled, and a newer native session is left alone (`leave_applies`); without `epoch` everything ends
+- `join_voice(channel_id, epoch?)`: Initialize WebRTC + Audio, send `VoiceJoin` event. Cancelled (`VOICE_JOIN_CANCELLED`) once the leave of its session raised the floor (`VoiceEpochGate`); rechecked after the socket lock and before each send. Emits `voice:session_state {epoch, state}`
+- `leave_voice(silent?, epoch?)`: Stop audio, disconnect WebRTC, send `VoiceLeave` event (not when `silent`). `epoch` names the session to end: its join (and older ones) is cancelled, and a newer native session is left alone (`leave_applies`); without `epoch` everything ends. The teardown runs as its own task (it completes even if the window stops waiting), each step bounded to 3 s, ordered with later joins by the voice lock
 - `handle_voice_offer(sdp)`: Process server SDP offer, return SDP answer
 - `handle_voice_ice_candidate(candidate)`: Add ICE candidate from server
 - `set_mute(muted)` / `set_deafen(deafened)`: Audio state

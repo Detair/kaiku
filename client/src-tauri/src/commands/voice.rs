@@ -21,7 +21,7 @@ use crate::audio::{
 use crate::network::{ClientEvent, WebSocketManager};
 use crate::voice::audio_mixer::AudioMixer;
 use crate::webrtc::IceServerConfig;
-use crate::{voice, AppState};
+use crate::{voice, AppState, VoiceState};
 
 #[derive(serde::Deserialize)]
 struct IceServersResponse {
@@ -165,7 +165,7 @@ pub const fn leave_applies(leave_epoch: Option<u64>, held_epoch: Option<u64>) ->
 pub struct SessionStateEvent {
     /// Epoch of the session the state belongs to (`None`: joined without one).
     pub epoch: Option<u64>,
-    /// `ConnectionState` name, as in `voice:state_change`.
+    /// `ConnectionState` name (`Connected`, `Reconnecting`, `Failed`, ...).
     pub state: String,
 }
 
@@ -353,17 +353,15 @@ pub async fn join_voice(
         .webrtc
         .set_on_state_change(move |new_state| {
             debug!("Voice connection state changed: {:?}", new_state);
-            let state = format!("{new_state:?}");
             // With the session's epoch, so the frontend can tell a late
             // state of an ended session from the one it holds now.
             let _ = app_clone.emit(
                 "voice:session_state",
                 SessionStateEvent {
                     epoch,
-                    state: state.clone(),
+                    state: format!("{new_state:?}"),
                 },
             );
-            let _ = app_clone.emit("voice:state_change", state);
         })
         .await;
 
@@ -767,10 +765,156 @@ fn sends_voice_leave(silent: Option<bool>) -> bool {
     !silent.unwrap_or(false)
 }
 
+/// Longest one step of a voice teardown may take. A step that does not
+/// finish in time is given up (logged) and the teardown goes on with the
+/// next one, so a teardown always runs to its end and never keeps the voice
+/// lock for good.
+const TEARDOWN_STEP_LIMIT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Run one teardown step, waiting at most [`TEARDOWN_STEP_LIMIT`] for it.
+async fn bounded_step<T>(
+    what: &'static str,
+    step: impl std::future::Future<Output = T>,
+) -> Option<T> {
+    if let Ok(done) = tokio::time::timeout(TEARDOWN_STEP_LIMIT, step).await {
+        Some(done)
+    } else {
+        warn!(
+            step = what,
+            "Voice teardown step did not finish in time; going on"
+        );
+        None
+    }
+}
+
+/// The native voice session as a teardown sees it (a seam for tests; the
+/// app uses [`VoiceState`]).
+trait NativeSession: Send {
+    /// Epoch of the session that holds the connection, if any.
+    fn session_epoch(&self) -> Option<u64>;
+    /// Release everything of the held session (microphone and speaker
+    /// streams, shares, webcam, peer connections), each step bounded.
+    /// Returns the channel the session was in.
+    fn release(&mut self) -> impl std::future::Future<Output = Option<String>> + Send;
+}
+
+impl NativeSession for VoiceState {
+    fn session_epoch(&self) -> Option<u64> {
+        self.session_epoch
+    }
+
+    async fn release(&mut self) -> Option<String> {
+        self.session_epoch = None;
+        let channel_id = self.channel_id.take();
+
+        // Stop all screen shares if active
+        if !self.screen_shares.is_empty() {
+            info!(
+                count = self.screen_shares.len(),
+                "Auto-stopping screen shares on voice leave"
+            );
+            let pipelines: Vec<_> = self.screen_shares.drain().collect();
+            for (stream_id, pipeline) in pipelines {
+                info!(stream_id = %stream_id, "Shutting down screen share pipeline");
+                bounded_step("screen share", pipeline.shutdown()).await;
+            }
+        }
+
+        // Stop webcam if active
+        if let Some(pipeline) = self.webcam.take() {
+            info!("Auto-stopping webcam on voice leave");
+            bounded_step("webcam", pipeline.shutdown()).await;
+        }
+
+        // Stop all video decode tasks
+        {
+            let mut tasks = self.video_tasks.lock().await;
+            if !tasks.is_empty() {
+                info!(
+                    count = tasks.len(),
+                    "Aborting video decode tasks on voice leave"
+                );
+                for handle in tasks.drain(..) {
+                    handle.abort();
+                }
+            }
+            self.active_video_count.store(0, Ordering::Relaxed);
+        }
+
+        // Drop any pending frame sinks (subscriptions whose track never arrived).
+        // Dropping the FrameBuffer closes its watch channel, which causes the
+        // emitter task in spawn_frame_emitter to exit cleanly.
+        self.video_frame_sinks.lock().await.clear();
+
+        // Stop audio and drop mixer
+        bounded_step("audio", self.audio.stop_all()).await;
+        self.audio_tx = None;
+        self.audio_mixer = None;
+        // Disconnect WebRTC. A failed or slow disconnect must not keep the
+        // rest of the session alive.
+        if let Some(Err(e)) = bounded_step("peer connections", self.webrtc.disconnect()).await {
+            warn!("WebRTC disconnect on leave failed: {e}");
+        }
+
+        // Clear receive stats AFTER disconnect: decode tasks publish until their
+        // tracks close, so clearing first would let a final publish resurrect
+        // stale entries into the next session.
+        self.connection_stats.clear();
+
+        channel_id
+    }
+}
+
+/// Tear down the native session `epoch` names. Everything happens under the
+/// voice lock, which joins take too: a join of a newer session waits until
+/// this teardown is through and then finds a clean state, and a teardown
+/// that names an older session than the held one changes nothing
+/// ([`leave_applies`]). Because every step is bounded, the lock is always
+/// released again.
+async fn teardown_session<S: NativeSession + Sync, W: VoiceSignal + Send + Sync>(
+    voice: &RwLock<Option<S>>,
+    ws: &RwLock<Option<W>>,
+    silent: Option<bool>,
+    epoch: Option<u64>,
+) -> Result<(), String> {
+    let mut voice = voice.write().await;
+    let session = voice.as_mut().ok_or("Voice not initialized")?;
+
+    if !leave_applies(epoch, session.session_epoch()) {
+        info!(
+            epoch = ?epoch,
+            held = ?session.session_epoch(),
+            "Leave names an older voice session; the newer one stays"
+        );
+        return Ok(());
+    }
+
+    let channel_id = session.release().await;
+
+    // Tell the server while the lock is still held, so the leave goes out
+    // before the `VoiceJoin` of a join that waits for the lock.
+    if let Some(channel_id) = channel_id.filter(|_| sends_voice_leave(silent)) {
+        let ws = ws.read().await;
+        if let Some(sender) = ws.as_ref() {
+            let _ = sender
+                .send_event(ClientEvent::VoiceLeave { channel_id })
+                .await;
+        }
+    }
+
+    info!("Left voice channel");
+    Ok(())
+}
+
 /// Leave a voice session. `silent: true` skips `VoiceLeave`. `epoch` names
 /// the session to end (from [`begin_voice_session`]): its join is cancelled
-/// and the native session is torn down unless a newer one holds it by now
-/// ([`leave_applies`]). Without `epoch` whatever is there ends.
+/// at once, and the native session is torn down unless a newer one holds
+/// the connection by now ([`leave_applies`]). Without `epoch` whatever is
+/// there ends.
+///
+/// The teardown runs as a task of its own: it runs to its end whether or
+/// not the window that asked for it still waits (or still exists), and it
+/// is ordered with later joins by the voice lock ([`teardown_session`]).
 #[command]
 pub async fn leave_voice(
     silent: Option<bool>,
@@ -785,87 +929,13 @@ pub async fn leave_voice(
         None => state.voice_gate.cancel_all(),
     }
 
-    let mut voice = state.voice.write().await;
-    let voice_state = voice.as_mut().ok_or("Voice not initialized")?;
-
-    if !leave_applies(epoch, voice_state.session_epoch) {
-        info!(
-            epoch = ?epoch,
-            held = ?voice_state.session_epoch,
-            "Leave names an older voice session; the newer one stays"
-        );
-        return Ok(());
-    }
-    voice_state.session_epoch = None;
-
-    let channel_id = voice_state.channel_id.take();
-
-    // Stop all screen shares if active
-    if !voice_state.screen_shares.is_empty() {
-        info!(
-            count = voice_state.screen_shares.len(),
-            "Auto-stopping screen shares on voice leave"
-        );
-        let pipelines: Vec<_> = voice_state.screen_shares.drain().collect();
-        for (stream_id, pipeline) in pipelines {
-            info!(stream_id = %stream_id, "Shutting down screen share pipeline");
-            pipeline.shutdown().await;
-        }
-    }
-
-    // Stop webcam if active
-    if let Some(pipeline) = voice_state.webcam.take() {
-        info!("Auto-stopping webcam on voice leave");
-        pipeline.shutdown().await;
-    }
-
-    // Stop all video decode tasks
-    {
-        let mut tasks = voice_state.video_tasks.lock().await;
-        if !tasks.is_empty() {
-            info!(
-                count = tasks.len(),
-                "Aborting video decode tasks on voice leave"
-            );
-            for handle in tasks.drain(..) {
-                handle.abort();
-            }
-        }
-        voice_state.active_video_count.store(0, Ordering::Relaxed);
-    }
-
-    // Drop any pending frame sinks (subscriptions whose track never arrived).
-    // Dropping the FrameBuffer closes its watch channel, which causes the
-    // emitter task in spawn_frame_emitter to exit cleanly.
-    voice_state.video_frame_sinks.lock().await.clear();
-
-    // Stop audio and drop mixer
-    voice_state.audio.stop_all().await;
-    voice_state.audio_tx = None;
-    voice_state.audio_mixer = None;
-    // Disconnect WebRTC
-    // A failed disconnect must not keep the rest of the session alive.
-    if let Err(e) = voice_state.webrtc.disconnect().await {
-        warn!("WebRTC disconnect on leave failed: {e}");
-    }
-
-    // Clear receive stats AFTER disconnect: decode tasks publish until their
-    // tracks close, so clearing first would let a final publish resurrect
-    // stale entries into the next session.
-    voice_state.connection_stats.clear();
-
-    // Send VoiceLeave to server
-    if let Some(channel_id) = channel_id.filter(|_| sends_voice_leave(silent)) {
-        let ws = state.websocket.read().await;
-        if let Some(ws_manager) = ws.as_ref() {
-            let _ = ws_manager
-                .send(ClientEvent::VoiceLeave { channel_id })
-                .await;
-        }
-    }
-
-    info!("Left voice channel");
-    Ok(())
+    let voice = state.voice.clone();
+    let websocket = state.websocket.clone();
+    tauri::async_runtime::spawn(
+        async move { teardown_session(&voice, &websocket, silent, epoch).await },
+    )
+    .await
+    .map_err(|e| format!("Voice teardown did not complete: {e}"))?
 }
 
 /// Set mute state.
@@ -1663,6 +1733,144 @@ mod tests {
             .unwrap()
             .clone();
         assert_eq!(sent, vec!["join", "leave"]);
+    }
+
+    /// A native session for the teardown tests.
+    struct FakeSession {
+        epoch: Option<u64>,
+        channel: Option<String>,
+        /// How long releasing takes.
+        release_takes: std::time::Duration,
+        log: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl NativeSession for FakeSession {
+        fn session_epoch(&self) -> Option<u64> {
+            self.epoch
+        }
+
+        async fn release(&mut self) -> Option<String> {
+            let epoch = self.epoch.take();
+            self.log
+                .lock()
+                .unwrap()
+                .push(format!("release {epoch:?} starts"));
+            bounded_step("fake", tokio::time::sleep(self.release_takes)).await;
+            self.log
+                .lock()
+                .unwrap()
+                .push(format!("release {epoch:?} done"));
+            self.channel.take()
+        }
+    }
+
+    fn fake_session(
+        epoch: u64,
+        release_takes_secs: u64,
+        log: &Arc<std::sync::Mutex<Vec<String>>>,
+    ) -> FakeSession {
+        FakeSession {
+            epoch: Some(epoch),
+            channel: Some(format!("ch-{epoch}")),
+            release_takes: std::time::Duration::from_secs(release_takes_secs),
+            log: log.clone(),
+        }
+    }
+
+    fn sent_by(ws: &RwLock<Option<FakeSignal>>) -> Vec<String> {
+        ws.try_read()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .sent
+            .lock()
+            .unwrap()
+            .clone()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_teardown_step_that_hangs_is_given_up_after_the_limit() {
+        let started = tokio::time::Instant::now();
+        assert_eq!(
+            bounded_step("hangs", std::future::pending::<u8>()).await,
+            None
+        );
+        assert_eq!(started.elapsed(), TEARDOWN_STEP_LIMIT);
+        assert_eq!(bounded_step("quick", async { 7 }).await, Some(7));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_teardown_with_a_hanging_step_still_completes_and_frees_the_lock() {
+        let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+        // Releasing would take an hour: far beyond the limit of one step.
+        let voice = Arc::new(RwLock::new(Some(fake_session(3, 3600, &log))));
+        let ws = RwLock::new(Some(FakeSignal::default()));
+
+        assert_eq!(
+            teardown_session(&voice, &ws, Some(false), Some(3)).await,
+            Ok(())
+        );
+        // The session is gone, the server was told, the lock is free again.
+        assert!(voice.try_write().is_ok());
+        assert_eq!(voice.read().await.as_ref().unwrap().epoch, None);
+        assert_eq!(sent_by(&ws), vec!["leave"]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_newer_join_waits_for_the_background_teardown_and_is_not_touched() {
+        let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let voice = Arc::new(RwLock::new(Some(fake_session(3, 2, &log))));
+        let ws = Arc::new(RwLock::new(Some(FakeSignal::default())));
+
+        // The teardown of session 3 runs on its own; nobody waits for it.
+        let teardown = tokio::spawn({
+            let voice = voice.clone();
+            let ws = ws.clone();
+            async move { teardown_session(&voice, &ws, Some(false), Some(3)).await }
+        });
+        tokio::task::yield_now().await;
+
+        // Meanwhile session 5 joins: it takes the same lock.
+        let join = tokio::spawn({
+            let voice = voice.clone();
+            let log = log.clone();
+            async move {
+                let mut held = voice.write().await;
+                log.lock().unwrap().push("join 5".into());
+                *held = Some(fake_session(5, 0, &log));
+            }
+        });
+        join.await.unwrap();
+        assert_eq!(teardown.await.unwrap(), Ok(()));
+
+        // Session 3 was released completely before session 5 was created.
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec!["release Some(3) starts", "release Some(3) done", "join 5"]
+        );
+        // A late repeat of the old leave does not touch session 5.
+        assert_eq!(
+            teardown_session(&voice, &ws, Some(false), Some(3)).await,
+            Ok(())
+        );
+        let held = voice.read().await;
+        assert_eq!(held.as_ref().unwrap().epoch, Some(5));
+        assert_eq!(held.as_ref().unwrap().channel.as_deref(), Some("ch-5"));
+        assert_eq!(log.lock().unwrap().len(), 3);
+        assert_eq!(sent_by(&ws), vec!["leave"]);
+    }
+
+    #[tokio::test]
+    async fn a_silent_teardown_tells_the_server_nothing() {
+        let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let voice = RwLock::new(Some(fake_session(4, 0, &log)));
+        let ws = RwLock::new(Some(FakeSignal::default()));
+        assert_eq!(
+            teardown_session(&voice, &ws, Some(true), Some(4)).await,
+            Ok(())
+        );
+        assert_eq!(voice.read().await.as_ref().unwrap().epoch, None);
+        assert!(sent_by(&ws).is_empty());
     }
 
     #[test]
