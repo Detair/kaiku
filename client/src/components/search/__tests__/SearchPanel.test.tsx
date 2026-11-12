@@ -38,6 +38,13 @@ beforeAll(() => {
 afterEach(cleanup);
 
 describe("SearchPanel", () => {
+  it("closes with Escape while focus is in the panel (A11Y-1)", () => {
+    const onClose = vi.fn();
+    render(() => <SearchPanel onClose={onClose} />);
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Search this server" }), { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it("filters by a person's name instead of an internal id", async () => {
     vi.useFakeTimers();
     try {

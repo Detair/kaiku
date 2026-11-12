@@ -231,7 +231,17 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
   });
 
   return (
-    <div class="absolute inset-0 z-50 flex flex-col bg-surface-layer2">
+    <div
+      class="absolute inset-0 z-50 flex flex-col bg-surface-layer2"
+      onKeyDown={(e) => {
+        // The panel over the sidebar closes with Escape too (A11Y-1); in the
+        // global search dialog the dialog handles Escape first.
+        if (e.key === "Escape" && !e.defaultPrevented) {
+          e.preventDefault();
+          props.onClose();
+        }
+      }}
+    >
       {/* Search Header */}
       <div class="flex items-center justify-between px-3 py-2 border-b border-white/10">
         <div class="relative flex-1 max-w-md">

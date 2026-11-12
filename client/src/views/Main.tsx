@@ -41,6 +41,7 @@ const ScreeningGate = lazy(
 import HomeView from "@/components/home/HomeView";
 import HomeSidebar from "@/components/home/HomeSidebar";
 import SearchPanel from "@/components/search/SearchPanel";
+import Modal from "@/components/ui/Modal";
 import KeyboardShortcutsDialog from "@/components/ui/KeyboardShortcutsDialog";
 import { LazyErrorBoundary } from "@/components/ui/LazyFallback";
 import { selectedChannel } from "@/stores/channels";
@@ -107,6 +108,12 @@ const Main: Component = () => {
     setShowPinDrawer(false);
   });
 
+  const closeGlobalSearch = () => {
+    setShowGlobalSearch(false);
+    setChannelSearchScope(false);
+    clearSearch();
+  };
+
   // Combined global keyboard shortcut handler
   const handleGlobalKeydown = (e: KeyboardEvent) => {
     // Ctrl+Shift+F → toggle global search
@@ -169,32 +176,23 @@ const Main: Component = () => {
       </Show>
 
       {/* Global Search Overlay */}
+      {/* A modal dialog (A11Y-1): Escape closes it, focus returns. */}
       <Show when={showGlobalSearch()}>
-        <div class="fixed inset-0 z-[90] flex items-start justify-center pt-[10vh]">
-          <div
-            class="absolute inset-0 bg-black/50"
-            onClick={() => {
-              setShowGlobalSearch(false);
-              setChannelSearchScope(false);
-              clearSearch();
-            }}
+        <Modal
+          onClose={closeGlobalSearch}
+          label={t("chat.search.dialogLabel")}
+          backdropClass="fixed inset-0 flex items-start justify-center pt-[10vh] px-4 bg-black/50"
+          class="relative w-[640px] max-w-full h-[70vh] rounded-xl border border-white/10 shadow-2xl overflow-hidden"
+          style={{ "background-color": "var(--color-surface-layer2)" }}
+          testId="global-search-dialog"
+        >
+          <SearchPanel
+            mode="global"
+            initialScope={channelSearchScope() ? "channel" : "all"}
+            channelId={channel()?.id}
+            onClose={closeGlobalSearch}
           />
-          <div
-            class="relative w-[640px] h-[70vh] rounded-xl border border-white/10 shadow-2xl overflow-hidden"
-            style={{"background-color":"var(--color-surface-layer2)"}}
-          >
-            <SearchPanel
-              mode="global"
-              initialScope={channelSearchScope() ? "channel" : "all"}
-              channelId={channel()?.id}
-              onClose={() => {
-                setShowGlobalSearch(false);
-                setChannelSearchScope(false);
-                clearSearch();
-              }}
-            />
-          </div>
-        </div>
+        </Modal>
       </Show>
 
       {/* Main Application Shell */}

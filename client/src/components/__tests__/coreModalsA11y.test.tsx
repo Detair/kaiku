@@ -107,8 +107,10 @@ import CreateAccountModal from "../admin/CreateAccountModal";
 import ReportModal from "../modals/ReportModal";
 import BlockConfirmModal from "../modals/BlockConfirmModal";
 import ImageLightbox from "../ui/ImageLightbox";
+import Modal from "../ui/Modal";
 import PositionedEmojiPicker from "../emoji/PositionedEmojiPicker";
 import GuildSettingsModal from "../guilds/GuildSettingsModal";
+import CreateGuildModal from "../guilds/CreateGuildModal";
 import type { JSX } from "solid-js";
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -173,7 +175,7 @@ describe("core modals expose role dialog with a label", () => {
 
   it("CreateChannelModal", () => {
     render(() => <CreateChannelModal guildId="g1" onClose={() => {}} />);
-    expect(screen.getByRole("dialog", { name: "Create Channel" })).toBeTruthy();
+    expect(screen.getByRole("dialog", { name: "Create channel" })).toBeTruthy();
   });
 
   it("ChannelSettingsModal", () => {
@@ -241,6 +243,22 @@ describe("modal contract: focus in, Tab stays, Escape from anywhere, focus back"
     await tick();
     expect(document.activeElement?.textContent).toBe("Cancel");
     expect(screen.getByRole("dialog").getAttribute("aria-describedby")).toBeTruthy();
+  });
+
+  it("CreateGuildModal", async () => {
+    await expectModalContract("Create a server", (onClose) => <CreateGuildModal onClose={onClose} />);
+  });
+
+  it("CreateChannelModal", async () => {
+    await expectModalContract("Create channel", (onClose) => (
+      <CreateChannelModal guildId="g1" onClose={onClose} />
+    ));
+  });
+
+  it("ChannelSettingsModal", async () => {
+    await expectModalContract("general", (onClose) => (
+      <ChannelSettingsModal channelId="c1" guildId="g1" onClose={onClose} />
+    ));
   });
 
   it("ImageLightbox", async () => {
@@ -352,5 +370,60 @@ describe("tabs (KONTO-10)", () => {
     expect(usage.getAttribute("aria-selected")).toBe("true");
     expect(usage.getAttribute("aria-describedby")).toBeTruthy();
     expect(screen.getByRole("tabpanel", { name: "Usage" })).toBeTruthy();
+  });
+});
+
+describe("nested dialogs", () => {
+  it("Escape closes only the top dialog, then the one below; each returns focus to its opener", async () => {
+    document.body.innerHTML = "";
+    const [outer, setOuter] = createSignal(true);
+    const [inner, setInner] = createSignal(false);
+    render(() => (
+      <Show when={outer()}>
+        <Modal onClose={() => setOuter(false)} label="Outer">
+          <button onClick={() => setInner(true)}>open inner</button>
+          <Show when={inner()}>
+            <Modal onClose={() => setInner(false)} label="Inner">
+              <button>inner action</button>
+            </Modal>
+          </Show>
+        </Modal>
+      </Show>
+    ));
+    await tick();
+    const openInner = screen.getByRole("button", { name: "open inner" });
+    expect(document.activeElement).toBe(openInner);
+    fireEvent.click(openInner);
+    await tick();
+    const innerDialog = screen.getByRole("dialog", { name: "Inner" });
+    expect(innerDialog.contains(document.activeElement)).toBe(true);
+    // The newer dialog is stacked above the older one.
+    const z = (name: string) =>
+      Number((screen.getByRole("dialog", { name }).parentElement as HTMLElement).style.zIndex);
+    expect(z("Inner")).toBeGreaterThan(z("Outer"));
+
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Inner" })).toBeNull();
+    expect(screen.getByRole("dialog", { name: "Outer" })).toBeTruthy();
+    expect(document.activeElement).toBe(openInner);
+
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Outer" })).toBeNull();
+  });
+
+  it("a click on the backdrop closes, a click inside does not", async () => {
+    document.body.innerHTML = "";
+    const onClose = vi.fn();
+    render(() => (
+      <Modal onClose={onClose} label="Box">
+        <p>text</p>
+      </Modal>
+    ));
+    await tick();
+    const dialog = screen.getByRole("dialog", { name: "Box" });
+    fireEvent.click(dialog);
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.click(dialog.parentElement!);
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

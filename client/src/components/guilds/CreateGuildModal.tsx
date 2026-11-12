@@ -9,13 +9,14 @@
  * step that creates the server directly and says why.
  */
 
-import { Component, createSignal, createMemo, Show, For, onMount, onCleanup } from "solid-js";
+import { Component, createSignal, createMemo, createUniqueId, Show, For } from "solid-js";
 import { Info, X } from "lucide-solid";
 import { createGuild } from "@/stores/guilds";
 import { isGuildDiscoveryOff } from "@/stores/serverFeatures";
 import * as tauri from "@/lib/tauri";
-import { Portal } from "solid-js/web";
 import { t } from "@/i18n";
+import { errorText } from "@/i18n/errors";
+import Modal from "@/components/ui/Modal";
 import Button from "@/components/ui/Button";
 import FileInput from "@/components/ui/FileInput";
 import Toggle from "@/components/ui/Toggle";
@@ -28,13 +29,11 @@ const TAG_REGEX = /^[a-zA-Z0-9-]+$/;
 const MAX_TAGS = 5;
 
 const CreateGuildModal: Component<CreateGuildModalProps> = (props) => {
-  onMount(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") props.onClose();
-    };
-    document.addEventListener("keydown", handleKeyDown);
-    onCleanup(() => document.removeEventListener("keydown", handleKeyDown));
-  });
+  const titleId = createUniqueId();
+  const nameId = createUniqueId();
+  const descriptionId = createUniqueId();
+  const tagInputId = createUniqueId();
+  const bannerUrlId = createUniqueId();
 
   // Step state: 1 = name/description, 2 = discovery setup
   const [step, setStep] = createSignal<1 | 2>(1);
@@ -83,12 +82,12 @@ const CreateGuildModal: Component<CreateGuildModalProps> = (props) => {
   const validateName = (): boolean => {
     const guildName = name().trim();
     if (!guildName) {
-      setError("Server name is required");
+      setError(t("guilds.create.nameRequired"));
       return false;
     }
 
     if (guildName.length < 2 || guildName.length > 100) {
-      setError("Server name must be between 2 and 100 characters");
+      setError(t("guilds.create.nameLength"));
       return false;
     }
     return true;
@@ -111,19 +110,19 @@ const CreateGuildModal: Component<CreateGuildModalProps> = (props) => {
     if (!raw) return;
 
     if (raw.length < 2 || raw.length > 32) {
-      setTagError("Tags must be 2-32 characters.");
+      setTagError(t("guilds.create.tagLength"));
       return;
     }
     if (!TAG_REGEX.test(raw)) {
-      setTagError("Tags may only contain letters, numbers, and hyphens.");
+      setTagError(t("guilds.create.tagChars"));
       return;
     }
     if (tags().includes(raw)) {
-      setTagError("This tag already exists.");
+      setTagError(t("guilds.create.tagExists"));
       return;
     }
     if (tags().length >= MAX_TAGS) {
-      setTagError(`Maximum ${MAX_TAGS} tags allowed.`);
+      setTagError(t("guilds.create.tagMax", { max: MAX_TAGS }));
       return;
     }
 
@@ -150,7 +149,7 @@ const CreateGuildModal: Component<CreateGuildModalProps> = (props) => {
     // Validate banner URL if provided
     const banner = trimmedBannerUrl();
     if (banner && !isValidBannerUrl() && !bannerFile()) {
-      setError("Banner URL must use HTTPS.");
+      setError(t("guilds.create.bannerHttps"));
       return;
     }
 
@@ -176,11 +175,8 @@ const CreateGuildModal: Component<CreateGuildModalProps> = (props) => {
         try {
           await tauri.uploadGuildBanner(newGuild.id, bannerFile()!);
         } catch (uploadErr) {
-          setError(
-            `Server created, but banner upload failed: ${
-              uploadErr instanceof Error ? uploadErr.message : "Unknown error"
-            }. You can try again in settings.`,
-          );
+          console.warn("[CreateGuildModal] banner upload failed:", uploadErr);
+          setError(t("guilds.create.bannerFailed"));
           setIsCreating(false);
           return;
         }
@@ -188,32 +184,33 @@ const CreateGuildModal: Component<CreateGuildModalProps> = (props) => {
 
       props.onClose();
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Failed to create server",
-      );
+      setError(errorText(err, "guilds.create.failed"));
     } finally {
       setIsCreating(false);
     }
   };
 
   return (
-    <Portal>
-      <div class="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-        <div
-          class="border border-white/10 rounded-2xl w-[480px] max-w-[calc(100vw-2rem)] max-h-[min(640px,calc(100dvh-2rem))] flex flex-col shadow-2xl"
-          style={{"background-color":"var(--color-surface-base)"}}
-        >
+    <Modal
+      onClose={() => props.onClose()}
+      labelledBy={titleId}
+      closeOnBackdrop={false}
+      class="border border-white/10 rounded-2xl w-[480px] max-w-[calc(100vw-2rem)] max-h-[min(640px,calc(100dvh-2rem))] flex flex-col shadow-2xl"
+      style={{ "background-color": "var(--color-surface-base)" }}
+      testId="create-guild-dialog"
+    >
           {/* Header */}
           <div class="flex items-center justify-between p-6 border-b border-white/10">
-            <h2 class="text-xl font-bold text-text-primary">
-              Create a Server
+            <h2 id={titleId} class="text-xl font-bold text-text-primary">
+              {t("guilds.create.title")}
             </h2>
             <button
-              onClick={props.onClose}
-              class="text-text-secondary hover:text-text-primary transition-colors"
-              aria-label="Close"
+              type="button"
+              onClick={() => props.onClose()}
+              class="p-1 tap-target text-text-secondary hover:text-text-primary transition-colors"
+              aria-label={t("common.close")}
             >
-              <X size={24} />
+              <X size={24} aria-hidden="true" />
             </button>
           </div>
 
@@ -245,10 +242,12 @@ const CreateGuildModal: Component<CreateGuildModalProps> = (props) => {
               <div class="space-y-4">
                 {/* Server Name */}
                 <div>
-                  <label class="block text-sm font-semibold text-text-primary mb-2">
-                    Server Name <span class="text-accent-danger">*</span>
+                  <label for={nameId} class="block text-sm font-semibold text-text-primary mb-2">
+                    {t("guilds.create.name")} <span class="text-accent-danger" aria-hidden="true">*</span>
                   </label>
                   <input
+                    id={nameId}
+                    required
                     type="text"
                     data-testid="create-guild-name"
                     value={name()}
@@ -261,17 +260,18 @@ const CreateGuildModal: Component<CreateGuildModalProps> = (props) => {
                     autofocus
                   />
                   <p class="text-xs text-text-secondary mt-1">
-                    {name().length}/100 characters
+                    {t("guilds.create.nameCount", { count: name().length })}
                   </p>
                 </div>
 
                 {/* Description */}
                 <div>
-                  <label class="block text-sm font-semibold text-text-primary mb-2">
-                    Description{" "}
-                    <span class="text-text-secondary text-xs">(optional)</span>
+                  <label for={descriptionId} class="block text-sm font-semibold text-text-primary mb-2">
+                    {t("guilds.create.description")}{" "}
+                    <span class="text-text-secondary text-xs">{t("guilds.create.optional")}</span>
                   </label>
                   <textarea
+                    id={descriptionId}
                     value={description()}
                     onInput={(e) => setDescription(e.currentTarget.value)}
                     placeholder={t("guilds.create.descriptionPlaceholder")}
@@ -282,7 +282,7 @@ const CreateGuildModal: Component<CreateGuildModalProps> = (props) => {
                     disabled={isCreating()}
                   />
                   <p class="text-xs text-text-secondary mt-1">
-                    {description().length}/1000 characters
+                    {t("guilds.create.descriptionCount", { count: description().length })}
                   </p>
                 </div>
 
@@ -299,6 +299,7 @@ const CreateGuildModal: Component<CreateGuildModalProps> = (props) => {
                 {/* Error Message */}
                 <Show when={error()}>
                   <div
+                    role="alert"
                     class="p-3 rounded-lg"
                     style={{"background-color":"var(--color-error-bg)","border":"1px solid var(--color-error-border)"}}
                   >
@@ -312,13 +313,9 @@ const CreateGuildModal: Component<CreateGuildModalProps> = (props) => {
 
             {/* Footer - Step 1 */}
             <div class="flex items-center justify-end gap-3 p-6 border-t border-white/10">
-              <button
-                type="button"
-                onClick={props.onClose}
-                class="px-4 py-2 text-text-primary hover:bg-surface-layer2 rounded-lg transition-colors"
-              >
-                Cancel
-              </button>
+              <Button variant="ghost" onClick={() => props.onClose()}>
+                {t("common.cancel")}
+              </Button>
               <Show
                 when={!isGuildDiscoveryOff()}
                 fallback={
@@ -329,7 +326,7 @@ const CreateGuildModal: Component<CreateGuildModalProps> = (props) => {
                     disabled={isCreating() || !name().trim()}
                     disabledReason={!name().trim() && t("guilds.create.nameRequired")}
                   >
-                    {isCreating() ? "Creating..." : "Create Server"}
+                    {isCreating() ? t("guilds.create.creating") : t("guilds.create.submit")}
                   </Button>
                 }
               >
@@ -340,7 +337,7 @@ const CreateGuildModal: Component<CreateGuildModalProps> = (props) => {
                   disabled={!name().trim()}
                   disabledReason={t("guilds.create.nameRequired")}
                 >
-                  Next
+                  {t("guilds.create.next")}
                 </Button>
               </Show>
             </div>
@@ -353,11 +350,10 @@ const CreateGuildModal: Component<CreateGuildModalProps> = (props) => {
                 <div class="flex items-center justify-between p-4 bg-surface-layer2 rounded-xl border border-white/5">
                   <div class="flex-1 mr-4">
                     <div class="text-sm font-medium text-text-primary">
-                      Make this server visible in the server browser
+                      {t("guilds.create.visibleTitle")}
                     </div>
                     <div class="text-xs text-text-secondary mt-1">
-                      Anyone can find and join your server without an invite
-                      code.
+                      {t("guilds.create.visibleHint")}
                     </div>
                   </div>
                   <Toggle
@@ -373,12 +369,11 @@ const CreateGuildModal: Component<CreateGuildModalProps> = (props) => {
                 <Show when={discoverable()}>
                   {/* Tags Input */}
                   <div class="p-4 bg-surface-layer2 rounded-xl border border-white/5">
-                    <div class="text-sm font-medium text-text-primary mb-1">
-                      Tags
-                    </div>
+                    <label for={tagInputId} class="block text-sm font-medium text-text-primary mb-1">
+                      {t("guilds.create.tags")}
+                    </label>
                     <div class="text-xs text-text-secondary mb-3">
-                      Add up to {MAX_TAGS} tags to help people find your
-                      server. Letters, numbers, and hyphens only.
+                      {t("guilds.create.tagsHint", { max: MAX_TAGS })}
                     </div>
 
                     {/* Existing tags */}
@@ -391,10 +386,11 @@ const CreateGuildModal: Component<CreateGuildModalProps> = (props) => {
                               <button
                                 onClick={() => handleRemoveTag(tag)}
                                 disabled={isCreating()}
-                                class="hover:text-text-primary transition-colors state-disabled-quiet"
-                                aria-label={`Remove tag ${tag}`}
+                                type="button"
+                                class="tap-target hover:text-text-primary transition-colors state-disabled-quiet"
+                                aria-label={t("guilds.create.removeTag", { tag })}
                               >
-                                <X class="w-3 h-3" />
+                                <X class="w-3 h-3" aria-hidden="true" />
                               </button>
                             </span>
                           )}
@@ -406,6 +402,7 @@ const CreateGuildModal: Component<CreateGuildModalProps> = (props) => {
                     <Show when={tags().length < MAX_TAGS}>
                       <div class="flex items-center gap-2">
                         <input
+                          id={tagInputId}
                           type="text"
                           placeholder={t("guilds.create.tagPlaceholder")}
                           value={tagInput()}
@@ -425,7 +422,7 @@ const CreateGuildModal: Component<CreateGuildModalProps> = (props) => {
                           disabledReason={!tagInput().trim() && t("guilds.create.tagRequired")}
                           showReason={false}
                         >
-                          Add
+                          {t("guilds.create.addTag")}
                         </Button>
                       </div>
                     </Show>
@@ -440,11 +437,10 @@ const CreateGuildModal: Component<CreateGuildModalProps> = (props) => {
                   {/* Banner URL */}
                   <div class="p-4 bg-surface-layer2 rounded-xl border border-white/5">
                     <div class="text-sm font-medium text-text-primary mb-1">
-                      Banner Image
+                      {t("guilds.create.banner")}
                     </div>
                     <div class="text-xs text-text-secondary mb-3">
-                      URL to a banner image displayed on your server's
-                      discovery card.
+                      {t("guilds.create.bannerHint")}
                     </div>
                     <div class="flex flex-col gap-3">
                       <div class="flex items-center gap-2">
@@ -470,14 +466,17 @@ const CreateGuildModal: Component<CreateGuildModalProps> = (props) => {
                             }}
                             class="text-xs text-text-secondary hover:text-text-primary transition-colors"
                           >
-                            Clear File
+                            {t("guilds.create.bannerClear")}
                           </button>
                         </Show>
                       </div>
                       <div class="flex items-center gap-2">
-                        <span class="text-xs text-text-secondary">OR</span>
+                        <label for={bannerUrlId} class="text-xs text-text-secondary">
+                          {t("guilds.create.bannerUrlLabel")}
+                        </label>
                       </div>
                       <input
+                        id={bannerUrlId}
                         type="url"
                         placeholder={t("guilds.create.bannerUrlPlaceholder")}
                         value={bannerUrl()}
@@ -497,13 +496,13 @@ const CreateGuildModal: Component<CreateGuildModalProps> = (props) => {
                           when={!bannerLoadError()}
                           fallback={
                             <div class="flex items-center justify-center h-full text-xs text-text-secondary">
-                              Image failed to load
+                              {t("guilds.create.bannerLoadFailed")}
                             </div>
                           }
                         >
                           <img
                             src={bannerPreviewUrl() || trimmedBannerUrl()}
-                            alt="Banner preview"
+                            alt={t("guilds.create.bannerPreview")}
                             class="w-full h-full object-cover"
                             onError={() => setBannerLoadError(true)}
                             onLoad={() => setBannerLoadError(false)}
@@ -516,7 +515,7 @@ const CreateGuildModal: Component<CreateGuildModalProps> = (props) => {
                   {/* Preview Card */}
                   <div>
                     <div class="text-xs font-semibold text-text-secondary uppercase tracking-wide mb-2">
-                      Preview
+                      {t("guilds.create.preview")}
                     </div>
                     <div class="rounded-xl border border-white/5 overflow-hidden bg-surface-layer2">
                       {/* Banner area */}
@@ -552,7 +551,7 @@ const CreateGuildModal: Component<CreateGuildModalProps> = (props) => {
                       {/* Content */}
                       <div class="pt-5 px-3 pb-3">
                         <div class="text-xs font-semibold text-text-primary truncate">
-                          {name().trim() || "Server Name"}
+                          {name().trim() || t("guilds.create.name")}
                         </div>
                         <Show when={tags().length > 0}>
                           <div class="flex flex-wrap gap-1 mt-1.5">
@@ -572,12 +571,13 @@ const CreateGuildModal: Component<CreateGuildModalProps> = (props) => {
 
                 {/* Skip note */}
                 <p class="text-xs text-text-secondary text-center">
-                  You can always set this up later in Server Settings.
+                  {t("guilds.create.later")}
                 </p>
 
                 {/* Error Message */}
                 <Show when={error()}>
                   <div
+                    role="alert"
                     class="p-3 rounded-lg"
                     style={{"background-color":"var(--color-error-bg)","border":"1px solid var(--color-error-border)"}}
                   >
@@ -591,27 +591,20 @@ const CreateGuildModal: Component<CreateGuildModalProps> = (props) => {
 
             {/* Footer - Step 2 */}
             <div class="flex items-center justify-between p-6 border-t border-white/10">
-              <button
-                type="button"
-                onClick={handleBack}
-                class="px-4 py-2 text-text-primary hover:bg-surface-layer2 rounded-lg transition-colors state-disabled-quiet"
-                disabled={isCreating()}
-              >
-                Back
-              </button>
+              <Button variant="ghost" onClick={handleBack} disabled={isCreating()}>
+                {t("guilds.create.back")}
+              </Button>
               <Button
                 type="submit"
                 onClick={handleCreate}
                 data-testid="create-guild-submit"
                 disabled={isCreating()}
               >
-                {isCreating() ? "Creating..." : "Create Server"}
+                {isCreating() ? t("guilds.create.creating") : t("guilds.create.submit")}
               </Button>
             </div>
           </Show>
-        </div>
-      </div>
-    </Portal>
+    </Modal>
   );
 };
 

@@ -4,13 +4,15 @@
  * Simple form for channel creation with name and type selection.
  */
 
-import { Component, JSX, createSignal, Show } from "solid-js";
+import { Component, JSX, createSignal, createUniqueId, Show } from "solid-js";
 import { X, Hash, Mic, MessagesSquare, Megaphone, Check } from "lucide-solid";
 import { createChannel } from "@/stores/channels";
 import { getCategory } from "@/stores/categories";
 import { Portal } from "solid-js/web";
 import { showToast } from "@/components/ui/Toast";
 import { createDialog } from "@/lib/a11y/dialog";
+import { createModalLayer, MODAL_LAYER } from "@/lib/a11y/modalLayer";
+import { errorText } from "@/i18n/errors";
 import { t } from "@/i18n";
 import { isFeatureEnabled } from "@/stores/serverFeatures";
 import Button from "@/components/ui/Button";
@@ -72,6 +74,9 @@ interface CreateChannelModalProps {
 
 const CreateChannelModal: Component<CreateChannelModalProps> = (props) => {
   const dialog = createDialog({ onClose: () => props.onClose() });
+  const layer = createModalLayer(MODAL_LAYER.dialog);
+  const nameId = createUniqueId();
+  const typeLabelId = createUniqueId();
 
   // If the category restricts channel type, lock the selector
   const categoryTypeRestriction = () => {
@@ -95,12 +100,12 @@ const CreateChannelModal: Component<CreateChannelModalProps> = (props) => {
 
     const channelName = name().trim();
     if (!channelName) {
-      setError("Channel name is required");
+      setError(t("channels.create.nameRequired"));
       return;
     }
 
     if (channelName.length < 1 || channelName.length > 64) {
-      setError("Channel name must be between 1 and 64 characters");
+      setError(t("channels.create.nameTooLong"));
       return;
     }
 
@@ -117,14 +122,14 @@ const CreateChannelModal: Component<CreateChannelModalProps> = (props) => {
       );
       showToast({
         type: "success",
-        title: "Channel Created",
-        message: `#${channelName} has been created successfully.`,
+        title: t("channels.create.created"),
+        message: t("channels.create.createdBody", { name: channelName }),
         duration: 3000,
       });
       props.onCreated?.(channel.id);
       props.onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create channel");
+      setError(errorText(err, "channels.create.failed"));
     } finally {
       setIsCreating(false);
     }
@@ -133,7 +138,8 @@ const CreateChannelModal: Component<CreateChannelModalProps> = (props) => {
   return (
     <Portal>
       <div
-        class="fixed inset-0 bg-black/60 flex items-center justify-center z-50"
+        class="fixed inset-0 bg-black/60 flex items-center justify-center p-4"
+        style={{ "z-index": layer }}
         onClick={(e) => {
           if (e.target === e.currentTarget) props.onClose();
         }}
@@ -141,19 +147,19 @@ const CreateChannelModal: Component<CreateChannelModalProps> = (props) => {
         <div
           {...dialog.dialogProps}
           ref={dialog.ref}
-          class="border border-white/10 rounded-2xl w-[440px] flex flex-col shadow-2xl"
+          class="border border-white/10 rounded-2xl w-[440px] max-w-full max-h-[calc(100dvh-2rem)] overflow-y-auto flex flex-col shadow-2xl"
           style={{"background-color":"var(--color-surface-base)"}}
         >
           {/* Header */}
           <div class="flex items-center justify-between p-6 border-b border-white/10">
-            <h2 id={dialog.titleId} class="text-xl font-bold text-text-primary">Create Channel</h2>
+            <h2 id={dialog.titleId} class="text-xl font-bold text-text-primary">{t("channels.create.title")}</h2>
             <button
               type="button"
               onClick={props.onClose}
-              class="text-text-secondary hover:text-text-primary transition-colors"
+              class="p-1 tap-target text-text-secondary hover:text-text-primary transition-colors"
               aria-label={t("common.close")}
             >
-              <X size={24} />
+              <X size={24} aria-hidden="true" />
             </button>
           </div>
 
@@ -162,33 +168,33 @@ const CreateChannelModal: Component<CreateChannelModalProps> = (props) => {
             <div class="space-y-5">
               {/* Channel Type */}
               <div>
-                <label class="block text-sm font-semibold text-text-primary mb-3">
-                  Channel Type
-                </label>
-                <div class="flex gap-3">
+                <div id={typeLabelId} class="block text-sm font-semibold text-text-primary mb-3">
+                  {t("channels.create.type")}
+                </div>
+                <div role="group" aria-labelledby={typeLabelId} class="flex flex-wrap gap-3">
                   <TypeCard
                     selected={channelType() === "text"}
                     locked={isTypeLocked() && channelType() !== "text"}
                     onSelect={() => setChannelType("text")}
                     icon={<Hash size={20} class="text-text-primary" />}
-                    title="Text"
-                    subtitle="Send messages"
+                    title={t("channels.create.typeText")}
+                    subtitle={t("channels.create.typeTextHint")}
                   />
                   <TypeCard
                     selected={channelType() === "voice"}
                     locked={isTypeLocked() && channelType() !== "voice"}
                     onSelect={() => setChannelType("voice")}
                     icon={<Mic size={20} class="text-text-primary" />}
-                    title="Voice"
-                    subtitle="Talk with others"
+                    title={t("channels.create.typeVoice")}
+                    subtitle={t("channels.create.typeVoiceHint")}
                   />
                   <Show when={!isTypeLocked() && isFeatureEnabled("forum_channels")}>
                     <TypeCard
                       selected={channelType() === "forum"}
                       onSelect={() => setChannelType("forum")}
                       icon={<MessagesSquare size={20} class="text-text-primary" />}
-                      title="Forum"
-                      subtitle="Organized posts"
+                      title={t("channels.create.typeForum")}
+                      subtitle={t("channels.create.typeForumHint")}
                     />
                   </Show>
                   <Show when={!isTypeLocked() && isFeatureEnabled("announcement_channels")}>
@@ -196,8 +202,8 @@ const CreateChannelModal: Component<CreateChannelModalProps> = (props) => {
                       selected={channelType() === "announcement"}
                       onSelect={() => setChannelType("announcement")}
                       icon={<Megaphone size={20} class="text-text-primary" />}
-                      title="Announcement"
-                      subtitle="Broadcast + follow"
+                      title={t("channels.create.typeAnnouncement")}
+                      subtitle={t("channels.create.typeAnnouncementHint")}
                     />
                   </Show>
                 </div>
@@ -205,11 +211,11 @@ const CreateChannelModal: Component<CreateChannelModalProps> = (props) => {
 
               {/* Channel Name */}
               <div>
-                <label class="block text-sm font-semibold text-text-primary mb-2">
-                  Channel Name <span class="text-accent-danger">*</span>
+                <label for={nameId} class="block text-sm font-semibold text-text-primary mb-2">
+                  {t("channels.create.name")} <span class="text-accent-danger" aria-hidden="true">*</span>
                 </label>
                 <div class="relative">
-                  <div class="absolute left-4 top-1/2 -translate-y-1/2 text-text-secondary">
+                  <div class="absolute left-4 top-1/2 -translate-y-1/2 text-text-secondary" aria-hidden="true">
                     {channelType() === "text" ? (
                       <Hash size={18} />
                     ) : (
@@ -217,7 +223,9 @@ const CreateChannelModal: Component<CreateChannelModalProps> = (props) => {
                     )}
                   </div>
                   <input
+                    id={nameId}
                     type="text"
+                    required
                     data-testid="create-channel-name"
                     value={name()}
                     onInput={(e) =>
@@ -240,13 +248,14 @@ const CreateChannelModal: Component<CreateChannelModalProps> = (props) => {
                   />
                 </div>
                 <p class="text-xs text-text-secondary mt-1">
-                  {name().length}/64 characters
+                  {t("channels.create.count", { count: name().length })}
                 </p>
               </div>
 
               {/* Error Message */}
               <Show when={error()}>
                 <div
+                  role="alert"
                   class="p-3 rounded-lg"
                   style={{"background-color":"var(--color-error-bg)","border":"1px solid var(--color-error-border)"}}
                 >
@@ -260,14 +269,9 @@ const CreateChannelModal: Component<CreateChannelModalProps> = (props) => {
 
           {/* Footer */}
           <div class="flex items-center justify-end gap-3 p-6 border-t border-white/10">
-            <button
-              type="button"
-              onClick={props.onClose}
-              class="px-4 py-2 text-text-primary hover:bg-surface-layer2 rounded-lg transition-colors state-disabled-quiet"
-              disabled={isCreating()}
-            >
-              Cancel
-            </button>
+            <Button variant="ghost" onClick={() => props.onClose()} disabled={isCreating()}>
+              {t("common.cancel")}
+            </Button>
             <Button
               type="submit"
               onClick={handleSubmit}
@@ -275,7 +279,7 @@ const CreateChannelModal: Component<CreateChannelModalProps> = (props) => {
               disabled={isCreating() || !name().trim()}
               disabledReason={!name().trim() && t("channels.create.nameRequired")}
             >
-              {isCreating() ? "Creating..." : "Create Channel"}
+              {isCreating() ? t("channels.create.creating") : t("channels.create.submit")}
             </Button>
           </div>
         </div>

@@ -130,6 +130,7 @@ export const chat = {
   "chat.search.placeholder.all": "Search all servers",
   "chat.search.filters": "Filters",
   "chat.search.close": "Close search",
+  "chat.search.dialogLabel": "Search messages",
   "chat.search.scope.channel": "This channel",
   "chat.search.scope.server": "This server",
   "chat.search.scope.all": "Everywhere",
