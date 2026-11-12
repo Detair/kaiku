@@ -137,3 +137,44 @@ async fn replacing_peer_frees_screen_share_slot(pool: PgPool) {
     let _: i64 = redis.del(&counter).await.expect("cleanup");
     redis.quit().await.expect("quit");
 }
+
+/// A member who already holds a seat in a full room can rejoin (the new
+/// peer replaces the stale one; the count stays), a new member cannot.
+#[tokio::test]
+async fn rejoin_into_a_full_room_replaces_the_seat() {
+    use std::sync::Arc;
+
+    use vc_server::voice::sfu::{Room, SfuServer};
+    use vc_server::voice::VoiceError;
+
+    let config = Arc::new(vc_server::config::Config::default_for_test());
+    let sfu = SfuServer::new(config, None).expect("sfu");
+    let channel = Uuid::new_v4();
+    let room = Room::new(channel, 2);
+    let (tx, _rx) = tokio::sync::mpsc::channel(16);
+    let peer = |user: Uuid| {
+        let sfu = &sfu;
+        let tx = tx.clone();
+        async move {
+            sfu.create_peer(user, "u".into(), "U".into(), channel, tx)
+                .await
+                .expect("peer")
+        }
+    };
+    let (a, b, c) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+    room.add_peer(peer(a).await).await.expect("a joins");
+    room.add_peer(peer(b).await).await.expect("b joins");
+
+    let rejoin = peer(a).await;
+    let session = rejoin.session_id;
+    room.add_peer(rejoin)
+        .await
+        .expect("a rejoins the full room");
+    assert_eq!(room.peers.read().await.len(), 2);
+    assert_eq!(room.get_peer(a).await.expect("a").session_id, session);
+
+    assert!(matches!(
+        room.add_peer(peer(c).await).await,
+        Err(VoiceError::ChannelFull { .. })
+    ));
+}

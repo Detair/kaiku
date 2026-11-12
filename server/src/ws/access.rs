@@ -923,4 +923,71 @@ mod tests {
         assert!(!access.is_allowed(c));
         assert!(!access.admit(c).await);
     }
+
+    /// Every SQL statement that writes a table feeding channel access, per
+    /// source file, with what keeps open connections in line. A new writer
+    /// changes a count and fails [`every_access_writer_is_audited`]: make sure
+    /// it calls `access_changed` after its commit (or say why it need not),
+    /// then update this list.
+    const AUDITED_WRITERS: &[(&str, usize, &str)] = &[
+        ("admin/queries.rs", 6, "elevation delete: de-elevate handler calls access_changed; guild suspension: not an access input; guild delete: access_changed"),
+        ("auth/queries.rs", 1, "first-admin bootstrap: grant, admin flag re-checked on subscribe"),
+        ("auth/revocation.rs", 1, "elevation ends with the session: the socket closes (1008)"),
+        ("chat/messages.rs", 6, "test fixtures"),
+        ("chat/queries.rs", 9, "channel create, DM create (new participants auto-subscribe), DM rename/icon: no access change; DM leave: access_changed; overrides: access_changed"),
+        ("cli/recovery.rs", 2, "CLI admin demote runs in another process: socket backstop (<= 60 s)"),
+        ("db/queries.rs", 3, "channel create/update: no access change; channel delete: access_changed"),
+        ("db/tests.rs", 13, "test fixtures"),
+        ("discovery/queries.rs", 1, "discovery join: access_changed (grant)"),
+        ("guild/core.rs", 1, "guild settings (name, icon, ...): not an access input"),
+        ("guild/screening.rs", 3, "screening disabled (promotes pending) and accepted: access_changed (grant); enabling never demotes"),
+        ("guild/settings.rs", 1, "guild settings: not an access input"),
+        ("guild/queries/core.rs", 8, "guild create (no sockets yet), banner, position, prompt: not access inputs; guild delete, member delete (kick/leave): access_changed"),
+        ("guild/queries/invites.rs", 1, "invite join: access_changed (grant); admin-created account has no sockets"),
+        ("guild/queries/reaction_roles.rs", 2, "reaction role add/remove/swap: access_changed"),
+        ("guild/queries/roles.rs", 5, "role create (no members): none; role update with permissions, role delete, assign, remove: access_changed"),
+        ("permissions/queries.rs", 12, "helpers without a production caller (admin grant/revoke, elevation, role CRUD, member roles); role creation is grant only"),
+        ("system_account.rs", 2, "Kaiku DM creation for a new user: grant only"),
+        ("voice/ws_handler_test.rs", 9, "test fixtures"),
+        ("ws/bot_gateway.rs", 2, "test fixtures"),
+    ];
+
+    #[test]
+    fn every_access_writer_is_audited() {
+        let writes = regex::Regex::new(
+            r"(?is)\b(insert\s+into|update|delete\s+from)\s+(guild_members|guild_member_roles|guild_roles|channel_overrides|channels|dm_participants|system_admins|elevated_sessions|guilds)\b",
+        )
+        .unwrap();
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut found: std::collections::BTreeMap<String, usize> =
+            std::collections::BTreeMap::new();
+        let mut dirs = vec![root.clone()];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    dirs.push(path);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    let text = std::fs::read_to_string(&path).unwrap();
+                    let n = writes.find_iter(&text).count();
+                    if n > 0 {
+                        let rel = path
+                            .strip_prefix(&root)
+                            .unwrap()
+                            .to_string_lossy()
+                            .replace('\\', "/");
+                        found.insert(rel, n);
+                    }
+                }
+            }
+        }
+        let audited: std::collections::BTreeMap<String, usize> = AUDITED_WRITERS
+            .iter()
+            .map(|(file, n, _)| ((*file).to_string(), *n))
+            .collect();
+        assert_eq!(
+            found, audited,
+            "writers of access tables changed: audit them (access_changed after commit?) and update AUDITED_WRITERS"
+        );
+    }
 }
