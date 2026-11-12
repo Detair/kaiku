@@ -316,6 +316,38 @@ mod membership {
         }
     }
 
+    /// A non-member cannot accept a server page (nor learn whether the
+    /// page exists or needs acceptance).
+    #[sqlx::test]
+    async fn non_member_cannot_accept_guild_page(pool: PgPool) {
+        let app = TestApp::with_pool(pool.clone()).await;
+        let (_, guild, page) = guild_with_rules(&app).await;
+        sqlx::query("UPDATE pages SET requires_acceptance = true WHERE id = $1")
+            .bind(page)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let (stranger, _) = create_test_user(&pool).await;
+        let token = generate_access_token(&app.config, stranger);
+        for target in [page, Uuid::new_v4()] {
+            let req = TestApp::request(
+                Method::POST,
+                &format!("/api/guilds/{guild}/pages/{target}/accept"),
+            )
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap();
+            assert_eq!(app.oneshot(req).await.status(), 403, "{target}");
+        }
+        let accepted: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM page_acceptances WHERE user_id = $1")
+                .bind(stranger)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(accepted, 0);
+    }
+
     #[sqlx::test]
     async fn member_and_pending_member_can_read_guild_pages(pool: PgPool) {
         let app = TestApp::with_all_features(pool.clone()).await;

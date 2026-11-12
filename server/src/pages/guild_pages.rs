@@ -477,6 +477,8 @@ pub async fn accept_guild_page(
     user: AuthUser,
     Path((guild_id, id)): Path<(Uuid, Uuid)>,
 ) -> Result<StatusCode, PagesError> {
+    // Only members (pending ones included: they accept the rules).
+    require_guild_member(&state, guild_id, user.id).await?;
     let page = queries::get_page_by_id(&state.db, id)
         .await
         .map_err(|e| {
