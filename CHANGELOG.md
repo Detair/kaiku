@@ -150,6 +150,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Opening a file with the access token in the address (`/api/messages/attachments/{id}/download?token=…`) still works for one more release but is deprecated; apps should send the `Authorization` header (now accepted on this route) or use `/api/messages/attachments/{id}/url`. The server no longer writes such a token into its request logs or traces.
 
 ### Security
+- Storage and internal errors (for example a failed server banner, emoji or page operation, or a failed item in an admin bulk action) no longer show the underlying error text; the details go to the server log.
 - You can no longer start a group DM with someone who blocked you or whom you blocked, just like a direct message.
 - Server pages (rules, info pages), their history and categories can only be read by members of that server; members who still have to accept the rules can read them.
 - Bot gateway sign-ins (`/api/gateway/bot`) are now limited per address like password sign-ins, and wrong bot tokens count towards the temporary address block.

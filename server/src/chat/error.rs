@@ -153,11 +153,14 @@ impl IntoResponse for ChatError {
                 "INVALID_FILENAME",
                 self.to_string(),
             ),
-            Self::Storage(_) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "STORAGE_ERROR",
-                "Storage operation failed".to_string(),
-            ),
+            Self::Storage(detail) => {
+                tracing::error!(error = %detail, "Chat storage error");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "STORAGE_ERROR",
+                    "Storage operation failed".to_string(),
+                )
+            }
 
             // Override
             Self::RoleNotFound => (StatusCode::NOT_FOUND, "ROLE_NOT_FOUND", self.to_string()),

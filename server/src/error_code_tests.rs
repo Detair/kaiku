@@ -842,3 +842,41 @@ fn source_scan_detects_lowercase_codes() {
     let ok = r#"json!({"error": "NOT_ADMIN"}) (StatusCode::NOT_FOUND, "File not found") code: 4"#;
     assert!(lowercase_code_literals(ok).is_empty());
 }
+
+/// Internal and storage failures never put their detail (storage, database
+/// or library error text) into the response body.
+#[tokio::test]
+async fn internal_detail_stays_out_of_responses() {
+    const DETAIL: &str = "S3 upload failed: dispatch failure at 10.0.0.5";
+    let responses = vec![
+        (
+            "GuildError",
+            GuildError::Internal(DETAIL.into()).into_response(),
+        ),
+        (
+            "AdminError",
+            AdminError::Internal(DETAIL.into()).into_response(),
+        ),
+        (
+            "PagesError",
+            PagesError::Internal(DETAIL.into()).into_response(),
+        ),
+        (
+            "EmojiError",
+            EmojiError::Storage(DETAIL.into()).into_response(),
+        ),
+        (
+            "ChatError",
+            ChatError::Storage(DETAIL.into()).into_response(),
+        ),
+    ];
+    for (name, resp) in responses {
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR, "{name}");
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8_lossy(&bytes);
+        assert!(!body.contains("S3"), "{name} leaks detail: {body}");
+        assert!(!body.contains("10.0.0.5"), "{name} leaks detail: {body}");
+    }
+}

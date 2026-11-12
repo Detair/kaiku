@@ -88,11 +88,14 @@ impl IntoResponse for EmojiError {
                     "Invalid file type",
                 ),
                 Self::NoFile => (StatusCode::BAD_REQUEST, "NO_FILE", "No file provided"),
-                Self::Storage(msg) => (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "STORAGE_ERROR",
-                    msg.as_str(),
-                ),
+                Self::Storage(msg) => {
+                    tracing::error!(error = %msg, "Emoji storage error");
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "STORAGE_ERROR",
+                        "Storage operation failed",
+                    )
+                }
                 Self::Validation(msg) => {
                     (StatusCode::BAD_REQUEST, "VALIDATION_ERROR", msg.as_str())
                 }

@@ -602,9 +602,10 @@ pub async fn bulk_ban_users(
 
         // Ban the user (durable first), then end their sessions
         if let Err(e) = ban_and_end_sessions(&state, *user_id, admin.user_id, &body).await {
+            tracing::error!(user_id = %user_id, error = %e, "Bulk ban failed");
             failed.push(BulkActionFailure {
                 id: *user_id,
-                reason: format!("Database error: {e}"),
+                reason: "Internal error".to_string(),
             });
             continue;
         }

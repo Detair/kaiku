@@ -377,9 +377,10 @@ pub async fn bulk_suspend_guilds(
                         suspended_count += 1;
                     }
                     Err(e) => {
+                        tracing::error!(guild_id = %guild_id, error = %e, "Bulk suspend failed");
                         failed.push(BulkActionFailure {
                             id: *guild_id,
-                            reason: format!("Database error: {e}"),
+                            reason: "Internal error".to_string(),
                         });
                     }
                 }

@@ -102,11 +102,14 @@ impl IntoResponse for PagesError {
                     "Database error".to_string(),
                 )
             }
-            Self::Internal(msg) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "INTERNAL_ERROR",
-                msg.clone(),
-            ),
+            Self::Internal(msg) => {
+                tracing::error!(error = %msg, "Pages endpoint internal error");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "INTERNAL_ERROR",
+                    "Internal server error".to_string(),
+                )
+            }
         };
         (
             status,
