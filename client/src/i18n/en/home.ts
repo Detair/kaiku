@@ -152,6 +152,7 @@ export const home = {
   "home.status.online": "Online",
   "home.status.idle": "Idle",
   "home.status.dnd": "Do Not Disturb",
+  "home.status.offline": "Offline",
   "home.status.setCustom": "Set Custom Status...",
   "home.status.focusAuto": "{{name}} (auto)",
   "home.status.endFocus": "End",

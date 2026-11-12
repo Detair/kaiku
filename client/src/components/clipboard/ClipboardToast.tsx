@@ -17,6 +17,7 @@ import {
   type ClipboardStatusEvent,
   type Sensitivity,
 } from "@/lib/clipboard";
+import { t } from "@/i18n";
 
 interface ClipboardToastProps {
   /** Initial event that triggered the toast */
@@ -152,10 +153,12 @@ const ClipboardToast: Component<ClipboardToastProps> = (props) => {
             </div>
           </div>
           <button
+            type="button"
             onClick={props.onClose}
-            class="p-1 text-text-secondary hover:text-text-primary rounded transition-colors"
+            aria-label={t("common.close")}
+            class="p-1 tap-target text-text-secondary hover:text-text-primary rounded transition-colors"
           >
-            <X class="w-4 h-4" />
+            <X class="w-4 h-4" aria-hidden="true" />
           </button>
         </div>
 

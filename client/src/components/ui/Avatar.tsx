@@ -65,6 +65,8 @@ const Avatar: Component<AvatarProps> = (props) => {
         when={props.src}
         fallback={
           <div
+            role="img"
+            aria-label={props.alt}
             class={`${sizeClasses[size()]} ${bgColor()} rounded-full flex items-center justify-center text-white font-medium`}
           >
             {initials()}

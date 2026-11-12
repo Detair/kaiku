@@ -111,6 +111,8 @@ import ReportModal from "../modals/ReportModal";
 import BlockConfirmModal from "../modals/BlockConfirmModal";
 import ImageLightbox from "../ui/ImageLightbox";
 import Modal from "../ui/Modal";
+import Avatar from "../ui/Avatar";
+import StatusIndicator from "../ui/StatusIndicator";
 import EventsModal from "../guilds/EventsModal";
 import PageAcceptanceModal from "../pages/PageAcceptanceModal";
 import CategoryManager from "../pages/CategoryManager";
@@ -499,5 +501,21 @@ describe("pages", () => {
     expect(onClose).not.toHaveBeenCalled();
     fireEvent.keyDown(document.body, { key: "Escape" });
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("states are not colour only (A11Y-14)", () => {
+  it("the online status next to an avatar has a word for screen readers", () => {
+    document.body.innerHTML = "";
+    render(() => <Avatar alt="Oma Erna" status="dnd" showStatus />);
+    expect(screen.getByRole("img", { name: "Do Not Disturb" })).toBeTruthy();
+    // Without a picture the initials stand for the person, not for "OE".
+    expect(screen.getByRole("img", { name: "Oma Erna" })).toBeTruthy();
+  });
+
+  it("is silent where the status is already written next to it", () => {
+    document.body.innerHTML = "";
+    render(() => <StatusIndicator status="online" decorative />);
+    expect(screen.queryByRole("img")).toBeNull();
   });
 });
