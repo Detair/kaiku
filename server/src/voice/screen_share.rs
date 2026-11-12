@@ -72,39 +72,6 @@ impl ScreenShareInfo {
     }
 }
 
-/// Request to start a screen share.
-#[derive(Clone, Debug, Deserialize, utoipa::ToSchema)]
-pub struct ScreenShareStartRequest {
-    /// Client-generated stream identifier for this screen share
-    pub stream_id: Uuid,
-    /// Requested quality tier
-    pub quality: Quality,
-    /// Include system audio
-    pub has_audio: bool,
-    /// Source label for display
-    pub source_label: String,
-}
-
-/// Request to stop a specific screen share stream.
-#[derive(Clone, Debug, Deserialize, utoipa::ToSchema)]
-pub struct ScreenShareStopRequest {
-    /// Stream identifier of the screen share to stop
-    pub stream_id: Uuid,
-}
-
-/// Response to screen share check/start request.
-#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
-pub struct ScreenShareCheckResponse {
-    /// Whether screen sharing is allowed
-    pub allowed: bool,
-    /// Quality tier granted (may be lower than requested)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub granted_quality: Option<Quality>,
-    /// Error message if not allowed
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<ScreenShareError>,
-}
-
 /// Screen share error reasons.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -139,26 +106,6 @@ impl ScreenShareError {
             Self::InternalError => "INTERNAL_ERROR",
             Self::InvalidSourceLabel => "INVALID_SOURCE_LABEL",
             Self::AlreadySharing => "ALREADY_SHARING",
-        }
-    }
-}
-
-impl ScreenShareCheckResponse {
-    /// Create an allowed response.
-    pub const fn allowed(quality: Quality) -> Self {
-        Self {
-            allowed: true,
-            granted_quality: Some(quality),
-            error: None,
-        }
-    }
-
-    /// Create a denied response.
-    pub const fn denied(error: ScreenShareError) -> Self {
-        Self {
-            allowed: false,
-            granted_quality: None,
-            error: Some(error),
         }
     }
 }
@@ -445,82 +392,6 @@ mod tests {
     }
 
     // =========================================================================
-    // ScreenShareCheckResponse Tests
-    // =========================================================================
-
-    #[test]
-    fn test_check_response_allowed() {
-        let resp = ScreenShareCheckResponse::allowed(Quality::High);
-        assert!(resp.allowed);
-        assert_eq!(resp.granted_quality, Some(Quality::High));
-        assert!(resp.error.is_none());
-    }
-
-    #[test]
-    fn test_check_response_denied() {
-        let resp = ScreenShareCheckResponse::denied(ScreenShareError::LimitReached);
-        assert!(!resp.allowed);
-        assert!(resp.granted_quality.is_none());
-        assert_eq!(resp.error, Some(ScreenShareError::LimitReached));
-    }
-
-    #[test]
-    fn test_check_response_all_quality_tiers() {
-        for quality in [
-            Quality::Low,
-            Quality::Medium,
-            Quality::High,
-            Quality::Premium,
-        ] {
-            let resp = ScreenShareCheckResponse::allowed(quality);
-            assert!(resp.allowed);
-            assert_eq!(resp.granted_quality, Some(quality));
-        }
-    }
-
-    #[test]
-    fn test_check_response_all_error_types() {
-        let errors = [
-            ScreenShareError::NoPermission,
-            ScreenShareError::LimitReached,
-            ScreenShareError::NotInChannel,
-            ScreenShareError::QualityNotAllowed,
-            ScreenShareError::RenegotiationFailed,
-            ScreenShareError::InternalError,
-            ScreenShareError::InvalidSourceLabel,
-            ScreenShareError::AlreadySharing,
-        ];
-
-        for error in errors {
-            let resp = ScreenShareCheckResponse::denied(error.clone());
-            assert!(!resp.allowed);
-            assert_eq!(resp.error, Some(error));
-        }
-    }
-
-    #[test]
-    fn test_check_response_serialization_allowed() {
-        let resp = ScreenShareCheckResponse::allowed(Quality::High);
-        let json = serde_json::to_string(&resp).unwrap();
-
-        assert!(json.contains("\"allowed\":true"));
-        assert!(json.contains("\"granted_quality\""));
-        // error should be skipped when None
-        assert!(!json.contains("\"error\""));
-    }
-
-    #[test]
-    fn test_check_response_serialization_denied() {
-        let resp = ScreenShareCheckResponse::denied(ScreenShareError::NoPermission);
-        let json = serde_json::to_string(&resp).unwrap();
-
-        assert!(json.contains("\"allowed\":false"));
-        assert!(json.contains("\"error\":\"NO_PERMISSION\""));
-        // granted_quality should be skipped when None
-        assert!(!json.contains("\"granted_quality\""));
-    }
-
-    // =========================================================================
     // validate_source_label Tests
     // =========================================================================
 
@@ -641,56 +512,5 @@ mod tests {
             ScreenShareError::NoPermission,
             ScreenShareError::LimitReached
         );
-    }
-
-    // =========================================================================
-    // ScreenShareStartRequest Tests
-    // =========================================================================
-
-    #[test]
-    fn test_start_request_deserialization() {
-        let stream_id = Uuid::new_v4();
-        let json = format!(
-            r#"{{"stream_id":"{stream_id}","quality":"high","has_audio":true,"source_label":"Display 1"}}"#
-        );
-        let req: ScreenShareStartRequest = serde_json::from_str(&json).unwrap();
-
-        assert_eq!(req.stream_id, stream_id);
-        assert_eq!(req.quality, Quality::High);
-        assert!(req.has_audio);
-        assert_eq!(req.source_label, "Display 1");
-    }
-
-    #[test]
-    fn test_start_request_deserialization_all_qualities() {
-        let qualities = ["low", "medium", "high", "premium"];
-        let expected = [
-            Quality::Low,
-            Quality::Medium,
-            Quality::High,
-            Quality::Premium,
-        ];
-
-        let stream_id = Uuid::new_v4();
-        for (quality_str, expected_quality) in qualities.iter().zip(expected.iter()) {
-            let json = format!(
-                r#"{{"stream_id":"{stream_id}","quality":"{quality_str}","has_audio":false,"source_label":"test"}}"#
-            );
-            let req: ScreenShareStartRequest = serde_json::from_str(&json).unwrap();
-            assert_eq!(req.quality, *expected_quality);
-        }
-    }
-
-    // =========================================================================
-    // ScreenShareStopRequest Tests
-    // =========================================================================
-
-    #[test]
-    fn test_stop_request_deserialization() {
-        let stream_id = Uuid::new_v4();
-        let json = format!(r#"{{"stream_id":"{stream_id}"}}"#);
-        let req: ScreenShareStopRequest = serde_json::from_str(&json).unwrap();
-
-        assert_eq!(req.stream_id, stream_id);
     }
 }

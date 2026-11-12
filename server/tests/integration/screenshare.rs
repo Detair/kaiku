@@ -8,28 +8,7 @@ use uuid::Uuid;
 // ============================================================================
 // Unit Tests (no database/Redis required)
 // ============================================================================
-use vc_server::voice::{
-    Quality, ScreenShareCheckResponse, ScreenShareError, ScreenShareInfo, ScreenShareStartRequest,
-};
-
-#[test]
-fn test_screen_share_check_response_allowed_serialization() {
-    let resp = ScreenShareCheckResponse::allowed(Quality::High);
-    let json = serde_json::to_string(&resp).unwrap();
-
-    assert!(json.contains("\"allowed\":true"));
-    assert!(json.contains("\"granted_quality\""));
-    assert!(!json.contains("\"error\""));
-}
-
-#[test]
-fn test_screen_share_check_response_denied_serialization() {
-    let resp = ScreenShareCheckResponse::denied(ScreenShareError::NoPermission);
-    let json = serde_json::to_string(&resp).unwrap();
-
-    assert!(json.contains("\"allowed\":false"));
-    assert!(json.contains("\"error\":\"NO_PERMISSION\""));
-}
+use vc_server::voice::{Quality, ScreenShareError, ScreenShareInfo};
 
 #[test]
 fn test_screen_share_error_into_response_status_codes() {
@@ -52,20 +31,6 @@ fn test_screen_share_error_into_response_status_codes() {
         let json = serde_json::to_string(&error).unwrap();
         assert_eq!(json, format!("\"{expected_str}\""));
     }
-}
-
-#[test]
-fn test_screen_share_start_request_deserialization() {
-    let stream_id = Uuid::new_v4();
-    let json = format!(
-        r#"{{"stream_id":"{stream_id}","quality":"high","has_audio":true,"source_label":"Display 1"}}"#
-    );
-    let req: ScreenShareStartRequest = serde_json::from_str(&json).unwrap();
-
-    assert_eq!(req.stream_id, stream_id);
-    assert_eq!(req.quality, Quality::High);
-    assert!(req.has_audio);
-    assert_eq!(req.source_label, "Display 1");
 }
 
 #[test]
@@ -384,18 +349,6 @@ async fn test_remove_nonexistent_stream_returns_none() {
 
     let result = room.remove_screen_share(Uuid::new_v4()).await;
     assert!(result.is_none());
-}
-
-/// `ScreenShareStopRequest` deserializes correctly with `stream_id`.
-#[test]
-fn test_screen_share_stop_request_deserialization() {
-    use vc_server::voice::ScreenShareStopRequest;
-
-    let stream_id = Uuid::new_v4();
-    let json = format!(r#"{{"stream_id":"{stream_id}"}}"#);
-    let req: ScreenShareStopRequest = serde_json::from_str(&json).unwrap();
-
-    assert_eq!(req.stream_id, stream_id);
 }
 
 // ============================================================================

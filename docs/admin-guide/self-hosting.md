@@ -56,6 +56,14 @@ The fastest way to get a node online. We will provide a pre-configured `docker-c
 ### 2. The "Esports Org" (Kubernetes)
 For massive communities. Detailed Helm charts and documentation for deploying scalable replicas of the Signaling server behind a load balancer, with dedicated external TURN clusters.
 
+> **Run exactly one server process.** Voice rooms, connection limits and
+> access changes on open connections are kept inside the server process, and
+> a starting server resets the screen-share slot counters in Valkey. On
+> Kubernetes use one replica with the `Recreate` deployment strategy (not
+> `RollingUpdate`, which starts the new pod while the old one still serves).
+> On stop the server closes every WebSocket with code 1012 and clients
+> reconnect on their own; give the container at least 10 seconds to stop.
+
 ## <span style="color: #88C0D0;">Voice NAT Traversal & Sovereignty (STUN/TURN)</span>
 
 WebRTC needs a **STUN** server (to discover each client's public address) and,

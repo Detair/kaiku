@@ -34,10 +34,7 @@ use axum::Router;
 // Re-exports
 pub use error::VoiceError;
 pub use quality::Quality;
-pub use screen_share::{
-    ScreenShareCheckResponse, ScreenShareError, ScreenShareInfo, ScreenShareLimiter,
-    ScreenShareStartRequest, ScreenShareStopRequest,
-};
+pub use screen_share::{ScreenShareError, ScreenShareInfo, ScreenShareLimiter};
 pub use sfu::{ParticipantInfo, ReplacedMedia, Room, SfuServer, StalePeer, PEER_FAILED_GRACE};
 pub use stats::{UserStats, VoiceStats};
 pub use track_types::{Layer, LayerPreference, TrackInfo, TrackKind, TrackSource};
