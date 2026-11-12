@@ -6,7 +6,7 @@
  * the owner can delete the server, everyone else can leave it (ADMIN-5).
  */
 
-import { Component, createSignal, Show } from "solid-js";
+import { Component, createSignal, createUniqueId, Show } from "solid-js";
 import { Portal } from "solid-js/web";
 import {
   X,
@@ -25,6 +25,9 @@ import {
   Trash2,
 } from "lucide-solid";
 import { t } from "@/i18n";
+import { createDialog } from "@/lib/a11y/dialog";
+import { createModalLayer, MODAL_LAYER } from "@/lib/a11y/modalLayer";
+import { createTabs } from "@/lib/a11y/tabs";
 import ConfirmActionDialog from "@/components/admin/ConfirmActionDialog";
 import { deleteServer, leaveServer } from "@/stores/guildAdmin";
 import { reportSuccess } from "./settingsAction";
@@ -91,7 +94,6 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
   const [nameDirty, setNameDirty] = createSignal(false);
   // What to do after "Discard changes": close the window or open another tab.
   const [discardThen, setDiscardThen] = createSignal<(() => void) | null>(null);
-  const confirmClose = () => discardThen() !== null;
   const [confirmExit, setConfirmExit] = createSignal(false);
   const [deleteName, setDeleteName] = createSignal("");
   const dirty = () => roleDirty() || safetyDirty() || nameDirty();
@@ -186,10 +188,44 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
       PermissionBits.MANAGE_CHANNELS,
     );
 
+  // Tabs in the order they are shown (KONTO-10).
+  const visibleTabs = (): TabId[] => {
+    const ids: TabId[] = [];
+    if (canManageGuild()) ids.push("general");
+    if (isOwner()) ids.push("invites");
+    ids.push("members");
+    if (canManageRoles()) ids.push("roles");
+    if (canManageChannels()) ids.push("categories");
+    if (canManageEmojis()) ids.push("emojis");
+    ids.push("usage");
+    if (canManageGuild()) ids.push("safety");
+    if (canManageRoles()) ids.push("reaction-roles");
+    if (canManageBots()) ids.push("bots");
+    if (canManageWebhooks()) ids.push("webhooks");
+    return ids;
+  };
+  const tabsA11y = createTabs<TabId>({
+    ids: visibleTabs,
+    active: activeTab,
+    onSelect: switchTab,
+    orientation: "vertical",
+    label: t("guildSettings.title"),
+  });
+  const advancedId = createUniqueId();
+  const ADVANCED: TabId[] = ["usage", "safety", "reaction-roles", "bots", "webhooks"];
+
+  // A real modal (A11Y-1): Escape closes from wherever focus is (also right
+  // after the click on the gear, when focus is still behind the window),
+  // always through the unsaved-changes question. A question opened on top
+  // takes Escape first.
+  const dialog = createDialog({ onClose: () => requestClose() });
+  const layer = createModalLayer(MODAL_LAYER.dialog);
+
   const navItem = (tab: TabId, Icon: Component<{ class?: string }>, label: string, testId?: string) => (
     <button
+      {...tabsA11y.tabProps(tab)}
       onClick={() => switchTab(tab)}
-      aria-current={activeTab() === tab ? "page" : undefined}
+      aria-describedby={ADVANCED.includes(tab) ? advancedId : undefined}
       data-testid={testId}
       class="flex items-center gap-2.5 w-full px-3 py-2 rounded-lg text-sm font-medium transition-colors"
       classList={{
@@ -197,7 +233,7 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
         "text-text-secondary hover:text-text-primary hover:bg-white/5": activeTab() !== tab,
       }}
     >
-      <Icon class="w-4 h-4 shrink-0" />
+      <Icon class="w-4 h-4 shrink-0" aria-hidden="true" />
       {label}
     </button>
   );
@@ -208,21 +244,17 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
     }
   };
 
-  const handleKeyDown = (e: KeyboardEvent) => {
-    if (e.key === "Escape" && !confirmClose() && !confirmExit()) {
-      requestClose();
-    }
-  };
-
   return (
     <Portal>
       <div
-        class="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50"
+        class="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center"
+        style={{ "z-index": layer }}
         onClick={handleBackdropClick}
-        onKeyDown={handleKeyDown}
-        tabIndex={-1}
       >
         <div
+          {...dialog.dialogProps}
+          ref={dialog.ref}
+          data-testid="guild-settings-dialog"
           class="border border-white/10 rounded-2xl w-[90vw] max-w-[900px] overflow-x-hidden max-h-[85vh] flex flex-col shadow-2xl"
           style={{"background-color":"var(--color-surface-base)"}}
         >
@@ -246,7 +278,7 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
                 />
               </Show>
               <div>
-                <h2 class="text-lg font-bold text-text-primary">
+                <h2 id={dialog.titleId} class="text-lg font-bold text-text-primary">
                   {guild()?.name}
                 </h2>
                 <p class="text-sm text-text-secondary">{t("guildSettings.title")}</p>
@@ -255,9 +287,9 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
             <button
               onClick={requestClose}
               aria-label={t("common.close")}
-              class="p-2.5 text-text-secondary hover:text-text-primary hover:bg-white/10 rounded-lg transition-colors"
+              class="p-2.5 tap-target text-text-secondary hover:text-text-primary hover:bg-white/10 rounded-lg transition-colors"
             >
-              <X class="w-5 h-5" />
+              <X class="w-5 h-5" aria-hidden="true" />
             </button>
           </div>
 
@@ -268,6 +300,7 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
               aria-label={t("guildSettings.title")}
               class="min-w-48 max-w-56 shrink-0 border-r border-white/10 py-3 px-2 overflow-y-auto flex flex-col"
             >
+              <div {...tabsA11y.listProps} class="flex flex-col">
               {/* Everyday tasks first (ADMIN-22). */}
               <Show when={canManageGuild()}>
                 {navItem("general", Settings, t("guildSettings.tab.general"))}
@@ -287,7 +320,11 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
               </Show>
 
               {/* Advanced: only for those who look for it. */}
+              {/* Group label: hidden from the tab list, read as the description
+                  of each advanced tab instead. */}
               <div
+                id={advancedId}
+                aria-hidden="true"
                 class="mt-4 mb-1 px-3 text-xs font-semibold uppercase tracking-wide text-text-secondary"
                 data-testid="guild-settings-advanced"
               >
@@ -316,6 +353,7 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
                   "guild-settings-tab-webhooks",
                 )}
               </Show>
+              </div>
 
               {/* Leave or delete (ADMIN-5). */}
               <div class="mt-auto pt-4">
@@ -333,7 +371,7 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
             </nav>
 
             {/* Content */}
-            <div class="flex-1 overflow-y-auto min-h-0">
+            <div {...tabsA11y.panelProps()} class="flex-1 overflow-y-auto min-h-0">
             <Show when={activeTab() === "general" && canManageGuild()}>
               <GeneralTab guildId={props.guildId} onDirtyChange={setNameDirty} />
             </Show>

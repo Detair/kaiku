@@ -447,3 +447,26 @@ pre code {
 .btn-danger {
   --color-overlay-rgb: 255 255 255;
 }
+
+/* Hit area (A11Y-12, NAV-19): small icon buttons react on at least 24x24 px,
+   44x44 px on touch screens, without changing their size or the layout. The
+   invisible ::after grows around the button; :where() keeps position
+   utilities (absolute, fixed) on the same element in charge. */
+:where(.tap-target) {
+  position: relative;
+}
+.tap-target::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: max(100%, 24px);
+  height: max(100%, 24px);
+  transform: translate(-50%, -50%);
+}
+@media (pointer: coarse) {
+  .tap-target::after {
+    width: max(100%, 44px);
+    height: max(100%, 44px);
+  }
+}

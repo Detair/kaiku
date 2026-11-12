@@ -122,7 +122,7 @@ describe("GuildSettingsModal", () => {
     becomeOwner();
     const onClose = vi.fn();
     render(() => <GuildSettingsModal guildId="g1" onClose={onClose} />);
-    fireEvent.click(screen.getByRole("button", { name: "Word filter" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Word filter" }));
     fireEvent.click(screen.getByRole("button", { name: "make a change" }));
     fireEvent.click(screen.getAllByRole("button", { name: "Close" })[0]);
     expect(onClose).not.toHaveBeenCalled();
@@ -131,17 +131,33 @@ describe("GuildSettingsModal", () => {
     await waitFor(() => expect(onClose).toHaveBeenCalled());
   });
 
+  it("Escape from anywhere asks first with unsaved changes; Escape again only closes the question (A11Y-1)", async () => {
+    becomeOwner();
+    const onClose = vi.fn();
+    render(() => <GuildSettingsModal guildId="g1" onClose={onClose} />);
+    fireEvent.click(screen.getByRole("tab", { name: "Word filter" }));
+    fireEvent.click(screen.getByRole("button", { name: "make a change" }));
+    (document.activeElement as HTMLElement | null)?.blur();
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByTestId("guild-settings-unsaved")).toBeTruthy();
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(screen.queryByTestId("guild-settings-unsaved")).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog", { name: "Familie" })).toBeTruthy();
+  });
+
   it("asks before switching tabs with unsaved changes, and switches only after discarding (W3)", async () => {
     becomeOwner();
     render(() => <GuildSettingsModal guildId="g1" onClose={vi.fn()} />);
-    fireEvent.click(screen.getByRole("button", { name: "Word filter" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Word filter" }));
     fireEvent.click(screen.getByRole("button", { name: "make a change" }));
-    fireEvent.click(screen.getByRole("button", { name: "Members" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Members" }));
     expect(screen.getByTestId("guild-settings-unsaved")).toBeTruthy();
     expect(screen.queryByTestId("members-tab")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(screen.getByRole("button", { name: "make a change" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Members" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Members" }));
     fireEvent.click(screen.getByRole("button", { name: "Discard changes" }));
     await screen.findByTestId("members-tab");
   });

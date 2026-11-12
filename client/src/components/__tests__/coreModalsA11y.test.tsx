@@ -41,6 +41,19 @@ vi.mock("../settings/AudioSettings", () => ({ default: () => null }));
 vi.mock("../settings/VoiceSettings", () => ({ default: () => null }));
 vi.mock("../channels/ChannelPermissions", () => ({ default: () => null }));
 vi.mock("../voice/MicTestPanel", () => ({ default: () => null }));
+vi.mock("../guilds/GeneralTab", () => ({ default: () => <div data-testid="tab-GeneralTab" /> }));
+vi.mock("../guilds/InvitesTab", () => ({ default: () => <div data-testid="tab-InvitesTab" /> }));
+vi.mock("../guilds/MembersTab", () => ({ default: () => <div data-testid="tab-MembersTab" /> }));
+vi.mock("../guilds/RolesTab", () => ({ default: () => <div data-testid="tab-RolesTab" /> }));
+vi.mock("../guilds/ReactionRolesTab", () => ({ default: () => <div data-testid="tab-ReactionRolesTab" /> }));
+vi.mock("../guilds/EmojisTab", () => ({ default: () => <div data-testid="tab-EmojisTab" /> }));
+vi.mock("../guilds/BotsTab", () => ({ default: () => <div data-testid="tab-BotsTab" /> }));
+vi.mock("../guilds/WebhooksTab", () => ({ default: () => <div data-testid="tab-WebhooksTab" /> }));
+vi.mock("../guilds/SafetyTab", () => ({ default: () => <div data-testid="tab-SafetyTab" /> }));
+vi.mock("../guilds/UsageTab", () => ({ default: () => <div data-testid="tab-UsageTab" /> }));
+vi.mock("../guilds/CategoriesTab", () => ({ default: () => <div data-testid="tab-CategoriesTab" /> }));
+vi.mock("../guilds/RoleEditor", () => ({ default: () => <div data-testid="tab-RoleEditor" /> }));
+vi.mock("@/stores/guildAdmin", () => ({ deleteServer: vi.fn(), leaveServer: vi.fn(), canManageChannel: () => true }));
 
 vi.mock("@/stores/channels", () => ({
   channelsState: { channels: [{ id: "c1", name: "general", channel_type: "text" }] },
@@ -56,7 +69,7 @@ vi.mock("@/stores/permissions", () => ({
   loadChannelOverrides: vi.fn(),
 }));
 vi.mock("@/stores/guilds", () => ({
-  guildsState: { guilds: [] },
+  guildsState: { guilds: [{ id: "g1", name: "Familie", icon_url: null, owner_id: "x" }] },
   isGuildOwner: () => false,
   joinViaInviteCode: vi.fn(),
 }));
@@ -95,6 +108,7 @@ import ReportModal from "../modals/ReportModal";
 import BlockConfirmModal from "../modals/BlockConfirmModal";
 import ImageLightbox from "../ui/ImageLightbox";
 import PositionedEmojiPicker from "../emoji/PositionedEmojiPicker";
+import GuildSettingsModal from "../guilds/GuildSettingsModal";
 import type { JSX } from "solid-js";
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -287,5 +301,56 @@ describe("emoji picker", () => {
     fireEvent.keyDown(document.activeElement!, { key: "Escape" });
     expect(pick()).toBe(false);
     expect(closeDialog).not.toHaveBeenCalled();
+  });
+});
+
+describe("settings windows", () => {
+  it("server settings: Escape closes even when focus is still on the gear behind it", async () => {
+    await expectModalContract("Familie", (onClose) => (
+      <GuildSettingsModal guildId="g1" onClose={onClose} />
+    ));
+  });
+
+  it("settings window keeps the modal contract", async () => {
+    await expectModalContract("Settings", (onClose) => <SettingsModal onClose={onClose} />);
+  });
+});
+
+describe("tabs (KONTO-10)", () => {
+  it("settings: arrow keys move between tabs, the open one is selected and names the panel", () => {
+    document.body.innerHTML = "";
+    render(() => <SettingsModal onClose={() => {}} />);
+    const list = screen.getByRole("tablist", { name: "Settings" });
+    const account = screen.getByRole("tab", { name: "My Account" });
+    expect(account.getAttribute("aria-selected")).toBe("true");
+    expect(account.tabIndex).toBe(0);
+    expect(screen.getByRole("tab", { name: "Appearance" }).tabIndex).toBe(-1);
+
+    account.focus();
+    fireEvent.keyDown(account, { key: "ArrowDown" });
+    const appearance = screen.getByRole("tab", { name: "Appearance" });
+    expect(appearance.getAttribute("aria-selected")).toBe("true");
+    expect(document.activeElement).toBe(appearance);
+    expect(screen.getByRole("tabpanel", { name: "Appearance" })).toBeTruthy();
+
+    fireEvent.keyDown(appearance, { key: "End" });
+    expect(screen.getByRole("tab", { name: "Security" }).getAttribute("aria-selected")).toBe("true");
+    fireEvent.keyDown(document.activeElement!, { key: "ArrowDown" });
+    expect(account.getAttribute("aria-selected")).toBe("true");
+    expect(list.contains(document.activeElement)).toBe(true);
+  });
+
+  it("server settings: tabs with arrow keys, advanced tabs say so", () => {
+    document.body.innerHTML = "";
+    render(() => <GuildSettingsModal guildId="g1" onClose={() => {}} />);
+    screen.getByRole("tablist", { name: "Server settings" });
+    const members = screen.getByRole("tab", { name: "Members" });
+    expect(members.getAttribute("aria-selected")).toBe("true");
+    members.focus();
+    fireEvent.keyDown(members, { key: "ArrowDown" });
+    const usage = screen.getByRole("tab", { name: "Usage" });
+    expect(usage.getAttribute("aria-selected")).toBe("true");
+    expect(usage.getAttribute("aria-describedby")).toBeTruthy();
+    expect(screen.getByRole("tabpanel", { name: "Usage" })).toBeTruthy();
   });
 });

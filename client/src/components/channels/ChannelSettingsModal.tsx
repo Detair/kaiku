@@ -14,6 +14,8 @@ import { authState } from "@/stores/auth";
 import { isGuildOwner } from "@/stores/guilds";
 import { PermissionBits } from "@/lib/permissionConstants";
 import { createDialog } from "@/lib/a11y/dialog";
+import { createModalLayer, MODAL_LAYER } from "@/lib/a11y/modalLayer";
+import { createTabs } from "@/lib/a11y/tabs";
 import { t } from "@/i18n";
 import ChannelPermissions from "./ChannelPermissions";
 import {
@@ -37,6 +39,7 @@ const ChannelSettingsModal: Component<ChannelSettingsModalProps> = (props) => {
   const [confirmDelete, setConfirmDelete] = createSignal(false);
 
   const dialog = createDialog({ onClose: () => props.onClose() });
+  const layer = createModalLayer(MODAL_LAYER.dialog);
 
   const channel = () =>
     channelsState.channels.find((c) => c.id === props.channelId);
@@ -51,6 +54,14 @@ const ChannelSettingsModal: Component<ChannelSettingsModalProps> = (props) => {
       isOwner(),
       PermissionBits.MANAGE_CHANNELS,
     );
+
+  // Real tabs (KONTO-10).
+  const tabsA11y = createTabs<TabId>({
+    ids: () => (canManageChannel() ? ["overview", "permissions"] : ["overview"]),
+    active: activeTab,
+    onSelect: setActiveTab,
+    label: t("guildSettings.channel.title"),
+  });
 
   const name = () => nameDraft() ?? channel()?.name ?? "";
   const nameChanged = () => {
@@ -96,19 +107,20 @@ const ChannelSettingsModal: Component<ChannelSettingsModalProps> = (props) => {
   return (
     <Portal>
       <div
-        class="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50"
+        class="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center"
+        style={{ "z-index": layer }}
         onClick={handleBackdropClick}
       >
         <div
           {...dialog.dialogProps}
           ref={dialog.ref}
-          class="border border-white/10 rounded-2xl w-[550px] max-h-[80vh] flex flex-col shadow-2xl"
+          class="border border-white/10 rounded-2xl w-[550px] max-w-[calc(100vw-2rem)] max-h-[80vh] flex flex-col shadow-2xl"
           style={{"background-color":"var(--color-surface-base)"}}
         >
           {/* Header */}
           <div class="flex items-center justify-between px-6 py-4 border-b border-white/10">
             <div class="flex items-center gap-3">
-              <Hash class="w-5 h-5 text-text-secondary" />
+              <Hash class="w-5 h-5 text-text-secondary" aria-hidden="true" />
               <div>
                 <h2 id={dialog.titleId} class="text-lg font-bold text-text-primary">
                   {channel()?.name}
@@ -120,16 +132,16 @@ const ChannelSettingsModal: Component<ChannelSettingsModalProps> = (props) => {
               type="button"
               aria-label={t("common.close")}
               onClick={props.onClose}
-              class="p-1.5 text-text-secondary hover:text-text-primary hover:bg-white/10 rounded-lg transition-colors"
+              class="p-1.5 tap-target text-text-secondary hover:text-text-primary hover:bg-white/10 rounded-lg transition-colors"
             >
-              <X class="w-5 h-5" />
+              <X class="w-5 h-5" aria-hidden="true" />
             </button>
           </div>
 
           {/* Tabs */}
-          <div class="flex border-b border-white/10">
+          <div {...tabsA11y.listProps} class="flex border-b border-white/10">
             <button
-              type="button"
+              {...tabsA11y.tabProps("overview")}
               onClick={() => setActiveTab("overview")}
               class="flex items-center gap-2 px-6 py-3 font-medium transition-colors"
               classList={{
@@ -139,12 +151,12 @@ const ChannelSettingsModal: Component<ChannelSettingsModalProps> = (props) => {
                   activeTab() !== "overview",
               }}
             >
-              <Settings class="w-4 h-4" />
+              <Settings class="w-4 h-4" aria-hidden="true" />
               {t("guildSettings.channel.overview")}
             </button>
             <Show when={canManageChannel()}>
               <button
-                type="button"
+                {...tabsA11y.tabProps("permissions")}
                 onClick={() => setActiveTab("permissions")}
                 data-testid="channel-settings-permissions-tab"
                 class="flex items-center gap-2 px-6 py-3 font-medium transition-colors"
@@ -155,14 +167,14 @@ const ChannelSettingsModal: Component<ChannelSettingsModalProps> = (props) => {
                     activeTab() !== "permissions",
                 }}
               >
-                <Shield class="w-4 h-4" />
+                <Shield class="w-4 h-4" aria-hidden="true" />
                 {t("guildSettings.channel.permissions")}
               </button>
             </Show>
           </div>
 
           {/* Content */}
-          <div class="flex-1 overflow-y-auto" data-testid="channel-settings-content">
+          <div {...tabsA11y.panelProps()} class="flex-1 overflow-y-auto" data-testid="channel-settings-content">
             <Show when={activeTab() === "overview"}>
               <div class="p-6 space-y-6">
                 {/* Channel Name: editable for people who manage channels (ADMIN-5). */}

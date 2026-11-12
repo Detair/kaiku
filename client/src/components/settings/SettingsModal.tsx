@@ -21,6 +21,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { initE2EE } from "@/lib/tauri";
 import { isE2EEEnabled } from "@/lib/featureFlags";
 import { createDialog } from "@/lib/a11y/dialog";
+import { createModalLayer } from "@/lib/a11y/modalLayer";
+import { createTabs } from "@/lib/a11y/tabs";
 import AccountSettings from "./AccountSettings";
 import AppearanceSettings from "./AppearanceSettings";
 import NotificationSettings from "./NotificationSettings";
@@ -67,7 +69,18 @@ const tabs: TabDefinition[] = [
 
 const SettingsModal: Component<SettingsModalProps> = (props) => {
   const dialog = createDialog({ onClose: () => props.onClose() });
+  // Base 50 like the security dialogs opened from here (RecoveryKeyModal,
+  // portaled at z-50, must stay above this window); above any open modal.
+  const layer = createModalLayer(50);
   const [activeTab, setActiveTab] = createSignal<TabId>(props.initialTab ?? "account");
+  // Real tabs (KONTO-10): tablist/tab/tabpanel, arrow keys, one tab stop.
+  const tabsA11y = createTabs<TabId>({
+    ids: () => tabs.map((tab) => tab.id),
+    active: activeTab,
+    onSelect: setActiveTab,
+    orientation: "vertical",
+    label: t("settings.modal.title"),
+  });
   const [showRecoveryKey, setShowRecoveryKey] = createSignal(false);
   const [recoveryKey, setRecoveryKey] = createSignal<{
     fullKey: string;
@@ -136,7 +149,8 @@ const SettingsModal: Component<SettingsModalProps> = (props) => {
   return (
     <Portal>
       <div
-        class="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50"
+        class="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center"
+        style={{ "z-index": layer }}
         onClick={handleBackdropClick}
       >
         <div
@@ -154,21 +168,21 @@ const SettingsModal: Component<SettingsModalProps> = (props) => {
               type="button"
               aria-label={t("common.close")}
               onClick={props.onClose}
-              class="p-1.5 text-text-secondary hover:text-text-primary hover:bg-white/10 rounded-lg transition-colors"
+              class="p-1.5 tap-target text-text-secondary hover:text-text-primary hover:bg-white/10 rounded-lg transition-colors"
             >
-              <X class="w-5 h-5" />
+              <X class="w-5 h-5" aria-hidden="true" />
             </button>
           </div>
 
           <div class="flex flex-1 overflow-hidden">
             {/* Sidebar tabs */}
-            <div class="w-48 border-r border-white/10 p-3">
+            <div {...tabsA11y.listProps} class="w-48 border-r border-white/10 p-3">
               <For each={tabs}>
                 {(tab) => {
                   const Icon = tab.icon;
                   return (
                     <button
-                      type="button"
+                      {...tabsA11y.tabProps(tab.id)}
                       data-testid={`settings-tab-${tab.id}`}
                       onClick={() => setActiveTab(tab.id)}
                       class="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-left transition-colors mb-1"
@@ -180,6 +194,7 @@ const SettingsModal: Component<SettingsModalProps> = (props) => {
                       }}
                     >
                       <Icon
+                        aria-hidden="true"
                         class="w-4 h-4"
                         classList={{
                           "text-accent-primary": activeTab() === tab.id,
@@ -193,7 +208,7 @@ const SettingsModal: Component<SettingsModalProps> = (props) => {
             </div>
 
             {/* Content area */}
-            <div class="flex-1 overflow-y-auto p-6">
+            <div {...tabsA11y.panelProps()} class="flex-1 overflow-y-auto p-6">
               <Show when={activeTab() === "account"}>
                 <AccountSettings />
               </Show>
