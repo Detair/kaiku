@@ -627,7 +627,7 @@ const ChannelList: Component<ChannelListProps> = (props) => {
             {/* Visible on hover, keyboard focus and touch screens (NAV-19) */}
             <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 touch:opacity-100 transition-opacity">
               <button
-                class="p-1 text-text-secondary hover:text-accent-primary rounded-lg hover:bg-white/10 transition-all duration-200"
+                class="tap-target p-1 text-text-secondary hover:text-accent-primary rounded-lg hover:bg-white/10 transition-all duration-200"
                 title={t("channels.list.testMicrophone")} aria-label={t("channels.list.testMicrophone")}
                 onClick={() => setShowMicTest(true)}
               >
@@ -636,7 +636,7 @@ const ChannelList: Component<ChannelListProps> = (props) => {
               {/* Only for people who may create channels (NAV-18) */}
               <Show when={canManageChannels()}>
                 <button
-                  class="p-1 text-text-secondary hover:text-text-primary rounded-lg hover:bg-white/10 transition-all duration-200"
+                  class="tap-target p-1 text-text-secondary hover:text-text-primary rounded-lg hover:bg-white/10 transition-all duration-200"
                   data-testid="create-channel-button"
                   title={t("channels.list.createChannel")} aria-label={t("channels.list.createChannel")}
                   onClick={() => openCreateModal("text", null)}

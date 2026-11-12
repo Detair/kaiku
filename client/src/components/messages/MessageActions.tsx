@@ -67,7 +67,7 @@ const MessageActions: Component<MessageActionsProps> = (props) => {
       {/* Quick emoji reactions */}
       <For each={QUICK_EMOJIS}>{(emoji) => (
         <button
-          class="w-7 h-7 flex items-center justify-center rounded hover:bg-white/10 transition-colors"
+          class="tap-target w-7 h-7 flex items-center justify-center rounded hover:bg-white/10 transition-colors"
           onClick={() => handleQuickReaction(emoji)}
           title={t("chat.message.react", { emoji })}
           aria-label={t("chat.message.react", { emoji })}
@@ -79,7 +79,7 @@ const MessageActions: Component<MessageActionsProps> = (props) => {
       {/* Emoji picker button */}
       <button
         ref={emojiButtonRef}
-        class="w-7 h-7 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary hover:text-text-primary transition-colors"
+        class="tap-target w-7 h-7 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary hover:text-text-primary transition-colors"
         data-testid="message-action-react"
         onClick={() => setShowEmojiPicker(!showEmojiPicker())}
         title={t("chat.message.moreReactions")}
@@ -107,7 +107,7 @@ const MessageActions: Component<MessageActionsProps> = (props) => {
         }
       >
         <button
-          class="w-7 h-7 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary hover:text-text-primary transition-colors"
+          class="tap-target w-7 h-7 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary hover:text-text-primary transition-colors"
           data-testid="message-action-thread"
           onClick={() => props.onReplyInThread?.()}
           title={t("chat.message.replyInThread")}
@@ -120,7 +120,7 @@ const MessageActions: Component<MessageActionsProps> = (props) => {
       {/* Edit button (own messages only) */}
       <Show when={props.isOwn && props.onEdit}>
         <button
-          class="w-7 h-7 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary hover:text-text-primary transition-colors"
+          class="tap-target w-7 h-7 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary hover:text-text-primary transition-colors"
           data-testid="message-action-edit"
           onClick={() => props.onEdit?.()}
           title={t("chat.message.edit")}
@@ -135,7 +135,7 @@ const MessageActions: Component<MessageActionsProps> = (props) => {
 
       {/* Context menu button */}
       <button
-        class="w-7 h-7 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary hover:text-text-primary transition-colors"
+        class="tap-target w-7 h-7 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary hover:text-text-primary transition-colors"
         data-testid="message-action-more"
         onClick={(e) => props.onShowContextMenu(e)}
         title={t("chat.message.moreActions")}

@@ -287,7 +287,7 @@ const ChannelItem: Component<ChannelItemProps> = (props) => {
         {/* Favorite star - shown on hover or when favorited */}
         <Show when={props.guildId && props.guildName}>
           <button
-            class="p-0.5 rounded transition-all duration-200 shrink-0"
+            class="tap-target p-0.5 rounded transition-all duration-200 shrink-0"
             classList={{
               "text-yellow-400": isFavorited(props.channel.id),
               // Visible on hover, keyboard focus and touch screens (NAV-19)
@@ -326,7 +326,7 @@ const ChannelItem: Component<ChannelItemProps> = (props) => {
         {/* Settings button - shown on hover when onSettings provided */}
         <Show when={props.onSettings}>
           <button
-            class="p-1 text-text-secondary hover:text-text-primary hover:bg-white/10 rounded opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 touch:opacity-100 transition-all duration-200"
+            class="tap-target p-1 text-text-secondary hover:text-text-primary hover:bg-white/10 rounded opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 touch:opacity-100 transition-all duration-200"
             onClick={(e) => {
               e.stopPropagation();
               props.onSettings?.();

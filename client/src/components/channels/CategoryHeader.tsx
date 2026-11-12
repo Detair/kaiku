@@ -93,7 +93,7 @@ const CategoryHeader: Component<CategoryHeaderProps> = (props) => {
           <Show when={props.onCreateChannel}>
             <button
               type="button"
-              class="p-0.5 text-text-secondary hover:text-text-primary rounded hover:bg-white/10 transition-all duration-200"
+              class="tap-target p-0.5 text-text-secondary hover:text-text-primary rounded hover:bg-white/10 transition-all duration-200"
               onClick={() => props.onCreateChannel?.()}
               title={t("channels.category.createChannel")} aria-label={t("channels.category.createChannel")}
             >
@@ -103,7 +103,7 @@ const CategoryHeader: Component<CategoryHeaderProps> = (props) => {
           <Show when={props.onSettings}>
             <button
               type="button"
-              class="p-0.5 text-text-secondary hover:text-text-primary rounded hover:bg-white/10 transition-all duration-200"
+              class="tap-target p-0.5 text-text-secondary hover:text-text-primary rounded hover:bg-white/10 transition-all duration-200"
               onClick={() => props.onSettings?.()}
               title={t("channels.category.settings")} aria-label={t("channels.category.settings")}
             >
