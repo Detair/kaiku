@@ -13,6 +13,7 @@ import {
   createSignal,
   createEffect,
   onCleanup,
+  onMount,
   createMemo,
   untrack,
 } from "solid-js";
@@ -194,6 +195,24 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
     }
   });
 
+  // Over the sidebar the panel is not a dialog, and the browser ignores
+  // `autofocus` while the button that opened it holds the focus: take the
+  // focus here and hand it back on close, unless it has moved elsewhere.
+  // In the global search the dialog does both.
+  let panelRef: HTMLDivElement | undefined;
+  let inputRef: HTMLInputElement | undefined;
+  onMount(() => {
+    if (props.mode === "global") return;
+    const opener =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    inputRef?.focus();
+    onCleanup(() => {
+      const active = document.activeElement;
+      const lost = !active || active === document.body || !!panelRef?.contains(active);
+      if (lost && opener?.isConnected) opener.focus();
+    });
+  });
+
   const placeholderText = () => {
     if (mode() === "dm") return t("chat.search.placeholder.dm");
     switch (scope()) {
@@ -232,6 +251,7 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
 
   return (
     <div
+      ref={panelRef}
       class="absolute inset-0 z-50 flex flex-col bg-surface-layer2"
       onKeyDown={(e) => {
         // The panel over the sidebar closes with Escape too (A11Y-1); in the
@@ -247,6 +267,7 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
         <div class="relative flex-1 max-w-md">
           <Search class="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-secondary" />
           <input
+            ref={inputRef}
             data-testid="search-input"
             type="text"
             placeholder={placeholderText()}

@@ -68,6 +68,32 @@ describe("SearchPanel", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it("takes the focus over the sidebar and hands it back on close", () => {
+    // The button that opens the panel holds the focus, so the browser
+    // ignores `autofocus` on the field.
+    const opener = document.createElement("button");
+    document.body.appendChild(opener);
+    opener.focus();
+    const view = render(() => <SearchPanel onClose={vi.fn()} />);
+    expect(document.activeElement).toBe(screen.getByTestId("search-input"));
+    view.unmount();
+    expect(document.activeElement).toBe(opener);
+    opener.remove();
+  });
+
+  it("leaves the focus alone on close when it has moved elsewhere", () => {
+    const opener = document.createElement("button");
+    const elsewhere = document.createElement("input");
+    document.body.append(opener, elsewhere);
+    opener.focus();
+    const view = render(() => <SearchPanel mode="dm" onClose={vi.fn()} />);
+    elsewhere.focus();
+    view.unmount();
+    expect(document.activeElement).toBe(elsewhere);
+    opener.remove();
+    elsewhere.remove();
+  });
+
   it("filters by a person's name instead of an internal id", async () => {
     vi.useFakeTimers();
     try {
