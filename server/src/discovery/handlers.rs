@@ -166,12 +166,14 @@ pub async fn join_discoverable(
     )
     .await?;
 
-    let ((), bumped) = crate::ws::access::bump_after_if(tx.commit(), |()| {
+    let ((), bumped) = crate::ws::access::bump_after_if(
         (rows_affected > 0).then_some(crate::ws::access::AccessChange::MemberJoined {
             guild_id,
             user_id: auth.id,
-        })
-    })
+        }),
+        tx.commit(),
+        |()| true,
+    )
     .await?;
     if let Some(bumped) = bumped {
         crate::ws::access::access_changed(&state, bumped).await;

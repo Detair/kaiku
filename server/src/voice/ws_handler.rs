@@ -232,6 +232,9 @@ async fn handle_join(
 
     sfu.setup_ice_handler(&peer);
     sfu.setup_track_handler(&peer, &room);
+    // What the owning socket's writes are fenced by: room content reaches it
+    // only while these epochs hold, or after a new check.
+    peer.set_admission(crate::ws::access::VoiceAdmission { guild_id, epochs });
 
     if let Some(replaced) = room.add_peer(peer.clone()).await? {
         release_replaced_media(&room, user_id, replaced, screen_share_limiter).await;

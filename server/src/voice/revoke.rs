@@ -15,7 +15,6 @@
 use std::sync::Arc;
 
 use sqlx::PgPool;
-use tokio::sync::mpsc;
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -176,7 +175,7 @@ pub async fn enforce_voice_access(
                     }
                 }
             }
-            if remove_with_notice(sfu, pool, limiter, &room, user_id, reason).await {
+            if remove_with_notice(sfu, pool, limiter, &room, user_id, None, reason).await {
                 removed += 1;
             }
         }
@@ -184,43 +183,33 @@ pub async fn enforce_voice_access(
     removed
 }
 
-/// Re-check the voice peer owned by the socket with queue `tx`.
+/// Remove the voice peer of session `session_id` after its own socket found
+/// its access gone (`ws::access`: revalidation after a bump, or the
+/// backstop), with `voice_removed { permission_lost }`.
 ///
-/// Runs after an access epoch of its room moved and on the socket's
-/// backstop; removes the peer with `permission_lost` if access is gone.
-/// Returns `false` if the check could not be made (database error), so the
-/// caller tries again.
-pub async fn recheck_socket_peer(
+/// A request that made the change removes the peer itself with its own
+/// reason; whichever comes first removes it, the other finds nothing.
+pub async fn remove_socket_peer(
     sfu: &Arc<SfuServer>,
     pool: &PgPool,
     limiter: Option<&ScreenShareLimiter>,
     user_id: Uuid,
-    tx: &mpsc::Sender<OutboundMsg>,
+    channel_id: Uuid,
+    session_id: Uuid,
 ) -> bool {
-    let Some((channel_id, _)) = sfu.find_peer_owned_by(user_id, tx).await else {
-        return true;
+    let Some(room) = sfu.get_room(channel_id).await else {
+        return false;
     };
-    match has_voice_access(pool, user_id, channel_id).await {
-        Ok(true) => true,
-        Ok(false) => {
-            if let Some(room) = sfu.get_room(channel_id).await {
-                remove_with_notice(
-                    sfu,
-                    pool,
-                    limiter,
-                    &room,
-                    user_id,
-                    VoiceRemovedReason::PermissionLost,
-                )
-                .await;
-            }
-            true
-        }
-        Err(e) => {
-            warn!(user_id = %user_id, error = %e, "Voice peer re-check failed; retried later");
-            false
-        }
-    }
+    remove_with_notice(
+        sfu,
+        pool,
+        limiter,
+        &room,
+        user_id,
+        Some(session_id),
+        VoiceRemovedReason::PermissionLost,
+    )
+    .await
 }
 
 async fn participants(room: &Room) -> Vec<Uuid> {
@@ -244,14 +233,16 @@ async fn channels_of_guild(pool: &PgPool, guild_id: Uuid, room_ids: &[Uuid]) -> 
     }
 }
 
-/// Remove `user_id`'s current peer from `room` and send `voice_removed` to
-/// the socket that owned it. Returns whether a peer was removed.
+/// Remove `user_id`'s current peer from `room` (only if it is session
+/// `only_session`, when given) and send `voice_removed` to the socket that
+/// owned it. Returns whether a peer was removed.
 async fn remove_with_notice(
     sfu: &Arc<SfuServer>,
     pool: &PgPool,
     limiter: Option<&ScreenShareLimiter>,
     room: &Room,
     user_id: Uuid,
+    only_session: Option<Uuid>,
     reason: VoiceRemovedReason,
 ) -> bool {
     let channel_id = room.channel_id;
@@ -261,6 +252,9 @@ async fn remove_with_notice(
     let owner = peer.signal_tx.clone();
     let session_id = peer.session_id;
     drop(peer);
+    if only_session.is_some_and(|s| s != session_id) {
+        return false;
+    }
 
     // Only this session: a newer join of the user is a separate decision.
     match leave_voice_internal(sfu, pool, user_id, channel_id, limiter, Some(session_id)).await {

@@ -571,6 +571,50 @@ pub mod test_hooks {
         }
     }
 
+    fn feed_write_pauses() -> &'static Mutex<HashMap<Uuid, Pause>> {
+        static PAUSES: OnceLock<Mutex<HashMap<Uuid, Pause>>> = OnceLock::new();
+        PAUSES.get_or_init(Mutex::default)
+    }
+
+    /// Pause the next server-feed (`guild:{id}`) or admin event a socket of
+    /// `user_id` is about to write, before its access decision (the event is
+    /// already queued).
+    pub fn pause_before_feed_write(user_id: Uuid) -> Pause {
+        arm();
+        let pause = Pause::default();
+        feed_write_pauses()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(user_id, pause.clone());
+        pause
+    }
+
+    pub(crate) async fn before_feed_write(user_id: Uuid) {
+        wait(feed_write_pauses(), user_id).await;
+    }
+
+    fn voice_leave_pauses() -> &'static Mutex<HashMap<Uuid, Pause>> {
+        static PAUSES: OnceLock<Mutex<HashMap<Uuid, Pause>>> = OnceLock::new();
+        PAUSES.get_or_init(Mutex::default)
+    }
+
+    /// Pause the next voice departure of `user_id` (whoever asks for it: the
+    /// user, a revocation, the closing socket, the shutdown) before the peer
+    /// is removed.
+    pub fn pause_voice_leave(user_id: Uuid) -> Pause {
+        arm();
+        let pause = Pause::default();
+        voice_leave_pauses()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(user_id, pause.clone());
+        pause
+    }
+
+    pub(crate) async fn before_voice_leave(user_id: Uuid) {
+        wait(voice_leave_pauses(), user_id).await;
+    }
+
     async fn wait(map: &Mutex<HashMap<Uuid, Pause>>, user_id: Uuid) {
         if !armed() {
             return;

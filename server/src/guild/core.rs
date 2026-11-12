@@ -292,10 +292,17 @@ pub async fn delete_guild(
         core_q::delete_guild(&state.db, guild_id),
     )
     .await;
+    // Voice follows the bump before the presence cleanup (Valkey).
+    let deleted = match deleted {
+        Ok(((), bumped)) => {
+            crate::ws::access::access_changed(&state, bumped).await;
+            Ok(())
+        }
+        Err(e) => Err(e),
+    };
     crate::presence::connections::finish_guild_revocation(&state.redis, revocation, guild_id, None)
         .await;
-    let ((), bumped) = deleted?;
-    crate::ws::access::access_changed(&state, bumped).await;
+    deleted?;
 
     Ok(StatusCode::NO_CONTENT)
 }

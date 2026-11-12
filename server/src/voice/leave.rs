@@ -38,6 +38,7 @@ pub async fn leave_voice_internal(
     screen_share_limiter: Option<&ScreenShareLimiter>,
     expected_session: Option<Uuid>,
 ) -> Result<bool, VoiceError> {
+    crate::ws::test_hooks::before_voice_leave(user_id).await;
     let Some(room) = sfu.get_room(channel_id).await else {
         return match expected_session {
             Some(_) => Ok(false),

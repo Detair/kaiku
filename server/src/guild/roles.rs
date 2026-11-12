@@ -331,6 +331,9 @@ pub async fn update_role(
     }
 
     let (role, bumped) = crate::ws::access::bump_after_if(
+        body.permissions
+            .is_some()
+            .then_some(crate::ws::access::AccessChange::GuildRolesChanged { guild_id }),
         queries::update_role(
             &state.db,
             role_id,
@@ -340,11 +343,7 @@ pub async fn update_role(
             body.permissions.map(|p| p as i64),
             body.position,
         ),
-        |_| {
-            body.permissions
-                .is_some()
-                .then_some(crate::ws::access::AccessChange::GuildRolesChanged { guild_id })
-        },
+        |_| true,
     )
     .await?;
     if let Some(bumped) = bumped {
@@ -550,13 +549,9 @@ pub async fn remove_role(
     can_manage_role(ctx.computed_permissions, actor_position, position, None)?;
 
     let (rows_affected, bumped) = crate::ws::access::bump_after_if(
+        Some(crate::ws::access::AccessChange::MemberRolesChanged { guild_id, user_id }),
         queries::remove_role_from_member(&state.db, guild_id, user_id, role_id),
-        |n| {
-            (*n > 0).then_some(crate::ws::access::AccessChange::MemberRolesChanged {
-                guild_id,
-                user_id,
-            })
-        },
+        |n| *n > 0,
     )
     .await?;
 

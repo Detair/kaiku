@@ -20,7 +20,7 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use super::access::{ChannelScope, SocketAccess};
+use super::access::{ChannelScope, OwnedVoicePeer, SocketAccess, SubscribeCommit};
 use super::connection_limit::{ConnectionPermit, TOO_MANY_CONNECTIONS};
 use super::events::{
     broadcast_to_channel, channels, ClientEvent, ClientMessageState, OutboundMsg, ServerEvent,
@@ -271,12 +271,15 @@ async fn handle_post_connect_auth(socket: WebSocket, state: AppState, ip_permit:
         }
     };
     let received = match waited {
-        Ok(Ok(token)) => Ok(tokio::time::timeout(
-            AUTH_FRAME_TIMEOUT,
-            validate_auth_token(&state, &token),
-        )
-        .await
-        .unwrap_or(Err(AuthFrameError::Unavailable))),
+        Ok(Ok(token)) => {
+            let validating =
+                tokio::time::timeout(AUTH_FRAME_TIMEOUT, validate_auth_token(&state, &token));
+            let Some(validated) = shutdown.run_until_cancelled(validating).await else {
+                close_pre_auth(ws_sender, CLOSE_SERVICE_RESTART, CLOSE_REASON_RESTART).await;
+                return;
+            };
+            Ok(validated.unwrap_or(Err(AuthFrameError::Unavailable)))
+        }
         Ok(Err(e)) => Ok(Err(e)),
         Err(elapsed) => Err(elapsed),
     };
@@ -572,11 +575,12 @@ async fn handle_socket(
     info!("WebSocket connected: user={}", user_id);
     crate::observability::metrics::record_ws_connect();
 
-    // Spawn task to forward events to WebSocket. Channel events are admitted
-    // here, when their frame is written, so an access change also stops
-    // events that were queued before it.
+    // Spawn task to forward events to WebSocket. What an event needs in
+    // order to be written (see `OutboundMsg`) is decided here, when its frame
+    // is written, so an access change also stops events queued before it.
     let sender_access = access.clone();
-    let sender_sfu = state.sfu.clone();
+    let sender_state = state.clone();
+    let sender_admin = admin_subscribed.clone();
     let own_queue = tx.downgrade();
     let mut sender_handle: tokio::task::JoinHandle<()> = tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
@@ -589,11 +593,42 @@ async fn handle_socket(
                     }
                     write_event(&mut ws_sender, &event).await
                 }
+                OutboundMsg::Guild { guild_id, event } => {
+                    crate::ws::test_hooks::before_feed_write(user_id).await;
+                    if !sender_access.admit_guild(guild_id).await {
+                        continue;
+                    }
+                    write_event(&mut ws_sender, &event).await
+                }
                 OutboundMsg::Voice { channel_id, event } => {
-                    // Room content only while this socket's peer is in the
-                    // room (in memory, no database).
+                    // Room content only while this socket owns the peer in
+                    // that room (in memory) and its authorization for the
+                    // room is current (epochs; a database check only after
+                    // one moved).
                     crate::ws::test_hooks::before_channel_write(user_id).await;
-                    if !owns_live_peer(&sender_sfu, user_id, channel_id, &own_queue).await {
+                    let owned = match own_queue.upgrade() {
+                        Some(own) => {
+                            owned_voice_peer(&sender_state.sfu, user_id, Some(channel_id), &own)
+                                .await
+                        }
+                        None => None,
+                    };
+                    if !sender_access.admit_voice(owned.as_ref()).await {
+                        continue;
+                    }
+                    write_event(&mut ws_sender, &event).await
+                }
+                OutboundMsg::Admin(event) => {
+                    crate::ws::test_hooks::before_feed_write(user_id).await;
+                    if !admin_events_hold(
+                        Some(&sender_state),
+                        &sender_access,
+                        &sender_admin,
+                        user_id,
+                        session_id,
+                    )
+                    .await
+                    {
                         continue;
                     }
                     write_event(&mut ws_sender, &event).await
@@ -614,9 +649,20 @@ async fn handle_socket(
         }
     });
 
+    // A server shutdown interrupts every step of the setup below (reads,
+    // the subscription barrier, the first snapshot): the socket then skips
+    // what is left, sends Close 1012 and runs the normal cleanup. `None` from
+    // `run_until_cancelled` is that case; the reads fall back to empty.
+    let shutdown = state.ws_connections.shutdown_token();
+    let cancelled = || sqlx::Error::PoolClosed;
+
     // Presence peers (friends, then members of the user's servers; capped):
     // the socket subscribes to their presence and gets their snapshot.
-    let presence_peer_ids = match audience_mod::get_presence_peers(&state.db, user_id).await {
+    let presence_peer_ids = match shutdown
+        .run_until_cancelled(audience_mod::get_presence_peers(&state.db, user_id))
+        .await
+        .unwrap_or_else(|| Err(cancelled()))
+    {
         Ok(peers) => {
             debug!(
                 "User {} has {} presence peers for presence subscriptions",
@@ -632,7 +678,11 @@ async fn handle_socket(
     };
 
     // Fetch user's guild IDs for guild event subscriptions
-    let guild_ids = match db::get_user_guild_ids(&state.db, user_id).await {
+    let guild_ids = match shutdown
+        .run_until_cancelled(db::get_user_guild_ids(&state.db, user_id))
+        .await
+        .unwrap_or_else(|| Err(cancelled()))
+    {
         Ok(guilds) => {
             debug!(
                 "User {} is member of {} guilds for event subscriptions",
@@ -648,7 +698,14 @@ async fn handle_socket(
     };
 
     // Load block sets for event filtering
-    let blocked_ids = match block_cache::load_blocked_users(&state.db, &state.redis, user_id).await
+    let blocked_ids = match shutdown
+        .run_until_cancelled(block_cache::load_blocked_users(
+            &state.db,
+            &state.redis,
+            user_id,
+        ))
+        .await
+        .unwrap_or_else(|| Err(cancelled().into()))
     {
         Ok(ids) => {
             debug!("User {} has blocked {} users", user_id, ids.len());
@@ -659,7 +716,14 @@ async fn handle_socket(
             HashSet::new()
         }
     };
-    let blocked_by_ids = match block_cache::load_blocked_by(&state.db, &state.redis, user_id).await
+    let blocked_by_ids = match shutdown
+        .run_until_cancelled(block_cache::load_blocked_by(
+            &state.db,
+            &state.redis,
+            user_id,
+        ))
+        .await
+        .unwrap_or_else(|| Err(cancelled().into()))
     {
         Ok(ids) => {
             debug!("User {} is blocked by {} users", user_id, ids.len());
@@ -675,7 +739,9 @@ async fn handle_socket(
     let blocked_users: Arc<tokio::sync::RwLock<HashSet<Uuid>>> =
         Arc::new(tokio::sync::RwLock::new(blocked_set.clone()));
 
-    crate::ws::test_hooks::after_audience_read(user_id).await;
+    let _ = shutdown
+        .run_until_cancelled(crate::ws::test_hooks::after_audience_read(user_id))
+        .await;
 
     // Presence audience (authorization and delivery state under one lock;
     // see `presence_audience`).
@@ -715,9 +781,13 @@ async fn handle_socket(
     // Why the socket ends, if that warrants a Close frame (see `close_code`).
     let mut exit: Option<PubsubExit> = None;
 
-    match tokio::time::timeout(PUBSUB_READY_TIMEOUT, ready_rx).await {
-        Ok(Ok(())) => {}
-        Ok(Err(_)) => {
+    match shutdown
+        .run_until_cancelled(tokio::time::timeout(PUBSUB_READY_TIMEOUT, ready_rx))
+        .await
+    {
+        None => exit = Some(PubsubExit::ServerShutdown),
+        Some(Ok(Ok(()))) => {}
+        Some(Ok(Err(_))) => {
             // The pub/sub task returned before `ready`: keep its real reason.
             let reason = (&mut pubsub_handle)
                 .await
@@ -728,58 +798,12 @@ async fn handle_socket(
             );
             exit = Some(reason);
         }
-        Err(_) => {
+        Some(Err(_)) => {
             warn!("Pub/sub pipeline not ready in time: user={}", user_id);
             exit = Some(PubsubExit::SubscribeFailed);
         }
     }
 
-    // The session may have ended, or the account been banned, between
-    // authentication and the moment the subscriptions went live (the notice
-    // would have been missed): check both once more before announcing `Ready`.
-    // The denylist check fails closed like the authentication check: an
-    // unreachable denylist closes with 1013.
-    if exit.is_none() {
-        let sid = session_id.map(|sid| sid.to_string());
-        let session = check_session(&state, sid.as_deref(), user_id).await;
-        let refusal = match session {
-            SessionCheck::Revoked => Some((session_revoked_event(), PubsubExit::SessionRevoked)),
-            SessionCheck::Unavailable => {
-                exit = Some(PubsubExit::SessionCheckUnavailable);
-                None
-            }
-            SessionCheck::Active => {
-                match tokio::time::timeout(AUTH_FRAME_TIMEOUT, account_status(&state, user_id))
-                    .await
-                {
-                    Ok(Ok(AccountStatus::Banned)) => {
-                        Some((account_banned_event(), PubsubExit::AccountBanned))
-                    }
-                    Ok(Ok(AccountStatus::Missing)) => {
-                        Some((session_revoked_event(), PubsubExit::SessionRevoked))
-                    }
-                    // Pending password change cannot appear after a successful
-                    // handshake; a DB error or timeout keeps the handshake's
-                    // verdict.
-                    Ok(
-                        Ok(AccountStatus::Active | AccountStatus::PasswordChangeRequired) | Err(_),
-                    )
-                    | Err(_) => None,
-                }
-            }
-        };
-        if let Some((event, reason)) = refusal {
-            exit = Some(match send_outbound(&tx, event).await {
-                Ok(()) => reason,
-                Err(err) => err.into(),
-            });
-        }
-    }
-
-    // Peers, servers and block sets were read before the subscriptions went
-    // live; a change in between published a notice this socket never saw.
-    // Revalidate them now, before anything is forwarded or the snapshot is
-    // built (a database error closes with 1011 so the client reconnects).
     let ctx = AudienceCtx {
         state: &state,
         user_id,
@@ -790,34 +814,84 @@ async fn handle_socket(
         pending: &audience_pending,
     };
     if exit.is_none() {
-        match audience_mod::refresh_full(&ctx, ReloadMode::Initial).await {
-            Ok(true) => {}
-            Ok(false) => exit = Some(PubsubExit::SubscribeFailed),
-            Err(reason) => exit = Some(reason),
-        }
+        // The rest of the setup; `Some(reason)` ends the socket (no `Ready`
+        // unless it was already queued).
+        let finish_setup = async {
+            // The session may have ended, or the account been banned, between
+            // authentication and the moment the subscriptions went live (the
+            // notice would have been missed): check both once more before
+            // announcing `Ready`. The denylist check fails closed like the
+            // authentication check: an unreachable denylist closes with 1013.
+            let sid = session_id.map(|sid| sid.to_string());
+            let refusal = match check_session(&state, sid.as_deref(), user_id).await {
+                SessionCheck::Revoked => {
+                    Some((session_revoked_event(), PubsubExit::SessionRevoked))
+                }
+                SessionCheck::Unavailable => {
+                    return Some(PubsubExit::SessionCheckUnavailable);
+                }
+                SessionCheck::Active => {
+                    match tokio::time::timeout(AUTH_FRAME_TIMEOUT, account_status(&state, user_id))
+                        .await
+                    {
+                        Ok(Ok(AccountStatus::Banned)) => {
+                            Some((account_banned_event(), PubsubExit::AccountBanned))
+                        }
+                        Ok(Ok(AccountStatus::Missing)) => {
+                            Some((session_revoked_event(), PubsubExit::SessionRevoked))
+                        }
+                        // Pending password change cannot appear after a
+                        // successful handshake; a DB error or timeout keeps
+                        // the handshake's verdict.
+                        Ok(
+                            Ok(AccountStatus::Active | AccountStatus::PasswordChangeRequired)
+                            | Err(_),
+                        )
+                        | Err(_) => None,
+                    }
+                }
+            };
+            if let Some((event, reason)) = refusal {
+                return Some(match send_outbound(&tx, event).await {
+                    Ok(()) => reason,
+                    Err(err) => err.into(),
+                });
+            }
+
+            // Peers, servers and block sets were read before the
+            // subscriptions went live; a change in between published a notice
+            // this socket never saw. Revalidate them now, before anything is
+            // forwarded or the snapshot is built (a database error closes
+            // with 1011 so the client reconnects).
+            match audience_mod::refresh_full(&ctx, ReloadMode::Initial).await {
+                Ok(true) => {}
+                Ok(false) => return Some(PubsubExit::SubscribeFailed),
+                Err(reason) => return Some(reason),
+            }
+
+            // On a setup failure there is no `Ready`; the socket is closed
+            // below.
+            if let Err(err) = send_ready(user_id, &tx, start_tx).await {
+                return Some(err.into());
+            }
+            // The forwarder runs from here on (fences need it): the connect
+            // snapshot.
+            let peers: Vec<Uuid> = presence
+                .audience
+                .lock()
+                .await
+                .peers
+                .iter()
+                .copied()
+                .collect();
+            audience_mod::send_states(&ctx, &peers).await.err()
+        };
+        exit = shutdown
+            .run_until_cancelled(finish_setup)
+            .await
+            .unwrap_or(Some(PubsubExit::ServerShutdown));
     }
     drop(presence_peer_ids);
-
-    // On a setup failure there is no `Ready`; the socket is closed below.
-    if exit.is_none() {
-        if let Err(err) = send_ready(user_id, &tx, start_tx).await {
-            exit = Some(err.into());
-        }
-    }
-    // The forwarder runs from here on (fences need it): the connect snapshot.
-    if exit.is_none() {
-        let peers: Vec<Uuid> = presence
-            .audience
-            .lock()
-            .await
-            .peers
-            .iter()
-            .copied()
-            .collect();
-        if let Err(reason) = audience_mod::send_states(&ctx, &peers).await {
-            exit = Some(reason);
-        }
-    }
 
     // Only a fully set up socket counts as a device for presence.
     let presence_registered = exit.is_none();
@@ -864,13 +938,11 @@ async fn handle_socket(
         let mut wake_rx = super::access::registry().wake_receiver();
         let wake_enabled = !crate::ws::test_hooks::access_wake_disabled(user_id);
         let mut revalidate_at: Option<tokio::time::Instant> = None;
-        let mut voice_seen: Option<VoiceSeen> = None;
         let mut access_backstop = tokio::time::interval_at(
             tokio::time::Instant::now() + jittered(recheck_every),
             recheck_every,
         );
         access_backstop.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        let shutdown = state.ws_connections.shutdown_token();
         // Per-socket jitter on the wake debounce, so a server-wide bump does
         // not start every socket's revalidation in the same instant.
         let wake_debounce = super::access::WAKE_DEBOUNCE + random_up_to(WAKE_DEBOUNCE_JITTER);
@@ -912,19 +984,24 @@ async fn handle_socket(
                 }
 
                 changed = wake_rx.changed(), if wake_enabled => {
-                    if changed.is_ok()
-                        && revalidate_at.is_none()
-                        && (access.is_stale()
-                            || state.sfu.find_peer_owned_by(user_id, &tx).await.is_some())
-                    {
-                        revalidate_at = Some(tokio::time::Instant::now() + wake_debounce);
+                    if changed.is_ok() && revalidate_at.is_none() {
+                        // The voice scope follows the peer this socket owns
+                        // now; whether anything is stale is an in-memory
+                        // comparison of epochs.
+                        let owned = owned_voice_peer(&state.sfu, user_id, None, &tx).await;
+                        access.track_voice(owned.as_ref());
+                        if access.is_stale() {
+                            revalidate_at = Some(tokio::time::Instant::now() + wake_debounce);
+                        }
                     }
                 }
 
                 () = access.attention() => {
                     // A revalidation failed (`access_due` now includes its
-                    // retry), a channel was recorded unchecked, or it
-                    // recovered after dropping events.
+                    // retry), a scope needs one (a channel recorded
+                    // unchecked, an event dropped without a decision), the
+                    // voice peer lost access, or a scope recovered after
+                    // dropping events.
                     if access.is_stale() && revalidate_at.is_none() {
                         revalidate_at = Some(tokio::time::Instant::now() + wake_debounce);
                     }
@@ -950,7 +1027,6 @@ async fn handle_socket(
                         &access,
                         &admin_subscribed,
                         &tx,
-                        &mut voice_seen,
                         false,
                     ))
                     {
@@ -962,8 +1038,7 @@ async fn handle_socket(
                 _ = access_backstop.tick() => {
                     // Backstop for anything that changed access without a
                     // bump (e.g. a direct database edit): re-check every
-                    // channel, the admin flag and the voice peer.
-                    access.force_full();
+                    // channel, membership, the admin flag and the voice peer.
                     if let Err(reason) = or_shutdown!(revalidate_socket(
                         &state,
                         user_id,
@@ -971,7 +1046,6 @@ async fn handle_socket(
                         &access,
                         &admin_subscribed,
                         &tx,
-                        &mut voice_seen,
                         true,
                     ))
                     {
@@ -1017,13 +1091,12 @@ async fn handle_socket(
                             // Only answers to our own pings count, so a client
                             // cannot drive Valkey writes with unsolicited pongs.
                             if awaiting_pong {
-                                presence_socket_refresh(
+                                or_shutdown!(presence_socket_refresh(
                                     &state,
                                     user_id,
                                     socket_id,
                                     &mut announce_pending,
-                                )
-                                .await;
+                                ));
                             }
                             awaiting_pong = false;
                         }
@@ -1301,13 +1374,6 @@ async fn admin_events_allowed(state: &AppState, user_id: Uuid, session_id: Optio
             .unwrap_or(false)
 }
 
-/// The voice peer this socket last checked, and the epochs it was checked at.
-struct VoiceSeen {
-    channel_id: Uuid,
-    guild_id: Option<Uuid>,
-    snap: super::access::EpochSnapshot,
-}
-
 /// A random duration in `[0, max]`.
 fn random_up_to(max: Duration) -> Duration {
     let max_ms = u64::try_from(max.as_millis()).unwrap_or(0);
@@ -1336,23 +1402,30 @@ fn jittered(period: Duration) -> Duration {
     period.saturating_sub(span) + Duration::from_millis(u64::try_from(offset).unwrap_or(0))
 }
 
-/// Whether the socket whose queue is `own_queue` owns `user_id`'s current
-/// peer in the voice room `channel_id`.
-async fn owns_live_peer(
+/// The voice peer of `user_id` that the socket with queue `own` owns: in
+/// the room `channel_id`, or in any room (`None`). In memory only.
+async fn owned_voice_peer(
     sfu: &crate::voice::SfuServer,
     user_id: Uuid,
-    channel_id: Uuid,
-    own_queue: &mpsc::WeakSender<OutboundMsg>,
-) -> bool {
-    let Some(room) = sfu.get_room(channel_id).await else {
-        return false;
+    channel_id: Option<Uuid>,
+    own: &mpsc::Sender<OutboundMsg>,
+) -> Option<OwnedVoicePeer> {
+    let rooms = match channel_id {
+        Some(channel_id) => sfu.get_room(channel_id).await.into_iter().collect(),
+        None => sfu.rooms_snapshot().await,
     };
-    let Some(peer) = room.get_peer(user_id).await else {
-        return false;
-    };
-    own_queue
-        .upgrade()
-        .is_some_and(|tx| peer.signal_tx.same_channel(&tx))
+    for room in rooms {
+        if let Some(peer) = room.get_peer(user_id).await {
+            if peer.signal_tx.same_channel(own) {
+                return Some(OwnedVoicePeer {
+                    channel_id: room.channel_id,
+                    session_id: peer.session_id,
+                    admission: peer.admission(),
+                });
+            }
+        }
+    }
+    None
 }
 
 /// Write one event frame. A serialisation failure is logged and skipped.
@@ -1370,11 +1443,12 @@ async fn write_event(
 }
 
 /// Revalidate this socket after a bump (or, with `full`, on the backstop):
-/// the channel sets (`SocketAccess::refresh`), the admin event flag (when the
-/// user epoch moved) and the socket's own voice peer (when its epochs
-/// moved). A failed revalidation keeps the socket open (fail closed, retried
-/// with backoff) until it has failed for `FAILURE_CLOSE_AFTER` (1011).
-#[allow(clippy::too_many_arguments)]
+/// channels, server membership and the voice room in one pass
+/// (`SocketAccess::refresh`), then the admin event flag (when the user epoch
+/// moved). A voice peer whose access is gone is removed with
+/// `voice_removed`. A failed revalidation keeps the socket open (fail
+/// closed, retried with backoff) until it has failed for
+/// `FAILURE_CLOSE_AFTER` (1011).
 async fn revalidate_socket(
     state: &AppState,
     user_id: Uuid,
@@ -1382,9 +1456,15 @@ async fn revalidate_socket(
     access: &SocketAccess,
     admin_subscribed: &tokio::sync::RwLock<bool>,
     tx: &mpsc::Sender<OutboundMsg>,
-    voice_seen: &mut Option<VoiceSeen>,
     full: bool,
 ) -> Result<(), PubsubExit> {
+    // The voice scope follows the peer this socket owns now (before a full
+    // invalidation, so that covers it too).
+    let owned = owned_voice_peer(&state.sfu, user_id, None, tx).await;
+    access.track_voice(owned.as_ref());
+    if full {
+        access.force_full();
+    }
     if access.refresh().await.is_err()
         && access
             .failing_for()
@@ -1400,55 +1480,18 @@ async fn revalidate_socket(
         }
         access.set_admin_seen(epoch);
     }
-    recheck_voice(state, user_id, tx, voice_seen, full).await;
-    Ok(())
-}
-
-/// Re-check this socket's voice peer if the epochs of its room moved since
-/// the last check (or always, with `full`); remove it with `voice_removed`
-/// if access is gone.
-async fn recheck_voice(
-    state: &AppState,
-    user_id: Uuid,
-    tx: &mpsc::Sender<OutboundMsg>,
-    voice_seen: &mut Option<VoiceSeen>,
-    full: bool,
-) {
-    let Some((channel_id, _)) = state.sfu.find_peer_owned_by(user_id, tx).await else {
-        *voice_seen = None;
-        return;
-    };
-    let guild_id = match voice_seen.as_ref() {
-        Some(seen) if seen.channel_id == channel_id => seen.guild_id,
-        _ => match db::find_channel_by_id(&state.db, channel_id).await {
-            Ok(channel) => channel.and_then(|c| c.guild_id),
-            // Retried with the next wake or backstop.
-            Err(_) => return,
-        },
-    };
-    let snap = super::access::registry().snapshot(user_id, guild_id);
-    if !full
-        && voice_seen
-            .as_ref()
-            .is_some_and(|seen| seen.channel_id == channel_id && seen.snap == snap)
-    {
-        return;
-    }
-    if crate::voice::revoke::recheck_socket_peer(
-        &state.sfu,
-        &state.db,
-        state.screen_share_limiter.as_ref(),
-        user_id,
-        tx,
-    )
-    .await
-    {
-        *voice_seen = Some(VoiceSeen {
+    if let Some((channel_id, voice_session)) = access.take_voice_denied() {
+        crate::voice::revoke::remove_socket_peer(
+            &state.sfu,
+            &state.db,
+            state.screen_share_limiter.as_ref(),
+            user_id,
             channel_id,
-            guild_id,
-            snap,
-        });
+            voice_session,
+        )
+        .await;
     }
+    Ok(())
 }
 
 /// Handle a client message.
@@ -1486,6 +1529,12 @@ pub async fn handle_client_message(
         }
 
         ClientEvent::Subscribe { channel_id } => {
+            // A socket holds a bounded number of requested channels; refused
+            // before any database work.
+            if !access.has_room_for(channel_id) {
+                send_outbound(tx, too_many_subscriptions()).await?;
+                return Ok(());
+            }
             // Verify channel exists
             let Some(channel) = db::find_channel_by_id(&state.db, channel_id).await? else {
                 send_outbound(
@@ -1525,13 +1574,23 @@ pub async fn handle_client_message(
                     }
                     Err(_) => false,
                 };
-                if access.commit_subscribe(channel_id, scope, snap, granted) {
-                    decision = Some(granted);
-                    break;
+                match access.commit_subscribe(channel_id, scope, snap, granted) {
+                    SubscribeCommit::Recorded => {
+                        decision = Some(granted);
+                        break;
+                    }
+                    SubscribeCommit::Moved => {}
+                    SubscribeCommit::Full => {
+                        send_outbound(tx, too_many_subscriptions()).await?;
+                        return Ok(());
+                    }
                 }
             }
             let Some(granted) = decision else {
-                access.record_unchecked(channel_id, scope);
+                if !access.record_unchecked(channel_id, scope) {
+                    send_outbound(tx, too_many_subscriptions()).await?;
+                    return Ok(());
+                }
                 send_outbound(
                     tx,
                     OutboundMsg::Event(ServerEvent::Error {
@@ -1577,7 +1636,7 @@ pub async fn handle_client_message(
         ClientEvent::Typing { channel_id } => {
             // Only allow typing in channels the user is subscribed to and
             // may still view.
-            if !access.admit(channel_id).await {
+            if !access.may_act(channel_id).await {
                 return Ok(());
             }
 
@@ -1629,7 +1688,7 @@ pub async fn handle_client_message(
         ClientEvent::StopTyping { channel_id } => {
             // Only allow in channels the user is subscribed to and may still
             // view.
-            if !access.admit(channel_id).await {
+            if !access.may_act(channel_id).await {
                 return Ok(());
             }
 
@@ -2258,22 +2317,43 @@ async fn forward_until_reconnect(
     }
 }
 
-/// Whether this socket's admin event flag holds at the current user access
-/// epoch; re-checks it (and clears the flag if lost) when the epoch moved.
-async fn admin_events_current(params: &HandlePubsubParams) -> bool {
-    if params.access.admin_fresh() {
+/// Whether this socket may get an admin event now: it subscribed, and the
+/// flag holds at the current user access epoch. When the epoch moved, the
+/// flag is re-checked against the database (and cleared if lost). Asked by
+/// the forwarder and again by the sender when the frame is written.
+/// `state` is `None` in unit tests: a moved epoch then refuses.
+async fn admin_events_hold(
+    state: Option<&AppState>,
+    access: &SocketAccess,
+    admin_subscribed: &tokio::sync::RwLock<bool>,
+    user_id: Uuid,
+    session_id: Option<Uuid>,
+) -> bool {
+    if !*admin_subscribed.read().await {
+        return false;
+    }
+    if access.admin_fresh() {
         return true;
     }
-    let Some(state) = params.state.as_ref() else {
+    let Some(state) = state else {
         return false;
     };
-    let epoch = params.access.user_epoch_now();
-    let allowed = admin_events_allowed(state, params.user_id, params.session_id).await;
+    let epoch = access.user_epoch_now();
+    let allowed = admin_events_allowed(state, user_id, session_id).await;
     if !allowed {
-        *params.admin_subscribed.write().await = false;
+        *admin_subscribed.write().await = false;
     }
-    params.access.set_admin_seen(epoch);
+    access.set_admin_seen(epoch);
     allowed
+}
+
+/// The `error` event for a `subscribe` beyond the socket's limit.
+fn too_many_subscriptions() -> OutboundMsg {
+    OutboundMsg::Event(ServerEvent::Error {
+        code: "TOO_MANY_SUBSCRIPTIONS".to_string(),
+        message: "Too many channel subscriptions on this connection; unsubscribe from one first"
+            .to_string(),
+    })
 }
 
 /// Forward pub/sub messages to the socket's outbound queue until the pipeline
@@ -2452,7 +2532,12 @@ pub(crate) async fn forward_pubsub_messages(
                                 .and_then(|id| id.as_str())
                                 .and_then(|id| Uuid::parse_str(id).ok());
                             if let Some(channel_id) = channel_id {
-                                params.access.insert_direct(channel_id);
+                                if !params.access.insert_direct(channel_id) {
+                                    debug!(
+                                        "DM not auto-subscribed: connection at its subscription limit (user {})",
+                                        params.user_id
+                                    );
+                                }
                             } else {
                                 warn!(
                                     "DmCreated without a valid channel id (user {})",
@@ -2470,11 +2555,20 @@ pub(crate) async fn forward_pubsub_messages(
         // Handle admin events
         else if channel_name == channels::ADMIN_EVENTS {
             // Only forward if user is subscribed to admin events, checked at
-            // the current user access epoch (an elevation can end).
-            if *params.admin_subscribed.read().await && admin_events_current(params).await {
+            // the current user access epoch (an elevation can end); checked
+            // again when the frame is written.
+            if admin_events_hold(
+                params.state.as_ref(),
+                &params.access,
+                &params.admin_subscribed,
+                params.user_id,
+                params.session_id,
+            )
+            .await
+            {
                 if let Some(payload) = message.value.as_str() {
                     if let Ok(event) = serde_json::from_str::<ServerEvent>(&payload) {
-                        try_forward!(event);
+                        try_forward!(@msg OutboundMsg::Admin(event));
                     }
                 }
             }
@@ -2506,8 +2600,12 @@ pub(crate) async fn forward_pubsub_messages(
             }
         }
         // Handle guild events (guild:{uuid}) for state sync
-        else if channel_name.starts_with("guild:") {
-            // Forward guild/member patch events to all guild members
+        else if let Some(guild_id) = channel_name
+            .strip_prefix("guild:")
+            .and_then(|id| Uuid::parse_str(id).ok())
+        {
+            // Forward guild/member patch events to the server's members;
+            // membership is decided when the frame is written.
             if let Some(payload) = message.value.as_str() {
                 if let Ok(crate::presence::connections::PresenceNotice::PresenceAudienceChanged {
                     user_id,
@@ -2533,7 +2631,7 @@ pub(crate) async fn forward_pubsub_messages(
                     continue;
                 }
                 if let Ok(event) = serde_json::from_str::<ServerEvent>(&payload) {
-                    try_forward!(event);
+                    try_forward!(@msg OutboundMsg::Guild { guild_id, event });
                 }
             }
         }

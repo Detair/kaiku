@@ -301,14 +301,11 @@ pub async fn de_elevate_session(
     let removed_sessions = match auth.session_id {
         Some(session_id) => {
             let (removed, bumped) = crate::ws::access::bump_after_if(
+                Some(crate::ws::access::AccessChange::AdminAccessChanged {
+                    user_id: admin.user_id,
+                }),
                 queries::delete_elevated_session(&state.db, admin.user_id, session_id),
-                |removed: &Vec<_>| {
-                    (!removed.is_empty()).then_some(
-                        crate::ws::access::AccessChange::AdminAccessChanged {
-                            user_id: admin.user_id,
-                        },
-                    )
-                },
+                |removed: &Vec<_>| !removed.is_empty(),
             )
             .await?;
             if let Some(bumped) = bumped {

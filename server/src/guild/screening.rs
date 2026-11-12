@@ -163,9 +163,11 @@ pub async fn update_screening(
         .await?;
     }
     // Pending members promoted above can view channels now.
-    let ((), bumped) = crate::ws::access::bump_after_if(tx.commit(), |()| {
-        (!body.enabled).then_some(crate::ws::access::AccessChange::GuildRolesChanged { guild_id })
-    })
+    let ((), bumped) = crate::ws::access::bump_after_if(
+        (!body.enabled).then_some(crate::ws::access::AccessChange::GuildRolesChanged { guild_id }),
+        tx.commit(),
+        |()| true,
+    )
     .await?;
     if let Some(bumped) = bumped {
         crate::ws::access::access_changed(&state, bumped).await;
@@ -186,6 +188,10 @@ pub async fn accept_screening(
     // Flip pending → active only if the guild is screening-enabled and the
     // caller is currently pending.
     let (result, bumped) = crate::ws::access::bump_after_if(
+        Some(crate::ws::access::AccessChange::MemberJoined {
+            guild_id,
+            user_id: auth.id,
+        }),
         sqlx::query(
             "UPDATE guild_members SET membership_state = 'active', accepted_rules_at = NOW()
              WHERE guild_id = $1 AND user_id = $2 AND membership_state = 'pending'
@@ -194,12 +200,7 @@ pub async fn accept_screening(
         .bind(guild_id)
         .bind(auth.id)
         .execute(&state.db),
-        |result| {
-            (result.rows_affected() > 0).then_some(crate::ws::access::AccessChange::MemberJoined {
-                guild_id,
-                user_id: auth.id,
-            })
-        },
+        |result| result.rows_affected() > 0,
     )
     .await?;
 

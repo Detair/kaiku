@@ -202,14 +202,16 @@ pub async fn add_reaction(
 
     // A reaction role changes what the member may view: fenced right at
     // the commit.
-    let ((), bumped) = crate::ws::access::bump_after_if(tx.commit(), |()| {
+    let ((), bumped) = crate::ws::access::bump_after_if(
         hook_outcome.as_ref().map(|(guild_id, _)| {
             crate::ws::access::AccessChange::MemberRolesChanged {
                 guild_id: *guild_id,
                 user_id: auth_user.id,
             }
-        })
-    })
+        }),
+        tx.commit(),
+        |()| true,
+    )
     .await?;
     if let Some(bumped) = bumped {
         crate::ws::access::access_changed(&state, bumped).await;
@@ -363,14 +365,16 @@ pub async fn remove_reaction(
 
     // A reaction role changes what the member may view: fenced right at
     // the commit.
-    let ((), bumped) = crate::ws::access::bump_after_if(tx.commit(), |()| {
+    let ((), bumped) = crate::ws::access::bump_after_if(
         hook_outcome.as_ref().map(|(guild_id, _)| {
             crate::ws::access::AccessChange::MemberRolesChanged {
                 guild_id: *guild_id,
                 user_id: auth_user.id,
             }
-        })
-    })
+        }),
+        tx.commit(),
+        |()| true,
+    )
     .await?;
     if let Some(bumped) = bumped {
         crate::ws::access::access_changed(&state, bumped).await;

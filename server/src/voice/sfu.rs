@@ -1342,7 +1342,10 @@ mod fan_out_tests {
         for rx in [&mut healthy_a_rx, &mut healthy_b_rx] {
             assert!(matches!(
                 rx.try_recv(),
-                Ok(OutboundMsg::Event(ServerEvent::VoiceUserLeft { .. }))
+                Ok(OutboundMsg::Voice {
+                    event: ServerEvent::VoiceUserLeft { .. },
+                    ..
+                })
             ));
         }
         // The stalled peer only holds what it had before; its event was skipped.

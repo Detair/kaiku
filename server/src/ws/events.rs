@@ -1144,22 +1144,39 @@ pub enum ServerEvent {
 
 /// Internal outbound message envelope for the WebSocket sender task.
 /// Separates serializable server events from raw WS control frames (Ping, Close).
+///
+/// The variant says what must hold when the frame is **written** (see
+/// [`super::access`]); the sender task decides then, so an access change
+/// also stops what was queued before it.
 #[derive(Debug)]
 pub enum OutboundMsg {
+    /// Written as is: a reply to the socket's own request, or an event
+    /// addressed to this user that carries no channel, server or room
+    /// content.
     Event(ServerEvent),
     /// An event of a chat channel: written only if the socket may still view
-    /// the channel when the frame is written (see [`super::access`]).
+    /// the channel.
     Channel {
         channel_id: Uuid,
         event: ServerEvent,
     },
-    /// Content of the voice room `channel_id` (participants, media state,
-    /// signalling): written only if this socket still owns a live peer in
-    /// that room when the frame is written. Build it with [`Self::voice`].
+    /// An event of a server's own feed (`guild:{id}`: members, roles,
+    /// scheduled events, emoji): written only while the user is a member.
+    Guild {
+        guild_id: Uuid,
+        event: ServerEvent,
+    },
+    /// An event of the voice room `channel_id` (participants, media state,
+    /// signalling, departures): written only if this socket still owns a
+    /// peer in that room **and** its authorization for the room is current.
+    /// Build it with [`Self::voice`].
     Voice {
         channel_id: Uuid,
         event: ServerEvent,
     },
+    /// An admin event: written only while the socket's admin subscription
+    /// holds at the current access epoch.
+    Admin(ServerEvent),
     Ping,
     /// Send a Close frame with this code and reason, then stop the sender task.
     Close {
@@ -1169,18 +1186,16 @@ pub enum OutboundMsg {
 }
 
 impl OutboundMsg {
-    /// A voice room event for a peer of room `channel_id`. Departure notices
-    /// (someone left, a share or camera stopped) are always delivered — they
-    /// carry no content and must reach peers that are leaving too; everything
-    /// else is fenced by the peer's membership at write time.
+    /// An event of the voice room `channel_id` for one of its peers.
+    ///
+    /// Every room event is fenced, departures (`voice_user_left`,
+    /// `screen_share_stopped`, `webcam_stopped`) included: they say who was
+    /// in the room. What a socket is told about its **own** removal
+    /// (`voice_removed`) and errors answering its own requests
+    /// (`voice_error`) are plain [`Self::Event`]s.
     #[must_use]
     pub const fn voice(channel_id: Uuid, event: ServerEvent) -> Self {
-        match event {
-            ServerEvent::VoiceUserLeft { .. }
-            | ServerEvent::ScreenShareStopped { .. }
-            | ServerEvent::WebcamStopped { .. } => Self::Event(event),
-            event => Self::Voice { channel_id, event },
-        }
+        Self::Voice { channel_id, event }
     }
 }
 

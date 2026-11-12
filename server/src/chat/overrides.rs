@@ -195,15 +195,14 @@ pub async fn delete_override(
         .await?
         .flatten();
     let (deleted, bumped) = crate::ws::access::bump_after_if(
+        guild_id.map(
+            |guild_id| crate::ws::access::AccessChange::ChannelPermissionsChanged {
+                guild_id,
+                channel_id,
+            },
+        ),
         queries::delete_channel_override(&state.db, channel_id, role_id),
-        |deleted| {
-            guild_id.filter(|_| *deleted).map(|guild_id| {
-                crate::ws::access::AccessChange::ChannelPermissionsChanged {
-                    guild_id,
-                    channel_id,
-                }
-            })
-        },
+        |deleted| *deleted,
     )
     .await?;
     if !deleted {

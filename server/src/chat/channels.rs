@@ -264,14 +264,15 @@ pub async fn delete(
     let guild_id = db::find_channel_by_id(&state.db, id)
         .await?
         .and_then(|c| c.guild_id);
-    let (deleted, bumped) =
-        crate::ws::access::bump_after_if(db::delete_channel(&state.db, id), |deleted| {
-            deleted.then_some(crate::ws::access::AccessChange::ChannelDeleted {
-                guild_id,
-                channel_id: id,
-            })
-        })
-        .await?;
+    let (deleted, bumped) = crate::ws::access::bump_after_if(
+        Some(crate::ws::access::AccessChange::ChannelDeleted {
+            guild_id,
+            channel_id: id,
+        }),
+        db::delete_channel(&state.db, id),
+        |deleted| *deleted,
+    )
+    .await?;
 
     if deleted {
         if let Some(bumped) = bumped {

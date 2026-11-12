@@ -187,7 +187,7 @@ mod tests {
 
         // Verify VoiceRoomState includes username
         let msg = rx.recv().await.expect("Should receive VoiceRoomState");
-        let OutboundMsg::Event(event) = msg else {
+        let (OutboundMsg::Event(event) | OutboundMsg::Voice { event, .. }) = msg else {
             panic!("Expected Event")
         };
         match event {
@@ -396,7 +396,7 @@ mod tests {
     fn drain(rx: &mut mpsc::Receiver<OutboundMsg>) -> Vec<ServerEvent> {
         let mut events = Vec::new();
         while let Ok(msg) = rx.try_recv() {
-            if let OutboundMsg::Event(e) = msg {
+            if let OutboundMsg::Event(e) | OutboundMsg::Voice { event: e, .. } = msg {
                 events.push(e);
             }
         }

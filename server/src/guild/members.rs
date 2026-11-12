@@ -52,18 +52,27 @@ pub async fn leave_guild(
     )
     .await;
     crate::ws::test_hooks::before_revocation_commit(auth.id).await;
-    // Open connections are fenced before anything else happens after the
-    // commit (`bump_after`).
+    // Open connections are fenced in the poll in which the delete commits
+    // (`bump_after_if`), and voice follows before anything else: presence
+    // cleanup (Valkey) comes after.
     let removed = crate::ws::access::bump_after_if(
+        Some(crate::ws::access::AccessChange::MemberLeft {
+            guild_id,
+            user_id: auth.id,
+        }),
         core_q::delete_guild_member(&state.db, guild_id, auth.id),
-        |n| {
-            (*n > 0).then_some(crate::ws::access::AccessChange::MemberLeft {
-                guild_id,
-                user_id: auth.id,
-            })
-        },
+        |n| *n > 0,
     )
     .await;
+    let removed = match removed {
+        Ok((n, bumped)) => {
+            if let Some(bumped) = bumped {
+                crate::ws::access::access_changed(&state, bumped).await;
+            }
+            Ok(n)
+        }
+        Err(e) => Err(e),
+    };
     crate::ws::test_hooks::after_revocation_commit(auth.id).await;
     crate::presence::connections::finish_guild_revocation(
         &state.redis,
@@ -72,9 +81,7 @@ pub async fn leave_guild(
         Some(auth.id),
     )
     .await;
-    if let (_, Some(bumped)) = removed? {
-        crate::ws::access::access_changed(&state, bumped).await;
-    }
+    removed?;
 
     // Dispatch MemberLeft to bot ecosystem (non-blocking)
     {
@@ -190,11 +197,23 @@ pub async fn kick_member(
         &[user_id],
     )
     .await;
+    // Fenced in the poll in which the delete commits; voice follows before
+    // the presence cleanup (Valkey).
     let rows_affected = crate::ws::access::bump_after_if(
+        Some(crate::ws::access::AccessChange::MemberKicked { guild_id, user_id }),
         core_q::delete_guild_member(&state.db, guild_id, user_id),
-        |n| (*n > 0).then_some(crate::ws::access::AccessChange::MemberKicked { guild_id, user_id }),
+        |n| *n > 0,
     )
     .await;
+    let rows_affected = match rows_affected {
+        Ok((n, bumped)) => {
+            if let Some(bumped) = bumped {
+                crate::ws::access::access_changed(&state, bumped).await;
+            }
+            Ok(n)
+        }
+        Err(e) => Err(e),
+    };
     crate::presence::connections::finish_guild_revocation(
         &state.redis,
         revocation,
@@ -202,13 +221,9 @@ pub async fn kick_member(
         Some(user_id),
     )
     .await;
-    let (rows_affected, bumped) = rows_affected?;
 
-    if rows_affected == 0 {
+    if rows_affected? == 0 {
         return Err(GuildError::NotFound);
-    }
-    if let Some(bumped) = bumped {
-        crate::ws::access::access_changed(&state, bumped).await;
     }
 
     // Dispatch MemberLeft to bot ecosystem (non-blocking)

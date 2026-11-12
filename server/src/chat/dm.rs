@@ -430,13 +430,12 @@ pub async fn leave_dm(
     // The leaver's sockets stop getting this DM; a DM call they are in ends
     // for them.
     let (removed, bumped) = crate::ws::access::bump_after_if(
+        Some(crate::ws::access::AccessChange::DmLeft {
+            user_id: auth.id,
+            channel_id,
+        }),
         queries::remove_dm_participant(&state.db, channel_id, auth.id),
-        |removed| {
-            removed.then_some(crate::ws::access::AccessChange::DmLeft {
-                user_id: auth.id,
-                channel_id,
-            })
-        },
+        |removed| *removed,
     )
     .await?;
 
@@ -453,13 +452,12 @@ pub async fn leave_dm(
     // If channel is empty, delete it
     if participant_count == 0 {
         let (_, bumped) = crate::ws::access::bump_after_if(
+            Some(crate::ws::access::AccessChange::ChannelDeleted {
+                guild_id: None,
+                channel_id,
+            }),
             db::delete_channel(&state.db, channel_id),
-            |deleted| {
-                deleted.then_some(crate::ws::access::AccessChange::ChannelDeleted {
-                    guild_id: None,
-                    channel_id,
-                })
-            },
+            |deleted| *deleted,
         )
         .await?;
         if let Some(bumped) = bumped {
