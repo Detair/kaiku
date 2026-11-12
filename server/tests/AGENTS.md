@@ -68,7 +68,7 @@ state between tests**.
 | `TestApp::with_pool(pool)` | Most tests — plain axum router against the injected pool. |
 | `TestApp::with_pool_and_screen_share_limiter(pool)` | Tests that hit `/screenshare/{check,start,stop}` — handlers need a `ScreenShareLimiter` wired against Redis, otherwise they return 500. |
 | `TestApp::with_pool_and_config(pool, config)` | Tests that need a non-default `Config` (e.g., custom rate limits, specific JWT expiries). |
-| `fresh_test_app_with_s3_and_pool(pool)` | Tests that exercise the file-upload handlers; returns `(TestApp, bucket_name)` with a unique RustFS bucket. Requires `canis-dev-rustfs` on `localhost:9000` (or `TEST_S3_ENDPOINT`, e.g. `http://127.0.0.1:55445`) and the `AWS_*` env vars. |
+| `fresh_test_app_with_s3_and_pool(pool)` | Tests that exercise the file-upload handlers; returns `(TestApp, bucket_name)` with a unique RustFS bucket. Requires `canis-dev-rustfs` on `localhost:9000` (or `TEST_S3_ENDPOINT`, e.g. `http://127.0.0.1:55445`) and the `AWS_*` env vars. Guard such tests with `if !rustfs_available().await { return; }`: locally an unreachable store skips the test with one stderr line, with `CI` set it fails the test (CI runs a RustFS service). |
 
 ### Rules
 
