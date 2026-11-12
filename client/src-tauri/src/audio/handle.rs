@@ -362,31 +362,64 @@ impl StillHeld {
     }
 }
 
+/// A running playback: the control channel of its task and the task itself,
+/// which owns the output stream until it ends.
+struct PlaybackStream {
+    control: mpsc::Sender<PlaybackControl>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl StopInTwoSteps for PlaybackStream {
+    fn request_stop(&self) {
+        // Never waits: a full control queue gets the stop a moment later.
+        if let Err(mpsc::error::TrySendError::Full(stop)) =
+            self.control.try_send(PlaybackControl::Stop)
+        {
+            let control = self.control.clone();
+            tokio::spawn(async move {
+                let _ = control.send(stop).await;
+            });
+        }
+    }
+
+    async fn released(self) {
+        let _ = self.task.await;
+    }
+}
+
+/// The streams of a call that have not confirmed their release in time.
+struct NotReleased {
+    capture: Option<Releasing>,
+    mic_test: Option<Releasing>,
+    playback: Option<Releasing>,
+}
+
 /// Stop every audio stream of a call: each one is asked to stop before any
 /// release is waited for, then each release is awaited with its own bound
-/// (`limit` from now, for each). Returns the capture and microphone-test
-/// streams that have not confirmed their release in time; the caller keeps
-/// them. `stop_playback` only asks (playback has nothing to wait for).
-async fn stop_streams<C: StopInTwoSteps, M: StopInTwoSteps>(
+/// (`limit` from now, for each). Returns the streams that have not
+/// confirmed their release in time; the caller keeps them.
+async fn stop_streams<C: StopInTwoSteps, M: StopInTwoSteps, P: StopInTwoSteps>(
     capture: Option<C>,
     mic_test: Option<M>,
-    stop_playback: impl FnOnce(),
+    playback: Option<P>,
     limit: Duration,
-) -> (Option<Releasing>, Option<Releasing>) {
+) -> NotReleased {
     let capture = Releasing::begin("capture", capture);
     let mic_test = Releasing::begin("microphone test", mic_test);
-    stop_playback();
+    let playback = Releasing::begin("playback", playback);
 
     let deadline = tokio::time::Instant::now() + limit;
-    let capture = match capture {
-        Some(releasing) => releasing.confirm_by(deadline).await,
-        None => None,
+    let within = |releasing: Option<Releasing>| async move {
+        match releasing {
+            Some(releasing) => releasing.confirm_by(deadline).await,
+            None => None,
+        }
     };
-    let mic_test = match mic_test {
-        Some(releasing) => releasing.confirm_by(deadline).await,
-        None => None,
-    };
-    (capture, mic_test)
+    NotReleased {
+        capture: within(capture).await,
+        mic_test: within(mic_test).await,
+        playback: within(playback).await,
+    }
 }
 
 /// Build a stream on a dedicated thread and keep it alive until `Stop`.
@@ -625,6 +658,13 @@ pub struct AudioHandle {
 
     /// The same for microphone tests.
     mic_test_still_held: StillHeld,
+
+    /// The task that owns the running playback stream, if any.
+    playback_task: Option<tokio::task::JoinHandle<()>>,
+
+    /// Playback streams that were stopped but have not released the speaker
+    /// yet; a new playback waits for them.
+    playback_still_held: StillHeld,
 
     /// Selected input device id
     input_device_id: Option<String>,
@@ -1156,6 +1196,8 @@ impl AudioHandle {
             mic_test: None,
             capture_still_held: StillHeld::default(),
             mic_test_still_held: StillHeld::default(),
+            playback_task: None,
+            playback_still_held: StillHeld::default(),
             input_device_id: None,
             output_device_id: None,
             active_output: ActiveLabel::default(),
@@ -1508,6 +1550,11 @@ impl AudioHandle {
     ) -> Result<(), AudioError> {
         // Stop existing playback if running
         self.stop_playback().await;
+        // A playback of an earlier call that is still letting go of the
+        // speaker: wait for it (bounded) instead of opening it twice.
+        self.playback_still_held
+            .wait_free(RELEASE_WAIT_LIMIT)
+            .await?;
 
         let fell_back = self.begin_playback_generation();
         let device = self.get_device_or_default(self.output_device_id.as_deref(), false)?;
@@ -1523,7 +1570,8 @@ impl AudioHandle {
         self.playback_control = Some(control_tx);
 
         // Spawn playback task that owns the Stream
-        tokio::task::spawn_blocking(move || {
+        // The task owns the output stream: when it ends, the device is free.
+        self.playback_task = Some(tokio::task::spawn_blocking(move || {
             run_playback_task(
                 PlaybackOpen {
                     device,
@@ -1537,7 +1585,7 @@ impl AudioHandle {
                 &mut control_rx,
                 sink,
             );
-        });
+        }));
 
         self.await_playback_ready(ready_rx).await;
         info!("Audio playback started");
@@ -1554,6 +1602,11 @@ impl AudioHandle {
     ) -> Result<(), AudioError> {
         // Stop existing playback if running
         self.stop_playback().await;
+        // A playback of an earlier call that is still letting go of the
+        // speaker: wait for it (bounded) instead of opening it twice.
+        self.playback_still_held
+            .wait_free(RELEASE_WAIT_LIMIT)
+            .await?;
 
         let fell_back = self.begin_playback_generation();
         let device = self.get_device_or_default(self.output_device_id.as_deref(), false)?;
@@ -1569,7 +1622,8 @@ impl AudioHandle {
         self.playback_control = Some(control_tx);
 
         // Spawn PCM playback task that owns the Stream
-        tokio::task::spawn_blocking(move || {
+        // The task owns the output stream: when it ends, the device is free.
+        self.playback_task = Some(tokio::task::spawn_blocking(move || {
             run_pcm_playback_task(
                 PlaybackOpen {
                     device,
@@ -1583,7 +1637,7 @@ impl AudioHandle {
                 &mut control_rx,
                 sink,
             );
-        });
+        }));
 
         self.await_playback_ready(ready_rx).await;
         info!("PCM playback started (mixer output)");
@@ -1597,6 +1651,12 @@ impl AudioHandle {
             set_active(&self.active_output, None);
             debug!("Audio playback stopped");
         }
+        // Its task still owns the stream until it has ended: keep track.
+        self.playback_still_held
+            .keep(self.playback_task.take().map(|done| Releasing {
+                what: "playback",
+                done,
+            }));
     }
 
     /// Set muted state
@@ -1694,30 +1754,24 @@ impl AudioHandle {
     /// kind waits for it.
     pub async fn stop_all(&mut self) {
         self.capture_output_tx = None;
-        let playback = self.playback_control.take();
-        let active_output = self.active_output.clone();
-        let (capture, mic_test) = stop_streams(
+        let playback = match (self.playback_control.take(), self.playback_task.take()) {
+            (Some(control), Some(task)) => Some(PlaybackStream { control, task }),
+            _ => None,
+        };
+        if playback.is_some() {
+            set_active(&self.active_output, None);
+        }
+        let not_released = stop_streams(
             self.capture.take(),
             self.mic_test.take(),
-            move || {
-                if let Some(control) = playback {
-                    // Never waits: a full control queue gets the stop later.
-                    if let Err(mpsc::error::TrySendError::Full(stop)) =
-                        control.try_send(PlaybackControl::Stop)
-                    {
-                        tokio::spawn(async move {
-                            let _ = control.send(stop).await;
-                        });
-                    }
-                    set_active(&active_output, None);
-                }
-            },
+            playback,
             RELEASE_LIMIT,
         )
         .await;
         self.mic_test_level.store(0, Ordering::Relaxed);
-        self.capture_still_held.keep(capture);
-        self.mic_test_still_held.keep(mic_test);
+        self.capture_still_held.keep(not_released.capture);
+        self.mic_test_still_held.keep(not_released.mic_test);
+        self.playback_still_held.keep(not_released.playback);
         info!("All audio streams stopped");
     }
 }
@@ -2456,13 +2510,10 @@ mod tests {
         let never = Arc::new(tokio::sync::Notify::new());
         let started = tokio::time::Instant::now();
 
-        let (capture, mic_test) = stop_streams(
+        let not_released = stop_streams(
             Some(FakeStream::held_until("capture", &log, &never)),
             Some(FakeStream::quick("mic test", &log)),
-            {
-                let log = log.clone();
-                move || log.lock().unwrap().push("playback: stop requested".into())
-            },
+            Some(FakeStream::quick("playback", &log)),
             RELEASE_LIMIT,
         )
         .await;
@@ -2476,12 +2527,62 @@ mod tests {
                 "mic test: stop requested",
                 "playback: stop requested",
                 "mic test: released",
+                "playback: released",
             ]
         );
         // The wait was bounded, and the capture is still owned.
         assert_eq!(started.elapsed(), RELEASE_LIMIT);
-        assert!(capture.is_some());
-        assert!(mic_test.is_none());
+        assert!(not_released.capture.is_some());
+        assert!(not_released.mic_test.is_none());
+        assert!(not_released.playback.is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_playback_that_does_not_let_go_is_tracked_like_the_others() {
+        let log = StopLog::default();
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let started = tokio::time::Instant::now();
+
+        let not_released = stop_streams(
+            Some(FakeStream::quick("capture", &log)),
+            Some(FakeStream::quick("mic test", &log)),
+            Some(FakeStream::held_until("playback", &log, &gate)),
+            RELEASE_LIMIT,
+        )
+        .await;
+
+        // Capture and the microphone test were released although playback hangs.
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec![
+                "capture: stop requested",
+                "mic test: stop requested",
+                "playback: stop requested",
+                "capture: released",
+                "mic test: released",
+            ]
+        );
+        assert_eq!(started.elapsed(), RELEASE_LIMIT);
+        assert!(not_released.capture.is_none());
+        assert!(not_released.mic_test.is_none());
+        let mut playback_still_held = StillHeld::default();
+        playback_still_held.keep(not_released.playback);
+
+        // The next join's playback waits at most 5 s, then fails cleanly.
+        let waiting = tokio::time::Instant::now();
+        assert!(matches!(
+            playback_still_held.wait_free(RELEASE_WAIT_LIMIT).await,
+            Err(AudioError::StillReleasing)
+        ));
+        assert_eq!(waiting.elapsed(), RELEASE_WAIT_LIMIT);
+
+        // Once the old playback has let go, a later join gets the speaker.
+        gate.notify_one();
+        assert!(playback_still_held
+            .wait_free(RELEASE_WAIT_LIMIT)
+            .await
+            .is_ok());
+        assert_eq!(log.lock().unwrap().last().unwrap(), "playback: released");
     }
 
     #[tokio::test(start_paused = true)]
@@ -2494,30 +2595,31 @@ mod tests {
             release: None,
             release_after: Duration::from_millis(1500),
         };
-        let (capture, mic_test) = stop_streams(
+        let not_released = stop_streams(
             Some(slow("capture")),
             Some(slow("mic test")),
-            || {},
+            Some(slow("playback")),
             RELEASE_LIMIT,
         )
         .await;
-        assert!(capture.is_none());
-        assert!(mic_test.is_none());
+        assert!(not_released.capture.is_none());
+        assert!(not_released.mic_test.is_none());
+        assert!(not_released.playback.is_none());
     }
 
     #[tokio::test(start_paused = true)]
     async fn the_next_capture_waits_for_the_old_one_within_its_bound() {
         let log = StopLog::default();
         let gate = Arc::new(tokio::sync::Notify::new());
-        let (capture, _) = stop_streams(
+        let not_released = stop_streams(
             Some(FakeStream::held_until("capture", &log, &gate)),
             None::<FakeStream>,
-            || {},
+            None::<FakeStream>,
             RELEASE_LIMIT,
         )
         .await;
         let mut still_held = StillHeld::default();
-        still_held.keep(capture);
+        still_held.keep(not_released.capture);
 
         // The old capture lets go one second into the next call's wait.
         tokio::spawn({
@@ -2539,15 +2641,15 @@ mod tests {
     async fn the_next_capture_fails_cleanly_while_the_old_one_still_holds_the_device() {
         let log = StopLog::default();
         let never = Arc::new(tokio::sync::Notify::new());
-        let (capture, _) = stop_streams(
+        let not_released = stop_streams(
             Some(FakeStream::held_until("capture", &log, &never)),
             None::<FakeStream>,
-            || {},
+            None::<FakeStream>,
             RELEASE_LIMIT,
         )
         .await;
         let mut still_held = StillHeld::default();
-        still_held.keep(capture);
+        still_held.keep(not_released.capture);
 
         let waiting = tokio::time::Instant::now();
         let refused = still_held.wait_free(RELEASE_WAIT_LIMIT).await;
