@@ -37,6 +37,8 @@ pub enum VoiceAccessScope {
         user_id: Uuid,
         guild_id: Option<Uuid>,
     },
+    /// One user, in one room (left a group DM).
+    UserInChannel { user_id: Uuid, channel_id: Uuid },
     /// Everyone in the rooms of one server.
     Guild(Uuid),
     /// Everyone in one room.
@@ -83,6 +85,16 @@ pub async fn enforce_voice_access(
             for room in rooms.into_iter().filter(|r| r.channel_id == channel_id) {
                 let users = participants(&room).await;
                 candidates.push((room, users, unconditional));
+            }
+        }
+        VoiceAccessScope::UserInChannel {
+            user_id,
+            channel_id,
+        } => {
+            for room in rooms.into_iter().filter(|r| r.channel_id == channel_id) {
+                if room.get_peer(user_id).await.is_some() {
+                    candidates.push((room, vec![user_id], false));
+                }
             }
         }
         VoiceAccessScope::Guild(guild_id) => {
@@ -172,29 +184,41 @@ pub async fn enforce_voice_access(
     removed
 }
 
-/// Re-check the voice peer owned by the socket with queue `tx` (the socket's
-/// periodic backstop); remove it with `permission_lost` if access is gone.
+/// Re-check the voice peer owned by the socket with queue `tx`.
+///
+/// Runs after an access epoch of its room moved and on the socket's
+/// backstop; removes the peer with `permission_lost` if access is gone.
+/// Returns `false` if the check could not be made (database error), so the
+/// caller tries again.
 pub async fn recheck_socket_peer(
     sfu: &Arc<SfuServer>,
     pool: &PgPool,
     limiter: Option<&ScreenShareLimiter>,
     user_id: Uuid,
     tx: &mpsc::Sender<OutboundMsg>,
-) {
+) -> bool {
     let Some((channel_id, _)) = sfu.find_peer_owned_by(user_id, tx).await else {
-        return;
+        return true;
     };
-    if matches!(has_voice_access(pool, user_id, channel_id).await, Ok(false)) {
-        if let Some(room) = sfu.get_room(channel_id).await {
-            remove_with_notice(
-                sfu,
-                pool,
-                limiter,
-                &room,
-                user_id,
-                VoiceRemovedReason::PermissionLost,
-            )
-            .await;
+    match has_voice_access(pool, user_id, channel_id).await {
+        Ok(true) => true,
+        Ok(false) => {
+            if let Some(room) = sfu.get_room(channel_id).await {
+                remove_with_notice(
+                    sfu,
+                    pool,
+                    limiter,
+                    &room,
+                    user_id,
+                    VoiceRemovedReason::PermissionLost,
+                )
+                .await;
+            }
+            true
+        }
+        Err(e) => {
+            warn!(user_id = %user_id, error = %e, "Voice peer re-check failed; retried later");
+            false
         }
     }
 }

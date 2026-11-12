@@ -246,6 +246,15 @@ pub async fn join_via_invite(
     queries::increment_invite_use_count(&mut tx, invite.id).await?;
 
     tx.commit().await?;
+    // Channels this user asked for before (re-invite) become live again.
+    crate::ws::access::access_changed(
+        &state,
+        crate::ws::access::AccessChange::MemberJoined {
+            guild_id: invite.guild_id,
+            user_id: auth.id,
+        },
+    )
+    .await;
 
     // The new member and the existing members see each other's presence.
     crate::presence::connections::notify_guild_audience_changed(

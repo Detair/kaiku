@@ -351,6 +351,154 @@ pub mod test_hooks {
         wait(before_commit_pauses(), user_id).await;
     }
 
+    fn channel_write_pauses() -> &'static Mutex<HashMap<Uuid, Pause>> {
+        static PAUSES: OnceLock<Mutex<HashMap<Uuid, Pause>>> = OnceLock::new();
+        PAUSES.get_or_init(Mutex::default)
+    }
+
+    /// Pause the next channel event a socket of `user_id` is about to write,
+    /// before its access decision (the event is already queued).
+    pub fn pause_before_channel_write(user_id: Uuid) -> Pause {
+        let pause = Pause::default();
+        channel_write_pauses()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(user_id, pause.clone());
+        pause
+    }
+
+    pub(crate) async fn before_channel_write(user_id: Uuid) {
+        wait(channel_write_pauses(), user_id).await;
+    }
+
+    fn subscribe_pauses() -> &'static Mutex<HashMap<Uuid, Pause>> {
+        static PAUSES: OnceLock<Mutex<HashMap<Uuid, Pause>>> = OnceLock::new();
+        PAUSES.get_or_init(Mutex::default)
+    }
+
+    /// Pause the next `subscribe` of `user_id` after its permission check,
+    /// before its result is recorded.
+    pub fn pause_subscribe_after_check(user_id: Uuid) -> Pause {
+        let pause = Pause::default();
+        subscribe_pauses()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(user_id, pause.clone());
+        pause
+    }
+
+    pub(crate) async fn subscribe_after_check(user_id: Uuid) {
+        wait(subscribe_pauses(), user_id).await;
+    }
+
+    fn voice_join_pauses() -> &'static Mutex<HashMap<Uuid, Pause>> {
+        static PAUSES: OnceLock<Mutex<HashMap<Uuid, Pause>>> = OnceLock::new();
+        PAUSES.get_or_init(Mutex::default)
+    }
+
+    /// Pause the next voice join of `user_id` after its permission check,
+    /// before its peer is created and added to the room.
+    pub fn pause_voice_join_after_check(user_id: Uuid) -> Pause {
+        let pause = Pause::default();
+        voice_join_pauses()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(user_id, pause.clone());
+        pause
+    }
+
+    pub(crate) async fn voice_join_after_check(user_id: Uuid) {
+        wait(voice_join_pauses(), user_id).await;
+    }
+
+    fn access_counters() -> &'static Mutex<HashMap<Uuid, (usize, usize)>> {
+        static COUNTERS: OnceLock<Mutex<HashMap<Uuid, (usize, usize)>>> = OnceLock::new();
+        COUNTERS.get_or_init(Mutex::default)
+    }
+
+    /// Count the access revalidation reads of `user_id`'s sockets from now
+    /// on (see [`access_reads`]).
+    pub fn count_access_reads(user_id: Uuid) {
+        access_counters()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(user_id, (0, 0));
+    }
+
+    /// `(revalidations, batched reads)` of `user_id`'s sockets since
+    /// [`count_access_reads`].
+    ///
+    /// A batched read is one `filter_viewable_channels_in_guilds` call (at
+    /// most 4 SQL statements) or one DM participation query.
+    pub fn access_reads(user_id: Uuid) -> (usize, usize) {
+        access_counters()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&user_id)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn count_access_read(user_id: Uuid, reads: usize) {
+        if let Some(entry) = access_counters()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_mut(&user_id)
+        {
+            entry.0 += 1;
+            entry.1 += reads;
+        }
+    }
+
+    fn failing_access_reads() -> &'static Mutex<HashMap<Uuid, usize>> {
+        static FAILING: OnceLock<Mutex<HashMap<Uuid, usize>>> = OnceLock::new();
+        FAILING.get_or_init(Mutex::default)
+    }
+
+    /// Make the next `n` access revalidations of `user_id`'s sockets fail
+    /// like a database error.
+    pub fn fail_access_reads(user_id: Uuid, n: usize) {
+        failing_access_reads()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(user_id, n);
+    }
+
+    pub(crate) fn access_read_fails(user_id: Uuid) -> bool {
+        let mut map = failing_access_reads()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match map.get_mut(&user_id) {
+            Some(n) if *n > 0 => {
+                *n -= 1;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn wake_disabled() -> &'static Mutex<std::collections::HashSet<Uuid>> {
+        static DISABLED: OnceLock<Mutex<std::collections::HashSet<Uuid>>> = OnceLock::new();
+        DISABLED.get_or_init(Mutex::default)
+    }
+
+    /// Sockets of `user_id` opened from now on do not revalidate when woken
+    /// by a bump (only at write time and on the backstop), so a test can
+    /// show that delivery itself is fenced.
+    pub fn disable_access_wake(user_id: Uuid) {
+        wake_disabled()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(user_id);
+    }
+
+    pub(crate) fn access_wake_disabled(user_id: Uuid) -> bool {
+        wake_disabled()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(&user_id)
+    }
+
     async fn wait(map: &Mutex<HashMap<Uuid, Pause>>, user_id: Uuid) {
         let pause = map
             .lock()

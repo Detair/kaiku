@@ -201,6 +201,17 @@ pub async fn add_reaction(
     .await?;
 
     tx.commit().await?;
+    // A reaction role changes what the member may view.
+    if let Some((guild_id, _)) = &hook_outcome {
+        crate::ws::access::access_changed(
+            &state,
+            crate::ws::access::AccessChange::MemberRolesChanged {
+                guild_id: *guild_id,
+                user_id: auth_user.id,
+            },
+        )
+        .await;
+    }
 
     // Broadcast after commit.
     if result.rows_affected() > 0 {
@@ -349,6 +360,17 @@ pub async fn remove_reaction(
     }
 
     tx.commit().await?;
+    // A reaction role changes what the member may view.
+    if let Some((guild_id, _)) = &hook_outcome {
+        crate::ws::access::access_changed(
+            &state,
+            crate::ws::access::AccessChange::MemberRolesChanged {
+                guild_id: *guild_id,
+                user_id: auth_user.id,
+            },
+        )
+        .await;
+    }
 
     // Only broadcast if a row was actually deleted
     if result.rows_affected() > 0 {

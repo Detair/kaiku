@@ -20,7 +20,7 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use super::access::AccessEpoch;
+use super::access::{ChannelScope, SocketAccess};
 use super::connection_limit::{ConnectionPermit, TOO_MANY_CONNECTIONS};
 use super::events::{
     broadcast_to_channel, channels, ClientEvent, ClientMessageState, OutboundMsg, ServerEvent,
@@ -88,6 +88,16 @@ const SUBSCRIBER_BROADCAST_CAPACITY: usize = 1024;
 
 /// Close reason sent with 1011/1013: the client should reconnect and resync.
 const CLOSE_REASON_RESYNC: &str = "RESYNC";
+
+/// Close code: the server is restarting; reconnect (with backoff) and catch
+/// up. Clients treat every close code except 1008 as "reconnect" (C11).
+const CLOSE_SERVICE_RESTART: u16 = 1012;
+
+/// Close reason sent with [`CLOSE_SERVICE_RESTART`].
+const CLOSE_REASON_RESTART: &str = "SERVER_RESTART";
+
+/// Most `subscribe` checks in a row when access epochs keep moving.
+const SUBSCRIBE_ATTEMPTS: usize = 4;
 
 /// Extract JWT token from Sec-WebSocket-Protocol header.
 ///
@@ -242,19 +252,25 @@ async fn handle_post_connect_auth(socket: WebSocket, state: AppState, ip_permit:
     // The 5 s budget covers receiving the Authenticate frame only; validating
     // it (session denylist, account status lookup) runs afterwards on its own
     // 5 s budget, and running out of that one closes with 1013 like a Valkey
-    // outage.
-    let received =
-        match tokio::time::timeout(AUTH_FRAME_TIMEOUT, wait_for_auth_frame(&mut ws_receiver)).await
-        {
-            Ok(Ok(token)) => Ok(tokio::time::timeout(
-                AUTH_FRAME_TIMEOUT,
-                validate_auth_token(&state, &token),
-            )
-            .await
-            .unwrap_or(Err(AuthFrameError::Unavailable))),
-            Ok(Err(e)) => Ok(Err(e)),
-            Err(elapsed) => Err(elapsed),
-        };
+    // outage. A server shutdown meanwhile closes with 1012.
+    let shutdown = state.ws_connections.shutdown_token();
+    let waited = tokio::select! {
+        waited = tokio::time::timeout(AUTH_FRAME_TIMEOUT, wait_for_auth_frame(&mut ws_receiver)) => waited,
+        () = shutdown.cancelled() => {
+            close_pre_auth(ws_sender, CLOSE_SERVICE_RESTART, CLOSE_REASON_RESTART).await;
+            return;
+        }
+    };
+    let received = match waited {
+        Ok(Ok(token)) => Ok(tokio::time::timeout(
+            AUTH_FRAME_TIMEOUT,
+            validate_auth_token(&state, &token),
+        )
+        .await
+        .unwrap_or(Err(AuthFrameError::Unavailable))),
+        Ok(Err(e)) => Ok(Err(e)),
+        Err(elapsed) => Err(elapsed),
+    };
     let (user_id, session_id) = match received {
         Ok(Ok(authed)) => authed,
         Ok(Err(AuthFrameError::Refused(refusal))) => {
@@ -533,9 +549,8 @@ async fn handle_socket(
     // Channel for sending messages to the WebSocket
     let (tx, mut rx) = mpsc::channel::<OutboundMsg>(OUTBOUND_QUEUE_CAPACITY);
 
-    // Track subscribed channels
-    let subscribed_channels: Arc<tokio::sync::RwLock<HashSet<Uuid>>> =
-        Arc::new(tokio::sync::RwLock::new(HashSet::new()));
+    // Requested and allowed channels, fenced by access epochs (`ws::access`).
+    let access = SocketAccess::new(user_id, state.db.clone());
 
     // Track admin event subscription
     let admin_subscribed: Arc<tokio::sync::RwLock<bool>> =
@@ -548,17 +563,21 @@ async fn handle_socket(
     info!("WebSocket connected: user={}", user_id);
     crate::observability::metrics::record_ws_connect();
 
-    // Spawn task to forward events to WebSocket
+    // Spawn task to forward events to WebSocket. Channel events are admitted
+    // here, when their frame is written, so an access change also stops
+    // events that were queued before it.
+    let sender_access = access.clone();
     let mut sender_handle: tokio::task::JoinHandle<()> = tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
             let send_result = match msg {
-                OutboundMsg::Event(event) => match serde_json::to_string(&event) {
-                    Ok(json) => ws_sender.send(Message::Text(json.into())).await,
-                    Err(e) => {
-                        error!("Failed to serialize event: {}", e);
+                OutboundMsg::Event(event) => write_event(&mut ws_sender, &event).await,
+                OutboundMsg::Channel { channel_id, event } => {
+                    crate::ws::test_hooks::before_channel_write(user_id).await;
+                    if !sender_access.admit(channel_id).await {
                         continue;
                     }
-                },
+                    write_event(&mut ws_sender, &event).await
+                }
                 OutboundMsg::Ping => ws_sender.send(Message::Ping(vec![].into())).await,
                 OutboundMsg::Close { code, reason } => {
                     let frame = CloseFrame {
@@ -649,14 +668,14 @@ async fn handle_socket(
     // so cleanup can `QUIT` it: fred keeps the connection (and its
     // subscriptions) alive after the last handle is dropped.
     let subscriber = new_subscriber_client(&state.redis);
-    let access_epoch = Arc::new(AccessEpoch::default());
     let (ready_tx, ready_rx) = oneshot::channel();
     let (start_tx, start_rx) = oneshot::channel();
     let mut pubsub_handle: tokio::task::JoinHandle<PubsubExit> = tokio::spawn(handle_pubsub(
         subscriber.clone(),
         HandlePubsubParams {
             tx: tx.clone(),
-            subscribed_channels: subscribed_channels.clone(),
+            access: access.clone(),
+            state: Some(state.clone()),
             admin_subscribed: admin_subscribed.clone(),
             blocked_users: blocked_users.clone(),
             user_id,
@@ -666,8 +685,6 @@ async fn handle_socket(
             presence: presence.clone(),
             audience_tx,
             audience_pending: audience_pending.clone(),
-            db: state.db.clone(),
-            access_epoch: access_epoch.clone(),
         },
         ready_tx,
         start_rx,
@@ -794,7 +811,6 @@ async fn handle_socket(
         // Per-connection mutable state for rate limiting and deduplication
         let mut msg_state = ClientMessageState {
             session_id,
-            access_epoch: access_epoch.clone(),
             ..ClientMessageState::default()
         };
 
@@ -822,9 +838,89 @@ async fn handle_socket(
             tokio::time::interval_at(tokio::time::Instant::now() + recheck_every, recheck_every);
         session_recheck.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
+        // Access: woken by every bump (cheap staleness check, then a
+        // debounced revalidation), a retry after a failed revalidation, and a
+        // jittered backstop that re-checks everything.
+        let mut wake_rx = super::access::registry().wake_receiver();
+        let wake_enabled = !crate::ws::test_hooks::access_wake_disabled(user_id);
+        let mut revalidate_at: Option<tokio::time::Instant> = None;
+        let mut voice_seen: Option<VoiceSeen> = None;
+        let mut access_backstop = tokio::time::interval_at(
+            tokio::time::Instant::now() + jittered(recheck_every),
+            recheck_every,
+        );
+        access_backstop.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let shutdown = state.ws_connections.shutdown_token();
+
         // Handle incoming messages with heartbeat
         loop {
+            let access_due = match (revalidate_at, access.retry_at()) {
+                (Some(a), Some(b)) => Some(a.max(b)),
+                (a, b) => a.or(b),
+            };
             tokio::select! {
+                () = shutdown.cancelled() => {
+                    info!("Server shutting down: closing socket of user={}", user_id);
+                    exit = Some(PubsubExit::ServerShutdown);
+                    break;
+                }
+
+                changed = wake_rx.changed(), if wake_enabled => {
+                    if changed.is_ok()
+                        && revalidate_at.is_none()
+                        && (access.is_stale()
+                            || state.sfu.find_peer_owned_by(user_id, &tx).await.is_some())
+                    {
+                        revalidate_at =
+                            Some(tokio::time::Instant::now() + super::access::WAKE_DEBOUNCE);
+                    }
+                }
+
+                () = access.attention() => {
+                    // A revalidation failed: `access_due` now includes its retry.
+                }
+
+                () = sleep_until_opt(access_due) => {
+                    revalidate_at = None;
+                    if let Err(reason) = revalidate_socket(
+                        &state,
+                        user_id,
+                        session_id,
+                        &access,
+                        &admin_subscribed,
+                        &tx,
+                        &mut voice_seen,
+                        false,
+                    )
+                    .await
+                    {
+                        exit = Some(reason);
+                        break;
+                    }
+                }
+
+                _ = access_backstop.tick() => {
+                    // Backstop for anything that changed access without a
+                    // bump (e.g. a direct database edit): re-check every
+                    // channel, the admin flag and the voice peer.
+                    access.force_full();
+                    if let Err(reason) = revalidate_socket(
+                        &state,
+                        user_id,
+                        session_id,
+                        &access,
+                        &admin_subscribed,
+                        &tx,
+                        &mut voice_seen,
+                        true,
+                    )
+                    .await
+                    {
+                        exit = Some(reason);
+                        break;
+                    }
+                }
+
                 msg = ws_receiver.next() => {
                     match msg {
                         Some(Ok(Message::Text(text))) => {
@@ -833,7 +929,7 @@ async fn handle_socket(
                                 user_id,
                                 &state,
                                 &tx,
-                                &subscribed_channels,
+                                &access,
                                 &admin_subscribed,
                                 &mut msg_state,
                             )
@@ -889,23 +985,7 @@ async fn handle_socket(
                 _ = session_recheck.tick() => {
                     let sid = session_id.map(|sid| sid.to_string());
                     match check_session(&state, sid.as_deref(), user_id).await {
-                        SessionCheck::Active => {
-                            // Backstop for a lost access notice: re-check every
-                            // subscription and the admin event subscription.
-                            if let Err(reason) = recheck_access(
-                                &state,
-                                user_id,
-                                session_id,
-                                &subscribed_channels,
-                                &admin_subscribed,
-                                &tx,
-                            )
-                            .await
-                            {
-                                exit = Some(reason);
-                                break;
-                            }
-                        }
+                        SessionCheck::Active => {}
                         SessionCheck::Revoked => {
                             exit = Some(match send_outbound(&tx, session_revoked_event()).await {
                                 Ok(()) => PubsubExit::SessionRevoked,
@@ -1159,43 +1239,135 @@ async fn admin_events_allowed(state: &AppState, user_id: Uuid, session_id: Optio
         && crate::admin::is_elevated_admin(&state.redis, &state.db, user_id, session_id).await
 }
 
-/// Periodic backstop for access changes whose notice was lost: re-check every
-/// channel subscription, the admin event subscription and this socket's voice
-/// peer. A database error on the subscriptions ends the socket (1011) so the
-/// client reconnects with fresh checks.
-async fn recheck_access(
+/// The voice peer this socket last checked, and the epochs it was checked at.
+struct VoiceSeen {
+    channel_id: Uuid,
+    guild_id: Option<Uuid>,
+    snap: super::access::EpochSnapshot,
+}
+
+/// Resolves at `at`, or never.
+async fn sleep_until_opt(at: Option<tokio::time::Instant>) {
+    match at {
+        Some(at) => tokio::time::sleep_until(at).await,
+        None => std::future::pending().await,
+    }
+}
+
+/// `period`, shifted by a random amount of up to a sixth of it (at most
+/// 10 s) in either direction, so sockets that connected together do not run
+/// their backstops together.
+fn jittered(period: Duration) -> Duration {
+    let span = (period / 6).min(Duration::from_secs(10));
+    let span_ms = u64::try_from(span.as_millis()).unwrap_or(0);
+    if span_ms == 0 {
+        return period;
+    }
+    let offset = Uuid::new_v4().as_u128() % u128::from(2 * span_ms + 1);
+    period.saturating_sub(span) + Duration::from_millis(u64::try_from(offset).unwrap_or(0))
+}
+
+/// Write one event frame. A serialisation failure is logged and skipped.
+async fn write_event(
+    ws_sender: &mut futures::stream::SplitSink<WebSocket, Message>,
+    event: &ServerEvent,
+) -> Result<(), axum::Error> {
+    match serde_json::to_string(event) {
+        Ok(json) => ws_sender.send(Message::Text(json.into())).await,
+        Err(e) => {
+            error!("Failed to serialize event: {}", e);
+            Ok(())
+        }
+    }
+}
+
+/// Revalidate this socket after a bump (or, with `full`, on the backstop):
+/// the channel sets (`SocketAccess::refresh`), the admin event flag (when the
+/// user epoch moved) and the socket's own voice peer (when its epochs
+/// moved). A failed revalidation keeps the socket open (fail closed, retried
+/// with backoff) until it has failed for `FAILURE_CLOSE_AFTER` (1011).
+#[allow(clippy::too_many_arguments)]
+async fn revalidate_socket(
     state: &AppState,
     user_id: Uuid,
     session_id: Option<Uuid>,
-    subscribed_channels: &tokio::sync::RwLock<HashSet<Uuid>>,
+    access: &SocketAccess,
     admin_subscribed: &tokio::sync::RwLock<bool>,
     tx: &mpsc::Sender<OutboundMsg>,
+    voice_seen: &mut Option<VoiceSeen>,
+    full: bool,
 ) -> Result<(), PubsubExit> {
-    super::access::revalidate_subscriptions(&state.db, user_id, subscribed_channels, None)
-        .await
-        .map_err(|_| PubsubExit::AccessCheckFailed)?;
-    if *admin_subscribed.read().await && !admin_events_allowed(state, user_id, session_id).await {
-        *admin_subscribed.write().await = false;
-        debug!("Admin {} lost admin events (no longer elevated)", user_id);
+    if access.refresh().await.is_err()
+        && access
+            .failing_for()
+            .is_some_and(|d| d >= super::access::FAILURE_CLOSE_AFTER)
+    {
+        return Err(PubsubExit::AccessCheckFailed);
     }
-    // This socket's voice peer, if any, must still have voice access.
-    crate::voice::revoke::recheck_socket_peer(
+    if *admin_subscribed.read().await && (full || !access.admin_fresh()) {
+        let epoch = access.user_epoch_now();
+        if !admin_events_allowed(state, user_id, session_id).await {
+            *admin_subscribed.write().await = false;
+            debug!("Admin {} lost admin events (no longer elevated)", user_id);
+        }
+        access.set_admin_seen(epoch);
+    }
+    recheck_voice(state, user_id, tx, voice_seen, full).await;
+    Ok(())
+}
+
+/// Re-check this socket's voice peer if the epochs of its room moved since
+/// the last check (or always, with `full`); remove it with `voice_removed`
+/// if access is gone.
+async fn recheck_voice(
+    state: &AppState,
+    user_id: Uuid,
+    tx: &mpsc::Sender<OutboundMsg>,
+    voice_seen: &mut Option<VoiceSeen>,
+    full: bool,
+) {
+    let Some((channel_id, _)) = state.sfu.find_peer_owned_by(user_id, tx).await else {
+        *voice_seen = None;
+        return;
+    };
+    let guild_id = match voice_seen.as_ref() {
+        Some(seen) if seen.channel_id == channel_id => seen.guild_id,
+        _ => match db::find_channel_by_id(&state.db, channel_id).await {
+            Ok(channel) => channel.and_then(|c| c.guild_id),
+            // Retried with the next wake or backstop.
+            Err(_) => return,
+        },
+    };
+    let snap = super::access::registry().snapshot(user_id, guild_id);
+    if !full
+        && voice_seen
+            .as_ref()
+            .is_some_and(|seen| seen.channel_id == channel_id && seen.snap == snap)
+    {
+        return;
+    }
+    if crate::voice::revoke::recheck_socket_peer(
         &state.sfu,
         &state.db,
         state.screen_share_limiter.as_ref(),
         user_id,
         tx,
     )
-    .await;
-    Ok(())
+    .await
+    {
+        *voice_seen = Some(VoiceSeen {
+            channel_id,
+            guild_id,
+            snap,
+        });
+    }
 }
 
 /// Handle a client message.
 ///
 /// **Internal:** Exposed for integration tests only.
-#[allow(clippy::implicit_hasher)]
 #[tracing::instrument(
-    skip(state, tx, subscribed_channels, admin_subscribed, msg_state, text),
+    skip(state, tx, access, admin_subscribed, msg_state, text),
     fields(user_id = %user_id)
 )]
 pub async fn handle_client_message(
@@ -1203,7 +1375,7 @@ pub async fn handle_client_message(
     user_id: Uuid,
     state: &AppState,
     tx: &mpsc::Sender<OutboundMsg>,
-    subscribed_channels: &Arc<tokio::sync::RwLock<HashSet<Uuid>>>,
+    access: &Arc<SocketAccess>,
     admin_subscribed: &Arc<tokio::sync::RwLock<bool>>,
     msg_state: &mut ClientMessageState,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -1226,12 +1398,8 @@ pub async fn handle_client_message(
         }
 
         ClientEvent::Subscribe { channel_id } => {
-            let epoch = msg_state.access_epoch.current();
             // Verify channel exists
-            if db::find_channel_by_id(&state.db, channel_id)
-                .await?
-                .is_none()
-            {
+            let Some(channel) = db::find_channel_by_id(&state.db, channel_id).await? else {
                 send_outbound(
                     tx,
                     OutboundMsg::Event(ServerEvent::Error {
@@ -1241,33 +1409,30 @@ pub async fn handle_client_message(
                 )
                 .await?;
                 return Ok(());
-            }
+            };
 
-            // Check if user has VIEW_CHANNEL permission
-            if crate::permissions::require_channel_access(&state.db, user_id, channel_id)
-                .await
-                .is_err()
-            {
-                send_outbound(
-                    tx,
-                    OutboundMsg::Event(ServerEvent::Error {
-                        code: "FORBIDDEN".to_string(),
-                        message: "You don't have permission to view this channel".to_string(),
-                    }),
-                )
-                .await?;
-                return Ok(());
-            }
+            let scope = channel
+                .guild_id
+                .map_or(ChannelScope::Direct, ChannelScope::Guild);
 
-            // Add to subscribed channels. An access notice processed while
-            // the check above ran may have missed this channel: check again.
-            subscribed_channels.write().await.insert(channel_id);
-            if msg_state.access_epoch.current() != epoch
-                && crate::permissions::require_channel_access(&state.db, user_id, channel_id)
-                    .await
-                    .is_err()
-            {
-                subscribed_channels.write().await.remove(&channel_id);
+            // Check VIEW_CHANNEL at the current access epochs and record the
+            // result only if they are still current; an access change in
+            // between makes the check run again (`ws::access`).
+            let mut granted = false;
+            let mut committed = false;
+            for _ in 0..SUBSCRIBE_ATTEMPTS {
+                let snap = access.snapshot(scope);
+                granted =
+                    crate::permissions::require_channel_access(&state.db, user_id, channel_id)
+                        .await
+                        .is_ok();
+                crate::ws::test_hooks::subscribe_after_check(user_id).await;
+                if access.commit_subscribe(channel_id, scope, snap, granted) {
+                    committed = true;
+                    break;
+                }
+            }
+            if !(committed && granted) {
                 send_outbound(
                     tx,
                     OutboundMsg::Event(ServerEvent::Error {
@@ -1288,7 +1453,7 @@ pub async fn handle_client_message(
         }
 
         ClientEvent::Unsubscribe { channel_id } => {
-            subscribed_channels.write().await.remove(&channel_id);
+            access.unsubscribe(channel_id);
             send_outbound(
                 tx,
                 OutboundMsg::Event(ServerEvent::Unsubscribed { channel_id }),
@@ -1298,9 +1463,9 @@ pub async fn handle_client_message(
         }
 
         ClientEvent::Typing { channel_id } => {
-            // Only allow typing in channels the user is subscribed to
-            // (subscription is already permission-gated)
-            if !subscribed_channels.read().await.contains(&channel_id) {
+            // Only allow typing in channels the user is subscribed to and
+            // may still view.
+            if !access.admit(channel_id).await {
                 return Ok(());
             }
 
@@ -1350,8 +1515,9 @@ pub async fn handle_client_message(
         }
 
         ClientEvent::StopTyping { channel_id } => {
-            // Only allow in channels the user is subscribed to
-            if !subscribed_channels.read().await.contains(&channel_id) {
+            // Only allow in channels the user is subscribed to and may still
+            // view.
+            if !access.admit(channel_id).await {
                 return Ok(());
             }
 
@@ -1545,7 +1711,9 @@ pub async fn handle_client_message(
             // The cached elevation counts only for a live full session (the
             // HTTP admin guard's committed-row check, B.4 rev 5): a probation
             // session never subscribes, even with an old elevation cached.
+            let epoch = access.user_epoch_now();
             let is_elevated = admin_events_allowed(state, user_id, msg_state.session_id).await;
+            access.set_admin_seen(epoch);
             if !is_elevated {
                 send_outbound(
                     tx,
@@ -1716,7 +1884,11 @@ async fn handle_component_interaction(
 /// Parameters for the Redis pub/sub handler.
 pub(crate) struct HandlePubsubParams {
     tx: mpsc::Sender<OutboundMsg>,
-    subscribed_channels: Arc<tokio::sync::RwLock<HashSet<Uuid>>>,
+    /// Requested and allowed channels (`ws::access`).
+    access: Arc<SocketAccess>,
+    /// For re-checking the admin event flag after the user's access epoch
+    /// moved (`None` in unit tests: admin events then need a fresh check).
+    state: Option<AppState>,
     admin_subscribed: Arc<tokio::sync::RwLock<bool>>,
     blocked_users: Arc<tokio::sync::RwLock<HashSet<Uuid>>>,
     user_id: Uuid,
@@ -1731,10 +1903,6 @@ pub(crate) struct HandlePubsubParams {
     audience_tx: mpsc::Sender<()>,
     /// What the woken socket loop has to recompute.
     audience_pending: Arc<std::sync::Mutex<AudiencePending>>,
-    /// Database for re-checking channel access on an access notice.
-    db: sqlx::PgPool,
-    /// Bumped for every access notice (see [`AccessEpoch`]).
-    access_epoch: Arc<AccessEpoch>,
 }
 
 /// Why a connection's pub/sub pipeline stopped.
@@ -1765,10 +1933,12 @@ pub(crate) enum PubsubExit {
     /// The account was found banned during socket setup; the client was told
     /// with an `error` event `ACCOUNT_BANNED`.
     AccountBanned,
-    /// Channel access could not be re-checked after an access change
-    /// (database error or timeout); the client reconnects and subscribes
-    /// again with fresh checks.
+    /// Channel access could not be re-checked for
+    /// `access::FAILURE_CLOSE_AFTER` (database errors or timeouts); the
+    /// client reconnects and subscribes again with fresh checks.
     AccessCheckFailed,
+    /// The server is shutting down (close 1012, reconnect).
+    ServerShutdown,
 }
 
 impl PubsubExit {
@@ -1781,6 +1951,7 @@ impl PubsubExit {
         match self {
             Self::SessionRevoked | Self::AccountBanned => Some(CLOSE_POLICY_VIOLATION),
             Self::SlowClient | Self::SessionCheckUnavailable => Some(CLOSE_TRY_AGAIN_LATER),
+            Self::ServerShutdown => Some(CLOSE_SERVICE_RESTART),
             Self::ClientGone => None,
             Self::ConnectFailed
             | Self::SubscribeFailed
@@ -1795,6 +1966,7 @@ impl PubsubExit {
         match self {
             Self::SessionRevoked => SESSION_REVOKED,
             Self::AccountBanned => ACCOUNT_BANNED,
+            Self::ServerShutdown => CLOSE_REASON_RESTART,
             _ => CLOSE_REASON_RESYNC,
         }
     }
@@ -1970,22 +2142,22 @@ async fn forward_until_reconnect(
     }
 }
 
-/// Handle an [`super::access::AccessNotice`]: re-check the subscriptions
-/// (`only` that channel, else all) before the next message is forwarded.
-async fn on_access_notice(
-    params: &HandlePubsubParams,
-    only: Option<Uuid>,
-) -> Result<(), PubsubExit> {
-    params.access_epoch.bump();
-    super::access::revalidate_subscriptions(
-        &params.db,
-        params.user_id,
-        &params.subscribed_channels,
-        only,
-    )
-    .await
-    .map(|_| ())
-    .map_err(|_| PubsubExit::AccessCheckFailed)
+/// Whether this socket's admin event flag holds at the current user access
+/// epoch; re-checks it (and clears the flag if lost) when the epoch moved.
+async fn admin_events_current(params: &HandlePubsubParams) -> bool {
+    if params.access.admin_fresh() {
+        return true;
+    }
+    let Some(state) = params.state.as_ref() else {
+        return false;
+    };
+    let epoch = params.access.user_epoch_now();
+    let allowed = admin_events_allowed(state, params.user_id, params.session_id).await;
+    if !allowed {
+        *params.admin_subscribed.write().await = false;
+    }
+    params.access.set_admin_seen(epoch);
+    allowed
 }
 
 /// Forward pub/sub messages to the socket's outbound queue until the pipeline
@@ -2002,7 +2174,10 @@ pub(crate) async fn forward_pubsub_messages(
 
     macro_rules! try_forward {
         ($event:expr) => {
-            if let Err(err) = send_outbound(&params.tx, OutboundMsg::Event($event)).await {
+            try_forward!(@msg OutboundMsg::Event($event))
+        };
+        (@msg $msg:expr) => {
+            if let Err(err) = send_outbound(&params.tx, $msg).await {
                 if err == OutboundSendError::TimedOut {
                     warn!(
                         "Closing slow WebSocket client (user {}): outbound queue full for {:?}",
@@ -2035,26 +2210,11 @@ pub(crate) async fn forward_pubsub_messages(
         // Handle channel events (channel:{uuid})
         if let Some(uuid_str) = channel_name.strip_prefix("channel:") {
             if let Ok(channel_id) = Uuid::parse_str(uuid_str) {
-                // Check if we're subscribed to this channel
-                if params
-                    .subscribed_channels
-                    .read()
-                    .await
-                    .contains(&channel_id)
-                {
+                // Requested and (as far as known now) allowed; the final
+                // decision is taken when the frame is written.
+                if params.access.may_forward(channel_id) {
                     // Parse and forward the event (with block filtering)
                     if let Some(payload) = message.value.as_str() {
-                        if let Ok(super::access::AccessNotice::AccessChanged {
-                            channel_id: named,
-                        }) = serde_json::from_str(&payload)
-                        {
-                            if let Err(exit) =
-                                on_access_notice(params, Some(named.unwrap_or(channel_id))).await
-                            {
-                                return exit;
-                            }
-                            continue;
-                        }
                         if let Ok(event) = serde_json::from_str::<ServerEvent>(&payload) {
                             // Filter events from blocked users
                             let blocked = params.blocked_users.read().await;
@@ -2078,7 +2238,7 @@ pub(crate) async fn forward_pubsub_messages(
                             drop(blocked);
 
                             if !should_filter {
-                                try_forward!(event);
+                                try_forward!(@msg OutboundMsg::Channel { channel_id, event });
                             }
                         }
                     }
@@ -2088,15 +2248,6 @@ pub(crate) async fn forward_pubsub_messages(
         // Handle user events (user:{uuid}) - for preferences sync across devices
         else if channel_name == user_channel {
             if let Some(payload) = message.value.as_str() {
-                // Internal access notices are consumed here, never forwarded.
-                if let Ok(super::access::AccessNotice::AccessChanged { channel_id }) =
-                    serde_json::from_str(&payload)
-                {
-                    if let Err(exit) = on_access_notice(params, channel_id).await {
-                        return exit;
-                    }
-                    continue;
-                }
                 // Internal session notices are consumed here, never forwarded.
                 if let Ok(notice) =
                     serde_json::from_str::<crate::auth::revocation::SessionNotice>(&payload)
@@ -2185,7 +2336,7 @@ pub(crate) async fn forward_pubsub_messages(
                                 .and_then(|id| id.as_str())
                                 .and_then(|id| Uuid::parse_str(id).ok());
                             if let Some(channel_id) = channel_id {
-                                params.subscribed_channels.write().await.insert(channel_id);
+                                params.access.insert_direct(channel_id);
                             } else {
                                 warn!(
                                     "DmCreated without a valid channel id (user {})",
@@ -2202,8 +2353,9 @@ pub(crate) async fn forward_pubsub_messages(
         }
         // Handle admin events
         else if channel_name == channels::ADMIN_EVENTS {
-            // Only forward if user is subscribed to admin events
-            if *params.admin_subscribed.read().await {
+            // Only forward if user is subscribed to admin events, checked at
+            // the current user access epoch (an elevation can end).
+            if *params.admin_subscribed.read().await && admin_events_current(params).await {
                 if let Some(payload) = message.value.as_str() {
                     if let Ok(event) = serde_json::from_str::<ServerEvent>(&payload) {
                         try_forward!(event);
@@ -2241,14 +2393,6 @@ pub(crate) async fn forward_pubsub_messages(
         else if channel_name.starts_with("guild:") {
             // Forward guild/member patch events to all guild members
             if let Some(payload) = message.value.as_str() {
-                if let Ok(super::access::AccessNotice::AccessChanged { channel_id }) =
-                    serde_json::from_str(&payload)
-                {
-                    if let Err(exit) = on_access_notice(params, channel_id).await {
-                        return exit;
-                    }
-                    continue;
-                }
                 if let Ok(crate::presence::connections::PresenceNotice::PresenceAudienceChanged {
                     user_id,
                     revoking,
@@ -2639,7 +2783,7 @@ mod pubsub_tests {
         btx.send(session_notice(params.user_id, vec![OTHER_SESSION]))
             .unwrap();
         btx.send(channel_message(CHANNEL, &typing_event())).unwrap();
-        params.subscribed_channels.write().await.insert(CHANNEL);
+        params.access.insert_direct(CHANNEL);
         drop(btx);
 
         assert_eq!(
@@ -2649,7 +2793,10 @@ mod pubsub_tests {
         // Only the channel event reaches the client.
         assert!(matches!(
             rx.recv().await,
-            Some(OutboundMsg::Event(ServerEvent::TypingStart { .. }))
+            Some(OutboundMsg::Channel {
+                event: ServerEvent::TypingStart { .. },
+                ..
+            })
         ));
         assert!(rx.try_recv().is_err());
     }
@@ -2658,7 +2805,12 @@ mod pubsub_tests {
         let (tx, rx) = mpsc::channel(capacity);
         let params = HandlePubsubParams {
             tx,
-            subscribed_channels: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
+            access: SocketAccess::new(
+                Uuid::from_u128(0x0192_0000_0000_7000_8000_0000_0000_00aa),
+                // Never connected: these tests cause no revalidation.
+                sqlx::PgPool::connect_lazy("postgres://localhost/unused").expect("lazy pool"),
+            ),
+            state: None,
             admin_subscribed: Arc::new(tokio::sync::RwLock::new(false)),
             blocked_users: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
             user_id: Uuid::from_u128(0x0192_0000_0000_7000_8000_0000_0000_00aa),
@@ -2668,9 +2820,6 @@ mod pubsub_tests {
             presence: PresenceState::new(Audience::default(), &[]),
             audience_tx: mpsc::channel(1).0,
             audience_pending: Arc::default(),
-            // Never connected: these tests send no access notices.
-            db: sqlx::PgPool::connect_lazy("postgres://localhost/unused").expect("lazy pool"),
-            access_epoch: Arc::default(),
         };
         (params, rx)
     }
@@ -2712,14 +2861,17 @@ mod pubsub_tests {
             forward_pubsub_messages(brx, &params).await,
             PubsubExit::StreamEnded
         ));
-        assert!(params.subscribed_channels.read().await.contains(&CHANNEL));
+        assert!(params.access.is_allowed(CHANNEL));
         assert!(matches!(
             rx.recv().await,
             Some(OutboundMsg::Event(ServerEvent::DmCreated { .. }))
         ));
         assert!(matches!(
             rx.recv().await,
-            Some(OutboundMsg::Event(ServerEvent::TypingStart { .. }))
+            Some(OutboundMsg::Channel {
+                event: ServerEvent::TypingStart { .. },
+                ..
+            })
         ));
     }
 
@@ -2917,7 +3069,7 @@ mod pubsub_tests {
     async fn forward_returns_slow_client_when_send_times_out() {
         let (btx, brx) = tokio::sync::broadcast::channel(8);
         let (params, _rx_never_drained) = test_params(1); // outbound capacity 1
-        params.subscribed_channels.write().await.insert(CHANNEL);
+        params.access.insert_direct(CHANNEL);
         for _ in 0..2 {
             btx.send(channel_message(CHANNEL, &typing_event())).unwrap();
         }
@@ -2936,7 +3088,7 @@ mod pubsub_tests {
         // socket stays open.
         let (btx, brx) = tokio::sync::broadcast::channel(8);
         let (params, mut rx) = test_params(1);
-        params.subscribed_channels.write().await.insert(CHANNEL);
+        params.access.insert_direct(CHANNEL);
         for _ in 0..3 {
             btx.send(channel_message(CHANNEL, &typing_event())).unwrap();
         }
@@ -2947,7 +3099,10 @@ mod pubsub_tests {
                 tokio::time::sleep(SLOW_CLIENT_SEND_TIMEOUT / 2).await;
                 assert!(matches!(
                     rx.recv().await,
-                    Some(OutboundMsg::Event(ServerEvent::TypingStart { .. }))
+                    Some(OutboundMsg::Channel {
+                        event: ServerEvent::TypingStart { .. },
+                        ..
+                    })
                 ));
             }
         };
@@ -2961,7 +3116,7 @@ mod pubsub_tests {
     async fn forward_returns_lagged_when_broadcast_overflows() {
         let (btx, brx) = tokio::sync::broadcast::channel(1);
         let (params, _rx) = test_params(16);
-        params.subscribed_channels.write().await.insert(CHANNEL);
+        params.access.insert_direct(CHANNEL);
         for _ in 0..3 {
             btx.send(channel_message(CHANNEL, &typing_event())).unwrap();
         }
@@ -2975,7 +3130,7 @@ mod pubsub_tests {
     async fn forward_returns_client_gone_when_outbound_closed() {
         let (btx, brx) = tokio::sync::broadcast::channel(8);
         let (params, rx) = test_params(16);
-        params.subscribed_channels.write().await.insert(CHANNEL);
+        params.access.insert_direct(CHANNEL);
         drop(rx);
         btx.send(channel_message(CHANNEL, &typing_event())).unwrap();
         assert!(matches!(
@@ -3006,7 +3161,7 @@ mod pubsub_tests {
         let (btx, brx) = tokio::sync::broadcast::channel::<PubsubMessage>(8);
         let (_reconnect_tx, reconnect_rx) = tokio::sync::broadcast::channel::<Server>(1);
         let (params, mut rx) = test_params(16);
-        params.subscribed_channels.write().await.insert(CHANNEL);
+        params.access.insert_direct(CHANNEL);
         btx.send(channel_message(CHANNEL, &typing_event())).unwrap();
         let forward = forward_until_reconnect(brx, reconnect_rx, &params);
         tokio::pin!(forward);
@@ -3014,7 +3169,10 @@ mod pubsub_tests {
             _ = &mut forward => panic!("forwarding stopped without a reason"),
             msg = rx.recv() => assert!(matches!(
                 msg,
-                Some(OutboundMsg::Event(ServerEvent::TypingStart { .. }))
+                Some(OutboundMsg::Channel {
+                event: ServerEvent::TypingStart { .. },
+                ..
+            })
             )),
         }
     }
@@ -3025,7 +3183,7 @@ mod pubsub_tests {
         let (_reconnect_tx, reconnect_rx) = tokio::sync::broadcast::channel::<Server>(1);
         let (start_tx, start_rx) = oneshot::channel();
         let (params, mut rx) = test_params(16);
-        params.subscribed_channels.write().await.insert(CHANNEL);
+        params.access.insert_direct(CHANNEL);
         let user_id = params.user_id;
         let tx = params.tx.clone();
 
@@ -3059,7 +3217,10 @@ mod pubsub_tests {
                 ));
                 assert!(matches!(
                     rx.recv().await,
-                    Some(OutboundMsg::Event(ServerEvent::TypingStart { .. }))
+                    Some(OutboundMsg::Channel {
+                event: ServerEvent::TypingStart { .. },
+                ..
+            })
                 ));
             } => {}
         }

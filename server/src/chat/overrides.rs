@@ -139,7 +139,10 @@ pub async fn set_override(
         queries::upsert_channel_override(&state.db, channel_id, role_id, allow, deny).await?;
     crate::ws::access::access_changed(
         &state,
-        crate::ws::access::AccessChange::ChannelPermissionsChanged { channel_id },
+        crate::ws::access::AccessChange::ChannelPermissionsChanged {
+            guild_id,
+            channel_id,
+        },
     )
     .await;
 
@@ -189,14 +192,22 @@ pub async fn delete_override(
         )));
     }
 
+    let guild_id = queries::find_channel_guild_id(&state.db, channel_id)
+        .await?
+        .flatten();
     if !queries::delete_channel_override(&state.db, channel_id, role_id).await? {
         return Err(ChatError::RoleNotFound);
     }
-    crate::ws::access::access_changed(
-        &state,
-        crate::ws::access::AccessChange::ChannelPermissionsChanged { channel_id },
-    )
-    .await;
+    if let Some(guild_id) = guild_id {
+        crate::ws::access::access_changed(
+            &state,
+            crate::ws::access::AccessChange::ChannelPermissionsChanged {
+                guild_id,
+                channel_id,
+            },
+        )
+        .await;
+    }
 
     Ok(Json(
         serde_json::json!({"deleted": true, "channel_id": channel_id, "role_id": role_id}),

@@ -194,6 +194,14 @@ async fn handle_join(
 ) -> Result<(), VoiceError> {
     info!(user_id = %user_id, channel_id = %channel_id, "User joining voice channel");
 
+    // The access epochs this join is decided at (`ws::access`): checked
+    // again once the peer is in the room.
+    let guild_id = crate::db::find_channel_by_id(pool, channel_id)
+        .await
+        .map_err(|e| VoiceError::Signaling(format!("Failed to load channel: {e}")))?
+        .and_then(|c| c.guild_id);
+    let epochs = crate::ws::access::registry().snapshot(user_id, guild_id);
+
     // Check if user has VIEW_CHANNEL and VOICE_CONNECT permissions
     let ctx = crate::permissions::require_channel_access(pool, user_id, channel_id)
         .await
@@ -204,6 +212,7 @@ async fn handle_join(
     }
 
     sfu.check_rate_limit(user_id).await?;
+    crate::ws::test_hooks::voice_join_after_check(user_id).await;
 
     let (username, display_name) = queries::find_user_username_display_name(pool, user_id)
         .await
@@ -226,6 +235,27 @@ async fn handle_join(
 
     if let Some(replaced) = room.add_peer(peer.clone()).await? {
         release_replaced_media(&room, user_id, replaced, screen_share_limiter).await;
+    }
+
+    // An access change that bumped its epoch before this point may have
+    // looked at the rooms before the peer was in: re-check now. A change
+    // after this point sees the peer (it bumps, then looks), so no join can
+    // slip past a revocation.
+    if crate::ws::access::registry().snapshot(user_id, guild_id) != epochs
+        && !super::revoke::has_voice_access(pool, user_id, channel_id)
+            .await
+            .unwrap_or(false)
+    {
+        super::leave::leave_voice_internal(
+            sfu,
+            pool,
+            user_id,
+            channel_id,
+            screen_share_limiter,
+            Some(peer.session_id),
+        )
+        .await?;
+        return Err(VoiceError::Unauthorized);
     }
 
     // In the dual-PC model, the server does NOT send an initial offer.

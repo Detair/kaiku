@@ -163,6 +163,14 @@ pub async fn update_screening(
         .await?;
     }
     tx.commit().await?;
+    // Pending members promoted above can view channels now.
+    if !body.enabled {
+        crate::ws::access::access_changed(
+            &state,
+            crate::ws::access::AccessChange::GuildRolesChanged { guild_id },
+        )
+        .await;
+    }
 
     Ok(Json(
         serde_json::json!({ "screening_enabled": body.enabled }),
@@ -192,6 +200,14 @@ pub async fn accept_screening(
     if affected == 0 {
         return Err(ScreeningError::NotPending);
     }
+    crate::ws::access::access_changed(
+        &state,
+        crate::ws::access::AccessChange::MemberJoined {
+            guild_id,
+            user_id: auth.id,
+        },
+    )
+    .await;
 
     if let Err(e) = crate::ws::broadcast_to_guild(
         &state.redis,

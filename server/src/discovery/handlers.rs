@@ -167,6 +167,16 @@ pub async fn join_discoverable(
     .await?;
 
     tx.commit().await?;
+    if rows_affected > 0 {
+        crate::ws::access::access_changed(
+            &state,
+            crate::ws::access::AccessChange::MemberJoined {
+                guild_id,
+                user_id: auth.id,
+            },
+        )
+        .await;
+    }
 
     // If no rows affected, user was already a member
     if rows_affected == 0 {

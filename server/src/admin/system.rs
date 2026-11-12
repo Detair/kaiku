@@ -307,6 +307,16 @@ pub async fn de_elevate_session(
         super::cache_elevated_status(&state.redis, *session_id, false, 60).await;
     }
     let removed = removed_sessions.len();
+    if removed > 0 {
+        // Sockets of the session stop getting admin events.
+        crate::ws::access::access_changed(
+            &state,
+            crate::ws::access::AccessChange::AdminAccessChanged {
+                user_id: admin.user_id,
+            },
+        )
+        .await;
+    }
 
     // Log the de-elevation if any sessions were deleted
     if removed > 0 {

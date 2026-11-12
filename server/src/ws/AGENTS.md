@@ -142,11 +142,14 @@ let subscribed_channels: Arc<RwLock<HashSet<Uuid>>> = Arc::new(RwLock::new(HashS
 
 **Auto-subscribe on `DmCreated`**: `POST /api/dm` publishes `DmCreated` on `user:{id}` of every participant (creator included) when the DM is newly created (an existing 1:1 DM sends nothing; group DMs are always new). In the `user:{id}` branch of `forward_pubsub_messages`, the socket inserts `channel["id"]` into `subscribed_channels` *before* forwarding the event. Redis keeps publish order on the subscriber connection, so the DM's first `channel:{id}` events (e.g. `MessageNew`) reach the socket without a client `Subscribe`.
 
-**Access revalidation** (`ws::access`): a subscription is checked at `subscribe` and again whenever access may have shrunk.
-- After the commit, kick, leave, ban, role add/remove on a member, role permission edit or delete, channel override set/delete, channel delete and server delete call `access::access_changed`, which publishes the internal `AccessNotice` (`{"type":"access_changed"}`, optional `channel_id`; bounded retry) on `user:{id}` (member changes, ban), `guild:{id}` (role edits, server delete) or `channel:{id}` (override changes, channel delete; only sockets subscribed to it see it, in order with its messages).
-- The forwarder consumes the notice (never forwarded) and re-checks the subscriptions with `require_channel_access` **inline**, before handling the next message, so nothing published after the notice reaches a socket that lost access. Failures are dropped silently (no event to the client); a database error or a re-check over 5 s ends the socket with **1011** (`PubsubExit::AccessCheckFailed`).
-- `subscribe` reads `ClientMessageState.access_epoch` before its check; if a notice was processed meanwhile it checks once more after adding the channel.
-- Backstop: on every session re-check tick (≤ 60 s) the socket re-checks all subscriptions and the admin event flag (`admin_events_allowed`), so a lost notice heals within a minute.
+**Access revalidation** (`ws::access`, single node): each socket keeps the channels the client **requested** (`subscribe`, `dm_created`) and the subset it may currently view (**allowed**). Only allowed channels' events reach the client; a revalidation recomputes allowed from requested in both directions, so access that comes back (re-invite, role granted again, override removed) restores the feed without a client action. No protocol change: no event tells the client about a dropped channel.
+- **Epochs**: a process-wide registry holds one epoch per server and one per user. Every change that can reduce or restore access calls `access::access_changed` after its commit; it bumps the epoch before its first `.await` (server: role permission edit or delete, override set/delete, channel delete, server delete, screening disabled; user: join via invite/discovery, screening accepted, kick, leave, ban, role add/remove incl. reaction roles, group-DM leave, admin de-elevation). The internal `AccessNotice` is published on `access:changed` in a detached task (500 ms bound) for a future multi-node setup; nothing subscribes to it yet.
+- **Delivery is fenced at write time**: the forwarder queues `channel:*` events as `OutboundMsg::Channel` (pre-filtered by requested/allowed), and the sender task calls `SocketAccess::admit` right before writing the frame. If the user's or the server's epoch moved since the allowed set was computed, it revalidates first. Steady state: atomic loads and a set lookup, no database work. Events published after a commit, or queued before it, are not written on stale authorization.
+- **`subscribe`** reads the epochs, checks `require_channel_access`, and records the result only if the epochs are unchanged (else checks again, up to 4 times; then `FORBIDDEN`).
+- **Revalidation** (`SocketAccess::refresh`) is scoped and batched: one `filter_viewable_channels_in_guilds` call for the stale servers' channels (≤ 4 SQL statements) and, after a user bump, one DM participation query. Concurrent bumps coalesce. Every bump wakes all sockets (`watch`); a stale socket, or one that owns a voice peer, revalidates after `WAKE_DEBOUNCE` (150 ms), so its admin flag and voice peer are re-checked without waiting for traffic. Backstop: every `session_recheck_secs` (≤ 60 s), first tick jittered by up to ±10 s, a full revalidation incl. admin flag and voice peer.
+- **Failure**: a failed revalidation (database error, 5 s timeout) removes the stale scopes' channels from allowed (fail closed) and retries with backoff (250 ms doubling to 5 s); after 30 s of failures the socket closes with 1011 (`AccessCheckFailed`).
+- **Admin events**: forwarded only while the admin flag was checked at the current user epoch; otherwise the forwarder re-checks it first.
+- Test hooks: `disable_access_wake`, `pause_before_channel_write`, `pause_subscribe_after_check`, `pause_voice_join_after_check`, `count_access_reads`/`access_reads`, `fail_access_reads`.
 
 **Unsubscribe**:
 1. Client sends `Unsubscribe { channel_id }` (when navigating away)
@@ -369,14 +372,14 @@ send_outbound(tx, OutboundMsg::Event(ServerEvent::Error {
 **Connection Drops**:
 - Network interruption: Client reconnects, re-subscribes to channels
 - Server restart: All clients disconnect, reconnect to new server instance
-- Graceful shutdown: Send `Close` frame with reason code (future)
+- Graceful shutdown: on SIGTERM/SIGINT the server first removes every voice peer (others get `voice_user_left`), then cancels `WsConnectionTracker::shutdown_token`; each socket (also one still waiting for its `authenticate` frame) closes with **1012** `SERVER_RESTART` and runs its normal cleanup. `main` waits at most 5 s for all sockets. Clients reconnect on 1012 like on 1011/1013 (C11: only 1008 is special).
 
 ### Rate Limiting
 
-**Connection attempts**: `/ws` is rate limited per client IP with `RateLimitCategory::WsConnect` (`rate_limit_by_ip`, default 20 per 60 s).
+**Connection attempts**: `/ws` is rate limited per client IP with `RateLimitCategory::WsConnect` (`rate_limit_by_ip`, default 60 per 60 s: a household of 15 devices behind one address reconnects at once after a restart).
 
 **Concurrent connections** (`connection_limit::WsConnectionTracker`, `AppState.ws_connections`, in-process because the server is a single node):
-- At most `WS_MAX_CONNECTIONS_PER_USER` (10) sockets per user and `WS_MAX_CONNECTIONS_PER_IP` (30) per client IP. The IP is derived exactly like the rate limiter's (`extract_client_ip` with the trusted proxies, `normalize_ip`: IPv6 per /64).
+- At most `WS_MAX_CONNECTIONS_PER_USER` (10) sockets per user and `WS_MAX_CONNECTIONS_PER_IP` (30) per client IP. The IP is derived exactly like the rate limiter's (`extract_client_ip` with the trusted proxies, `normalize_ip`: IPv4-mapped IPv6 as IPv4, IPv6 per /64). A socket that has not authenticated holds an IP slot and must send `authenticate` within 5 s. Without `RATE_LIMIT_TRUSTED_PROXIES` on a non-loopback listener, `main` logs a startup warning (behind a proxy every client would count as the proxy).
 - The IP slot is taken before the upgrade (HTTP 429 `TOO_MANY_CONNECTIONS`). The user slot is taken before the upgrade with header auth (429), or right after the `authenticate` frame (close **1013** `TOO_MANY_CONNECTIONS`), in both cases before `handle_socket` creates the Valkey subscriber.
 - Each slot is a `ConnectionPermit` that gives it back on `Drop`, held until `handle_socket` returns.
 

@@ -105,9 +105,6 @@ pub struct ClientMessageState {
     /// Session of the socket's token (`sid`); admin event subscription needs
     /// this session to be elevated.
     pub session_id: Option<Uuid>,
-    /// Access notices processed by this socket's forwarder (see
-    /// [`super::access::AccessEpoch`]).
-    pub access_epoch: std::sync::Arc<super::access::AccessEpoch>,
 }
 
 /// Default `pc_type` for backward compatibility with old clients.
@@ -1150,6 +1147,12 @@ pub enum ServerEvent {
 #[derive(Debug)]
 pub enum OutboundMsg {
     Event(ServerEvent),
+    /// An event of a chat channel: written only if the socket may still view
+    /// the channel when the frame is written (see [`super::access`]).
+    Channel {
+        channel_id: Uuid,
+        event: ServerEvent,
+    },
     Ping,
     /// Send a Close frame with this code and reason, then stop the sender task.
     Close {

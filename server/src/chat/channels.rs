@@ -261,12 +261,18 @@ pub async fn delete(
         return Err(ChatError::Forbidden);
     }
 
+    let guild_id = db::find_channel_by_id(&state.db, id)
+        .await?
+        .and_then(|c| c.guild_id);
     let deleted = db::delete_channel(&state.db, id).await?;
 
     if deleted {
         crate::ws::access::access_changed(
             &state,
-            crate::ws::access::AccessChange::ChannelDeleted { channel_id: id },
+            crate::ws::access::AccessChange::ChannelDeleted {
+                guild_id,
+                channel_id: id,
+            },
         )
         .await;
         Ok(StatusCode::NO_CONTENT)

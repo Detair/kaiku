@@ -7,6 +7,11 @@
 //!
 //! The counts live in this process: the server runs as a single node, like
 //! the voice SFU.
+//!
+//! The tracker also carries the shutdown signal for open sockets: on SIGTERM
+//! the server cancels [`WsConnectionTracker::shutdown_token`], every socket
+//! closes with 1012 and runs its normal cleanup, and the server waits until
+//! the IP slots (held by every socket, also before authentication) are free.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -14,6 +19,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use axum::extract::ConnectInfo;
 use axum::http::HeaderMap;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::ratelimit::{extract_client_ip, normalize_ip, TrustedProxies};
@@ -49,6 +55,7 @@ pub struct WsConnectionTracker {
     limits: ConnectionLimits,
     trusted: TrustedProxies,
     counts: Counts,
+    shutdown: CancellationToken,
 }
 
 /// One occupied slot; released when dropped.
@@ -83,7 +90,64 @@ impl WsConnectionTracker {
             },
             trusted,
             counts: Arc::default(),
+            shutdown: CancellationToken::new(),
         }
+    }
+
+    /// Cancelled when the server shuts down; every socket watches it.
+    #[must_use]
+    pub fn shutdown_token(&self) -> CancellationToken {
+        self.shutdown.clone()
+    }
+
+    /// Tell every open socket to close (1012) and clean up.
+    pub fn begin_shutdown(&self) {
+        self.shutdown.cancel();
+    }
+
+    /// Open sockets (every socket holds an IP slot, also before it has
+    /// authenticated).
+    #[must_use]
+    pub fn open_sockets(&self) -> usize {
+        self.counts
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .filter(|(slot, _)| matches!(slot, Slot::Ip(_)))
+            .map(|(_, n)| *n)
+            .sum()
+    }
+
+    /// Wait until every socket has finished (or `bound` passed). Returns the
+    /// number still open.
+    pub async fn wait_closed(&self, bound: std::time::Duration) -> usize {
+        let deadline = tokio::time::Instant::now() + bound;
+        loop {
+            let open = self.open_sockets();
+            if open == 0 || tokio::time::Instant::now() >= deadline {
+                return open;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+
+    /// Whether the per-IP cap could be counting a reverse proxy instead of
+    /// the clients: no trusted proxies are configured and the server listens
+    /// on more than loopback. Logged once at startup (see `main`).
+    #[must_use]
+    pub fn proxy_warning_applies(&self, bind_address: &str) -> bool {
+        if !self.trusted.is_empty() {
+            return false;
+        }
+        let host = bind_address
+            .rsplit_once(':')
+            .map_or(bind_address, |(host, _)| host)
+            .trim_start_matches('[')
+            .trim_end_matches(']');
+        !host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+            && host != "localhost"
     }
 
     /// The caps in force.
