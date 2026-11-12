@@ -98,7 +98,7 @@ Rate limiting also uses Valkey; see [rate-limiting.md](rate-limiting.md).
 | `S3_ENDPOINT` | unset (empty = unset) | S3-compatible endpoint (for example MinIO) |
 | `S3_BUCKET` | `voicechat` | Bucket for uploads |
 | `S3_PUBLIC_URL` | unset (empty = unset) | Public URL prefix for stored objects |
-| `S3_PRESIGN_EXPIRY` | `3600` | Presigned URL lifetime in seconds (minimum 1) |
+| `S3_PRESIGN_EXPIRY` | `300` | Presigned URL lifetime in seconds (minimum 1). A file link keeps working until it expires, even if the viewer has lost access or the file was deleted meanwhile; keep it short |
 | `AWS_ACCESS_KEY_ID` | unset (empty = unset) | S3 access key |
 | `AWS_SECRET_ACCESS_KEY` | unset (empty = unset) | S3 secret key |
 | `ALLOWED_MIME_TYPES` | unset (server default) | Comma-separated list of accepted upload MIME types |

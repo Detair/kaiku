@@ -41,7 +41,7 @@ Ensure your `.env` file contains the S3 configuration:
 # S3 Configuration (RustFS for development)
 S3_ENDPOINT=http://localhost:9000
 S3_BUCKET=voicechat
-S3_PRESIGN_EXPIRY=3600
+S3_PRESIGN_EXPIRY=300
 
 # AWS Credentials (must match RUSTFS_ACCESS_KEY / RUSTFS_SECRET_KEY in docker-compose.dev.yml)
 AWS_ACCESS_KEY_ID=rustfsdev

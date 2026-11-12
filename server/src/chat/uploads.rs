@@ -893,7 +893,9 @@ pub async fn download(
         ),
         (
             axum::http::header::CACHE_CONTROL,
-            "private, max-age=31536000, immutable".to_string(),
+            // Only the viewer's own cache, and at most an hour: a deleted
+            // file or lost access is not served from cache for long.
+            "private, max-age=3600".to_string(),
         ),
         (
             HeaderName::from_static("x-content-type-options"),

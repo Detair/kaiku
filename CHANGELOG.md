@@ -91,6 +91,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Android: admins set up phones from their own phone.** Create the account (no password), choose "Set up a phone", and type the code the new phone shows; existing accounts wait 24 hours with notices to everyone involved. "Remove device now" for stolen phones. See `docs/admin-guide/ops/phone-setup.md`.
 
 ### Changed
+- Bots now see and write only where their roles allow, like members: a bot without a role has only what `@everyone` may do. Bots in private channels, or in channels where `@everyone` may not write, stop receiving messages and commands there and cannot answer. Server owners who want a bot in such a channel give the bot a role that has "View channel" (and "Send messages" to answer) for it.
+- File links (`/api/messages/attachments/{id}/url`) are valid for 5 minutes by default instead of an hour (`S3_PRESIGN_EXPIRY`), and downloaded files are kept in the viewer's own cache for at most an hour, so a file whose access was removed or that was deleted does not stay reachable for long.
 - The sign-in page puts passkey and phone first; the password field opens with "Sign in with a password".
 - **Breaking:** new accounts start by adding a passkey or a key phone (or an authenticator app) within 30 minutes; a password is optional, and registering no longer signs you in. Accounts that add nothing within 30 minutes are removed. The first admin of a new server adds a passkey or a key phone.
 - **Breaking for older apps:** after your password (or single sign-on), Kaiku asks you to confirm on your phone by scanning a code, or for your authenticator code if you have no key phone. Sessions created this way are limited to chat and calls. A wrong password, an unknown user name and an account without a second step all get the same answer. The desktop app receives single sign-on results through a page that hands a one-time code to the app.
@@ -152,8 +154,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 - Storage and internal errors (for example a failed server banner, emoji or page operation, or a failed item in an admin bulk action) no longer show the underlying error text; the details go to the server log.
 - You can no longer start a group DM with someone who blocked you or whom you blocked, just like a direct message.
-- Server pages (rules, info pages), their history and categories can only be read by members of that server; members who still have to accept the rules can read them.
-- Bot gateway sign-ins (`/api/gateway/bot`) are now limited per address like password sign-ins, and wrong bot tokens count towards the temporary address block.
+- Server pages (rules, info pages), their history and categories can only be read (and accepted) by members of that server; members who still have to accept the rules can read them.
+- Bot gateway sign-ins (`/api/gateway/bot`) are now limited per address like password sign-ins, and repeated wrong bot tokens block further bot sign-ins from that address for a while. Bot sign-ins have their own limit and block: a misconfigured bot cannot block people signing in from the same address, and the other way round.
 - Slash commands and message buttons only reach a bot that is installed in the server and can see the channel; otherwise the person gets "This bot can't be used in this channel" (`BOT_NOT_ALLOWED_IN_CHANNEL`) and the bot is not told. A bot's answer to a command is checked again when it arrives: a visible answer needs "Send messages" in that channel, and answers of a bot that was removed from the server are refused.
 - Bots and app webhooks no longer receive messages from channels the bot cannot see; private channels stay private unless a role lets the bot in. Roles can now be given to installed bots, and removing a bot from a server removes its roles there.
 - Adding a file to a message you already sent follows the same rules as sending a message with a file: you need to see the channel and have the "Attach files" permission, and blocks and read-only conversations apply. A message can carry at most 10 files (`TOO_MANY_ATTACHMENTS`). Requests without files are limited to 1 MB; only file uploads (messages, avatars, group icons, server banners, emojis) may be up to `MAX_UPLOAD_SIZE`.
@@ -213,7 +215,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Android app no longer accepts sign-in tokens from a link; single sign-on returns only a one-time code.
 
 ### Removed
-- The channel member API (`POST /api/channels/{id}/members`, `DELETE /api/channels/{id}/members/{user_id}`) is gone; it had no effect on who can see a channel. Bots now send into a channel when their roles give them "View channel" and "Send messages" there, like members.
+- The channel member API (`GET` and `POST /api/channels/{id}/members`, `DELETE /api/channels/{id}/members/{user_id}`) is gone; it had no effect on who can see a channel. Bots now send into a channel when their roles give them "View channel" and "Send messages" there, like members.
 - The unused REST endpoints `POST /api/channels/{id}/screenshare/check`, `/start` and `/stop`. Screen sharing is started and stopped over the WebSocket voice connection, as all clients already do.
 - Temporary passwords for admin-created accounts (`POST /api/admin/users` refuses `temporary_password`).
 - Password reset by e-mail. A forgotten password is replaced through an account recovery with a recovery code, or by an admin.
