@@ -1,6 +1,7 @@
 import { Component, Show } from "solid-js";
 import type { UserStatus, QualityLevel, StatusShape } from "@/lib/types";
 import { STATUS_COLORS } from "@/lib/types";
+import { t, type MessageKey } from "@/i18n";
 
 interface StatusIndicatorProps {
   /** For user status: online, idle, dnd, offline */
@@ -15,7 +16,26 @@ interface StatusIndicatorProps {
   overlay?: boolean;
   /** Optional text to show next to indicator (e.g., "42ms") */
   text?: string;
+  /** Spoken name; defaults to the status or quality word. */
+  label?: string;
+  /** The status is already written next to it: hide the shape from screen readers. */
+  decorative?: boolean;
 }
+
+// A11Y-14: the shape and colour also have a word for screen readers.
+const STATUS_LABEL: Record<UserStatus, MessageKey> = {
+  online: "home.status.online",
+  idle: "home.status.idle",
+  dnd: "home.status.dnd",
+  offline: "home.status.offline",
+};
+
+const QUALITY_LABEL: Record<QualityLevel, MessageKey> = {
+  good: "common.quality.good",
+  warning: "common.quality.warning",
+  poor: "common.quality.poor",
+  unknown: "common.quality.unknown",
+};
 
 const sizeMap = {
   xs: 8,
@@ -126,12 +146,27 @@ const StatusIndicator: Component<StatusIndicatorProps> = (props) => {
     }
   };
 
+  const label = () => {
+    if (props.label) return props.label;
+    if (props.quality) return t(QUALITY_LABEL[props.quality]);
+    if (props.status) return t(STATUS_LABEL[props.status]);
+    return undefined;
+  };
+
   const positionClass = () =>
     props.overlay ? "absolute -bottom-0.5 -right-0.5" : "";
 
   return (
     <span class={`inline-flex items-center gap-1 ${positionClass()}`}>
-      {renderShape()}
+      <span
+        class="inline-flex"
+        role={props.decorative || !label() ? undefined : "img"}
+        aria-label={props.decorative ? undefined : label()}
+        aria-hidden={props.decorative || !label() ? "true" : undefined}
+        title={props.decorative ? undefined : label()}
+      >
+        {renderShape()}
+      </span>
       <Show when={props.text}>
         <span class="text-xs" style={{ color: color() }}>
           {props.text}

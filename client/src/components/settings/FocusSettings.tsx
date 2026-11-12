@@ -300,7 +300,7 @@ const FocusSettings: Component = () => {
                     <span class="text-sm text-text-primary font-mono">
                       {process}
                     </span>
-                    <span class="text-[10px] px-1.5 py-0.5 rounded bg-accent-primary/20 text-text-primary uppercase tracking-wide">
+                    <span class="text-xs px-1.5 py-0.5 rounded bg-accent-primary/20 text-text-primary uppercase tracking-wide">
                       {category}
                     </span>
                   </div>
@@ -405,12 +405,12 @@ const FocusSettings: Component = () => {
                       {mode.name}
                     </span>
                     <Show when={mode.builtin}>
-                      <span class="text-[10px] px-1.5 py-0.5 rounded bg-white/10 text-text-secondary uppercase tracking-wide">
+                      <span class="text-xs px-1.5 py-0.5 rounded bg-white/10 text-text-secondary uppercase tracking-wide">
                         built-in
                       </span>
                     </Show>
                     <Show when={isActive()}>
-                      <span class="text-[10px] px-1.5 py-0.5 rounded bg-accent-primary/20 text-text-primary uppercase tracking-wide">
+                      <span class="text-xs px-1.5 py-0.5 rounded bg-accent-primary/20 text-text-primary uppercase tracking-wide">
                         active
                       </span>
                     </Show>
@@ -422,7 +422,7 @@ const FocusSettings: Component = () => {
                           e.stopPropagation();
                           activateFocusMode(mode.id);
                         }}
-                        class="text-xs px-2 py-1 rounded-lg bg-white/10 hover:bg-accent-primary/20 text-text-secondary hover:text-accent-primary transition-colors"
+                        class="text-xs px-2 py-1 rounded-lg bg-white/10 hover:bg-accent-primary/20 text-text-secondary hover:text-text-primary transition-colors"
                       >
                         Activate
                       </button>

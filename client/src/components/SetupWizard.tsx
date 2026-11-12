@@ -16,6 +16,7 @@ import { codeIs } from "@/lib/errorCode";
 import { authState, clearSetupRequired } from "@/stores/auth";
 import { AlertCircle, CheckCircle, Server } from "lucide-solid";
 import { getAuthContext, getServerUrl } from "@/lib/tauri";
+import Modal from "@/components/ui/Modal";
 
 // Setup config interface (matches server API)
 interface SetupConfig {
@@ -246,18 +247,22 @@ const SetupWizard: Component = () => {
   // Only show wizard if setup is required
   return (
     <Show when={authState.setupRequired}>
-      <div
-        class="fixed inset-0 bg-black/80 flex items-center justify-center z-50"
-        data-testid="setup-wizard"
+      {/* Setup must be finished: a modal dialog without a way to close it. */}
+      <Modal
+        onClose={() => {}}
+        closeOnBackdrop={false}
+        labelledBy="setup-wizard-title"
+        backdropClass="fixed inset-0 bg-black/80 flex items-center justify-center p-4"
+        class="bg-surface-layer2 rounded-xl p-6 w-[32rem] max-w-full max-h-[calc(100dvh-2rem)] overflow-y-auto shadow-2xl border border-white/10"
+        testId="setup-wizard"
       >
-        <div class="bg-surface-layer2 rounded-xl p-6 w-[32rem] shadow-2xl border border-white/10">
           {/* Header */}
           <div class="flex items-center gap-3 mb-6">
             <div class="p-3 bg-accent-primary/20 rounded-lg">
               <Server class="w-6 h-6 text-accent-primary" />
             </div>
             <div>
-              <h2 class="text-xl font-bold text-text-primary">
+              <h2 id="setup-wizard-title" class="text-xl font-bold text-text-primary">
                 Welcome to Kaiku! 🎉
               </h2>
               <p class="text-sm text-text-muted">
@@ -402,8 +407,7 @@ const SetupWizard: Component = () => {
               be undone.
             </p>
           </div>
-        </div>
-      </div>
+      </Modal>
     </Show>
   );
 };

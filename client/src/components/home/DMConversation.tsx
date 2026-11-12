@@ -7,16 +7,18 @@
 import {
   Component,
   Show,
+  createEffect,
   createSignal,
+  onCleanup,
   onMount,
 } from "solid-js";
 import { Phone, Check, X, ShieldCheck } from "lucide-solid";
 import { isReadOnlyDM } from "@/lib/kaikuDm";
-import { loadInitialMessages } from "@/stores/messages";
+import { loadInitialMessages, messagesState } from "@/stores/messages";
 import { t, plural } from "@/i18n";
 import { isCallGlareError } from "@/lib/callEnd";
 import { errorText, CALL_START_ERRORS } from "@/i18n/errors";
-import { getSelectedDM, updateDMIconUrl } from "@/stores/dms";
+import { getSelectedDM, isWindowActive, readVisibleDM, updateDMIconUrl } from "@/stores/dms";
 import { currentUser } from "@/stores/auth";
 import MessageList from "@/components/messages/MessageList";
 import MessageInput from "@/components/messages/MessageInput";
@@ -58,8 +60,45 @@ const KaikuDMView: Component<{ channelId: string }> = (props) => {
   );
 };
 
+/** True while the window is in front and focused (the user can see it). */
+function createWindowActive(): () => boolean {
+  const isActive = isWindowActive;
+  const [active, setActive] = createSignal(isActive());
+  const update = () => setActive(isActive());
+  window.addEventListener("focus", update);
+  window.addEventListener("blur", update);
+  document.addEventListener("visibilitychange", update);
+  onCleanup(() => {
+    window.removeEventListener("focus", update);
+    window.removeEventListener("blur", update);
+    document.removeEventListener("visibilitychange", update);
+  });
+  return active;
+}
+
 const DMConversation: Component = () => {
   const dm = () => getSelectedDM();
+
+  // N1: this view only exists while Home shows this conversation. Mark it
+  // read on opening and on each new message, while the window is active.
+  const windowActive = createWindowActive();
+  createEffect(() => {
+    const current = dm();
+    if (!current || !windowActive()) return;
+    const loaded = messagesState.byChannel[current.id] ?? [];
+    let newest: string | null = null;
+    for (let i = loaded.length - 1; i >= 0; i--) {
+      // Top-level and confirmed: the server only takes such a cursor.
+      if (!loaded[i].parent_id && !loaded[i].id.startsWith("pending:")) {
+        newest = loaded[i].id;
+        break;
+      }
+    }
+    // Track the list fields that change with a new message.
+    void current.last_message_id;
+    void current.unread_count;
+    readVisibleDM(current.id, newest);
+  });
   const [isStartingCall, setIsStartingCall] = createSignal(false);
   const [isEditingName, setIsEditingName] = createSignal(false);
   const [editName, setEditName] = createSignal("");
@@ -294,14 +333,14 @@ const DMConversation: Component = () => {
               />
               <button
                 onClick={saveEditedName}
-                class="p-1 rounded hover:bg-white/10 text-accent-success transition-colors"
+                class="tap-dense p-1 rounded hover:bg-white/10 text-accent-success transition-colors"
                 title={t("common.save")}
               >
                 <Check class="w-4 h-4" />
               </button>
               <button
                 onClick={cancelEditingName}
-                class="p-1 rounded hover:bg-white/10 text-text-secondary transition-colors"
+                class="tap-dense p-1 rounded hover:bg-white/10 text-text-secondary transition-colors"
                 title={t("common.cancel")}
               >
                 <X class="w-4 h-4" />

@@ -286,6 +286,15 @@ export function getChannelOverrides(channelId: string): ChannelOverride[] {
 }
 
 /**
+ * The channel's overrides once they have been loaded, otherwise null. The
+ * server only hands the list to members who may manage the channel, so
+ * "not loaded" must not be read as "no overrides".
+ */
+export function getLoadedChannelOverrides(channelId: string): ChannelOverride[] | null {
+  return permissionsState.channelOverrides[channelId] ?? null;
+}
+
+/**
  * Set a channel override
  */
 export async function setChannelOverride(

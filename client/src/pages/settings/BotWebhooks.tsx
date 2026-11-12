@@ -29,6 +29,10 @@ import {
   type TestDeliveryResult,
 } from "../../lib/api/webhooks";
 import { showToast } from "../../components/ui/Toast";
+import { createConfirm } from "@/components/admin/confirmHost";
+import { actionErrorText } from "@/components/admin/actionErrors";
+import { t } from "@/i18n";
+import Modal from "@/components/ui/Modal";
 
 const ALL_EVENT_TYPES: WebhookEventType[] = [
   "message.created",
@@ -38,6 +42,7 @@ const ALL_EVENT_TYPES: WebhookEventType[] = [
 ];
 
 const BotWebhooks: Component = () => {
+  const confirmDialog = createConfirm();
   const params = useParams<{ id: string }>();
   const [app, setApp] = createSignal<BotApplication | null>(null);
   const [webhooks, setWebhooks] = createSignal<WebhookType[]>([]);
@@ -83,7 +88,7 @@ const BotWebhooks: Component = () => {
       showToast({
         type: "error",
         title: "Failed to load webhooks",
-        message: error instanceof Error ? error.message : "Unknown error",
+        message: actionErrorText(error),
         duration: 8000,
       });
     } finally {
@@ -130,26 +135,27 @@ const BotWebhooks: Component = () => {
       showToast({
         type: "error",
         title: "Failed to create webhook",
-        message: error instanceof Error ? error.message : "Unknown error",
+        message: actionErrorText(error),
         duration: 8000,
       });
     }
   }
 
-  async function handleDelete(webhookId: string) {
-    if (!confirm("Are you sure you want to delete this webhook?")) return;
-    try {
-      await deleteWebhook(params.id, webhookId);
-      await loadData();
-      showToast({ type: "success", title: "Webhook deleted", duration: 3000 });
-    } catch (error) {
-      showToast({
-        type: "error",
-        title: "Failed to delete webhook",
-        message: error instanceof Error ? error.message : "Unknown error",
-        duration: 8000,
-      });
-    }
+  function handleDelete(webhookId: string) {
+    confirmDialog.ask({
+      title: t("guildSettings.bots.deleteHookTitle"),
+      message: t("guildSettings.bots.deleteHookBody"),
+      confirmLabel: t("guildSettings.bots.deleteHook"),
+      danger: true,
+      run: () => handleDeleteNow(webhookId),
+    });
+  }
+
+  async function handleDeleteNow(webhookId: string) {
+    // Failures reach the dialog, which stays open and says why (K2).
+    await deleteWebhook(params.id, webhookId);
+    await loadData();
+    showToast({ type: "success", title: "Webhook deleted", duration: 3000 });
   }
 
   async function handleToggleActive(wh: WebhookType) {
@@ -160,7 +166,7 @@ const BotWebhooks: Component = () => {
       showToast({
         type: "error",
         title: "Failed to update webhook",
-        message: error instanceof Error ? error.message : "Unknown error",
+        message: actionErrorText(error),
         duration: 8000,
       });
     }
@@ -181,7 +187,7 @@ const BotWebhooks: Component = () => {
       showToast({
         type: "error",
         title: "Failed to test webhook",
-        message: error instanceof Error ? error.message : "Unknown error",
+        message: actionErrorText(error),
         duration: 8000,
       });
     } finally {
@@ -203,7 +209,7 @@ const BotWebhooks: Component = () => {
       showToast({
         type: "error",
         title: "Failed to load deliveries",
-        message: error instanceof Error ? error.message : "Unknown error",
+        message: actionErrorText(error),
         duration: 8000,
       });
     } finally {
@@ -277,7 +283,7 @@ const BotWebhooks: Component = () => {
                     <div class="flex items-center gap-2 mb-1">
                       <span class="font-mono text-sm truncate">{wh.url}</span>
                       <span
-                        class={`text-xs px-2 py-0.5 rounded-full ${wh.active ? "bg-green-500/20 text-green-400" : "bg-gray-500/20 text-gray-400"}`}
+                        class={`text-xs px-2 py-0.5 rounded-full ${wh.active ? "bg-status-success/20 text-text-primary" : "bg-gray-500/20 text-gray-400"}`}
                       >
                         {wh.active ? "Active" : "Inactive"}
                       </span>
@@ -321,7 +327,7 @@ const BotWebhooks: Component = () => {
                       <Eye size={16} />
                     </button>
                     <button
-                      class="p-2 rounded hover:bg-red-500/20 transition-colors text-red-400"
+                      class="p-2 rounded hover:bg-status-error/20 transition-colors text-text-primary"
                       title="Delete"
                       onClick={() => handleDelete(wh.id)}
                     >
@@ -334,7 +340,7 @@ const BotWebhooks: Component = () => {
                 <Show when={testResults()[wh.id]}>
                   {(result) => (
                     <div
-                      class={`mt-3 p-2 rounded text-xs ${result().success ? "bg-green-500/10 text-green-400" : "bg-red-500/10 text-red-400"}`}
+                      class={`mt-3 p-2 rounded text-xs ${result().success ? "bg-status-success/15 text-text-primary" : "bg-status-error/15 text-text-primary"}`}
                     >
                       {result().success ? "OK" : "Failed"} —{" "}
                       {result().response_status
@@ -372,7 +378,7 @@ const BotWebhooks: Component = () => {
                           {(entry) => (
                             <div class="flex items-center gap-2 text-xs py-1">
                               <span
-                                class={`w-2 h-2 rounded-full shrink-0 ${entry.success ? "bg-green-400" : "bg-red-400"}`}
+                                class={`w-2 h-2 rounded-full shrink-0 ${entry.success ? "bg-status-success" : "bg-status-error"}`}
                               />
                               <span class="text-[var(--text-secondary)]">
                                 {entry.event_type}
@@ -389,7 +395,7 @@ const BotWebhooks: Component = () => {
                                 </span>
                               </Show>
                               <Show when={entry.error_message}>
-                                <span class="text-red-400 truncate">
+                                <span class="text-text-primary truncate">
                                   {entry.error_message}
                                 </span>
                               </Show>
@@ -411,15 +417,13 @@ const BotWebhooks: Component = () => {
 
       {/* Create Webhook Modal */}
       <Show when={showCreateModal()}>
-        <div
-          class="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
-          onClick={() => setShowCreateModal(false)}
+        <Modal
+          onClose={() => setShowCreateModal(false)}
+          labelledBy="bot-webhook-create-title"
+          backdropClass="fixed inset-0 bg-black/50 flex items-center justify-center p-4"
+          class="bg-[var(--bg-primary)] rounded-lg p-6 w-full max-w-md border border-[var(--border)]"
         >
-          <div
-            class="bg-[var(--bg-primary)] rounded-lg p-6 w-full max-w-md border border-[var(--border)]"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h2 class="text-lg font-semibold mb-4">Create Webhook</h2>
+            <h2 id="bot-webhook-create-title" class="text-lg font-semibold mb-4">Create Webhook</h2>
 
             <div class="space-y-4">
               <div>
@@ -481,15 +485,20 @@ const BotWebhooks: Component = () => {
                 Create
               </button>
             </div>
-          </div>
-        </div>
+        </Modal>
       </Show>
 
       {/* Signing Secret Modal (shown once after creation) */}
       <Show when={showSecretModal() && createdWebhook()}>
-        <div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div class="bg-[var(--bg-primary)] rounded-lg p-6 w-full max-w-md border border-[var(--border)]">
-            <h2 class="text-lg font-semibold mb-2">Signing Secret</h2>
+        {/* Shown once: Escape and the backdrop do not close it, only "Done". */}
+        <Modal
+          onClose={() => {}}
+          closeOnBackdrop={false}
+          labelledBy="bot-webhook-secret-title"
+          backdropClass="fixed inset-0 bg-black/50 flex items-center justify-center p-4"
+          class="bg-[var(--bg-primary)] rounded-lg p-6 w-full max-w-md border border-[var(--border)]"
+        >
+            <h2 id="bot-webhook-secret-title" class="text-lg font-semibold mb-2">Signing Secret</h2>
             <p class="text-sm text-[var(--text-secondary)] mb-4">
               Copy this secret now. It will not be shown again. Use it to verify
               webhook signatures (X-Webhook-Signature header).
@@ -500,10 +509,11 @@ const BotWebhooks: Component = () => {
               <button
                 class="p-1.5 rounded hover:bg-[var(--bg-tertiary)] transition-colors shrink-0"
                 onClick={copySecret}
-                title="Copy"
+                title={t("common.copy")}
+                aria-label={t("common.copy")}
               >
                 <Show when={secretCopied()} fallback={<Copy size={16} />}>
-                  <Check size={16} class="text-green-400" />
+                  <Check size={16} class="text-text-primary" />
                 </Show>
               </button>
             </div>
@@ -520,9 +530,9 @@ const BotWebhooks: Component = () => {
                 Done
               </button>
             </div>
-          </div>
-        </div>
+        </Modal>
       </Show>
+      <confirmDialog.Host />
     </div>
   );
 };

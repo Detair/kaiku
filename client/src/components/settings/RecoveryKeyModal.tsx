@@ -18,6 +18,7 @@ import {
 } from "lucide-solid";
 import { secureCopy } from "@/lib/clipboard";
 import { createDialog } from "@/lib/a11y/dialog";
+import { createModalLayer } from "@/lib/a11y/modalLayer";
 import { t } from "@/i18n";
 
 interface RecoveryKeyModalProps {
@@ -41,6 +42,9 @@ interface RecoveryKeyModalProps {
 
 const RecoveryKeyModal: Component<RecoveryKeyModalProps> = (props) => {
   const dialog = createDialog({ onClose: () => props.onClose() });
+  // Opens on its own after sign-in, possibly while the first-run tour or the
+  // settings are open: it takes the keyboard, so it has to be in front.
+  const layer = createModalLayer(50);
 
   const [confirmed, setConfirmed] = createSignal(false);
   const [copied, setCopied] = createSignal(false);
@@ -65,7 +69,10 @@ const RecoveryKeyModal: Component<RecoveryKeyModalProps> = (props) => {
 
   return (
     <Portal>
-      <div class="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50">
+      <div
+        class="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center"
+        style={{ "z-index": layer }}
+      >
         <div
           {...dialog.dialogProps}
           ref={dialog.ref}

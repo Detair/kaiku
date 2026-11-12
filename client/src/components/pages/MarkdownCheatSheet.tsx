@@ -74,11 +74,11 @@ export default function MarkdownCheatSheet(props: MarkdownCheatSheetProps) {
 
   return (
     <div
-      class={`bg-zinc-800 rounded-lg border border-zinc-700 ${props.class || ""}`}
+      class={`bg-surface-layer1 rounded-lg border border-white/10 ${props.class || ""}`}
     >
       <button
         type="button"
-        class="w-full px-4 py-2 flex items-center justify-between text-sm text-zinc-300 hover:bg-zinc-700/50 rounded-lg transition-colors"
+        class="w-full px-4 py-2 flex items-center justify-between text-sm text-text-primary hover:bg-white/10 rounded-lg transition-colors"
         onClick={() => setIsExpanded(!isExpanded())}
       >
         <span class="font-medium">Markdown Reference</span>
@@ -91,16 +91,16 @@ export default function MarkdownCheatSheet(props: MarkdownCheatSheetProps) {
         <div class="px-4 pb-4 space-y-4">
           <For each={sections}>{(section) => (
             <div>
-              <h4 class="text-xs font-semibold text-zinc-400 uppercase tracking-wide mb-2">
+              <h4 class="text-xs font-semibold text-text-secondary uppercase tracking-wide mb-2">
                 {section.title}
               </h4>
               <div class="space-y-1">
                 <For each={section.items}>{(item) => (
                   <div class="flex items-start gap-3 text-xs">
-                    <code class="bg-zinc-900 px-1.5 py-0.5 rounded text-emerald-400 font-mono whitespace-pre">
+                    <code class="bg-surface-base px-1.5 py-0.5 rounded text-text-primary font-mono whitespace-pre">
                       {item.syntax}
                     </code>
-                    <span class="text-zinc-400">{item.description}</span>
+                    <span class="text-text-secondary">{item.description}</span>
                   </div>
                 )}</For>
               </div>

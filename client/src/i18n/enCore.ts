@@ -16,6 +16,7 @@ import { home } from "./en/home";
 import { time } from "./en/time";
 import { guilds } from "./en/guilds";
 import { passkeys } from "./en/passkeys";
+import { moderation } from "./en/moderation";
 
 export const enCore = {
   ...common,
@@ -29,4 +30,5 @@ export const enCore = {
   ...time,
   ...guilds,
   ...passkeys,
+  ...moderation,
 } as const;

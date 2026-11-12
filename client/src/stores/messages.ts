@@ -200,6 +200,12 @@ interface MessagesState {
   loadError: string | null;
   // Last send failure (shown by the composer)
   sendError: string | null;
+  /**
+   * Set while a channel shows an older window (after a far jump): the newest
+   * message of that window. Newer messages are fetched after it; until then
+   * the list does not reach the present.
+   */
+  newerAfter: Record<string, string | undefined>;
 }
 
 // Create the store
@@ -209,6 +215,7 @@ const [messagesState, setMessagesState] = createStore<MessagesState>({
   hasMore: {},
   loadError: null,
   sendError: null,
+  newerAfter: {},
 });
 
 // Default message limit per request
@@ -281,6 +288,61 @@ export async function loadMessagesAround(channelId: string, aroundMessageId: str
   }
 }
 
+/**
+ * Make `messageId` part of the loaded messages so the list can jump to it
+ * (search result, pinned message). Loads the page around it plus every newer
+ * page and merges them with what is loaded, so scrolling down still reaches
+ * the newest message. With more than `maxPages` newer pages the window alone
+ * replaces the loaded messages. Resolves `true` once the message is loaded,
+ * `false` when it is gone or could not be loaded (the list stays as it was).
+ */
+export async function loadMessagesForJump(
+  channelId: string,
+  messageId: string,
+  maxPages = 10,
+): Promise<boolean> {
+  if ((messagesState.byChannel[channelId] ?? []).some((m) => m.id === messageId)) return true;
+  if (messagesState.loadingChannels[channelId]) return false;
+
+  setMessagesState("loadingChannels", channelId, true);
+  const before = new Set((messagesState.byChannel[channelId] ?? []).map((m) => m.id));
+  const edits = beginPageEdits(channelId);
+  try {
+    const fetched = await fetchAroundWindow(channelId, messageId);
+    if (!fetched.items.some((m) => m.id === messageId)) return false;
+
+    const anchor = fetched.items[fetched.items.length - 1].id;
+    const newerRaw = await fetchMessagesAfter(channelId, anchor, maxPages);
+    // Edits and deletions that came in while loading win over the pages.
+    const window = { ...fetched, items: await withPageEdits(edits, fetched.items) };
+    const newer = newerRaw && (await withPageEdits(edits, newerRaw));
+    if (!window.items.some((m) => m.id === messageId)) return false;
+    const current = messagesState.byChannel[channelId] ?? [];
+    if (newer) {
+      setMessagesState("byChannel", channelId, mergeAscending(current, [...window.items, ...newer]));
+      // Bridged to the newest message: an older window from before is gone.
+      setMessagesState("newerAfter", channelId, undefined);
+    } else {
+      // Too far back to bridge: show the window and remember that newer
+      // messages follow it (`loadNewerMessages`). Messages that arrived or
+      // were sent while loading stay at the end; newer pages go before them.
+      const arrived = current.filter((m) => !before.has(m.id));
+      setMessagesState("byChannel", channelId, mergeAscending(window.items, arrived));
+      // Cursor from the page as fetched: a deleted last message is refused
+      // by the server and handled in loadNewerMessages.
+      setMessagesState("newerAfter", channelId, anchor);
+    }
+    setMessagesState("hasMore", channelId, window.hasMore);
+    return true;
+  } catch (err) {
+    console.error("Failed to load messages for jump:", err);
+    return false;
+  } finally {
+    endPageEdits(channelId);
+    setMessagesState("loadingChannels", channelId, false);
+  }
+}
+
 function reportLoadError(channelId: string, label: string, err: unknown): void {
   const error = err instanceof Error ? err.message : String(err);
   console.error(label, error);
@@ -312,6 +374,77 @@ interface LiveBuffer {
   removed: Set<string>;
 }
 const liveBuffers: Record<string, LiveBuffer | undefined> = {};
+
+/**
+ * Live edits and deletions that arrive while a page is fetched for a jump or
+ * for newer messages. The page may still hold the old version; these are
+ * applied to it before it goes into the list. Counted, so overlapping loads
+ * of one channel share the buffer until the last one ends.
+ */
+interface PageEdits {
+  users: number;
+  updated: Map<string, Message>;
+  /** Edit events (`message_edit`) for messages not in the list yet. */
+  patches: Map<string, { content: string; edited_at: string }>;
+  removed: Set<string>;
+}
+const pageEdits: Record<string, PageEdits | undefined> = {};
+
+function beginPageEdits(channelId: string): PageEdits {
+  const edits = pageEdits[channelId] ?? { users: 0, updated: new Map(), patches: new Map(), removed: new Set() };
+  edits.users += 1;
+  pageEdits[channelId] = edits;
+  return edits;
+}
+
+function endPageEdits(channelId: string): void {
+  const edits = pageEdits[channelId];
+  if (!edits) return;
+  edits.users -= 1;
+  if (edits.users <= 0) delete pageEdits[channelId];
+}
+
+/** The page as it is now: buffered edits applied, deleted messages dropped. */
+async function withPageEdits(edits: PageEdits, items: Message[]): Promise<Message[]> {
+  const result: Message[] = [];
+  for (const m of items) {
+    if (edits.removed.has(m.id)) continue;
+    const full = edits.updated.get(m.id);
+    if (full) {
+      result.push(full);
+      continue;
+    }
+    const patch = edits.patches.get(m.id);
+    if (!patch) {
+      result.push(m);
+      continue;
+    }
+    const content = m.encrypted
+      ? (await decryptMessageIfNeeded({ ...m, content: patch.content })).content
+      : patch.content;
+    result.push({ ...m, content, edited_at: patch.edited_at });
+  }
+  return result;
+}
+
+/**
+ * Keep a live edit (`message_edit`) for a message that is not in the list
+ * but may be on a page that is loading right now (jump, newer messages).
+ * Returns whether it was kept. The WebSocket handler (`applyMessageEdit`)
+ * must call this when the message is not loaded; it edits loaded ones itself.
+ */
+export function bufferLiveEdit(
+  channelId: string,
+  messageId: string,
+  content: string,
+  editedAt: string,
+): boolean {
+  const edits = pageEdits[channelId];
+  if (!edits) return false;
+  edits.updated.delete(messageId);
+  edits.patches.set(messageId, { content, edited_at: editedAt });
+  return true;
+}
 
 /** Merge buffered live changes into `messages` and drop the buffer. */
 function applyLiveBuffer(channelId: string, messages: Message[]): Message[] {
@@ -346,6 +479,7 @@ export async function loadInitialMessages(
 
   initialLoadInProgress[channelId] = true;
   liveBuffers[channelId] = { added: [], updated: new Map(), removed: new Set() };
+  setMessagesState("newerAfter", channelId, undefined);
 
   try {
     setMessagesState("byChannel", channelId, []);
@@ -619,13 +753,10 @@ export async function sendMessage(
       }
     }
 
-    // Mark channel as read (sending implies seeing)
-    try {
-      const { markChannelAsRead } = await import("@/stores/channels");
-      markChannelAsRead(channelId, message.id);
-    } catch {
-      // Non-critical — don't fail the send
-    }
+    // No read marker here: the visible message list marks the channel read
+    // once the sent message is on screen (MessageList, scheduleMarkAsRead).
+    // It knows whether the channel is still shown and whether an unseen
+    // newer stretch lies between (after a far jump).
 
     return message;
   } catch (err) {
@@ -711,6 +842,8 @@ export function updateMessage(raw: Message): void {
     if (i !== -1) buf.added[i] = message;
     else buf.updated.set(message.id, message);
   }
+  pageEdits[channelId]?.patches.delete(message.id);
+  pageEdits[channelId]?.updated.set(message.id, message);
   const messages = messagesState.byChannel[channelId];
 
   if (messages) {
@@ -743,6 +876,12 @@ export function removeMessage(channelId: string, messageId: string): void {
     buf.updated.delete(messageId);
     buf.removed.add(messageId);
   }
+  const edits = pageEdits[channelId];
+  if (edits) {
+    edits.updated.delete(messageId);
+    edits.patches.delete(messageId);
+    edits.removed.add(messageId);
+  }
   const existing = messagesState.byChannel[channelId];
   if (existing) {
     setMessagesState("byChannel", channelId, existing.filter((m) => m.id !== messageId));
@@ -766,6 +905,51 @@ export function isLoadingMessages(channelId: string): boolean {
 /**
  * Check if a channel has more messages to load.
  */
+/** True while the channel shows an older window that does not reach the newest message. */
+export function hasNewerMessages(channelId: string): boolean {
+  return !!messagesState.newerAfter[channelId];
+}
+
+const loadingNewer: Record<string, boolean> = {};
+
+/**
+ * Fetch the next page after an older window (see `newerAfter`) and merge it
+ * in. Clears `newerAfter` once the newest message is loaded. Errors are
+ * logged; the next scroll tries again.
+ */
+export async function loadNewerMessages(channelId: string): Promise<void> {
+  const cursor = messagesState.newerAfter[channelId];
+  if (!cursor || loadingNewer[channelId]) return;
+  loadingNewer[channelId] = true;
+  const edits = beginPageEdits(channelId);
+  let reloadPresent = false;
+  try {
+    const page = await tauri.getMessagesAfter(channelId, cursor, CATCH_UP_PAGE_LIMIT);
+    const fetched = await decryptMessages(page.items);
+    // A reload (jump to newest) while this page was on its way wins.
+    if (messagesState.newerAfter[channelId] !== cursor) return;
+    // Edits and deletions that came in while loading win over the page.
+    const items = await withPageEdits(edits, fetched);
+    if (messagesState.newerAfter[channelId] !== cursor) return;
+    const current = messagesState.byChannel[channelId] ?? [];
+    setMessagesState("byChannel", channelId, mergeAscending(current, items));
+    const next = page.next_cursor ?? fetched[fetched.length - 1]?.id;
+    setMessagesState("newerAfter", channelId, page.has_more && next ? next : undefined);
+  } catch (err) {
+    console.error("Failed to load newer messages:", err);
+    if (isAnchorRejected(err) && messagesState.newerAfter[channelId] === cursor) {
+      // The window's last message was deleted, so the server refuses it as
+      // an anchor. Retrying would fail on every scroll: load the present.
+      setMessagesState("newerAfter", channelId, undefined);
+      reloadPresent = true;
+    }
+  } finally {
+    endPageEdits(channelId);
+    loadingNewer[channelId] = false;
+  }
+  if (reloadPresent) await loadInitialMessages(channelId);
+}
+
 export function hasMoreMessages(channelId: string): boolean {
   return messagesState.hasMore[channelId] ?? true;
 }
@@ -776,6 +960,7 @@ export function hasMoreMessages(channelId: string): boolean {
 export function clearChannelMessages(channelId: string): void {
   setMessagesState("byChannel", channelId, undefined!);
   setMessagesState("hasMore", channelId, undefined!);
+  setMessagesState("newerAfter", channelId, undefined);
 }
 
 // Export the store for reading and writing (setMessagesState is used by websocket.ts for reaction updates)

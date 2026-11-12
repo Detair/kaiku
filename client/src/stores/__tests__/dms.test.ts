@@ -5,6 +5,7 @@ vi.mock("@/lib/tauri", () => ({
   wsStatus: vi.fn(),
   markDMAsRead: vi.fn(),
   markAllDMsRead: vi.fn(),
+  createDM: vi.fn(),
 }));
 
 vi.mock("@/stores/websocket", () => ({
@@ -35,7 +36,11 @@ import {
   isDMUnread,
   getDMLastReadMessageId,
   handleDmCreated,
+  openDirectMessage,
+  bindDMsToAccount,
+  readVisibleDM,
 } from "../dms";
+import { setGuildsState } from "../guilds";
 
 function createDM(overrides: Partial<DMListItem> = {}): DMListItem {
   return {
@@ -189,6 +194,47 @@ describe("dms store", () => {
       });
       expect(dmsState.dms[0].last_message_id).toBe(msg.id);
       expect(dmsState.dms[0].unread_count).toBe(1);
+    });
+
+    it("counts a message in the last opened DM while a server is shown (W2)", () => {
+      setDmsState({
+        dms: [createDM({ id: "dm-1", unread_count: 0 })],
+        selectedDMId: "dm-1",
+        isShowingFriends: false,
+      });
+      setGuildsState({ activeGuildId: "g1" });
+      try {
+        updateDMLastMessage("dm-1", createMessage({ channel_id: "dm-1" }));
+      } finally {
+        setGuildsState({ activeGuildId: null });
+      }
+      expect(dmsState.dms[0].unread_count).toBe(1);
+      expect(getTotalUnreadCount()).toBe(1);
+    });
+
+    it("does not count a message in the DM that is open on Home", () => {
+      vi.spyOn(document, "hasFocus").mockReturnValue(true);
+      setDmsState({
+        dms: [createDM({ id: "dm-1", unread_count: 0 })],
+        selectedDMId: "dm-1",
+        isShowingFriends: false,
+      });
+      updateDMLastMessage("dm-1", createMessage({ channel_id: "dm-1" }));
+      expect(dmsState.dms[0].unread_count).toBe(0);
+      vi.restoreAllMocks();
+    });
+
+    it("counts a message in the open DM while the window is in the background (R1)", () => {
+      vi.spyOn(document, "hasFocus").mockReturnValue(false);
+      setDmsState({
+        dms: [createDM({ id: "dm-1", unread_count: 0 })],
+        selectedDMId: "dm-1",
+        isShowingFriends: false,
+      });
+      updateDMLastMessage("dm-1", createMessage({ channel_id: "dm-1" }));
+      vi.restoreAllMocks();
+      expect(dmsState.dms[0].unread_count).toBe(1);
+      expect(getTotalUnreadCount()).toBe(1);
     });
 
     it("ignores unknown channel", () => {
@@ -413,5 +459,137 @@ describe("dms store", () => {
 
       expect(subscribeChannel).toHaveBeenCalledWith("dm-new");
     });
+  });
+});
+
+describe("openDirectMessage", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setDmsState({ dms: [], selectedDMId: null, isShowingFriends: true });
+  });
+
+  it("opens the existing conversation without creating a new one", async () => {
+    setDmsState({ dms: [createDM({ id: "dm-anna" })] });
+    await openDirectMessage(["user-1"]);
+    expect(tauri.createDM).not.toHaveBeenCalled();
+    expect(dmsState.selectedDMId).toBe("dm-anna");
+    expect(dmsState.isShowingFriends).toBe(false);
+  });
+
+  it("creates a conversation with someone who is not a friend", async () => {
+    vi.mocked(tauri.createDM).mockResolvedValue({ channel: { id: "dm-new" } } as never);
+    vi.mocked(tauri.getDMList).mockResolvedValue([createDM({ id: "dm-new" })]);
+    vi.mocked(waitForConnection).mockResolvedValue(false);
+    await openDirectMessage(["user-9"]);
+    expect(tauri.createDM).toHaveBeenCalledWith(["user-9"]);
+    expect(dmsState.selectedDMId).toBe("dm-new");
+  });
+});
+
+describe("bindDMsToAccount (W3)", () => {
+  it("drops the previous account's conversations and selection", () => {
+    bindDMsToAccount("fabian");
+    setDmsState({
+      dms: [createDM({ id: "dm-f", unread_count: 4 })],
+      selectedDMId: "dm-f",
+      isShowingFriends: false,
+    });
+    expect(bindDMsToAccount("fabian")).toBe(false);
+    expect(getTotalUnreadCount()).toBe(4);
+
+    expect(bindDMsToAccount("matthias")).toBe(true);
+    expect(dmsState.dms).toEqual([]);
+    expect(dmsState.selectedDMId).toBeNull();
+    expect(getTotalUnreadCount()).toBe(0);
+  });
+});
+
+describe("navigationCount (K2)", () => {
+  it("moves also when the open conversation is picked again", () => {
+    selectDM("dm-1");
+    const before = dmsState.navigationCount;
+    selectDM("dm-1");
+    expect(dmsState.navigationCount).toBe(before + 1);
+  });
+});
+
+describe("readVisibleDM retries a failed save", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    bindDMsToAccount("retry-test");
+  });
+
+  it("tries again at the next chance after the server refused, without a storm", async () => {
+    setDmsState({
+      dms: [createDM({ id: "dm-1", unread_count: 2, last_message_id: "m2", last_read_message_id: "m0" })],
+    });
+    let fail: (e: Error) => void = () => {};
+    vi.mocked(tauri.markDMAsRead).mockImplementationOnce(
+      () => new Promise((_, reject) => (fail = reject)),
+    );
+
+    readVisibleDM("dm-1", "m2");
+    // Shown as read at once; a second call while saving sends nothing.
+    expect(dmsState.dms[0].unread_count).toBe(0);
+    readVisibleDM("dm-1", "m2");
+    expect(tauri.markDMAsRead).toHaveBeenCalledTimes(1);
+
+    fail(new Error("offline"));
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Next chance (focus, opening): the save is tried again.
+    vi.mocked(tauri.markDMAsRead).mockResolvedValueOnce(undefined);
+    readVisibleDM("dm-1", "m2");
+    expect(tauri.markDMAsRead).toHaveBeenCalledTimes(2);
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Saved: no further requests.
+    readVisibleDM("dm-1", "m2");
+    expect(tauri.markDMAsRead).toHaveBeenCalledTimes(2);
+  });
+
+  it("an older save that succeeds does not settle a newer one that failed", async () => {
+    setDmsState({
+      dms: [createDM({ id: "dm-1", unread_count: 1, last_message_id: "m1", last_read_message_id: "m0" })],
+    });
+    let saveOlder: () => void = () => {};
+    let failNewer: (e: Error) => void = () => {};
+    vi.mocked(tauri.markDMAsRead)
+      .mockImplementationOnce(() => new Promise<void>((resolve) => (saveOlder = resolve)))
+      .mockImplementationOnce(() => new Promise<void>((_, reject) => (failNewer = reject)));
+
+    readVisibleDM("dm-1", "m1");
+    readVisibleDM("dm-1", "m2");
+    expect(tauri.markDMAsRead).toHaveBeenCalledTimes(2);
+
+    failNewer(new Error("offline"));
+    await new Promise((r) => setTimeout(r, 0));
+    saveOlder();
+    await new Promise((r) => setTimeout(r, 0));
+
+    // m2 is shown as read but the server only has m1: the next chance saves m2.
+    vi.mocked(tauri.markDMAsRead).mockResolvedValueOnce(undefined);
+    readVisibleDM("dm-1", "m2");
+    expect(tauri.markDMAsRead).toHaveBeenCalledTimes(3);
+    expect(tauri.markDMAsRead).toHaveBeenLastCalledWith("dm-1", "m2");
+  });
+
+  it("an older save that fails after a newer one worked asks for nothing more", async () => {
+    setDmsState({
+      dms: [createDM({ id: "dm-1", unread_count: 1, last_message_id: "m1", last_read_message_id: "m0" })],
+    });
+    let failOlder: (e: Error) => void = () => {};
+    vi.mocked(tauri.markDMAsRead)
+      .mockImplementationOnce(() => new Promise<void>((_, reject) => (failOlder = reject)))
+      .mockResolvedValueOnce(undefined);
+
+    readVisibleDM("dm-1", "m1");
+    readVisibleDM("dm-1", "m2");
+    await new Promise((r) => setTimeout(r, 0));
+    failOlder(new Error("offline"));
+    await new Promise((r) => setTimeout(r, 0));
+
+    readVisibleDM("dm-1", "m2");
+    expect(tauri.markDMAsRead).toHaveBeenCalledTimes(2);
   });
 });

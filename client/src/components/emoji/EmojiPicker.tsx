@@ -1,6 +1,22 @@
-import { Component, createSignal, For, Show } from "solid-js";
+import { Component, createSignal, For, Show, onMount } from "solid-js";
 import { emojiState, addEmojiStringToRecents } from "@/stores/emoji";
 import { EMOJI_CATEGORIES, searchEmojis } from "@/lib/emojiData";
+import { t, type MessageKey } from "@/i18n";
+
+/** Translated heading per category id from `emojiData`; unknown ids keep their name. */
+const CATEGORY_KEYS: Record<string, MessageKey> = {
+  smileys: "chat.emoji.category.smileys",
+  gestures: "chat.emoji.category.gestures",
+  hearts: "chat.emoji.category.hearts",
+  objects: "chat.emoji.category.objects",
+  nature: "chat.emoji.category.nature",
+  food: "chat.emoji.category.food",
+};
+
+export function categoryTitle(category: { id: string; name: string }): string {
+  const key = CATEGORY_KEYS[category.id];
+  return key ? t(key) : category.name;
+}
 
 interface EmojiPickerProps {
   onSelect: (emoji: string) => void;
@@ -12,6 +28,10 @@ interface EmojiPickerProps {
 
 const EmojiPicker: Component<EmojiPickerProps> = (props) => {
   const [search, setSearch] = createSignal("");
+  let searchRef: HTMLInputElement | undefined;
+
+  // Typing right away searches: focus the search box when the picker opens.
+  onMount(() => searchRef?.focus());
 
   const handleSelect = (emoji: string) => {
     addEmojiStringToRecents(emoji);
@@ -45,9 +65,11 @@ const EmojiPicker: Component<EmojiPickerProps> = (props) => {
       {/* Search */}
       <div class="p-2 border-b border-white/10">
         <input
+          ref={searchRef}
           data-testid="emoji-search"
           type="text"
-          placeholder="Search emoji..."
+          placeholder={t("chat.emoji.search")}
+          aria-label={t("chat.emoji.search")}
           value={search()}
           onInput={(e) => setSearch(e.currentTarget.value)}
           class="w-full px-3 py-1.5 bg-surface-layer1 rounded text-sm text-text-primary placeholder:text-text-placeholder"
@@ -59,6 +81,14 @@ const EmojiPicker: Component<EmojiPickerProps> = (props) => {
         {/* Search Results */}
         <Show when={filteredEmojis()}>
           {(emojis) => (
+            <Show
+              when={emojis().length > 0}
+              fallback={
+                <p class="text-sm text-text-secondary text-center py-4" role="status">
+                  {t("chat.emoji.noResults")}
+                </p>
+              }
+            >
             <div class="flex flex-wrap gap-1">
               <For each={emojis()}>
                 {(emoji) => (
@@ -71,6 +101,7 @@ const EmojiPicker: Component<EmojiPickerProps> = (props) => {
                 )}
               </For>
             </div>
+            </Show>
           )}
         </Show>
 
@@ -80,7 +111,7 @@ const EmojiPicker: Component<EmojiPickerProps> = (props) => {
           <Show when={emojiState.recents.length > 0}>
             <div>
               <div class="text-xs text-text-secondary uppercase mb-1 px-1">
-                Recent
+                {t("chat.emoji.recent")}
               </div>
               <div class="flex flex-wrap gap-1">
                 <For each={emojiState.recents}>
@@ -101,7 +132,7 @@ const EmojiPicker: Component<EmojiPickerProps> = (props) => {
           <Show when={guildEmojis().length > 0}>
             <div>
               <div class="text-xs text-text-secondary uppercase mb-1 px-1">
-                Server Emojis
+                {t("chat.emoji.server")}
               </div>
               <div class="flex flex-wrap gap-1">
                 <For each={guildEmojis()}>
@@ -128,10 +159,10 @@ const EmojiPicker: Component<EmojiPickerProps> = (props) => {
             {(category) => (
               <div>
                 <div class="text-xs text-text-secondary uppercase mb-1 px-1">
-                  {category.name}
+                  {categoryTitle(category)}
                 </div>
                 <div class="flex flex-wrap gap-1">
-                  <For each={category.emojis.slice(0, 32)}>
+                  <For each={category.emojis}>
                     {(emoji) => (
                       <button
                         class="w-8 h-8 flex items-center justify-center hover:bg-white/10 rounded text-xl transition-colors"

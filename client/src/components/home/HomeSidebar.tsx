@@ -4,18 +4,25 @@ import {
   Show,
   createMemo,
   createSignal,
+  lazy,
   onMount,
 } from "solid-js";
-import { t } from "@/i18n";
-import { Users, Plus, ChevronDown } from "lucide-solid";
+import { t, plural } from "@/i18n";
+import { Users, Plus, ChevronDown, SquarePen } from "lucide-solid";
 import { dmsState, loadDMs, selectFriendsTab } from "@/stores/dms";
 import DMItem from "./DMItem";
-import NewMessageModal from "./NewMessageModal";
 import UserPanel from "@/components/layout/UserPanel";
+import VoicePanel from "@/components/voice/VoicePanel";
+import { getIncomingRequestCount } from "@/stores/friends";
+import { voiceState } from "@/stores/voice";
 import AddFriend from "@/components/social/AddFriend";
-import SearchPanel from "@/components/search/SearchPanel";
+import LazyDialog from "@/components/ui/LazyDialog";
 import { createVirtualizer } from "@/lib/virtualizer";
 import flokiThinking from "@/assets/emotes/floki_emote_2.webp";
+
+// Open on demand: each loads with its first use, off the startup payload.
+const NewMessageModal = lazy(() => import("./NewMessageModal"));
+const SearchPanel = lazy(() => import("@/components/search/SearchPanel"));
 
 const HomeSidebar: Component = () => {
   const [showNewMessage, setShowNewMessage] = createSignal(false);
@@ -26,6 +33,17 @@ const HomeSidebar: Component = () => {
   onMount(() => {
     loadDMs();
   });
+
+  // Voice bar on Home for every voice channel that is not a direct call
+  // (NAV-6). A direct call has its own banner, and the bar's hang-up would
+  // end it only half (W1). No server lookup: a channel created during the
+  // session is not in the channel→server map yet (N2).
+  const inServerVoice = () => {
+    const id = voiceState.channelId;
+    if (!id) return false;
+    return !dmsState.dms.some((d) => d.id === id);
+  };
+
 
   // Sort DMs by last_message timestamp (descending)
   const sortedDMs = createMemo(() => {
@@ -53,7 +71,7 @@ const HomeSidebar: Component = () => {
       <div class="px-3 py-2 mt-2">
         <button
           onClick={() => setShowDMSearch(true)}
-          class="w-full px-3 py-2 rounded-xl text-sm text-text-muted text-left outline-none border border-white/5"
+          class="w-full px-3 py-2 rounded-xl text-sm text-text-muted text-left outline-none border border-white/5 truncate whitespace-nowrap"
           style={{"background-color":"var(--color-surface-base)"}}
         >
           {t("home.sidebar.findConversation")}
@@ -79,8 +97,20 @@ const HomeSidebar: Component = () => {
               !dmsState.isShowingFriends,
           }}
         >
-          <Users class="w-5 h-5 transition-colors" />
-          <span class="font-medium">{t("home.sidebar.friends")}</span>
+          <Users class="w-5 h-5 transition-colors" aria-hidden="true" />
+          <span class="font-medium flex-1 text-left">{t("home.sidebar.friends")}</span>
+          <Show when={getIncomingRequestCount() > 0}>
+            <span
+              data-testid="friends-request-count"
+              class="min-w-5 h-5 px-1.5 rounded-full bg-accent-primary text-on-accent text-xs font-bold flex items-center justify-center"
+              aria-label={plural(getIncomingRequestCount(), {
+                one: "home.sidebar.requestCount.one",
+                other: "home.sidebar.requestCount.other",
+              })}
+            >
+              {getIncomingRequestCount() > 99 ? "99+" : getIncomingRequestCount()}
+            </span>
+          </Show>
         </button>
 
         {/* Quick Add Friend Button */}
@@ -91,8 +121,21 @@ const HomeSidebar: Component = () => {
           }}
           class="p-2 rounded-lg text-text-secondary hover:text-accent-success hover:bg-white/10 transition-colors"
           title={t("home.sidebar.addFriend")}
+          aria-label={t("home.sidebar.addFriend")}
         >
-          <Plus class="w-5 h-5" />
+          <Plus class="w-5 h-5" aria-hidden="true" />
+        </button>
+      </div>
+
+      {/* New message: always visible and labelled (NAV-8), also for touch and keyboard */}
+      <div class="mx-2 mt-1">
+        <button
+          data-testid="new-dm-button"
+          onClick={() => setShowNewMessage(true)}
+          class="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/5 transition-colors"
+        >
+          <SquarePen class="w-5 h-5" aria-hidden="true" />
+          <span class="font-medium">{t("dm.new.title")}</span>
         </button>
       </div>
 
@@ -103,6 +146,7 @@ const HomeSidebar: Component = () => {
       <div class="flex items-center justify-between px-3 py-1 group mb-1">
         <button
           onClick={() => setShowDMs(!showDMs())}
+          aria-expanded={showDMs()}
           class="flex items-center gap-1.5 px-1 py-1 rounded hover:bg-white/5 transition-colors flex-1 text-left"
         >
           <ChevronDown
@@ -114,14 +158,6 @@ const HomeSidebar: Component = () => {
           </span>
         </button>
 
-        <button
-          data-testid="new-dm-button"
-          onClick={() => setShowNewMessage(true)}
-          class="p-1 rounded hover:bg-white/10 transition-colors text-text-secondary hover:text-text-primary opacity-0 group-hover:opacity-100"
-          title={t("dm.new.title")}
-        >
-          <Plus class="w-4 h-4" />
-        </button>
       </div>
 
       {/* DM List */}
@@ -187,12 +223,19 @@ const HomeSidebar: Component = () => {
         </Show>
       </div>
 
+      {/* Voice Panel: a running voice session stays controllable on Home (NAV-6) */}
+      <Show when={inServerVoice()}>
+        <VoicePanel />
+      </Show>
+
       {/* User Panel (Bottom) */}
       <UserPanel />
 
       {/* New Message Modal */}
       <Show when={showNewMessage()}>
-        <NewMessageModal onClose={() => setShowNewMessage(false)} />
+        <LazyDialog name="NewMessageModal">
+          <NewMessageModal onClose={() => setShowNewMessage(false)} />
+        </LazyDialog>
       </Show>
 
       {/* Add Friend Modal */}
@@ -202,7 +245,9 @@ const HomeSidebar: Component = () => {
 
       {/* DM Search Panel */}
       <Show when={showDMSearch()}>
-        <SearchPanel mode="dm" onClose={() => setShowDMSearch(false)} />
+        <LazyDialog name="SearchPanel">
+          <SearchPanel mode="dm" onClose={() => setShowDMSearch(false)} />
+        </LazyDialog>
       </Show>
     </aside>
   );

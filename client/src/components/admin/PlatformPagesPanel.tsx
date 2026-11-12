@@ -6,6 +6,7 @@ import {
   loadPlatformPages,
   pagesState,
 } from "@/stores/pages";
+import { t } from "@/i18n";
 
 const PlatformPagesPanel: Component = () => {
   const [isCreating, setIsCreating] = createSignal(false);
@@ -39,7 +40,7 @@ const PlatformPagesPanel: Component = () => {
     );
 
     if (!created) {
-      throw new Error(pagesState.error ?? "Failed to create platform page");
+      throw new Error(pagesState.error ?? "PAGE_CREATE_FAILED");
     }
 
     setIsCreating(false);
@@ -53,7 +54,7 @@ const PlatformPagesPanel: Component = () => {
             <div class="flex items-center justify-between">
               <div class="flex items-center gap-3">
                 <BookOpen class="w-5 h-5 text-accent-primary" />
-                <h2 class="text-lg font-bold text-text-primary">Platform Pages</h2>
+                <h2 class="text-lg font-bold text-text-primary">{t("admin.nav.platformPages")}</h2>
               </div>
               <div class="flex items-center gap-2">
                 <button
@@ -64,7 +65,7 @@ const PlatformPagesPanel: Component = () => {
                 >
                   <span class="inline-flex items-center gap-2">
                     <RefreshCw class="w-4 h-4" classList={{ "animate-spin": isRefreshing() }} />
-                    Refresh
+                    {t("common.reload")}
                   </span>
                 </button>
                 <button
@@ -74,13 +75,13 @@ const PlatformPagesPanel: Component = () => {
                   class="px-3 py-1.5 rounded-lg text-sm font-medium bg-accent-primary text-on-accent hover:bg-accent-primary/90 transition-colors inline-flex items-center gap-2"
                 >
                   <Plus class="w-4 h-4" />
-                  New Platform Page
+                  {t("admin.pages.new")}
                 </button>
               </div>
             </div>
 
-            <Show when={!pagesState.isPlatformLoading} fallback={<div class="text-text-secondary">Loading pages...</div>}>
-              <Show when={pagesState.platformPages.length > 0} fallback={<div class="text-text-secondary">No platform pages yet.</div>}>
+            <Show when={!pagesState.isPlatformLoading} fallback={<div class="text-text-secondary">{t("common.loading")}</div>}>
+              <Show when={pagesState.platformPages.length > 0} fallback={<div class="text-text-secondary">{t("admin.pages.empty")}</div>}>
                 <div class="space-y-2">
                   <For each={pagesState.platformPages}>
                     {(page) => (
@@ -90,8 +91,8 @@ const PlatformPagesPanel: Component = () => {
                           <div class="text-xs text-text-secondary">/{page.slug}</div>
                         </div>
                         <Show when={page.requires_acceptance}>
-                          <span class="px-2 py-0.5 rounded text-xs bg-amber-500/20 text-amber-400">
-                            Requires Acceptance
+                          <span class="px-2 py-0.5 rounded text-xs bg-status-warning/20 text-text-primary">
+                            {t("admin.pages.mustAccept")}
                           </span>
                         </Show>
                       </div>

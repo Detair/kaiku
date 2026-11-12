@@ -37,7 +37,7 @@ import {
 } from "@/stores/pages";
 import ChannelList from "@/components/channels/ChannelList";
 import PageSection from "@/components/pages/PageSection";
-import SearchPanel from "@/components/search/SearchPanel";
+import LazyDialog from "@/components/ui/LazyDialog";
 import UserPanel from "./UserPanel";
 import VoicePanel from "@/components/voice/VoicePanel";
 import { ModalFallback, LazyErrorBoundary } from "@/components/ui/LazyFallback";
@@ -48,6 +48,8 @@ const GuildSettingsModal = lazy(
   () => import("@/components/guilds/GuildSettingsModal"),
 );
 const EventsModal = lazy(() => import("@/components/guilds/EventsModal"));
+// Opens on demand: loads with the first search.
+const SearchPanel = lazy(() => import("@/components/search/SearchPanel"));
 
 interface SidebarProps {
   /** Called after a navigation action (e.g. channel selected). Used by AppShell to close the mobile drawer. */
@@ -131,7 +133,7 @@ const Sidebar: Component<SidebarProps> = (props) => {
             <button
               data-testid="guild-settings-button"
               onClick={() => setShowGuildSettings(true)}
-              class="p-1.5 text-text-secondary hover:text-text-primary hover:bg-white/10 rounded-lg transition-colors"
+              class="tap-dense p-1.5 text-text-secondary hover:text-text-primary hover:bg-white/10 rounded-lg transition-colors"
               title={t("home.guildSidebar.settings")}
             >
               <Settings class="w-4 h-4" />
@@ -148,13 +150,13 @@ const Sidebar: Component<SidebarProps> = (props) => {
             class="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-sm text-text-muted border border-white/5 hover:border-white/10 transition-colors"
             style={{"background-color":"var(--color-surface-base)"}}
           >
-            <Search class="w-4 h-4" />
-            <span>{t("home.guildSidebar.searchMessages")}</span>
+            <Search class="w-4 h-4 flex-shrink-0" />
+            <span class="min-w-0 truncate whitespace-nowrap">{t("home.guildSidebar.searchMessages")}</span>
           </button>
         </Show>
         <Show when={!activeGuild()}>
           <div
-            class="w-full px-3 py-2 rounded-xl text-sm text-text-muted border border-white/5"
+            class="w-full px-3 py-2 rounded-xl text-sm text-text-muted border border-white/5 truncate whitespace-nowrap"
             style={{"background-color":"var(--color-surface-base)"}}
           >
             {t("home.guildSidebar.search")}
@@ -231,7 +233,9 @@ const Sidebar: Component<SidebarProps> = (props) => {
 
       {/* Search Panel Overlay */}
       <Show when={showSearch() && activeGuild()}>
-        <SearchPanel onClose={handleCloseSearch} />
+        <LazyDialog name="SearchPanel">
+          <SearchPanel onClose={handleCloseSearch} />
+        </LazyDialog>
       </Show>
     </aside>
   );

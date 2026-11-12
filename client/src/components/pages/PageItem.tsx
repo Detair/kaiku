@@ -23,15 +23,15 @@ export default function PageItem(props: PageItemProps) {
       onClick={props.onClick}
       class={`w-full flex items-center gap-2 px-3 py-2 rounded-md text-left transition-colors group ${
         props.isSelected
-          ? "bg-zinc-700 text-white"
-          : "text-zinc-300 hover:bg-zinc-700/50 hover:text-white"
+          ? "bg-surface-layer2 text-text-primary"
+          : "text-text-primary hover:bg-white/10 hover:text-text-primary"
       }`}
     >
       <Show when={props.isDraggable}>
-        <GripVertical class="w-4 h-4 text-zinc-500 opacity-0 group-hover:opacity-100 cursor-grab transition-opacity flex-shrink-0" />
+        <GripVertical class="w-4 h-4 text-text-secondary opacity-0 group-hover:opacity-100 cursor-grab transition-opacity flex-shrink-0" />
       </Show>
 
-      <FileText class="w-4 h-4 flex-shrink-0 text-zinc-400" />
+      <FileText class="w-4 h-4 flex-shrink-0 text-text-secondary" />
 
       <span class="flex-1 truncate text-sm" title={props.page.title}>
         {props.page.title}
@@ -39,7 +39,7 @@ export default function PageItem(props: PageItemProps) {
 
       <Show when={props.isPending}>
         <span
-          class="flex items-center gap-1 px-1.5 py-0.5 bg-amber-900/40 text-amber-400 rounded text-xs font-medium"
+          class="flex items-center gap-1 px-1.5 py-0.5 bg-status-warning/20 text-text-primary rounded text-xs font-medium"
           title="Action required"
         >
           <AlertCircle class="w-3 h-3" />
@@ -48,7 +48,7 @@ export default function PageItem(props: PageItemProps) {
 
       <Show when={props.page.requires_acceptance && !props.isPending}>
         <span
-          class="w-2 h-2 bg-amber-500 rounded-full flex-shrink-0"
+          class="w-2 h-2 bg-status-warning rounded-full flex-shrink-0"
           title="Requires acceptance"
         />
       </Show>
