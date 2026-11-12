@@ -105,8 +105,7 @@ pub fn messages_router(max_upload_size: usize) -> Router<AppState> {
         )
         .route(
             "/channel/{channel_id}/upload",
-            post(uploads::upload_message_with_file)
-                .layer(DefaultBodyLimit::max(max_upload_size)),
+            post(uploads::upload_message_with_file).layer(DefaultBodyLimit::max(max_upload_size)),
         )
         .route("/{id}", patch(messages::update).delete(messages::delete))
         .route("/{parent_id}/thread", get(messages::list_thread_replies))

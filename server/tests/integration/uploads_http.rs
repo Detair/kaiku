@@ -528,11 +528,18 @@ async fn member_with_message(app: &TestApp, perms: GuildPermissions) -> (Uuid, U
     let (member, _) = create_test_user(&app.pool).await;
     add_guild_member(&app.pool, guild, member).await;
     let message = super::helpers::insert_message(&app.pool, channel, member, "mine").await;
-    (guild, member, message, generate_access_token(&app.config, member))
+    (
+        guild,
+        member,
+        message,
+        generate_access_token(&app.config, member),
+    )
 }
 
 fn file_perms() -> GuildPermissions {
-    GuildPermissions::VIEW_CHANNEL | GuildPermissions::SEND_MESSAGES | GuildPermissions::ATTACH_FILES
+    GuildPermissions::VIEW_CHANNEL
+        | GuildPermissions::SEND_MESSAGES
+        | GuildPermissions::ATTACH_FILES
 }
 
 #[sqlx::test]
@@ -612,8 +619,7 @@ async fn twenty_mb_upload_still_works(pool: PgPool) {
         eprintln!("skipping: object storage not reachable");
         return;
     }
-    let (app, _bucket) =
-        super::helpers::fresh_test_app_with_s3_and_pool(pool.clone()).await;
+    let (app, _bucket) = super::helpers::fresh_test_app_with_s3_and_pool(pool.clone()).await;
     let (channel, token) = guild_member_channel(&app, file_perms(), "text").await;
     let boundary = "----TestBoundary";
     let mut body = format!(
@@ -622,14 +628,17 @@ async fn twenty_mb_upload_still_works(pool: PgPool) {
     .into_bytes();
     body.extend(std::iter::repeat_n(b'a', 20 * 1024 * 1024));
     body.extend(format!("\r\n--{boundary}--\r\n").into_bytes());
-    let req = TestApp::request(Method::POST, &format!("/api/messages/channel/{channel}/upload"))
-        .header("Authorization", format!("Bearer {token}"))
-        .header(
-            "Content-Type",
-            format!("multipart/form-data; boundary={boundary}"),
-        )
-        .body(Body::from(body))
-        .unwrap();
+    let req = TestApp::request(
+        Method::POST,
+        &format!("/api/messages/channel/{channel}/upload"),
+    )
+    .header("Authorization", format!("Bearer {token}"))
+    .header(
+        "Content-Type",
+        format!("multipart/form-data; boundary={boundary}"),
+    )
+    .body(Body::from(body))
+    .unwrap();
     assert_eq!(app.oneshot(req).await.status(), 201);
 }
 

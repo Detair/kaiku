@@ -650,7 +650,11 @@ pub async fn bot_channel_permissions(
         return Ok(None);
     };
     let overrides = crate::db::get_channel_overrides(pool, channel_id).await?;
-    Ok(Some(channel_permissions(&ctx, bot_user_id, Some(&overrides))))
+    Ok(Some(channel_permissions(
+        &ctx,
+        bot_user_id,
+        Some(&overrides),
+    )))
 }
 
 /// The subset of `bot_user_ids` that are installed in `guild_id` and have

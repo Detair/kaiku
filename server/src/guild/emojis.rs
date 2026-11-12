@@ -128,7 +128,6 @@ async fn check_guild_membership(
 // Router
 // ============================================================================
 
-///
 /// `max_upload_size` is the body limit of emoji creation (multipart).
 pub fn router(max_upload_size: usize) -> Router<AppState> {
     Router::new()

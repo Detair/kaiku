@@ -100,11 +100,13 @@ async fn fixture(pool: &PgPool) -> Fx {
     .await;
 
     let (app_id, bot, _token) = create_bot_application(pool, owner).await;
-    sqlx::query("UPDATE bot_applications SET gateway_intents = ARRAY['commands','messages'] WHERE id = $1")
-        .bind(app_id)
-        .execute(pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "UPDATE bot_applications SET gateway_intents = ARRAY['commands','messages'] WHERE id = $1",
+    )
+    .bind(app_id)
+    .execute(pool)
+    .await
+    .unwrap();
     install_bot_in_guild(pool, guild, app_id, owner).await;
     let owner_token = generate_access_token(&app.config, owner);
     Fx {
@@ -121,14 +123,22 @@ async fn fixture(pool: &PgPool) -> Fx {
 }
 
 /// Subscribe to the bot's event channel.
-async fn bot_events(fx: &Fx) -> (Client, tokio::sync::broadcast::Receiver<fred::types::Message>) {
+async fn bot_events(
+    fx: &Fx,
+) -> (
+    Client,
+    tokio::sync::broadcast::Receiver<fred::types::Message>,
+) {
     let subscriber = vc_server::db::create_redis_client(&fx.app.config.redis_url)
         .await
         .unwrap();
     let _ = subscriber.connect();
     subscriber.wait_for_connect().await.unwrap();
     let rx = subscriber.message_rx();
-    subscriber.subscribe(format!("bot:{}", fx.bot)).await.unwrap();
+    subscriber
+        .subscribe(format!("bot:{}", fx.bot))
+        .await
+        .unwrap();
     (subscriber, rx)
 }
 
@@ -145,10 +155,15 @@ async fn post(fx: &Fx, channel: Uuid, content: &str) -> Uuid {
 }
 
 /// Next `message_created` for the bot, or `None` within `QUIET`.
-async fn next_message(rx: &mut tokio::sync::broadcast::Receiver<fred::types::Message>) -> Option<serde_json::Value> {
+async fn next_message(
+    rx: &mut tokio::sync::broadcast::Receiver<fred::types::Message>,
+) -> Option<serde_json::Value> {
     let deadline = tokio::time::Instant::now() + QUIET;
     loop {
-        let msg = tokio::time::timeout_at(deadline, rx.recv()).await.ok()?.ok()?;
+        let msg = tokio::time::timeout_at(deadline, rx.recv())
+            .await
+            .ok()?
+            .ok()?;
         let text = String::from_utf8(msg.value.as_bytes()?.to_vec()).ok()?;
         let v: serde_json::Value = serde_json::from_str(&text).ok()?;
         if v["type"] == "message_created" {
@@ -162,7 +177,9 @@ async fn public_channel_delivers_to_bot(pool: PgPool) {
     let fx = fixture(&pool).await;
     let (_sub, mut rx) = bot_events(&fx).await;
     let id = post(&fx, fx.public, "hello").await;
-    let ev = next_message(&mut rx).await.expect("event for a public channel");
+    let ev = next_message(&mut rx)
+        .await
+        .expect("event for a public channel");
     assert_eq!(ev["message_id"], id.to_string());
 }
 
@@ -171,7 +188,10 @@ async fn private_channel_hidden_from_bot(pool: PgPool) {
     let fx = fixture(&pool).await;
     let (_sub, mut rx) = bot_events(&fx).await;
     post(&fx, fx.private, "secret").await;
-    assert!(next_message(&mut rx).await.is_none(), "bot saw a private channel");
+    assert!(
+        next_message(&mut rx).await.is_none(),
+        "bot saw a private channel"
+    );
 }
 
 #[sqlx::test]
@@ -191,7 +211,9 @@ async fn role_lets_bot_into_private_channel(pool: PgPool) {
 
     let (_sub, mut rx) = bot_events(&fx).await;
     let id = post(&fx, fx.private, "for insiders").await;
-    let ev = next_message(&mut rx).await.expect("bot with role sees channel");
+    let ev = next_message(&mut rx)
+        .await
+        .expect("bot with role sees channel");
     assert_eq!(ev["message_id"], id.to_string());
 }
 
@@ -278,11 +300,12 @@ async fn uninstalled_bot_loses_roles(pool: PgPool) {
     .body(Body::empty())
     .unwrap();
     assert_eq!(fx.app.oneshot(req).await.status(), 204);
-    let roles: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM guild_member_roles WHERE user_id = $1")
-        .bind(fx.bot)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let roles: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM guild_member_roles WHERE user_id = $1")
+            .bind(fx.bot)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(roles, 0);
     let _ = fx.owner;
 }

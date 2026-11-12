@@ -62,8 +62,9 @@ pub fn router(state: &AppState) -> Router<AppState> {
         // Banner upload
         .route(
             "/{id}/banner",
-            post(settings::upload_guild_banner)
-                .layer(axum::extract::DefaultBodyLimit::max(state.config.max_upload_size)),
+            post(settings::upload_guild_banner).layer(axum::extract::DefaultBodyLimit::max(
+                state.config.max_upload_size,
+            )),
         )
         // Role routes
         .route(

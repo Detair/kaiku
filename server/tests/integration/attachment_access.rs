@@ -151,7 +151,10 @@ async fn role_loss_blocks_download_variant_and_url(pool: PgPool) {
     let (attachment, _) = stored_attachment(&app, message).await;
     let token = generate_access_token(&app.config, member);
 
-    assert_eq!(read_statuses(&app, &token, attachment).await, [200, 200, 200]);
+    assert_eq!(
+        read_statuses(&app, &token, attachment).await,
+        [200, 200, 200]
+    );
 
     sqlx::query("DELETE FROM guild_member_roles WHERE user_id = $1 AND role_id = $2")
         .bind(member)
@@ -160,7 +163,10 @@ async fn role_loss_blocks_download_variant_and_url(pool: PgPool) {
         .await
         .unwrap();
 
-    assert_eq!(read_statuses(&app, &token, attachment).await, [403, 403, 403]);
+    assert_eq!(
+        read_statuses(&app, &token, attachment).await,
+        [403, 403, 403]
+    );
 }
 
 /// A user outside a DM cannot read its attachments; both participants can.
@@ -179,7 +185,10 @@ async fn dm_non_participant_is_refused(pool: PgPool) {
     let (attachment, _) = stored_attachment(&app, message).await;
 
     let b_token = generate_access_token(&app.config, b);
-    assert_eq!(read_statuses(&app, &b_token, attachment).await, [200, 200, 200]);
+    assert_eq!(
+        read_statuses(&app, &b_token, attachment).await,
+        [200, 200, 200]
+    );
 
     let outsider_token = generate_access_token(&app.config, outsider);
     assert_eq!(
@@ -210,7 +219,10 @@ async fn group_dm_leaver_is_refused(pool: PgPool) {
     let (attachment, _) = stored_attachment(&app, message).await;
 
     let c_token = generate_access_token(&app.config, c);
-    assert_eq!(read_statuses(&app, &c_token, attachment).await, [200, 200, 200]);
+    assert_eq!(
+        read_statuses(&app, &c_token, attachment).await,
+        [200, 200, 200]
+    );
 
     sqlx::query("DELETE FROM dm_participants WHERE channel_id = $1 AND user_id = $2")
         .bind(dm)
@@ -218,10 +230,16 @@ async fn group_dm_leaver_is_refused(pool: PgPool) {
         .execute(&pool)
         .await
         .unwrap();
-    assert_eq!(read_statuses(&app, &c_token, attachment).await, [403, 403, 403]);
+    assert_eq!(
+        read_statuses(&app, &c_token, attachment).await,
+        [403, 403, 403]
+    );
 
     let b_token = generate_access_token(&app.config, b);
-    assert_eq!(read_statuses(&app, &b_token, attachment).await, [200, 200, 200]);
+    assert_eq!(
+        read_statuses(&app, &b_token, attachment).await,
+        [200, 200, 200]
+    );
 }
 
 /// The attachment of a soft-deleted message is refused, even to its author.
@@ -238,7 +256,10 @@ async fn deleted_message_attachment_is_refused(pool: PgPool) {
     let message = insert_message(&pool, channel, owner, "file").await;
     let (attachment, _) = stored_attachment(&app, message).await;
     let token = generate_access_token(&app.config, owner);
-    assert_eq!(read_statuses(&app, &token, attachment).await, [200, 200, 200]);
+    assert_eq!(
+        read_statuses(&app, &token, attachment).await,
+        [200, 200, 200]
+    );
 
     // Soft delete written directly (no attachment clean-up involved).
     sqlx::query("ALTER TABLE messages DISABLE TRIGGER USER")
@@ -255,7 +276,10 @@ async fn deleted_message_attachment_is_refused(pool: PgPool) {
         .await
         .unwrap();
 
-    assert_eq!(read_statuses(&app, &token, attachment).await, [403, 403, 403]);
+    assert_eq!(
+        read_statuses(&app, &token, attachment).await,
+        [403, 403, 403]
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -320,7 +344,10 @@ async fn deleting_message_removes_rows_and_objects(pool: PgPool) {
         );
     }
 
-    assert_eq!(read_statuses(&app, &token, attachment).await, [403, 403, 403]);
+    assert_eq!(
+        read_statuses(&app, &token, attachment).await,
+        [403, 403, 403]
+    );
 }
 
 /// Rows removed by a cascade (channel deletion) queue their objects too.
@@ -368,13 +395,10 @@ async fn failed_object_delete_stays_queued(pool: PgPool) {
         .unwrap();
     assert_eq!(attachment_rows(&pool, message).await, 0);
 
-    let deleted = vc_server::chat::storage_cleanup::drain_pending_deletes(
-        &pool,
-        app.state.s3.as_ref(),
-        10,
-    )
-    .await
-    .unwrap();
+    let deleted =
+        vc_server::chat::storage_cleanup::drain_pending_deletes(&pool, app.state.s3.as_ref(), 10)
+            .await
+            .unwrap();
     assert_eq!(deleted, 0);
     let attempts: i32 =
         sqlx::query_scalar("SELECT attempts FROM storage_pending_deletes WHERE s3_key = $1")
@@ -396,11 +420,13 @@ async fn account_deletion_removes_files(pool: PgPool) {
     let channel = create_channel(&pool, guild, "general").await;
     let message = insert_message(&pool, channel, leaver, "file").await;
     super::helpers::insert_attachment(&pool, message).await;
-    sqlx::query("UPDATE users SET deletion_scheduled_at = NOW() - INTERVAL '1 minute' WHERE id = $1")
-        .bind(leaver)
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "UPDATE users SET deletion_scheduled_at = NOW() - INTERVAL '1 minute' WHERE id = $1",
+    )
+    .bind(leaver)
+    .execute(&pool)
+    .await
+    .unwrap();
 
     vc_server::governance::deletion::process_pending_deletions(&pool, &None)
         .await
