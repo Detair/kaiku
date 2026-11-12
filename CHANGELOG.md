@@ -211,6 +211,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Android app no longer accepts sign-in tokens from a link; single sign-on returns only a one-time code.
 
 ### Removed
+- The channel member API (`POST /api/channels/{id}/members`, `DELETE /api/channels/{id}/members/{user_id}`) is gone; it had no effect on who can see a channel. Bots now send into a channel when their roles give them "View channel" and "Send messages" there, like members.
 - The unused REST endpoints `POST /api/channels/{id}/screenshare/check`, `/start` and `/stop`. Screen sharing is started and stopped over the WebSocket voice connection, as all clients already do.
 - Temporary passwords for admin-created accounts (`POST /api/admin/users` refuses `temporary_password`).
 - Password reset by e-mail. A forgotten password is replaced through an account recovery with a recovery code, or by an admin.

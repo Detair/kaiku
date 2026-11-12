@@ -44,8 +44,6 @@ pub fn channels_router(state: &AppState) -> Router<AppState> {
         .route("/{id}", patch(channels::update))
         .route("/{id}", delete(channels::delete))
         .route("/{id}/members", get(channels::list_members))
-        .route("/{id}/members", post(channels::add_member))
-        .route("/{id}/members/{user_id}", delete(channels::remove_member))
         // Permission overrides
         .route("/{id}/overrides", get(overrides::list_overrides))
         .route(

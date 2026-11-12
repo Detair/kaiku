@@ -169,8 +169,6 @@ use utoipa::{Modify, OpenApi};
         crate::chat::channels::update,
         crate::chat::channels::delete,
         crate::chat::channels::list_members,
-        crate::chat::channels::add_member,
-        crate::chat::channels::remove_member,
         crate::chat::channels::mark_as_read,
         // Messages
         crate::chat::messages::list,
@@ -511,7 +509,6 @@ use utoipa::{Modify, OpenApi};
         crate::chat::types::ChannelResponse,
         crate::chat::types::CreateChannelRequest,
         crate::chat::types::UpdateChannelRequest,
-        crate::chat::types::AddMemberRequest,
         crate::chat::types::MemberResponse,
         crate::chat::types::MarkChannelAsReadRequest,
         // Incoming (Discord-compatible) webhooks

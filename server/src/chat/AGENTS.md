@@ -15,7 +15,7 @@ Text messaging with end-to-end encryption (E2EE) using vodozemac (Olm/Megolm), f
 ## Key Files
 
 - `mod.rs` — Router setup for channels, messages, DM endpoints
-- `channels.rs` — Channel CRUD handlers (list, create, update, delete, member management)
+- `channels.rs` — Channel CRUD handlers (list, create, update, delete, member list)
 - `messages.rs` — Message handlers (list, create, edit, delete)
 - `dm.rs` — DM channel creation and management
 - `uploads.rs` — File upload/download handlers with multipart form support

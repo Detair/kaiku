@@ -471,30 +471,27 @@ async fn handle_bot_event(
                 "Bot sending message"
             );
 
-            // Check if bot has access to the channel (is a member)
-            let has_access = sqlx::query!(
-                r#"
-                SELECT 1 as "exists"
-                FROM channel_members
-                WHERE channel_id = $1 AND user_id = $2
-                "#,
-                channel_id,
-                bot_user_id
-            )
-            .fetch_optional(&state.db)
-            .await
-            .map_err(|e| {
-                error!("Failed to check channel membership: {e}");
-                format!("Failed to verify channel access: {e}")
-            })?;
-
-            if has_access.is_none() {
+            // The bot needs VIEW_CHANNEL and SEND_MESSAGES in the channel,
+            // from its installation's @everyone, its roles and the channel
+            // overrides (the same rights decide which messages it receives).
+            let perms =
+                crate::permissions::bot_channel_permissions(&state.db, bot_user_id, channel_id)
+                    .await
+                    .map_err(|e| {
+                        error!("Failed to check bot channel permissions: {e}");
+                        "Failed to verify channel access".to_string()
+                    })?;
+            let allowed = perms.is_some_and(|p| {
+                p.has(crate::permissions::GuildPermissions::VIEW_CHANNEL)
+                    && p.has(crate::permissions::GuildPermissions::SEND_MESSAGES)
+            });
+            if !allowed {
                 warn!(
                     bot_user_id = %bot_user_id,
                     channel_id = %channel_id,
                     "Bot attempted to send message to unauthorized channel"
                 );
-                return Err("Bot is not a member of this channel".to_string());
+                return Err("Bot cannot send messages in this channel".to_string());
             }
 
             ensure_channel_writable(state, channel_id).await?;
@@ -786,7 +783,7 @@ mod feature_gate_tests {
         })
     }
 
-    /// A bot user that is a member of a forum channel in a fresh guild.
+    /// A bot installed in a fresh guild whose @everyone may write in its forum channel.
     async fn bot_in_forum(pool: &PgPool) -> (Uuid, Uuid) {
         let name = format!("bot_{}", &Uuid::new_v4().simple().to_string()[..8]);
         let bot = crate::db::create_user(pool, &name, "Bot", None, "hash")
@@ -808,12 +805,50 @@ mod feature_gate_tests {
         .execute(pool)
         .await
         .unwrap();
-        sqlx::query("INSERT INTO channel_members (channel_id, user_id) VALUES ($1, $2)")
-            .bind(forum)
-            .bind(bot.id)
+        // Installed bot application; @everyone may view and write.
+        let owner = crate::db::create_user(pool, &format!("{name}_o"), "Owner", None, "hash")
+            .await
+            .expect("owner");
+        sqlx::query("UPDATE guilds SET owner_id = $1 WHERE id = $2")
+            .bind(owner.id)
+            .bind(guild)
             .execute(pool)
             .await
             .unwrap();
+        sqlx::query(
+            "INSERT INTO guild_roles (id, guild_id, name, permissions, position, is_default)
+             VALUES ($1, $2, '@everyone', $3, 0, true)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(guild)
+        .bind(
+            (crate::permissions::GuildPermissions::VIEW_CHANNEL
+                | crate::permissions::GuildPermissions::SEND_MESSAGES)
+                .to_db(),
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        let app = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO bot_applications (id, owner_id, name, bot_user_id) VALUES ($1, $2, $3, $4)",
+        )
+        .bind(app)
+        .bind(owner.id)
+        .bind(&name)
+        .bind(bot.id)
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO guild_bot_installations (guild_id, application_id, installed_by) VALUES ($1, $2, $3)",
+        )
+        .bind(guild)
+        .bind(app)
+        .bind(owner.id)
+        .execute(pool)
+        .await
+        .unwrap();
         (bot.id, forum)
     }
 
@@ -841,6 +876,46 @@ mod feature_gate_tests {
         let on = state_with(pool.clone(), true).await;
         handle_bot_event(event(), &on, bot).await.expect("forum on");
         assert_eq!(message_count(&pool, forum).await, 1);
+    }
+
+    /// Sending needs the bot's own VIEW_CHANNEL: a channel hidden from
+    /// `@everyone` refuses the bot (it would not receive its messages either).
+    #[sqlx::test]
+    async fn bot_cannot_send_into_hidden_channel(pool: PgPool) {
+        let (bot, forum) = bot_in_forum(&pool).await;
+        let everyone: Uuid = sqlx::query_scalar(
+            "SELECT r.id FROM guild_roles r JOIN channels c ON c.guild_id = r.guild_id
+             WHERE c.id = $1 AND r.is_default",
+        )
+        .bind(forum)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO channel_overrides (id, channel_id, role_id, allow_permissions, deny_permissions)
+             VALUES ($1, $2, $3, 0, $4)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(forum)
+        .bind(everyone)
+        .bind(crate::permissions::GuildPermissions::VIEW_CHANNEL.to_db())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let state = state_with(pool.clone(), true).await;
+        let err = handle_bot_event(
+            BotClientEvent::MessageCreate {
+                channel_id: forum,
+                content: "hello".to_string(),
+            },
+            &state,
+            bot,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err, "Bot cannot send messages in this channel");
+        assert_eq!(message_count(&pool, forum).await, 0);
     }
 
     #[sqlx::test]

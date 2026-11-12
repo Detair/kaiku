@@ -79,12 +79,6 @@ pub struct UpdateChannelRequest {
     pub position: Option<i32>,
 }
 
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-pub struct AddMemberRequest {
-    pub user_id: Uuid,
-    pub role_id: Option<Uuid>,
-}
-
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct MemberResponse {
     pub user_id: Uuid,

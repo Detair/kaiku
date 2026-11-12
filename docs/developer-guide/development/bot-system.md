@@ -45,6 +45,8 @@ bots) and the channel overrides decide `VIEW_CHANNEL`. `message_created` gateway
 and `message.created` webhooks are only delivered for channels the bot can view, so a
 private channel stays private unless a role lets the bot in. If the visibility check
 fails, nothing is delivered.
+Sending a message through the gateway (`message_create`) needs `VIEW_CHANNEL` and
+`SEND_MESSAGES` in that channel, decided the same way.
 
 ### Removing a Bot
 

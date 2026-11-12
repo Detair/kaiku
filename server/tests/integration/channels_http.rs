@@ -204,3 +204,34 @@ async fn test_get_channel_not_found(pool: PgPool) {
         resp.status()
     );
 }
+
+/// Adding or removing channel members had no effect on access and is gone.
+#[sqlx::test]
+async fn channel_member_write_routes_are_gone(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (owner, _) = super::helpers::create_test_user(&pool).await;
+    let guild = super::helpers::create_guild_with_default_role(
+        &pool,
+        owner,
+        vc_server::permissions::GuildPermissions::VIEW_CHANNEL,
+    )
+    .await;
+    let channel = super::helpers::create_channel(&pool, guild, "general").await;
+    let token = super::helpers::generate_access_token(&app.config, owner);
+    let add = TestApp::request(Method::POST, &format!("/api/channels/{channel}/members"))
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            serde_json::json!({ "user_id": owner }).to_string(),
+        ))
+        .unwrap();
+    assert_eq!(app.oneshot(add).await.status(), 405);
+    let remove = TestApp::request(
+        Method::DELETE,
+        &format!("/api/channels/{channel}/members/{owner}"),
+    )
+    .header("Authorization", format!("Bearer {token}"))
+    .body(Body::empty())
+    .unwrap();
+    assert_eq!(app.oneshot(remove).await.status(), 404);
+}
