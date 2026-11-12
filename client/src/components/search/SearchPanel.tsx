@@ -483,7 +483,7 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
           }
         >
           <div class="flex flex-col items-center justify-center py-8 text-text-secondary">
-            <img src={flokiThinking} alt="" class="w-14 h-14 object-contain mb-3" loading="lazy" />
+            <img src={flokiThinking} alt={""} class="w-14 h-14 object-contain mb-3" loading="lazy" />
             <p class="text-sm">{t("chat.search.noResults")}</p>
             <p class="text-xs mt-1">{t("chat.search.noResultsHint")}</p>
           </div>

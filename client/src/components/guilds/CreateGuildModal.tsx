@@ -267,8 +267,8 @@ const CreateGuildModal: Component<CreateGuildModalProps> = (props) => {
                 {/* Description */}
                 <div>
                   <label for={descriptionId} class="block text-sm font-semibold text-text-primary mb-2">
-                    {t("guilds.create.description")}{" "}
-                    <span class="text-text-secondary text-xs">{t("guilds.create.optional")}</span>
+                    {t("guilds.create.description")}
+                    <span class="ml-1 text-text-secondary text-xs">{t("guilds.create.optional")}</span>
                   </label>
                   <textarea
                     id={descriptionId}
@@ -535,7 +535,7 @@ const CreateGuildModal: Component<CreateGuildModalProps> = (props) => {
                         >
                           <img
                             src={bannerPreviewUrl() || trimmedBannerUrl()}
-                            alt=""
+                            alt={""}
                             class="w-full h-full object-cover"
                           />
                         </Show>

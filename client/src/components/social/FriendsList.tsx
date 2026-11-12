@@ -298,7 +298,7 @@ const FriendsList: Component = () => {
                         ? flokiHappy
                         : flokiThinking
                   }
-                  alt=""
+                  alt={""}
                   class="w-12 h-12 object-contain mb-3"
                   loading="lazy"
                 />
