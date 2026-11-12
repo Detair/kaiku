@@ -302,6 +302,9 @@ pub struct VoiceState {
     pub audio: AudioHandle,
     /// Current channel ID if connected.
     pub channel_id: Option<String>,
+    /// Epoch of the voice session that holds the WebRTC connection (set by
+    /// the join that created it): a leave for an older session leaves it.
+    pub session_epoch: Option<u64>,
     /// Sender for encoded audio to WebRTC.
     pub audio_tx: Option<mpsc::Sender<Vec<u8>>>,
     /// Active screen share pipelines, keyed by stream ID. Max 3 concurrent.
@@ -335,6 +338,7 @@ impl VoiceState {
             webrtc,
             audio,
             channel_id: None,
+            session_epoch: None,
             audio_tx: None,
             screen_shares: HashMap::new(),
             webcam: None,

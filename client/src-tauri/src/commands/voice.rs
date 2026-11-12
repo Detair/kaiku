@@ -95,12 +95,15 @@ pub const JOIN_CANCELLED: &str = "VOICE_JOIN_CANCELLED";
 /// Voice session epochs (C32 amendment "leave and `voice_removed` win").
 ///
 /// The native process allocates the epochs ([`begin_voice_session`]), so
-/// every window and every reload of a window share one order. A new
-/// session raises the floor to its own epoch (older joins become stale);
-/// every leave raises it above everything allocated so far, before it waits
-/// for the voice lock. A join whose epoch is below the floor is cancelled:
-/// it checks after each await and right before each message it sends.
-/// Joins without an epoch (older frontends) are never cancelled.
+/// every window and every reload of a window share one order. Allocating
+/// an epoch cancels nothing. A leave names the session it ends: it raises
+/// the floor just above that session's epoch before it waits for the voice
+/// lock, so that session's join (and any older one) stops, and it tears
+/// the native session down only if that is not a newer one
+/// ([`leave_applies`]). A join whose epoch is below the floor is
+/// cancelled: it checks after each await and right before each message it
+/// sends. Joins and leaves without an epoch (older frontends) keep the old
+/// behaviour: such a join is never cancelled, such a leave ends everything.
 #[derive(Debug, Default)]
 pub struct VoiceEpochGate {
     /// Last epoch handed out.
@@ -110,14 +113,20 @@ pub struct VoiceEpochGate {
 }
 
 impl VoiceEpochGate {
-    /// A new voice session: the next epoch, which supersedes all older ones.
+    /// A new voice session: the next epoch. Older sessions are not touched;
+    /// only the leave that names a session ends it.
     pub fn begin_session(&self) -> u64 {
-        let epoch = self.last.fetch_add(1, Ordering::SeqCst) + 1;
-        self.floor.fetch_max(epoch, Ordering::SeqCst);
-        epoch
+        self.last.fetch_add(1, Ordering::SeqCst) + 1
     }
 
-    /// A leave or teardown: every session allocated so far is cancelled.
+    /// A leave of the session with `epoch`: its join, and every older one,
+    /// is cancelled. Sessions allocated later go on.
+    pub fn cancel_through(&self, epoch: u64) {
+        self.floor
+            .fetch_max(epoch.saturating_add(1), Ordering::SeqCst);
+    }
+
+    /// A leave without an epoch: every session allocated so far is cancelled.
     pub fn cancel_all(&self) {
         let next = self.last.load(Ordering::SeqCst) + 1;
         self.floor.fetch_max(next, Ordering::SeqCst);
@@ -139,8 +148,30 @@ impl VoiceEpochGate {
     }
 }
 
-/// Start a voice session: returns its epoch for `join_voice`. Allocated by
-/// the native process so reloads and several windows share one order.
+/// Whether a leave for the session `leave_epoch` may tear down the native
+/// session established under `held_epoch`. A leave never ends a session
+/// that is newer than the one it names; without an epoch on either side
+/// (older frontends) it ends whatever is there.
+pub const fn leave_applies(leave_epoch: Option<u64>, held_epoch: Option<u64>) -> bool {
+    match (leave_epoch, held_epoch) {
+        (Some(leave), Some(held)) => held <= leave,
+        _ => true,
+    }
+}
+
+/// Payload of `voice:session_state`: the publisher state of the native
+/// session established under `epoch` (wire format, hence `snake_case`).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SessionStateEvent {
+    /// Epoch of the session the state belongs to (`None`: joined without one).
+    pub epoch: Option<u64>,
+    /// `ConnectionState` name, as in `voice:state_change`.
+    pub state: String,
+}
+
+/// Start a voice session: returns its epoch for `join_voice` and for the
+/// `leave_voice` that ends it. Allocated by the native process so reloads
+/// and several windows share one order.
 #[command]
 pub fn begin_voice_session(state: State<'_, AppState>) -> u64 {
     state.voice_gate.begin_session()
@@ -255,6 +286,9 @@ pub async fn join_voice(
     if voice_state.channel_id.is_some() {
         return Err("Already in a voice channel. Leave first.".into());
     }
+    // From here on the native session belongs to this join: the leave that
+    // names this epoch (or a later one) tears it down, also after an error.
+    voice_state.session_epoch = epoch;
 
     // Connect WebRTC (creates peer connection)
     voice_state
@@ -319,7 +353,17 @@ pub async fn join_voice(
         .webrtc
         .set_on_state_change(move |new_state| {
             debug!("Voice connection state changed: {:?}", new_state);
-            let _ = app_clone.emit("voice:state_change", format!("{new_state:?}"));
+            let state = format!("{new_state:?}");
+            // With the session's epoch, so the frontend can tell a late
+            // state of an ended session from the one it holds now.
+            let _ = app_clone.emit(
+                "voice:session_state",
+                SessionStateEvent {
+                    epoch,
+                    state: state.clone(),
+                },
+            );
+            let _ = app_clone.emit("voice:state_change", state);
         })
         .await;
 
@@ -486,6 +530,7 @@ pub async fn join_voice(
         Err(JoinSendError::Failed(e)) => return Err(e),
         Err(JoinSendError::CancelledBeforeJoin | JoinSendError::CancelledAfterJoin) => {
             voice_state.channel_id = None;
+            voice_state.session_epoch = None;
             if let Err(e) = voice_state.webrtc.disconnect().await {
                 warn!("Disconnect of a cancelled voice join failed: {e}");
             }
@@ -722,16 +767,36 @@ fn sends_voice_leave(silent: Option<bool>) -> bool {
     !silent.unwrap_or(false)
 }
 
-/// Leave the current voice channel. `silent: true` skips `VoiceLeave`.
+/// Leave a voice session. `silent: true` skips `VoiceLeave`. `epoch` names
+/// the session to end (from [`begin_voice_session`]): its join is cancelled
+/// and the native session is torn down unless a newer one holds it by now
+/// ([`leave_applies`]). Without `epoch` whatever is there ends.
 #[command]
-pub async fn leave_voice(silent: Option<bool>, state: State<'_, AppState>) -> Result<(), String> {
-    info!(silent = ?silent, "Leaving voice channel");
-    // Before waiting for the lock: a join of an ended session stops at its
+pub async fn leave_voice(
+    silent: Option<bool>,
+    epoch: Option<u64>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    info!(silent = ?silent, epoch = ?epoch, "Leaving voice channel");
+    // Before waiting for the lock: a join of the ended session stops at its
     // next check instead of connecting after this leave.
-    state.voice_gate.cancel_all();
+    match epoch {
+        Some(epoch) => state.voice_gate.cancel_through(epoch),
+        None => state.voice_gate.cancel_all(),
+    }
 
     let mut voice = state.voice.write().await;
     let voice_state = voice.as_mut().ok_or("Voice not initialized")?;
+
+    if !leave_applies(epoch, voice_state.session_epoch) {
+        info!(
+            epoch = ?epoch,
+            held = ?voice_state.session_epoch,
+            "Leave names an older voice session; the newer one stays"
+        );
+        return Ok(());
+    }
+    voice_state.session_epoch = None;
 
     let channel_id = voice_state.channel_id.take();
 
@@ -1413,23 +1478,54 @@ mod tests {
     }
 
     #[test]
-    fn newer_session_supersedes_older() {
+    fn a_new_session_alone_cancels_nothing() {
         let gate = VoiceEpochGate::default();
         let a = gate.begin_session();
         let b = gate.begin_session();
         assert!(b > a);
-        assert!(!gate.is_current(Some(a)));
+        // Allocation is not a leave: a join that got its epoch earlier goes
+        // on, whatever order the allocations were answered in.
+        assert!(gate.is_current(Some(a)));
         assert!(gate.is_current(Some(b)));
     }
 
     #[test]
-    fn reloaded_window_continues_the_native_order() {
-        // Window before reload: many sessions, then a leave.
+    fn a_leave_ends_its_session_and_older_ones_only() {
         let gate = VoiceEpochGate::default();
+        let old = gate.begin_session();
+        let left = gate.begin_session();
+        let newer = gate.begin_session();
+        gate.cancel_through(left);
+        assert!(!gate.is_current(Some(old)));
+        assert!(!gate.is_current(Some(left)));
+        assert!(gate.is_current(Some(newer)));
+        // A late leave of an older session changes nothing any more.
+        gate.cancel_through(old);
+        assert!(gate.is_current(Some(newer)));
+    }
+
+    #[test]
+    fn a_leave_never_tears_down_a_newer_native_session() {
+        // The leave of session 3 arrives after session 5 was established.
+        assert!(!leave_applies(Some(3), Some(5)));
+        // Its own session, or an older one that was left behind, ends.
+        assert!(leave_applies(Some(3), Some(3)));
+        assert!(leave_applies(Some(3), Some(2)));
+        // Callers or sessions without an epoch keep the old behaviour.
+        assert!(leave_applies(None, Some(5)));
+        assert!(leave_applies(Some(3), None));
+        assert!(leave_applies(None, None));
+    }
+
+    #[test]
+    fn reloaded_window_continues_the_native_order() {
+        // Window before reload: many sessions, the last one left.
+        let gate = VoiceEpochGate::default();
+        let mut last = 0;
         for _ in 0..50 {
-            gate.begin_session();
+            last = gate.begin_session();
         }
-        gate.cancel_all();
+        gate.cancel_through(last);
         // The reloaded window knows nothing of the old epochs; it asks the
         // same process and gets one above the floor.
         let after_reload = gate.begin_session();
@@ -1441,10 +1537,11 @@ mod tests {
         let gate = VoiceEpochGate::default();
         let window_a = gate.begin_session();
         let window_b = gate.begin_session();
-        // B started later: A's pending join is stale, B's goes on.
+        // A's leave ends A's session; B, started later, goes on.
+        gate.cancel_through(window_a);
         assert!(!gate.is_current(Some(window_a)));
         assert!(gate.is_current(Some(window_b)));
-        // A leave in either window ends both sessions.
+        // A leave without an epoch (older caller) ends both.
         gate.cancel_all();
         assert!(!gate.is_current(Some(window_b)));
     }

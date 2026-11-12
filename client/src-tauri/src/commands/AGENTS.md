@@ -175,9 +175,9 @@ Failures with a server code are returned as the bare code (`OIDC_CLIENT_OUTDATED
 **Purpose:** Voice channel lifecycle and WebRTC signaling.
 
 **Key Commands:**
-- `begin_voice_session()`: next voice session epoch (native counter, shared by reloads and windows; supersedes older sessions)
-- `join_voice(channel_id, epoch?)`: Initialize WebRTC + Audio, send `VoiceJoin` event. Cancelled (`VOICE_JOIN_CANCELLED`) once a leave or newer session raised the floor (`VoiceEpochGate`); rechecked after the socket lock and before each send
-- `leave_voice(silent?)`: Stop audio, disconnect WebRTC, send `VoiceLeave` event (not when `silent`); cancels every session allocated so far first
+- `begin_voice_session()`: next voice session epoch (native counter, shared by reloads and windows); allocating one cancels nothing
+- `join_voice(channel_id, epoch?)`: Initialize WebRTC + Audio, send `VoiceJoin` event. Cancelled (`VOICE_JOIN_CANCELLED`) once the leave of its session raised the floor (`VoiceEpochGate`); rechecked after the socket lock and before each send. Emits `voice:session_state {epoch, state}` (and the older `voice:state_change`)
+- `leave_voice(silent?, epoch?)`: Stop audio, disconnect WebRTC, send `VoiceLeave` event (not when `silent`). `epoch` names the session to end: its join (and older ones) is cancelled, and a newer native session is left alone (`leave_applies`); without `epoch` everything ends
 - `handle_voice_offer(sdp)`: Process server SDP offer, return SDP answer
 - `handle_voice_ice_candidate(candidate)`: Add ICE candidate from server
 - `set_mute(muted)` / `set_deafen(deafened)`: Audio state
