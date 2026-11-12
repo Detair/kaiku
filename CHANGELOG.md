@@ -406,6 +406,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Friends can be written to from the friends list; new friend requests show a notice and a count on Home, and unread direct messages show on the Home icon.
 - "New Message" is always visible, signing out asks first, and the phone menu closes after picking a conversation or voice channel.
 - Channel lists work by keyboard, touch and screen reader: category headers are buttons, hidden buttons appear on focus and touch, unread dots are announced. The browser tab shows the number of unread messages.
+- Dialogs work by keyboard and screen reader: server settings, settings, creating a server or channel, search, the picture viewer, the emoji picker, report and block, events, custom status, keyboard shortcuts, quick actions (Ctrl+K), page acceptance and the phone menu take focus when they open, keep Tab inside, close with Escape wherever focus was and give focus back. A window opened from another closes on its own first; unsaved server settings still ask first.
+- The tabs of settings, server settings and channel settings are real tabs: the open tab is announced and arrow keys switch tabs.
+- The window title names the open channel and server or the person you are writing with; "Skip to content" moves focus to the page.
+- Screen readers hear a person's online status and their name on avatars without a picture; small icon buttons react on a larger area (44 pixels on touch screens) without changing the layout.
+- The text of a page you must accept can be scrolled with the keyboard, so "I accept" can be reached without a mouse.
 
 ### Security
 - E2EE Megolm session cache is now cleared on logout — prevents stale session keys from persisting
