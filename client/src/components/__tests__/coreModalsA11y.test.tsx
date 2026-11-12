@@ -482,6 +482,7 @@ describe("pages", () => {
     const onClose = vi.fn();
     render(() => (
       <CategoryManager
+        guildId="g1"
         categories={[{ id: "c1", name: "Rules" } as never]}
         onCreateCategory={async () => {}}
         onUpdateCategory={async () => {}}

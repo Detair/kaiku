@@ -6,9 +6,22 @@
  * Prevents body scroll while open.
  */
 
-import { Component, JSX, createEffect, onCleanup } from "solid-js";
+import { Component, JSX, Show, createEffect, onCleanup } from "solid-js";
 import { X } from "lucide-solid";
 import { t } from "@/i18n";
+import { createDialog } from "@/lib/a11y/dialog";
+
+/**
+ * While the drawer is open it is a modal dialog (A11Y-1, NAV-11): focus moves
+ * to it, Tab stays inside, Escape closes it, and focus returns to the menu
+ * button. Mounted only while open; the panel itself stays for the animation.
+ */
+const DrawerFocus: Component<{ panel: HTMLElement; onClose: () => void }> = (props) => {
+  const dialog = createDialog({ onClose: () => props.onClose() });
+  // eslint-disable-next-line solid/reactivity
+  dialog.ref(props.panel);
+  return null;
+};
 
 interface MobileDrawerProps {
   open: boolean;
@@ -41,14 +54,8 @@ const MobileDrawer: Component<MobileDrawerProps> = (props) => {
     }
   });
 
-  // Escape closes an open drawer (NAV-12)
-  const onKeyDown = (e: KeyboardEvent) => {
-    if (e.key === "Escape" && props.open && !e.defaultPrevented) {
-      props.onClose();
-    }
-  };
-  document.addEventListener("keydown", onKeyDown);
-  onCleanup(() => document.removeEventListener("keydown", onKeyDown));
+  // Escape closes an open drawer (NAV-12): handled by DrawerFocus below.
+  let panelRef: HTMLDivElement | undefined;
 
   onCleanup(() => {
     // Component disposed mid-lock: restore so we don't leave the page locked
@@ -78,6 +85,11 @@ const MobileDrawer: Component<MobileDrawerProps> = (props) => {
       {/* Drawer panel: a slim top bar holds the close button, so it is on
           screen at every width (320 px too) and covers nothing (N5) */}
       <div
+        ref={panelRef}
+        role={props.open ? "dialog" : undefined}
+        aria-modal={props.open ? "true" : undefined}
+        aria-label={props.open ? t("home.drawer.label") : undefined}
+        tabIndex={-1}
         class="absolute top-0 left-0 h-full w-[300px] max-w-[100vw] flex flex-col transition-transform duration-200 bg-surface-base"
         classList={{
           "translate-x-0": props.open,
@@ -99,6 +111,9 @@ const MobileDrawer: Component<MobileDrawerProps> = (props) => {
         </div>
         <div class="flex flex-1 min-h-0">{props.children}</div>
       </div>
+      <Show when={props.open && panelRef}>
+        {(panel) => <DrawerFocus panel={panel()} onClose={() => props.onClose()} />}
+      </Show>
     </div>
   );
 };

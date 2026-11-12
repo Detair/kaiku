@@ -1,11 +1,33 @@
 // NAV-12: the phone drawer closes with Escape and has a close button.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@solidjs/testing-library";
+import { createSignal } from "solid-js";
 import MobileDrawer from "../MobileDrawer";
 
 afterEach(cleanup);
 
 describe("MobileDrawer", () => {
+  it("is a dialog while open: focus moves in and goes back to the menu button (A11Y-1)", async () => {
+    const menu = document.createElement("button");
+    document.body.appendChild(menu);
+    menu.focus();
+    const [open, setOpen] = createSignal(false);
+    render(() => (
+      <MobileDrawer open={open()} onClose={() => setOpen(false)}>
+        <a href="#x">Channel</a>
+      </MobileDrawer>
+    ));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    setOpen(true);
+    await new Promise((r) => setTimeout(r, 0));
+    const dialog = screen.getByRole("dialog", { name: "Servers and channels" });
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(open()).toBe(false);
+    expect(document.activeElement).toBe(menu);
+    menu.remove();
+  });
+
   it("keeps the close button inside the drawer, so it is on screen at 320 px (N5)", () => {
     render(() => (
       <MobileDrawer open onClose={() => {}}>

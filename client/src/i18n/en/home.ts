@@ -1,4 +1,5 @@
 export const home = {
+  "home.drawer.label": "Servers and channels",
   "home.panel.members": "Members — {{count}}",
 
   "home.sidebar.findConversation": "Find conversation...",
