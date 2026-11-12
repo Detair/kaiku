@@ -157,6 +157,7 @@ pub fn run() {
             commands::passkey::passkey_step_up,
             commands::passkey::passkey_cancel,
             // Voice commands
+            commands::voice::begin_voice_session,
             commands::voice::join_voice,
             commands::voice::leave_voice,
             commands::voice::set_mute,
@@ -176,6 +177,7 @@ pub fn run() {
             commands::voice::is_in_voice,
             commands::voice::get_voice_channel,
             commands::voice::voice_connection_stats,
+            commands::voice::voice_probe,
             commands::voice::subscribe_video_frames,
             // Tray commands
             commands::tray::tray_set_unread,
@@ -301,6 +303,9 @@ pub struct VoiceState {
     pub audio: AudioHandle,
     /// Current channel ID if connected.
     pub channel_id: Option<String>,
+    /// Epoch of the voice session that holds the WebRTC connection (set by
+    /// the join that created it): a leave for an older session leaves it.
+    pub session_epoch: Option<u64>,
     /// Sender for encoded audio to WebRTC.
     pub audio_tx: Option<mpsc::Sender<Vec<u8>>>,
     /// Active screen share pipelines, keyed by stream ID. Max 3 concurrent.
@@ -334,6 +339,7 @@ impl VoiceState {
             webrtc,
             audio,
             channel_id: None,
+            session_epoch: None,
             audio_tx: None,
             screen_shares: HashMap::new(),
             webcam: None,
@@ -359,6 +365,8 @@ pub struct AppState {
     pub websocket: Arc<RwLock<Option<WebSocketManager>>>,
     /// Voice state.
     pub voice: Arc<RwLock<Option<VoiceState>>>,
+    /// Cancels voice joins of sessions the frontend already ended (C32).
+    pub voice_gate: Arc<commands::voice::VoiceEpochGate>,
     /// E2EE crypto manager.
     /// Uses `Mutex` instead of `RwLock` because `rusqlite::Connection` is `Send` but not `Sync`.
     pub crypto: Arc<Mutex<Option<crypto::CryptoManager>>>,
@@ -386,6 +394,7 @@ impl AppState {
             session,
             websocket: Arc::new(RwLock::new(None)),
             voice: Arc::new(RwLock::new(None)),
+            voice_gate: Arc::new(commands::voice::VoiceEpochGate::default()),
             crypto: Arc::new(Mutex::new(None)),
             ui_state: Arc::new(Mutex::new(None)),
         }

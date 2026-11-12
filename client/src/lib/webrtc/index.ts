@@ -5,33 +5,31 @@
  */
 
 import type { VoiceAdapter } from "./types";
-import { BrowserVoiceAdapter } from "./browser";
-import { TauriVoiceAdapter } from "./tauri";
 import { isTauri } from "@/lib/tauri/common";
 
 // Singleton instance
 let adapterInstance: VoiceAdapter | null = null;
+/** The adapter being created (its code is loaded on first use). */
+let creating: Promise<VoiceAdapter> | null = null;
 
 /**
- * Create or return the existing voice adapter
+ * Create or return the existing voice adapter. The adapter's code is not
+ * part of the start-up bundle: it is loaded the first time voice is used.
  */
-export async function createVoiceAdapter(): Promise<VoiceAdapter> {
-  // Return existing instance if available
-  if (adapterInstance) {
-    return adapterInstance;
-  }
-
-  console.log(
-    `[VoiceAdapter] Creating ${isTauri() ? "Tauri" : "Browser"} adapter`,
-  );
-
-  if (isTauri()) {
-    adapterInstance = new TauriVoiceAdapter();
-  } else {
-    adapterInstance = new BrowserVoiceAdapter();
-  }
-
-  return adapterInstance;
+export function createVoiceAdapter(): Promise<VoiceAdapter> {
+  if (adapterInstance) return Promise.resolve(adapterInstance);
+  creating ??= (async () => {
+    console.log(
+      `[VoiceAdapter] Creating ${isTauri() ? "Tauri" : "Browser"} adapter`,
+    );
+    const adapter: VoiceAdapter = isTauri()
+      ? new (await import("./tauri")).TauriVoiceAdapter()
+      : new (await import("./browser")).BrowserVoiceAdapter();
+    adapterInstance = adapter;
+    creating = null;
+    return adapter;
+  })();
+  return creating;
 }
 
 /**

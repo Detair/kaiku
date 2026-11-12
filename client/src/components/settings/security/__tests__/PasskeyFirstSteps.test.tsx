@@ -9,7 +9,14 @@ vi.mock("@/lib/tauri/passkeys", async () => ({
   listPasskeys,
 }));
 
+const getMeSecurity = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/tauri/security", async () => ({
+  ...(await vi.importActual<object>("@/lib/tauri/security")),
+  getMeSecurity,
+}));
+
 import PasskeysSection from "../../PasskeysSection";
+import { refreshMeSecurity, resetMeSecurity, addPasskeyHintKey, firstPasskeyHintKey } from "@/stores/security";
 import PasskeyFirstSteps from "../PasskeyFirstSteps";
 import { setAuthState } from "@/stores/auth";
 import type { User } from "@/lib/types";
@@ -37,6 +44,33 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   setAuthState({ user: null });
+  resetMeSecurity();
+});
+
+describe("passkey hint per account (C38)", () => {
+  it("an account that may not confirm sign-ins is sent to the admin", async () => {
+    getMeSecurity.mockResolvedValue({ may_approve: false, passkeys: 0 });
+    await refreshMeSecurity();
+    expect(addPasskeyHintKey()).toBe("auth.probation.addPasskeyHintAskAdmin");
+    expect(firstPasskeyHintKey()).toBe("passkeys.settings.firstFromAdmin");
+
+    signIn("probation");
+    renderSection();
+    await screen.findByText("No passkeys yet.");
+    expect(screen.getAllByText(/ask your admin for a setup link for this computer/).length).toBe(2);
+    expect(screen.queryByText(/Add a phone/)).toBeNull();
+  });
+
+  it("an account that may confirm keeps the phone's Add a phone hint", async () => {
+    getMeSecurity.mockResolvedValue({ may_approve: true, passkeys: 0 });
+    await refreshMeSecurity();
+    expect(addPasskeyHintKey()).toBe("auth.probation.addPasskeyHint");
+    expect(firstPasskeyHintKey()).toBe("passkeys.settings.firstFromPhone");
+  });
+
+  it("before the overview loads the phone hint stays", () => {
+    expect(addPasskeyHintKey()).toBe("auth.probation.addPasskeyHint");
+  });
 });
 
 describe("PasskeysSection empty state", () => {

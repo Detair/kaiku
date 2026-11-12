@@ -23,14 +23,28 @@ Use `createVoiceAdapter()` to get platform-specific implementation:
 import { createVoiceAdapter } from "@/lib/webrtc";
 const adapter = await createVoiceAdapter();
 
-// VoiceAdapter interface (both platforms) — dual PeerConnection model:
-await adapter.join(channelId);
-await adapter.leave();
+// VoiceAdapter interface (both platforms) — dual PeerConnection model.
+// Sessions are named by a handle (voiceSession.ts): a join creates the
+// session, and only leave/teardown with the same handle end it.
+const session = { token: nextVoiceToken(), channelId };
+await adapter.join(session);
+await adapter.leave(session);     // with voice_leave
+await adapter.teardown(session);  // without (server already dropped the peer)
 await adapter.setMute(true);
 await adapter.handlePublisherAnswer(channelId, sdp);
 await adapter.handleSubscriberOffer(channelId, sdp);
 await adapter.handleIceCandidate(channelId, candidate, pcType);
 ```
+
+### Who may join and leave
+
+Only the voice owner (`@/stores/voiceOwner`) calls `join`, `leave` and
+`teardown`. It keeps the one session the user wants (channel voice or the
+voice of a DM call), ends the held session completely before it joins the
+next, and runs recovery (C32) as a phase of that session. Stores change the
+owner's intent (`request`/`drop`); they never join or leave themselves.
+`onStateChange` and `onConnectionLost` carry the session's handle and go to
+the owner, which ignores events of sessions it does not hold.
 
 ### Browser Implementation
 

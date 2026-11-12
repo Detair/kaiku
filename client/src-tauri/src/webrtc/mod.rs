@@ -84,7 +84,25 @@ pub enum ConnectionState {
     Disconnected,
     Connecting,
     Connected,
+    /// Short ICE outage (`disconnected`): media keeps running and may come
+    /// back by itself; the UI shows "reconnecting" and keeps everything.
+    Reconnecting,
     Failed,
+}
+
+/// Map the publisher peer connection's state to the voice state the UI sees.
+///
+/// `Disconnected` is a short ICE outage, not the end of the call: it becomes
+/// `Reconnecting` so the UI keeps its state (A8). Only `Closed` (own leave)
+/// ends the call; `Failed` lets the UI run its rejoin flow.
+pub const fn publisher_state(state: RTCPeerConnectionState) -> ConnectionState {
+    match state {
+        RTCPeerConnectionState::Connected => ConnectionState::Connected,
+        RTCPeerConnectionState::Disconnected => ConnectionState::Reconnecting,
+        RTCPeerConnectionState::Closed => ConnectionState::Disconnected,
+        RTCPeerConnectionState::Failed => ConnectionState::Failed,
+        _ => ConnectionState::Connecting,
+    }
 }
 
 /// ICE server configuration
@@ -585,14 +603,7 @@ impl WebRtcClient {
             let state = state.clone();
             let on_state_change = on_state_change.clone();
             Box::pin(async move {
-                let new_state = match s {
-                    RTCPeerConnectionState::Connected => ConnectionState::Connected,
-                    RTCPeerConnectionState::Disconnected | RTCPeerConnectionState::Closed => {
-                        ConnectionState::Disconnected
-                    }
-                    RTCPeerConnectionState::Failed => ConnectionState::Failed,
-                    _ => ConnectionState::Connecting,
-                };
+                let new_state = publisher_state(s);
 
                 *state.write().await = new_state;
 
@@ -950,6 +961,34 @@ impl Default for WebRtcClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn short_ice_outage_is_reconnecting_not_disconnected() {
+        assert_eq!(
+            publisher_state(RTCPeerConnectionState::Disconnected),
+            ConnectionState::Reconnecting
+        );
+        assert_eq!(
+            publisher_state(RTCPeerConnectionState::Connected),
+            ConnectionState::Connected
+        );
+    }
+
+    #[test]
+    fn only_closed_ends_and_failed_stays_failed() {
+        assert_eq!(
+            publisher_state(RTCPeerConnectionState::Closed),
+            ConnectionState::Disconnected
+        );
+        assert_eq!(
+            publisher_state(RTCPeerConnectionState::Failed),
+            ConnectionState::Failed
+        );
+        assert_eq!(
+            publisher_state(RTCPeerConnectionState::New),
+            ConnectionState::Connecting
+        );
+    }
 
     #[test]
     fn test_webrtc_client_creation() {

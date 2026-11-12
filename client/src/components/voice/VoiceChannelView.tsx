@@ -22,8 +22,13 @@ interface VoiceChannelViewProps {
 }
 
 const VoiceChannelView: Component<VoiceChannelViewProps> = (props) => {
+  // Reconnecting is still this voice session: grid, controls and no
+  // Join button for this channel; VoicePanel keeps Leave.
   const isConnected = () =>
-    voiceState.state === "connected" && voiceState.channelId === props.channelId;
+    (voiceState.state === "connected" || voiceState.state === "reconnecting") &&
+    voiceState.channelId === props.channelId;
+  const isReconnecting = () =>
+    voiceState.state === "reconnecting" && voiceState.channelId === props.channelId;
   const isConnecting = () => voiceState.state === "connecting";
   const participants = createMemo(() => getParticipants());
   const screenShares = () => voiceState.screenShares || [];
@@ -89,6 +94,15 @@ const VoiceChannelView: Component<VoiceChannelViewProps> = (props) => {
 
       {/* Connected — tile grid + controls */}
       <Show when={isConnected()}>
+        <Show when={isReconnecting()}>
+          <p
+            data-testid="voice-channel-reconnecting"
+            role="status"
+            class="px-4 py-2 text-sm text-text-primary bg-surface-layer2 border-b border-white/10"
+          >
+            {t("voice.channel.reconnecting")}
+          </p>
+        </Show>
         <div class="flex-1 min-h-0">
           <VoiceTileGrid
             participants={participants()}

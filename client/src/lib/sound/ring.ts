@@ -62,6 +62,65 @@ async function loadRingBuffer(): Promise<AudioBuffer | null> {
 }
 
 // ============================================================================
+// Autoplay policy
+// ============================================================================
+
+const UNLOCK_EVENTS = ["pointerdown", "keydown"] as const;
+
+/**
+ * Create (or resume) the ring's AudioContext and load the ring sound. Runs on
+ * the first click or key press after load: browsers only start audio after a
+ * user gesture, and a context created without one stays suspended, so a call
+ * arriving later would ring silently.
+ */
+export async function primeRingAudio(): Promise<void> {
+  try {
+    const ctx = getAudioContext();
+    if (ctx.state === "suspended") await ctx.resume();
+    await loadRingBuffer();
+    // Unlocked by the gesture; it may be resumed again later without one.
+    suspendWhenIdle();
+  } catch (error) {
+    console.warn("[Ring] Could not prepare ring audio:", error);
+  }
+}
+
+/**
+ * Let the audio context rest while nothing rings: a running context keeps
+ * an audio device open and costs idle CPU. A ring resumes it.
+ */
+function suspendWhenIdle(): void {
+  const ctx = audioContext;
+  if (!ctx || ringInterval || ctx.state !== "running" || typeof ctx.suspend !== "function") {
+    return;
+  }
+  ctx
+    .suspend()
+    .then(() => {
+      // A ring that started while the context was going to sleep.
+      if (ringInterval) return ctx.resume();
+    })
+    .catch((error: unknown) => console.warn("[Ring] Could not suspend ring audio:", error));
+}
+
+function onFirstGesture(): void {
+  for (const type of UNLOCK_EVENTS) {
+    document.removeEventListener(type, onFirstGesture, true);
+  }
+  void primeRingAudio();
+}
+
+/** Prepare the ring audio on the first user gesture (idempotent). */
+export function installRingAudioUnlock(): void {
+  if (typeof document === "undefined") return;
+  for (const type of UNLOCK_EVENTS) {
+    document.addEventListener(type, onFirstGesture, true);
+  }
+}
+
+installRingAudioUnlock();
+
+// ============================================================================
 // Playback
 // ============================================================================
 
@@ -155,6 +214,7 @@ export function stopRinging(): void {
     }
     currentSource = null;
   }
+  suspendWhenIdle();
 
   console.log("[Ring] Stopped ringing");
 }

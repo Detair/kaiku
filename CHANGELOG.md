@@ -147,6 +147,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Password and single sign-on sign-ins on a second phone are confirmed by scanning with your key phone.
 
 ### Security
+- Images and files in messages now load through short-lived links from the server; your sign-in token is no longer part of image addresses.
+- The end-to-end encryption library was updated to a release that clears key material from memory more thoroughly.
+- Dependency advisories for the web client and the server were cleared.
 - Repeated wrong passwords or codes for one account slow further tries (from the 5th: 30 seconds, doubling up to an hour) and are reported to the account and the admins; after 100 the password or code is blocked. Signing in with a passkey or your phone is never blocked by this.
 - A session ends automatically when its refresh token is used twice, browser sessions end after 30 days and app sessions after 90 days, and an account can have at most 50 open sessions.
 - Sign-in IP addresses are no longer sent to an external GeoIP service.
@@ -208,6 +211,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Android: signing the phone in by scanning a QR code from the desktop without any confirmation. The phone's scanner now only reads Kaiku sign-in and setup codes of its own server.
 
 ### Fixed
+- Voice no longer goes silent after a short connection hiccup: you keep hearing everyone, and the voice panel shows "Reconnecting..." until the connection is back. This works in the browser and in the desktop app.
+- Voice reconnects by itself after a short connection loss (network change, sleep, server restart): it rejoins the channel with your latest mute and deafen settings; screen share and camera stay off until you start them again. While it reconnects you stay in the channel, see who is there and can mute or leave. After three failed tries, or when the connection stays away for a minute, the microphone is released and the voice panel offers "Rejoin". Leaving or being removed while it reconnects always wins.
+- A call you answered or declined on another device stops ringing on this one right away, and a declined one is not shown as missed.
+- Calls no longer ring forever when the end of a call got lost: a ring stops after 100 seconds at the latest, and after a reconnect the app checks the call with the server. An incoming call that ended this way shows "Missed call from ...". In the desktop app, a direct call you are still in reconnects its voice by itself.
+- Browser: an incoming call now rings audibly even when the page has not played any sound before; the ring is prepared on your first click or key press.
+- Client: for accounts that cannot confirm sign-ins on a phone, the chat-only hint and the empty passkey list now say to ask the admin for a setup link for this computer, instead of pointing to "Add a phone", which these accounts do not have.
+- Client: on servers with the server browser turned off, the setup's "Join a server" step opens on the invite code instead of an empty Discover tab; people who already belong to a server still skip that step.
+- Switching voice channels, leaving and joining again in quick succession now always ends in what you clicked last: the voice panel follows each click at once, the previous channel is left completely before the next one is joined, and a microphone prompt you answer late no longer brings an abandoned channel back. In the desktop app, joining a voice channel leaves a running direct call (and starting or accepting a call leaves the voice channel).
+- Signing out (or a session that ends, or switching accounts) now ends voice at once: the microphone is released immediately, a running direct call is dropped on this device, and the next account sees nothing of the previous one's voice channel. Closing or reloading the window does the same.
+- Voice no longer comes back by itself after the computer slept: if more than a minute passed without a working connection (for example the lid was closed), you are out of the channel with the microphone off and get the "Rejoin" offer instead. A direct call in that situation ends.
+- Direct calls in the desktop app: while the call's sound is being restored after a connection loss the call banner says "Reconnecting..." and hanging up works right away; a call whose sound cannot be restored ends; and a call the other side ended now also releases the microphone on this device. Hanging up tells the server at once and no longer waits for the local audio to shut down.
+- Desktop app: leaving voice can no longer get stuck behind an audio device or connection that does not shut down; the app moves on after a few seconds and the shutdown finishes in the background.
+- Push-to-talk stays as configured when you switch voice channels quickly, even if registering or removing the shortcut is slow.
+- When you are removed from a voice channel or from the voice of a direct call (kicked, banned, access lost, channel deleted, or joined from another device) the call ends cleanly with one line saying why, and it does not rejoin by itself (needs a server that sends this notice).
+- Images that cannot be shown from an expired link load again once, and on servers without short-lived links very large images are no longer loaded into memory to show them inline.
 - Client: a chat-only sign-in without a passkey now says exactly how to add a passkey for the computer, in the banner and in the security settings.
 - Client: in the desktop app and in browsers other than Firefox, avatars are now round, icons have their intended size, selected options and primary buttons show their accent background, QR codes have a white background, and clickable items show a hand cursor. These styles were dropped from the app's CSS; Firefox already showed them.
 - The message for actions that need a full session now says that a computer needs a passkey sign-in and that a phone can do it in the Kaiku app.

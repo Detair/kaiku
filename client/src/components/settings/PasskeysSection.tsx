@@ -11,6 +11,7 @@
 
 import { Component, createResource, createSignal, For, JSX, onCleanup, Show } from "solid-js";
 import { t } from "@/i18n";
+import { firstPasskeyHintKey } from "@/stores/security";
 import { formatRelativeTime, formatTimestamp } from "@/i18n/format";
 import { formatPasskeyError } from "@/lib/authErrors";
 import { isTauri } from "@/lib/tauri/common";
@@ -230,7 +231,7 @@ const PasskeysSection: Component<{ empty?: JSX.Element }> = (props) => {
           >
             <Show
               when={canAdd()}
-              fallback={<p class="text-sm text-text-secondary">{t("passkeys.settings.firstFromPhone")}</p>}
+              fallback={<p class="text-sm text-text-secondary">{t(firstPasskeyHintKey())}</p>}
             >
               <button type="button" class="btn-primary min-h-12 px-4" disabled={busy()} onClick={() => void add()}>
                 {t("passkeys.settings.add")}
