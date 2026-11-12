@@ -439,6 +439,28 @@ describe("nested dialogs", () => {
     expect(screen.queryByRole("dialog", { name: "Outer" })).toBeNull();
   });
 
+  it("when the opener is gone (a closed drawer), focus goes to the page, not nowhere", async () => {
+    document.body.innerHTML = "";
+    const main = document.createElement("main");
+    main.id = "main-content";
+    main.tabIndex = -1;
+    const drawerItem = document.createElement("button");
+    document.body.append(main, drawerItem);
+    drawerItem.focus();
+    const [open, setOpen] = createSignal(true);
+    render(() => (
+      <Show when={open()}>
+        <Modal onClose={() => setOpen(false)} label="Settings">
+          <button>inside</button>
+        </Modal>
+      </Show>
+    ));
+    await tick();
+    drawerItem.remove();
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(document.activeElement).toBe(main);
+  });
+
   it("a click on the backdrop closes, a click inside does not", async () => {
     document.body.innerHTML = "";
     const onClose = vi.fn();

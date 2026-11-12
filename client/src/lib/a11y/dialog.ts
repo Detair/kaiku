@@ -146,7 +146,17 @@ export function createDialog(opts: DialogOptions): DialogHandle {
 
   onCleanup(() => {
     unregister(entry);
-    if (opener?.isConnected) opener.focus();
+    if (opener?.isConnected && !opener.closest("[inert]")) {
+      opener.focus();
+      return;
+    }
+    // The opener is gone or hidden (a drawer that closed, a menu item): keep
+    // focus out of nowhere (UX2 K11). Go to the dialog below, else the page.
+    const active = document.activeElement;
+    if (active && active !== document.body && !el?.contains(active)) return;
+    const below = openDialogs[openDialogs.length - 1]?.el();
+    const fallback = below ?? document.getElementById("main-content");
+    fallback?.focus();
   });
 
   return {
