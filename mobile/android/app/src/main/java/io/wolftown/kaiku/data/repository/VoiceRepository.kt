@@ -120,9 +120,11 @@ class VoiceRepository @Inject constructor(
         /**
          * The authenticated socket that carried the session's last
          * `voice_join`, or null while none went out (the join is held).
-         * Guarded by [sessionLock].
+         * Written under [sessionLock], in one step with the send. A state
+         * the owner's 60 s deadline reads: it runs while this is not the
+         * authenticated socket.
          */
-        var joinSocket: Long? = null
+        val joinSocket = MutableStateFlow<Long?>(null)
 
         /**
          * Completes when the first join is set up. Fails with the join's
@@ -195,7 +197,7 @@ class VoiceRepository @Inject constructor(
     private fun sendJoinOn(session: Session, socket: Long, job: Job?): Boolean = synchronized(sessionLock) {
         if (live !== session || job?.isActive == false) return false
         if (!webSocket.sendOn(socket, ClientEvent.VoiceJoin(session.channelId))) return false
-        session.joinSocket = socket
+        session.joinSocket.value = socket
         // The new server-side peer starts unmuted; the local track stays disabled.
         if (live === session && _isMuted.value) webSocket.sendOn(socket, ClientEvent.VoiceMute(session.channelId))
         true
@@ -207,7 +209,7 @@ class VoiceRepository @Inject constructor(
      * gone, or the session ended).
      */
     private fun sendToPeer(session: Session, event: ClientEvent): Boolean = synchronized(sessionLock) {
-        val socket = session.joinSocket
+        val socket = session.joinSocket.value
         live === session && socket != null && webSocket.sendOn(socket, event)
     }
 
@@ -333,7 +335,7 @@ class VoiceRepository @Inject constructor(
      * offer and started the foreground service.
      *
      * While no socket is authenticated the join is held (and this call with
-     * it); 60 s without one give the session up. Throws what made the join
+     * it); 60 s without the `voice_join` going out give the session up. Throws what made the join
      * fail, or a [CancellationException] if the session ended before the join
      * was set up (leave, `voice_removed`, give-up). Cancelling the caller
      * ends the session.
@@ -472,7 +474,7 @@ class VoiceRepository @Inject constructor(
             val endNotice = notice?.invoke(session)
             _currentChannelId.value = null
             if (sendLeave) {
-                val socket = synchronized(sessionLock) { session.joinSocket }
+                val socket = session.joinSocket.value
                 if (socket != null) {
                     try {
                         webSocket.sendOn(socket, ClientEvent.VoiceLeave(session.channelId))
@@ -581,6 +583,8 @@ class VoiceRepository @Inject constructor(
 
     private inner class SessionSteps(private val session: Session) : VoiceSignalling.Steps {
         private val channelId = session.channelId
+
+        override val joinSocket: StateFlow<Long?> get() = session.joinSocket
 
         /**
          * Before the first `voice_join`: WebRTC, the subscriber connection
@@ -702,7 +706,8 @@ class VoiceRepository @Inject constructor(
         }
 
         /**
-         * All attempts failed, or no authenticated socket for 60 s: ends the
+         * All attempts failed, or no authenticated socket carried the
+         * session's `voice_join` for 60 s: ends the
          * call locally (clears state, stops the foreground service) and offers
          * "Rejoin" through [endNotice]. The owner keeps the "reconnecting"
          * state until this returns.

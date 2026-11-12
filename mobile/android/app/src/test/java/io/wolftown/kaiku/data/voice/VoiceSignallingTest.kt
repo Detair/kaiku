@@ -41,6 +41,9 @@ class VoiceSignallingTest {
         /** Whether the current connections reported ICE FAILED; a new attempt makes new ones. */
         val connectionFailed = MutableStateFlow(false)
 
+        /** The socket that carried the last `voice_join` (first join or attempt), as the machine reads it. */
+        val joinSocket = MutableStateFlow<Long?>(null)
+
         val joinSockets = mutableListOf<Long>()
         val attemptTimes = mutableListOf<Long>()
         val attemptSockets = mutableListOf<Long>()
@@ -54,6 +57,9 @@ class VoiceSignallingTest {
         var prepare: suspend () -> Unit = {}
         var beforeJoin: (Long) -> Unit = {}
 
+        /** Runs right after an attempt's voice_join went out, before anything else can look. */
+        var afterAttemptJoin: (Long) -> Unit = {}
+
         val signalling = VoiceSignalling(this.socket)
         val state get() = signalling.state.value
         lateinit var owner: Job
@@ -62,6 +68,8 @@ class VoiceSignallingTest {
         var failure: Exception? = null
 
         private val steps = object : VoiceSignalling.Steps {
+            override val joinSocket get() = this@Harness.joinSocket
+
             override suspend fun prepare() = this@Harness.prepare()
 
             override suspend fun join(socket: Long): Boolean {
@@ -69,6 +77,7 @@ class VoiceSignallingTest {
                 // Like the real send: only on the socket that is authenticated now.
                 if (this@Harness.socket.value != socket || socket in refusing) return false
                 joinSockets += socket
+                this@Harness.joinSocket.value = socket
                 return true
             }
 
@@ -80,7 +89,14 @@ class VoiceSignallingTest {
                 connectionFailed.value = false
                 attemptTimes += scope.currentTime
                 attemptSockets += socket
-                return when (val result = results.removeFirstOrNull() ?: Attempt.Failed) {
+                val result = results.removeFirstOrNull() ?: Attempt.Failed
+                // An attempt that throws does so before its voice_join; one that
+                // found its socket gone sent none. Every other one sent it.
+                if (result !is Throwable && result != Attempt.SocketGone) {
+                    this@Harness.joinSocket.value = socket
+                    afterAttemptJoin(socket)
+                }
+                return when (result) {
                     HANG -> awaitCancellation()
                     is Throwable -> throw result
                     else -> result as Attempt
@@ -298,10 +314,12 @@ class VoiceSignallingTest {
         val socket = MutableStateFlow<Long?>(1L)
         val signalling = VoiceSignalling(socket)
         val steps = object : VoiceSignalling.Steps {
+            override val joinSocket = MutableStateFlow<Long?>(null)
             override suspend fun prepare() {}
-            override suspend fun join(socket: Long) = true
+            override suspend fun join(socket: Long) = true.also { joinSocket.value = socket }
             override suspend fun awaitConnectionFailed() = awaitCancellation()
             override suspend fun rejoin(socket: Long): Attempt {
+                joinSocket.value = socket
                 starts += currentTime
                 if (++calls == 1) {
                     try { awaitCancellation() } finally { cancelledAt += currentTime }
@@ -483,7 +501,11 @@ class VoiceSignallingTest {
         assertEquals(listOf(2L), h.attemptSockets)
     }
 
-    // -- The offline cap -----------------------------------------------------------
+    // -- The 60 s without a socket that carries the join ---------------------------
+    //
+    // They run from the loss of the socket that carried the voice_join (for a
+    // first join: from the start) until a voice_join went out on an
+    // authenticated socket. A socket that only authenticates changes nothing.
 
     @Test
     fun `60 s without an authenticated socket gives up`() = runTest {
@@ -504,58 +526,185 @@ class VoiceSignallingTest {
     }
 
     @Test
-    fun `60 s offline during a rejoin gives up once`() = runTest {
+    fun `a socket that only authenticates does not stop the 60 s`() = runTest {
+        val h = joined()
+        h.socket.value = null
+        runCurrent()
+        advanceTimeBy(59_000); runCurrent()
+        // Up for half a second: too short for the 1 s before the rejoin, so
+        // it never carries a voice_join.
+        h.socket.value = 2L
+        runCurrent()
+        advanceTimeBy(500); runCurrent()
+        h.socket.value = null
+        runCurrent()
+
+        advanceTimeBy(499); runCurrent() // 59 999 ms after the loss of socket 1
+        assertTrue(h.statesAtGiveUp.isEmpty())
+        advanceTimeBy(1); runCurrent()
+
+        assertEquals(listOf<VoiceLinkState>(VoiceLinkState.Rejoining(1)), h.statesAtGiveUp)
+        assertTrue(h.attemptTimes.isEmpty())
+    }
+
+    @Test
+    fun `sockets that come and go for a minute never stop the 60 s`() = runTest {
+        val h = joined()
+        h.socket.value = null
+        runCurrent()
+        // A new socket every 1.5 s, each up for half a second.
+        var id = 1L
+        repeat(39) {
+            advanceTimeBy(1_000); runCurrent()
+            h.socket.value = ++id
+            runCurrent()
+            advanceTimeBy(500); runCurrent()
+            h.socket.value = null
+            runCurrent()
+        }
+
+        advanceTimeBy(1_499); runCurrent()
+        assertTrue(h.statesAtGiveUp.isEmpty())
+        advanceTimeBy(1); runCurrent()
+
+        assertEquals(1, h.statesAtGiveUp.size)
+        assertTrue(h.attemptTimes.isEmpty())
+        assertTrue(h.owner.isCompleted)
+    }
+
+    @Test
+    fun `a voice_join carried within the 60 s ends them`() = runTest {
+        val h = joined()
+        h.results += Attempt.Connected
+        h.socket.value = null
+        runCurrent()
+        advanceTimeBy(58_000); runCurrent()
+        h.socket.value = 2L
+        runCurrent()
+        advanceTimeBy(1_000); runCurrent() // the attempt's voice_join goes out at 59 s
+
+        assertEquals(listOf(59_000L), h.attemptTimes)
+        advanceTimeBy(600_000); runCurrent()
+        assertTrue(h.statesAtGiveUp.isEmpty())
+        assertEquals(VoiceLinkState.Stable, h.state)
+    }
+
+    @Test
+    fun `a socket that authenticates too late for its voice_join does not save the session`() = runTest {
+        val h = joined()
+        h.results += Attempt.Connected
+        h.socket.value = null
+        runCurrent()
+        advanceTimeBy(59_500); runCurrent()
+        // Its voice_join would be due at 60.5 s: the 1 s before an attempt still applies.
+        h.socket.value = 2L
+        runCurrent()
+
+        advanceTimeBy(499); runCurrent()
+        assertTrue(h.statesAtGiveUp.isEmpty())
+        advanceTimeBy(1); runCurrent()
+
+        assertEquals(listOf<VoiceLinkState>(VoiceLinkState.Rejoining(1)), h.statesAtGiveUp)
+        assertTrue(h.attemptTimes.isEmpty())
+    }
+
+    @Test
+    fun `once the join is carried a slow attempt is a matter of its 15 s, not of the 60 s`() = runTest {
+        val h = joined()
+        h.results += HANG
+        h.results += Attempt.Connected
+        h.socket.value = null
+        runCurrent()
+        advanceTimeBy(50_000); runCurrent()
+        h.socket.value = 2L
+        runCurrent()
+
+        // Attempt 1 sends its voice_join at 51 s and hangs until 66 s, past the 60 s.
+        advanceTimeBy(120_000); runCurrent()
+
+        assertEquals(listOf(51_000L, 69_000L), h.attemptTimes)
+        assertTrue(h.statesAtGiveUp.isEmpty())
+        assertEquals(VoiceLinkState.Stable, h.state)
+    }
+
+    @Test
+    fun `a carried voice_join whose socket is lost again starts new 60 s from that loss`() = runTest {
+        val h = joined()
+        h.results += HANG
+        h.socket.value = null
+        runCurrent() // first loss at 0 s
+        advanceTimeBy(9_000); runCurrent()
+        h.socket.value = 2L
+        runCurrent()
+        advanceTimeBy(1_000); runCurrent() // voice_join carried at 10 s
+        assertEquals(listOf(10_000L), h.attemptTimes)
+        advanceTimeBy(10_000); runCurrent()
+        h.socket.value = null
+        runCurrent() // the carrying socket is lost at 20 s
+
+        // Sockets that only authenticate, at 30 s and at 70 s.
+        advanceTimeBy(10_000); runCurrent()
+        h.socket.value = 3L
+        runCurrent()
+        advanceTimeBy(500); runCurrent()
+        h.socket.value = null
+        runCurrent()
+        advanceTimeBy(39_500); runCurrent()
+        h.socket.value = 4L
+        runCurrent()
+        advanceTimeBy(500); runCurrent()
+        h.socket.value = null
+        runCurrent()
+
+        advanceTimeBy(9_499); runCurrent() // 79 999 ms
+        assertTrue(h.statesAtGiveUp.isEmpty())
+        advanceTimeBy(1); runCurrent() // 80 s = 20 s + 60 s
+
+        assertEquals(1, h.statesAtGiveUp.size)
+        assertEquals(listOf(10_000L), h.attemptTimes)
+    }
+
+    @Test
+    fun `a carried voice_join whose socket is lost before anyone looked still starts new 60 s`() = runTest {
+        val h = joined()
+        h.results += HANG
+        // The attempt's voice_join goes out and its socket is lost in the same breath.
+        h.afterAttemptJoin = { h.socket.value = null }
+        h.socket.value = null
+        runCurrent() // first loss at 0 s
+        advanceTimeBy(30_000); runCurrent()
+        h.socket.value = 2L
+        runCurrent()
+        advanceTimeBy(1_000); runCurrent() // carried and lost at 31 s
+        assertEquals(listOf(31_000L), h.attemptTimes)
+
+        advanceTimeBy(59_999); runCurrent() // 90 999 ms: the first 60 s are long over
+        assertTrue(h.statesAtGiveUp.isEmpty())
+        advanceTimeBy(1); runCurrent() // 91 s = 31 s + 60 s
+
+        assertEquals(1, h.statesAtGiveUp.size)
+    }
+
+    @Test
+    fun `a rejoin still waiting 60 s after the loss is given up once`() = runTest {
         val h = joined()
         h.reconnect(2L)
         advanceTimeBy(500); runCurrent()
         h.socket.value = null
         runCurrent()
 
-        advanceTimeBy(60_000); runCurrent()
+        advanceTimeBy(59_499); runCurrent() // 59 999 ms after the loss of socket 1
+        assertTrue(h.statesAtGiveUp.isEmpty())
+        advanceTimeBy(1); runCurrent()
 
         assertEquals(listOf<VoiceLinkState>(VoiceLinkState.Rejoining(1)), h.statesAtGiveUp)
         assertTrue(h.attemptTimes.isEmpty())
-        advanceTimeBy(60_000); runCurrent()
+        advanceTimeBy(120_000); runCurrent()
         assertEquals(1, h.statesAtGiveUp.size)
     }
 
     @Test
-    fun `a socket that comes back within 60 s keeps the session`() = runTest {
-        val h = joined()
-        h.results += Attempt.Connected
-        h.socket.value = null
-        runCurrent()
-        advanceTimeBy(59_000); runCurrent()
-        h.socket.value = 2L
-        advanceTimeBy(60_000); runCurrent()
-
-        assertTrue(h.statesAtGiveUp.isEmpty())
-        assertEquals(1, h.attemptTimes.size)
-        assertEquals(VoiceLinkState.Stable, h.state)
-    }
-
-    @Test
-    fun `any authenticated socket starts the 60 s anew`() = runTest {
-        val h = joined()
-        h.socket.value = null
-        runCurrent()
-        advanceTimeBy(59_000); runCurrent()
-        // Up for half a second: too short for the rejoin, long enough to count.
-        h.socket.value = 2L
-        runCurrent()
-        advanceTimeBy(500); runCurrent()
-        h.socket.value = null
-        runCurrent()
-
-        advanceTimeBy(59_999); runCurrent()
-        assertTrue(h.statesAtGiveUp.isEmpty())
-        advanceTimeBy(1); runCurrent()
-        assertEquals(1, h.statesAtGiveUp.size)
-        assertTrue(h.attemptTimes.isEmpty())
-    }
-
-    @Test
-    fun `a socket that refuses a frame counts as no socket for the 60 s`() = runTest {
+    fun `a socket that refuses the join does not stop the 60 s`() = runTest {
         val h = Harness(this, socket = 1L)
         // Socket 1 is closing; its close is never reported.
         h.refusing += 1L
@@ -591,6 +740,27 @@ class VoiceSignallingTest {
     }
 
     @Test
+    fun `a first join that no socket ever carries gives up 60 s after it started`() = runTest {
+        val h = Harness(this, socket = null)
+        // Every socket is lost between the machine's look and the send.
+        h.beforeJoin = { h.socket.value = null }
+        h.start()
+        var id = 0L
+        repeat(39) {
+            advanceTimeBy(1_500); runCurrent()
+            h.socket.value = ++id
+            runCurrent()
+        }
+
+        advanceTimeBy(1_499); runCurrent() // 59 999 ms after the start
+        assertTrue(h.statesAtGiveUp.isEmpty())
+        advanceTimeBy(1); runCurrent()
+
+        assertEquals(1, h.statesAtGiveUp.size)
+        assertTrue(h.joinSockets.isEmpty())
+    }
+
+    @Test
     fun `the 60 s also run while the first join is still setting up`() = runTest {
         val h = Harness(this, socket = null)
         var cancelledAt = -1L
@@ -598,8 +768,15 @@ class VoiceSignallingTest {
             try { awaitCancellation() } finally { cancelledAt = currentTime }
         }
         h.start()
+        // Sockets that come and go meanwhile change nothing.
+        advanceTimeBy(30_000); runCurrent()
+        h.socket.value = 1L
+        runCurrent()
+        advanceTimeBy(20_000); runCurrent()
+        h.socket.value = null
+        runCurrent()
 
-        advanceTimeBy(60_000); runCurrent()
+        advanceTimeBy(10_000); runCurrent()
 
         assertEquals(60_000L, cancelledAt)
         assertEquals(1, h.statesAtGiveUp.size)
@@ -648,10 +825,12 @@ class VoiceSignallingTest {
         val socket = MutableStateFlow<Long?>(1L)
         val signalling = VoiceSignalling(socket)
         val steps = object : VoiceSignalling.Steps {
+            override val joinSocket = MutableStateFlow<Long?>(null)
             override suspend fun prepare() {}
-            override suspend fun join(socket: Long) = true
+            override suspend fun join(socket: Long) = true.also { joinSocket.value = socket }
             override suspend fun awaitConnectionFailed() = awaitCancellation()
             override suspend fun rejoin(socket: Long): Attempt {
+                joinSocket.value = socket
                 try {
                     awaitCancellation()
                 } finally {

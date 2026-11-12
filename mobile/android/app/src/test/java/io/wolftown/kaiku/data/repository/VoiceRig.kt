@@ -11,6 +11,7 @@ import io.wolftown.kaiku.data.voice.IceTrouble
 import io.wolftown.kaiku.data.voice.MicPermissionChecker
 import io.wolftown.kaiku.data.voice.PublisherLink
 import io.wolftown.kaiku.data.voice.SessionGuard
+import io.wolftown.kaiku.data.voice.VoiceEndNotice
 import io.wolftown.kaiku.data.voice.VoiceLinkState
 import io.wolftown.kaiku.data.voice.VoiceServiceEvents
 import io.wolftown.kaiku.data.voice.WebRtcManager
@@ -112,6 +113,10 @@ internal class VoiceRig(private val test: TestScope) {
         stubSocket()
         stubWebRtc()
 
+        val audioRouteManager: AudioRouteManager = mockk(relaxed = true)
+        every { audioRouteManager.requestAudioFocus() } answers { log += "audio:focus" }
+        every { audioRouteManager.abandonAudioFocus() } answers { log += "audio:abandon" }
+
         val voiceServiceEvents: VoiceServiceEvents = mockk(relaxed = true)
         every { voiceServiceEvents.events } returns MutableSharedFlow()
         val micPermissionChecker: MicPermissionChecker = mockk()
@@ -120,7 +125,7 @@ internal class VoiceRig(private val test: TestScope) {
         repository = VoiceRepository(
             webRtcManager = rtc,
             webSocket = webSocket,
-            audioRouteManager = mockk<AudioRouteManager>(relaxed = true),
+            audioRouteManager = audioRouteManager,
             voiceServiceEvents = voiceServiceEvents,
             micPermissionChecker = micPermissionChecker,
             context = mockk<Context>(relaxed = true),
@@ -289,10 +294,7 @@ internal class VoiceRig(private val test: TestScope) {
             val installed = firstArg<SessionGuard>().runIfCurrent {}
             log += if (installed) "pub" else "pub-discarded"
             // Media connects when the server holds our peer on the socket that is up.
-            val peer = server.peer
-            if (installed && peer != null && peer == socket.authenticated.value) {
-                publisherLink.value = PublisherLink(generation, true)
-            }
+            if (installed && mediaConnects) connectPublisher()
             installed
         }
     }
@@ -300,6 +302,20 @@ internal class VoiceRig(private val test: TestScope) {
     /** The set-up of a join (creating the subscriber connection) never finishes; it can still be cancelled. */
     fun hangSubscriberSetup() {
         coEvery { rtc.createSubscriberPeerConnection(any()) } coAnswers { awaitCancellation() }
+    }
+
+    /**
+     * Whether a new publisher connects by itself as soon as it can. Off: it
+     * stays unconnected until the test calls [connectPublisher].
+     */
+    var mediaConnects = true
+
+    /** The current publisher connects, if the server holds our peer on the socket that is up. */
+    fun connectPublisher() {
+        val peer = server.peer
+        if (peer != null && peer == socket.authenticated.value) {
+            publisherLink.value = PublisherLink(generation, true)
+        }
     }
 
     /** The current publisher connection reports ICE trouble. */
@@ -337,6 +353,25 @@ internal class VoiceRig(private val test: TestScope) {
 
     fun closes(): Int = log.count { it == "close" }
 
+    /**
+     * The call was given up: it is over locally with the Rejoin action, the
+     * connections are closed (which ends the microphone capture), audio focus
+     * is released and the call service (the microphone foreground service)
+     * is stopped.
+     */
+    fun assertGaveUp(wasMuted: Boolean = false) {
+        assertEquals(null, repository.currentChannelId.value)
+        assertEquals(VoiceEndNotice.RejoinFailed(channel, wasMuted), repository.endNotice.value)
+        assertEquals(VoiceLinkState.Stable, repository.linkState.value)
+        assertFalse(repository.isConnected.value)
+        val lastInstall = maxOf(log.lastIndexOf("sub"), log.lastIndexOf("pub"))
+        assertTrue("connections not closed: $log", log.lastIndexOf("close") > lastInstall)
+        assertTrue("audio focus not released: $log", "audio:abandon" in log)
+        assertTrue("call service not stopped: $log", "service:stop" in log)
+        assertEquals("a voice_join hit a channel we already held our place in: $log", 0, server.refusedJoins)
+        assertFalse("a voice frame went out without naming its socket: $log", log.any { it.endsWith("@any") })
+    }
+
     /** The call is up on exactly these joins and nothing went wrong on the way. */
     fun assertCallUp(joins: List<Long>) {
         assertEquals("voice_join frames by socket: $log", joins, joins())
@@ -369,6 +404,7 @@ internal class VoiceRig(private val test: TestScope) {
             assertTrue("a connection was never closed: $log", log.lastIndexOf("close") > lastInstall)
         }
         assertTrue("call service not stopped after $marker: $log", "service:stop" in after)
+        assertTrue("audio focus not released after $marker: $log", "audio:abandon" in after)
         assertEquals("the server still holds our peer: $log", null, server.peer)
         assertEquals("a voice_join hit a channel we already held our place in: $log", 0, server.refusedJoins)
         assertEquals(null, repository.currentChannelId.value)

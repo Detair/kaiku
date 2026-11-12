@@ -217,33 +217,143 @@ class VoiceSocketGatingTest {
         rig.assertCallUp(joins = listOf(1L, 2L, 7L))
     }
 
-    @Test
-    fun `flapping that ends without a socket gives up 60 s after the last loss`() = rigTest { rig ->
-        rig.joinAndConnect() // socket 1
-        // Sockets 2 to 6 within 2 s, none up for the 1 s the rejoin waits.
-        repeat(5) {
-            rig.socket.drop(); runCurrent()
-            advanceTimeBy(100); runCurrent()
-            rig.socket.ready(); runCurrent()
-            advanceTimeBy(300); runCurrent()
-        }
-        rig.socket.drop(); runCurrent() // nothing stays up
+    // -- 3. The 60 s without a socket that carries the join ---------------------
+    //
+    // The 60 s run from the loss of the socket that carried the session's
+    // voice_join (for a first join: from its start) and end only when a
+    // voice_join went out on an authenticated socket. A socket that merely
+    // authenticates changes nothing.
 
-        advanceTimeBy(59_999); runCurrent()
+    @Test
+    fun `sockets that never carry the join end the call 60 s after the join's socket was lost`() = rigTest { rig ->
+        rig.joinAndConnect() // socket 1
+        rig.socket.drop(); runCurrent() // the join's socket is lost: the 60 s start
+        // A new socket every 1.5 s, each up for half a second: never for the
+        // 1 s the rejoin waits, so none of them ever carries a voice_join.
+        repeat(39) {
+            advanceTimeBy(1_000); runCurrent()
+            rig.socket.ready(); runCurrent()
+            advanceTimeBy(500); runCurrent()
+            rig.socket.drop(); runCurrent()
+        }
+        advanceTimeBy(1_499); runCurrent() // 59 999 ms after the loss
         assertEquals(rig.channel, rig.repository.currentChannelId.value)
         assertEquals(VoiceLinkState.Rejoining(1), rig.repository.linkState.value)
-        assertEquals(listOf(1L), rig.joins())
+        assertTrue("call service stopped too early: ${rig.log}", "service:stop" !in rig.log)
 
         advanceTimeBy(1); runCurrent()
-        assertEquals(null, rig.repository.currentChannelId.value)
-        assertEquals(VoiceEndNotice.RejoinFailed(rig.channel, wasMuted = false), rig.repository.endNotice.value)
-        assertEquals(VoiceLinkState.Stable, rig.repository.linkState.value)
-        // Only the first join ever went out; the peer died with socket 1, so no voice_leave either.
+
+        // Over: connections closed (microphone released), service stopped, Rejoin offered.
+        rig.assertGaveUp()
+        // Nothing was sent after the first join: no voice_join on a later
+        // socket, and no voice_leave for a peer that went with socket 1.
         assertEquals(listOf<String?>("VoiceJoin"), rig.voiceFrames())
-        assertEquals(0, rig.server.refusedJoins)
+        rig.socket.ready()
+        advanceTimeBy(180_000); runCurrent()
+        assertEquals(listOf<String?>("VoiceJoin"), rig.voiceFrames())
     }
 
-    // -- 3. The offline cap while the first join is held ------------------------
+    @Test
+    fun `a join carried at 59 s ends the 60 s and a socket that only authenticates at 59 s 500 does not`() = rigTest { rig ->
+        rig.joinAndConnect() // socket 1
+        rig.mediaConnects = false
+        rig.socket.drop(); runCurrent() // lost: the 60 s start
+        advanceTimeBy(58_000); runCurrent()
+        rig.socket.ready(); runCurrent() // socket 2 after 58 s
+        advanceTimeBy(1_000); runCurrent() // its voice_join goes out after 59 s
+        assertEquals(listOf(1L, 2L), rig.joins())
+
+        // Past the 60 s: the attempt goes on; its own 15 s decide now.
+        advanceTimeBy(5_000); runCurrent()
+        assertEquals(rig.channel, rig.repository.currentChannelId.value)
+        assertEquals(VoiceLinkState.Rejoining(1), rig.repository.linkState.value)
+        rig.connectPublisher(); runCurrent()
+        rig.assertCallUp(joins = listOf(1L, 2L))
+
+        // The same loss again. This time the next socket is authenticated after
+        // 59.5 s; its voice_join would be due 1 s later, after the 60 s.
+        rig.socket.drop(); runCurrent()
+        advanceTimeBy(59_500); runCurrent()
+        rig.socket.ready(); runCurrent() // socket 3
+        advanceTimeBy(499); runCurrent()
+        assertEquals(rig.channel, rig.repository.currentChannelId.value)
+
+        advanceTimeBy(1); runCurrent()
+
+        rig.assertGaveUp()
+        assertEquals(listOf(1L, 2L), rig.joins())
+        advanceTimeBy(180_000); runCurrent()
+        assertEquals(listOf(1L, 2L), rig.joins())
+    }
+
+    @Test
+    fun `a carried join whose socket is lost again starts new 60 s from that loss`() = rigTest { rig ->
+        rig.joinAndConnect() // socket 1
+        rig.mediaConnects = false
+        rig.socket.drop(); runCurrent() // first loss, at 0 s
+        advanceTimeBy(9_000); runCurrent()
+        rig.socket.ready(); runCurrent() // socket 2
+        advanceTimeBy(1_000); runCurrent() // its voice_join goes out at 10 s: the first 60 s are over
+        assertEquals(listOf(1L, 2L), rig.joins())
+        advanceTimeBy(10_000); runCurrent()
+        rig.socket.drop(); runCurrent() // the carrying socket is lost at 20 s: new 60 s, until 80 s
+
+        // From here on only sockets that never carry a join.
+        repeat(39) {
+            advanceTimeBy(1_000); runCurrent()
+            rig.socket.ready(); runCurrent()
+            advanceTimeBy(500); runCurrent()
+            rig.socket.drop(); runCurrent()
+        }
+        advanceTimeBy(1_499); runCurrent() // 79 999 ms: well past 60 s after the first loss
+        assertEquals(rig.channel, rig.repository.currentChannelId.value)
+        assertEquals(VoiceLinkState.Rejoining(1), rig.repository.linkState.value)
+
+        advanceTimeBy(1); runCurrent() // 80 s
+
+        rig.assertGaveUp()
+        assertEquals(listOf(1L, 2L), rig.joins())
+    }
+
+    @Test
+    fun `a held first join that no socket ever carries gives up 60 s after it started`() = rigTest { rig ->
+        rig.repository.startJoin(rig.channel)
+        runCurrent() // held: there is no socket
+        // A new socket every 1.5 s, each lost at the very moment the join would go out.
+        for (n in 1..39) rig.at("join:check", nth = n) { rig.socket.drop() }
+        repeat(39) {
+            advanceTimeBy(1_500); runCurrent()
+            rig.socket.ready(); runCurrent()
+        }
+        advanceTimeBy(1_499); runCurrent() // 59 999 ms after the start
+        assertEquals(rig.channel, rig.repository.currentChannelId.value)
+        assertEquals(emptyList<String?>(), rig.voiceFrames())
+
+        advanceTimeBy(1); runCurrent()
+
+        rig.assertGaveUpWithoutAnyFrame()
+    }
+
+    @Test
+    fun `a first join still setting up gives up after 60 s whatever sockets come and go`() = rigTest { rig ->
+        // The set-up before the join does not finish (fetching the ICE servers hangs).
+        rig.hangSubscriberSetup()
+        rig.repository.startJoin(rig.channel)
+        runCurrent()
+        repeat(39) {
+            advanceTimeBy(1_000); runCurrent()
+            rig.socket.ready(); runCurrent()
+            advanceTimeBy(500); runCurrent()
+            rig.socket.drop(); runCurrent()
+        }
+        advanceTimeBy(1_499); runCurrent()
+        assertEquals(rig.channel, rig.repository.currentChannelId.value)
+
+        advanceTimeBy(1); runCurrent()
+
+        rig.assertGaveUpWithoutAnyFrame()
+    }
+
 
     @Test
     fun `a join held for 60 s without a socket gives up without any voice frame`() = rigTest { rig ->

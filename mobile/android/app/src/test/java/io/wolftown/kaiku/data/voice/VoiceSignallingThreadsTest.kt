@@ -39,13 +39,16 @@ class VoiceSignallingThreadsTest {
         private val stepsRunning = AtomicInteger(0)
         val mostStepsAtOnce = AtomicInteger(0)
 
-        // Delays of 1 ms so the machine keeps up with the flapping; the cap is far away.
+        // Delays of 1 ms so the machine keeps up with the flapping; the deadline is far away.
         val signalling = VoiceSignalling(
             socket = socket,
             delaysMs = listOf(1L, 1L, 1L),
             attemptTimeoutMs = 30_000L,
-            offlineCapMs = 120_000L,
+            joinDeadlineMs = 120_000L,
         )
+
+        /** The socket that carried the last `voice_join`, as the machine sees it. */
+        val joinSocket = MutableStateFlow<Long?>(null)
 
         private fun <T> step(block: () -> T): T {
             mostStepsAtOnce.accumulateAndGet(stepsRunning.incrementAndGet(), ::maxOf)
@@ -61,10 +64,13 @@ class VoiceSignallingThreadsTest {
             if (socket.value != id) return false
             joins += id
             joinedOn.set(id)
+            joinSocket.value = id
             return true
         }
 
         val steps = object : VoiceSignalling.Steps {
+            override val joinSocket get() = this@Run.joinSocket
+
             override suspend fun prepare() {}
 
             override suspend fun join(socket: Long): Boolean = step {

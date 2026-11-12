@@ -314,7 +314,8 @@ class VoiceRepositoryTest {
         coEvery { webRtcManager.createSubscriberPeerConnection(any()) } coAnswers { awaitCancellation() }
 
         repository.startJoin("ch-1")
-        advanceUntilIdle()
+        // Not advanceUntilIdle: a join that has not sent its voice_join after 60 s is given up.
+        runCurrent()
         assertEquals("ch-1", repository.currentChannelId.value)
 
         repository.leaveChannel()

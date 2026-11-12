@@ -63,9 +63,9 @@ sealed interface VoiceLinkState {
  * in the state it reads next.
  *
  * **Socket loss** is one comparison: the authenticated socket is not the one
- * that carried the session's last `voice_join` (the server drops a voice peer
- * with its socket). The rejoin, the attempt budget and the offline cap all
- * follow from it:
+ * that carried the session's last `voice_join` ([Steps.joinSocket]; the
+ * server drops a voice peer with its socket). The rejoin, the attempt budget
+ * and the 60 s deadline all follow from it:
  *
  * | Mode | Leaves it when | Next |
  * |---|---|---|
@@ -74,11 +74,17 @@ sealed interface VoiceLinkState {
  * | recovering, n used: delay (1 s, 3 s, 9 s), then one attempt of at most 15 s | attempt connected | up on that socket |
  * | | attempt failed or timed out | n + 1 used; the third failure gives up |
  * | | the socket is another one (or none) | same n: not used up; again on the next socket |
- * | any | no usable socket for 60 s in one stretch | give up |
+ * | any | for 60 s in one stretch, no authenticated socket carried the session's `voice_join` | give up |
  *
- * A usable socket is the authenticated one, unless it refused a frame of this
- * session: then it is closing and counts as none, so the 60 s run even if its
- * close is never reported.
+ * **The 60 s deadline** measures the time without an authenticated socket
+ * that carries the session's `voice_join`. It starts when the socket that
+ * carried the join is lost (for a first join: when the session starts) and
+ * ends only when a `voice_join` of the session went out on an authenticated
+ * socket. A socket that merely authenticates does not end it: sockets that
+ * never stay up for the delay before an attempt end the session after 60 s.
+ * Once the join is carried, an attempt that does not connect is a matter of
+ * its 15 s and of the three attempts; if that socket is lost again, new 60 s
+ * start from that loss.
  *
  * ICE `DISCONNECTED` is an indication only ([VoiceLinkState.Interrupted]).
  */
@@ -86,14 +92,16 @@ class VoiceSignalling(
     private val socket: StateFlow<Long?>,
     private val delaysMs: List<Long> = DEFAULT_DELAYS_MS,
     private val attemptTimeoutMs: Long = ATTEMPT_TIMEOUT_MS,
-    private val offlineCapMs: Long = OFFLINE_CAP_MS,
+    private val joinDeadlineMs: Long = JOIN_DEADLINE_MS,
 ) {
     companion object {
         private val logger = Logger.getLogger("VoiceSignalling")
 
         val DEFAULT_DELAYS_MS = listOf(1_000L, 3_000L, 9_000L)
         const val ATTEMPT_TIMEOUT_MS = 15_000L
-        const val OFFLINE_CAP_MS = 60_000L
+
+        /** How long a session may be without an authenticated socket that carries its `voice_join`. */
+        const val JOIN_DEADLINE_MS = 60_000L
     }
 
     /** How a rejoin attempt ended. */
@@ -110,6 +118,14 @@ class VoiceSignalling(
 
     /** The steps of one session. Each is called by the owner only, one at a time. */
     interface Steps {
+        /**
+         * The socket that carried the session's last `voice_join`, or null
+         * while none went out. It changes at the very moment a `voice_join`
+         * goes out ([join], [rejoin]) and at no other time; the 60 s
+         * deadline runs whenever it is not the authenticated socket.
+         */
+        val joinSocket: StateFlow<Long?>
+
         /** Everything the first join needs before its `voice_join`. Uses no socket. Throws if the join cannot be set up. */
         suspend fun prepare()
 
@@ -147,10 +163,10 @@ class VoiceSignalling(
         var mode: Mode = Mode.FirstJoin
 
         /**
-         * The last socket that could not take a frame of this session: it was
-         * replaced, or it refused the frame while it still was the
-         * authenticated one (then it is closing). As ids never repeat, it
-         * counts as no socket from then on.
+         * The last socket that could not take a `voice_join` of this session:
+         * it was replaced, or it refused the frame while it still was the
+         * authenticated one (then it is closing). As ids never repeat, the
+         * owner treats it as no socket from then on and waits for another.
          */
         val unusable = MutableStateFlow<Long?>(null)
     }
@@ -178,12 +194,12 @@ class VoiceSignalling(
         }
         refresh()
         try {
-            val attemptsUsedUp = withinOfflineCap(session) { signal(session, steps) }
+            val attemptsUsedUp = withinJoinDeadline(session, steps) { signal(session, steps) }
             logger.info(
                 if (attemptsUsedUp) {
                     "voice session gave up: ${delaysMs.size} rejoin attempts failed"
                 } else {
-                    "voice session gave up: no usable socket within ${offlineCapMs / 1000} s"
+                    "voice session gave up: no socket carried its voice_join for ${joinDeadlineMs / 1000} s"
                 }
             )
             steps.giveUp()
@@ -236,7 +252,8 @@ class VoiceSignalling(
             refresh()
 
             // Recovering, with a fresh budget. Until a socket is there, the
-            // state stays "interrupted"; the offline cap is running.
+            // state stays "interrupted". If the socket is another one, the
+            // 60 s deadline has been running since it changed.
             var failures = 0
             var id = usableSocket(session)
             recovering@ while (true) {
@@ -267,7 +284,7 @@ class VoiceSignalling(
     private suspend fun attempt(steps: Steps, id: Long, number: Int): Attempt = try {
         withTimeoutOrNull(attemptTimeoutMs) { steps.rejoin(id) } ?: Attempt.Failed
     } catch (e: CancellationException) {
-        // Cancelled from outside (socket gone, offline cap, session end): not ours to judge.
+        // Cancelled from outside (socket gone, deadline, session end): not ours to judge.
         currentCoroutineContext().ensureActive()
         logger.log(Level.WARNING, "voice rejoin attempt $number was cancelled from inside", e)
         Attempt.Failed
@@ -311,24 +328,40 @@ class VoiceSignalling(
         }
     }
 
+    /** Which socket carried the session's `voice_join`, and whether it is the authenticated one. */
+    private data class Carrier(val joinSocket: Long?, val authenticated: Boolean)
+
     /**
-     * Runs [block] under the offline cap: once there has been no usable
-     * socket for [offlineCapMs] in one stretch, [block] is cancelled, wherever
-     * it is (also in a first join that is still held or setting up). Returns
-     * true if [block] returned by itself and false if the cap cut it short;
-     * it has finished cancelling by then.
+     * Runs [block] under the 60 s deadline: once no authenticated socket has
+     * carried the session's `voice_join` for [joinDeadlineMs] in one stretch,
+     * [block] is cancelled, wherever it is (a first join that is held or
+     * still setting up, the delay before an attempt, an attempt that has not
+     * sent its join yet). Returns true if [block] returned by itself and
+     * false if the deadline cut it short; it has finished cancelling by then.
      *
-     * The same look at the socket keeps [state] in step with it.
+     * The clock is a function of two states, the authenticated socket and
+     * [Steps.joinSocket]: it runs while they differ (or there is no join
+     * socket yet). The authenticated socket changing from one that does not
+     * carry the join to another one, or to none, changes nothing. A join that
+     * went out and whose socket was lost again before anyone looked still
+     * shows as another join socket, so its new 60 s start.
      */
-    private suspend fun withinOfflineCap(session: Session, block: suspend () -> Unit): Boolean = coroutineScope {
-        val capped = AtomicBoolean(false)
+    private suspend fun withinJoinDeadline(
+        session: Session,
+        steps: Steps,
+        block: suspend () -> Unit,
+    ): Boolean = coroutineScope {
+        val expired = AtomicBoolean(false)
         val work = async { block() }
         val watchdog = launch {
-            usableSockets(session).collectLatest { id ->
-                refresh()
-                if (id == null) {
-                    delay(offlineCapMs)
-                    capped.set(true)
+            // Keeps [state] in step with the socket.
+            launch { usableSockets(session).collect { refresh() } }
+            combine(socket, steps.joinSocket) { authenticated, joined ->
+                Carrier(joined, authenticated = joined != null && joined == authenticated)
+            }.distinctUntilChanged().collectLatest { carrier ->
+                if (!carrier.authenticated) {
+                    delay(joinDeadlineMs)
+                    expired.set(true)
                     work.cancel()
                 }
             }
@@ -338,7 +371,7 @@ class VoiceSignalling(
             true
         } catch (e: CancellationException) {
             currentCoroutineContext().ensureActive()
-            if (!capped.get()) throw e
+            if (!expired.get()) throw e
             false
         } finally {
             watchdog.cancel()
