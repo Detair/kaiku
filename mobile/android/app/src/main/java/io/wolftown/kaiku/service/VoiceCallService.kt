@@ -18,18 +18,13 @@ import androidx.core.content.ContextCompat
 import dagger.hilt.android.AndroidEntryPoint
 import io.wolftown.kaiku.R
 import io.wolftown.kaiku.data.repository.VoiceRepository
-import io.wolftown.kaiku.data.voice.VoiceLinkState
 import io.wolftown.kaiku.data.voice.VoiceServiceEvent
 import io.wolftown.kaiku.data.voice.VoiceServiceEvents
 import io.wolftown.kaiku.push.NotificationChannels
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.launch
 import java.util.logging.Logger
 import javax.inject.Inject
 
@@ -52,15 +47,25 @@ class VoiceCallService : Service() {
     @Inject lateinit var voiceServiceEvents: VoiceServiceEvents
     @Inject lateinit var voiceRepository: VoiceRepository
 
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var channelName: String = ""
+
     /**
      * Keeps the ongoing-call notification in step with the voice link
-     * ("Reconnecting…") by re-posting it under the same id. The service is
-     * neither stopped nor restarted while the call reconnects: Android 12+
-     * restricts starting a foreground service from the background.
+     * ("Reconnecting…") by re-posting it under the same id, and makes sure
+     * none is left when the call is over. The service is neither stopped nor
+     * restarted while the call reconnects: Android 12+ restricts starting a
+     * foreground service from the background.
      */
-    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private var linkJob: Job? = null
-    private var channelName: String = ""
+    private val ongoingNotification by lazy {
+        OngoingCallNotification(
+            scope = serviceScope,
+            callIsOn = { voiceRepository.currentChannelId.value != null },
+            linkState = voiceRepository.linkState,
+            post = ::postNotification,
+            cancel = { NotificationManagerCompat.from(this).cancel(NOTIFICATION_ID) },
+        )
+    }
 
     override fun onCreate() {
         super.onCreate()  // REQUIRED: Hilt injects fields here
@@ -153,7 +158,7 @@ class VoiceCallService : Service() {
             throw e
         }
 
-        observeLinkState()
+        ongoingNotification.follow()
         logger.info("VoiceCallService started for channel: $channelName")
         return START_NOT_STICKY
     }
@@ -165,25 +170,21 @@ class VoiceCallService : Service() {
         stopSelf()
     }
 
-    private fun observeLinkState() {
-        if (linkJob?.isActive == true) return
-        linkJob = serviceScope.launch {
-            voiceRepository.linkState
-                .map { it != VoiceLinkState.Stable }
-                .distinctUntilChanged()
-                .collect { reconnecting ->
-                    try {
-                        NotificationManagerCompat.from(this@VoiceCallService)
-                            .notify(NOTIFICATION_ID, buildNotification(channelName, reconnecting))
-                    } catch (e: SecurityException) {
-                        // POST_NOTIFICATIONS revoked: the call itself is unaffected.
-                        logger.warning("Could not update the call notification")
-                    }
-                }
+    private fun postNotification(reconnecting: Boolean) {
+        try {
+            NotificationManagerCompat.from(this)
+                .notify(NOTIFICATION_ID, buildNotification(channelName, reconnecting))
+        } catch (e: SecurityException) {
+            // POST_NOTIFICATIONS revoked: the call itself is unaffected.
+            logger.warning("Could not update the call notification")
         }
     }
 
     override fun onDestroy() {
+        // Android took the foreground notification away when the stop was
+        // requested; an update that was already on its way may have posted a
+        // new one since. Nothing may stay behind without a call.
+        ongoingNotification.destroy()
         serviceScope.cancel()
         super.onDestroy()
         logger.info("VoiceCallService destroyed")

@@ -14,6 +14,7 @@ import io.wolftown.kaiku.data.voice.VoiceEndNotice
 import io.wolftown.kaiku.data.voice.VoiceLinkState
 import io.wolftown.kaiku.data.voice.VoiceServiceEvent
 import io.wolftown.kaiku.data.voice.VoiceServiceEvents
+import io.wolftown.kaiku.data.voice.VoiceServiceStartException
 import io.wolftown.kaiku.data.voice.VoiceSignalling
 import io.wolftown.kaiku.data.voice.WebRtcManager
 import io.wolftown.kaiku.data.ws.ClientEvent
@@ -58,6 +59,20 @@ import javax.inject.Singleton
  * - Mute/unmute state
  * - Screen share tracking
  * - Audio focus and foreground service lifecycle
+ *
+ * **Locks and WebRTC's threads.** Calls into WebRTC wait for its signalling
+ * thread, and its callbacks run on that thread (see [WebRtcManager]). The
+ * callbacks wired here send frames to the peer ([sendToPeer]) and report
+ * trouble, so they take [sessionLock] (and, inside it, the socket lock) and
+ * the signalling state lock. The rule:
+ * - Never call into [WebRtcManager] (mute, create, close) while holding
+ *   [sessionLock], the socket lock or the signalling state lock. Decide under
+ *   the lock, act on WebRTC after leaving it ([toggleMute]). The install
+ *   step of a new connection ([guardFor]) only assigns a field.
+ * - [muteLock], [leaveMutex] and [joinLock] may be held across calls into
+ *   WebRTC: no callback takes them.
+ * - Where locks nest, the order is [sessionLock], then the socket lock or
+ *   WebRtcManager's connection lock. Nothing nests the other way.
  */
 @Singleton
 class VoiceRepository @Inject constructor(
@@ -274,8 +289,10 @@ class VoiceRepository @Inject constructor(
 
     private val _endNotice = MutableStateFlow<VoiceEndNotice?>(null)
     /**
-     * Why the last call ended without the user leaving (rejoin gave up), with
-     * the "Rejoin" action. Cleared by [dismissEndNotice], [rejoin] and any new join.
+     * Why the last call ended without the user leaving: the rejoin gave up
+     * (with the "Rejoin" action) or the server removed the user (with its
+     * reason). Cleared by [dismissEndNotice], [rejoin], any new join, an own
+     * leave and logout.
      */
     val endNotice: StateFlow<VoiceEndNotice?> = _endNotice.asStateFlow()
 
@@ -331,8 +348,8 @@ class VoiceRepository @Inject constructor(
     /**
      * Joins a voice channel and returns once the join is set up: the session's
      * owner ([own]) initialised WebRTC, created the subscriber connection,
-     * sent `voice_join` on an authenticated socket, created the publisher
-     * offer and started the foreground service.
+     * started the foreground service, sent `voice_join` on an authenticated
+     * socket and created the publisher offer.
      *
      * While no socket is authenticated the join is held (and this call with
      * it); 60 s without the `voice_join` going out give the session up. Throws what made the join
@@ -355,8 +372,8 @@ class VoiceRepository @Inject constructor(
         _currentChannelId.value = channelId
         _endNotice.value = null
         // Both layers start from the same mute state (a Rejoin restores the user's last choice).
-        webRtcManager.setMuted(muted)
         _isMuted.value = muted
+        applyMuteToMicrophone()
         val session = openSession(channelId)
         try {
             session.firstJoin.await()
@@ -394,6 +411,8 @@ class VoiceRepository @Inject constructor(
                     throw e
                 } catch (e: MissingMicPermissionException) {
                     _error.value = R.string.voice_mic_permission_required
+                } catch (e: VoiceServiceStartException) {
+                    _error.value = R.string.voice_start_failed
                 } catch (e: Exception) {
                     // The owner already logged and cleaned up (which clears the error).
                     _error.value = R.string.voice_join_failed
@@ -445,10 +464,13 @@ class VoiceRepository @Inject constructor(
         withContext(NonCancellable) {
             session?.owner?.cancelAndJoin()
             cancelJoin(self)
-            // Own leave and logout: a notice of an earlier call is no longer relevant.
-            _endNotice.value = null
             // A session that somebody else ended (removal, give-up) gets no voice_leave from here.
             if (session != null) tearDown(session, sendLeave = closedHere)
+            // Own leave and logout: a notice of an earlier call is no longer
+            // relevant. After the teardown, so that a removal tearing down the
+            // same session right now has either set its notice by this point
+            // or finds the session torn down and sets none.
+            _endNotice.value = null
         }
     }
 
@@ -472,6 +494,8 @@ class VoiceRepository @Inject constructor(
             session.tornDown = true
             // Before the clean-up resets what the notice reads (the mute state).
             val endNotice = notice?.invoke(session)
+            // The channel goes before the call service is stopped ([cleanUp]):
+            // from here on the service posts no notification any more.
             _currentChannelId.value = null
             if (sendLeave) {
                 val socket = session.joinSocket.value
@@ -511,20 +535,39 @@ class VoiceRepository @Inject constructor(
      */
     fun toggleMute() {
         if (_currentChannelId.value == null) return
-        // One step with [sendJoinOn]: a toggle and the mute state that follows
-        // a voice_join can never cross, so the server's view stays the local one.
+        // The decision and its frame are one step with [sendJoinOn]: a toggle
+        // and the mute state that follows a voice_join can never cross, so the
+        // server's view stays the local one.
         synchronized(sessionLock) {
             val newMuted = !_isMuted.value
-            webRtcManager.setMuted(newMuted)
             _isMuted.value = newMuted
 
             // Only to the peer our voice_join created, on its socket. While the
             // join is held or a rejoin is pending, the state goes out right
             // after the next voice_join instead.
-            val session = live ?: return
+            val session = live ?: return@synchronized
             val channelId = session.channelId
             sendToPeer(session, if (newMuted) ClientEvent.VoiceMute(channelId) else ClientEvent.VoiceUnmute(channelId))
         }
+        // The microphone follows outside the session lock: muting the track
+        // waits for WebRTC's signalling thread, whose callbacks take that lock.
+        applyMuteToMicrophone()
+    }
+
+    /**
+     * Guards [applyMuteToMicrophone]. No WebRTC callback takes it, so it may
+     * be held across the call into WebRTC.
+     */
+    private val muteLock = Any()
+
+    /**
+     * Brings the microphone in line with [isMuted] as it is at this moment.
+     * Every change of [isMuted] is followed by a call, and each call applies
+     * the latest state, so the last one to finish leaves the microphone as
+     * [isMuted] says, in whatever order concurrent toggles get here.
+     */
+    private fun applyMuteToMicrophone() {
+        synchronized(muteLock) { webRtcManager.setMuted(_isMuted.value) }
     }
 
     override fun close() {
@@ -588,8 +631,8 @@ class VoiceRepository @Inject constructor(
 
         /**
          * Before the first `voice_join`: WebRTC, the subscriber connection
-         * (it receives the server's offer), the signalling callbacks and the
-         * event collectors. Needs no socket.
+         * (it receives the server's offer), the signalling callbacks, the
+         * event collectors and the call service. Needs no socket.
          */
         override suspend fun prepare() {
             val guard = guardFor(session, currentCoroutineContext()[Job])
@@ -612,12 +655,17 @@ class VoiceRepository @Inject constructor(
                     }
                 }
             }
+
+            // Last, when the set-up stands: from here on the join may be held
+            // for the socket, for up to a minute.
+            startCallService()
         }
 
         /**
          * The first `voice_join`, on [socket], and what follows it: the
          * publisher offer (Android-initiated; its offer and ICE frames follow
-         * the join on the same socket), audio focus, the foreground service.
+         * the join on the same socket) and audio focus. The microphone is
+         * captured from here on; the call service is already running.
          */
         override suspend fun join(socket: Long): Boolean {
             val job = currentCoroutineContext()[Job]
@@ -632,6 +680,26 @@ class VoiceRepository @Inject constructor(
 
             audioRouteManager.requestAudioFocus()
 
+            session.firstJoin.complete(Unit)
+            return true
+        }
+
+        /**
+         * Starts the call service (the microphone foreground service) as soon
+         * as the set-up stands, before the join waits for a socket: right
+         * after the user's tap, while the app is in the foreground. Android
+         * 12+ refuses to start a foreground service from the background, and
+         * a join can be held for the socket long after the user left the
+         * app. The service then stays for the whole session, through the
+         * held join and every rejoin, and is stopped once, by the teardown.
+         * (Not before the set-up: a set-up that fails at once, e.g. without
+         * network, would stop the service before it reached the foreground.)
+         *
+         * If Android refuses the start all the same, the join ends here with
+         * [VoiceServiceStartException]; if the service itself cannot go to
+         * the foreground, it reports [VoiceServiceEvent.StartFailed].
+         */
+        private fun startCallService() {
             // Collect service events first (so StartFailed cannot be missed), then
             // start the foreground service.
             // UNDISPATCHED: subscribe before the service can emit (replay is 0).
@@ -651,10 +719,14 @@ class VoiceRepository @Inject constructor(
                     }
                 }
             }
-            VoiceCallService.start(context, channelId, channelId)
-
-            session.firstJoin.complete(Unit)
-            return true
+            try {
+                VoiceCallService.start(context, channelId, channelId)
+            } catch (e: IllegalStateException) {
+                // ForegroundServiceStartNotAllowedException (API 31+) is one.
+                throw VoiceServiceStartException(e)
+            } catch (e: SecurityException) {
+                throw VoiceServiceStartException(e)
+            }
         }
 
         /** The connections of the session as they are now reported ICE `FAILED`. */
@@ -826,8 +898,8 @@ class VoiceRepository @Inject constructor(
         _isConnected.value = false
         // Nothing is captured any more: both layers say "not muted" (the next
         // join sets both again).
-        webRtcManager.setMuted(false)
         _isMuted.value = false
+        applyMuteToMicrophone()
         _error.value = null
     }
 

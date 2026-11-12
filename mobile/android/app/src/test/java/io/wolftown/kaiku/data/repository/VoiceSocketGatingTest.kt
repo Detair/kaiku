@@ -33,6 +33,7 @@ class VoiceSocketGatingTest {
         assertEquals(VoiceEndNotice.RejoinFailed(channel, wasMuted = false), repository.endNotice.value)
         assertEquals(VoiceLinkState.Stable, repository.linkState.value)
         assertTrue("call service not stopped: $log", "service:stop" in log)
+        assertNoCallNotification()
     }
 
     // -- 1. A socket that is replaced between the state check and the send -----

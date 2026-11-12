@@ -18,6 +18,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.webrtc.AudioTrack
 import org.webrtc.PeerConnection
 import org.webrtc.PeerConnectionFactory
 
@@ -29,7 +30,8 @@ import org.webrtc.PeerConnectionFactory
  * this test class focuses on:
  *
  * - ICE candidate serialization / deserialization ([IceCandidateData])
- * - Mute state logic (pure boolean tracking)
+ * - Mute state and the microphone track (against mocked tracks)
+ * - Connection generations, the publisher link and the session guard
  *
  * Tests that require PeerConnection, AudioTrack, or PeerConnectionFactory
  * are documented below and should be run as instrumented (androidTest) tests.
@@ -217,15 +219,6 @@ class WebRtcManagerTest {
     }
 
     // ========================================================================
-    // Mute state logic
-    // ========================================================================
-    // WebRtcManager requires android.content.Context (Hilt @ApplicationContext)
-    // and cannot be instantiated in pure JVM unit tests. The isMuted field and
-    // setMuted() method need Robolectric or instrumented tests.
-    //
-    // TODO: isMuted / setMuted tests require Robolectric (PeerConnection dependency)
-
-    // ========================================================================
     // IceServer conversion (data mapping)
     // ========================================================================
 
@@ -395,10 +388,10 @@ class WebRtcManagerTest {
     // ========================================================================
     // publisherLink StateFlow
     // ========================================================================
-    // The combined flow is backed by an Eagerly-started stateIn scope that
-    // observes both publisherIceState and subscriberIceState. Test-only
-    // `internal` mutators on WebRtcManager feed the underlying StateFlows
-    // without requiring a live PeerConnection.
+    // "Connected" is the publisher connection alone, together with the
+    // generation of that connection. A test-only `internal` mutator on
+    // WebRtcManager sets the publisher's ICE state without a live
+    // PeerConnection.
 
     @Test
     fun `publisherLink starts false before any PC connects`() {
@@ -413,11 +406,6 @@ class WebRtcManagerTest {
         val webRtcManager = newWebRtcManager(voiceScope = backgroundScope)
 
         webRtcManager.setPublisherIceStateForTest(PeerConnection.IceConnectionState.CONNECTED)
-        runCurrent()
-        assertTrue(webRtcManager.publisherLink.value.connected)
-
-        // The subscriber does not matter (it may never be offered).
-        webRtcManager.setSubscriberIceStateForTest(PeerConnection.IceConnectionState.DISCONNECTED)
         runCurrent()
         assertTrue(webRtcManager.publisherLink.value.connected)
 
@@ -439,7 +427,7 @@ class WebRtcManagerTest {
     // instrumented (androidTest) tests.
 
     // ========================================================================
-    // Fix round 1: success criterion and stale callbacks (C32 amendments)
+    // Connected means the publisher; closed connections stay silent
     // ========================================================================
 
     @OptIn(ExperimentalCoroutinesApi::class)
@@ -559,7 +547,7 @@ class WebRtcManagerTest {
     }
 
     // ========================================================================
-    // Fix round 2
+    // Connection generations and the session guard
     // ========================================================================
 
     @Test
@@ -628,6 +616,108 @@ class WebRtcManagerTest {
         // A failed subscriber still asks for a rejoin.
         sub.onIceConnectionChange(PeerConnection.IceConnectionState.FAILED)
         assertEquals(IceTrouble.Failed, trouble.last())
+    }
+
+    // ========================================================================
+    // Mute and the microphone track
+    // ========================================================================
+
+    /** A manager whose factory hands out relaxed PCs and records the microphone tracks it creates. */
+    private fun managerWithMicTracks(scope: CoroutineScope, tracks: MutableList<AudioTrack>): WebRtcManager {
+        val factory = mockk<PeerConnectionFactory>(relaxed = true)
+        io.mockk.every { factory.createAudioTrack(any(), any()) } answers {
+            mockk<AudioTrack>(relaxed = true).also { tracks += it }
+        }
+        val voiceApi = mockk<VoiceApi>()
+        coEvery { voiceApi.getIceServers() } returns IceServerConfig(iceServers = emptyList())
+        return newWebRtcManager(
+            voiceScope = scope,
+            voiceApi = voiceApi,
+            factoryProvider = DefaultPeerConnectionFactoryProvider(create = { factory }),
+        )
+    }
+
+    @Test
+    fun `mute reaches the microphone track of the current connections only`() = runTest {
+        val tracks = mutableListOf<AudioTrack>()
+        val manager = managerWithMicTracks(backgroundScope, tracks)
+        manager.initialize()
+        manager.createSubscriberPeerConnection()
+        manager.createPublisherOffer()
+
+        manager.setMuted(true)
+        verify(exactly = 1) { tracks[0].setEnabled(false) }
+
+        // A rejoin: the old track is disposed, a new one is made, muted from the start.
+        manager.closePeerConnections()
+        verify(exactly = 1) { tracks[0].dispose() }
+        manager.createSubscriberPeerConnection()
+        manager.createPublisherOffer()
+        verify(exactly = 1) { tracks[1].setEnabled(false) }
+
+        manager.setMuted(false)
+        verify(exactly = 1) { tracks[1].setEnabled(true) }
+        // Created enabled, muted once, and never touched after its disposal.
+        verify(exactly = 2) { tracks[0].setEnabled(any()) }
+    }
+
+    @Test
+    fun `mute without connections only remembers the state`() = runTest {
+        val tracks = mutableListOf<AudioTrack>()
+        val manager = managerWithMicTracks(backgroundScope, tracks)
+        manager.initialize()
+        manager.createSubscriberPeerConnection()
+        manager.createPublisherOffer()
+        manager.closePeerConnections()
+
+        manager.setMuted(true)
+
+        assertTrue(manager.isMuted)
+        // Only the call at its creation.
+        verify(exactly = 1) { tracks[0].setEnabled(any()) }
+    }
+
+    @Test
+    fun `a mute that hits a disposed track is ignored`() = runTest {
+        val tracks = mutableListOf<AudioTrack>()
+        val manager = managerWithMicTracks(backgroundScope, tracks)
+        manager.initialize()
+        manager.createSubscriberPeerConnection()
+        manager.createPublisherOffer()
+        // What WebRTC does for a track that was disposed underneath the caller.
+        io.mockk.every { tracks[0].setEnabled(any()) } throws
+            IllegalStateException("MediaStreamTrack has been disposed.")
+
+        manager.setMuted(true)
+
+        assertTrue(manager.isMuted)
+    }
+
+    @Test
+    fun `closing the connections waits for a mute that is being applied`() = runTest {
+        val tracks = mutableListOf<AudioTrack>()
+        val manager = managerWithMicTracks(backgroundScope, tracks)
+        manager.initialize()
+        manager.createSubscriberPeerConnection()
+        manager.createPublisherOffer()
+        var disposed = false
+        io.mockk.every { tracks[0].dispose() } answers { disposed = true }
+        // setEnabled is still waiting for WebRTC's thread when a rejoin closes the connections.
+        var disposedWhileMuting = false
+        val closer = Thread { manager.closePeerConnections() }
+        io.mockk.every { tracks[0].setEnabled(false) } answers {
+            closer.start()
+            closer.join(300)
+            disposedWhileMuting = disposed
+            true
+        }
+
+        manager.setMuted(true)
+        closer.join(5_000)
+
+        assertFalse("the track was disposed while setEnabled was using it", disposedWhileMuting)
+        assertTrue(disposed)
+        assertNull(manager.localAudioTrack)
     }
 
     @Test

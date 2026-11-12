@@ -18,6 +18,7 @@ import io.wolftown.kaiku.data.voice.WebRtcManager
 import io.wolftown.kaiku.data.ws.ClientEvent
 import io.wolftown.kaiku.data.ws.KaikuWebSocket
 import io.wolftown.kaiku.data.ws.ServerEvent
+import io.wolftown.kaiku.service.OngoingCallNotification
 import io.wolftown.kaiku.service.VoiceCallService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -96,6 +97,7 @@ internal class VoiceRig(private val test: TestScope) {
     val events = MutableSharedFlow<ServerEvent>(extraBufferCapacity = 64)
     val socket = FakeSocket()
     val server = FakeServer()
+    val service = FakeCallService()
 
     private val webSocket: KaikuWebSocket = mockk(relaxed = true)
     private val rtc: WebRtcManager = mockk(relaxed = true)
@@ -107,8 +109,14 @@ internal class VoiceRig(private val test: TestScope) {
 
     init {
         mockkObject(VoiceCallService.Companion)
-        every { VoiceCallService.start(any(), any(), any()) } answers { log += "service:start" }
-        every { VoiceCallService.stop(any()) } answers { log += "service:stop" }
+        every { VoiceCallService.start(any(), any(), any()) } answers {
+            log += "service:start"
+            service.start()
+        }
+        every { VoiceCallService.stop(any()) } answers {
+            log += "service:stop"
+            service.stop()
+        }
 
         stubSocket()
         stubWebRtc()
@@ -267,6 +275,68 @@ internal class VoiceRig(private val test: TestScope) {
         }
     }
 
+    // -- The call service -----------------------------------------------------
+
+    /**
+     * The call service as far as its notification goes, with Android's part
+     * in it: `start` puts the service in the foreground with its notification
+     * and the service keeps it in step with the voice link
+     * ([OngoingCallNotification], the production code). `stop` makes Android
+     * take the foreground notification away at once, while the service's
+     * `onDestroy` reaches the main thread a moment later (here: 1 ms).
+     */
+    inner class FakeCallService {
+        /** Whether a call notification is up. */
+        var notificationShown = false
+            private set
+
+        /** What happened to the notification, in order: foreground, post:…, stop, cancel, destroyed. */
+        val notifications = mutableListOf<String>()
+
+        private var running: OngoingCallNotification? = null
+
+        fun start() {
+            if (running != null) return
+            notifications += "foreground"
+            notificationShown = true
+            running = OngoingCallNotification(
+                scope = side,
+                callIsOn = { repository.currentChannelId.value != null },
+                linkState = repository.linkState,
+                post = { reconnecting ->
+                    notifications += if (reconnecting) "post:reconnecting" else "post:in-call"
+                    notificationShown = true
+                },
+                cancel = {
+                    notifications += "cancel"
+                    notificationShown = false
+                },
+            ).also { it.follow() }
+        }
+
+        fun stop() {
+            val stopped = running ?: return
+            running = null
+            notifications += "stop"
+            notificationShown = false
+            side.launch {
+                delay(1)
+                stopped.destroy()
+                notifications += "destroyed"
+            }
+        }
+    }
+
+    /** No call notification is up, and none was posted once the service had been told to stop. */
+    fun assertNoCallNotification() {
+        assertFalse("a call notification stayed behind: ${service.notifications}", service.notificationShown)
+        val afterStop = service.notifications.drop(service.notifications.lastIndexOf("stop") + 1)
+        assertFalse(
+            "a notification was posted after the service was told to stop: ${service.notifications}",
+            afterStop.any { it.startsWith("post:") },
+        )
+    }
+
     // -- The WebRTC layer -----------------------------------------------------
 
     private fun stubWebRtc() {
@@ -368,6 +438,7 @@ internal class VoiceRig(private val test: TestScope) {
         assertTrue("connections not closed: $log", log.lastIndexOf("close") > lastInstall)
         assertTrue("audio focus not released: $log", "audio:abandon" in log)
         assertTrue("call service not stopped: $log", "service:stop" in log)
+        assertNoCallNotification()
         assertEquals("a voice_join hit a channel we already held our place in: $log", 0, server.refusedJoins)
         assertFalse("a voice frame went out without naming its socket: $log", log.any { it.endsWith("@any") })
     }
@@ -383,6 +454,9 @@ internal class VoiceRig(private val test: TestScope) {
         assertEquals(null, repository.endNotice.value)
         assertEquals(null, repository.error.value)
         assertFalse("a voice frame went out without naming its socket: $log", log.any { it.endsWith("@any") })
+        // The service was started once and never stopped; its notification is up.
+        assertEquals("call service starts and stops: $log", listOf("service:start"), log.filter { it.startsWith("service:") })
+        assertTrue("no call notification: ${service.notifications}", service.notificationShown)
     }
 
     /** The session ended at [marker]: nothing was sent or created after it, and everything is closed. */
@@ -411,5 +485,6 @@ internal class VoiceRig(private val test: TestScope) {
         assertFalse(repository.isConnected.value)
         assertEquals(VoiceLinkState.Stable, repository.linkState.value)
         assertFalse("a voice frame went out without naming its socket: $log", log.any { it.endsWith("@any") })
+        assertNoCallNotification()
     }
 }

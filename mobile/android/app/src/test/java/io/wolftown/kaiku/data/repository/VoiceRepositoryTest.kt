@@ -58,7 +58,10 @@ import org.junit.Test
  *   `pcType` labels.
  * - Incoming `VoicePublisherAnswer` / `VoiceSubscriberOffer` / `VoiceIceCandidate`
  *   events route to the matching `WebRtcManager` method.
- * - The repository's `_isConnected` state follows `WebRtcManager.voiceIceConnected`.
+ * - The repository's `_isConnected` state follows `WebRtcManager.publisherLink`
+ *   (the publisher connection alone).
+ * - Rejoin after a lost connection (C32), forced leave (C31), the call service
+ *   and the lock rule towards WebRTC.
  *
  * Out of scope:
  * - Error propagation (`onError` → `_error`); covered by Phase 2 workstream B.2.
@@ -641,7 +644,7 @@ class VoiceRepositoryTest {
         assertEquals(null, repository.endNotice.value)
     }
 
-    // -- Fix round 1: session end always wins over a rejoin attempt -----------
+    // -- A session end always wins over a rejoin attempt ----------------------
     //
     // The log records what reached the WebRTC layer and the socket, in order.
     // A step hook runs a leave or a removal *inside* a rejoin step, the way a
@@ -786,7 +789,7 @@ class VoiceRepositoryTest {
         assertSessionEndWon("REMOVED")
     }
 
-    // -- Fix round 1: attempt timeout, socket loss, offline cap ---------------
+    // -- Attempt timeout, socket loss, the 60 s without a socket --------------
 
     @Test
     fun `an attempt times out after 15 s and its connections are closed at once`() = runTest {
@@ -866,7 +869,7 @@ class VoiceRepositoryTest {
         verifyJoins(1)
     }
 
-    // -- Fix round 1: success criterion ---------------------------------------
+    // -- Success is the publisher connection alone ----------------------------
 
     @Test
     fun `a rejoin into an empty channel succeeds on the publisher alone`() = runTest {
@@ -887,7 +890,7 @@ class VoiceRepositoryTest {
         assertEquals("ch-1", repository.currentChannelId.value)
     }
 
-    // -- Fix round 1: mute state agrees in both layers ------------------------
+    // -- The mute state agrees in both layers ---------------------------------
 
     private var rtcMuted = false
 
@@ -948,7 +951,7 @@ class VoiceRepositoryTest {
         assertFalse(rtcMuted)
     }
 
-    // -- Fix round 1: minor findings ------------------------------------------
+    // -- Errors during a rejoin, logout, the first join -----------------------
 
     @Test
     fun `a WebRTC error during a rejoin attempt fails the attempt without a snackbar`() = runTest {
@@ -1006,7 +1009,7 @@ class VoiceRepositoryTest {
         assertTrue("attempt closed the join's connections: $log", pubAt in 0 until log.indexOf("close"))
     }
 
-    // -- Fix round 2 -----------------------------------------------------------
+    // -- Only the attempt's own connections count ------------------------------
 
     @Test
     fun `a success of an older publisher does not complete the current attempt`() = runTest {
@@ -1352,21 +1355,187 @@ class VoiceRepositoryTest {
         verifyJoins(1)
     }
 
+    // -- Locks and WebRTC's own thread ------------------------------------------
+
+    @Test
+    fun `a mute toggle does not make a WebRTC callback wait for the session lock`() = runTest {
+        repository.joinChannel("ch-1")
+        advanceUntilIdle()
+        // Like AudioTrack.setEnabled: it returns only once WebRTC's signalling
+        // thread got to it. That thread is just delivering an ICE candidate,
+        // which goes to the peer through the repository.
+        var candidateDelivered = false
+        every { webRtcManager.setMuted(any()) } answers {
+            val signallingThread = Thread {
+                onPublisherIceSlot.captured.invoke("""{"candidate":"c0","sdpMLineIndex":0,"sdpMid":"0"}""")
+            }
+            signallingThread.start()
+            signallingThread.join(3_000)
+            candidateDelivered = !signallingThread.isAlive
+        }
+
+        repository.toggleMute()
+
+        // With the session lock held across setEnabled the two threads wait
+        // for each other for good (on a device: a frozen app).
+        assertTrue("the callback had to wait for the mute toggle", candidateDelivered)
+        assertTrue(repository.isMuted.value)
+        verify(exactly = 1) { webSocket.send(ClientEvent.VoiceMute("ch-1")) }
+        verify { webSocket.send(match<ClientEvent.VoiceIceCandidate> { it.candidate.contains("c0") }) }
+    }
+
+    @Test
+    fun `the microphone follows the last of two mute toggles that cross`() = runTest {
+        trackRtcMute()
+        repository.joinChannel("ch-1")
+        advanceUntilIdle()
+        // A second toggle (the notification's Mute action) arrives while the
+        // first one is on its way to the microphone track.
+        var second: Thread? = null
+        every { webRtcManager.setMuted(any()) } answers {
+            val toTrack = firstArg<Boolean>()
+            if (second == null) {
+                second = Thread { repository.toggleMute() }.also {
+                    it.start()
+                    // It can decide (and tell the server) at once; it reaches the track after us.
+                    it.join(300)
+                }
+            }
+            rtcMuted = toTrack
+        }
+
+        repository.toggleMute()
+        second!!.join(5_000)
+
+        // Muted, then unmuted: both layers and the server end up unmuted.
+        assertFalse(repository.isMuted.value)
+        assertFalse(rtcMuted)
+        io.mockk.verifyOrder {
+            webSocket.send(ClientEvent.VoiceMute("ch-1"))
+            webSocket.send(ClientEvent.VoiceUnmute("ch-1"))
+        }
+    }
+
+    // -- The call service --------------------------------------------------------
+
+    @Test
+    fun `the call service starts at the tap, also for a held join, and once per session`() = runTest {
+        socketDown()
+        repository.startJoin("ch-1")
+        runCurrent()
+
+        // Held: nothing was sent, but the service is up. It was started right
+        // after the tap, while the app is in the foreground; when the socket
+        // is finally there, Android may not allow it any more.
+        verifyNoVoiceFrames()
+        verify(exactly = 1) { VoiceCallService.start(any(), "ch-1", any()) }
+
+        socketUp()
+        runCurrent()
+        verifyJoins(1)
+        reconnect()
+        advanceTimeBy(1_000); runCurrent()
+        verifyJoins(2)
+
+        // Never stopped or started again between the join and the rejoin.
+        verify(exactly = 1) { VoiceCallService.start(any(), any(), any()) }
+        verify(exactly = 0) { VoiceCallService.stop(any()) }
+    }
+
+    @Test
+    fun `a call service that may not be started ends the join with its own message`() = runTest {
+        // What Android 12+ throws for a foreground service start from the background.
+        every { VoiceCallService.start(any(), any(), any()) } throws
+            IllegalStateException("startForegroundService() not allowed")
+
+        repository.startJoin("ch-1")
+        advanceUntilIdle()
+
+        assertEquals(null, repository.currentChannelId.value)
+        assertEquals(R.string.voice_start_failed, repository.error.value)
+        assertEquals(null, repository.endNotice.value)
+        assertEquals(VoiceLinkState.Stable, repository.linkState.value)
+        // Nothing reached the server, the microphone was never opened, and
+        // what the set-up had created is closed again.
+        verifyNoVoiceFrames()
+        coVerify(exactly = 0) { webRtcManager.createPublisherOffer(any()) }
+        verify(atLeast = 1) { webRtcManager.closePeerConnections() }
+    }
+
+    @Test
+    fun `a join whose set-up fails never starts the call service`() = runTest {
+        coEvery { webRtcManager.createSubscriberPeerConnection(any()) } throws
+            java.io.IOException("no ICE servers")
+
+        repository.startJoin("ch-1")
+        advanceUntilIdle()
+
+        assertEquals(R.string.voice_join_failed, repository.error.value)
+        assertEquals(null, repository.currentChannelId.value)
+        // Nothing to stop before it reached the foreground.
+        verify(exactly = 0) { VoiceCallService.start(any(), any(), any()) }
+    }
+
+    @Test
+    fun `a call service that reports a failed start during a held join ends it cleanly`() = runTest {
+        val serviceEvents = MutableSharedFlow<VoiceServiceEvent>(extraBufferCapacity = 5)
+        every { voiceServiceEvents.events } returns serviceEvents
+        socketDown()
+        repository.startJoin("ch-1")
+        runCurrent()
+
+        serviceEvents.emit(VoiceServiceEvent.StartFailed)
+        runCurrent()
+        socketUp()
+        advanceTimeBy(120_000); runCurrent()
+
+        assertEquals(null, repository.currentChannelId.value)
+        assertEquals(R.string.voice_start_failed, repository.error.value)
+        assertEquals(null, repository.endNotice.value)
+        verifyNoVoiceFrames()
+        verify(atLeast = 1) { VoiceCallService.stop(any()) }
+    }
+
+    @Test
+    fun `a logout during a removal's teardown leaves no notice behind`() = runTest {
+        repository.joinChannel("ch-1")
+        advanceUntilIdle()
+        // The logout (it leaves the channel) arrives while the removal tears the call down.
+        var loggedOut = false
+        every { VoiceCallService.stop(any()) } answers {
+            if (!loggedOut) {
+                loggedOut = true
+                backgroundScope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
+                    repository.leaveChannel()
+                }
+            }
+        }
+
+        wsEvents.emit(ServerEvent.VoiceRemoved(channelId = "ch-1", reason = "banned"))
+        runCurrent()
+        advanceTimeBy(1_000); runCurrent()
+
+        assertTrue(loggedOut)
+        // The removal belongs to the account that just logged out.
+        assertEquals(null, repository.endNotice.value)
+        assertEquals(null, repository.currentChannelId.value)
+    }
+
     @Test
     fun `a session end cannot slip between the guard check and the install`() = runTest {
         recordWebRtcAndSocket()
         repository.joinChannel("ch-1")
         advanceUntilIdle()
         var removalBlocked = false
+        // voice_removed arrives on another thread while the PC is installed.
+        val removal = Thread {
+            repository.handleServerEventNow(
+                "ch-1", ServerEvent.VoiceRemoved(channelId = "ch-1", reason = "kicked")
+            )
+            log += "REMOVED"
+        }
         coEvery { webRtcManager.createSubscriberPeerConnection(any()) } coAnswers {
             firstArg<SessionGuard>().runIfCurrent {
-                // voice_removed arrives on another thread while the PC is installed.
-                val removal = Thread {
-                    repository.handleServerEventNow(
-                        "ch-1", ServerEvent.VoiceRemoved(channelId = "ch-1", reason = "kicked")
-                    )
-                    log += "REMOVED"
-                }
                 removal.start()
                 removal.join(300)
                 removalBlocked = removal.isAlive
@@ -1375,10 +1544,10 @@ class VoiceRepositoryTest {
         }
         reconnect()
         advanceTimeBy(1_000); runCurrent()
-        // Wait for the blocked removal to go through, then for its teardown.
-        val deadline = System.currentTimeMillis() + 5_000
-        while ("REMOVED" !in log && System.currentTimeMillis() < deadline) Thread.sleep(5)
-        Thread.sleep(50)
+        // The removal goes through once the install released the lock. When
+        // its thread is done, its teardown is queued on the test scheduler.
+        removal.join(5_000)
+        assertFalse("the removal never got through", removal.isAlive)
         advanceUntilIdle()
 
         // The removal waited for the install, so the teardown closed that PC,

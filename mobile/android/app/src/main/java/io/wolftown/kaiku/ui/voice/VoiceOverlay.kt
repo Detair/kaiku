@@ -9,7 +9,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
@@ -118,7 +120,10 @@ fun VoiceEndNoticeBar(
                 text = stringResource(notice.message),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onErrorContainer,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier
+                    .weight(1f)
+                    // Spoken when it appears: the call has ended without the user's doing.
+                    .semantics { liveRegion = LiveRegionMode.Polite }
             )
             if (notice.canRejoin) {
                 TextButton(onClick = onRejoin) { Text(stringResource(R.string.voice_call_rejoin)) }
