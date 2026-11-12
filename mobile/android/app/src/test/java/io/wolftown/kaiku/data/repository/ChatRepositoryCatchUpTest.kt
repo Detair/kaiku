@@ -139,6 +139,7 @@ class ChatRepositoryCatchUpTest {
             authState,
             CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher()),
             mockk<AttachmentReader>(relaxed = true),
+            mockk<AttachmentFiles>(relaxed = true),
         )
     }
 

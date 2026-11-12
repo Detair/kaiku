@@ -30,7 +30,11 @@ interface MessageApi {
         after: String? = null,
         limit: Int = 50
     ): CursorPage<Message>
-    suspend fun sendMessage(channelId: String, content: String): Message
+    /**
+     * Sends a text message. With [sessionId] the request is never sent in
+     * another session (see [KaikuHttpClient.RequiredSessionId]).
+     */
+    suspend fun sendMessage(channelId: String, content: String, sessionId: Long? = null): Message
     suspend fun editMessage(messageId: String, content: String): Message
     suspend fun deleteMessage(messageId: String)
     suspend fun addReaction(channelId: String, messageId: String, emoji: String)
@@ -113,9 +117,10 @@ class MessageApiImpl @Inject constructor(
         return response.body()
     }
 
-    override suspend fun sendMessage(channelId: String, content: String): Message {
+    override suspend fun sendMessage(channelId: String, content: String, sessionId: Long?): Message {
         val response = httpClient.post("/api/messages/channel/$channelId") {
             setBody(SendMessageRequest(content))
+            if (sessionId != null) attributes.put(KaikuHttpClient.RequiredSessionId, sessionId)
         }
 
         if (!response.status.isSuccess()) {

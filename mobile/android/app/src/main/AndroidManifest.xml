@@ -86,6 +86,17 @@
             android:name="firebase_messaging_auto_init_enabled"
             android:value="false" />
 
+        <!-- AND-B-4: hands downloaded attachments to other apps (open, share); read access per intent only. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/attachment_paths" />
+        </provider>
+
         <!-- WorkManager is initialized on demand with the HiltWorkerFactory (KaikuApplication). -->
         <provider
             android:name="androidx.startup.InitializationProvider"

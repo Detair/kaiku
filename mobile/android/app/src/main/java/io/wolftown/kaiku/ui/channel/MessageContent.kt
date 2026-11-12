@@ -13,7 +13,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.TextLinkStyles
+import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
@@ -30,6 +34,9 @@ import io.wolftown.kaiku.domain.markdown.MarkdownParser
  *
  * Spoilers render as a hidden block (background-filled, transparent text)
  * until tapped, matching the desktop click-to-reveal behavior.
+ *
+ * Web links ([LinkFinder]) are underlined and open in the browser (AND-B-5);
+ * links inside a hidden spoiler stay hidden and inert until it is revealed.
  */
 @Composable
 fun MessageContent(
@@ -45,6 +52,13 @@ fun MessageContent(
 
     val codeBg = MaterialTheme.colorScheme.surfaceVariant
     val spoilerBg = MaterialTheme.colorScheme.onSurface
+    val context = LocalContext.current
+    val linkStyles = TextLinkStyles(
+        style = SpanStyle(
+            color = MaterialTheme.colorScheme.primary,
+            textDecoration = TextDecoration.Underline,
+        )
+    )
 
     val annotated: AnnotatedString = buildAnnotatedString {
         for (span in spans) {
@@ -61,7 +75,22 @@ fun MessageContent(
                 },
                 color = if (hidden) Color.Transparent else Color.Unspecified,
             )
-            withStyle(style) { append(span.text) }
+            withStyle(style) {
+                val links = if (hidden) emptyList() else LinkFinder.find(span.text)
+                var at = 0
+                for (link in links) {
+                    append(span.text.substring(at, link.start))
+                    withLink(
+                        LinkAnnotation.Url(
+                            url = link.url,
+                            styles = linkStyles,
+                            linkInteractionListener = { openWebLink(context, link.url) },
+                        )
+                    ) { append(span.text.substring(link.start, link.end)) }
+                    at = link.end
+                }
+                append(span.text.substring(at))
+            }
         }
     }
 
@@ -75,3 +104,22 @@ fun MessageContent(
         }.padding(top = 2.dp),
     )
 }
+
+/** Opens an http(s) [url] in the browser; does nothing when no app can open it. */
+internal fun openWebLink(context: android.content.Context, url: String) {
+    val uri = android.net.Uri.parse(url)
+    if (uri.scheme?.lowercase() !in setOf("http", "https")) return
+    try {
+        context.startActivity(
+            android.content.Intent(android.content.Intent.ACTION_VIEW, uri)
+                .addCategory(android.content.Intent.CATEGORY_BROWSABLE)
+                .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
+    } catch (_: android.content.ActivityNotFoundException) {
+        // No browser installed.
+    }
+}
+
+/** The text a person sees (markdown markers removed), for "Copy text". */
+internal fun plainMessageText(content: String): String =
+    MarkdownParser.parse(content).joinToString("") { it.text }

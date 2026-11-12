@@ -161,6 +161,29 @@ class SettingsViewModelTest {
     }
 
     @Test
+    fun `retry after a load failure clears the error and shows the profile`() {
+        val repo: AuthRepository = mockk()
+        val user = io.wolftown.kaiku.domain.model.User(id = "u1", username = "anna", displayName = "Anna")
+        coEvery { repo.getCurrentUser() } returnsMany listOf(
+            Result.failure(IllegalStateException("offline")),
+            Result.success(user),
+        )
+        val vm = SettingsViewModel(
+            authRepository = repo,
+            tokenStorage = mockk<TokenStorage>(relaxed = true),
+            pushRegistrar = registrar,
+            pushPlatform = platform,
+            pushPreferences = preferences,
+        )
+        assertEquals(R.string.settings_profile_load_failed, vm.error.value)
+
+        vm.retryLoadUser()
+
+        assertEquals(null, vm.error.value)
+        assertEquals(user, vm.user.value)
+    }
+
+    @Test
     fun `an unexpected exception while loading also exposes the string resource`() {
         val vm = viewModel() // unstubbed repository throws
         assertEquals(R.string.settings_profile_load_failed, vm.error.value)

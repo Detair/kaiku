@@ -413,6 +413,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The window title names the open channel and server or the person you are writing with; "Skip to content" moves focus to the page.
 - Screen readers hear a person's online status and their name on avatars without a picture; small icon buttons react on a larger area (44 pixels on touch screens) without changing the layout.
 - The text of a page you must accept can be scrolled with the keyboard, so "I accept" can be reached without a mouse.
+- Android: a message or photo sent right before leaving the chat is no longer lost. It shows as "Sending…" until it arrives; if it fails it stays in the chat with Retry and Delete. Unsent text stays in the field when you leave the chat.
+- Android: the message field stays above the keyboard and the navigation bar, and the chat title no longer slides away while typing.
+- Android: photos open full screen with zoom, Save and Share; videos and files open with an app on the phone. Links in messages can be tapped, and the message menu has Copy text.
+- Android: TalkBack offers React, Copy, Edit and Delete as actions on a message and announces new messages politely. Deleting a message asks first; replies show who and what they answer.
+- Android: the chat shows day separators, a button back to the newest message with the number of new ones, and loads older messages when you reach the top.
+- Android: settings scroll, so Log out stays reachable with large text; a profile that fails to load says so and offers Retry.
+- Android: when notifications are off, chats and settings show a lasting hint to turn them on.
+- Android: error text, badges, the reconnect banner, the snackbar Retry and red buttons have enough contrast.
 
 ### Security
 - E2EE Megolm session cache is now cleared on logout — prevents stale session keys from persisting

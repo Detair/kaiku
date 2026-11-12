@@ -9,6 +9,7 @@ import io.wolftown.kaiku.data.api.KaikuHttpClient
 import io.wolftown.kaiku.data.api.MessageApiImpl
 import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.local.TokenStorage
+import io.wolftown.kaiku.data.repository.AttachmentFiles
 import io.wolftown.kaiku.data.repository.AttachmentReader
 import io.wolftown.kaiku.data.repository.ChatRepository
 import io.wolftown.kaiku.data.repository.GuildRepository
@@ -141,6 +142,7 @@ class MessageFlowTest {
             authState,
             CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher()),
             mockk<AttachmentReader>(relaxed = true),
+            mockk<AttachmentFiles>(relaxed = true),
         )
     }
 
