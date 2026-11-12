@@ -593,6 +593,27 @@ pub mod test_hooks {
         wait(feed_write_pauses(), user_id).await;
     }
 
+    fn upload_pauses() -> &'static Mutex<HashMap<Uuid, Pause>> {
+        static PAUSES: OnceLock<Mutex<HashMap<Uuid, Pause>>> = OnceLock::new();
+        PAUSES.get_or_init(Mutex::default)
+    }
+
+    /// Pause the next file upload of `user_id` after its objects are stored
+    /// and before its database rows are written.
+    pub fn pause_after_object_upload(user_id: Uuid) -> Pause {
+        arm();
+        let pause = Pause::default();
+        upload_pauses()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(user_id, pause.clone());
+        pause
+    }
+
+    pub(crate) async fn after_object_upload(user_id: Uuid) {
+        wait(upload_pauses(), user_id).await;
+    }
+
     fn voice_leave_pauses() -> &'static Mutex<HashMap<Uuid, Pause>> {
         static PAUSES: OnceLock<Mutex<HashMap<Uuid, Pause>>> = OnceLock::new();
         PAUSES.get_or_init(Mutex::default)

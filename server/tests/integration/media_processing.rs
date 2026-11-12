@@ -400,3 +400,98 @@ async fn test_invalid_variant_returns_validation_error(pool: PgPool) {
         "Unexpected validation message: {error}"
     );
 }
+
+/// An upload whose request is cancelled after its objects are stored and
+/// before its rows are written (the client went away, the server is shutting
+/// down) leaves nothing in the object store: the keys were queued for
+/// deletion before the first write, so they are still queued when the
+/// handler's future is dropped, and the objects are deleted.
+#[sqlx::test]
+async fn cancelled_upload_leaves_no_objects(pool: PgPool) {
+    if !super::helpers::rustfs_available().await {
+        return;
+    }
+    let (app, _bucket) = super::helpers::fresh_test_app_with_s3_and_pool(pool.clone()).await;
+    let (user_id, _) = create_test_user(&app.pool).await;
+    let token = generate_access_token(&app.config, user_id);
+    let perms = GuildPermissions::VIEW_CHANNEL | GuildPermissions::SEND_MESSAGES;
+    let guild_id = super::helpers::create_guild_with_default_role(&app.pool, user_id, perms).await;
+    let channel_id = super::helpers::create_channel(&app.pool, guild_id, "media-test").await;
+    let s3 = app.state.s3.clone().expect("object storage configured");
+
+    let png_data = create_test_png(500, 400);
+    let (boundary, body) = build_upload_multipart("photo.png", "image/png", &png_data, "hello");
+    let req = TestApp::request(
+        Method::POST,
+        &format!("/api/messages/channel/{channel_id}/upload"),
+    )
+    .header("Authorization", format!("Bearer {token}"))
+    .header(
+        "Content-Type",
+        format!("multipart/form-data; boundary={boundary}"),
+    )
+    .body(Body::from(body))
+    .unwrap();
+
+    let pause = vc_server::ws::test_hooks::pause_after_object_upload(user_id);
+    let queued: Vec<String> = {
+        let upload = app.oneshot(req);
+        tokio::pin!(upload);
+        tokio::select! {
+            _ = &mut upload => panic!("the upload finished without reaching the pause"),
+            () = pause.reached.notified() => {}
+        }
+        // Stored, no row yet, and already queued: original and both variants.
+        let queued: Vec<String> =
+            sqlx::query_scalar("SELECT s3_key FROM storage_pending_deletes ORDER BY s3_key")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            queued.len(),
+            3,
+            "keys not queued before the write: {queued:?}"
+        );
+        let original = queued
+            .iter()
+            .find(|k| k.ends_with(".png"))
+            .expect("original key queued");
+        assert!(
+            s3.get_object_stream(original).await.is_ok(),
+            "the original is stored at this point"
+        );
+        queued
+        // The handler's future is dropped here: the request is cancelled.
+    };
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM storage_pending_deletes")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        if left == 0 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{left} keys still queued"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    for key in &queued {
+        assert!(
+            s3.get_object_stream(key).await.is_err(),
+            "object {key} left behind by the cancelled upload"
+        );
+    }
+    let rows: (i64, i64) = sqlx::query_as(
+        "SELECT (SELECT COUNT(*) FROM messages WHERE channel_id = $1),
+                (SELECT COUNT(*) FROM file_attachments)",
+    )
+    .bind(channel_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(rows, (0, 0));
+}

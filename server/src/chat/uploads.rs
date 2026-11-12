@@ -265,25 +265,20 @@ pub async fn upload_file(
         message.channel_id, message_id, file_id, extension
     );
 
+    // Every object this upload may write is queued for deletion first; the
+    // transaction that stores the attachment row takes the keys out again.
+    // An error or a cancelled request in between leaves nothing behind.
+    let pending = announce_upload(&state.db, s3, &s3_key).await?;
+
     // Process image before S3 upload (clones data internally for spawn_blocking)
     let file_size = file_data.len() as i64;
     let media = process_and_upload_variants(s3, &file_data, &content_type, &s3_key).await;
 
     // Upload original to S3
     if let Err(e) = s3.upload(&s3_key, file_data, &content_type).await {
-        // Clean up orphaned variant objects
-        let mut keys = Vec::new();
-        if let Some(k) = media.thumb_key {
-            keys.push(k);
-        }
-        if let Some(k) = media.medium_key {
-            keys.push(k);
-        }
-        if !keys.is_empty() {
-            cleanup_s3_objects(s3.clone(), keys);
-        }
         return Err(ChatError::Storage(e.to_string()));
     }
+    crate::ws::test_hooks::after_object_upload(auth_user.id).await;
 
     // Save metadata to database: lock the message, re-check the cap.
     let stored = async {
@@ -317,26 +312,21 @@ pub async fn upload_file(
             media.processing_status,
         )
         .await?;
+        pending.keep_in(&mut tx).await?;
         tx.commit().await?;
         Ok(attachment)
     }
     .await;
+    // On an error the stored objects (original and variants) go with
+    // `pending`.
     let attachment = stored.map_err(|e| {
-        // Clean up orphaned S3 objects (original + variants)
-        let mut keys = vec![s3_key.clone()];
-        if let Some(k) = media.thumb_key.clone() {
-            keys.push(k);
-        }
-        if let Some(k) = media.medium_key.clone() {
-            keys.push(k);
-        }
-        cleanup_s3_objects(s3.clone(), keys);
         tracing::warn!(
             message_id = %message_id,
             "Attachment not stored, cleaning up S3 objects: {e}"
         );
         e
     })?;
+    pending.kept();
 
     // Generate download URL
     let url = format!("/api/messages/attachments/{}", attachment.id);
@@ -493,22 +483,19 @@ pub async fn upload_message_with_file(
         .unwrap_or("bin");
     let s3_key = format!("attachments/{channel_id}/{message_id}/{file_id}.{extension}");
 
+    // Every object this upload may write is queued for deletion first; the
+    // transaction that stores the message and its attachment takes the keys
+    // out again. An error or a cancelled request in between leaves nothing
+    // behind.
+    let pending = announce_upload(&state.db, s3, &s3_key).await?;
+
     // Process image before S3 upload (clones data internally for spawn_blocking)
     let file_size = file_data.len() as i64;
     let media = process_and_upload_variants(s3, &file_data, &file_content_type, &s3_key).await;
 
-    let variant_keys: Vec<String> = media
-        .thumb_key
-        .iter()
-        .chain(media.medium_key.iter())
-        .cloned()
-        .collect();
-
-    // Upload original to S3. On failure nothing has been written to the database.
+    // Upload original to S3. On failure nothing has been written to the
+    // database, and the objects written so far go with `pending`.
     if let Err(e) = s3.upload(&s3_key, file_data, &file_content_type).await {
-        if !variant_keys.is_empty() {
-            cleanup_s3_objects(s3.clone(), variant_keys);
-        }
         tracing::error!(
             message_id = %message_id,
             error = %e,
@@ -516,6 +503,7 @@ pub async fn upload_message_with_file(
         );
         return Err(ChatError::Storage(e.to_string()));
     }
+    crate::ws::test_hooks::after_object_upload(auth_user.id).await;
 
     // Insert message and attachment in one transaction
     let stored = async {
@@ -538,18 +526,19 @@ pub async fn upload_message_with_file(
             media.processing_status,
         )
         .await?;
+        pending.keep_in(&mut tx).await?;
         tx.commit().await?;
         Ok::<_, sqlx::Error>((message, attachment))
     }
     .await;
 
     let (message, attachment) = match stored {
-        Ok(v) => v,
+        Ok(v) => {
+            pending.kept();
+            v
+        }
         Err(e) => {
-            // Stored objects would be orphaned without their rows
-            let mut keys = vec![s3_key.clone()];
-            keys.extend(variant_keys);
-            cleanup_s3_objects(s3.clone(), keys);
+            // The stored objects go with `pending`.
             tracing::error!(
                 message_id = %message_id,
                 error = %e,
@@ -1073,12 +1062,10 @@ async fn process_and_upload_variants(
     };
 
     // Upload variants to S3
-    let base_key = base_s3_key
-        .rsplit_once('.')
-        .map_or(base_s3_key, |(base, _)| base);
+    let [thumb_object, medium_object] = variant_keys(base_s3_key);
 
     let thumb_key = if let Some(ref thumb) = meta.thumbnail {
-        let key = format!("{base_key}_thumb.webp");
+        let key = thumb_object;
         if let Err(e) = s3
             .upload(&key, thumb.data.clone(), &thumb.content_type)
             .await
@@ -1098,7 +1085,7 @@ async fn process_and_upload_variants(
     };
 
     let medium_key = if let Some(ref medium) = meta.medium {
-        let key = format!("{base_key}_medium.webp");
+        let key = medium_object;
         if let Err(e) = s3
             .upload(&key, medium.data.clone(), &medium.content_type)
             .await
@@ -1135,15 +1122,29 @@ async fn process_and_upload_variants(
     }
 }
 
-/// Clean up S3 objects in the background (used when DB insert fails).
-fn cleanup_s3_objects(s3: S3Client, keys: Vec<String>) {
-    tokio::spawn(async move {
-        for key in keys {
-            if let Err(e) = s3.delete(&key).await {
-                tracing::error!("Failed to cleanup orphaned S3 object {}: {}", key, e);
-            }
-        }
-    });
+/// The keys of the thumbnail and medium variants of the object `base_s3_key`.
+fn variant_keys(base_s3_key: &str) -> [String; 2] {
+    let base_key = base_s3_key
+        .rsplit_once('.')
+        .map_or(base_s3_key, |(base, _)| base);
+    [
+        format!("{base_key}_thumb.webp"),
+        format!("{base_key}_medium.webp"),
+    ]
+}
+
+/// Queue the original and both possible variants of an upload for deletion
+/// before any of them is written (see [`UploadKeys`]).
+///
+/// [`UploadKeys`]: super::storage_cleanup::UploadKeys
+async fn announce_upload(
+    pool: &sqlx::PgPool,
+    s3: &S3Client,
+    s3_key: &str,
+) -> sqlx::Result<super::storage_cleanup::UploadKeys<S3Client>> {
+    let [thumb, medium] = variant_keys(s3_key);
+    super::storage_cleanup::UploadKeys::announce(pool, s3, vec![s3_key.to_string(), thumb, medium])
+        .await
 }
 
 /// Sanitize a filename to prevent path traversal and other issues.

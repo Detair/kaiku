@@ -552,6 +552,121 @@ pub fn spawn_with<S: ObjectStore + Send + 'static>(
     CleanupWorker { stop, task }
 }
 
+/// How long an upload may take from announcing its keys to its commit.
+///
+/// The commit is that of the attachment row that owns the objects. Far above
+/// the longest upload request; after it the worker removes what is still
+/// announced.
+pub const UPLOAD_GRACE: Duration = Duration::from_mins(30);
+
+/// The object keys of one upload, owned by the outbox until the attachment
+/// row that will own them is committed.
+///
+/// [`UploadKeys::announce`] queues the keys for deletion, due
+/// [`UPLOAD_GRACE`] from now, **before** anything is written to the object
+/// store. The transaction that inserts the attachment row takes them out of
+/// the queue again ([`UploadKeys::keep_in`]), so its commit hands them over
+/// atomically. Whatever else happens to the request — an error, its future
+/// dropped at any point (the client went away, the server is shutting down),
+/// the process killed — the keys are still queued and the worker deletes the
+/// objects. Dropping the guard without [`UploadKeys::kept`] makes them due at
+/// once and tries them right away.
+#[must_use = "an upload that does not keep its keys has them deleted"]
+pub struct UploadKeys<S: ObjectStore + Clone + Send + 'static> {
+    pool: PgPool,
+    store: S,
+    keys: Vec<String>,
+    announced: std::time::Instant,
+    kept: bool,
+}
+
+impl<S: ObjectStore + Clone + Send + 'static> UploadKeys<S> {
+    /// Queue `keys` (every object this upload may write) for deletion after
+    /// [`UPLOAD_GRACE`]. Call before the first write to the object store.
+    pub async fn announce(pool: &PgPool, store: &S, keys: Vec<String>) -> sqlx::Result<Self> {
+        sqlx::query(
+            "INSERT INTO storage_pending_deletes (s3_key, next_attempt_at)
+             SELECT k, NOW() + make_interval(secs => $2) FROM unnest($1::text[]) AS k
+             ON CONFLICT (s3_key) DO NOTHING",
+        )
+        .bind(&keys)
+        .bind(interval_secs(UPLOAD_GRACE))
+        .execute(pool)
+        .await?;
+        Ok(Self {
+            pool: pool.clone(),
+            store: store.clone(),
+            keys,
+            announced: std::time::Instant::now(),
+            kept: false,
+        })
+    }
+
+    /// Inside the transaction that stores the attachment row: take the keys
+    /// out of the queue, so that from its commit on the row owns them. Fails
+    /// (and so fails the transaction) if the clean-up already took one: the
+    /// upload outlived its grace period and its objects are going away.
+    pub async fn keep_in(&self, tx: &mut sqlx::PgConnection) -> sqlx::Result<()> {
+        // Until the grace period is over, nothing has claimed the keys.
+        if self.announced.elapsed() + LEASE >= UPLOAD_GRACE {
+            return Err(sqlx::Error::RowNotFound);
+        }
+        let removed = sqlx::query(
+            "DELETE FROM storage_pending_deletes
+             WHERE s3_key = ANY($1) AND attempts = 0 AND next_attempt_at > NOW()",
+        )
+        .bind(&self.keys)
+        .execute(tx)
+        .await?
+        .rows_affected();
+        if usize::try_from(removed).ok() == Some(self.keys.len()) {
+            Ok(())
+        } else {
+            Err(sqlx::Error::RowNotFound)
+        }
+    }
+
+    /// The transaction with [`Self::keep_in`] committed: nothing to clean up.
+    pub fn kept(mut self) {
+        self.kept = true;
+    }
+}
+
+impl<S: ObjectStore + Clone + Send + 'static> Drop for UploadKeys<S> {
+    fn drop(&mut self) {
+        if self.kept {
+            return;
+        }
+        // Not kept (or the request was cancelled after its commit, in which
+        // case the rows are gone and this finds nothing): due now. Without a
+        // runtime to do it on, the keys stay queued for their grace period.
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let (pool, store) = (self.pool.clone(), self.store.clone());
+        let keys = std::mem::take(&mut self.keys);
+        runtime.spawn(async move {
+            let due = sqlx::query(
+                "UPDATE storage_pending_deletes SET next_attempt_at = NOW()
+                 WHERE s3_key = ANY($1) AND attempts = 0",
+            )
+            .bind(&keys)
+            .execute(&pool)
+            .await;
+            match due {
+                Ok(_) => {
+                    if let Err(e) = drain_keys(&pool, &store, &keys).await {
+                        tracing::warn!(error = %e, "Removing the objects of an unfinished upload failed; queued");
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Objects of an unfinished upload stay queued for their grace period");
+                }
+            }
+        });
+    }
+}
+
 /// Try the keys a just-committed delete queued (and only those), in the
 /// background. Older keys are the worker's.
 pub fn spawn_drain(state: &AppState, keys: Vec<String>) {
