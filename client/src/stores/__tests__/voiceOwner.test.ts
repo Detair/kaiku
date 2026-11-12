@@ -51,8 +51,15 @@ const adapter = {
     await adapterCall("teardown", session);
     return { ok: true, value: undefined };
   },
-  setEventHandlers: () => {},
+  setEventHandlers: (handlers: typeof mediaEvents) => {
+    mediaEvents = { ...mediaEvents, ...handlers };
+  },
 } as unknown as VoiceAdapter;
+
+/** The handlers the owner installed on the adapter. */
+let mediaEvents: {
+  onConnectionLost?: (session: Session | null) => void;
+} = {};
 
 async function settle(): Promise<void> {
   await vi.advanceTimersByTimeAsync(0);
@@ -275,6 +282,18 @@ describe("voice owner", () => {
       sleep(5 * 60_000);
       await vi.advanceTimersByTimeAsync(10_000); // timers run again after resume
       expect(gaveUp).toHaveBeenCalledTimes(1);
+      expect(log).toEqual(["join:A", "teardown:A"]);
+    });
+
+    it("resume after 5 minutes when the first thing noticed is the media failing", async () => {
+      const gaveUp = vi.fn();
+      const a = owner.wish("channel", "A", { gaveUp });
+      await owner.request(a);
+      await vi.advanceTimersByTimeAsync(20_000);
+      sleep(5 * 60_000);
+      mediaEvents.onConnectionLost!({ token: a.token, channelId: "A" });
+      expect(gaveUp).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(30_000);
       expect(log).toEqual(["join:A", "teardown:A"]);
     });
 

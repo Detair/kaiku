@@ -550,10 +550,17 @@ export class VoiceOwner {
   }
 
   private mediaLost(session: VoiceSessionHandle | null): void {
+    // The first thing noticed after a sleep may be the media failing.
+    this.checkClock();
     const held = this.held;
     if (!held || !isSameSession(session, held.session) || held.wish !== this.intent) return;
     this.startRecovery(held);
     this.kick();
+  }
+
+  /** If no heartbeat ran for a minute or more, the device slept: see `wake()`. */
+  private checkClock(): void {
+    if (this.heartbeat && Date.now() - this.lastBeat >= RECOVERY_OFFLINE_CAP_MS) this.wake();
   }
 
   // --- the runner -----------------------------------------------------------
@@ -591,6 +598,7 @@ export class VoiceOwner {
     for (;;) {
       this.poke();
       this.endIfForeign();
+      this.checkClock();
       const held = this.held;
       if (held && held.wish !== this.intent) {
         // Not wanted any more: end it completely before anything else.
@@ -884,7 +892,8 @@ export class VoiceOwner {
     const gone = () => this.intent !== wish;
     const waiting = () => !this.socketUp || !held.confirmed;
     while (!gone()) {
-      if (this.checkDeadline(held)) return;
+      this.checkClock();
+      if (gone() || this.checkDeadline(held)) return;
       if (held.used >= RECOVERY_DELAYS_MS.length) return this.giveUp(held, "three attempts failed");
       if (waiting()) {
         // For the next authenticated socket (and the resync, for a call).
