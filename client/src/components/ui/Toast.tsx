@@ -35,6 +35,7 @@
 import { Component, For, createSignal, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
 import { t } from "@/i18n";
+import { MODAL_LAYER } from "@/lib/a11y/modalLayer";
 
 export type ToastType = "info" | "success" | "warning" | "error";
 
@@ -298,7 +299,9 @@ export const ToastContainer: Component = () => {
   return (
     <Portal>
       <div
-        class="fixed bottom-4 right-4 z-50 flex flex-col gap-2"
+        class="fixed bottom-4 right-4 flex flex-col gap-2"
+        style={{ "z-index": MODAL_LAYER.notice }}
+        data-testid="toast-container"
         aria-live="polite"
         aria-label={t("common.notifications")}
       >

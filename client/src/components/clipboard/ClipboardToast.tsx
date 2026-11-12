@@ -18,6 +18,7 @@ import {
   type Sensitivity,
 } from "@/lib/clipboard";
 import { t } from "@/i18n";
+import { MODAL_LAYER } from "@/lib/a11y/modalLayer";
 
 interface ClipboardToastProps {
   /** Initial event that triggered the toast */
@@ -136,8 +137,8 @@ const ClipboardToast: Component<ClipboardToastProps> = (props) => {
   return (
     <Show when={currentStatus()?.has_sensitive_content}>
       <div
-        class="fixed bottom-4 right-4 z-50 w-80 rounded-xl shadow-lg border border-white/10 overflow-hidden"
-        style={{"background-color":"var(--color-surface-layer1)"}}
+        class="fixed bottom-4 right-4 w-80 rounded-xl shadow-lg border border-white/10 overflow-hidden"
+        style={{ "background-color": "var(--color-surface-layer1)", "z-index": MODAL_LAYER.notice }}
       >
         {/* Header */}
         <div class="flex items-center justify-between px-4 py-3">
