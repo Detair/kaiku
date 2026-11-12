@@ -39,9 +39,9 @@ sealed interface VoiceLinkState {
 }
 
 /**
- * The signalling state machine of a voice session (contract C32 with the
- * 2026-11-11 amendments): when the first `voice_join` goes out, when the
- * channel is rejoined and when the session is given up.
+ * The signalling state machine of a voice session (contract C32 with its
+ * amendments): when the first `voice_join` goes out, when the channel is
+ * rejoined and when the session is given up.
  *
  * Pure logic (no Android, no WebRTC) so it runs on virtual time in unit tests.
  * It decides *when*; *how* each step is done is [Steps].

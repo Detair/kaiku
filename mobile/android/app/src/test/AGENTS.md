@@ -125,7 +125,7 @@ class MyFeature @Inject constructor(
 
 Existing examples in this codebase:
 
-- `@VoiceCoroutineScope` — drives `WebRtcManager.voiceIceConnected` and `VoiceRepository`'s collectors
+- `@VoiceCoroutineScope` — drives `VoiceRepository`'s collectors and its session owner (voice signalling)
   (`mobile/android/app/src/main/java/io/wolftown/kaiku/di/VoiceCoroutineScope.kt`,
   module provides `Dispatchers.IO`).
 - `@AuthCoroutineScope` — drives `AuthState.isLoggedIn` and `currentUserId`

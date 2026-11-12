@@ -17,8 +17,9 @@ sealed interface VoiceEndNotice {
     val canRejoin: Boolean
 
     /**
-     * C32: the rejoin gave up (three failed attempts, or no connection for
-     * 60 s). [wasMuted] is the user's last mute choice; "Rejoin" restores it.
+     * C32: the rejoin gave up (three failed attempts, or 60 s without a socket
+     * that carried the session's `voice_join`). [wasMuted] is the user's last
+     * mute choice; "Rejoin" restores it.
      */
     data class RejoinFailed(
         override val channelId: String,
