@@ -276,7 +276,7 @@ const Main: Component = () => {
                       >
                         <Pin class="w-4 h-4" />
                         <Show when={pinCount() > 0}>
-                          <span class="absolute -top-1 -right-1 bg-accent-primary text-on-accent text-[10px] rounded-full w-4 h-4 flex items-center justify-center font-bold">
+                          <span class="absolute -top-1 -right-1 bg-accent-primary text-on-accent text-xs rounded-full min-w-[1.125rem] h-[1.125rem] px-0.5 flex items-center justify-center font-bold">
                             {pinCount()}
                           </span>
                         </Show>

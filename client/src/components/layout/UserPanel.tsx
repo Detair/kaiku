@@ -136,7 +136,7 @@ const UserPanel: Component = () => {
                   @{user()!.username}
                 </div>
                 <Show when={currentCustomStatusText()}>
-                  <div class="text-[11px] text-text-secondary/90 truncate">
+                  <div class="text-xs text-text-secondary truncate">
                     {truncate(currentCustomStatusText()!, 40)}
                   </div>
                 </Show>

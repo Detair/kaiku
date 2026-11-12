@@ -149,7 +149,7 @@ const CategoriesTab: Component<CategoriesTabProps> = (props) => {
         >
           <span class="flex-1 text-sm text-text-primary truncate">{name}</span>
           <Show when={catType !== "mixed"}>
-            <span class="flex items-center gap-1 text-[11px] text-text-muted px-1.5 py-0.5 rounded bg-white/5 shrink-0">
+            <span class="flex items-center gap-1 text-xs text-text-secondary px-1.5 py-0.5 rounded bg-white/5 shrink-0">
               {typeIcon(catType)} {typeLabel(catType)}
             </span>
           </Show>
