@@ -32,17 +32,14 @@ import { t } from "@/i18n";
 import { voiceErrorText } from "@/lib/webrtc/voiceErrorText";
 import { PttController, createTauriPttListeners, type PttFullConfig } from "@/lib/pttManager";
 import { isTauri } from "@/lib/tauri/common";
+import { isSameSession, type VoiceSessionHandle } from "@/lib/webrtc/voiceSession";
 import {
-  bumpVoiceEpoch,
-  isJoinCancelled,
-  isVoiceEpochStale,
-} from "@/lib/webrtc/voiceSession";
-import {
-  VoiceRecovery,
+  voiceOwner,
   RECOVERY_ATTEMPT_TIMEOUT_MS,
   RECOVERY_DELAYS_MS,
-  type RecoverySession,
-} from "./voiceRecovery";
+  type VoiceHooks,
+  type VoiceWish,
+} from "./voiceOwner";
 
 const getErrorMessage = voiceErrorText;
 
@@ -114,17 +111,21 @@ let pttCleanup: (() => void) | null = null;
 let metricsInterval: number | null = null;
 
 /**
- * The manual join in progress (guards rapid clicks). A leave clears it, so
- * a join hanging in a permission prompt never blocks a newer session.
+ * The channel voice session this store last asked the voice owner for. It
+ * may have been replaced since (a DM call, give-up); `voiceOwner.wants`
+ * says whether it is still the intent. The store never touches the
+ * adapter's session itself: joining, leaving and recovery are the owner's.
  */
-let joinInProgress: object | null = null;
+let channelWish: VoiceWish | null = null;
 
-/**
- * The voice session the store is in, identified by the token (epoch) of
- * the manual join that established it. Set only once that join SUCCEEDED;
- * recovery flows are owned by it and only run for it (W1c N2).
- */
-let establishedSession: { token: number; channelId: string } | null = null;
+// The owner uses the same adapter instance as this store (already loaded
+// here, so the owner does not wait for a module to load before a join).
+voiceOwner.useAdapter(createVoiceAdapter);
+
+/** The adapter session of the channel voice the user is in, if any. */
+function heldSession(): VoiceSessionHandle | null {
+  return voiceOwner.sessionOf(channelWish);
+}
 
 /** Remote `<audio>` elements per user (browser mode), for cleanup. */
 const remoteAudioElements = new Map<string, HTMLAudioElement>();
@@ -419,36 +420,22 @@ export async function applyStoredAudioDevices(
   }
 }
 
-/** Route the adapter's events into this store (every join and rejoin). */
+/**
+ * Route the adapter's events into this store (every join). The connection
+ * state and its loss go to the voice owner, which reports them per session
+ * (`channelHooks`); events that name a session count only for the one held.
+ */
 function installAdapterHandlers(adapter: VoiceAdapter): void {
   adapter.setEventHandlers({
-    onStateChange: (state) => {
-      // A short outage ("reconnecting") keeps every audio element (A8):
-      // when ICE recovers, the same streams play on. Only an ended
-      // connection removes them.
-      if (state === "disconnected") removeRemoteAudioElements();
-      // No session (left, removed, given up): a late state of a cancelled
-      // join must not bring a call back on screen.
-      if (!voiceState.channelId) return;
-      if (state === "connected") settleConnectedWaiters(true);
-      // While the rejoin flow runs, the old connection going away and the
-      // new one setting up are both "reconnecting"; the flow itself sets
-      // "connected" once the mute state is restored.
-      if (channelRecovery.running) {
-        if (state !== "connected") setVoiceState({ state: "reconnecting" });
-        return;
-      }
-      setVoiceState({ state: storeStateFor(state) });
-    },
-    onConnectionLost: () => {
-      void startVoiceRejoin();
-    },
-    onError: (error) => {
+    onError: (error, session) => {
+      if (session && !isSameSession(session, heldSession())) return;
       setVoiceState({ error });
     },
-    onRemoteTrack: (remoteTrack) => {
+    onRemoteTrack: (remoteTrack, session) => {
       // Tauri mode — audio plays natively via CPAL, no browser Audio needed
       if (!remoteTrack.stream) return;
+      // Audio of a session this store is not in is not played.
+      if (session && !isSameSession(session, heldSession())) return;
 
       console.log("[Voice] Remote audio track received:", remoteTrack.userId);
       // Create an audio element to play the remote user's audio.
@@ -496,7 +483,7 @@ function installAdapterHandlers(adapter: VoiceAdapter): void {
     onAudioError: (audioError) => {
       // A stream stopping while leaving or while the recovery drops the
       // old connection is not news.
-      if (voiceState.state === "disconnected" || channelRecovery.running) return;
+      if (voiceState.state === "disconnected" || voiceOwner.isRecovering(channelWish)) return;
       // Native stream died (unplugged, stalled, could not open): never let
       // the call look healthy with a dead mic. Stays until audio works
       // again (onAudioRecovered), it is dismissed, or the call ends.
@@ -559,157 +546,167 @@ function installAdapterHandlers(adapter: VoiceAdapter): void {
 }
 
 /**
- * Join a voice channel. Runs as a new voice session (epoch): a leave,
- * another join or `voice_removed` arriving while this one is still pending
- * cancels it, and it then changes nothing (C32 amendment).
+ * What the user sees when the channel session is over (left, replaced,
+ * removed, given up). Synchronous: the screen follows the click at once;
+ * the voice owner ends the adapter session in the background.
  */
-export async function joinVoice(channelId: string): Promise<void> {
-  if (joinInProgress) {
-    console.warn("[Voice] Join already in progress, ignoring duplicate call");
-    return;
-  }
-  // Reconnecting is still this voice session (R2): joining the same
-  // channel again would only race the running recovery.
-  if (voiceState.state === "reconnecting" && voiceState.channelId === channelId) {
-    console.info("[Voice] Already in this channel (reconnecting), join ignored");
-    return;
-  }
-  const op = {};
-  joinInProgress = op;
-  removedChannels.delete(channelId);
-  channelRecovery.cancel();
-  setVoiceState({ lostChannelId: null });
-
-  try {
-    // Leave current channel if connected (client-side)
-    if (voiceState.state !== "disconnected") {
-      await leaveVoice();
-      joinInProgress = op; // leaveVoice released the guard; this join goes on
-    }
-
-    const epoch = bumpVoiceEpoch();
-    const stale = () => isVoiceEpochStale(epoch);
-    setVoiceState({ state: "connecting", channelId, error: null });
-
-    const adapter = await createVoiceAdapter();
-    if (stale()) return;
-
-    installAdapterHandlers(adapter);
-
-    await applyStoredNoiseSuppression(adapter);
-    if (stale()) return;
-
-    // Browser mode: hand the stored devices over BEFORE joining. Outside a
-    // call the adapter only records them, so join opens the stored mic
-    // directly (falling back to the default mic if it is gone) and remote
-    // audio arriving later uses the stored speaker.
-    const storedInput = isTauri() ? null : (appSettings()?.audio?.input_device ?? null);
-    if (!isTauri()) {
-      await applyStoredAudioDevices(adapter);
-      if (stale()) return;
-    }
-
-    const result = await adapter.join(channelId, { epoch });
-    if (!result.ok) {
-      // Cancelled by a leave / another join / voice_removed: they own the
-      // state now, and a cancellation is not an error.
-      // Recovery only ever runs for an established session, but a flow
-      // owned by this join must never outlive it, however the epoch moved.
-      cancelRecoveryOwnedBy(epoch);
-      if (isJoinCancelled(result.error) || stale()) return;
-      setVoiceState({
-        state: "disconnected",
-        channelId: null,
-        error: result.error,
-      });
-      throw new Error(getErrorMessage(result.error));
-    }
-    if (stale()) return;
-    // voice_join went out: this join owns the session from now on.
-    establishedSession = { token: epoch, channelId };
-
-    if (isTauri()) {
-      // Native: apply the audio devices configured in settings — without
-      // this the stored selection never reaches the adapter and voice
-      // always uses the system default devices.
-      await applyStoredAudioDevices(adapter);
-    } else if (
-      storedInput &&
-      typeof adapter.getInputDevice === "function" &&
-      adapter.getInputDevice() === null
-    ) {
-      // Join found the stored mic gone and used the default instead.
-      await forgetStoredDevice("input_device");
-    }
-    if (stale()) return;
-
-    // Start session tracking and metrics collection
-    setVoiceState("sessionId", crypto.randomUUID());
-    setVoiceState("connectedAt", Date.now());
-    startMetricsLoop();
-
-    // Activate PTT/PTM if configured (also handles VAD disable when PTT active)
-    await activatePtt();
-    if (stale()) return;
-
-    // Apply VAD config only if PTT didn't take over
-    if (!isPttActive()) {
-      syncVadConfig(adapter);
-    }
-  } finally {
-    if (joinInProgress === op) joinInProgress = null;
-  }
+function showVoiceLeft(): void {
+  stopMetricsLoop();
+  // Reset notification state and dismiss any active connection toasts
+  currentIncidentStart = null;
+  goodQualityStartTime = null;
+  dismissToast("connection-critical");
+  dismissToast("connection-warning");
+  removeRemoteAudioElements();
+  resetVoiceSession();
 }
 
-/**
- * Leave the current voice channel.
- */
-export async function leaveVoice(): Promise<void> {
-  // Leave wins (C32 amendment): stop the recovery and start a new epoch
-  // first, so a join still pending in any adapter step stops there.
-  channelRecovery.cancel();
-  const leaveToken = bumpVoiceEpoch();
-  joinInProgress = null;
-  setVoiceState({ lostChannelId: null });
-  if (voiceState.state === "disconnected") return;
-
-  try {
-    // Stop metrics collection first
-    stopMetricsLoop();
-
-    // Reset notification state and dismiss any active connection toasts
-    currentIncidentStart = null;
-    goodQualityStartTime = null;
-    dismissToast("connection-critical");
-    dismissToast("connection-warning");
-
-    // Deactivate PTT/PTM
-    await deactivatePtt();
-
-    const adapter = await createVoiceAdapter();
-    const result = await adapter.leave();
-    if (!result.ok) {
-      console.error("Failed to leave voice:", result.error);
-    }
-  } catch (err) {
-    console.error("Failed to leave voice:", err);
-  } finally {
-    // Leaving always ends the local session (W1-N1): nothing is left to
-    // recover or time out, even when the server could not be told. A
-    // session the user started while this leave ran is not ours to reset.
-    if (!isVoiceEpochStale(leaveToken)) {
+/** Channel voice as the voice owner runs it (see `VoiceHooks`). */
+function channelHooks(channelId: string): VoiceHooks {
+  /** Browser: the microphone stored in settings when the join began. */
+  let storedInput: string | null = null;
+  return {
+    prepare: async (adapter) => {
+      installAdapterHandlers(adapter);
+      await applyStoredNoiseSuppression(adapter);
+      // Browser mode: hand the stored devices over BEFORE joining. Outside a
+      // call the adapter only records them, so join opens the stored mic
+      // directly (falling back to the default mic if it is gone) and remote
+      // audio arriving later uses the stored speaker.
+      storedInput = isTauri() ? null : (appSettings()?.audio?.input_device ?? null);
+      if (!isTauri()) await applyStoredAudioDevices(adapter);
+    },
+    established: async (adapter) => {
+      if (isTauri()) {
+        // Native: apply the audio devices configured in settings — without
+        // this the stored selection never reaches the adapter and voice
+        // always uses the system default devices.
+        await applyStoredAudioDevices(adapter);
+      } else if (
+        storedInput &&
+        typeof adapter.getInputDevice === "function" &&
+        adapter.getInputDevice() === null
+      ) {
+        // Join found the stored mic gone and used the default instead.
+        await forgetStoredDevice("input_device");
+      }
+      // Activate PTT/PTM if configured (also handles VAD disable when PTT active)
+      await activatePtt();
+    },
+    live: (adapter) => {
+      // Start session tracking and metrics collection
+      setVoiceState("sessionId", crypto.randomUUID());
+      setVoiceState("connectedAt", Date.now());
+      startMetricsLoop();
+      // Apply VAD config only if PTT didn't take over
+      if (!isPttActive()) syncVadConfig(adapter);
+    },
+    media: (state) => {
+      // A short outage ("reconnecting") keeps every audio element (A8):
+      // when ICE recovers, the same streams play on. Only an ended
+      // connection removes them.
+      if (state === "disconnected") removeRemoteAudioElements();
+      setVoiceState({ state: storeStateFor(state) });
+    },
+    recovering: () => {
+      setVoiceState({ state: "reconnecting" });
+      stopMetricsLoop();
+    },
+    attemptStarts: () => {
+      // The old connection is gone: its audio, shares and webcam with it
+      // (screen share and webcam are not restarted, C32).
       removeRemoteAudioElements();
+      import("@/stores/webcamViewer").then(({ clearAll }) => clearAll());
+      setVoiceState({ screenSharing: false, webcamActive: false });
+    },
+    rejoined: async (adapter) => {
+      // Deafened stays deafened from the first remote track on (native
+      // plays tracks that arrive before "connected", W1-M10).
+      if (voiceState.deafened) await adapter.setDeafen(true);
+    },
+    restore: async (adapter) => {
+      // The latest choice wins: mute/deafen may have changed while
+      // reconnecting (R2).
+      const deafened = voiceState.deafened;
+      await adapter.setDeafen(deafened);
+      await adapter.setMute(voiceState.muted || deafened);
+      if (isTauri()) {
+        // Native keeps no device choice across the silent leave.
+        await applyStoredAudioDevices(adapter);
+      }
+    },
+    recovered: (adapter) => {
+      setVoiceState({
+        state: "connected",
+        muted: voiceState.muted || voiceState.deafened,
+        error: null,
+        sessionId: crypto.randomUUID(),
+        connectedAt: Date.now(),
+      });
+      startMetricsLoop();
+      if (!isPttActive()) syncVadConfig(adapter);
+      console.info("[Voice] Rejoined voice channel:", channelId);
+    },
+    failed: (error) => {
+      setVoiceState({ state: "disconnected", channelId: null, error });
+    },
+    gaveUp: () => {
+      showVoiceLeft();
+      // A failed attempt's error is not news once the call is over (W1-M2).
+      setVoiceState({ lostChannelId: channelId, error: null });
+    },
+    // Something else took the voice session (a DM call): the channel is left.
+    superseded: showVoiceLeft,
+    released: async () => {
+      // After the adapter session ended: with PTT active this restores open
+      // mic locally only (the adapter has no channel any more).
+      await deactivatePtt();
       // After the streams stopped, so an error raised while leaving is cleared too.
       dismissToast(AUDIO_CAPTURE_TOAST_ID);
       dismissToast(AUDIO_PLAYBACK_TOAST_ID);
-      resetVoiceSession();
-    }
+    },
+  };
+}
+
+/**
+ * Join a voice channel: the channel becomes the voice session the user
+ * wants, replacing whatever was wanted before. The screen switches at once;
+ * the voice owner ends the old session completely and then joins this one,
+ * unless the user has changed their mind again by then. Resolves when the
+ * join is through or was replaced; throws when it failed.
+ */
+export async function joinVoice(channelId: string): Promise<void> {
+  // Joining, connected or reconnecting in this very channel (R2): one
+  // session is enough.
+  if (voiceOwner.wants(channelWish) && channelWish?.id === channelId) {
+    console.info("[Voice] Already in this channel, join ignored");
+    return;
   }
+  removedChannels.delete(channelId);
+  const wish = voiceOwner.wish("channel", channelId, channelHooks(channelId));
+  channelWish = wish;
+  const outcome = voiceOwner.request(wish);
+  setVoiceState({ state: "connecting", channelId, error: null, lostChannelId: null });
+
+  const result = await outcome;
+  if (result.type === "failed") throw new Error(getErrorMessage(result.error));
+}
+
+/**
+ * Leave the current voice channel. The screen shows "left" at once; the
+ * promise resolves when the voice owner has ended the session.
+ */
+export async function leaveVoice(): Promise<void> {
+  setVoiceState({ lostChannelId: null });
+  const wish = channelWish;
+  if (voiceOwner.wants(wish) || voiceState.state !== "disconnected") showVoiceLeft();
+  // Only this store's own wish is dropped; a DM call that took over since
+  // is not this leave's to end.
+  await voiceOwner.drop(wish);
 }
 
 /** Clear everything about the current call (state stays `disconnected`). */
 function resetVoiceSession(): void {
-  establishedSession = null;
   // Clear webcam viewer tracks
   import("@/stores/webcamViewer").then(({ clearAll }) => clearAll());
 
@@ -746,8 +743,7 @@ export function voiceRemovedText(reason: string): string {
 }
 
 /**
- * Channels the server removed us from (C31). A rejoin (C32) never targets
- * them; joining again by hand clears the entry.
+ * Channels the server removed us from (C31) since the last own join there.
  */
 const removedChannels = new Set<string>();
 
@@ -757,40 +753,24 @@ export function wasRemovedFrom(channelId: string): boolean {
 }
 
 /**
- * C31 `voice_removed`: the server dropped this socket's voice peer. Tear
- * the call down locally WITHOUT `voice_leave`, clear the voice state and
- * say why in one line. Never rejoins afterwards.
+ * C31 `voice_removed`: the server dropped this socket's voice peer. The
+ * channel session is over: the voice owner ends it WITHOUT `voice_leave`
+ * and never rejoins it; the store says why in one line. A removal for a
+ * channel the user is no longer in changes nothing they see. Returns
+ * whether the removal was for the channel voice the user is in.
  */
 export async function handleVoiceRemoved(
   channelId: string,
   reason: string,
 ): Promise<boolean> {
-  if (voiceState.channelId !== channelId) return false;
+  // Whatever is still held for that channel goes without `voice_leave`:
+  // the server already removed the peer.
+  voiceOwner.serverRemoved(channelId);
+  const wish = channelWish;
+  if (!wish || wish.id !== channelId || !voiceOwner.wants(wish)) return false;
   removedChannels.add(channelId);
-  // voice_removed wins: no attempt and no pending join may go on.
-  channelRecovery.cancel();
-  const removedToken = bumpVoiceEpoch();
-  joinInProgress = null;
-
-  stopMetricsLoop();
-  currentIncidentStart = null;
-  goodQualityStartTime = null;
-  dismissToast("connection-critical");
-  dismissToast("connection-warning");
-
-  const adapter = getVoiceAdapter();
-  if (adapter) {
-    const result = await adapter.teardown();
-    if (!result.ok) console.error("[Voice] Teardown after removal failed:", result.error);
-  }
-  removeRemoteAudioElements();
-  // After the teardown: with PTT active this restores open mic locally
-  // only (the adapter has no channel any more, so nothing is sent).
-  await deactivatePtt();
-  dismissToast(AUDIO_CAPTURE_TOAST_ID);
-  dismissToast(AUDIO_PLAYBACK_TOAST_ID);
-  // A session started while the teardown ran is not ours to reset.
-  if (!isVoiceEpochStale(removedToken)) resetVoiceSession();
+  showVoiceLeft();
+  const ended = voiceOwner.drop(wish, { silent: true });
 
   showToast({
     type: "warning",
@@ -798,11 +778,12 @@ export async function handleVoiceRemoved(
     duration: 8000,
     id: "voice-removed",
   });
+  await ended;
   return true;
 }
 
 // ============================================================================
-// Rejoin after a lost connection (C32)
+// Rejoin after a lost connection (C32) — run by the voice owner
 // ============================================================================
 
 /** Wait before each rejoin attempt (C32: at most 3, spaced 1 s, 3 s, 9 s). */
@@ -810,196 +791,44 @@ export const REJOIN_DELAYS_MS = RECOVERY_DELAYS_MS;
 /** An attempt fails when the publisher is not connected after this long. */
 export const REJOIN_ATTEMPT_TIMEOUT_MS = RECOVERY_ATTEMPT_TIMEOUT_MS;
 
-/** The recovery flow of channel voice (shared logic: voiceRecovery.ts). */
-const channelRecovery = new VoiceRecovery();
-let connectedWaiters: Array<(ok: boolean) => void> = [];
-
-function settleConnectedWaiters(ok: boolean): void {
-  const waiters = connectedWaiters;
-  connectedWaiters = [];
-  for (const settle of waiters) settle(ok);
-}
-
-/** Resolves true on the adapter's next "connected", false after `ms`. */
-function waitForConnected(ms: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const settle = (ok: boolean) => {
-      clearTimeout(timer);
-      connectedWaiters = connectedWaiters.filter((w) => w !== settle);
-      resolve(ok);
-    };
-    const timer = setTimeout(() => settle(false), ms);
-    connectedWaiters.push(settle);
-  });
-}
-
-/** Whether the rejoin flow is running (exported for tests). */
+/** Whether the channel session is being recovered (exported for tests). */
 export function isVoiceRejoinRunning(): boolean {
-  return channelRecovery.running;
+  return voiceOwner.isRecovering(channelWish);
 }
 
-/** Attempts the running flow has used up (exported for tests). */
+/** Attempts the running recovery has used up (exported for tests). */
 export function voiceRejoinAttemptsUsed(): number {
-  return channelRecovery.attemptsUsed;
-}
-
-/**
- * The established session the store should recover, if any. A join that
- * is still pending has no session to recover: it fails or succeeds itself.
- */
-function recoverableSession(): { token: number; channelId: string } | null {
-  const session = establishedSession;
-  if (!session || session.channelId !== voiceState.channelId) return null;
-  if (voiceState.state === "disconnected") return null;
-  if (removedChannels.has(session.channelId)) return null;
-  return session;
-}
-
-/** Cancel the recovery flow owned by the join with `token` (if any). */
-function cancelRecoveryOwnedBy(token: number): void {
-  if (channelRecovery.owner === token) channelRecovery.cancel();
+  return voiceOwner.isRecovering(channelWish) ? voiceOwner.attemptsUsed : 0;
 }
 
 /**
  * The signalling socket dropped. The server removes this user's voice peer
- * when the socket closes, so the call shows "reconnecting" and the
- * recovery waits for `rejoinVoiceAfterReconnect` on the new socket (at
- * most 60 s, then it gives up).
+ * when the socket closes, so an established session shows "reconnecting"
+ * and waits for the next authenticated socket (at most 60 s, see
+ * `voiceOwner.ts`). Covers channel voice and DM-call voice alike.
  */
 export function noteSignallingLost(): void {
-  channelRecovery.socketLost();
-  const session = recoverableSession();
-  if (!session) return;
-  setVoiceState({ state: "reconnecting" });
-  stopMetricsLoop();
-  void channelRecovery.start(channelSession(session), { socketDown: true });
+  voiceOwner.socketLost();
 }
 
-/** The socket is open again (before re-subscription), see `socketOpen`. */
+/** The socket is open again (before re-subscription). */
 export function noteSignallingUp(): void {
-  channelRecovery.socketOpen();
+  voiceOwner.socketOpen();
 }
 
 /**
  * C32 trigger: the socket is back and the text re-subscription finished.
- * Resumes (or starts) the recovery of the channel the user is still in
- * (not left, not removed). Later reconnects wake a running flow.
+ * The voice owner recovers the session the user is still in (not left, not
+ * removed). Resolves when no recovery is running any more.
  */
 export function rejoinVoiceAfterReconnect(): Promise<void> {
-  channelRecovery.socketReady();
-  return startVoiceRejoin();
+  voiceOwner.socketReady();
+  return voiceOwner.whenCalm();
 }
 
 /** The user dismissed the "Rejoin" offer. */
 export function dismissVoiceRejoin(): void {
   setVoiceState({ lostChannelId: null });
-}
-
-/** Start the recovery of the current channel (ICE failure, reconnect). */
-function startVoiceRejoin(): Promise<void> {
-  const session = recoverableSession();
-  if (!session) return Promise.resolve();
-  setVoiceState({ state: "reconnecting" });
-  stopMetricsLoop();
-  return channelRecovery.start(channelSession(session), {
-    socketDown: channelRecovery.signallingDown,
-  });
-}
-
-/**
- * Channel voice as a recovery session: fresh peer connections per attempt
- * (no `voice_leave`, C32), screen share and webcam not restarted, the
- * latest mute/deafen choice applied on success.
- */
-function channelSession(owner: { token: number; channelId: string }): RecoverySession {
-  const channelId = owner.channelId;
-  // The session this flow recovers must still be the store's: compared by
-  // the owner's token, never by "whatever is current" (W1c N2).
-  const owned = () =>
-    establishedSession?.token === owner.token && voiceState.state !== "disconnected";
-  return {
-    label: `channel ${channelId}`,
-    owner: owner.token,
-    attempt: async (epoch) => {
-      const ours = () => owned() && !isVoiceEpochStale(epoch);
-      if (!ours()) return false;
-      const adapter = await createVoiceAdapter();
-      if (!ours()) return false;
-      // Drop the old peer connections without `voice_leave` (C32: the
-      // server already removed the old peer; a leave from here could hit
-      // another device).
-      await adapter.teardown();
-      removeRemoteAudioElements();
-      import("@/stores/webcamViewer").then(({ clearAll }) => clearAll());
-      if (!ours()) return false;
-      setVoiceState({ screenSharing: false, webcamActive: false });
-
-      const connected = waitForConnected(RECOVERY_ATTEMPT_TIMEOUT_MS);
-      const result = await adapter.join(channelId, { epoch });
-      if (!result.ok) {
-        if (!isJoinCancelled(result.error)) {
-          console.warn("[Voice] Rejoin attempt failed:", result.error);
-        }
-        settleConnectedWaiters(false);
-        return false;
-      }
-      // Deafened stays deafened from the first remote track on (native
-      // plays tracks that arrive before "connected", W1-M10).
-      if (voiceState.deafened && !isVoiceEpochStale(epoch)) {
-        await adapter.setDeafen(true).catch(() => undefined);
-      }
-      return (await connected) && !isVoiceEpochStale(epoch);
-    },
-    abandon: async () => {
-      settleConnectedWaiters(false);
-      const adapter = getVoiceAdapter();
-      if (adapter) await adapter.teardown();
-      removeRemoteAudioElements();
-    },
-    restore: async (epoch) => {
-      const adapter = getVoiceAdapter();
-      if (!adapter) return;
-      // The latest choice wins: mute/deafen may have changed while
-      // reconnecting (R2).
-      const deafened = voiceState.deafened;
-      await adapter.setDeafen(deafened);
-      if (isVoiceEpochStale(epoch)) return;
-      await adapter.setMute(voiceState.muted || deafened);
-      if (isVoiceEpochStale(epoch)) return;
-      if (isTauri()) {
-        // Native keeps no device choice across the silent leave.
-        await applyStoredAudioDevices(adapter);
-      }
-    },
-    commit: () => {
-      const adapter = getVoiceAdapter();
-      if (!owned() || !adapter) return;
-      setVoiceState({
-        state: "connected",
-        muted: voiceState.muted || voiceState.deafened,
-        error: null,
-        sessionId: crypto.randomUUID(),
-        connectedAt: Date.now(),
-      });
-      startMetricsLoop();
-      if (!isPttActive()) syncVadConfig(adapter);
-      console.info("[Voice] Rejoined voice channel:", channelId);
-    },
-    giveUp: async () => {
-      settleConnectedWaiters(false);
-      const adapter = getVoiceAdapter();
-      if (adapter) await adapter.teardown();
-      removeRemoteAudioElements();
-      // A leave or voice_removed that arrived meanwhile owns the state.
-      if (establishedSession?.token !== owner.token) return;
-      await deactivatePtt();
-      dismissToast(AUDIO_CAPTURE_TOAST_ID);
-      dismissToast(AUDIO_PLAYBACK_TOAST_ID);
-      resetVoiceSession();
-      // A failed attempt's error is not news once the call is over (W1-M2).
-      setVoiceState({ lostChannelId: channelId, error: null });
-    },
-  };
 }
 
 function getPttConfig(): PttFullConfig | null {
@@ -1212,7 +1041,7 @@ export async function startScreenShare(
   // Generate a stream ID for this screen share
   const streamId = crypto.randomUUID();
   // The share belongs to this session; the picker can take long.
-  const session = establishedSession;
+  const session = heldSession();
   const channelId = voiceState.channelId;
 
   const adapter = await createVoiceAdapter();
@@ -1224,7 +1053,7 @@ export async function startScreenShare(
     console.error("Failed to start screen share:", result.error);
     return { ok: false, error: getErrorMessage(result.error) };
   }
-  if (establishedSession !== session || voiceState.state !== "connected") {
+  if (!isSameSession(session, heldSession()) || voiceState.state !== "connected") {
     await adapter.stopScreenShare(streamId);
     return { ok: false, error: t("voice.error.notConnected") };
   }
@@ -1355,7 +1184,7 @@ export async function startWebcam(
     return { ok: false, error: t("voice.error.webcamActive") };
   }
 
-  const session = establishedSession;
+  const session = heldSession();
   const channelId = voiceState.channelId;
   const adapter = await createVoiceAdapter();
 
@@ -1365,7 +1194,7 @@ export async function startWebcam(
     console.error("Failed to start webcam:", result.error);
     return { ok: false, error: getErrorMessage(result.error) };
   }
-  if (establishedSession !== session || voiceState.state !== "connected") {
+  if (!isSameSession(session, heldSession()) || voiceState.state !== "connected") {
     await adapter.stopWebcam();
     return { ok: false, error: t("voice.error.notConnected") };
   }

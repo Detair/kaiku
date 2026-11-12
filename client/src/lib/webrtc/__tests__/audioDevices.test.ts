@@ -76,7 +76,16 @@ describe("BrowserVoiceAdapter stale device handling", () => {
     priv.localStream = oldStream;
     priv.inputDeviceId = "good";
     priv.publisherState = {
-      pc: { getSenders: () => [{ track: { kind: "audio" }, replaceTrack }] },
+      pc: { getSenders: () => [{ track: { kind: "audio" }, replaceTrack }], close: vi.fn() },
+    };
+    // The open voice session these resources belong to.
+    priv.session = {
+      handle: { token: 1, channelId: "ch" },
+      stream: oldStream,
+      publisher: priv.publisherState,
+      subscriber: null,
+      joinSent: true,
+      ended: false,
     };
     return { adapter, priv, oldStop, oldStream, replaceTrack };
   }
@@ -107,6 +116,25 @@ describe("BrowserVoiceAdapter stale device handling", () => {
     expect(oldStop).toHaveBeenCalled();
     expect(priv.inputDeviceId).toBe("fresh");
     expect(replaceTrack).toHaveBeenCalled();
+  });
+
+  it("releases a microphone that opens after the call has ended", async () => {
+    const { adapter, priv, replaceTrack } = inCall();
+    const lateStop = vi.fn();
+    let grant!: (stream: unknown) => void;
+    vi.stubGlobal("navigator", {
+      mediaDevices: {
+        getUserMedia: vi.fn(() => new Promise((resolve) => (grant = resolve))),
+      },
+    });
+    const switching = adapter.setInputDevice("fresh");
+    await adapter.teardown({ token: 1, channelId: "ch" });
+    grant({ getTracks: () => [{ stop: lateStop }], getAudioTracks: () => [{}] });
+    const r = await switching;
+    expect(r.ok).toBe(false);
+    expect(lateStop).toHaveBeenCalled();
+    expect(replaceTrack).not.toHaveBeenCalled();
+    expect(priv.localStream).toBeNull();
   });
 
   it("keeps a muted user muted after switching the microphone", async () => {
@@ -196,7 +224,7 @@ describe("BrowserVoiceAdapter stored device preferences", () => {
     vi.stubGlobal("navigator", { mediaDevices: { getUserMedia } });
     const adapter = new BrowserVoiceAdapter();
     await adapter.setInputDevice("usb");
-    await adapter.join("ch");
+    await adapter.join({ token: 1, channelId: "ch" });
     const audio = getUserMedia.mock.calls[0][0].audio as MediaTrackConstraints;
     expect(audio.deviceId).toEqual({ exact: "usb" });
   });
@@ -211,7 +239,7 @@ describe("BrowserVoiceAdapter stored device preferences", () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("stop here")));
     const adapter = new BrowserVoiceAdapter();
     await adapter.setMute(true);
-    await adapter.join("ch");
+    await adapter.join({ token: 1, channelId: "ch" });
     expect(track.enabled).toBe(false);
   });
 
@@ -224,7 +252,7 @@ describe("BrowserVoiceAdapter stored device preferences", () => {
     vi.stubGlobal("navigator", { mediaDevices: { getUserMedia } });
     const adapter = new BrowserVoiceAdapter();
     await adapter.setInputDevice("stale");
-    await adapter.join("ch");
+    await adapter.join({ token: 1, channelId: "ch" });
     expect(getUserMedia).toHaveBeenCalledTimes(2);
     expect((getUserMedia.mock.calls[1][0].audio as MediaTrackConstraints).deviceId).toBeUndefined();
     expect(adapter.getInputDevice()).toBeNull();
@@ -237,7 +265,7 @@ describe("BrowserVoiceAdapter stored device preferences", () => {
     });
     const adapter = new BrowserVoiceAdapter();
     await adapter.setInputDevice("usb");
-    const r = await adapter.join("ch");
+    const r = await adapter.join({ token: 1, channelId: "ch" });
     expect(r.ok).toBe(false);
     expect(adapter.getInputDevice()).toBe("usb");
   });

@@ -14,6 +14,7 @@ Solid.js signal-based state management. Each store manages a domain-specific sli
 - `channels.ts` - Channel list and selection
 - `guilds.ts` - Guild/server list and active selection
 - `voice.ts` - Voice connection state and participants
+- `voiceOwner.ts` - The one owner of the voice session: keeps the wanted session (channel voice or DM-call voice), ends the held one completely before joining the next, runs recovery (C32). `voice.ts` and `call.ts` only change its intent
 - `call.ts` - DM call state (ringing, active, ended)
 - `presence.ts` - User online status tracking
 - `friends.ts` - Friend list and requests

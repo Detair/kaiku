@@ -545,35 +545,11 @@ export async function handleServerEvent(event: ServerEvent): Promise<void> {
       break;
 
     case "voice_error":
+      // Nothing is sent from here: every `voice_join` and `voice_leave`
+      // belongs to the voice owner's session. (The old leave-and-rejoin
+      // answer to "Already in voice channel" is gone; the server replaces
+      // a stale peer of the same user on `voice_join`, C32.)
       console.error("Voice error:", event.code, event.message);
-
-      // Auto-retry for "Already in voice channel" error
-      if (event.message === "Already in voice channel") {
-        const { voiceState } = await import("@/stores/voice");
-        const channelId = voiceState.channelId;
-
-        if (channelId) {
-          console.log(
-            "[WebSocket] Auto-retry: leaving and rejoining channel",
-            channelId,
-          );
-
-          // Send leave message
-          await tauri.wsSend({
-            type: "voice_leave",
-            channel_id: channelId,
-          });
-
-          // Wait a bit for server to process leave
-          await new Promise((resolve) => setTimeout(resolve, 150));
-
-          // Retry join
-          await tauri.wsSend({
-            type: "voice_join",
-            channel_id: channelId,
-          });
-        }
-      }
       break;
 
     case "voice_removed": {
@@ -1283,21 +1259,16 @@ function getSupervisor(): ConnectionSupervisor {
       // A new connection must deliver its own `ready` before catch-up.
       if (status !== "connected") {
         readyReceived = false;
-        // The voice peer goes with the socket: show "reconnecting" and hold
-        // the recovery until the next authenticated socket (C32).
+        // The voice peer goes with the socket: the voice owner shows
+        // "reconnecting" and holds the recovery until the next
+        // authenticated socket (C32), for channel and DM-call voice alike.
         void import("@/stores/voice")
           .then(({ noteSignallingLost }) => noteSignallingLost())
           .catch((err) => console.warn("[WS] Voice signalling-lost hook failed:", err));
-        void import("@/stores/call")
-          .then(({ noteCallSignallingLost }) => noteCallSignallingLost())
-          .catch((err) => console.warn("[WS] Call signalling-lost hook failed:", err));
       } else {
         void import("@/stores/voice")
           .then(({ noteSignallingUp }) => noteSignallingUp())
           .catch((err) => console.warn("[WS] Voice signalling-up hook failed:", err));
-        void import("@/stores/call")
-          .then(({ noteCallSignallingUp }) => noteCallSignallingUp())
-          .catch((err) => console.warn("[WS] Call signalling-up hook failed:", err));
       }
       setWsState({
         status,

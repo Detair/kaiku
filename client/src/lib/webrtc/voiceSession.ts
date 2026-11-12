@@ -1,38 +1,46 @@
 /**
- * Voice session epoch (C32 amendment "leave and voice_removed win").
+ * Voice session handles.
  *
- * One monotonically increasing number for every voice session in this
- * window: channel voice and DM-call voice, browser and native. Each join
- * (and each rejoin attempt) runs under the epoch that was current when it
- * started. Leave, switching channel, a manual join, give-up and
- * `voice_removed` bump the epoch first; a join that finds its epoch stale
- * after an await releases what it acquired and reports `cancelled`.
+ * Every join creates exactly one voice session inside the adapter, named by
+ * a handle. Whoever started the join holds the handle and is the only one
+ * who can end that session: `leave(handle)` / `teardown(handle)` release
+ * what THAT join acquired (its microphone stream, its peer connections,
+ * its native epoch) and nothing else. There is no "current session" to
+ * look up: a join that finds its own session ended after an await releases
+ * what it just got and reports `cancelled`; adapter events carry the handle
+ * of the session they belong to.
  *
- * This counter only orders work inside this window (JS). In the desktop
- * app the native process allocates its own session epoch for each join
- * (`begin_voice_session`), so reloads and several windows share one order
- * there; the browser has no surviving native state and needs nothing more.
+ * Tokens only need to be unique inside this window. In the desktop app the
+ * adapter maps each handle to the epoch the native process allocated for
+ * it (`begin_voice_session`), which orders sessions across reloads and
+ * windows.
  */
 
-let epoch = 0;
-
-/** The epoch of the voice session that may currently acquire resources. */
-export function currentVoiceEpoch(): number {
-  return epoch;
+/** One voice session inside an adapter: created by exactly one join. */
+export interface VoiceSessionHandle {
+  /** Unique per join in this window; never reused. */
+  readonly token: number;
+  /** Channel (or DM channel) the session is in. */
+  readonly channelId: string;
 }
 
-/** Start a new epoch: every join running under an older one is cancelled. */
-export function bumpVoiceEpoch(): number {
-  epoch += 1;
-  return epoch;
+let lastToken = 0;
+
+/** A token no other user action or join in this window has. */
+export function nextVoiceToken(): number {
+  lastToken += 1;
+  return lastToken;
 }
 
-/** Whether a join running under `joinEpoch` must stop (undefined = never). */
-export function isVoiceEpochStale(joinEpoch: number | undefined): boolean {
-  return joinEpoch !== undefined && joinEpoch !== epoch;
+/** Whether an adapter event for `session` belongs to the session `held`. */
+export function isSameSession(
+  session: VoiceSessionHandle | null | undefined,
+  held: VoiceSessionHandle | null | undefined,
+): boolean {
+  return !!session && !!held && session.token === held.token;
 }
 
-/** Error a join returns when its epoch went stale; nobody shows it. */
+/** Error a join returns when its session was ended meanwhile; nobody shows it. */
 export const VOICE_JOIN_CANCELLED = {
   type: "cancelled",
   message: "voice join cancelled",
@@ -43,7 +51,7 @@ export function isJoinCancelled(error: { type: string } | null | undefined): boo
   return error?.type === "cancelled";
 }
 
-/** Error text of a native `join_voice` whose epoch went stale (Rust). */
+/** Error text of a native `join_voice` whose session was ended (Rust). */
 export const NATIVE_JOIN_CANCELLED = "VOICE_JOIN_CANCELLED";
 
 /** Whether a native join failed only because its session was cancelled. */

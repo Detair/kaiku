@@ -1,6 +1,7 @@
 /**
- * W1-N3: hanging up stops the call's voice recovery first, then tears the
- * voice down, then tells the server.
+ * W1-N3: hanging up ends the call's voice session first (the intent
+ * changes before anything is awaited, so no recovery attempt and no
+ * pending join can run behind the hang-up), then tells the server.
  */
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, cleanup, fireEvent, waitFor } from "@solidjs/testing-library";
@@ -16,17 +17,18 @@ vi.mock("@/stores/call", () => ({
   joinCall: vi.fn(),
   declineCall: vi.fn(),
   endCall: vi.fn(() => order.push("endCall")),
-  stopCallVoiceRecovery: vi.fn(() => order.push("stopRecovery")),
+  acceptCall: vi.fn(),
+  leaveCallVoice: vi.fn(() => {
+    order.push("voiceNotWanted");
+    return Promise.resolve().then(() => {
+      order.push("voiceEnded");
+    });
+  }),
 }));
 vi.mock("@/lib/tauri", () => ({
-  joinDMCall: vi.fn(),
   declineDMCall: vi.fn(),
   leaveDMCall: vi.fn(async () => {
     order.push("leaveDMCall");
-  }),
-  joinVoice: vi.fn(),
-  leaveVoice: vi.fn(async () => {
-    order.push("leaveVoice");
   }),
 }));
 
@@ -38,18 +40,21 @@ afterEach(() => {
 });
 
 describe("CallBanner hang-up order", () => {
-  it("leave: recovery stopped, then voice, then server", async () => {
+  it("leave: voice no longer wanted at once, ended, then the server, then the call", async () => {
     render(() => <CallBanner channelId="dm-x" />);
     fireEvent.click(screen.getByTitle("Leave"));
+    // Synchronously with the click, before anything was awaited.
+    expect(order).toEqual(["voiceNotWanted"]);
     await waitFor(() => expect(order).toContain("endCall"));
-    expect(order).toEqual(["stopRecovery", "leaveVoice", "leaveDMCall", "endCall"]);
+    expect(order).toEqual(["voiceNotWanted", "voiceEnded", "leaveDMCall", "endCall"]);
   });
 
-  it("cancel of an outgoing ring stops recovery first too", async () => {
+  it("cancel of an outgoing ring ends the voice first too", async () => {
     state.currentCall = { status: "outgoing_ringing", channelId: "dm-x", startedAt: 1 };
     render(() => <CallBanner channelId="dm-x" />);
     fireEvent.click(screen.getByTitle("Cancel"));
+    expect(order).toEqual(["voiceNotWanted"]);
     await waitFor(() => expect(order).toContain("endCall"));
-    expect(order[0]).toBe("stopRecovery");
+    expect(order).toEqual(["voiceNotWanted", "voiceEnded", "leaveDMCall", "endCall"]);
   });
 });

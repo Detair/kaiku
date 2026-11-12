@@ -18,9 +18,9 @@ import {
   acceptCall,
   declineCall,
   endCall,
-  stopCallVoiceRecovery,
+  leaveCallVoice,
 } from "@/stores/call";
-import { declineDMCall, leaveDMCall, leaveVoice } from "@/lib/tauri";
+import { declineDMCall, leaveDMCall } from "@/lib/tauri";
 import { t } from "@/i18n";
 
 import { endReasonText, isCallAlreadyGoneError } from "@/lib/callEnd";
@@ -83,44 +83,30 @@ const CallBanner: Component<CallBannerProps> = (props) => {
     }
   };
 
-  const handleLeave = async () => {
-    // Recovery stops first, then the voice, then the server is told.
-    stopCallVoiceRecovery();
+  /**
+   * Hang up or cancel. The call's voice session is over from the first
+   * line on (no join and no recovery attempt runs for it any more); the
+   * voice owner ends it while the server is told.
+   */
+  const hangUp = async (reason: "last_left" | "cancelled") => {
+    const voiceEnded = leaveCallVoice();
     setIsLoading(true);
     try {
-      // Stop voice connection first
-      await leaveVoice();
+      await voiceEnded;
       await leaveDMCall(props.channelId);
-      endCall(props.channelId, "last_left");
     } catch (err) {
       if (!isCallAlreadyGoneError(err)) {
         console.error("Failed to leave call:", err);
       }
-      await leaveVoice().catch(() => {}); // Best effort cleanup
-      endCall(props.channelId, "last_left");
     } finally {
+      endCall(props.channelId, reason);
       setIsLoading(false);
     }
   };
 
-  const handleCancel = async () => {
-    stopCallVoiceRecovery();
-    setIsLoading(true);
-    try {
-      // Stop voice connection first (initiator may have started voice)
-      await leaveVoice();
-      await leaveDMCall(props.channelId);
-      endCall(props.channelId, "cancelled");
-    } catch (err) {
-      if (!isCallAlreadyGoneError(err)) {
-        console.error("Failed to cancel call:", err);
-      }
-      await leaveVoice().catch(() => {}); // Best effort cleanup
-      endCall(props.channelId, "cancelled");
-    } finally {
-      setIsLoading(false);
-    }
-  };
+  const handleLeave = () => hangUp("last_left");
+
+  const handleCancel = () => hangUp("cancelled");
 
   const currentCall = () => {
     const call = callState.currentCall;

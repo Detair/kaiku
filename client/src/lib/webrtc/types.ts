@@ -5,6 +5,9 @@
  */
 
 import type { QualityLevel } from "../types";
+import type { VoiceSessionHandle } from "./voiceSession";
+
+export type { VoiceSessionHandle } from "./voiceSession";
 
 /**
  * Voice connection states
@@ -34,12 +37,6 @@ export type VoiceError =
   | { type: "hardware_error"; message: string }
   | { type: "constraint_error"; message: string }
   | { type: "unknown"; message: string };
-
-/** Options for `VoiceAdapter.join`. */
-export interface VoiceJoinOptions {
-  /** Voice session epoch this join runs under (cancellation, C32). */
-  epoch?: number;
-}
 
 /**
  * Result type for voice operations
@@ -73,10 +70,15 @@ export interface AudioStreamError {
  * Voice adapter events
  */
 export interface VoiceAdapterEvents {
-  onStateChange: (state: VoiceConnectionState) => void;
-  onError: (error: VoiceError) => void;
+  /**
+   * State of the media connection of `session` (the handle its join was
+   * given). Ending a session reports `disconnected` for that session only;
+   * a listener ignores states of sessions it does not hold.
+   */
+  onStateChange: (state: VoiceConnectionState, session: VoiceSessionHandle | null) => void;
+  onError: (error: VoiceError, session?: VoiceSessionHandle | null) => void;
   onWarning?: (warning: { type: string; message: string }) => void;
-  onRemoteTrack: (track: RemoteTrack) => void;
+  onRemoteTrack: (track: RemoteTrack, session?: VoiceSessionHandle | null) => void;
   onRemoteTrackRemoved: (userId: string) => void;
   onLocalMuteChange: (muted: boolean) => void;
   onSpeakingChange: (speaking: boolean) => void;
@@ -85,11 +87,11 @@ export interface VoiceAdapterEvents {
   /** Native only: audio of `error.kind` works again (withdraws onAudioError). */
   onAudioRecovered?: (error: AudioStreamError) => void;
   /**
-   * The media connection failed for good (ICE `failed`). The store starts the
-   * rejoin flow (C32); a short `disconnected` is reported as `reconnecting`
-   * through onStateChange instead.
+   * The media connection of `session` failed for good (ICE `failed`). The
+   * owner of that session starts the rejoin (C32); a short `disconnected`
+   * is reported as `reconnecting` through onStateChange instead.
    */
-  onConnectionLost?: () => void;
+  onConnectionLost?: (session: VoiceSessionHandle | null) => void;
 
   // Screen share events
   onScreenShareStarted?: (info: ScreenShareInfo) => void;
@@ -310,18 +312,28 @@ export interface ParticipantMetrics {
 export interface VoiceAdapter {
   // Lifecycle
   /**
-   * Join a channel. With `epoch` (see `voiceSession.ts`) the join checks
-   * after every await whether its session is still current; a stale join
-   * releases what it acquired and returns a `cancelled` error.
+   * Join `session.channelId` as the voice session `session` (see
+   * `voiceSession.ts`). Everything the join acquires belongs to that
+   * session. If the session is ended (`leave` / `teardown` with the same
+   * handle) while the join is still waiting somewhere, the join releases
+   * what it got when it resumes and returns a `cancelled` error. A session
+   * of this adapter that is still open is ended first, by its own handle.
    */
-  join(channelId: string, opts?: VoiceJoinOptions): Promise<VoiceResult<void>>;
-  leave(): Promise<VoiceResult<void>>;
+  join(session: VoiceSessionHandle): Promise<VoiceResult<VoiceSessionHandle>>;
   /**
-   * Drop the local call without telling the server (no `voice_leave`): the
-   * server already removed this peer (C31) or the socket was replaced (C32).
-   * A `voice_leave` here could remove the user's peer on another device.
+   * End `session` and tell the server (`voice_leave`, only if its
+   * `voice_join` went out). Releases exactly what that session holds, at
+   * once and before anything is awaited; a session the adapter no longer
+   * knows is a no-op. Never touches another session.
    */
-  teardown(): Promise<VoiceResult<void>>;
+  leave(session: VoiceSessionHandle): Promise<VoiceResult<void>>;
+  /**
+   * End `session` without telling the server (no `voice_leave`): the
+   * server already removed this peer (C31) or the socket was replaced
+   * (C32); a `voice_leave` here could remove the user's peer on another
+   * device. Otherwise like `leave`.
+   */
+  teardown(session: VoiceSessionHandle): Promise<VoiceResult<void>>;
 
   // Audio control
   setMute(muted: boolean): Promise<VoiceResult<void>>;

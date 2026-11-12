@@ -75,8 +75,6 @@ vi.mock("@/stores/threads", () => ({
   threadsState: { activeThreadId: null },
 }));
 vi.mock("@/stores/call", () => ({
-  noteCallSignallingLost: vi.fn(),
-  noteCallSignallingUp: vi.fn(),
   declinedElsewhere: vi.fn(),
   handleCallVoiceRemoved: vi.fn().mockResolvedValue(false),
   receiveIncomingCall: vi.fn(),
