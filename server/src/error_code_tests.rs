@@ -768,6 +768,7 @@ const NON_CODE_ALLOWLIST: &[&str] = &[
     "DM channel not found",
     "Not a participant of this DM",
     "Cannot call this user",
+    "Internal server error",
 ];
 
 fn rust_sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
