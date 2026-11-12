@@ -86,6 +86,9 @@ const EventsModal: Component<{
     <Modal
       onClose={() => props.onClose()}
       labelledBy={titleId}
+      // A click beside the window never drops a half-filled event (W3);
+      // before UX4b it did not close on such a click at all.
+      closeOnBackdrop={!(name().trim() || startsAt() || location().trim())}
       class="w-full max-w-lg max-h-[80vh] rounded-xl flex flex-col overflow-hidden"
       style={{ "background-color": "var(--color-surface-base)" }}
       testId="events-dialog"

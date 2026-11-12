@@ -278,6 +278,19 @@ describe("modal contract: focus in, Tab stays, Escape from anywhere, focus back"
     ));
   });
 
+  it("EventsModal: a click beside it keeps a half-filled event (W3)", async () => {
+    document.body.innerHTML = "";
+    const onClose = vi.fn();
+    render(() => <EventsModal guildId="g1" canManage onClose={onClose} />);
+    await tick();
+    fireEvent.click(screen.getByRole("button", { name: "New event" }));
+    fireEvent.input(screen.getByLabelText("What is happening?"), { target: { value: "Grillen" } });
+    const dialog = screen.getByRole("dialog", { name: "Events" });
+    fireEvent.click(dialog.parentElement!);
+    expect(onClose).not.toHaveBeenCalled();
+    expect((screen.getByLabelText("What is happening?") as HTMLInputElement).value).toBe("Grillen");
+  });
+
   it("CustomStatusModal", async () => {
     await expectModalContract("Set Custom Status", (onClose) => (
       <CustomStatusModal onSave={() => {}} onClose={onClose} />
