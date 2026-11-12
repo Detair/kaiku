@@ -675,38 +675,111 @@ pub async fn get_attachment(
     Ok(Json(attachment.into()))
 }
 
+/// A deprecated `?token=` taken off a download URI (see
+/// [`strip_download_token`]). Never logged.
+#[derive(Clone)]
+pub struct QueryToken(String);
+
+impl std::fmt::Debug for QueryToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("QueryToken([REDACTED])")
+    }
+}
+
+/// Outermost middleware: on attachment download URIs, remove the deprecated
+/// `token` query parameter and hand it to the handler as a [`QueryToken`]
+/// extension, so request spans, access logs and metrics never see it.
+pub async fn strip_download_token(
+    mut request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let path = request.uri().path();
+    let is_download = path.starts_with("/api/messages/attachments/") && path.ends_with("/download");
+    if is_download {
+        if let Some(query) = request.uri().query() {
+            let pairs: Vec<(String, String)> =
+                serde_urlencoded::from_str(query).unwrap_or_default();
+            if pairs.iter().any(|(k, _)| k == "token") {
+                let mut token = None;
+                let kept: Vec<(String, String)> = pairs
+                    .into_iter()
+                    .filter_map(|(k, v)| {
+                        if k == "token" {
+                            token.get_or_insert(v);
+                            None
+                        } else {
+                            Some((k, v))
+                        }
+                    })
+                    .collect();
+                let rest = serde_urlencoded::to_string(&kept).unwrap_or_default();
+                let path_and_query = if rest.is_empty() {
+                    path.to_string()
+                } else {
+                    format!("{path}?{rest}")
+                };
+                let mut parts = request.uri().clone().into_parts();
+                parts.path_and_query = path_and_query.parse().ok();
+                match axum::http::Uri::from_parts(parts) {
+                    Ok(uri) => *request.uri_mut() = uri,
+                    // Never pass the token on in the URI.
+                    Err(_) => return ChatError::Forbidden.into_response(),
+                }
+                if let Some(token) = token {
+                    request.extensions_mut().insert(QueryToken(token));
+                }
+            }
+        }
+    }
+    next.run(request).await
+}
+
+/// Set once the deprecated `?token=` was seen by this process.
+static QUERY_TOKEN_WARNED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// Download a file (stream from S3).
 ///
 /// GET /api/messages/attachments/:id/download
 ///
 /// Supports two authentication methods:
 /// 1. Authorization header (Bearer token) - standard API auth
-/// 2. `token` query parameter - **deprecated**, use presigned URLs via `/url` endpoint instead
+/// 2. `token` query parameter - **deprecated**, kept for one more release for old clients; use the
+///    header or presigned URLs via the `/url` endpoint
 #[utoipa::path(
     get,
     path = "/api/messages/attachments/{id}/download",
     tag = "messages",
-    params(("id" = Uuid, Path, description = "Attachment ID")),
+    params(
+        ("id" = Uuid, Path, description = "Attachment ID"),
+        ("variant" = Option<String>, Query, description = "Variant: 'thumbnail' or 'medium'"),
+        ("token" = Option<String>, Query, deprecated,
+            description = "Deprecated: access token in the URL. Send `Authorization: Bearer` \
+                           instead, or use `/api/messages/attachments/{id}/url`. Removed in a \
+                           later release."),
+    ),
     responses(
         (status = 200, description = "File download"),
     ),
-    security(),
+    security((), ("bearer_auth" = [])),
 )]
 pub async fn download(
     State(state): State<AppState>,
     auth_user: Option<AuthUser>,
+    query_token: Option<axum::Extension<QueryToken>>,
     Path(id): Path<Uuid>,
     Query(query): Query<DownloadQuery>,
 ) -> Result<Response, ChatError> {
     // Get user ID from either AuthUser (header) or token query parameter
     let user_id = if let Some(user) = auth_user {
         user.id
-    } else if let Some(token) = query.token {
-        tracing::warn!(
-            attachment_id = %id,
-            "Deprecated: JWT token passed via ?token= query parameter. \
-             Use GET /api/messages/attachments/<id>/url with Authorization header instead."
-        );
+    } else if let Some(axum::Extension(QueryToken(token))) = query_token {
+        if !QUERY_TOKEN_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            tracing::warn!(
+                "Deprecated: an attachment download authenticated with ?token= (logged once \
+                 per process). Clients should send an Authorization header instead."
+            );
+        }
         // Validate token from query parameter
         let claims = validate_access_token(&token, &state.config.jwt_public_key)
             .map_err(|_| ChatError::Forbidden)?;

@@ -146,6 +146,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Opening a channel with unreads scrolls to your last read position
 - Password and single sign-on sign-ins on a second phone are confirmed by scanning with your key phone.
 
+### Deprecated
+- Opening a file with the access token in the address (`/api/messages/attachments/{id}/download?token=…`) still works for one more release but is deprecated; apps should send the `Authorization` header (now accepted on this route) or use `/api/messages/attachments/{id}/url`. The server no longer writes such a token into its request logs or traces.
+
 ### Security
 - You can no longer start a group DM with someone who blocked you or whom you blocked, just like a direct message.
 - Server pages (rules, info pages), their history and categories can only be read by members of that server; members who still have to accept the rules can read them.

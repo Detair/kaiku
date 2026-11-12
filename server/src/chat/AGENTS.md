@@ -82,7 +82,8 @@ Text messaging with end-to-end encryption (E2EE) using vodozemac (Olm/Megolm), f
 **Attachment access** (`get_attachment`, `download`, `get_signed_url`): `authorize_attachment_read` resolves the attachment's channel (`db::find_attachment_channel`, message not deleted) and requires `permissions::require_channel_access`. Unknown, deleted and refused attachments all answer 403 `FORBIDDEN`.
 
 **Download Endpoint**: `GET /api/messages/attachments/:id/download`
-- Public route with auth via `?token=jwt` query parameter (browser compatibility)
+- Outside `require_auth`, layered with `optional_auth`: an `Authorization: Bearer` header works (a bad header → 401)
+- Deprecated `?token=jwt` (one more release for old clients): `uploads::strip_download_token`, the outermost router layer, moves it out of the URI into a `QueryToken` extension before the trace/metrics layers record the URI; first use per process logs one warning
 - Generates signed S3 URL (presigned URL with 1-hour expiry)
 - Returns redirect to S3 URL or proxied file content
 

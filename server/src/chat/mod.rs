@@ -119,9 +119,19 @@ pub fn messages_router(max_upload_size: usize) -> Router<AppState> {
 }
 
 /// Create public messages router (routes that handle their own auth).
-/// The download route accepts auth via query parameter for browser requests.
-pub fn messages_public_router() -> Router<AppState> {
-    Router::new().route("/attachments/{id}/download", get(uploads::download))
+///
+/// The download route authenticates with an `Authorization` header
+/// (`optional_auth`: a bad header is refused) or, deprecated, with
+/// `?token=` (moved out of the URI by [`uploads::strip_download_token`]
+/// before any tracing layer sees it).
+pub fn messages_public_router(state: &AppState) -> Router<AppState> {
+    Router::new().route(
+        "/attachments/{id}/download",
+        get(uploads::download).layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::auth::optional_auth,
+        )),
+    )
 }
 
 /// Create DM (Direct Message) router (`max_upload_size`: body limit of the

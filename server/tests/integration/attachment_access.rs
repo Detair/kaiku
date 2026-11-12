@@ -435,3 +435,140 @@ async fn account_deletion_removes_files(pool: PgPool) {
     assert_eq!(attachment_rows(&pool, message).await, 0);
     assert_eq!(pending_keys(&pool).await, vec!["uploads/test.png"]);
 }
+
+// ---------------------------------------------------------------------------
+// Download authentication: header, deprecated `?token=`
+// ---------------------------------------------------------------------------
+
+/// Collects every span field and event field the server records.
+#[derive(Clone, Default)]
+struct Capture(std::sync::Arc<std::sync::Mutex<String>>);
+
+struct FieldWriter<'a>(&'a mut String);
+
+impl tracing::field::Visit for FieldWriter<'_> {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        use std::fmt::Write;
+        let _ = write!(self.0, " {}={:?}", field.name(), value);
+    }
+}
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Capture {
+    fn on_new_span(
+        &self,
+        attrs: &tracing::span::Attributes<'_>,
+        _id: &tracing::span::Id,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        let mut out = self.0.lock().unwrap();
+        out.push_str("\nspan ");
+        out.push_str(attrs.metadata().name());
+        attrs.record(&mut FieldWriter(&mut out));
+    }
+
+    fn on_record(
+        &self,
+        _id: &tracing::span::Id,
+        values: &tracing::span::Record<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        values.record(&mut FieldWriter(&mut self.0.lock().unwrap()));
+    }
+
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        let mut out = self.0.lock().unwrap();
+        out.push_str("\nevent");
+        event.record(&mut FieldWriter(&mut out));
+    }
+}
+
+async fn download_fixture(pool: &PgPool) -> Option<(TestApp, Uuid, String)> {
+    if !rustfs_available().await {
+        eprintln!("skipping: object storage not reachable");
+        return None;
+    }
+    let (app, _bucket) = fresh_test_app_with_s3_and_pool(pool.clone()).await;
+    let (owner, _) = create_test_user(pool).await;
+    let guild = create_guild_with_default_role(pool, owner, member_perms()).await;
+    let channel = create_channel(pool, guild, "general").await;
+    let message = insert_message(pool, channel, owner, "file").await;
+    let (attachment, _) = stored_attachment(&app, message).await;
+    let token = generate_access_token(&app.config, owner);
+    Some((app, attachment, token))
+}
+
+#[sqlx::test]
+async fn download_with_authorization_header(pool: PgPool) {
+    let Some((app, attachment, token)) = download_fixture(&pool).await else {
+        return;
+    };
+    let req = TestApp::request(
+        Method::GET,
+        &format!("/api/messages/attachments/{attachment}/download?variant=thumbnail"),
+    )
+    .header("Authorization", format!("Bearer {token}"))
+    .body(Body::empty())
+    .unwrap();
+    assert_eq!(app.oneshot(req).await.status(), 200);
+
+    // A bad header is refused, not ignored.
+    let req = TestApp::request(
+        Method::GET,
+        &format!("/api/messages/attachments/{attachment}/download"),
+    )
+    .header("Authorization", "Bearer not-a-jwt")
+    .body(Body::empty())
+    .unwrap();
+    assert_eq!(app.oneshot(req).await.status(), 401);
+
+    // No credentials at all.
+    let req = TestApp::request(
+        Method::GET,
+        &format!("/api/messages/attachments/{attachment}/download"),
+    )
+    .body(Body::empty())
+    .unwrap();
+    assert_eq!(app.oneshot(req).await.status(), 403);
+}
+
+/// `?token=` keeps working (deprecated), and the token never appears in a
+/// span or log event the server records for the request.
+#[sqlx::test]
+async fn query_token_still_works_and_stays_out_of_traces(pool: PgPool) {
+    use tracing_subscriber::layer::SubscriberExt;
+    let Some((app, attachment, token)) = download_fixture(&pool).await else {
+        return;
+    };
+    let capture = Capture::default();
+    let subscriber = tracing_subscriber::registry().with(capture.clone());
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    let req = TestApp::request(
+        Method::GET,
+        &format!("/api/messages/attachments/{attachment}/download?token={token}&variant=thumbnail"),
+    )
+    .body(Body::empty())
+    .unwrap();
+    let status = app.oneshot(req).await.status();
+    drop(_guard);
+    assert_eq!(status, 200);
+
+    let recorded = capture.0.lock().unwrap().clone();
+    assert!(
+        recorded.contains(&format!("/api/messages/attachments/{attachment}/download")),
+        "the request span was not captured: {recorded}"
+    );
+    assert!(
+        recorded.contains("variant=thumbnail"),
+        "other query parameters stay visible: {recorded}"
+    );
+    let signature = token.rsplit('.').next().unwrap();
+    assert!(
+        !recorded.contains(signature),
+        "the token reached a span or event: {recorded}"
+    );
+}

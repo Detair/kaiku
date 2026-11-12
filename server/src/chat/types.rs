@@ -570,12 +570,12 @@ pub struct SignedUrlResponse {
 }
 
 /// Query parameters for download endpoint.
+///
+/// The deprecated `token` parameter never reaches this struct: it is taken
+/// off the URI by `uploads::strip_download_token` and handed over as a
+/// request extension.
 #[derive(Debug, Deserialize)]
 pub struct DownloadQuery {
-    /// **Deprecated:** Use `GET /api/messages/attachments/<id>/url` with Authorization header
-    /// instead. When present, authenticates via this JWT token instead of the Authorization
-    /// header.
-    pub token: Option<String>,
     /// Optional variant to download: "thumbnail" (256px) or "medium" (1024px).
     pub variant: Option<String>,
 }

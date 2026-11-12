@@ -391,7 +391,7 @@ pub fn create_router(state: AppState) -> Router {
         // Public file redirect (presigned S3 URLs)
         .route("/api/files/{*key}", get(chat::files::serve))
         // Public message routes (download handles its own auth via query param)
-        .nest("/api/messages", chat::messages_public_router())
+        .nest("/api/messages", chat::messages_public_router(&state))
         // WebSocket (connection attempts rate limited per IP; concurrent
         // connections are capped in the handler)
         .route(
@@ -435,6 +435,9 @@ pub fn create_router(state: AppState) -> Router {
         // Small default body limit; the file upload routes (messages, DM
         // icon, guild banner, emoji, avatar) and the key backup set their own.
         .layer(DefaultBodyLimit::max(DEFAULT_BODY_LIMIT))
+        // Outermost: take a deprecated `?token=` off the download URI before
+        // the trace, metrics and request-id layers record it.
+        .layer(from_fn(chat::uploads::strip_download_token))
         // State
         .with_state(state)
 }
