@@ -147,6 +147,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Password and single sign-on sign-ins on a second phone are confirmed by scanning with your key phone.
 
 ### Security
+- Server pages (rules, info pages), their history and categories can only be read by members of that server; members who still have to accept the rules can read them.
 - Bot gateway sign-ins (`/api/gateway/bot`) are now limited per address like password sign-ins, and wrong bot tokens count towards the temporary address block.
 - Bots and app webhooks no longer receive messages from channels the bot cannot see; private channels stay private unless a role lets the bot in. Roles can now be given to installed bots, and removing a bot from a server removes its roles there.
 - Adding a file to a message you already sent follows the same rules as sending a message with a file: you need to see the channel and have the "Attach files" permission, and blocks and read-only conversations apply. A message can carry at most 10 files (`TOO_MANY_ATTACHMENTS`). Requests without files are limited to 1 MB; only file uploads (messages, avatars, group icons, server banners, emojis) may be up to `MAX_UPLOAD_SIZE`.

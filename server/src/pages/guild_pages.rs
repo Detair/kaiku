@@ -8,7 +8,8 @@ use uuid::Uuid;
 
 use super::error::PagesError;
 use super::shared::{
-    check_manage_pages_permission, validate_create_request, validate_slug, validate_update_request,
+    check_manage_pages_permission, require_guild_member, validate_create_request, validate_slug,
+    validate_update_request,
 };
 use super::{queries, CreatePageRequest, Page, PageListItem, ReorderRequest, UpdatePageRequest};
 use crate::api::AppState;
@@ -16,9 +17,8 @@ use crate::auth::AuthUser;
 
 /// List all pages for a guild.
 ///
-/// Note: Does not check guild membership — guild information pages (rules, welcome)
-/// are intentionally readable by any authenticated user who has the guild ID.
-/// Write operations are protected by `MANAGE_PAGES` permission.
+/// Members only (members still in screening included, so they can read the
+/// rules). Write operations are protected by `MANAGE_PAGES` permission.
 #[utoipa::path(
     get,
     path = "/api/guilds/{id}/pages",
@@ -29,8 +29,10 @@ use crate::auth::AuthUser;
 )]
 pub async fn list_guild_pages(
     State(state): State<AppState>,
+    user: AuthUser,
     Path(guild_id): Path<Uuid>,
 ) -> Result<Json<Vec<PageListItem>>, PagesError> {
+    require_guild_member(&state, guild_id, user.id).await?;
     let pages = queries::list_pages(&state.db, Some(guild_id))
         .await
         .map_err(|e| {
@@ -40,7 +42,7 @@ pub async fn list_guild_pages(
     Ok(Json(pages))
 }
 
-/// Get a guild page by slug.
+/// Get a guild page by slug (members only).
 #[utoipa::path(
     get,
     path = "/api/guilds/{id}/pages/by-slug/{slug}",
@@ -54,8 +56,10 @@ pub async fn list_guild_pages(
 )]
 pub async fn get_guild_page(
     State(state): State<AppState>,
+    user: AuthUser,
     Path((guild_id, slug)): Path<(Uuid, String)>,
 ) -> Result<Json<Page>, PagesError> {
+    require_guild_member(&state, guild_id, user.id).await?;
     queries::get_page_by_slug(&state.db, Some(guild_id), &slug)
         .await
         .map_err(|e| {
