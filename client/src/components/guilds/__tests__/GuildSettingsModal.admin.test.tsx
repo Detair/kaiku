@@ -169,6 +169,22 @@ describe("GuildSettingsModal", () => {
     expect(general.getAttribute("aria-selected")).toBe("true");
   });
 
+  it("a clicked tab that did not open hands focus back to the open tab after Cancel", async () => {
+    becomeOwner();
+    render(() => <GuildSettingsModal guildId="g1" onClose={vi.fn()} />);
+    const filter = screen.getByRole("tab", { name: "Word filter" });
+    fireEvent.click(filter);
+    fireEvent.click(screen.getByRole("button", { name: "make a change" }));
+    const members = screen.getByRole("tab", { name: "Members" });
+    // A real click focuses the tab before the question opens.
+    members.focus();
+    fireEvent.click(members);
+    expect(screen.getByTestId("guild-settings-unsaved")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(document.activeElement).toBe(filter));
+    expect(filter.getAttribute("aria-selected")).toBe("true");
+  });
+
   it("asks before switching tabs with unsaved changes, and switches only after discarding (W3)", async () => {
     becomeOwner();
     render(() => <GuildSettingsModal guildId="g1" onClose={vi.fn()} />);

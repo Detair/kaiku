@@ -77,6 +77,8 @@ export function createTabs<T extends string>(opts: TabsOptions<T>) {
   );
 
   return {
+    /** Put focus on the open tab (after a refused or cancelled switch). */
+    focusActive: () => focusTab(opts.active()),
     listProps: {
       role: "tablist" as const,
       "aria-orientation": (vertical ? "vertical" : "horizontal") as "vertical" | "horizontal",

@@ -37,6 +37,18 @@ describe("MessageActions", () => {
     expect(css).toMatch(/\.pointer-events-none\{pointer-events:none;\}/);
   });
 
+  it("never grows wider than the screen: buttons keep their size and wrap", async () => {
+    renderBar();
+    const bar = screen.getByTestId("message-action-bar");
+    const uno = await createGenerator({ ...config, safelist: [] });
+    const { css } = await uno.generate(bar.className, { preflights: false });
+    expect(css).toMatch(/max-width:calc\(100vw - 1\.5rem\)/);
+    expect(css).toMatch(/flex-wrap:wrap/);
+    const buttons = bar.querySelectorAll("button");
+    expect(buttons.length).toBeGreaterThan(4);
+    for (const b of buttons) expect(b.classList).toContain("shrink-0");
+  });
+
   it("stays visible while its emoji picker is open", () => {
     renderBar();
     fireEvent.click(screen.getByRole("button", { name: "More reactions" }));

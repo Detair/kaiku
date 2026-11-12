@@ -448,7 +448,14 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
               setDiscardThen(null);
               next();
             }}
-            onCancel={() => setDiscardThen(null)}
+            onCancel={() => {
+              setDiscardThen(null);
+              // The question hands focus back to what opened it. When that was
+              // a tab that did not open, move on to the tab that is open.
+              setTimeout(() => {
+                if (document.activeElement?.getAttribute("role") === "tab") tabsA11y.focusActive();
+              }, 0);
+            }}
             testId="guild-settings-unsaved"
           />
         )}
