@@ -1998,6 +1998,25 @@ async fn handle_component_interaction(
         return Ok(());
     }
 
+    // The bot must still be installed in the server and see this channel,
+    // like for a slash command; otherwise it is not told (its gateway drops
+    // the click as well) and the person learns why nothing happens.
+    if !crate::permissions::bot_can_use_channel(
+        &state.db,
+        bot_id,
+        message.channel_id,
+        crate::permissions::GuildPermissions::empty(),
+    )
+    .await?
+    {
+        send_err(
+            "BOT_NOT_ALLOWED_IN_CHANNEL",
+            "This bot can't be used in this channel",
+        )
+        .await?;
+        return Ok(());
+    }
+
     let guild_id = db::find_channel_by_id(&state.db, message.channel_id)
         .await?
         .and_then(|c| c.guild_id);
