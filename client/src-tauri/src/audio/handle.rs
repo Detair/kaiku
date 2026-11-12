@@ -1322,28 +1322,41 @@ impl AudioHandle {
             let device = LabelledDevice::new(&self.host, device, false);
             let label = device.label.clone();
             let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel(1);
-            if control
-                .send(PlaybackControl::SwitchDevice(Box::new(device), reply_tx))
-                .await
-                .is_err()
+            // Both waits are bounded: a playback thread that does not answer
+            // must not keep the caller (and the voice lock it holds) forever.
+            let no_answer = || {
+                AudioError::StreamError(format!(
+                    "output device {label} did not answer in time; audio stays on the previous speaker"
+                ))
+            };
+            match tokio::time::timeout(
+                PLAYBACK_READY_TIMEOUT,
+                control.send(PlaybackControl::SwitchDevice(Box::new(device), reply_tx)),
+            )
+            .await
             {
-                debug!("Playback task not running; output device applies on next start");
-                return Ok(());
+                Err(_) => return Err(no_answer()),
+                Ok(Err(_)) => {
+                    debug!("Playback task not running; output device applies on next start");
+                    return Ok(());
+                }
+                Ok(Ok(())) => {}
             }
             // The playback thread answers right after trying to open it.
-            let opened = tokio::task::spawn_blocking(move || reply_rx.recv())
-                .await
-                .ok()
-                .and_then(Result::ok);
+            let opened =
+                tokio::task::spawn_blocking(move || reply_rx.recv_timeout(PLAYBACK_READY_TIMEOUT))
+                    .await
+                    .ok();
             // Audio stays on the previous speaker; tell the caller.
             match opened {
-                Some(Err(AudioError::DeviceInUse)) => return Err(AudioError::DeviceInUse),
-                Some(Err(e)) => {
+                Some(Err(std_mpsc::RecvTimeoutError::Timeout)) => return Err(no_answer()),
+                Some(Ok(Err(AudioError::DeviceInUse))) => return Err(AudioError::DeviceInUse),
+                Some(Ok(Err(e))) => {
                     return Err(AudioError::StreamError(format!(
                         "could not open output device {label}: {e}"
                     )))
                 }
-                Some(Ok(())) | None => {}
+                Some(Ok(Ok(())) | Err(std_mpsc::RecvTimeoutError::Disconnected)) | None => {}
             }
         }
         Ok(())
