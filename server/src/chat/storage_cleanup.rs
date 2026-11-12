@@ -330,9 +330,10 @@ pub async fn run_tick<S: ObjectStore>(pool: &PgPool, store: Option<&S>) {
     }
 }
 
-/// Remove the attachment rows of every message `user_id` wrote; the
-/// trigger queues their objects. For account deletion (self-service and
-/// admin): the messages stay anonymized, their files go. Call in the
+/// Remove the attachment rows of every message `user_id` wrote.
+///
+/// The trigger queues their objects. For account deletion (self-service
+/// and admin): the messages stay anonymized, their files go. Call in the
 /// transaction that deletes the user row.
 pub async fn remove_attachments_of_user(
     conn: &mut sqlx::PgConnection,
