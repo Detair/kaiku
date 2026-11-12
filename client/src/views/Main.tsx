@@ -40,8 +40,7 @@ const ScreeningGate = lazy(
 );
 import HomeView from "@/components/home/HomeView";
 import HomeSidebar from "@/components/home/HomeSidebar";
-import SearchPanel from "@/components/search/SearchPanel";
-import Modal from "@/components/ui/Modal";
+import GlobalSearchDialog from "@/components/search/GlobalSearchDialog";
 import KeyboardShortcutsDialog from "@/components/ui/KeyboardShortcutsDialog";
 import { LazyErrorBoundary } from "@/components/ui/LazyFallback";
 import { selectedChannel } from "@/stores/channels";
@@ -178,21 +177,11 @@ const Main: Component = () => {
       {/* Global Search Overlay */}
       {/* A modal dialog (A11Y-1): Escape closes it, focus returns. */}
       <Show when={showGlobalSearch()}>
-        <Modal
+        <GlobalSearchDialog
+          initialScope={channelSearchScope() ? "channel" : "all"}
+          channelId={channel()?.id}
           onClose={closeGlobalSearch}
-          label={t("chat.search.dialogLabel")}
-          backdropClass="fixed inset-0 flex items-start justify-center pt-[10vh] px-4 bg-black/50"
-          class="relative w-[640px] max-w-full h-[70vh] rounded-xl border border-white/10 shadow-2xl overflow-hidden"
-          style={{ "background-color": "var(--color-surface-layer2)" }}
-          testId="global-search-dialog"
-        >
-          <SearchPanel
-            mode="global"
-            initialScope={channelSearchScope() ? "channel" : "all"}
-            channelId={channel()?.id}
-            onClose={closeGlobalSearch}
-          />
-        </Modal>
+        />
       </Show>
 
       {/* Main Application Shell */}

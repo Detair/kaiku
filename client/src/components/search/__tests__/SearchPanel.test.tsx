@@ -27,6 +27,7 @@ vi.mock("@/stores/dms", () => ({ dmsState: { dms: [] } }));
 vi.mock("@/components/ui/Avatar", () => ({ default: () => null }));
 
 import SearchPanel from "../SearchPanel";
+import GlobalSearchDialog from "../GlobalSearchDialog";
 
 beforeAll(() => {
   globalThis.ResizeObserver ??= class {
@@ -36,6 +37,28 @@ beforeAll(() => {
   } as unknown as typeof ResizeObserver;
 });
 afterEach(cleanup);
+
+describe("GlobalSearchDialog (A11Y-1)", () => {
+  it("is a named dialog: focus in the field, Escape from anywhere, focus back", async () => {
+    const opener = document.createElement("button");
+    document.body.appendChild(opener);
+    opener.focus();
+    const onClose = vi.fn();
+    const view = render(() => <GlobalSearchDialog initialScope="all" onClose={onClose} />);
+    await new Promise((r) => setTimeout(r, 0));
+    const dialog = screen.getByRole("dialog", { name: "Search messages" });
+    expect(dialog.getAttribute("aria-modal")).toBe("true");
+    expect(document.activeElement).toBe(screen.getByTestId("search-input"));
+    (document.activeElement as HTMLElement).blur();
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+    fireEvent.click(dialog.parentElement!);
+    expect(onClose).toHaveBeenCalledTimes(2);
+    view.unmount();
+    expect(document.activeElement).toBe(opener);
+    opener.remove();
+  });
+});
 
 describe("SearchPanel", () => {
   it("closes with Escape while focus is in the panel (A11Y-1)", () => {

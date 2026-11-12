@@ -42,7 +42,8 @@ export const I18N_GUARDED_FILES = [
   "src/components/pages/{CategoryManager,PageAcceptanceModal,AcceptanceManager}.tsx",
   "src/components/layout/{CommandPalette,AppShell,MobileDrawer,LogoutConfirmDialog}.tsx",
   "src/components/social/{FriendsList,AddFriend}.tsx",
-  "src/components/search/{SearchPanel,SearchSyntaxHelp}.tsx",
+  "src/components/search/{SearchPanel,SearchSyntaxHelp,GlobalSearchDialog}.tsx",
+  "src/components/layout/SkipLink.tsx",
   "src/components/admin/AdminQuickModal.tsx",
   "src/App.tsx",
 ];
