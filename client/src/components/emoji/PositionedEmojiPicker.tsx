@@ -16,6 +16,7 @@ import {
   size,
 } from "@floating-ui/dom";
 import EmojiPicker from "./EmojiPicker";
+import { t } from "@/i18n";
 
 interface PositionedEmojiPickerProps {
   /** Reference element to position relative to */
@@ -85,12 +86,26 @@ const PositionedEmojiPicker: Component<PositionedEmojiPickerProps> = (
     props.onClose();
   };
 
-  // Close on Escape key
+  // Escape closes the picker only (A11Y-1): handled in the capture phase and
+  // stopped, so a dialog underneath or a page shortcut never sees it.
   const handleKeyDown = (e: KeyboardEvent) => {
     if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
       props.onClose();
     }
   };
+
+  // Escape works right away, before the click-outside listener is armed.
+  document.addEventListener("keydown", handleKeyDown, true);
+  onCleanup(() => {
+    document.removeEventListener("keydown", handleKeyDown, true);
+    // Focus goes back to the button that opened the picker.
+    const active = document.activeElement;
+    if (!active || active === document.body || pickerRef?.contains(active)) {
+      if (props.anchorEl?.isConnected) props.anchorEl.focus();
+    }
+  });
 
   onMount(() => {
     // Keep the picker anchored when it or the anchor resizes, or the window resizes
@@ -113,14 +128,12 @@ const PositionedEmojiPicker: Component<PositionedEmojiPickerProps> = (
     // Add event listeners after a small delay to avoid immediate close
     const timeoutId = setTimeout(() => {
       document.addEventListener("mousedown", handleClickOutside);
-      document.addEventListener("keydown", handleKeyDown);
       window.addEventListener("scroll", handleScroll, true); // capture phase for all scrollable elements
     }, 0);
 
     onCleanup(() => {
       clearTimeout(timeoutId);
       document.removeEventListener("mousedown", handleClickOutside);
-      document.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("scroll", handleScroll, true);
     });
   });
@@ -129,6 +142,8 @@ const PositionedEmojiPicker: Component<PositionedEmojiPickerProps> = (
     <Portal>
       <div
         ref={pickerRef}
+        role="dialog"
+        aria-label={t("chat.emoji.pickerLabel")}
         style={{
           position: "fixed",
           left: `${position().x}px`,

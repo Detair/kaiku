@@ -89,6 +89,12 @@ export function createDialog(opts: DialogOptions): DialogHandle {
   const handleKey = (e: KeyboardEvent) => {
     if (!el) return;
     if (e.key === "Escape") {
+      // Focus in a popup outside the dialog (portaled context menu, emoji
+      // picker): Escape belongs to that popup, the dialog stays open.
+      const active = document.activeElement;
+      const popup =
+        active && !el.contains(active) ? active.closest(`${OVERLAY}, [data-context-menu]`) : null;
+      if (popup && !openDialogs.some((d) => d.el() === popup)) return;
       e.preventDefault();
       e.stopPropagation();
       opts.onClose();
