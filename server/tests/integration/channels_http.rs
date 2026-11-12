@@ -205,7 +205,8 @@ async fn test_get_channel_not_found(pool: PgPool) {
     );
 }
 
-/// Adding or removing channel members had no effect on access and is gone.
+/// The channel member API had no effect on access and is gone: adding,
+/// removing and listing (the list showed a table nothing writes any more).
 #[sqlx::test]
 async fn channel_member_write_routes_are_gone(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
@@ -225,7 +226,12 @@ async fn channel_member_write_routes_are_gone(pool: PgPool) {
             serde_json::json!({ "user_id": owner }).to_string(),
         ))
         .unwrap();
-    assert_eq!(app.oneshot(add).await.status(), 405);
+    assert_eq!(app.oneshot(add).await.status(), 404);
+    let list = TestApp::request(Method::GET, &format!("/api/channels/{channel}/members"))
+        .header("Authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(app.oneshot(list).await.status(), 404);
     let remove = TestApp::request(
         Method::DELETE,
         &format!("/api/channels/{channel}/members/{owner}"),

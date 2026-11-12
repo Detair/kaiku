@@ -7,8 +7,7 @@ use uuid::Uuid;
 use validator::Validate;
 
 use super::types::{
-    ChannelResponse, CreateChannelRequest, MarkChannelAsReadRequest, MemberResponse,
-    UpdateChannelRequest,
+    ChannelResponse, CreateChannelRequest, MarkChannelAsReadRequest, UpdateChannelRequest,
 };
 use super::{queries, ChatError};
 use crate::api::AppState;
@@ -273,43 +272,6 @@ pub async fn delete(
     } else {
         Err(ChatError::ChannelNotFound)
     }
-}
-
-/// List members of a channel.
-/// GET /api/channels/:id/members
-#[utoipa::path(
-    get,
-    path = "/api/channels/{id}/members",
-    tag = "channels",
-    params(("id" = Uuid, Path, description = "Channel ID")),
-    responses(
-        (status = 200, body = Vec<MemberResponse>),
-    ),
-    security(("bearer_auth" = [])),
-)]
-pub async fn list_members(
-    State(state): State<AppState>,
-    auth_user: AuthUser,
-    Path(id): Path<Uuid>,
-) -> Result<Json<Vec<MemberResponse>>, ChatError> {
-    // Check channel access (VIEW_CHANNEL permission or DM participant)
-    crate::permissions::require_channel_access(&state.db, auth_user.id, id)
-        .await
-        .map_err(|_| ChatError::Forbidden)?;
-
-    let users = db::list_channel_members_with_users(&state.db, id).await?;
-
-    let response: Vec<MemberResponse> = users
-        .into_iter()
-        .map(|u| MemberResponse {
-            user_id: u.id,
-            username: u.username,
-            display_name: u.display_name,
-            avatar_url: u.avatar_url,
-        })
-        .collect();
-
-    Ok(Json(response))
 }
 
 // ============================================================================

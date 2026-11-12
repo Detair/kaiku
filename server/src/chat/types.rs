@@ -79,14 +79,6 @@ pub struct UpdateChannelRequest {
     pub position: Option<i32>,
 }
 
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct MemberResponse {
-    pub user_id: Uuid,
-    pub username: String,
-    pub display_name: String,
-    pub avatar_url: Option<String>,
-}
-
 /// Request body for marking a guild channel as read.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct MarkChannelAsReadRequest {
