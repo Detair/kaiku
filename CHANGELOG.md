@@ -147,6 +147,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Password and single sign-on sign-ins on a second phone are confirmed by scanning with your key phone.
 
 ### Security
+- You can no longer start a group DM with someone who blocked you or whom you blocked, just like a direct message.
 - Server pages (rules, info pages), their history and categories can only be read by members of that server; members who still have to accept the rules can read them.
 - Bot gateway sign-ins (`/api/gateway/bot`) are now limited per address like password sign-ins, and wrong bot tokens count towards the temporary address block.
 - Bots and app webhooks no longer receive messages from channels the bot cannot see; private channels stay private unless a role lets the bot in. Roles can now be given to installed bots, and removing a bot from a server removes its roles there.
