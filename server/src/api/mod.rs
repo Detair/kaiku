@@ -28,7 +28,8 @@ use crate::config::Config;
 use crate::email::EmailService;
 use crate::moderation::filter_cache::FilterCache;
 use crate::ratelimit::{
-    rate_limit_by_ip, rate_limit_by_user, with_category, RateLimitCategory, RateLimiter,
+    check_ip_not_blocked, rate_limit_by_ip, rate_limit_by_user, with_category, RateLimitCategory,
+    RateLimiter,
 };
 use crate::voice::{ScreenShareLimiter, SfuServer};
 use crate::{
@@ -399,10 +400,15 @@ pub fn create_router(state: AppState) -> Router {
                 .layer(from_fn_with_state(state.clone(), rate_limit_by_ip))
                 .layer(from_fn(with_category(RateLimitCategory::WsConnect))),
         )
-        // Bot Gateway WebSocket (uses bot token auth)
+        // Bot Gateway WebSocket (uses bot token auth). Same IP limit and
+        // failed-auth block as the password login: the token check runs
+        // Argon2, so unauthenticated attempts must be bounded.
         .route(
             "/api/gateway/bot",
-            get(ws::bot_gateway::bot_gateway_handler),
+            get(ws::bot_gateway::bot_gateway_handler)
+                .layer(from_fn_with_state(state.clone(), rate_limit_by_ip))
+                .layer(from_fn(with_category(RateLimitCategory::AuthLogin)))
+                .layer(from_fn_with_state(state.clone(), check_ip_not_blocked)),
         )
         // API documentation
         .merge(api_docs(state.config.enable_api_docs))

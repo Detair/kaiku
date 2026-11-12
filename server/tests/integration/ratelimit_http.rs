@@ -220,3 +220,60 @@ async fn test_link_authorize_is_rate_limited(pool: PgPool) {
         "4th link-authorize request should be rate limited (429)"
     );
 }
+
+/// Status of a bot gateway WebSocket handshake with `Authorization: Bot <token>`.
+async fn bot_gateway_status(server: &super::helpers::TestServer, token: &str) -> u16 {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let mut req = format!("ws://{}/api/gateway/bot", server.addr)
+        .into_client_request()
+        .unwrap();
+    req.headers_mut()
+        .insert("Authorization", format!("Bot {token}").parse().unwrap());
+    match tokio_tungstenite::connect_async(req).await {
+        Ok(_) => 101,
+        Err(tokio_tungstenite::tungstenite::Error::Http(resp)) => resp.status().as_u16(),
+        Err(e) => panic!("unexpected handshake error: {e}"),
+    }
+}
+
+/// Wrong bot tokens count as failed sign-ins: after the configured number
+/// the address is blocked like after wrong passwords.
+#[sqlx::test]
+async fn bot_gateway_login_blocked_after_failures(pool: PgPool) {
+    let limits = RateLimits {
+        auth_login: LimitConfig {
+            requests: 100,
+            window_secs: 60,
+        },
+        failed_auth: vc_server::ratelimit::FailedAuthConfig {
+            max_failures: 3,
+            block_duration_secs: 60,
+            window_secs: 60,
+        },
+        ..RateLimits::default()
+    };
+    let (server, _config) = create_rate_limited_app(pool, limits).await;
+    let wrong = format!("{}.wrong_secret", uuid::Uuid::now_v7());
+
+    for _ in 0..3 {
+        assert_eq!(bot_gateway_status(&server, &wrong).await, 401);
+    }
+    assert_eq!(bot_gateway_status(&server, &wrong).await, 429);
+}
+
+/// Bot gateway sign-ins share the per-address login limit.
+#[sqlx::test]
+async fn bot_gateway_login_is_rate_limited(pool: PgPool) {
+    let limits = RateLimits {
+        auth_login: LimitConfig {
+            requests: 2,
+            window_secs: 60,
+        },
+        ..RateLimits::default()
+    };
+    let (server, _config) = create_rate_limited_app(pool, limits).await;
+    let token = "not-a-token";
+    assert_eq!(bot_gateway_status(&server, token).await, 401);
+    assert_eq!(bot_gateway_status(&server, token).await, 401);
+    assert_eq!(bot_gateway_status(&server, token).await, 429);
+}

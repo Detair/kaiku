@@ -207,11 +207,15 @@ pub struct BotGatewayQuery {
 }
 
 /// Bot gateway WebSocket handler.
-#[instrument(skip(state, ws, headers, query))]
+///
+/// The route is IP rate limited and IP-blocked after repeated failures, like
+/// the password login; every wrong token counts as a failed sign-in.
+#[instrument(skip(state, ws, headers, query, ip))]
 pub async fn bot_gateway_handler(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
     headers: HeaderMap,
+    ip: Option<axum::Extension<crate::ratelimit::NormalizedIp>>,
     axum::extract::Query(query): axum::extract::Query<BotGatewayQuery>,
 ) -> Result<Response, (StatusCode, String)> {
     // Extract token from headers
@@ -222,8 +226,25 @@ pub async fn bot_gateway_handler(
         )
     })?;
 
-    // Authenticate bot
-    let (bot_user_id, application_id) = authenticate_bot_token(&state.db, &token).await?;
+    // Authenticate bot; a wrong token feeds the failed-auth IP block.
+    let (bot_user_id, application_id) = match authenticate_bot_token(&state.db, &token).await {
+        Ok(ids) => ids,
+        Err(refusal) => {
+            if refusal.0 == StatusCode::UNAUTHORIZED {
+                if let (Some(rl), Some(ip)) = (&state.rate_limiter, &ip) {
+                    if rl.record_failed_auth(&ip.0 .0).await.is_err()
+                        && !rl.allow_during_outage(RateLimitCategory::FailedAuth)
+                    {
+                        return Err((
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "Service temporarily unavailable".to_string(),
+                        ));
+                    }
+                }
+            }
+            return Err(refusal);
+        }
+    };
 
     // Parse intents from query parameter
     let intents: Vec<String> = if let Some(intents_str) = query.intents {
