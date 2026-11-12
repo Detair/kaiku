@@ -147,6 +147,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Password and single sign-on sign-ins on a second phone are confirmed by scanning with your key phone.
 
 ### Security
+- Bots and app webhooks no longer receive messages from channels the bot cannot see; private channels stay private unless a role lets the bot in. Roles can now be given to installed bots, and removing a bot from a server removes its roles there.
 - Adding a file to a message you already sent follows the same rules as sending a message with a file: you need to see the channel and have the "Attach files" permission, and blocks and read-only conversations apply. A message can carry at most 10 files (`TOO_MANY_ATTACHMENTS`). Requests without files are limited to 1 MB; only file uploads (messages, avatars, group icons, server banners, emojis) may be up to `MAX_UPLOAD_SIZE`.
 - Deleting a message now also deletes its files, including previews. Files of messages deleted earlier, of deleted channels and servers, and of deleted accounts are removed from storage as well; a failed removal is retried every minute.
 - Files in a channel can only be opened by people who can see that channel: download, previews and file links now follow the channel's permissions (and DM membership), not just server membership. Files of deleted messages can no longer be opened.

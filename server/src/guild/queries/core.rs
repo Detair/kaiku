@@ -651,19 +651,33 @@ pub async fn list_guild_bots(
     Ok(bots)
 }
 
-/// Delete a bot installation. Returns the number of rows affected.
+/// Delete a bot installation and the roles its bot user held in the guild,
+/// in one transaction. Returns the number of installation rows deleted.
 pub async fn delete_bot_installation(
     pool: &PgPool,
     guild_id: Uuid,
     application_id: Uuid,
 ) -> Result<u64, GuildError> {
+    let mut tx = pool.begin().await?;
     let result = sqlx::query!(
         "DELETE FROM guild_bot_installations WHERE guild_id = $1 AND application_id = $2",
         guild_id,
         application_id
     )
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
+    if result.rows_affected() > 0 {
+        sqlx::query(
+            "DELETE FROM guild_member_roles gmr
+             USING bot_applications ba
+             WHERE ba.id = $2 AND gmr.guild_id = $1 AND gmr.user_id = ba.bot_user_id",
+        )
+        .bind(guild_id)
+        .bind(application_id)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
     Ok(result.rows_affected())
 }
 

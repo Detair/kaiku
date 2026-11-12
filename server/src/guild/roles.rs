@@ -468,8 +468,13 @@ pub async fn assign_role(
     };
     can_manage_role(ctx.computed_permissions, actor_position, role.0, None)?;
 
-    // Check target is a member
-    if !queries::is_guild_member(&state.db, guild_id, user_id).await? {
+    // Check target is a member or a bot installed in the guild (a bot's
+    // roles decide which channels it can see).
+    if !queries::is_guild_member(&state.db, guild_id, user_id).await?
+        && crate::permissions::bot_guild_context(&state.db, guild_id, user_id)
+            .await?
+            .is_none()
+    {
         return Err(RoleError::Validation(
             "User is not a member of this guild".to_string(),
         ));

@@ -36,10 +36,20 @@ Once a bot is installed, its registered slash commands become available in the g
 Guild admins can view installed bots and their commands via the **Slash Commands** page
 in the client settings UI.
 
+### Channel Visibility
+
+A bot sees exactly the channels its permissions let it see, like a member:
+the `@everyone` role, the roles assigned to the bot user
+(`POST /api/guilds/{id}/members/{bot_user_id}/roles/{role_id}`, allowed for installed
+bots) and the channel overrides decide `VIEW_CHANNEL`. `message_created` gateway events
+and `message.created` webhooks are only delivered for channels the bot can view, so a
+private channel stays private unless a role lets the bot in. If the visibility check
+fails, nothing is delivered.
+
 ### Removing a Bot
 
-Delete the installation record from `guild_bot_installations` to remove a bot.
-This does not delete the bot user or its commands.
+`DELETE /api/guilds/{id}/bots/{bot_user_id}` removes the installation and the roles the
+bot held in the guild. This does not delete the bot user or its commands.
 
 ## Getting Started (Bot Developers)
 

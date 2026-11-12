@@ -18,6 +18,7 @@ mod approvals_core;
 mod attachment_access;
 mod auth;
 mod blocking;
+mod bot_channel_visibility;
 mod bot_ecosystem;
 mod bot_intents;
 mod call_push;

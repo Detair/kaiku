@@ -35,7 +35,8 @@ async fn bots_with_intent(
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 
-/// Publish a `MessageCreated` event to all bots with `messages` intent in a guild.
+/// Publish a `MessageCreated` event to the bots with `messages` intent in a
+/// guild that can view `channel_id`.
 pub async fn publish_message_created(
     db: &PgPool,
     redis: &Client,
@@ -53,6 +54,25 @@ pub async fn publish_message_created(
         }
     };
 
+    if bot_ids.is_empty() {
+        return;
+    }
+
+    // Only bots that can view the channel (roles + overrides, like a member).
+    // Fails closed: no delivery if the check fails.
+    let viewing =
+        match crate::permissions::bots_viewing_channel(db, guild_id, channel_id, &bot_ids).await {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(channel_id = %channel_id, error = %e,
+                    "Bot visibility check failed; message not delivered to bots");
+                return;
+            }
+        };
+    let bot_ids: Vec<Uuid> = bot_ids
+        .into_iter()
+        .filter(|id| viewing.contains(id))
+        .collect();
     if bot_ids.is_empty() {
         return;
     }
