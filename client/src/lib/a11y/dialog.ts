@@ -7,6 +7,9 @@
  *
  * Spread `dialogProps` on the dialog element, pass `ref` as its `ref`, and put
  * `id={titleId}` on its visible heading.
+ *
+ * A field inside that handles Escape itself (an inline rename) marks itself
+ * `data-escape-local`: Escape there reaches the field, not the dialog.
  */
 
 import { createUniqueId, onCleanup, onMount } from "solid-js";
@@ -98,6 +101,9 @@ export function createDialog(opts: DialogOptions): DialogHandle {
       // An open context menu above the dialog closes first, even though it
       // does not hold focus (W1).
       if (document.querySelector("[data-context-menu]")) return;
+      // A field that handles Escape itself (inline rename: Escape cancels
+      // the rename) keeps it; the next Escape closes the dialog (K2).
+      if (active instanceof Element && active.closest("[data-escape-local]")) return;
       e.preventDefault();
       e.stopPropagation();
       opts.onClose();

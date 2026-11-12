@@ -125,6 +125,7 @@ const CategoriesTab: Component<CategoriesTabProps> = (props) => {
                   if (e.key === "Enter") handleRename();
                   if (e.key === "Escape") cancelEditing();
                 }}
+                data-escape-local
                 class="flex-1 px-2 py-1 bg-surface-layer2 rounded text-sm text-text-primary border border-white/10 outline-none focus:ring-1 focus:ring-accent-primary"
                 ref={(el) => setTimeout(() => el.focus(), 0)}
               />
@@ -272,6 +273,7 @@ const CategoriesTab: Component<CategoriesTabProps> = (props) => {
                             if (e.key === "Enter") handleCreateSubcategory(category.id);
                             if (e.key === "Escape") setAddingSubcategoryFor(null);
                           }}
+                          data-escape-local
                           class="flex-1 px-2 py-1 bg-surface-layer2 rounded text-sm text-text-primary border border-white/10 outline-none focus:ring-1 focus:ring-accent-primary placeholder-text-placeholder"
                           disabled={isCreating()}
                           ref={(el) => setTimeout(() => el.focus(), 0)}

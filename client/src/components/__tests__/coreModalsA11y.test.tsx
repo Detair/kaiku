@@ -509,6 +509,31 @@ describe("nested dialogs", () => {
     expect(document.activeElement).toBe(main);
   });
 
+  it("Escape in an inline rename field cancels the rename, not the dialog (K2)", async () => {
+    document.body.innerHTML = "";
+    const onClose = vi.fn();
+    const [editing, setEditing] = createSignal(true);
+    render(() => (
+      <Modal onClose={onClose} label="Server settings">
+        <Show when={editing()} fallback={<button>Rename</button>}>
+          <input
+            aria-label="Category name"
+            data-escape-local
+            onKeyDown={(e) => e.key === "Escape" && setEditing(false)}
+          />
+        </Show>
+      </Modal>
+    ));
+    await tick();
+    const field = screen.getByRole("textbox", { name: "Category name" });
+    field.focus();
+    fireEvent.keyDown(field, { key: "Escape" });
+    expect(editing()).toBe(false);
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it("a click on the backdrop closes, a click inside does not", async () => {
     document.body.innerHTML = "";
     const onClose = vi.fn();

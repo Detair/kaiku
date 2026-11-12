@@ -225,6 +225,7 @@ const WebhooksTab: Component<WebhooksTabProps> = (props) => {
                           if (e.key === "Enter") void handleRename(w.id);
                           if (e.key === "Escape") setEditingId(null);
                         }}
+                        data-escape-local
                       />
                     </Show>
                     <div class="text-xs text-text-secondary flex items-center gap-2 mt-0.5">
