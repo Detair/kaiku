@@ -1781,7 +1781,7 @@ mod tests {
         registry().snapshot(u, None).user
     }
 
-    /// Invariant A: a write whose outcome is not known (the request was
+    /// A write whose outcome is not known (the request was
     /// dropped while its commit was in flight, or the commit answered with
     /// an error) bumps as well; a write that did not apply does not.
     #[tokio::test]
@@ -1856,7 +1856,7 @@ mod tests {
         assert!(Arc::ptr_eq(&cell, &registry().guild_epoch(g)));
     }
 
-    /// Invariant F: the requested set is bounded.
+    /// The requested set is bounded.
     #[tokio::test]
     async fn requested_channels_are_capped() {
         let (u, g) = (Uuid::new_v4(), Uuid::new_v4());
@@ -1909,7 +1909,7 @@ mod tests {
             || inner.voice.as_ref().is_some_and(|v| is(v.state))
     }
 
-    /// Invariant D: a forced (backstop) revalidation that fails **without**
+    /// A forced (backstop) revalidation that fails **without**
     /// any epoch moving makes the scopes failing; every event dropped then
     /// is recorded, whoever drops it, and the recovery asks for a resync —
     /// only if something was dropped.
@@ -1999,7 +1999,7 @@ mod tests {
         assert!(access.take_resync());
     }
 
-    /// Invariant B (voice): room content needs an owned peer **and** current
+    /// Room content needs an owned peer **and** current
     /// authorization for the room; a peer that did not come through the join
     /// check gets nothing.
     #[tokio::test]

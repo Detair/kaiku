@@ -520,7 +520,7 @@ async fn backstop_removes_voice_participant_without_notice(pool: PgPool) {
 }
 
 // ---------------------------------------------------------------------------
-// Fix round 1: epochs fence delivery, regain, races, cost, failure, triggers
+// Epochs fence delivery: regain, races, cost, failure, triggers
 // ---------------------------------------------------------------------------
 
 /// A private channel (`@everyone` may not view it, `role` may) and a public
@@ -627,7 +627,7 @@ async fn grant_role(fx: &Fixture, role: Uuid) {
     .await;
 }
 
-/// Test 1a: the role removal commits and the next message is published
+/// The role removal commits and the next message is published
 /// before the socket was woken (wake path disabled): delivery itself is
 /// fenced by the epoch, no notice involved.
 #[sqlx::test]
@@ -644,7 +644,7 @@ async fn message_after_commit_is_fenced_without_any_wake(pool: PgPool) {
     assert_cut_off_before_control(&fx, &mut ws, p.private, p.control).await;
 }
 
-/// Test 1b: an event already queued for the socket when access shrinks is
+/// An event already queued for the socket when access shrinks is
 /// not written.
 #[sqlx::test]
 async fn queued_message_is_not_written_after_revocation(pool: PgPool) {
@@ -670,7 +670,7 @@ async fn queued_message_is_not_written_after_revocation(pool: PgPool) {
     );
 }
 
-/// Test 2: access that comes back restores the live feed without any
+/// Access that comes back restores the live feed without any
 /// client action (no new `subscribe`).
 #[sqlx::test]
 async fn regained_role_restores_events_without_resubscribe(pool: PgPool) {
@@ -714,7 +714,7 @@ async fn removed_override_restores_events(pool: PgPool) {
     assert_eq!(next_message(&mut ws).await["message"]["content"], "back");
 }
 
-/// Test 3a: `subscribe` checked access, then a revocation committed before
+/// `subscribe` checked access, then a revocation committed before
 /// the result was recorded: the subscribe checks again and is refused.
 #[sqlx::test]
 async fn subscribe_racing_a_revocation_is_refused(pool: PgPool) {
@@ -738,7 +738,7 @@ async fn subscribe_racing_a_revocation_is_refused(pool: PgPool) {
     assert_cut_off_before_control(&fx, &mut ws, p.private, p.control).await;
 }
 
-/// Test 3b: the other order: `subscribe` was refused on its first check, a
+/// The other order: `subscribe` was refused on its first check, a
 /// grant committed before the result was recorded: it checks again and is
 /// accepted.
 #[sqlx::test]
@@ -763,7 +763,7 @@ async fn subscribe_racing_a_grant_is_accepted(pool: PgPool) {
     assert_receives(&fx, &mut ws, p.private).await;
 }
 
-/// Test 3c: a revocation right after the subscribe was recorded.
+/// A revocation right after the subscribe was recorded.
 #[sqlx::test]
 async fn revocation_after_subscribe_cuts_off(pool: PgPool) {
     let fx = fixture(&pool).await;
@@ -775,7 +775,7 @@ async fn revocation_after_subscribe_cuts_off(pool: PgPool) {
     assert_cut_off_before_control(&fx, &mut ws, p.private, p.control).await;
 }
 
-/// Test 4: many role edits in a row cost each socket a bounded number of
+/// Many role edits in a row cost each socket a bounded number of
 /// batched reads, independent of the number of edits and subscriptions.
 #[sqlx::test]
 async fn rapid_role_edits_coalesce_into_few_reads(pool: PgPool) {
@@ -920,7 +920,7 @@ async fn until_close(ws: &mut WsClient) -> (Vec<Value>, u16, String) {
     (events, code, reason)
 }
 
-/// Test 5 / item 4: a revalidation that fails (database error) drops the
+/// A revalidation that fails (database error) drops the
 /// scope's events (fail closed) and retries with backoff; once it recovers,
 /// the socket that dropped something closes with 1011 `RESYNC` (spread over
 /// up to 3 s) so the client reconnects and catches up — never right away.
@@ -973,7 +973,7 @@ async fn failed_revalidation_without_drops_keeps_the_socket(pool: PgPool) {
     expect_no_ws_event(&mut ws, "error", Duration::from_millis(3200)).await;
 }
 
-// --- Test 6: every trigger --------------------------------------------------
+// --- Every trigger --------------------------------------------------------
 
 /// A role's permission edit (on the role that grants the channel).
 #[sqlx::test]
@@ -1218,7 +1218,7 @@ async fn trigger_de_elevation_stops_admin_events(pool: PgPool) {
         .expect("pong");
 }
 
-/// Test 7: a voice join whose permission check passed, then the role that
+/// A voice join whose permission check passed, then the role that
 /// allowed it was removed before the peer was added: the peer is not
 /// admitted.
 #[sqlx::test]
@@ -1268,7 +1268,7 @@ async fn voice_join_racing_a_revocation_is_not_admitted(pool: PgPool) {
 }
 
 // ---------------------------------------------------------------------------
-// Fix round 2
+// The windows: paused right after the commit
 // ---------------------------------------------------------------------------
 
 /// The epoch the trigger bumps (user or server).
@@ -1282,7 +1282,7 @@ fn epoch_of(scope_id: Uuid) -> (u64, u64) {
     )
 }
 
-/// Item 10: run `request` with a pause right after its commit and bump; at
+/// Run `request` with a pause right after its commit and bump; at
 /// that moment (before any post-commit cleanup of the request) the epoch of
 /// `scope_id` has already moved, and `check` (e.g. a cut-off check) runs.
 /// A trigger whose bump is not the first thing after its commit never
@@ -1900,7 +1900,7 @@ async fn de_elevation_fences_before_cache_update(pool: PgPool) {
     .await;
 }
 
-/// Item 2: a channel deleted while one of its events is queued: the
+/// A channel deleted while one of its events is queued: the
 /// revalidation finds it gone (not "allowed by default" once its overrides
 /// cascaded away), and the event is not written.
 #[sqlx::test]
@@ -1931,7 +1931,7 @@ async fn deleted_channel_is_not_allowed(pool: PgPool) {
     );
 }
 
-/// Item 3: voice room content queued for a peer that is removed before the
+/// Voice room content queued for a peer that is removed before the
 /// frame is written is not written; `voice_removed` still is.
 #[sqlx::test]
 async fn queued_voice_content_is_not_written_after_removal(pool: PgPool) {
@@ -1985,7 +1985,7 @@ async fn voice_removed_without(ws: &mut WsClient, forbidden: &str) -> Value {
         .expect("voice_removed")
 }
 
-/// Invariant B, the window itself: the kick has committed and bumped, the
+/// The window itself: the kick has committed and bumped, the
 /// request is paused there — the peer is **still in the room** (nothing has
 /// removed it yet). Room content that was queued before, and room content
 /// produced at that moment, is not written: the socket's authorization for
@@ -2054,7 +2054,7 @@ async fn voice_content_is_fenced_while_the_kick_is_still_cleaning_up(pool: PgPoo
     assert!(!in_room(&fx, voice, fx.member).await);
 }
 
-/// Item 6: a refused `subscribe` is remembered; when access is granted
+/// A refused `subscribe` is remembered; when access is granted
 /// later, the channel's events arrive without a new `subscribe`.
 #[sqlx::test]
 async fn refused_subscribe_comes_back_with_access(pool: PgPool) {
@@ -2078,7 +2078,7 @@ async fn refused_subscribe_comes_back_with_access(pool: PgPool) {
     );
 }
 
-/// Invariant D: a **forced** revalidation (the backstop) fails although no
+/// A **forced** revalidation (the backstop) fails although no
 /// epoch moved. From that failure until a revalidation succeeds the scopes
 /// are failing: the message published meanwhile is dropped, the drop is
 /// recorded, and after the recovery the socket closes with 1011 `RESYNC` so
