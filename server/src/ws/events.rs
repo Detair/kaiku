@@ -1153,12 +1153,35 @@ pub enum OutboundMsg {
         channel_id: Uuid,
         event: ServerEvent,
     },
+    /// Content of the voice room `channel_id` (participants, media state,
+    /// signalling): written only if this socket still owns a live peer in
+    /// that room when the frame is written. Build it with [`Self::voice`].
+    Voice {
+        channel_id: Uuid,
+        event: ServerEvent,
+    },
     Ping,
     /// Send a Close frame with this code and reason, then stop the sender task.
     Close {
         code: u16,
         reason: &'static str,
     },
+}
+
+impl OutboundMsg {
+    /// A voice room event for a peer of room `channel_id`. Departure notices
+    /// (someone left, a share or camera stopped) are always delivered — they
+    /// carry no content and must reach peers that are leaving too; everything
+    /// else is fenced by the peer's membership at write time.
+    #[must_use]
+    pub const fn voice(channel_id: Uuid, event: ServerEvent) -> Self {
+        match event {
+            ServerEvent::VoiceUserLeft { .. }
+            | ServerEvent::ScreenShareStopped { .. }
+            | ServerEvent::WebcamStopped { .. } => Self::Event(event),
+            event => Self::Voice { channel_id, event },
+        }
+    }
 }
 
 /// Redis pub/sub channels.

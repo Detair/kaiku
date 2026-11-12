@@ -200,17 +200,19 @@ pub async fn add_reaction(
     .fetch_one(&mut *tx)
     .await?;
 
-    tx.commit().await?;
-    // A reaction role changes what the member may view.
-    if let Some((guild_id, _)) = &hook_outcome {
-        crate::ws::access::access_changed(
-            &state,
+    // A reaction role changes what the member may view: fenced right at
+    // the commit.
+    let ((), bumped) = crate::ws::access::bump_after_if(tx.commit(), |()| {
+        hook_outcome.as_ref().map(|(guild_id, _)| {
             crate::ws::access::AccessChange::MemberRolesChanged {
                 guild_id: *guild_id,
                 user_id: auth_user.id,
-            },
-        )
-        .await;
+            }
+        })
+    })
+    .await?;
+    if let Some(bumped) = bumped {
+        crate::ws::access::access_changed(&state, bumped).await;
     }
 
     // Broadcast after commit.
@@ -359,17 +361,19 @@ pub async fn remove_reaction(
         }
     }
 
-    tx.commit().await?;
-    // A reaction role changes what the member may view.
-    if let Some((guild_id, _)) = &hook_outcome {
-        crate::ws::access::access_changed(
-            &state,
+    // A reaction role changes what the member may view: fenced right at
+    // the commit.
+    let ((), bumped) = crate::ws::access::bump_after_if(tx.commit(), |()| {
+        hook_outcome.as_ref().map(|(guild_id, _)| {
             crate::ws::access::AccessChange::MemberRolesChanged {
                 guild_id: *guild_id,
                 user_id: auth_user.id,
-            },
-        )
-        .await;
+            }
+        })
+    })
+    .await?;
+    if let Some(bumped) = bumped {
+        crate::ws::access::access_changed(&state, bumped).await;
     }
 
     // Only broadcast if a row was actually deleted

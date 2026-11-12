@@ -2,18 +2,12 @@
 //!
 //! Self-hosted voice and text chat platform backend.
 
-use std::net::SocketAddr;
-
 use anyhow::Result;
 use tracing::info;
 use vc_server::{api, chat, config, db, email, voice};
 
 /// Upper bound for draining the telemetry ingestion workers on shutdown.
 const INGESTION_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
-
-/// Upper bound for closing the open web sockets on shutdown (voice leave,
-/// close frames 1012, per-socket cleanup).
-const SOCKET_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -467,9 +461,8 @@ async fn main() -> Result<()> {
         .spawn_stale_peer_reaper(state.db.clone(), state.screen_share_limiter.clone());
 
     // Kept for the shutdown of the open WebSockets (the router owns `state`).
+    let socket_drain = vc_server::shutdown::SocketDrain::from_state(&state);
     let ws_connections = state.ws_connections.clone();
-    let voice_sfu = state.sfu.clone();
-    let voice_limiter = state.screen_share_limiter.clone();
     if ws_connections.proxy_warning_applies(&config.bind_address) {
         tracing::warn!(
             per_ip = ws_connections.limits().per_ip,
@@ -487,44 +480,20 @@ async fn main() -> Result<()> {
     let listener = tokio::net::TcpListener::bind(&config.bind_address).await?;
     info!(address = %config.bind_address, "Server listening");
 
-    // Graceful shutdown on Ctrl-C or SIGTERM (container stop), with cleanup
-    // of the background tasks below.
-    axum::serve(
+    // Graceful shutdown on Ctrl-C or SIGTERM (container stop): HTTP and
+    // WebSocket drain start together at the signal, each bounded (5 s); then
+    // the background tasks below are cleaned up.
+    vc_server::shutdown::serve(
         listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
+        app,
+        socket_drain,
+        vc_server::shutdown::shutdown_signal(),
     )
-    .with_graceful_shutdown(vc_server::shutdown::shutdown_signal())
     .await?;
 
     // =========================================================================
     // Graceful shutdown: clean up background tasks
     // =========================================================================
-
-    info!("HTTP server stopped, closing WebSockets...");
-
-    // Upgraded WebSockets are not tracked by axum's graceful shutdown. First
-    // remove every voice peer through the normal leave path (the others are
-    // told `voice_user_left` while their sockets are still open), then tell
-    // each socket to close with 1012 and run its own cleanup (presence,
-    // connection slots, rate-limit buckets), and wait for them, bounded.
-    let socket_drain = async {
-        let left = voice::leave::leave_all(&voice_sfu, &db_pool, voice_limiter.as_ref()).await;
-        ws_connections.begin_shutdown();
-        let open = ws_connections.wait_closed(SOCKET_DRAIN_TIMEOUT).await;
-        (left, open)
-    };
-    match tokio::time::timeout(SOCKET_DRAIN_TIMEOUT, socket_drain).await {
-        Ok((left, 0)) => info!(voice_peers = left, "WebSockets closed"),
-        Ok((left, open)) => tracing::warn!(
-            voice_peers = left,
-            open,
-            "WebSockets still open after the shutdown bound"
-        ),
-        Err(_) => {
-            ws_connections.begin_shutdown();
-            tracing::warn!("WebSocket shutdown did not finish in time");
-        }
-    }
 
     info!("Cleaning up background tasks...");
 

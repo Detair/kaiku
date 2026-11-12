@@ -287,15 +287,15 @@ pub async fn delete_guild(
     let revocation =
         crate::presence::connections::begin_user_revocation(&state.redis, guild_id, None, &members)
             .await;
-    let deleted = core_q::delete_guild(&state.db, guild_id).await;
-    crate::presence::connections::finish_guild_revocation(&state.redis, revocation, guild_id, None)
-        .await;
-    deleted?;
-    crate::ws::access::access_changed(
-        &state,
+    let deleted = crate::ws::access::bump_after(
         crate::ws::access::AccessChange::GuildDeleted { guild_id },
+        core_q::delete_guild(&state.db, guild_id),
     )
     .await;
+    crate::presence::connections::finish_guild_revocation(&state.redis, revocation, guild_id, None)
+        .await;
+    let ((), bumped) = deleted?;
+    crate::ws::access::access_changed(&state, bumped).await;
 
     Ok(StatusCode::NO_CONTENT)
 }

@@ -390,6 +390,17 @@ pub struct TestServer {
     _handle: JoinHandle<()>,
 }
 
+impl TestServer {
+    /// A server the test runs itself (e.g. through `shutdown::serve`).
+    pub fn for_addr(addr: SocketAddr) -> Self {
+        Self {
+            addr,
+            url: format!("http://{addr}"),
+            _handle: tokio::spawn(async {}),
+        }
+    }
+}
+
 /// Spawn a real HTTP server on a random port.
 ///
 /// Use this instead of `oneshot` when testing stateful middleware behavior

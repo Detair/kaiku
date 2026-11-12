@@ -99,6 +99,15 @@ const CLOSE_REASON_RESTART: &str = "SERVER_RESTART";
 /// Most `subscribe` checks in a row when access epochs keep moving.
 const SUBSCRIBE_ATTEMPTS: usize = 4;
 
+/// Extra per-socket delay on top of `access::WAKE_DEBOUNCE` (random, fixed
+/// per socket): 150–250 ms from a bump to an idle socket's revalidation.
+const WAKE_DEBOUNCE_JITTER: Duration = Duration::from_millis(100);
+
+/// After a failing revalidation recovered with dropped events, the socket
+/// closes (1011 `RESYNC`) at a random moment within this window, so a
+/// database blip does not make every client reconnect at once.
+const RESYNC_CLOSE_SPREAD: Duration = Duration::from_secs(3);
+
 /// Extract JWT token from Sec-WebSocket-Protocol header.
 ///
 /// Expected format: `access_token.<jwt_token>`
@@ -567,6 +576,8 @@ async fn handle_socket(
     // here, when their frame is written, so an access change also stops
     // events that were queued before it.
     let sender_access = access.clone();
+    let sender_sfu = state.sfu.clone();
+    let own_queue = tx.downgrade();
     let mut sender_handle: tokio::task::JoinHandle<()> = tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
             let send_result = match msg {
@@ -574,6 +585,15 @@ async fn handle_socket(
                 OutboundMsg::Channel { channel_id, event } => {
                     crate::ws::test_hooks::before_channel_write(user_id).await;
                     if !sender_access.admit(channel_id).await {
+                        continue;
+                    }
+                    write_event(&mut ws_sender, &event).await
+                }
+                OutboundMsg::Voice { channel_id, event } => {
+                    // Room content only while this socket's peer is in the
+                    // room (in memory, no database).
+                    crate::ws::test_hooks::before_channel_write(user_id).await;
+                    if !owns_live_peer(&sender_sfu, user_id, channel_id, &own_queue).await {
                         continue;
                     }
                     write_event(&mut ws_sender, &event).await
@@ -851,6 +871,32 @@ async fn handle_socket(
         );
         access_backstop.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let shutdown = state.ws_connections.shutdown_token();
+        // Per-socket jitter on the wake debounce, so a server-wide bump does
+        // not start every socket's revalidation in the same instant.
+        let wake_debounce = super::access::WAKE_DEBOUNCE + random_up_to(WAKE_DEBOUNCE_JITTER);
+        // When to make the client resynchronise (events were dropped while a
+        // revalidation was failing; spread over a few seconds).
+        let mut resync_at: Option<tokio::time::Instant> = None;
+
+        // Long operations inside an arm stop at shutdown, so the normal
+        // disconnect cleanup below still runs within the bound.
+        macro_rules! or_shutdown {
+            ($op:expr) => {
+                match tokio::select! {
+                    biased;
+                    () = shutdown.cancelled() => None,
+                    // Boxed: these futures are large; inlined, the socket
+                    // task's frame would grow by their size.
+                    value = Box::pin($op) => Some(value),
+                } {
+                    Some(value) => value,
+                    None => {
+                        exit = Some(PubsubExit::ServerShutdown);
+                        break;
+                    }
+                }
+            };
+        }
 
         // Handle incoming messages with heartbeat
         loop {
@@ -871,18 +917,33 @@ async fn handle_socket(
                         && (access.is_stale()
                             || state.sfu.find_peer_owned_by(user_id, &tx).await.is_some())
                     {
-                        revalidate_at =
-                            Some(tokio::time::Instant::now() + super::access::WAKE_DEBOUNCE);
+                        revalidate_at = Some(tokio::time::Instant::now() + wake_debounce);
                     }
                 }
 
                 () = access.attention() => {
-                    // A revalidation failed: `access_due` now includes its retry.
+                    // A revalidation failed (`access_due` now includes its
+                    // retry), a channel was recorded unchecked, or it
+                    // recovered after dropping events.
+                    if access.is_stale() && revalidate_at.is_none() {
+                        revalidate_at = Some(tokio::time::Instant::now() + wake_debounce);
+                    }
+                    if access.take_resync() && resync_at.is_none() {
+                        resync_at = Some(
+                            tokio::time::Instant::now() + random_up_to(RESYNC_CLOSE_SPREAD),
+                        );
+                    }
+                }
+
+                () = sleep_until_opt(resync_at) => {
+                    info!("Closing socket so the client resynchronises: user={}", user_id);
+                    exit = Some(PubsubExit::AccessResync);
+                    break;
                 }
 
                 () = sleep_until_opt(access_due) => {
                     revalidate_at = None;
-                    if let Err(reason) = revalidate_socket(
+                    if let Err(reason) = or_shutdown!(revalidate_socket(
                         &state,
                         user_id,
                         session_id,
@@ -891,8 +952,7 @@ async fn handle_socket(
                         &tx,
                         &mut voice_seen,
                         false,
-                    )
-                    .await
+                    ))
                     {
                         exit = Some(reason);
                         break;
@@ -904,7 +964,7 @@ async fn handle_socket(
                     // bump (e.g. a direct database edit): re-check every
                     // channel, the admin flag and the voice peer.
                     access.force_full();
-                    if let Err(reason) = revalidate_socket(
+                    if let Err(reason) = or_shutdown!(revalidate_socket(
                         &state,
                         user_id,
                         session_id,
@@ -913,8 +973,7 @@ async fn handle_socket(
                         &tx,
                         &mut voice_seen,
                         true,
-                    )
-                    .await
+                    ))
                     {
                         exit = Some(reason);
                         break;
@@ -924,7 +983,7 @@ async fn handle_socket(
                 msg = ws_receiver.next() => {
                     match msg {
                         Some(Ok(Message::Text(text))) => {
-                            if let Err(e) = handle_client_message(
+                            if let Err(e) = or_shutdown!(handle_client_message(
                                 &text,
                                 user_id,
                                 &state,
@@ -932,8 +991,7 @@ async fn handle_socket(
                                 &access,
                                 &admin_subscribed,
                                 &mut msg_state,
-                            )
-                            .await
+                            ))
                             {
                                 if let Some(reason) = outbound_failure(&*e) {
                                     exit = Some(reason);
@@ -984,7 +1042,7 @@ async fn handle_socket(
 
                 _ = session_recheck.tick() => {
                     let sid = session_id.map(|sid| sid.to_string());
-                    match check_session(&state, sid.as_deref(), user_id).await {
+                    match or_shutdown!(check_session(&state, sid.as_deref(), user_id)) {
                         SessionCheck::Active => {}
                         SessionCheck::Revoked => {
                             exit = Some(match send_outbound(&tx, session_revoked_event()).await {
@@ -1026,9 +1084,9 @@ async fn handle_socket(
                         &mut *audience_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
                     );
                     let refreshed = if pending.full {
-                        audience_mod::refresh_full(&ctx, ReloadMode::Update).await.map(|_| ())
+                        or_shutdown!(audience_mod::refresh_full(&ctx, ReloadMode::Update)).map(|_| ())
                     } else {
-                        audience_mod::recheck(&ctx, pending.targets).await
+                        or_shutdown!(audience_mod::recheck(&ctx, pending.targets))
                     };
                     if let Err(reason) = refreshed {
                         exit = Some(reason);
@@ -1037,14 +1095,14 @@ async fn handle_socket(
                 }
 
                 () = backstop_now(backstop_trigger.as_ref()) => {
-                    if let Err(reason) = audience_mod::backstop(&ctx).await {
+                    if let Err(reason) = or_shutdown!(audience_mod::backstop(&ctx)) {
                         exit = Some(reason);
                         break;
                     }
                 }
 
                 _ = presence_backstop.tick() => {
-                    if let Err(reason) = audience_mod::backstop(&ctx).await {
+                    if let Err(reason) = or_shutdown!(audience_mod::backstop(&ctx)) {
                         exit = Some(reason);
                         break;
                     }
@@ -1235,8 +1293,12 @@ async fn admin_events_allowed(state: &AppState, user_id: Uuid, session_id: Optio
         crate::permissions::queries::get_system_admin(&state.db, user_id).await,
         Ok(Some(_))
     );
+    // The committed elevation row, not the cache: a de-elevation bumps the
+    // user's access epoch before it updates the cache.
     full && admin
-        && crate::admin::is_elevated_admin(&state.redis, &state.db, user_id, session_id).await
+        && crate::admin::queries::has_active_elevated_session(&state.db, user_id, session_id)
+            .await
+            .unwrap_or(false)
 }
 
 /// The voice peer this socket last checked, and the epochs it was checked at.
@@ -1244,6 +1306,13 @@ struct VoiceSeen {
     channel_id: Uuid,
     guild_id: Option<Uuid>,
     snap: super::access::EpochSnapshot,
+}
+
+/// A random duration in `[0, max]`.
+fn random_up_to(max: Duration) -> Duration {
+    let max_ms = u64::try_from(max.as_millis()).unwrap_or(0);
+    let ms = Uuid::new_v4().as_u128() % u128::from(max_ms + 1);
+    Duration::from_millis(u64::try_from(ms).unwrap_or(0))
 }
 
 /// Resolves at `at`, or never.
@@ -1265,6 +1334,25 @@ fn jittered(period: Duration) -> Duration {
     }
     let offset = Uuid::new_v4().as_u128() % u128::from(2 * span_ms + 1);
     period.saturating_sub(span) + Duration::from_millis(u64::try_from(offset).unwrap_or(0))
+}
+
+/// Whether the socket whose queue is `own_queue` owns `user_id`'s current
+/// peer in the voice room `channel_id`.
+async fn owns_live_peer(
+    sfu: &crate::voice::SfuServer,
+    user_id: Uuid,
+    channel_id: Uuid,
+    own_queue: &mpsc::WeakSender<OutboundMsg>,
+) -> bool {
+    let Some(room) = sfu.get_room(channel_id).await else {
+        return false;
+    };
+    let Some(peer) = room.get_peer(user_id).await else {
+        return false;
+    };
+    own_queue
+        .upgrade()
+        .is_some_and(|tx| peer.signal_tx.same_channel(&tx))
 }
 
 /// Write one event frame. A serialisation failure is logged and skipped.
@@ -1418,21 +1506,45 @@ pub async fn handle_client_message(
             // Check VIEW_CHANNEL at the current access epochs and record the
             // result only if they are still current; an access change in
             // between makes the check run again (`ws::access`).
-            let mut granted = false;
-            let mut committed = false;
+            // A refusal is recorded too (the client keeps the id and will not
+            // ask again): the channel comes back when access does. A check
+            // that could not be made (database error, epochs kept moving) is
+            // recorded undecided and revalidated by the socket.
+            let mut decision = None;
             for _ in 0..SUBSCRIBE_ATTEMPTS {
                 let snap = access.snapshot(scope);
-                granted =
+                let checked =
                     crate::permissions::require_channel_access(&state.db, user_id, channel_id)
-                        .await
-                        .is_ok();
+                        .await;
                 crate::ws::test_hooks::subscribe_after_check(user_id).await;
+                let granted = match checked {
+                    Ok(_) => true,
+                    Err(crate::permissions::PermissionError::DatabaseError(e)) => {
+                        warn!(error = %e, "Subscribe check failed; revalidated later");
+                        break;
+                    }
+                    Err(_) => false,
+                };
                 if access.commit_subscribe(channel_id, scope, snap, granted) {
-                    committed = true;
+                    decision = Some(granted);
                     break;
                 }
             }
-            if !(committed && granted) {
+            let Some(granted) = decision else {
+                access.record_unchecked(channel_id, scope);
+                send_outbound(
+                    tx,
+                    OutboundMsg::Event(ServerEvent::Error {
+                        code: "SERVICE_UNAVAILABLE".to_string(),
+                        message:
+                            "Channel access could not be checked yet; events follow once it is"
+                                .to_string(),
+                    }),
+                )
+                .await?;
+                return Ok(());
+            };
+            if !granted {
                 send_outbound(
                     tx,
                     OutboundMsg::Event(ServerEvent::Error {
@@ -1939,6 +2051,9 @@ pub(crate) enum PubsubExit {
     AccessCheckFailed,
     /// The server is shutting down (close 1012, reconnect).
     ServerShutdown,
+    /// Channel events were dropped while revalidation was failing; it has
+    /// recovered, and the client reconnects and catches up (close 1011).
+    AccessResync,
 }
 
 impl PubsubExit {
@@ -1957,7 +2072,8 @@ impl PubsubExit {
             | Self::SubscribeFailed
             | Self::StreamEnded
             | Self::Lagged
-            | Self::AccessCheckFailed => Some(CLOSE_INTERNAL_ERROR),
+            | Self::AccessCheckFailed
+            | Self::AccessResync => Some(CLOSE_INTERNAL_ERROR),
         }
     }
 
@@ -2861,7 +2977,8 @@ mod pubsub_tests {
             forward_pubsub_messages(brx, &params).await,
             PubsubExit::StreamEnded
         ));
-        assert!(params.access.is_allowed(CHANNEL));
+        // Requested at once; allowed after a revalidation confirms it.
+        assert!(params.access.is_requested(CHANNEL));
         assert!(matches!(
             rx.recv().await,
             Some(OutboundMsg::Event(ServerEvent::DmCreated { .. }))

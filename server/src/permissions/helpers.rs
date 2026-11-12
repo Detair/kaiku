@@ -415,21 +415,65 @@ pub async fn filter_accessible_channels(
 /// can view, with the same rules as [`require_channel_access`].
 ///
 /// `channels` are `(guild_id, channel_id)` pairs. Everything is loaded in at
-/// most four queries in total, independent of the number of guilds and
-/// channels (membership + owner, `@everyone` roles, member roles, channel
-/// overrides); the permissions are then resolved in memory per guild. Channels
-/// in guilds the user is not a member of are dropped.
+/// most five queries in total, independent of the number of guilds and
+/// channels (channel existence, membership + owner, `@everyone` roles, member
+/// roles, channel overrides); the permissions are then resolved in memory per
+/// guild. Channels that no longer exist (or are not in the named guild) and
+/// channels in guilds the user is not a member of are dropped.
 #[tracing::instrument(skip(pool, channels), fields(channels = channels.len()))]
 pub async fn filter_viewable_channels_in_guilds(
     pool: &PgPool,
     user_id: Uuid,
     channels: &[(Uuid, Uuid)],
 ) -> sqlx::Result<std::collections::HashSet<Uuid>> {
+    Ok(viewable_and_existing_channels(pool, user_id, channels)
+        .await?
+        .0)
+}
+
+/// [`filter_viewable_channels_in_guilds`], also returning which of the
+/// channels still exist in their named guild: `(viewable, existing)`, with
+/// `viewable ⊆ existing`.
+#[tracing::instrument(skip(pool, channels), fields(channels = channels.len()))]
+pub async fn viewable_and_existing_channels(
+    pool: &PgPool,
+    user_id: Uuid,
+    channels: &[(Uuid, Uuid)],
+) -> sqlx::Result<(
+    std::collections::HashSet<Uuid>,
+    std::collections::HashSet<Uuid>,
+)> {
     use std::collections::{HashMap, HashSet};
 
     let mut viewable = HashSet::new();
     if channels.is_empty() {
-        return Ok(viewable);
+        return Ok((viewable, HashSet::new()));
+    }
+    // 0. Which channels still exist in the guild they are named with. A
+    // deleted channel's overrides are gone, so it must never be resolved.
+    let (guild_col, channel_col): (Vec<Uuid>, Vec<Uuid>) = channels.iter().copied().unzip();
+    let existing: HashSet<Uuid> = sqlx::query_scalar::<_, Uuid>(
+        r"
+        SELECT c.id
+        FROM channels c
+        INNER JOIN UNNEST($1::uuid[], $2::uuid[]) AS p(guild_id, channel_id)
+            ON c.id = p.channel_id AND c.guild_id = p.guild_id
+        ",
+    )
+    .bind(&guild_col)
+    .bind(&channel_col)
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .collect();
+    let channels: Vec<(Uuid, Uuid)> = channels
+        .iter()
+        .copied()
+        .filter(|(_, c)| existing.contains(c))
+        .collect();
+    let channels = channels.as_slice();
+    if channels.is_empty() {
+        return Ok((viewable, existing));
     }
     let mut guild_ids: Vec<Uuid> = channels.iter().map(|(g, _)| *g).collect();
     guild_ids.sort_unstable();
@@ -549,7 +593,7 @@ pub async fn filter_viewable_channels_in_guilds(
             viewable.insert(*channel_id);
         }
     }
-    Ok(viewable)
+    Ok((viewable, existing))
 }
 
 /// Internal struct for guild membership query.

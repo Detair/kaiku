@@ -49,11 +49,15 @@ const PEER_SIGNAL_SEND_TIMEOUT: Duration = Duration::from_millis(250);
 /// Send `event` to every peer concurrently, waiting at most
 /// [`PEER_SIGNAL_SEND_TIMEOUT`] per peer. Peers whose queue is closed or stays
 /// full are skipped (logged), so one stalled peer never delays the others.
-async fn fan_out(senders: Vec<(Uuid, mpsc::Sender<OutboundMsg>)>, event: &ServerEvent) {
+async fn fan_out(
+    channel_id: Uuid,
+    senders: Vec<(Uuid, mpsc::Sender<OutboundMsg>)>,
+    event: &ServerEvent,
+) {
     let sends = senders.iter().map(|(user_id, tx)| async move {
         if let Err(e) = send_outbound_within(
             tx,
-            OutboundMsg::Event(event.clone()),
+            OutboundMsg::voice(channel_id, event.clone()),
             PEER_SIGNAL_SEND_TIMEOUT,
         )
         .await
@@ -334,7 +338,7 @@ impl Room {
         };
 
         // Send without holding the lock; never block on another peer's queue
-        fan_out(senders, &event).await;
+        fan_out(self.channel_id, senders, &event).await;
     }
 
     /// Broadcast an event to all peers.
@@ -351,7 +355,7 @@ impl Room {
         };
 
         // Send without holding the lock; never block on another peer's queue
-        fan_out(senders, &event).await;
+        fan_out(self.channel_id, senders, &event).await;
     }
 
     /// Get participant count.
@@ -1063,7 +1067,7 @@ impl SfuServer {
                     }
                 };
                 if let Err(e) = tx
-                    .send(OutboundMsg::Event(ServerEvent::VoiceIceCandidate {
+                    .send(OutboundMsg::voice(channel_id, ServerEvent::VoiceIceCandidate {
                         channel_id,
                         candidate: candidate_str,
                         pc_type: if pc_label == "subscriber" { PcType::Subscriber } else { PcType::Publisher },
@@ -1182,10 +1186,13 @@ impl SfuServer {
         peer.subscriber_pc
             .set_local_description(offer.clone())
             .await?;
-        Ok(OutboundMsg::Event(ServerEvent::VoiceSubscriberOffer {
-            channel_id: peer.channel_id,
-            sdp: offer.sdp,
-        }))
+        Ok(OutboundMsg::voice(
+            peer.channel_id,
+            ServerEvent::VoiceSubscriberOffer {
+                channel_id: peer.channel_id,
+                sdp: offer.sdp,
+            },
+        ))
     }
 
     fn check_offer_sent(
@@ -1319,6 +1326,7 @@ mod fan_out_tests {
         tokio::time::timeout(
             PEER_SIGNAL_SEND_TIMEOUT * 2,
             fan_out(
+                Uuid::nil(),
                 vec![
                     (Uuid::from_u128(2), healthy_a_tx),
                     (stalled_id, stalled_tx),
@@ -1348,6 +1356,7 @@ mod fan_out_tests {
         drop(closed_rx);
         let (healthy_tx, mut healthy_rx) = mpsc::channel(8);
         fan_out(
+            Uuid::nil(),
             vec![
                 (Uuid::from_u128(1), closed_tx),
                 (Uuid::from_u128(2), healthy_tx),
@@ -1393,7 +1402,10 @@ mod renegotiate_tests {
             .expect("own offer must not be dropped by the fan-out bound");
         assert!(matches!(
             drain.await.expect("drain task"),
-            Some(OutboundMsg::Event(ServerEvent::VoiceSubscriberOffer { .. }))
+            Some(OutboundMsg::Voice {
+                event: ServerEvent::VoiceSubscriberOffer { .. },
+                ..
+            })
         ));
         peer.close().await;
     }

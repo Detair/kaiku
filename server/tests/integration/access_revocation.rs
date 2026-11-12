@@ -773,7 +773,7 @@ async fn rapid_role_edits_coalesce_into_few_reads(pool: PgPool) {
     for _ in 0..EDITS {
         vc_server::ws::access::access_changed(
             &fx.app.state,
-            vc_server::ws::access::AccessChange::GuildRolesChanged { guild_id: fx.guild },
+            vc_server::ws::access::AccessChange::GuildRolesChanged { guild_id: fx.guild }.bump(),
         )
         .await;
     }
@@ -797,11 +797,35 @@ async fn rapid_role_edits_coalesce_into_few_reads(pool: PgPool) {
     );
 }
 
-/// Test 5: a revalidation that fails (database error) drops the scope's
-/// channels (fail closed), keeps the socket open, retries with backoff and
-/// recovers.
+/// Frames until the server's Close: the events seen, and the close code and
+/// reason.
+async fn until_close(ws: &mut WsClient) -> (Vec<Value>, u16, String) {
+    use futures::StreamExt;
+    let mut events = Vec::new();
+    let wait = async {
+        loop {
+            match ws.next().await {
+                Some(Ok(Message::Text(text))) => events.push(serde_json::from_str(&text).unwrap()),
+                Some(Ok(Message::Close(Some(frame)))) => {
+                    return (u16::from(frame.code), frame.reason.to_string());
+                }
+                Some(Ok(_)) => {}
+                other => panic!("socket ended without a close frame: {other:?}"),
+            }
+        }
+    };
+    let (code, reason) = tokio::time::timeout(EVENT_TIMEOUT, wait)
+        .await
+        .expect("no close frame");
+    (events, code, reason)
+}
+
+/// Test 5 / item 4: a revalidation that fails (database error) drops the
+/// scope's events (fail closed) and retries with backoff; once it recovers,
+/// the socket that dropped something closes with 1011 `RESYNC` (spread over
+/// up to 3 s) so the client reconnects and catches up — never right away.
 #[sqlx::test]
-async fn failed_revalidation_fails_closed_then_recovers(pool: PgPool) {
+async fn failed_revalidation_fails_closed_then_asks_for_resync(pool: PgPool) {
     let fx = fixture(&pool).await;
     let channel = create_channel(&pool, fx.guild, "general").await;
     let mut ws = connect_ready(&fx.server, &fx.member_token).await;
@@ -809,34 +833,52 @@ async fn failed_revalidation_fails_closed_then_recovers(pool: PgPool) {
     assert_receives(&fx, &mut ws, channel).await;
 
     vc_server::ws::test_hooks::fail_access_reads(fx.member, 2);
+    let bumped_at = tokio::time::Instant::now();
     vc_server::ws::access::access_changed(
         &fx.app.state,
-        vc_server::ws::access::AccessChange::GuildRolesChanged { guild_id: fx.guild },
+        vc_server::ws::access::AccessChange::GuildRolesChanged { guild_id: fx.guild }.bump(),
     )
     .await;
     // The first write after the bump fails its revalidation: dropped.
     post_message(&fx, channel, "while failing").await;
 
-    // Retries (250 ms, then 500 ms) succeed on the third read; the socket
-    // stays open (expect_no_ws_event would panic on a close frame).
+    let (events, code, reason) = until_close(&mut ws).await;
+    assert!(
+        !events
+            .iter()
+            .any(|e| e["type"] == "message_new" && e["message"]["content"] == "while failing"),
+        "dropped message delivered: {events:?}"
+    );
+    assert_eq!((code, reason.as_str()), (1011, "RESYNC"));
+    // Retries at 250 ms and 500 ms: not before the recovery.
+    assert!(bumped_at.elapsed() >= Duration::from_millis(700));
+}
+
+/// A failing revalidation that dropped nothing recovers without a close.
+#[sqlx::test]
+async fn failed_revalidation_without_drops_keeps_the_socket(pool: PgPool) {
+    let fx = fixture(&pool).await;
+    let channel = create_channel(&pool, fx.guild, "general").await;
+    let mut ws = connect_ready(&fx.server, &fx.member_token).await;
+    subscribe(&mut ws, channel).await;
+
+    vc_server::ws::test_hooks::count_access_reads(fx.member);
+    vc_server::ws::test_hooks::fail_access_reads(fx.member, 1);
+    vc_server::ws::access::access_changed(
+        &fx.app.state,
+        vc_server::ws::access::AccessChange::GuildRolesChanged { guild_id: fx.guild }.bump(),
+    )
+    .await;
+    // The woken revalidation fails, its retry succeeds.
     let deadline = tokio::time::Instant::now() + EVENT_TIMEOUT;
-    loop {
-        post_message(&fx, channel, "probe").await;
-        let got = tokio::time::timeout(
-            Duration::from_millis(200),
-            next_ws_event(&mut ws, "message_new", EVENT_TIMEOUT),
-        )
-        .await;
-        if let Ok(ev) = got {
-            assert_eq!(
-                ev["message"]["content"], "probe",
-                "dropped message leaked: {ev}"
-            );
-            break;
-        }
-        assert!(tokio::time::Instant::now() < deadline, "never recovered");
+    while vc_server::ws::test_hooks::access_reads(fx.member).0 < 2 {
+        assert!(tokio::time::Instant::now() < deadline, "no retry");
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    expect_no_ws_event(&mut ws, "error", Duration::from_millis(200)).await;
+    assert_receives(&fx, &mut ws, channel).await;
+    // No resync close within its whole spread window (expect_no_ws_event
+    // panics on a close frame); a negative check needs the full window.
+    expect_no_ws_event(&mut ws, "error", Duration::from_millis(3200)).await;
 }
 
 // --- Test 6: every trigger --------------------------------------------------
@@ -1131,4 +1173,407 @@ async fn voice_join_racing_a_revocation_is_not_admitted(pool: PgPool) {
         !in_room(&fx, voice, fx.member).await,
         "revoked join admitted"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Fix round 2
+// ---------------------------------------------------------------------------
+
+/// The epoch the trigger bumps (user or server).
+fn epoch_of(scope_id: Uuid) -> (u64, u64) {
+    let r = vc_server::ws::access::registry();
+    (
+        r.snapshot(scope_id, None).user,
+        r.snapshot(Uuid::nil(), Some(scope_id))
+            .guild
+            .unwrap_or_default(),
+    )
+}
+
+/// Item 10: run `request` with a pause right after its commit and bump; at
+/// that moment (before any post-commit cleanup of the request) the epoch of
+/// `scope_id` has already moved, and `check` (e.g. a cut-off check) runs.
+/// A trigger whose bump is not the first thing after its commit never
+/// reaches the pause and fails on the timeout.
+async fn fenced_at_commit<R, C>(scope_id: Uuid, request: R, check: C)
+where
+    R: std::future::Future<Output = ()> + Send + 'static,
+    C: std::future::Future<Output = ()>,
+{
+    let before = epoch_of(scope_id);
+    let pause = vc_server::ws::test_hooks::pause_after_access_bump(scope_id);
+    let running = tokio::spawn(request);
+    tokio::time::timeout(EVENT_TIMEOUT, pause.reached.notified())
+        .await
+        .expect("the trigger did not bump right after its commit");
+    assert_ne!(epoch_of(scope_id), before, "epoch not moved at the commit");
+    check.await;
+    pause.release.notify_one();
+    running.await.expect("request task");
+}
+
+fn spawn_request(
+    url: String,
+    token: String,
+    method: reqwest::Method,
+    body: Option<Value>,
+) -> impl std::future::Future<Output = ()> + Send + 'static {
+    async move {
+        let mut req = reqwest::Client::new()
+            .request(method.clone(), &url)
+            .bearer_auth(token);
+        if let Some(body) = body {
+            req = req.json(&body);
+        }
+        let resp = req.send().await.expect("request");
+        assert!(
+            resp.status().is_success(),
+            "{method} {url}: {}",
+            resp.status()
+        );
+    }
+}
+
+/// A DM between owner and member as a control channel that survives server
+/// changes.
+async fn dm_control(pool: &PgPool, fx: &Fixture) -> Uuid {
+    let (third, _) = create_test_user(pool).await;
+    vc_server::chat::dm::create_group_dm(pool, fx.owner, &[fx.member, third], None)
+        .await
+        .expect("group DM")
+        .id
+}
+
+#[sqlx::test]
+async fn kick_fences_before_presence_cleanup(pool: PgPool) {
+    let fx = fixture(&pool).await;
+    let channel = create_channel(&pool, fx.guild, "general").await;
+    let control = dm_control(&pool, &fx).await;
+    vc_server::ws::test_hooks::disable_access_wake(fx.member);
+    let mut ws = connect_ready(&fx.server, &fx.member_token).await;
+    subscribe(&mut ws, channel).await;
+    subscribe(&mut ws, control).await;
+    let url = format!(
+        "{}/api/guilds/{}/members/{}",
+        fx.server.url, fx.guild, fx.member
+    );
+    fenced_at_commit(
+        fx.member,
+        spawn_request(url, fx.owner_token.clone(), reqwest::Method::DELETE, None),
+        assert_cut_off_before_control(&fx, &mut ws, channel, control),
+    )
+    .await;
+}
+
+#[sqlx::test]
+async fn leave_fences_before_presence_cleanup(pool: PgPool) {
+    let fx = fixture(&pool).await;
+    let channel = create_channel(&pool, fx.guild, "general").await;
+    let control = dm_control(&pool, &fx).await;
+    vc_server::ws::test_hooks::disable_access_wake(fx.member);
+    let mut ws = connect_ready(&fx.server, &fx.member_token).await;
+    subscribe(&mut ws, channel).await;
+    subscribe(&mut ws, control).await;
+    let url = format!("{}/api/guilds/{}/leave", fx.server.url, fx.guild);
+    fenced_at_commit(
+        fx.member,
+        spawn_request(url, fx.member_token.clone(), reqwest::Method::POST, None),
+        assert_cut_off_before_control(&fx, &mut ws, channel, control),
+    )
+    .await;
+}
+
+#[sqlx::test]
+async fn role_removal_fences_at_commit(pool: PgPool) {
+    let fx = fixture(&pool).await;
+    let p = private_channel(&pool, &fx).await;
+    vc_server::ws::test_hooks::disable_access_wake(fx.member);
+    let mut ws = connect_ready(&fx.server, &fx.member_token).await;
+    subscribe(&mut ws, p.private).await;
+    subscribe(&mut ws, p.control).await;
+    let url = format!(
+        "{}/api/guilds/{}/members/{}/roles/{}",
+        fx.server.url, fx.guild, fx.member, p.role
+    );
+    fenced_at_commit(
+        fx.member,
+        spawn_request(url, fx.owner_token.clone(), reqwest::Method::DELETE, None),
+        assert_cut_off_before_control(&fx, &mut ws, p.private, p.control),
+    )
+    .await;
+}
+
+#[sqlx::test]
+async fn override_fences_at_commit(pool: PgPool) {
+    let fx = fixture(&pool).await;
+    let channel = create_channel(&pool, fx.guild, "general").await;
+    let control = create_channel(&pool, fx.guild, "control").await;
+    let everyone = everyone_role(&pool, fx.guild).await;
+    vc_server::ws::test_hooks::disable_access_wake(fx.member);
+    let mut ws = connect_ready(&fx.server, &fx.member_token).await;
+    subscribe(&mut ws, channel).await;
+    subscribe(&mut ws, control).await;
+    let url = format!(
+        "{}/api/channels/{channel}/overrides/{everyone}",
+        fx.server.url
+    );
+    fenced_at_commit(
+        fx.guild,
+        spawn_request(
+            url,
+            fx.owner_token.clone(),
+            reqwest::Method::PUT,
+            Some(json!({ "allow": 0, "deny": GuildPermissions::VIEW_CHANNEL.bits() })),
+        ),
+        assert_cut_off_before_control(&fx, &mut ws, channel, control),
+    )
+    .await;
+}
+
+#[sqlx::test]
+async fn role_permission_edit_fences_at_commit(pool: PgPool) {
+    let fx = fixture(&pool).await;
+    let p = private_channel(&pool, &fx).await;
+    vc_server::ws::test_hooks::disable_access_wake(fx.member);
+    let mut ws = connect_ready(&fx.server, &fx.member_token).await;
+    subscribe(&mut ws, p.private).await;
+    subscribe(&mut ws, p.control).await;
+    // Overrides alone grant the private channel; edits to the role are
+    // permission edits that bump the server.
+    let url = format!("{}/api/guilds/{}/roles/{}", fx.server.url, fx.guild, p.role);
+    fenced_at_commit(
+        fx.guild,
+        spawn_request(
+            url,
+            fx.owner_token.clone(),
+            reqwest::Method::PATCH,
+            Some(json!({ "permissions": 0 })),
+        ),
+        async {},
+    )
+    .await;
+}
+
+#[sqlx::test]
+async fn channel_delete_fences_at_commit(pool: PgPool) {
+    let fx = fixture(&pool).await;
+    let channel = create_channel(&pool, fx.guild, "doomed").await;
+    let url = format!("{}/api/channels/{channel}", fx.server.url);
+    fenced_at_commit(
+        fx.guild,
+        spawn_request(url, fx.owner_token.clone(), reqwest::Method::DELETE, None),
+        async {},
+    )
+    .await;
+}
+
+#[sqlx::test]
+async fn guild_delete_fences_before_presence_cleanup(pool: PgPool) {
+    let fx = fixture(&pool).await;
+    let url = format!("{}/api/guilds/{}", fx.server.url, fx.guild);
+    fenced_at_commit(
+        fx.guild,
+        spawn_request(url, fx.owner_token.clone(), reqwest::Method::DELETE, None),
+        async {},
+    )
+    .await;
+}
+
+#[sqlx::test]
+async fn group_dm_leave_fences_at_commit(pool: PgPool) {
+    let fx = fixture(&pool).await;
+    let dm = dm_control(&pool, &fx).await;
+    let control = create_channel(&pool, fx.guild, "control").await;
+    vc_server::ws::test_hooks::disable_access_wake(fx.member);
+    let mut ws = connect_ready(&fx.server, &fx.member_token).await;
+    subscribe(&mut ws, dm).await;
+    subscribe(&mut ws, control).await;
+    let url = format!("{}/api/dm/{dm}/leave", fx.server.url);
+    fenced_at_commit(
+        fx.member,
+        spawn_request(url, fx.member_token.clone(), reqwest::Method::POST, None),
+        assert_cut_off_before_control(&fx, &mut ws, dm, control),
+    )
+    .await;
+}
+
+#[sqlx::test]
+async fn de_elevation_fences_before_cache_update(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let server = spawn_test_server(app.router.clone()).await;
+    let (admin, _) = create_test_user(&pool).await;
+    make_admin(&pool, admin).await;
+    let token = create_elevated_session(&pool, &app.config, admin).await;
+    let url = format!("{}/api/admin/elevate", server.url);
+    fenced_at_commit(
+        admin,
+        spawn_request(url, token, reqwest::Method::DELETE, None),
+        async {},
+    )
+    .await;
+}
+
+/// Item 2: a channel deleted while one of its events is queued: the
+/// revalidation finds it gone (not "allowed by default" once its overrides
+/// cascaded away), and the event is not written.
+#[sqlx::test]
+async fn deleted_channel_is_not_allowed(pool: PgPool) {
+    let fx = fixture(&pool).await;
+    let channel = create_channel(&pool, fx.guild, "doomed").await;
+    let control = create_channel(&pool, fx.guild, "control").await;
+    let mut ws = connect_ready(&fx.server, &fx.member_token).await;
+    subscribe(&mut ws, channel).await;
+    subscribe(&mut ws, control).await;
+
+    let pause = vc_server::ws::test_hooks::pause_before_channel_write(fx.member);
+    post_message(&fx, channel, "queued").await;
+    pause.reached.notified().await;
+    owner_request(
+        &fx,
+        reqwest::Method::DELETE,
+        &format!("/api/channels/{channel}"),
+        None,
+    )
+    .await;
+    pause.release.notify_one();
+    post_message(&fx, control, "control").await;
+    let ev = next_message(&mut ws).await;
+    assert_eq!(
+        ev["message"]["content"], "control",
+        "deleted channel's event written: {ev}"
+    );
+}
+
+/// Item 3: voice room content queued for a peer that is removed before the
+/// frame is written is not written; `voice_removed` still is.
+#[sqlx::test]
+async fn queued_voice_content_is_not_written_after_removal(pool: PgPool) {
+    let fx = fixture(&pool).await;
+    let voice = create_voice_channel(&pool, fx.guild, "voice").await;
+    let mut member_ws = connect_ready(&fx.server, &fx.member_token).await;
+    join_voice(&mut member_ws, voice).await;
+
+    let pause = vc_server::ws::test_hooks::pause_before_channel_write(fx.member);
+    let mut owner_ws = connect_ready(&fx.server, &fx.owner_token).await;
+    // The member's socket gets `voice_user_joined` for the owner: held.
+    send(
+        &mut owner_ws,
+        json!({ "type": "voice_join", "channel_id": voice }),
+    )
+    .await;
+    pause.reached.notified().await;
+    owner_request(
+        &fx,
+        reqwest::Method::DELETE,
+        &format!("/api/guilds/{}/members/{}", fx.guild, fx.member),
+        None,
+    )
+    .await;
+    pause.release.notify_one();
+
+    use futures::StreamExt;
+    let wait = async {
+        loop {
+            match member_ws.next().await {
+                Some(Ok(Message::Text(text))) => {
+                    let v: Value = serde_json::from_str(&text).unwrap();
+                    assert_ne!(v["type"], "voice_user_joined", "room content after removal");
+                    if v["type"] == "voice_removed" {
+                        return v;
+                    }
+                }
+                Some(Ok(_)) => {}
+                other => panic!("socket ended: {other:?}"),
+            }
+        }
+    };
+    let removed = tokio::time::timeout(EVENT_TIMEOUT, wait)
+        .await
+        .expect("voice_removed");
+    assert_eq!(removed["reason"], "kicked");
+}
+
+/// Item 6: a refused `subscribe` is remembered; when access is granted
+/// later, the channel's events arrive without a new `subscribe`.
+#[sqlx::test]
+async fn refused_subscribe_comes_back_with_access(pool: PgPool) {
+    let fx = fixture(&pool).await;
+    let p = private_channel(&pool, &fx).await;
+    remove_role(&fx, p.role).await;
+    let mut ws = connect_ready(&fx.server, &fx.member_token).await;
+    send(
+        &mut ws,
+        json!({ "type": "subscribe", "channel_id": p.private }),
+    )
+    .await;
+    let err = next_ws_event(&mut ws, "error", EVENT_TIMEOUT).await;
+    assert_eq!(err["code"], "FORBIDDEN");
+
+    grant_role(&fx, p.role).await;
+    post_message(&fx, p.private, "now visible").await;
+    assert_eq!(
+        next_message(&mut ws).await["message"]["content"],
+        "now visible"
+    );
+}
+
+/// Item 5: shutdown is bounded from the signal — an HTTP request held open
+/// and a socket parked in a slow operation do not delay the sockets' close
+/// frames (1012), and `serve` returns within the bounds.
+#[sqlx::test]
+async fn shutdown_does_not_wait_for_held_requests_or_parked_sockets(pool: PgPool) {
+    let fx = fixture(&pool).await;
+    let channel = create_channel(&pool, fx.guild, "general").await;
+    let (other, _) = create_test_user(&pool).await;
+    add_guild_member(&pool, fx.guild, other).await;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (signal_tx, signal_rx) = tokio::sync::oneshot::channel::<()>();
+    let drain = vc_server::shutdown::SocketDrain::from_state(&fx.app.state);
+    let serving = tokio::spawn(vc_server::shutdown::serve(
+        listener,
+        fx.app.router.clone(),
+        drain,
+        async move {
+            let _ = signal_rx.await;
+        },
+    ));
+    let server = TestServer::for_addr(addr);
+
+    // A socket parked inside a `subscribe` (after its permission check).
+    let mut parked = connect_ready(&server, &fx.member_token).await;
+    let park = vc_server::ws::test_hooks::pause_subscribe_after_check(fx.member);
+    send(
+        &mut parked,
+        json!({ "type": "subscribe", "channel_id": channel }),
+    )
+    .await;
+    park.reached.notified().await;
+    // An HTTP request held right after its commit.
+    let hold = vc_server::ws::test_hooks::pause_after_access_bump(other);
+    let held = tokio::spawn(spawn_request(
+        format!("http://{addr}/api/guilds/{}/members/{other}", fx.guild),
+        fx.owner_token.clone(),
+        reqwest::Method::DELETE,
+        None,
+    ));
+    hold.reached.notified().await;
+
+    let signalled = tokio::time::Instant::now();
+    signal_tx.send(()).unwrap();
+    let (_, code, _) = until_close(&mut parked).await;
+    assert_eq!(code, 1012);
+    assert!(
+        signalled.elapsed() < Duration::from_secs(2),
+        "close took {:?}",
+        signalled.elapsed()
+    );
+    let served = tokio::time::timeout(Duration::from_secs(8), serving)
+        .await
+        .expect("serve did not return within the bounds");
+    served.expect("serve task").expect("serve");
+    hold.release.notify_one();
+    park.release.notify_one();
+    held.abort();
 }

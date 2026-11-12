@@ -427,35 +427,44 @@ pub async fn leave_dm(
     super::read_only::ensure_writable(&state.db, channel_id).await?;
 
     // Remove user from participants
-    let removed = queries::remove_dm_participant(&state.db, channel_id, auth.id).await?;
+    // The leaver's sockets stop getting this DM; a DM call they are in ends
+    // for them.
+    let (removed, bumped) = crate::ws::access::bump_after_if(
+        queries::remove_dm_participant(&state.db, channel_id, auth.id),
+        |removed| {
+            removed.then_some(crate::ws::access::AccessChange::DmLeft {
+                user_id: auth.id,
+                channel_id,
+            })
+        },
+    )
+    .await?;
 
     if !removed {
         return Err(ChatError::ChannelNotFound);
     }
-    // The leaver's sockets stop getting this DM; a DM call they are in ends
-    // for them.
-    crate::ws::access::access_changed(
-        &state,
-        crate::ws::access::AccessChange::DmLeft {
-            user_id: auth.id,
-            channel_id,
-        },
-    )
-    .await;
+    if let Some(bumped) = bumped {
+        crate::ws::access::access_changed(&state, bumped).await;
+    }
 
     // Check if channel is now empty
     let participant_count = queries::count_dm_participants(&state.db, channel_id).await?;
 
     // If channel is empty, delete it
-    if participant_count == 0 && db::delete_channel(&state.db, channel_id).await? {
-        crate::ws::access::access_changed(
-            &state,
-            crate::ws::access::AccessChange::ChannelDeleted {
-                guild_id: None,
-                channel_id,
+    if participant_count == 0 {
+        let (_, bumped) = crate::ws::access::bump_after_if(
+            db::delete_channel(&state.db, channel_id),
+            |deleted| {
+                deleted.then_some(crate::ws::access::AccessChange::ChannelDeleted {
+                    guild_id: None,
+                    channel_id,
+                })
             },
         )
-        .await;
+        .await?;
+        if let Some(bumped) = bumped {
+            crate::ws::access::access_changed(&state, bumped).await;
+        }
     }
 
     Ok(StatusCode::NO_CONTENT)

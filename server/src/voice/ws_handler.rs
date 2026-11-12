@@ -281,12 +281,15 @@ async fn handle_join(
 
     crate::ws::handlers::send_outbound(
         tx,
-        OutboundMsg::Event(ServerEvent::VoiceRoomState {
+        OutboundMsg::voice(
             channel_id,
-            participants,
-            screen_shares,
-            webcams,
-        }),
+            ServerEvent::VoiceRoomState {
+                channel_id,
+                participants,
+                screen_shares,
+                webcams,
+            },
+        ),
     )
     .await?;
 
@@ -398,10 +401,13 @@ async fn handle_publisher_offer(
         Ok(answer_sdp) => {
             if let Err(e) = crate::ws::handlers::send_outbound(
                 &peer.signal_tx,
-                OutboundMsg::Event(ServerEvent::VoicePublisherAnswer {
+                OutboundMsg::voice(
                     channel_id,
-                    sdp: answer_sdp,
-                }),
+                    ServerEvent::VoicePublisherAnswer {
+                        channel_id,
+                        sdp: answer_sdp,
+                    },
+                ),
             )
             .await
             {
@@ -1103,12 +1109,15 @@ async fn handle_set_layer_preference(
         // Notify the viewer of the layer change
         crate::ws::handlers::send_outbound(
             tx,
-            OutboundMsg::Event(ServerEvent::VoiceLayerChanged {
+            OutboundMsg::voice(
                 channel_id,
-                source_user_id: target_user_id,
-                track_source,
-                active_layer: new_layer,
-            }),
+                ServerEvent::VoiceLayerChanged {
+                    channel_id,
+                    source_user_id: target_user_id,
+                    track_source,
+                    active_layer: new_layer,
+                },
+            ),
         )
         .await?;
     }

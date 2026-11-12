@@ -95,6 +95,7 @@ pub async fn process_pending_deletions(pool: &PgPool, s3: &Option<S3Client>) -> 
             tracing::warn!(user_id = %user_id, "User already deleted, skipping");
             continue;
         }
+        crate::ws::access::registry().forget_user(*user_id);
 
         // Clean up S3 objects (best-effort, logged on failure)
         if let Some(s3) = s3 {

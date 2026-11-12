@@ -98,6 +98,17 @@ const RETRY_BASE: Duration = Duration::from_millis(250);
 /// Longest retry delay after failed revalidations.
 const RETRY_MAX: Duration = Duration::from_secs(5);
 
+/// Revalidation reads running at once, process-wide.
+///
+/// The database pool has
+/// 20 connections (`db::create_pool`); a server-wide bump must leave most of
+/// them to requests, so at most 4 are used for revalidation and the other
+/// sockets queue for a permit.
+pub const REVALIDATION_CONCURRENCY: usize = 4;
+
+static REVALIDATION_PERMITS: tokio::sync::Semaphore =
+    tokio::sync::Semaphore::const_new(REVALIDATION_CONCURRENCY);
+
 /// Bound for publishing the cross-node notice.
 const NOTICE_TIMEOUT: Duration = Duration::from_millis(500);
 
@@ -139,15 +150,49 @@ pub struct EpochSnapshot {
     pub guild: Option<u64>,
 }
 
+/// One process-wide sequence for all epoch values: a cell that is removed and
+/// created again never repeats a value a live socket may have stored, and 0
+/// is never an epoch (sockets use it as "never computed").
+static EPOCH_SEQ: AtomicU64 = AtomicU64::new(1);
+
+fn next_epoch() -> u64 {
+    EPOCH_SEQ.fetch_add(1, Ordering::SeqCst) + 1
+}
+
+fn cell(map: &DashMap<Uuid, Arc<AtomicU64>>, id: Uuid) -> Arc<AtomicU64> {
+    map.entry(id)
+        .or_insert_with(|| Arc::new(AtomicU64::new(next_epoch())))
+        .clone()
+}
+
 impl AccessRegistry {
-    /// The epoch cell of `guild_id` (created at 0).
+    /// The epoch cell of `guild_id` (created on first use).
     pub fn guild_epoch(&self, guild_id: Uuid) -> Arc<AtomicU64> {
-        self.guilds.entry(guild_id).or_default().clone()
+        cell(&self.guilds, guild_id)
     }
 
-    /// The epoch cell of `user_id` (created at 0).
+    /// The epoch cell of `user_id` (created on first use).
     pub fn user_epoch(&self, user_id: Uuid) -> Arc<AtomicU64> {
-        self.users.entry(user_id).or_default().clone()
+        cell(&self.users, user_id)
+    }
+
+    /// Drop the cell of a deleted server (after its final bump). Sockets that
+    /// still hold the old cell see it moved and revalidate.
+    pub fn forget_guild(&self, guild_id: Uuid) {
+        self.guilds.remove(&guild_id);
+    }
+
+    /// Drop the cell of a deleted account (its sockets are closed).
+    pub fn forget_user(&self, user_id: Uuid) {
+        if let Some((_, cell)) = self.users.remove(&user_id) {
+            cell.store(next_epoch(), Ordering::SeqCst);
+        }
+    }
+
+    /// Number of cells (tests).
+    #[doc(hidden)]
+    pub fn cells(&self) -> (usize, usize) {
+        (self.guilds.len(), self.users.len())
     }
 
     /// Current epochs of `user_id` and (if given) `guild_id`.
@@ -160,13 +205,15 @@ impl AccessRegistry {
 
     /// Advance `guild_id`'s epoch and wake the sockets.
     pub fn bump_guild(&self, guild_id: Uuid) {
-        self.guild_epoch(guild_id).fetch_add(1, Ordering::SeqCst);
+        self.guild_epoch(guild_id)
+            .store(next_epoch(), Ordering::SeqCst);
         self.wake.send_modify(|n| *n = n.wrapping_add(1));
     }
 
     /// Advance `user_id`'s epoch and wake the sockets.
     pub fn bump_user(&self, user_id: Uuid) {
-        self.user_epoch(user_id).fetch_add(1, Ordering::SeqCst);
+        self.user_epoch(user_id)
+            .store(next_epoch(), Ordering::SeqCst);
         self.wake.send_modify(|n| *n = n.wrapping_add(1));
     }
 
@@ -306,25 +353,75 @@ impl AccessChange {
         })
     }
 
-    /// Bump this change's epoch in this process (synchronous).
-    pub fn bump(self) {
+    /// Bump this change's epoch in this process (synchronous) and return the
+    /// proof for [`access_changed`]. Writers use [`bump_after`]; this is for
+    /// tests.
+    #[doc(hidden)]
+    pub fn bump(self) -> Bumped {
         match self.scope() {
-            Some((NoticeScope::Guild, id)) => registry().bump_guild(id),
+            Some((NoticeScope::Guild, id)) => {
+                registry().bump_guild(id);
+                if matches!(self, Self::GuildDeleted { .. }) {
+                    registry().forget_guild(id);
+                }
+            }
             Some((NoticeScope::User, id)) => registry().bump_user(id),
             None => {}
         }
+        Bumped(self)
     }
 }
 
-/// Apply `change` to open connections. Call it after the change committed.
+/// Proof that a change's epoch was bumped right after its write; the only
+/// way to call [`access_changed`].
+#[derive(Debug)]
+#[must_use = "pass it to access_changed so voice and other nodes follow"]
+pub struct Bumped(AccessChange);
+
+impl Bumped {
+    /// The change.
+    pub const fn change(&self) -> AccessChange {
+        self.0
+    }
+}
+
+/// Run the committing `write`, then bump `change`'s epoch in the same poll.
 ///
-/// The epoch is bumped before the first `.await`. The cross-node notice is
-/// published in a detached task, so a Valkey outage never delays the
-/// request. Voice participants who lost access are removed before this
-/// returns (rooms are in this process). It never fails the request.
+/// There is no `.await` (cancellation point) between the commit and the
+/// bump. Every access trigger writes through this (or
+/// [`bump_after_if`]), so no post-commit work can delay the fence.
+pub async fn bump_after<T, E>(
+    change: AccessChange,
+    write: impl std::future::Future<Output = Result<T, E>>,
+) -> Result<(T, Bumped), E> {
+    let value = write.await?;
+    let bumped = change.bump();
+    crate::ws::test_hooks::after_access_bump(change).await;
+    Ok((value, bumped))
+}
+
+/// [`bump_after`] for writes whose result decides whether (and what) to bump
+/// (e.g. "a row was removed").
+pub async fn bump_after_if<T, E>(
+    write: impl std::future::Future<Output = Result<T, E>>,
+    decide: impl FnOnce(&T) -> Option<AccessChange>,
+) -> Result<(T, Option<Bumped>), E> {
+    let value = write.await?;
+    let bumped = decide(&value).map(AccessChange::bump);
+    if let Some(bumped) = &bumped {
+        crate::ws::test_hooks::after_access_bump(bumped.change()).await;
+    }
+    Ok((value, bumped))
+}
+
+/// Apply a bumped change to the rest of the system.
+///
+/// That is the cross-node notice (detached, so a Valkey outage never delays the request) and voice
+/// participants who lost access (removed before this returns; rooms are in
+/// this process). It never fails the request.
 #[tracing::instrument(skip(state))]
-pub async fn access_changed(state: &AppState, change: AccessChange) {
-    change.bump();
+pub async fn access_changed(state: &AppState, bumped: Bumped) {
+    let change = bumped.0;
     if let Some((scope, id)) = change.scope() {
         publish_notice_detached(&state.redis, scope, id);
     }
@@ -397,6 +494,23 @@ struct Inner {
     guilds: HashMap<Uuid, GuildSeen>,
     failure: Option<Failure>,
     force_full: bool,
+    /// A channel event was refused because revalidation was failing (not
+    /// because access was lost): the client missed something.
+    dropped_while_failing: bool,
+    /// Revalidation recovered after such a drop: the socket must make the
+    /// client resynchronise (close 1011, see `ws::handlers`).
+    resync: bool,
+    /// Bumped by [`SocketAccess::record_unchecked`]; a revalidation planned
+    /// before such a record must not mark the scopes fresh.
+    unchecked_gen: u64,
+}
+
+/// What one revalidation read found.
+struct ReadResult {
+    viewable: HashSet<Uuid>,
+    existing: HashSet<Uuid>,
+    direct_ok: HashSet<Uuid>,
+    direct_existing: HashSet<Uuid>,
 }
 
 /// One socket's requested and allowed channels and the epochs they were
@@ -416,6 +530,7 @@ pub struct SocketAccess {
 }
 
 struct Plan {
+    unchecked_gen: u64,
     full: bool,
     forced: bool,
     user_now: u64,
@@ -440,6 +555,9 @@ impl SocketAccess {
                 guilds: HashMap::new(),
                 failure: None,
                 force_full: false,
+                dropped_while_failing: false,
+                resync: false,
+                unchecked_gen: 0,
             }),
             refresh_gate: tokio::sync::Mutex::new(()),
             attention: Notify::new(),
@@ -491,7 +609,7 @@ impl SocketAccess {
     pub async fn admit(&self, channel_id: Uuid) -> bool {
         for _ in 0..4 {
             {
-                let inner = self.lock();
+                let mut inner = self.lock();
                 let Some(&scope) = inner.requested.get(&channel_id) else {
                     return false;
                 };
@@ -503,15 +621,24 @@ impl SocketAccess {
                     .as_ref()
                     .is_some_and(|f| Instant::now() < f.retry_at)
                 {
+                    inner.dropped_while_failing = true;
                     return false;
                 }
             }
             if self.refresh().await.is_err() {
+                self.lock().dropped_while_failing = true;
                 return false;
             }
         }
         // Epochs kept moving under four revalidations in a row.
+        self.lock().dropped_while_failing = true;
         false
+    }
+
+    /// Whether the client must resynchronise (an event was dropped while
+    /// revalidation was failing, and it has recovered since). Clears it.
+    pub fn take_resync(&self) -> bool {
+        std::mem::take(&mut self.lock().resync)
     }
 
     /// The epochs a `subscribe` of a channel in `scope` checks against.
@@ -540,19 +667,47 @@ impl SocketAccess {
         if self.snapshot(scope) != snap {
             return false;
         }
+        // Recorded either way: the client keeps the id and will not ask
+        // again, so a refused channel must come back when access does.
+        if let (ChannelScope::Guild(g), Some(seen)) = (scope, snap.guild) {
+            inner.guilds.entry(g).or_insert_with(|| GuildSeen {
+                epoch: registry().guild_epoch(g),
+                seen,
+            });
+        }
+        inner.requested.insert(channel_id, scope);
         if granted {
-            if let (ChannelScope::Guild(g), Some(seen)) = (scope, snap.guild) {
-                inner.guilds.entry(g).or_insert_with(|| GuildSeen {
-                    epoch: registry().guild_epoch(g),
-                    seen,
-                });
-            }
-            inner.requested.insert(channel_id, scope);
             inner.allowed.insert(channel_id);
         } else {
             inner.allowed.remove(&channel_id);
         }
         true
+    }
+
+    /// Record `channel_id` as requested without a decision (the check failed
+    /// with a database error, or a `dm_created` arrived): not allowed, and its
+    /// scope is marked stale so the next delivery or wake revalidates it.
+    pub fn record_unchecked(&self, channel_id: Uuid, scope: ChannelScope) {
+        let mut inner = self.lock();
+        inner.requested.insert(channel_id, scope);
+        inner.allowed.remove(&channel_id);
+        inner.unchecked_gen += 1;
+        match scope {
+            // 0 is never an epoch value: stale until revalidated.
+            ChannelScope::Direct => inner.seen_user = 0,
+            ChannelScope::Guild(g) => {
+                inner
+                    .guilds
+                    .entry(g)
+                    .or_insert_with(|| GuildSeen {
+                        epoch: registry().guild_epoch(g),
+                        seen: 0,
+                    })
+                    .seen = 0;
+            }
+        }
+        drop(inner);
+        self.attention.notify_one();
     }
 
     /// The client unsubscribed: drop `channel_id` from both sets.
@@ -562,11 +717,11 @@ impl SocketAccess {
         inner.allowed.remove(&channel_id);
     }
 
-    /// A DM the user was just added to (`dm_created`): requested and allowed.
+    /// A DM the user was just added to (`dm_created`): requested, and
+    /// allowed only after a revalidation confirms participation (the user
+    /// may have left again before this socket processed the event).
     pub fn insert_direct(&self, channel_id: Uuid) {
-        let mut inner = self.lock();
-        inner.requested.insert(channel_id, ChannelScope::Direct);
-        inner.allowed.insert(channel_id);
+        self.record_unchecked(channel_id, ChannelScope::Direct);
     }
 
     /// Whether any epoch this socket depends on moved since its last
@@ -629,10 +784,13 @@ impl SocketAccess {
             self.user_id,
             usize::from(!plan.guild_channels.is_empty()) + usize::from(!plan.direct.is_empty()),
         );
+        // Queue for a permit outside the timeout: waiting behind other
+        // sockets is not a failure.
+        let _permit = REVALIDATION_PERMITS.acquire().await;
         let read = tokio::time::timeout(REFRESH_TIMEOUT, self.read(&plan)).await;
         match read {
-            Ok(Ok((viewable, direct_ok))) => {
-                self.apply(&plan, &viewable, &direct_ok);
+            Ok(Ok(found)) => {
+                self.apply(&plan, &found);
                 Ok(())
             }
             Ok(Err(e)) => {
@@ -682,6 +840,7 @@ impl SocketAccess {
             }
         }
         Ok(Some(Plan {
+            unchecked_gen: inner.unchecked_gen,
             full,
             forced,
             user_now,
@@ -691,61 +850,85 @@ impl SocketAccess {
         }))
     }
 
-    async fn read(&self, plan: &Plan) -> Result<(HashSet<Uuid>, HashSet<Uuid>), sqlx::Error> {
+    async fn read(&self, plan: &Plan) -> Result<ReadResult, sqlx::Error> {
         if crate::ws::test_hooks::access_read_fails(self.user_id) {
             return Err(sqlx::Error::PoolTimedOut);
         }
-        let viewable = if plan.guild_channels.is_empty() {
-            HashSet::new()
+        let (viewable, existing) = if plan.guild_channels.is_empty() {
+            (HashSet::new(), HashSet::new())
         } else {
-            crate::permissions::filter_viewable_channels_in_guilds(
+            crate::permissions::viewable_and_existing_channels(
                 &self.db,
                 self.user_id,
                 &plan.guild_channels,
             )
             .await?
         };
-        let direct_ok: HashSet<Uuid> = if plan.direct.is_empty() {
-            HashSet::new()
-        } else {
-            sqlx::query_scalar::<_, Uuid>(
-                "SELECT channel_id FROM dm_participants WHERE user_id = $1 AND channel_id = ANY($2)",
+        let mut direct_ok = HashSet::new();
+        let mut direct_existing = HashSet::new();
+        if !plan.direct.is_empty() {
+            let rows: Vec<(Uuid, bool)> = sqlx::query_as(
+                "SELECT c.id, EXISTS (SELECT 1 FROM dm_participants dp
+                                       WHERE dp.channel_id = c.id AND dp.user_id = $1)
+                 FROM channels c WHERE c.id = ANY($2)",
             )
             .bind(self.user_id)
             .bind(&plan.direct)
             .fetch_all(&self.db)
-            .await?
-            .into_iter()
-            .collect()
-        };
-        Ok((viewable, direct_ok))
+            .await?;
+            for (channel, participant) in rows {
+                direct_existing.insert(channel);
+                if participant {
+                    direct_ok.insert(channel);
+                }
+            }
+        }
+        Ok(ReadResult {
+            viewable,
+            existing,
+            direct_ok,
+            direct_existing,
+        })
     }
 
-    fn apply(&self, plan: &Plan, viewable: &HashSet<Uuid>, direct_ok: &HashSet<Uuid>) {
+    fn apply(&self, plan: &Plan, found: &ReadResult) {
         let mut guard = self.lock();
         let inner = &mut *guard;
         let mut lost = Vec::new();
         let mut regained = Vec::new();
+        // allowed = requested ∩ existing ∩ permitted; a deleted channel can
+        // never come back, so it also leaves requested.
         for &(g, channel) in &plan.guild_channels {
             // Only channels still requested in the same scope (an
             // unsubscribe or a fresh subscribe during the read wins).
             if inner.requested.get(&channel) == Some(&ChannelScope::Guild(g)) {
-                let ok = viewable.contains(&channel);
+                if !found.existing.contains(&channel) {
+                    inner.requested.remove(&channel);
+                }
+                let ok = found.viewable.contains(&channel);
                 set_allowed(&mut inner.allowed, channel, ok, &mut lost, &mut regained);
             }
         }
         for &channel in &plan.direct {
             if inner.requested.get(&channel) == Some(&ChannelScope::Direct) {
-                let ok = direct_ok.contains(&channel);
+                if !found.direct_existing.contains(&channel) {
+                    inner.requested.remove(&channel);
+                }
+                let ok = found.direct_ok.contains(&channel);
                 set_allowed(&mut inner.allowed, channel, ok, &mut lost, &mut regained);
             }
         }
-        if plan.full {
+        // A channel recorded unchecked during the read was not in the plan:
+        // its scope stays stale for the next run.
+        let unchecked_since_plan = inner.unchecked_gen != plan.unchecked_gen;
+        if plan.full && !unchecked_since_plan {
             inner.seen_user = inner.seen_user.max(plan.user_now);
         }
         for &(g, now) in &plan.guild_targets {
             if let Some(gs) = inner.guilds.get_mut(&g) {
-                gs.seen = gs.seen.max(now);
+                if !unchecked_since_plan {
+                    gs.seen = gs.seen.max(now);
+                }
             }
         }
         // Servers without requested channels need no epoch.
@@ -756,7 +939,14 @@ impl SocketAccess {
                 .any(|scope| *scope == ChannelScope::Guild(*g))
         });
         inner.failure = None;
+        let resync = std::mem::take(&mut inner.dropped_while_failing);
+        if resync {
+            inner.resync = true;
+        }
         drop(guard);
+        if resync {
+            self.attention.notify_one();
+        }
         if !lost.is_empty() || !regained.is_empty() {
             debug!(
                 user_id = %self.user_id,
@@ -875,10 +1065,57 @@ mod tests {
         );
 
         let before = registry().snapshot(u, Some(g));
-        AccessChange::GuildRolesChanged { guild_id: g }.bump();
+        let _ = AccessChange::GuildRolesChanged { guild_id: g }.bump();
         let after = registry().snapshot(u, Some(g));
         assert_eq!(after.user, before.user);
         assert_eq!(after.guild, before.guild.map(|e| e + 1));
+    }
+
+    #[test]
+    fn deleted_cells_go_and_never_repeat_a_value() {
+        let (g, u) = (Uuid::new_v4(), Uuid::new_v4());
+        let old_guild = registry().guild_epoch(g);
+        let old_user = registry().user_epoch(u);
+        let seen_guild = old_guild.load(Ordering::SeqCst);
+        let seen_user = old_user.load(Ordering::SeqCst);
+        let _ = AccessChange::GuildDeleted { guild_id: g }.bump();
+        assert!(
+            !registry().guilds.contains_key(&g),
+            "cell of a deleted server kept"
+        );
+        assert_ne!(
+            old_guild.load(Ordering::SeqCst),
+            seen_guild,
+            "holders see the bump"
+        );
+        registry().forget_user(u);
+        assert!(!registry().users.contains_key(&u));
+        assert_ne!(old_user.load(Ordering::SeqCst), seen_user);
+        // A re-created cell starts at a value nobody has stored.
+        let again = registry().guild_epoch(g).load(Ordering::SeqCst);
+        assert!(again > seen_guild && again != old_guild.load(Ordering::SeqCst));
+        assert!(registry().user_epoch(u).load(Ordering::SeqCst) > seen_user);
+    }
+
+    #[tokio::test]
+    async fn refused_and_unchecked_channels_stay_requested() {
+        let (u, g, c, d) = (
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+        );
+        let access = SocketAccess::new(u, lazy_pool());
+        let scope = ChannelScope::Guild(g);
+        assert!(access.commit_subscribe(c, scope, access.snapshot(scope), false));
+        assert!(access.is_requested(c) && !access.is_allowed(c));
+        assert!(!access.is_stale());
+        access.record_unchecked(d, ChannelScope::Direct);
+        assert!(access.is_requested(d) && !access.is_allowed(d));
+        assert!(
+            access.is_stale(),
+            "an unchecked channel must be revalidated"
+        );
     }
 
     #[tokio::test]

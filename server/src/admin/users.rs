@@ -437,12 +437,12 @@ pub async fn ban_user(
     )
     .await?;
     end_all_sessions_tx(&state, &mut tx, user_id).await?;
-    tx.commit().await?;
-    crate::ws::access::access_changed(
-        &state,
+    let ((), bumped) = crate::ws::access::bump_after(
         crate::ws::access::AccessChange::UserBanned { user_id },
+        tx.commit(),
     )
-    .await;
+    .await?;
+    crate::ws::access::access_changed(&state, bumped).await;
 
     // Log the action
     let ip_address = addr.ip().to_string();
@@ -601,18 +601,17 @@ pub async fn bulk_ban_users(
         }
 
         // Ban the user (durable first), then end their sessions
-        if let Err(e) = ban_and_end_sessions(&state, *user_id, admin.user_id, &body).await {
-            failed.push(BulkActionFailure {
-                id: *user_id,
-                reason: format!("Database error: {e}"),
-            });
-            continue;
-        }
-        crate::ws::access::access_changed(
-            &state,
-            crate::ws::access::AccessChange::UserBanned { user_id: *user_id },
-        )
-        .await;
+        let bumped = match ban_and_end_sessions(&state, *user_id, admin.user_id, &body).await {
+            Ok(bumped) => bumped,
+            Err(e) => {
+                failed.push(BulkActionFailure {
+                    id: *user_id,
+                    reason: format!("Database error: {e}"),
+                });
+                continue;
+            }
+        };
+        crate::ws::access::access_changed(&state, bumped).await;
         banned_count += 1;
     }
 
@@ -693,6 +692,9 @@ pub async fn delete_user(
         return Err(AdminError::NotFound("User".to_string()));
     }
     tx.commit().await?;
+    // The account's sessions ended above (its sockets close); its access
+    // epoch cell goes with it.
+    crate::ws::access::registry().forget_user(user_id);
 
     // Log the action
     let ip_address = addr.ip().to_string();
@@ -814,11 +816,15 @@ async fn ban_and_end_sessions(
     user_id: Uuid,
     banned_by: Uuid,
     body: &BulkBanRequest,
-) -> Result<(), AdminError> {
+) -> Result<crate::ws::access::Bumped, AdminError> {
     let mut tx = state.db.begin().await?;
     crate::approvals::transition::lock_accounts(&mut tx, &[banned_by, user_id]).await?;
     queries::insert_global_ban(&mut tx, user_id, banned_by, &body.reason, body.expires_at).await?;
     end_all_sessions_tx(state, &mut tx, user_id).await?;
-    tx.commit().await?;
-    Ok(())
+    let ((), bumped) = crate::ws::access::bump_after(
+        crate::ws::access::AccessChange::UserBanned { user_id },
+        tx.commit(),
+    )
+    .await?;
+    Ok(bumped)
 }

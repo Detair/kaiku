@@ -295,9 +295,26 @@ pub async fn de_elevate_session(
 
     // De-elevate only the caller's session (C24: an elevation belongs to one
     // session); other sessions of the same admin keep theirs.
+    // The admin's sockets are fenced right after the commit (`bump_after`):
+    // their admin flag is re-checked against the database, not the cache
+    // updated below.
     let removed_sessions = match auth.session_id {
         Some(session_id) => {
-            queries::delete_elevated_session(&state.db, admin.user_id, session_id).await?
+            let (removed, bumped) = crate::ws::access::bump_after_if(
+                queries::delete_elevated_session(&state.db, admin.user_id, session_id),
+                |removed: &Vec<_>| {
+                    (!removed.is_empty()).then_some(
+                        crate::ws::access::AccessChange::AdminAccessChanged {
+                            user_id: admin.user_id,
+                        },
+                    )
+                },
+            )
+            .await?;
+            if let Some(bumped) = bumped {
+                crate::ws::access::access_changed(&state, bumped).await;
+            }
+            removed
         }
         None => Vec::new(),
     };
@@ -307,16 +324,6 @@ pub async fn de_elevate_session(
         super::cache_elevated_status(&state.redis, *session_id, false, 60).await;
     }
     let removed = removed_sessions.len();
-    if removed > 0 {
-        // Sockets of the session stop getting admin events.
-        crate::ws::access::access_changed(
-            &state,
-            crate::ws::access::AccessChange::AdminAccessChanged {
-                user_id: admin.user_id,
-            },
-        )
-        .await;
-    }
 
     // Log the de-elevation if any sessions were deleted
     if removed > 0 {

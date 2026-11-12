@@ -443,19 +443,21 @@ pub async fn delete_guild(
     let revocation =
         crate::presence::connections::begin_user_revocation(&state.redis, guild_id, None, &members)
             .await;
-    let deleted = queries::delete_guild(&state.db, guild_id).await;
+    let deleted =
+        crate::ws::access::bump_after_if(queries::delete_guild(&state.db, guild_id), |n| {
+            (*n > 0).then_some(crate::ws::access::AccessChange::GuildDeleted { guild_id })
+        })
+        .await;
     crate::presence::connections::finish_guild_revocation(&state.redis, revocation, guild_id, None)
         .await;
-    let deleted = deleted?;
+    let (deleted, bumped) = deleted?;
 
     if deleted == 0 {
         return Err(AdminError::NotFound("Guild".to_string()));
     }
-    crate::ws::access::access_changed(
-        &state,
-        crate::ws::access::AccessChange::GuildDeleted { guild_id },
-    )
-    .await;
+    if let Some(bumped) = bumped {
+        crate::ws::access::access_changed(&state, bumped).await;
+    }
 
     // Log the action
     let ip_address = addr.ip().to_string();

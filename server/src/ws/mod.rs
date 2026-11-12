@@ -170,10 +170,24 @@ pub mod test_hooks {
     //! lock and an empty map lookup.
 
     use std::collections::HashMap;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex, OnceLock};
 
     use tokio::sync::Notify;
     use uuid::Uuid;
+
+    /// Set once any hook is registered (tests only). Until then every hook
+    /// is a single relaxed load: production never takes a hook lock.
+    static ARMED: AtomicBool = AtomicBool::new(false);
+
+    fn arm() {
+        ARMED.store(true, Ordering::Relaxed);
+    }
+
+    #[inline]
+    fn armed() -> bool {
+        ARMED.load(Ordering::Relaxed)
+    }
 
     /// A pause registered for one user's next socket.
     #[derive(Clone, Default)]
@@ -192,6 +206,7 @@ pub mod test_hooks {
     /// Pause the next socket of `user_id` after it has read its presence
     /// audience (peers, servers, blocks) and before it subscribes.
     pub fn pause_after_audience_read(user_id: Uuid) -> Pause {
+        arm();
         let pause = Pause::default();
         pauses()
             .lock()
@@ -212,6 +227,7 @@ pub mod test_hooks {
     /// Pause the next audience reload of a live socket of `user_id` after it
     /// has read the audience and before it applies it (subscribes).
     pub fn pause_in_audience_reload(user_id: Uuid) -> Pause {
+        arm();
         let pause = Pause::default();
         reload_pauses()
             .lock()
@@ -233,6 +249,7 @@ pub mod test_hooks {
     /// subscriptions, right after their barrier (new peers subscribed, not
     /// yet validated).
     pub fn pause_after_audience_barrier(user_id: Uuid) -> Pause {
+        arm();
         let pause = Pause::default();
         barrier_pauses()
             .lock()
@@ -253,6 +270,7 @@ pub mod test_hooks {
     /// Make the next presence-audience read of `user_id` fail like a database
     /// error.
     pub fn fail_next_audience_read(user_id: Uuid) {
+        arm();
         failing_reads()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -260,6 +278,9 @@ pub mod test_hooks {
     }
 
     pub(crate) fn audience_read_fails(user_id: Uuid) -> bool {
+        if !armed() {
+            return false;
+        }
         failing_reads()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -274,6 +295,7 @@ pub mod test_hooks {
     /// Pause the next presence snapshot (connect, new peers, backstop) of a
     /// socket of `user_id` after its fence, before it queues any entry.
     pub fn pause_in_snapshot(user_id: Uuid) -> Pause {
+        arm();
         let pause = Pause::default();
         snapshot_pauses()
             .lock()
@@ -294,6 +316,7 @@ pub mod test_hooks {
     /// Let tests run the presence backstop of `user_id`'s next socket on
     /// demand: register before the socket connects, then notify.
     pub fn run_backstop(user_id: Uuid) -> Arc<Notify> {
+        arm();
         let trigger = Arc::new(Notify::new());
         backstop_triggers()
             .lock()
@@ -304,6 +327,9 @@ pub mod test_hooks {
 
     /// The backstop trigger registered for `user_id`, if any (taken once).
     pub(crate) fn backstop_trigger(user_id: Uuid) -> Option<Arc<Notify>> {
+        if !armed() {
+            return None;
+        }
         backstop_triggers()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -318,6 +344,7 @@ pub mod test_hooks {
     /// Pause the next block or server leave made by `user_id` after its
     /// database change, before its completion notice.
     pub fn pause_after_revocation_commit(user_id: Uuid) -> Pause {
+        arm();
         let pause = Pause::default();
         revocation_pauses()
             .lock()
@@ -339,6 +366,7 @@ pub mod test_hooks {
     /// pending revocation was opened (and pre-notice sent), before its
     /// database change.
     pub fn pause_before_revocation_commit(user_id: Uuid) -> Pause {
+        arm();
         let pause = Pause::default();
         before_commit_pauses()
             .lock()
@@ -356,9 +384,11 @@ pub mod test_hooks {
         PAUSES.get_or_init(Mutex::default)
     }
 
-    /// Pause the next channel event a socket of `user_id` is about to write,
-    /// before its access decision (the event is already queued).
+    /// Pause the next channel or voice-room event a socket of `user_id` is
+    /// about to write, before its access decision (the event is already
+    /// queued).
     pub fn pause_before_channel_write(user_id: Uuid) -> Pause {
+        arm();
         let pause = Pause::default();
         channel_write_pauses()
             .lock()
@@ -379,6 +409,7 @@ pub mod test_hooks {
     /// Pause the next `subscribe` of `user_id` after its permission check,
     /// before its result is recorded.
     pub fn pause_subscribe_after_check(user_id: Uuid) -> Pause {
+        arm();
         let pause = Pause::default();
         subscribe_pauses()
             .lock()
@@ -399,6 +430,7 @@ pub mod test_hooks {
     /// Pause the next voice join of `user_id` after its permission check,
     /// before its peer is created and added to the room.
     pub fn pause_voice_join_after_check(user_id: Uuid) -> Pause {
+        arm();
         let pause = Pause::default();
         voice_join_pauses()
             .lock()
@@ -419,6 +451,7 @@ pub mod test_hooks {
     /// Count the access revalidation reads of `user_id`'s sockets from now
     /// on (see [`access_reads`]).
     pub fn count_access_reads(user_id: Uuid) {
+        arm();
         access_counters()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -431,6 +464,7 @@ pub mod test_hooks {
     /// A batched read is one `filter_viewable_channels_in_guilds` call (at
     /// most 4 SQL statements) or one DM participation query.
     pub fn access_reads(user_id: Uuid) -> (usize, usize) {
+        arm();
         access_counters()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -440,6 +474,9 @@ pub mod test_hooks {
     }
 
     pub(crate) fn count_access_read(user_id: Uuid, reads: usize) {
+        if !armed() {
+            return;
+        }
         if let Some(entry) = access_counters()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -458,6 +495,7 @@ pub mod test_hooks {
     /// Make the next `n` access revalidations of `user_id`'s sockets fail
     /// like a database error.
     pub fn fail_access_reads(user_id: Uuid, n: usize) {
+        arm();
         failing_access_reads()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -465,6 +503,9 @@ pub mod test_hooks {
     }
 
     pub(crate) fn access_read_fails(user_id: Uuid) -> bool {
+        if !armed() {
+            return false;
+        }
         let mut map = failing_access_reads()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -486,6 +527,7 @@ pub mod test_hooks {
     /// by a bump (only at write time and on the backstop), so a test can
     /// show that delivery itself is fenced.
     pub fn disable_access_wake(user_id: Uuid) {
+        arm();
         wake_disabled()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -493,13 +535,46 @@ pub mod test_hooks {
     }
 
     pub(crate) fn access_wake_disabled(user_id: Uuid) -> bool {
+        if !armed() {
+            return false;
+        }
         wake_disabled()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .contains(&user_id)
     }
 
+    fn bump_pauses() -> &'static Mutex<HashMap<Uuid, Pause>> {
+        static PAUSES: OnceLock<Mutex<HashMap<Uuid, Pause>>> = OnceLock::new();
+        PAUSES.get_or_init(Mutex::default)
+    }
+
+    /// Pause the next access trigger for `scope_id` (the user or server whose
+    /// epoch it bumps) right after its commit and bump, before any other
+    /// post-commit work of the request.
+    pub fn pause_after_access_bump(scope_id: Uuid) -> Pause {
+        arm();
+        let pause = Pause::default();
+        bump_pauses()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(scope_id, pause.clone());
+        pause
+    }
+
+    pub(crate) async fn after_access_bump(change: crate::ws::access::AccessChange) {
+        if !armed() {
+            return;
+        }
+        if let Some((_, id)) = change.scope() {
+            wait(bump_pauses(), id).await;
+        }
+    }
+
     async fn wait(map: &Mutex<HashMap<Uuid, Pause>>, user_id: Uuid) {
+        if !armed() {
+            return;
+        }
         let pause = map
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
