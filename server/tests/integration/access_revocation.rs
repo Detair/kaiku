@@ -574,10 +574,11 @@ async fn request_as(
         req = req.json(&body);
     }
     let resp = req.send().await.expect("request");
+    let status = resp.status();
     assert!(
-        resp.status().is_success(),
-        "{method} {path}: {}",
-        resp.status()
+        status.is_success(),
+        "{method} {path}: {status} {}",
+        resp.text().await.unwrap_or_default()
     );
 }
 
@@ -856,6 +857,36 @@ async fn until_pong(ws: &mut WsClient) -> Vec<Value> {
     tokio::time::timeout(EVENT_TIMEOUT, wait)
         .await
         .expect("no pong");
+    events
+}
+
+/// Like [`until_pong`] for a socket that the change under test also closes
+/// (its session ends): the events seen until the pong or the end of the
+/// socket, whichever comes first.
+async fn until_pong_or_end(ws: &mut WsClient) -> Vec<Value> {
+    use futures::StreamExt;
+    let _ = ws
+        .send(Message::Text(json!({ "type": "ping" }).to_string().into()))
+        .await;
+    let mut events = Vec::new();
+    let wait = async {
+        while let Some(Ok(frame)) = ws.next().await {
+            match frame {
+                Message::Text(text) => {
+                    let event: Value = serde_json::from_str(&text).unwrap();
+                    if event["type"] == "pong" {
+                        return;
+                    }
+                    events.push(event);
+                }
+                Message::Close(_) => return,
+                _ => {}
+            }
+        }
+    };
+    tokio::time::timeout(EVENT_TIMEOUT, wait)
+        .await
+        .expect("neither a pong nor the end of the socket");
     events
 }
 
@@ -1686,6 +1717,107 @@ async fn override_delete_fences_at_commit(pool: PgPool) {
     .await;
 }
 
+/// Deleting an account: nothing more is written to its sockets from the
+/// commit on (its sessions end with it; the sockets close afterwards).
+#[sqlx::test]
+async fn account_deletion_fences_at_commit(pool: PgPool) {
+    let fx = fixture(&pool).await;
+    let channel = create_channel(&pool, fx.guild, "general").await;
+    let (admin, _) = create_test_user(&pool).await;
+    make_admin(&pool, admin).await;
+    let admin_token = create_elevated_session(&pool, &fx.app.config, admin).await;
+    vc_server::ws::test_hooks::disable_access_wake(fx.member);
+    let mut ws = connect_ready(&fx.server, &fx.member_token).await;
+    subscribe(&mut ws, channel).await;
+    assert_receives(&fx, &mut ws, channel).await;
+
+    let held = vc_server::ws::test_hooks::pause_before_channel_write(fx.member);
+    post_message(&fx, channel, "queued").await;
+    held.reached.notified().await;
+    let url = format!("{}/api/admin/users/{}", fx.server.url, fx.member);
+    fenced_at_commit(
+        fx.member,
+        spawn_request(url, admin_token, reqwest::Method::DELETE, None),
+        async {
+            held.release.notify_one();
+            assert_none_of_type(&until_pong_or_end(&mut ws).await, "message_new");
+        },
+    )
+    .await;
+}
+
+/// Removing a bot from a server takes its roles there away: written like
+/// every other role change (the bump follows the commit with nothing in
+/// between).
+#[sqlx::test]
+async fn bot_uninstall_fences_at_commit(pool: PgPool) {
+    let fx = fixture(&pool).await;
+    let role = create_role(&pool, fx.guild, "helpers").await;
+    let (app_id, bot, _token) = super::helpers::create_bot_application(&pool, fx.owner).await;
+    super::helpers::install_bot_in_guild(&pool, fx.guild, app_id, fx.owner).await;
+    assign_role(&pool, fx.guild, bot, role).await;
+    let url = format!("{}/api/guilds/{}/bots/{bot}", fx.server.url, fx.guild);
+    fenced_at_commit(
+        bot,
+        spawn_request(url, fx.owner_token.clone(), reqwest::Method::DELETE, None),
+        async {
+            let roles: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM guild_member_roles WHERE user_id = $1")
+                    .bind(bot)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(roles, 0, "paused before the uninstall committed");
+        },
+    )
+    .await;
+}
+
+/// A button of a bot that cannot see the channel (any more): the click is
+/// answered with `BOT_NOT_ALLOWED_IN_CHANNEL`, like a slash command; while
+/// the bot can see the channel there is no such error.
+#[sqlx::test]
+async fn component_click_for_a_bot_without_channel_access_is_refused(pool: PgPool) {
+    let fx = fixture(&pool).await;
+    let channel = create_channel(&pool, fx.guild, "general").await;
+    let everyone = everyone_role(&pool, fx.guild).await;
+    let (app_id, bot, _token) = super::helpers::create_bot_application(&pool, fx.owner).await;
+    super::helpers::install_bot_in_guild(&pool, fx.guild, app_id, fx.owner).await;
+    let message = super::helpers::insert_message(&pool, channel, bot, "pick one").await;
+    sqlx::query("UPDATE messages SET components = $2 WHERE id = $1")
+        .bind(message)
+        .bind(json!([{ "components": [
+            { "type": "button", "style": "primary", "label": "Go", "custom_id": "go" }
+        ] }]))
+        .execute(&pool)
+        .await
+        .unwrap();
+    let click = json!({
+        "type": "component_interaction",
+        "message_id": message,
+        "custom_id": "go",
+        "values": [],
+    });
+
+    let mut ws = connect_ready(&fx.server, &fx.owner_token).await;
+    send(&mut ws, click.clone()).await;
+    assert_none_of_type(&until_pong(&mut ws).await, "error");
+
+    // The channel is hidden from everyone without a role; the owner still
+    // sees it, the bot does not.
+    set_override(
+        &pool,
+        channel,
+        everyone,
+        GuildPermissions::empty(),
+        GuildPermissions::VIEW_CHANNEL,
+    )
+    .await;
+    send(&mut ws, click).await;
+    let error = next_ws_event(&mut ws, "error", EVENT_TIMEOUT).await;
+    assert_eq!(error["code"], "BOT_NOT_ALLOWED_IN_CHANNEL");
+}
+
 /// A ban: nothing more is written to the banned account's sockets from the
 /// commit on (its sessions end with the ban; the sockets close afterwards).
 #[sqlx::test]
@@ -1714,7 +1846,7 @@ async fn ban_fences_at_commit(pool: PgPool) {
         ),
         async {
             held.release.notify_one();
-            assert_none_of_type(&until_pong(&mut ws).await, "message_new");
+            assert_none_of_type(&until_pong_or_end(&mut ws).await, "message_new");
         },
     )
     .await;
