@@ -67,6 +67,15 @@ class AttachmentViewModel @Inject constructor(
     private var pendingSave: File? = null
     private var pendingSaveOrigin: Long? = null
 
+    private var lastViewer = 0L
+
+    /**
+     * An id for a photo viewer that is being opened. Ids come from here, not
+     * from the screen, because this ViewModel outlives a rotation: a viewer
+     * opened afterwards never gets the id of one that started a save before.
+     */
+    fun newViewer(): Long = ++lastViewer
+
     fun open(attachment: Attachment) = withFile(attachment, R.string.chat_attachment_open_failed) { file ->
         AttachmentEvent.Open(files.shareableUri(file), attachment.mimeType)
     }

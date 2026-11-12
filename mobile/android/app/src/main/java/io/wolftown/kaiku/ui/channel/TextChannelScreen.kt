@@ -280,7 +280,7 @@ fun TextChannelScreen(
     }
     val openAttachment: (io.wolftown.kaiku.domain.model.Attachment) -> Unit = { att ->
         if (att.isImage()) {
-            viewerInstance++
+            viewerInstance = attachmentViewModel.newViewer()
             viewerAttachment = att
         } else {
             attachmentViewModel.open(att)

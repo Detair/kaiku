@@ -94,4 +94,15 @@ class AttachmentViewModelTest {
         assertFalse(showInViewer(origin = 4L, openViewer = 5L)) // another photo: never there
         assertFalse(showInViewer(origin = null, openViewer = 5L)) // started from the chat list
     }
+
+    @Test
+    fun `every viewer opening gets an id of its own, also after the screen was recreated`() {
+        // The ViewModel outlives a rotation; ids come from it, so a new screen cannot hand out an old one.
+        val vm = AttachmentViewModel(files)
+        val beforeRotation = vm.newViewer()
+        val afterRotation = vm.newViewer()
+
+        assertTrue(beforeRotation != afterRotation)
+        assertFalse(showInViewer(origin = beforeRotation, openViewer = afterRotation))
+    }
 }
