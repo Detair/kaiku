@@ -40,14 +40,24 @@
 //! | `Channel` | user scope + the channel's server scope | [`SocketAccess::admit`]: in the allowed set |
 //! | `Guild` (a server's own feed) | user scope + that server's scope | [`SocketAccess::admit_guild`]: member |
 //! | `Voice` (everything of a voice room) | the voice scope: user epoch + the room's server epoch as of the join check | [`SocketAccess::admit_voice`]: the socket owns the peer and voice access holds |
-//! | `Admin` | user epoch | the admin flag, re-checked when the epoch moved |
+//! | `Admin` | the admin scope: user epoch | [`SocketAccess::admit_admin`]: subscribed, and the session is an elevated admin's |
 //!
-//! A scope is **current** (computed at the epoch that still holds), **stale**
-//! (the epoch moved, or it was invalidated) or **failing** (see below). A
-//! frame of a current scope is decided from memory: atomic loads and a
-//! lookup. A frame of a stale scope waits for a revalidation. So after a bump
-//! nothing of that scope is written on old authorization: neither events
-//! published after the commit nor events that were already queued.
+//! There are four kinds of scope — the **user**, each **server**, the
+//! **voice room**, the **admin stream** — and one state machine for all of
+//! them. A scope is **current** (computed at the epoch that still holds),
+//! **stale** (the epoch moved, or it was invalidated) or **failing** (see
+//! below). A frame of a current scope is decided from memory: atomic loads
+//! and a lookup. A frame of a stale scope waits for a revalidation, which
+//! reads the epochs first, then the database, and counts only if the epochs
+//! are still the same afterwards. So after a bump nothing of that scope is
+//! written on old authorization: neither events published after the commit
+//! nor events that were already queued.
+//!
+//! Every frame goes through one decision loop and leaves it in one of three
+//! ways: **admitted** (its scope is current and allows it), **denied** (its
+//! scope is current and does not, or it was never asked for) or
+//! **undecided** — and an undecided outbound frame is always recorded on its
+//! scope (see Failure). There is no fourth way.
 //!
 //! `subscribe` uses the same epochs: it reads them, checks access and records
 //! the result only if they are unchanged, otherwise it checks again.
@@ -58,7 +68,8 @@
 //! socket that is not current, with batched reads: the account's ban state,
 //! one [`viewable_and_existing_channels`] call for the stale servers'
 //! channels, the user's memberships, after a user bump one query for the
-//! requested DMs, and the voice check if the voice scope is stale. At most
+//! requested DMs, the voice check if the voice scope is stale, and the
+//! elevation check if the admin scope is. At most
 //! [`REVALIDATION_CONCURRENCY`] run at once process-wide. Bumps arriving
 //! while one runs coalesce into one follow-up. Idle sockets are woken by the
 //! bump and revalidate after [`WAKE_DEBOUNCE`], so voice and the admin flag
@@ -80,8 +91,11 @@
 //!
 //! # Bounds
 //!
-//! A socket keeps at most [`MAX_REQUESTED_CHANNELS`] requested channels, one
-//! scope per server with a requested channel or a feed event, and one voice
+//! A socket keeps at most [`MAX_REQUESTED_CHANNELS`] requested server
+//! channels and [`MAX_REQUESTED_DIRECT`] requested DMs (counted apart, so a
+//! new DM always finds room unless the socket is full of DMs — then it
+//! closes for a resync instead of filtering the DM), one scope per server
+//! with a requested channel or a feed event, one voice scope and one admin
 //! scope. The registry keeps one cell per server and user that exists.
 //!
 //! # Several nodes
@@ -136,12 +150,25 @@ pub const REVALIDATION_CONCURRENCY: usize = 4;
 static REVALIDATION_PERMITS: tokio::sync::Semaphore =
     tokio::sync::Semaphore::const_new(REVALIDATION_CONCURRENCY);
 
-/// Most channels one socket can have requested at a time.
+/// Most server channels one socket can have requested at a time.
 ///
 /// A `subscribe` beyond it is refused (`TOO_MANY_SUBSCRIPTIONS`); the client
 /// unsubscribes from something first. Bounds the per-socket state and the
 /// size of one revalidation.
 pub const MAX_REQUESTED_CHANNELS: usize = 2_000;
+
+/// Most DMs and group DMs one socket can have requested at a time.
+///
+/// Counted apart from server channels, so that the automatic subscription of
+/// a new DM (`dm_created`) is never refused because of server channels. A
+/// `subscribe` beyond it is refused like one beyond
+/// [`MAX_REQUESTED_CHANNELS`]; a new DM that does not fit ends the socket
+/// with a resynchronising close instead of going unheard.
+pub const MAX_REQUESTED_DIRECT: usize = 2_000;
+
+/// Revalidations one delivery decision waits for before it gives up
+/// (epochs kept moving); the decision is evaluated after each of them.
+const DECISION_REVALIDATIONS: usize = 4;
 
 /// Servers whose feed (`guild:{id}`) a socket keeps a scope for without
 /// having requested one of their channels; beyond it the set starts over
@@ -717,6 +744,15 @@ impl VoiceScope {
     }
 }
 
+/// The socket's subscription to the admin event stream (present while the
+/// client is subscribed): whether its session is an elevated system admin's,
+/// as read at user epoch `seen`.
+struct AdminScope {
+    seen: u64,
+    state: ScopeState,
+    allowed: bool,
+}
+
 struct Failure {
     since: Instant,
     attempts: u32,
@@ -733,6 +769,10 @@ struct Inner {
     /// [`MAX_FEED_GUILDS`]).
     feed_guilds: HashSet<Uuid>,
     voice: Option<VoiceScope>,
+    admin: Option<AdminScope>,
+    /// Requested DMs and group DMs (the rest of `requested` are server
+    /// channels); kept by [`Inner::request`] and [`Inner::forget`].
+    requested_direct: usize,
     /// Backoff after failed revalidations (the database is shared, so one
     /// for the socket).
     failure: Option<Failure>,
@@ -751,6 +791,43 @@ enum Target {
     /// as its channels (`ChannelScope::Guild`).
     Channel(ChannelScope),
     Voice,
+    /// The admin event stream.
+    Admin,
+}
+
+impl Inner {
+    fn requested_guild(&self) -> usize {
+        self.requested.len() - self.requested_direct
+    }
+
+    /// Whether `channel_id` (of `scope`) can be in the requested set: it is
+    /// already, or its kind is below its cap.
+    fn has_room(&self, channel_id: Uuid, scope: ChannelScope) -> bool {
+        self.requested.contains_key(&channel_id)
+            || match scope {
+                ChannelScope::Direct => self.requested_direct < MAX_REQUESTED_DIRECT,
+                ChannelScope::Guild(_) => self.requested_guild() < MAX_REQUESTED_CHANNELS,
+            }
+    }
+
+    /// Put `channel_id` into the requested set (the only place that does).
+    fn request(&mut self, channel_id: Uuid, scope: ChannelScope) {
+        let before = self.requested.insert(channel_id, scope);
+        let was_direct = before == Some(ChannelScope::Direct);
+        let is_direct = scope == ChannelScope::Direct;
+        if is_direct && !was_direct {
+            self.requested_direct += 1;
+        } else if was_direct && !is_direct {
+            self.requested_direct -= 1;
+        }
+    }
+
+    /// Take `channel_id` out of the requested set (the only place that does).
+    fn forget(&mut self, channel_id: Uuid) {
+        if self.requested.remove(&channel_id) == Some(ChannelScope::Direct) {
+            self.requested_direct -= 1;
+        }
+    }
 }
 
 /// What one revalidation read found.
@@ -762,6 +839,28 @@ struct ReadResult {
     /// The user's servers; read whenever a server scope is revalidated.
     member_of: Option<HashSet<Uuid>>,
     voice_ok: Option<bool>,
+    admin_ok: Option<bool>,
+}
+
+/// One step of a scripted revalidation read (tests): optionally bump an
+/// epoch while the read is "in flight", then fail or answer.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ScriptStep {
+    bump: bool,
+    /// `None`: the read fails; `Some(allowed)`: everything asked is allowed
+    /// (or nothing is).
+    outcome: Option<bool>,
+}
+
+/// Replaces the database in [`SocketAccess::read`] (tests).
+#[cfg(test)]
+struct Script {
+    steps: std::collections::VecDeque<ScriptStep>,
+    /// The answer once the steps are used up.
+    then: bool,
+    /// The server whose epoch a step's bump moves (`None`: the user's).
+    bump_guild: Option<Uuid>,
 }
 
 /// One socket's requested and allowed channels, server memberships and voice
@@ -777,8 +876,11 @@ pub struct SocketAccess {
     /// Wakes the socket loop: a revalidation failed (retry), a scope needs
     /// one, the client must resynchronise, or the voice peer lost access.
     attention: Notify,
-    /// The user epoch at which the admin event flag was last checked.
-    admin_seen: AtomicU64,
+    /// The session the socket authenticated with (an admin elevation belongs
+    /// to one session).
+    session_id: Option<Uuid>,
+    #[cfg(test)]
+    script: Mutex<Option<Script>>,
 }
 
 struct VoicePlan {
@@ -796,6 +898,7 @@ struct Plan {
     guild_channels: Vec<(Uuid, Uuid)>,
     direct: Vec<Uuid>,
     voice: Option<VoicePlan>,
+    admin: bool,
 }
 
 enum Planned {
@@ -813,13 +916,20 @@ pub enum SubscribeCommit {
     Recorded,
     /// An epoch moved since the check: check again.
     Moved,
-    /// The socket already has [`MAX_REQUESTED_CHANNELS`] channels.
+    /// The socket already has as many channels of this kind as it may
+    /// ([`MAX_REQUESTED_CHANNELS`], [`MAX_REQUESTED_DIRECT`]).
     Full,
 }
 
 impl SocketAccess {
-    /// A socket of `user_id` with nothing requested.
+    /// A socket of `user_id` with nothing requested and no session (admin
+    /// events are then never allowed).
     pub fn new(user_id: Uuid, db: PgPool) -> Arc<Self> {
+        Self::for_session(user_id, None, db)
+    }
+
+    /// A socket of `user_id` that authenticated with session `session_id`.
+    pub fn for_session(user_id: Uuid, session_id: Option<Uuid>, db: PgPool) -> Arc<Self> {
         let user_epoch = registry().user_epoch(user_id);
         let now = user_epoch.load(Ordering::SeqCst);
         Arc::new(Self {
@@ -836,13 +946,17 @@ impl SocketAccess {
                 guilds: HashMap::new(),
                 feed_guilds: HashSet::new(),
                 voice: None,
+                admin: None,
+                requested_direct: 0,
                 failure: None,
                 resync: false,
                 invalidations: 0,
             }),
             refresh_gate: tokio::sync::Mutex::new(()),
             attention: Notify::new(),
-            admin_seen: AtomicU64::new(now),
+            session_id,
+            #[cfg(test)]
+            script: Mutex::new(None),
         })
     }
 
@@ -879,7 +993,17 @@ impl SocketAccess {
                 .voice
                 .as_ref()
                 .map_or(Phase::Stale, |v| self.voice_phase(v)),
+            Target::Admin => inner
+                .admin
+                .as_ref()
+                .map_or(Phase::Stale, |a| self.admin_phase(a)),
         }
+    }
+
+    fn admin_phase(&self, admin: &AdminScope) -> Phase {
+        admin
+            .state
+            .phase(admin.seen == self.user_epoch.load(Ordering::SeqCst))
     }
 
     /// An event of `target` is dropped without a decision: every scope it
@@ -902,6 +1026,11 @@ impl SocketAccess {
             Target::Voice => {
                 if let Some(voice) = inner.voice.as_mut() {
                     voice.state.drop_event();
+                }
+            }
+            Target::Admin => {
+                if let Some(admin) = inner.admin.as_mut() {
+                    admin.state.drop_event();
                 }
             }
         }
@@ -1019,49 +1148,71 @@ impl SocketAccess {
         .await
     }
 
-    /// The decision loop shared by every kind of event.
+    /// Delivery decision for an admin event: the socket is subscribed to the
+    /// admin stream and its session is an elevated system admin's, as read
+    /// at the current user epoch (the same loop as every other frame).
+    pub async fn admit_admin(&self) -> bool {
+        self.decide(true, |inner| {
+            let admin = inner.admin.as_ref()?;
+            Some((Target::Admin, admin.allowed.then_some(true)))
+        })
+        .await
+    }
+
+    /// Pre-filter for the forwarder, like [`Self::may_forward`]: `false`
+    /// only on a decision (not subscribed, or current and not allowed).
+    pub fn may_forward_admin(&self) -> bool {
+        let inner = self.lock();
+        inner
+            .admin
+            .as_ref()
+            .is_some_and(|a| self.admin_phase(a) != Phase::Current || a.allowed)
+    }
+
+    /// The decision loop shared by every kind of frame.
     ///
-    /// `look` names what the event depends on and, if that is current, the
-    /// answer: `None` = refused outright (not requested, no peer),
-    /// `Some((target, Some(true)))` = allowed when `target` is current,
-    /// `Some((target, None))` = not allowed as computed.
+    /// `look` names what the frame depends on and, if that is current, the
+    /// answer: `None` = refused outright (not requested, no peer, not
+    /// subscribed), `Some((target, Some(true)))` = allowed when `target` is
+    /// current, `Some((target, None))` = not allowed as computed.
+    ///
+    /// It leaves in exactly one of three ways:
+    /// 1. **admitted** — `target` is current and allows it;
+    /// 2. **denied** — refused outright, or `target` is current and does not allow it;
+    /// 3. **undecided** — `target` is not current and cannot be made so now (a revalidation failed,
+    ///    the socket is in backoff, or epochs moved under [`DECISION_REVALIDATIONS`] of them): the
+    ///    one place where a frame is dropped without a decision, and for an outbound frame the drop
+    ///    is recorded on its scope ([`Self::record_drop`]).
+    ///
+    /// The answer is looked at again after every revalidation, the last one
+    /// included.
     async fn decide(
         &self,
         outbound: bool,
         mut look: impl FnMut(&mut Inner) -> Option<(Target, Option<bool>)>,
     ) -> bool {
-        let mut last = None;
-        for _ in 0..4 {
+        let mut revalidations = 0;
+        loop {
             {
                 let mut inner = self.lock();
                 let Some((target, answer)) = look(&mut inner) else {
                     return false;
                 };
-                last = Some(target);
-                match self.phase(&inner, target) {
-                    Phase::Current => return answer.unwrap_or(false),
-                    // No attempt can be made now: dropped without a decision.
-                    Phase::Stale | Phase::Failing if Self::in_backoff(&inner) => {
-                        if outbound {
-                            self.record_drop(&mut inner, target);
-                        }
-                        return false;
+                if self.phase(&inner, target) == Phase::Current {
+                    return answer.unwrap_or(false);
+                }
+                if Self::in_backoff(&inner) || revalidations == DECISION_REVALIDATIONS {
+                    if outbound {
+                        self.record_drop(&mut inner, target);
                     }
-                    Phase::Stale | Phase::Failing => {}
+                    return false;
                 }
             }
-            if self.refresh().await.is_err() {
-                break;
-            }
+            revalidations += 1;
+            // A failure leaves the scope failing and the socket in backoff:
+            // the next pass ends as undecided.
+            let _ = self.refresh().await;
         }
-        // The revalidation failed, or epochs kept moving under four of them.
-        if let (true, Some(target)) = (outbound, last) {
-            let mut inner = self.lock();
-            if self.phase(&inner, target) != Phase::Current {
-                self.record_drop(&mut inner, target);
-            }
-        }
-        false
     }
 
     /// Whether the client must resynchronise (an event was dropped while a
@@ -1081,16 +1232,13 @@ impl SocketAccess {
         }
     }
 
-    /// Whether `channel_id` may be added to the requested set (it is in it
-    /// already, or the set is below [`MAX_REQUESTED_CHANNELS`]).
-    fn has_room(inner: &Inner, channel_id: Uuid) -> bool {
-        inner.requested.len() < MAX_REQUESTED_CHANNELS || inner.requested.contains_key(&channel_id)
-    }
-
-    /// Whether a `subscribe` of `channel_id` can be recorded at all (asked
-    /// before any database work).
+    /// Whether a `subscribe` of `channel_id` can be recorded at all, asked
+    /// before any database work (its kind is not known yet: refused only if
+    /// neither kind has room).
     pub fn has_room_for(&self, channel_id: Uuid) -> bool {
-        Self::has_room(&self.lock(), channel_id)
+        let inner = self.lock();
+        inner.has_room(channel_id, ChannelScope::Direct)
+            || inner.requested_guild() < MAX_REQUESTED_CHANNELS
     }
 
     /// Record a `subscribe` decision taken at `snap`.
@@ -1110,7 +1258,7 @@ impl SocketAccess {
         if self.snapshot(scope) != snap {
             return SubscribeCommit::Moved;
         }
-        if !Self::has_room(&inner, channel_id) {
+        if !inner.has_room(channel_id, scope) {
             return SubscribeCommit::Full;
         }
         if let (ChannelScope::Guild(g), Some(seen)) = (scope, snap.guild) {
@@ -1123,7 +1271,7 @@ impl SocketAccess {
         }
         // Recorded either way: the client keeps the id and will not ask
         // again, so a refused channel must come back when access does.
-        inner.requested.insert(channel_id, scope);
+        inner.request(channel_id, scope);
         if granted {
             inner.allowed.insert(channel_id);
         } else {
@@ -1138,10 +1286,10 @@ impl SocketAccess {
     /// Returns `false` (nothing recorded) if the socket is full.
     pub fn record_unchecked(&self, channel_id: Uuid, scope: ChannelScope) -> bool {
         let mut inner = self.lock();
-        if !Self::has_room(&inner, channel_id) {
+        if !inner.has_room(channel_id, scope) {
             return false;
         }
-        inner.requested.insert(channel_id, scope);
+        inner.request(channel_id, scope);
         inner.allowed.remove(&channel_id);
         inner.invalidations += 1;
         match scope {
@@ -1166,13 +1314,16 @@ impl SocketAccess {
     /// The client unsubscribed: drop `channel_id` from both sets.
     pub fn unsubscribe(&self, channel_id: Uuid) {
         let mut inner = self.lock();
-        inner.requested.remove(&channel_id);
+        inner.forget(channel_id);
         inner.allowed.remove(&channel_id);
     }
 
     /// A DM the user was just added to (`dm_created`): requested, and
     /// allowed only after a revalidation confirms participation (the user
     /// may have left again before this socket processed the event).
+    /// `false`: the socket holds [`MAX_REQUESTED_DIRECT`] DMs already and
+    /// cannot follow this one — the caller ends the socket so the client
+    /// resynchronises, it must not go on without the DM's messages.
     pub fn insert_direct(&self, channel_id: Uuid) -> bool {
         self.record_unchecked(channel_id, ChannelScope::Direct)
     }
@@ -1220,6 +1371,10 @@ impl SocketAccess {
             || inner.voice.as_ref().is_some_and(|v| {
                 self.voice_phase(v) != Phase::Current || (!v.allowed && !v.denial_taken)
             })
+            || inner
+                .admin
+                .as_ref()
+                .is_some_and(|a| self.admin_phase(a) != Phase::Current)
     }
 
     /// Make the next [`Self::refresh`] re-check everything (backstop): every
@@ -1233,6 +1388,9 @@ impl SocketAccess {
         }
         if let Some(voice) = inner.voice.as_mut() {
             voice.state.invalidate();
+        }
+        if let Some(admin) = inner.admin.as_mut() {
+            admin.state.invalidate();
         }
     }
 
@@ -1252,19 +1410,94 @@ impl SocketAccess {
         self.attention.notified().await;
     }
 
-    /// Whether the admin event flag was checked at the current user epoch.
-    pub fn admin_fresh(&self) -> bool {
-        self.admin_seen.load(Ordering::SeqCst) == self.user_epoch.load(Ordering::SeqCst)
-    }
-
     /// The current user epoch (read before an admin check).
     pub fn user_epoch_now(&self) -> u64 {
         self.user_epoch.load(Ordering::SeqCst)
     }
 
-    /// Record that the admin flag was checked at user epoch `epoch`.
-    pub fn set_admin_seen(&self, epoch: u64) {
-        self.admin_seen.store(epoch, Ordering::SeqCst);
+    /// Whether this socket's session is an elevated system admin's right
+    /// now, read from the committed rows (not the cache: a de-elevation
+    /// bumps the user's epoch before it updates the cache). An error is an
+    /// error, not a "no".
+    pub async fn check_admin(&self) -> Result<bool, AccessCheckFailed> {
+        if crate::ws::test_hooks::access_read_fails(self.user_id) {
+            return Err(AccessCheckFailed);
+        }
+        self.read_admin().await.map_err(|e| {
+            warn!(error = %e, user_id = %self.user_id, "Admin access check failed");
+            AccessCheckFailed
+        })
+    }
+
+    async fn read_admin(&self) -> Result<bool, String> {
+        let Some(session_id) = self.session_id else {
+            return Ok(false);
+        };
+        // A live full session of this user (a probation session never
+        // subscribes, even with an old elevation).
+        let live = crate::auth::session_check::load_live(&self.db, session_id)
+            .await
+            .map_err(|e| e.to_string())?;
+        let full = live.as_ref().is_some_and(|s| {
+            s.user.id == self.user_id
+                && crate::auth::SessionMeta::from(s).assurance
+                    == crate::auth::assurance::Assurance::Full
+        });
+        if !full {
+            return Ok(false);
+        }
+        let admin = crate::permissions::queries::get_system_admin(&self.db, self.user_id)
+            .await
+            .map_err(|e| e.to_string())?
+            .is_some();
+        if !admin {
+            return Ok(false);
+        }
+        crate::admin::queries::has_active_elevated_session(&self.db, self.user_id, session_id)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    /// Record an `admin_subscribe` decision taken at user epoch `epoch`.
+    /// Returns `false` (and changes nothing) if the epoch moved since: the
+    /// caller checks again. Allowed: subscribed; refused: not subscribed.
+    pub fn commit_admin(&self, epoch: u64, allowed: bool) -> bool {
+        let mut inner = self.lock();
+        if self.user_epoch.load(Ordering::SeqCst) != epoch {
+            return false;
+        }
+        inner.admin = allowed.then_some(AdminScope {
+            seen: epoch,
+            state: ScopeState::Checked,
+            allowed: true,
+        });
+        true
+    }
+
+    /// Record an `admin_subscribe` without a decision (the check failed, or
+    /// the epoch kept moving): subscribed, nothing allowed yet, and the
+    /// scope is revalidated; a read that says "not elevated" ends it.
+    pub fn record_admin_unchecked(&self) {
+        let mut inner = self.lock();
+        inner.invalidations += 1;
+        inner.admin = Some(AdminScope {
+            seen: 0,
+            state: ScopeState::Unchecked,
+            allowed: false,
+        });
+        drop(inner);
+        self.attention.notify_one();
+    }
+
+    /// The client unsubscribed from admin events.
+    pub fn unsubscribe_admin(&self) {
+        self.lock().admin = None;
+    }
+
+    /// Whether the socket is subscribed to admin events (allowed or still
+    /// to be decided).
+    pub fn admin_subscribed(&self) -> bool {
+        self.lock().admin.is_some()
     }
 
     /// Revalidate every scope that is not current — all of them after a user
@@ -1331,7 +1564,11 @@ impl SocketAccess {
                 user_now,
                 guild_now: v.guild_now(),
             });
-        if !full && guild_targets.is_empty() && voice.is_none() {
+        let admin = inner
+            .admin
+            .as_ref()
+            .is_some_and(|a| self.admin_phase(a) != Phase::Current);
+        if !full && guild_targets.is_empty() && voice.is_none() && !admin {
             return Planned::Nothing;
         }
         let stale: HashSet<Uuid> = guild_targets.iter().map(|(g, _)| *g).collect();
@@ -1352,10 +1589,15 @@ impl SocketAccess {
             guild_channels,
             direct,
             voice,
+            admin,
         })
     }
 
     async fn read(&self, plan: &Plan) -> Result<ReadResult, String> {
+        #[cfg(test)]
+        if let Some(scripted) = self.scripted_read(plan) {
+            return scripted;
+        }
         if crate::ws::test_hooks::access_read_fails(self.user_id) {
             return Err(sqlx::Error::PoolTimedOut.to_string());
         }
@@ -1380,6 +1622,7 @@ impl SocketAccess {
                 direct_existing: plan.direct.iter().copied().collect(),
                 member_of: Some(HashSet::new()),
                 voice_ok: plan.voice.as_ref().map(|_| false),
+                admin_ok: plan.admin.then_some(false),
             });
         }
         let (viewable, existing) = if plan.guild_channels.is_empty() {
@@ -1432,6 +1675,11 @@ impl SocketAccess {
             ),
             None => None,
         };
+        let admin_ok = if plan.admin {
+            Some(self.read_admin().await?)
+        } else {
+            None
+        };
         Ok(ReadResult {
             viewable,
             existing,
@@ -1439,7 +1687,44 @@ impl SocketAccess {
             direct_existing,
             member_of,
             voice_ok,
+            admin_ok,
         })
+    }
+
+    /// The scripted answer to a read, if a script is installed (tests).
+    #[cfg(test)]
+    fn scripted_read(&self, plan: &Plan) -> Option<Result<ReadResult, String>> {
+        let mut guard = self.script.lock().unwrap_or_else(PoisonError::into_inner);
+        let script = guard.as_mut()?;
+        let step = script.steps.pop_front().unwrap_or(ScriptStep {
+            bump: false,
+            outcome: Some(script.then),
+        });
+        if step.bump {
+            match script.bump_guild {
+                Some(g) => registry().bump_guild(g),
+                None => registry().bump_user(self.user_id),
+            }
+        }
+        let Some(allowed) = step.outcome else {
+            return Some(Err("scripted failure".to_string()));
+        };
+        let all = |ids: Vec<Uuid>| -> HashSet<Uuid> {
+            if allowed {
+                ids.into_iter().collect()
+            } else {
+                HashSet::new()
+            }
+        };
+        Some(Ok(ReadResult {
+            viewable: all(plan.guild_channels.iter().map(|(_, c)| *c).collect()),
+            existing: plan.guild_channels.iter().map(|(_, c)| *c).collect(),
+            direct_ok: all(plan.direct.clone()),
+            direct_existing: plan.direct.iter().copied().collect(),
+            member_of: Some(all(plan.guild_targets.iter().map(|(g, _)| *g).collect())),
+            voice_ok: plan.voice.as_ref().map(|_| allowed),
+            admin_ok: plan.admin.then_some(allowed),
+        }))
     }
 
     fn apply(&self, plan: &Plan, found: ReadResult) {
@@ -1454,7 +1739,7 @@ impl SocketAccess {
             // unsubscribe or a fresh subscribe during the read wins).
             if inner.requested.get(&channel) == Some(&ChannelScope::Guild(g)) {
                 if !found.existing.contains(&channel) {
-                    inner.requested.remove(&channel);
+                    inner.forget(channel);
                 }
                 let ok = found.viewable.contains(&channel);
                 set_allowed(&mut inner.allowed, channel, ok, &mut lost, &mut regained);
@@ -1463,7 +1748,7 @@ impl SocketAccess {
         for &channel in &plan.direct {
             if inner.requested.get(&channel) == Some(&ChannelScope::Direct) {
                 if !found.direct_existing.contains(&channel) {
-                    inner.requested.remove(&channel);
+                    inner.forget(channel);
                 }
                 let ok = found.direct_ok.contains(&channel);
                 set_allowed(&mut inner.allowed, channel, ok, &mut lost, &mut regained);
@@ -1505,6 +1790,21 @@ impl SocketAccess {
                 }
                 voice.allowed = ok;
                 voice_denied = !ok && !voice.denial_taken;
+            }
+        }
+        if let Some(ok) = found.admin_ok {
+            if let Some(admin) = inner.admin.as_mut() {
+                resync |= admin.state.settle(fresh);
+                if fresh {
+                    admin.seen = admin.seen.max(plan.user_now);
+                }
+                admin.allowed = ok;
+            }
+            // Only a read that answered "not elevated" ends the
+            // subscription; a failed read never does.
+            if !ok {
+                inner.admin = None;
+                debug!(user_id = %self.user_id, "Admin events ended (no longer elevated)");
             }
         }
         // Servers without requested channels or feed events need no scope.
@@ -1552,6 +1852,11 @@ impl SocketAccess {
                 .filter(|v| v.session_id == planned.session_id)
             {
                 voice.state.fail();
+            }
+        }
+        if plan.admin {
+            if let Some(admin) = inner.admin.as_mut() {
+                admin.state.fail();
             }
         }
         let now = Instant::now();
@@ -1856,9 +2161,10 @@ mod tests {
         assert!(Arc::ptr_eq(&cell, &registry().guild_epoch(g)));
     }
 
-    /// The requested set is bounded.
+    /// The requested set is bounded, and DMs have their own room: server
+    /// channels can never crowd out the automatic subscription of a new DM.
     #[tokio::test]
-    async fn requested_channels_are_capped() {
+    async fn requested_channels_are_capped_per_kind() {
         let (u, g) = (Uuid::new_v4(), Uuid::new_v4());
         let access = SocketAccess::new(u, lazy_pool());
         let scope = ChannelScope::Guild(g);
@@ -1871,23 +2177,49 @@ mod tests {
             );
         }
         let extra = Uuid::new_v4();
-        assert!(!access.has_room_for(extra));
         assert_eq!(
             access.commit_subscribe(extra, scope, access.snapshot(scope), true),
             SubscribeCommit::Full
         );
         assert!(!access.record_unchecked(extra, scope));
-        assert!(!access.insert_direct(extra));
-        assert_eq!(access.requested_len(), MAX_REQUESTED_CHANNELS);
         assert!(!access.is_requested(extra));
-        // A channel that is requested already can still be decided again...
+        assert_eq!(access.requested_len(), MAX_REQUESTED_CHANNELS);
+        // A channel that is requested already can still be decided again.
         assert_eq!(
             access.commit_subscribe(first, scope, access.snapshot(scope), true),
             SubscribeCommit::Recorded
         );
-        // ...and unsubscribing makes room.
+
+        // A full set of server channels leaves every DM slot free.
+        assert!(access.has_room_for(extra), "a DM would still fit");
+        let first_dm = Uuid::new_v4();
+        assert!(access.insert_direct(first_dm));
+        for _ in 1..MAX_REQUESTED_DIRECT {
+            assert!(access.insert_direct(Uuid::new_v4()));
+        }
+        assert_eq!(
+            access.requested_len(),
+            MAX_REQUESTED_CHANNELS + MAX_REQUESTED_DIRECT
+        );
+        assert!(!access.insert_direct(extra), "one DM too many was taken");
+        assert!(!access.has_room_for(extra));
+        let direct = ChannelScope::Direct;
+        assert_eq!(
+            access.commit_subscribe(extra, direct, access.snapshot(direct), true),
+            SubscribeCommit::Full
+        );
+        // Unsubscribing makes room, per kind.
+        access.unsubscribe(first_dm);
+        assert!(access.insert_direct(extra));
         access.unsubscribe(first);
-        assert!(access.has_room_for(extra));
+        assert_eq!(
+            access.commit_subscribe(Uuid::new_v4(), scope, access.snapshot(scope), true),
+            SubscribeCommit::Recorded
+        );
+        assert_eq!(
+            access.requested_len(),
+            MAX_REQUESTED_CHANNELS + MAX_REQUESTED_DIRECT
+        );
     }
 
     fn all_found(channels: &[Uuid]) -> ReadResult {
@@ -1898,6 +2230,7 @@ mod tests {
             direct_existing: HashSet::new(),
             member_of: Some(HashSet::new()),
             voice_ok: None,
+            admin_ok: None,
         }
     }
 
@@ -1907,6 +2240,7 @@ mod tests {
         is(inner.user.state)
             || inner.guilds.values().any(|gs| is(gs.state))
             || inner.voice.as_ref().is_some_and(|v| is(v.state))
+            || inner.admin.as_ref().is_some_and(|a| is(a.state))
     }
 
     /// A forced (backstop) revalidation that fails **without**
@@ -2050,6 +2384,309 @@ mod tests {
         crate::ws::test_hooks::fail_access_reads(u2, 1);
         registry().bump_guild(g2);
         assert!(!access.admit_voice(Some(&peer)).await);
+    }
+
+    /// What a frame of the enumeration below depends on.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Kind {
+        GuildChannel,
+        Direct,
+        Feed,
+        Voice,
+        Admin,
+    }
+
+    /// How the scope stands when the frame arrives.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Start {
+        Current,
+        Bumped,
+        Invalidated,
+    }
+
+    fn install(access: &SocketAccess, steps: &[ScriptStep], then: bool, bump_guild: Option<Uuid>) {
+        *access.script.lock().unwrap() = Some(Script {
+            steps: steps.iter().copied().collect(),
+            then,
+            bump_guild,
+        });
+    }
+
+    /// One frame through the decision loop with scripted reads. Returns the
+    /// way it left as text, or panics if it left in a way that must not
+    /// exist.
+    async fn one_decision(
+        kind: Kind,
+        bump_guild: bool,
+        start: Start,
+        steps: &[ScriptStep],
+        then: bool,
+        (u, g, c): (Uuid, Uuid, Uuid),
+    ) -> &'static str {
+        let access = SocketAccess::new(u, lazy_pool());
+        let peer = OwnedVoicePeer {
+            channel_id: c,
+            session_id: Uuid::from_u128(7),
+            admission: Some(VoiceAdmission {
+                guild_id: Some(g),
+                epochs: registry().snapshot(u, Some(g)),
+            }),
+        };
+        // Current and allowed to begin with.
+        match kind {
+            Kind::GuildChannel => {
+                let scope = ChannelScope::Guild(g);
+                let recorded = access.commit_subscribe(c, scope, access.snapshot(scope), true);
+                assert_eq!(recorded, SubscribeCommit::Recorded);
+            }
+            Kind::Direct => {
+                let scope = ChannelScope::Direct;
+                let recorded = access.commit_subscribe(c, scope, access.snapshot(scope), true);
+                assert_eq!(recorded, SubscribeCommit::Recorded);
+            }
+            Kind::Feed => {
+                let mut inner = access.lock();
+                let epoch = registry().guild_epoch(g);
+                let seen = epoch.load(Ordering::SeqCst);
+                inner.guilds.insert(
+                    g,
+                    GuildScope {
+                        epoch,
+                        seen,
+                        state: ScopeState::Checked,
+                        member: Some(true),
+                    },
+                );
+                inner.feed_guilds.insert(g);
+            }
+            Kind::Voice => access.track_voice(Some(&peer)),
+            Kind::Admin => assert!(access.commit_admin(access.user_epoch_now(), true)),
+        }
+        let bump_guild = bump_guild.then_some(g);
+        match start {
+            Start::Current => {}
+            Start::Bumped => match bump_guild {
+                Some(g) => registry().bump_guild(g),
+                None => registry().bump_user(u),
+            },
+            Start::Invalidated => access.force_full(),
+        }
+        install(&access, steps, then, bump_guild);
+
+        let admitted = match kind {
+            Kind::GuildChannel | Kind::Direct => access.admit(c).await,
+            Kind::Feed => access.admit_guild(g).await,
+            Kind::Voice => access.admit_voice(Some(&peer)).await,
+            Kind::Admin => access.admit_admin().await,
+        };
+
+        let recorded = dropped(&access);
+        let inner = access.lock();
+        let (target, allowed, subscribed) = match kind {
+            Kind::GuildChannel => (
+                Target::Channel(ChannelScope::Guild(g)),
+                inner.allowed.contains(&c),
+                inner.requested.contains_key(&c),
+            ),
+            Kind::Direct => (
+                Target::Channel(ChannelScope::Direct),
+                inner.allowed.contains(&c),
+                inner.requested.contains_key(&c),
+            ),
+            Kind::Feed => (
+                Target::Channel(ChannelScope::Guild(g)),
+                inner.guilds.get(&g).and_then(|s| s.member) == Some(true),
+                true,
+            ),
+            Kind::Voice => (
+                Target::Voice,
+                inner.voice.as_ref().is_some_and(|v| v.allowed),
+                inner.voice.is_some(),
+            ),
+            Kind::Admin => (
+                Target::Admin,
+                inner.admin.as_ref().is_some_and(|a| a.allowed),
+                inner.admin.is_some(),
+            ),
+        };
+        let current = subscribed && access.phase(&inner, target) == Phase::Current;
+        let case = format!("{kind:?} bump_guild={bump_guild:?} {start:?} {steps:?} then={then}");
+        if admitted {
+            assert!(
+                current && allowed,
+                "admitted without current authorization: {case}"
+            );
+            return "admitted";
+        }
+        assert!(
+            !(current && allowed),
+            "refused although allowed at the current epoch: {case}"
+        );
+        let denied = !subscribed || (current && !allowed);
+        assert!(
+            denied || recorded,
+            "dropped, not denied, not recorded: {case}"
+        );
+        if denied {
+            "denied"
+        } else {
+            "undecided, recorded"
+        }
+    }
+
+    /// Every way through the decision loop: all sequences of read outcomes
+    /// (answers yes, answers no, fails), each with or without an epoch
+    /// moving while the read is in flight, for every kind of frame, every
+    /// starting state and both epochs. A frame leaves the loop admitted (on
+    /// current authorization), denied (by a decision at the current epoch)
+    /// or undecided with the drop recorded — never dropped without either.
+    #[tokio::test(start_paused = true)]
+    async fn every_exit_of_the_decision_loop_is_accounted_for() {
+        const OUTCOMES: [Option<bool>; 3] = [Some(true), Some(false), None];
+        let mut symbols = Vec::new();
+        for outcome in OUTCOMES {
+            for bump in [false, true] {
+                symbols.push(ScriptStep { bump, outcome });
+            }
+        }
+        let ids = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        let kinds = [
+            (Kind::GuildChannel, false),
+            (Kind::GuildChannel, true),
+            (Kind::Direct, false),
+            (Kind::Feed, false),
+            (Kind::Feed, true),
+            (Kind::Voice, false),
+            (Kind::Voice, true),
+            (Kind::Admin, false),
+        ];
+        let mut exits = std::collections::BTreeMap::<&str, usize>::new();
+        let n = symbols.len();
+        for code in 0..n.pow(u32::try_from(DECISION_REVALIDATIONS).unwrap()) {
+            let mut steps = Vec::with_capacity(DECISION_REVALIDATIONS);
+            let mut rest = code;
+            for _ in 0..DECISION_REVALIDATIONS {
+                steps.push(symbols[rest % n]);
+                rest /= n;
+            }
+            for then in [true, false] {
+                for start in [Start::Current, Start::Bumped, Start::Invalidated] {
+                    for (kind, bump_guild) in kinds {
+                        let exit = one_decision(kind, bump_guild, start, &steps, then, ids).await;
+                        *exits.entry(exit).or_default() += 1;
+                    }
+                }
+            }
+        }
+        // All three ways out occur.
+        assert_eq!(exits.len(), 3, "{exits:?}");
+    }
+
+    /// The case that was lost: epochs move under the first revalidations and
+    /// the last one succeeds at the current epoch. Its answer counts.
+    #[tokio::test(start_paused = true)]
+    async fn the_answer_of_the_last_revalidation_counts() {
+        let moving = ScriptStep {
+            bump: true,
+            outcome: Some(true),
+        };
+        let settled = ScriptStep {
+            bump: false,
+            outcome: Some(true),
+        };
+        let steps = [moving, moving, moving, settled];
+        let ids = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        for (kind, bump_guild) in [
+            (Kind::GuildChannel, true),
+            (Kind::Direct, false),
+            (Kind::Feed, true),
+            (Kind::Voice, false),
+            (Kind::Admin, false),
+        ] {
+            let exit = one_decision(kind, bump_guild, Start::Bumped, &steps, false, ids).await;
+            assert_eq!(exit, "admitted", "{kind:?}");
+        }
+        // One move more than the loop waits for: undecided, and recorded.
+        let exit = one_decision(
+            Kind::GuildChannel,
+            true,
+            Start::Bumped,
+            &[moving; DECISION_REVALIDATIONS],
+            true,
+            ids,
+        )
+        .await;
+        assert_eq!(exit, "undecided, recorded");
+    }
+
+    /// The admin stream is a scope like the others. A read that says
+    /// "elevated" while a de-elevation commits and bumps does not admit the
+    /// frame (the epoch is compared after the read); a read that fails is
+    /// not a "no": the subscription stays, the drop is recorded and the
+    /// recovery asks for a resync; only a read that says "not elevated" ends
+    /// the subscription.
+    #[tokio::test(start_paused = true)]
+    async fn the_admin_stream_is_a_scope() {
+        let u = Uuid::new_v4();
+        let yes_while_bumped = ScriptStep {
+            bump: true,
+            outcome: Some(true),
+        };
+        let failure = ScriptStep {
+            bump: false,
+            outcome: None,
+        };
+
+        // Not subscribed: nothing, and nothing to revalidate.
+        let access = SocketAccess::new(u, lazy_pool());
+        assert!(!access.may_forward_admin());
+        assert!(!access.admit_admin().await);
+        // A decision taken at an epoch that moved meanwhile is not recorded.
+        let epoch = access.user_epoch_now();
+        registry().bump_user(u);
+        assert!(!access.commit_admin(epoch, true));
+        assert!(!access.admin_subscribed());
+
+        // Subscribed and current: from memory.
+        assert!(access.commit_admin(access.user_epoch_now(), true));
+        assert!(access.may_forward_admin());
+        assert!(access.admit_admin().await);
+
+        // The elevation ends while the re-check's read is in flight.
+        registry().bump_user(u);
+        install(&access, &[yes_while_bumped], false, None);
+        assert!(access.may_forward_admin(), "stale: the writer decides");
+        assert!(!access.admit_admin().await, "admitted on an obsolete epoch");
+        assert!(!access.admin_subscribed(), "a read said: not elevated");
+        assert!(!dropped(&access));
+
+        // A failed read is not a denial.
+        let access = SocketAccess::new(u, lazy_pool());
+        assert!(access.commit_admin(access.user_epoch_now(), true));
+        registry().bump_user(u);
+        install(&access, &[failure], true, None);
+        assert!(!access.admit_admin().await);
+        assert!(
+            access.admin_subscribed(),
+            "a failed read ended the subscription"
+        );
+        assert!(
+            dropped(&access),
+            "silent drop while the admin scope was failing"
+        );
+        assert!(access.may_forward_admin());
+        assert!(!access.take_resync());
+        tokio::time::advance(RETRY_BASE + Duration::from_millis(1)).await;
+        assert!(access.refresh().await.is_ok());
+        assert!(access.admit_admin().await);
+        assert!(access.take_resync());
+
+        // An undecided subscribe is decided by the first read.
+        let access = SocketAccess::new(u, lazy_pool());
+        access.record_admin_unchecked();
+        assert!(access.admin_subscribed() && access.is_stale());
+        install(&access, &[], true, None);
+        assert!(access.admit_admin().await);
     }
 
     /// Every SQL statement that writes a table feeding channel access, per

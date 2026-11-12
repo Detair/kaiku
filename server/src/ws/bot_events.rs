@@ -2,6 +2,14 @@
 //!
 //! Publishes events to `bot:{bot_user_id}` Redis channels for all bots
 //! installed in a guild that have the matching intent declared.
+//!
+//! What a bot may see is decided **when an event is dispatched**: its
+//! visibility of the channel is read from the database for every event,
+//! here, before the publish. That is the rule for bots — there is no access
+//! epoch for bot sockets and no second check when the gateway writes a
+//! message event, so an event already on its way when a bot's role is
+//! removed is still delivered; everything dispatched after that commit is
+//! not. (Interactions are checked once more at the gateway.)
 
 use fred::interfaces::PubsubInterface;
 use fred::prelude::*;

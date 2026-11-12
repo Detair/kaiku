@@ -821,6 +821,20 @@ async fn rapid_role_edits_coalesce_into_few_reads(pool: PgPool) {
     );
 }
 
+/// A change to one account's access without a database write (its epoch
+/// moves), through the production wrapper.
+async fn user_bumped(guild: Uuid, user: Uuid) {
+    let change = vc_server::ws::access::AccessChange::MemberRolesChanged {
+        guild_id: guild,
+        user_id: user,
+    };
+    let written = std::future::ready(Ok::<(), std::convert::Infallible>(()));
+    match vc_server::ws::access::bump_after(change, written).await {
+        Ok(((), _bumped)) => {}
+        Err(never) => match never {},
+    }
+}
+
 /// A server-wide access change without a database write, through the
 /// production wrapper (the only way to get the proof `access_changed` takes).
 async fn guild_roles_bumped(guild: Uuid) -> vc_server::ws::access::Bumped {
@@ -1456,6 +1470,9 @@ async fn role_permission_edit_fences_at_commit(pool: PgPool) {
     .await;
 }
 
+/// Deleting the role that granted the channel. Regression guard: the bump
+/// at this commit was in place before this window test existed, so it
+/// passes without the changes it was added with.
 #[sqlx::test]
 async fn role_delete_fences_at_commit(pool: PgPool) {
     let fx = fixture(&pool).await;
@@ -1474,7 +1491,9 @@ async fn role_delete_fences_at_commit(pool: PgPool) {
 }
 
 /// The member's own reaction removal takes a reaction role (and the private
-/// channel it granted) away.
+/// channel it granted) away. Regression guard: the bump at this commit was
+/// in place before this window test existed, so it passes without the
+/// changes it was added with.
 #[sqlx::test]
 async fn reaction_role_removal_fences_at_commit(pool: PgPool) {
     let fx = fixture(&pool).await;
@@ -1898,6 +1917,55 @@ async fn de_elevation_fences_before_cache_update(pool: PgPool) {
         },
     )
     .await;
+}
+
+/// The admin stream is fenced like a channel. An unrelated change to the
+/// admin's account moves its epoch, and the re-check that the next admin
+/// event needs fails (database trouble): the event is dropped, but the
+/// subscription is not ended by a failed read — the drop is recorded, and
+/// once the check works again the socket closes with 1011 `RESYNC` so the
+/// client reconnects and subscribes again.
+#[sqlx::test]
+async fn failed_admin_recheck_asks_for_resync(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let server = spawn_test_server(app.router.clone()).await;
+    let (admin, _) = create_test_user(&pool).await;
+    make_admin(&pool, admin).await;
+    let token = create_elevated_session(&pool, &app.config, admin).await;
+    vc_server::ws::test_hooks::disable_access_wake(admin);
+    let mut ws = connect_ready(&server, &token).await;
+    send(&mut ws, json!({ "type": "admin_subscribe" })).await;
+    until_pong(&mut ws).await;
+    assert!(admin_event_arrives(&app, &mut ws, admin).await);
+
+    vc_server::ws::test_hooks::fail_access_reads(admin, 1);
+    user_bumped(Uuid::new_v4(), admin).await;
+    assert!(
+        !admin_event_arrives(&app, &mut ws, admin).await,
+        "written although its check failed"
+    );
+    let (_, code, reason) = until_close(&mut ws).await;
+    assert_eq!((code, reason.as_str()), (1011, "RESYNC"));
+}
+
+/// An admin event that needs a re-check (the account's epoch moved for an
+/// unrelated reason) is written once the re-check confirms the elevation:
+/// the subscription survives.
+#[sqlx::test]
+async fn admin_events_survive_an_unrelated_change(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let server = spawn_test_server(app.router.clone()).await;
+    let (admin, _) = create_test_user(&pool).await;
+    make_admin(&pool, admin).await;
+    let token = create_elevated_session(&pool, &app.config, admin).await;
+    vc_server::ws::test_hooks::disable_access_wake(admin);
+    let mut ws = connect_ready(&server, &token).await;
+    send(&mut ws, json!({ "type": "admin_subscribe" })).await;
+    until_pong(&mut ws).await;
+
+    user_bumped(Uuid::new_v4(), admin).await;
+    assert!(admin_event_arrives(&app, &mut ws, admin).await);
+    assert!(admin_event_arrives(&app, &mut ws, admin).await);
 }
 
 /// A channel deleted while one of its events is queued: the

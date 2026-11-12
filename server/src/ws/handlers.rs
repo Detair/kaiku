@@ -562,11 +562,9 @@ async fn handle_socket(
     let (tx, mut rx) = mpsc::channel::<OutboundMsg>(OUTBOUND_QUEUE_CAPACITY);
 
     // Requested and allowed channels, fenced by access epochs (`ws::access`).
-    let access = SocketAccess::new(user_id, state.db.clone());
-
-    // Track admin event subscription
-    let admin_subscribed: Arc<tokio::sync::RwLock<bool>> =
-        Arc::new(tokio::sync::RwLock::new(false));
+    // The session matters for the admin event stream: an elevation belongs
+    // to one session.
+    let access = SocketAccess::for_session(user_id, session_id, state.db.clone());
 
     // This socket's member in the user's presence set (registered once the
     // socket is fully set up, see `presence_socket_up`).
@@ -580,7 +578,6 @@ async fn handle_socket(
     // is written, so an access change also stops events queued before it.
     let sender_access = access.clone();
     let sender_state = state.clone();
-    let sender_admin = admin_subscribed.clone();
     let own_queue = tx.downgrade();
     let mut sender_handle: tokio::task::JoinHandle<()> = tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
@@ -620,15 +617,7 @@ async fn handle_socket(
                 }
                 OutboundMsg::Admin(event) => {
                     crate::ws::test_hooks::before_feed_write(user_id).await;
-                    if !admin_events_hold(
-                        Some(&sender_state),
-                        &sender_access,
-                        &sender_admin,
-                        user_id,
-                        session_id,
-                    )
-                    .await
-                    {
+                    if !sender_access.admit_admin().await {
                         continue;
                     }
                     write_event(&mut ws_sender, &event).await
@@ -761,8 +750,6 @@ async fn handle_socket(
         HandlePubsubParams {
             tx: tx.clone(),
             access: access.clone(),
-            state: Some(state.clone()),
-            admin_subscribed: admin_subscribed.clone(),
             blocked_users: blocked_users.clone(),
             user_id,
             session_id,
@@ -903,10 +890,7 @@ async fn handle_socket(
 
     if exit.is_none() {
         // Per-connection mutable state for rate limiting and deduplication
-        let mut msg_state = ClientMessageState {
-            session_id,
-            ..ClientMessageState::default()
-        };
+        let mut msg_state = ClientMessageState::default();
 
         // Server-side heartbeat: detect dead connections via Ping/Pong
         let mut ping_interval = tokio::time::interval(Duration::from_secs(30));
@@ -1023,9 +1007,7 @@ async fn handle_socket(
                     if let Err(reason) = or_shutdown!(revalidate_socket(
                         &state,
                         user_id,
-                        session_id,
                         &access,
-                        &admin_subscribed,
                         &tx,
                         false,
                     ))
@@ -1042,9 +1024,7 @@ async fn handle_socket(
                     if let Err(reason) = or_shutdown!(revalidate_socket(
                         &state,
                         user_id,
-                        session_id,
                         &access,
-                        &admin_subscribed,
                         &tx,
                         true,
                     ))
@@ -1063,7 +1043,6 @@ async fn handle_socket(
                                 &state,
                                 &tx,
                                 &access,
-                                &admin_subscribed,
                                 &mut msg_state,
                             ))
                             {
@@ -1348,32 +1327,6 @@ async fn backstop_now(trigger: Option<&Arc<tokio::sync::Notify>>) {
     }
 }
 
-/// Whether this socket may receive admin events: a live full session of an
-/// elevated system admin. The cached elevation counts only for a live full
-/// session (the HTTP admin guard's committed-row check, B.4 rev 5): a
-/// probation session never subscribes, even with an old elevation cached.
-async fn admin_events_allowed(state: &AppState, user_id: Uuid, session_id: Option<Uuid>) -> bool {
-    let Some(session_id) = session_id else {
-        return false;
-    };
-    let full = matches!(
-        crate::auth::session_check::load_live(&state.db, session_id).await,
-        Ok(Some(ref s)) if s.user.id == user_id
-            && crate::auth::SessionMeta::from(s).assurance
-                == crate::auth::assurance::Assurance::Full
-    );
-    let admin = matches!(
-        crate::permissions::queries::get_system_admin(&state.db, user_id).await,
-        Ok(Some(_))
-    );
-    // The committed elevation row, not the cache: a de-elevation bumps the
-    // user's access epoch before it updates the cache.
-    full && admin
-        && crate::admin::queries::has_active_elevated_session(&state.db, user_id, session_id)
-            .await
-            .unwrap_or(false)
-}
-
 /// A random duration in `[0, max]`.
 fn random_up_to(max: Duration) -> Duration {
     let max_ms = u64::try_from(max.as_millis()).unwrap_or(0);
@@ -1443,18 +1396,15 @@ async fn write_event(
 }
 
 /// Revalidate this socket after a bump (or, with `full`, on the backstop):
-/// channels, server membership and the voice room in one pass
-/// (`SocketAccess::refresh`), then the admin event flag (when the user epoch
-/// moved). A voice peer whose access is gone is removed with
-/// `voice_removed`. A failed revalidation keeps the socket open (fail
-/// closed, retried with backoff) until it has failed for
+/// channels, server membership, the voice room and the admin stream in one
+/// pass (`SocketAccess::refresh`). A voice peer whose access is gone is
+/// removed with `voice_removed`. A failed revalidation keeps the socket open
+/// (fail closed, retried with backoff) until it has failed for
 /// `FAILURE_CLOSE_AFTER` (1011).
 async fn revalidate_socket(
     state: &AppState,
     user_id: Uuid,
-    session_id: Option<Uuid>,
     access: &SocketAccess,
-    admin_subscribed: &tokio::sync::RwLock<bool>,
     tx: &mpsc::Sender<OutboundMsg>,
     full: bool,
 ) -> Result<(), PubsubExit> {
@@ -1471,14 +1421,6 @@ async fn revalidate_socket(
             .is_some_and(|d| d >= super::access::FAILURE_CLOSE_AFTER)
     {
         return Err(PubsubExit::AccessCheckFailed);
-    }
-    if *admin_subscribed.read().await && (full || !access.admin_fresh()) {
-        let epoch = access.user_epoch_now();
-        if !admin_events_allowed(state, user_id, session_id).await {
-            *admin_subscribed.write().await = false;
-            debug!("Admin {} lost admin events (no longer elevated)", user_id);
-        }
-        access.set_admin_seen(epoch);
     }
     if let Some((channel_id, voice_session)) = access.take_voice_denied() {
         crate::voice::revoke::remove_socket_peer(
@@ -1498,7 +1440,7 @@ async fn revalidate_socket(
 ///
 /// **Internal:** Exposed for integration tests only.
 #[tracing::instrument(
-    skip(state, tx, access, admin_subscribed, msg_state, text),
+    skip(state, tx, access, msg_state, text),
     fields(user_id = %user_id)
 )]
 pub async fn handle_client_message(
@@ -1507,7 +1449,6 @@ pub async fn handle_client_message(
     state: &AppState,
     tx: &mpsc::Sender<OutboundMsg>,
     access: &Arc<SocketAccess>,
-    admin_subscribed: &Arc<tokio::sync::RwLock<bool>>,
     msg_state: &mut ClientMessageState,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let event: ClientEvent = serde_json::from_str(text)?;
@@ -1877,33 +1818,53 @@ pub async fn handle_client_message(
         }
 
         ClientEvent::AdminSubscribe => {
-            // Check if this socket's session is elevated (an elevation
-            // belongs to one session, C24)
-            // The cached elevation counts only for a live full session (the
-            // HTTP admin guard's committed-row check, B.4 rev 5): a probation
-            // session never subscribes, even with an old elevation cached.
-            let epoch = access.user_epoch_now();
-            let is_elevated = admin_events_allowed(state, user_id, msg_state.session_id).await;
-            access.set_admin_seen(epoch);
-            if !is_elevated {
-                send_outbound(
-                    tx,
-                    OutboundMsg::Event(ServerEvent::Error {
-                        code: "ADMIN_NOT_ELEVATED".to_string(),
-                        message: "Must be an elevated admin to subscribe to admin events"
-                            .to_string(),
-                    }),
-                )
-                .await?;
-                return Ok(());
+            // Whether this socket's session is elevated (an elevation
+            // belongs to one session, C24), read from the committed rows at
+            // the current user epoch and recorded only if the epoch is
+            // unchanged — the same steps as `subscribe`. A check that could
+            // not be made is recorded undecided and revalidated.
+            let mut decision = None;
+            for _ in 0..SUBSCRIBE_ATTEMPTS {
+                let epoch = access.user_epoch_now();
+                let Ok(allowed) = access.check_admin().await else {
+                    break;
+                };
+                if access.commit_admin(epoch, allowed) {
+                    decision = Some(allowed);
+                    break;
+                }
             }
-
-            *admin_subscribed.write().await = true;
-            debug!("Admin {} subscribed to admin events", user_id);
+            match decision {
+                Some(true) => debug!("Admin {} subscribed to admin events", user_id),
+                Some(false) => {
+                    send_outbound(
+                        tx,
+                        OutboundMsg::Event(ServerEvent::Error {
+                            code: "ADMIN_NOT_ELEVATED".to_string(),
+                            message: "Must be an elevated admin to subscribe to admin events"
+                                .to_string(),
+                        }),
+                    )
+                    .await?;
+                }
+                None => {
+                    access.record_admin_unchecked();
+                    send_outbound(
+                        tx,
+                        OutboundMsg::Event(ServerEvent::Error {
+                            code: "SERVICE_UNAVAILABLE".to_string(),
+                            message:
+                                "Admin access could not be checked yet; events follow once it is"
+                                    .to_string(),
+                        }),
+                    )
+                    .await?;
+                }
+            }
         }
 
         ClientEvent::AdminUnsubscribe => {
-            *admin_subscribed.write().await = false;
+            access.unsubscribe_admin();
             debug!("Admin {} unsubscribed from admin events", user_id);
         }
 
@@ -2076,10 +2037,6 @@ pub(crate) struct HandlePubsubParams {
     tx: mpsc::Sender<OutboundMsg>,
     /// Requested and allowed channels (`ws::access`).
     access: Arc<SocketAccess>,
-    /// For re-checking the admin event flag after the user's access epoch
-    /// moved (`None` in unit tests: admin events then need a fresh check).
-    state: Option<AppState>,
-    admin_subscribed: Arc<tokio::sync::RwLock<bool>>,
     blocked_users: Arc<tokio::sync::RwLock<HashSet<Uuid>>>,
     user_id: Uuid,
     /// Session of the socket's token; `None` for tokens without a `sid`.
@@ -2336,36 +2293,6 @@ async fn forward_until_reconnect(
     }
 }
 
-/// Whether this socket may get an admin event now: it subscribed, and the
-/// flag holds at the current user access epoch. When the epoch moved, the
-/// flag is re-checked against the database (and cleared if lost). Asked by
-/// the forwarder and again by the sender when the frame is written.
-/// `state` is `None` in unit tests: a moved epoch then refuses.
-async fn admin_events_hold(
-    state: Option<&AppState>,
-    access: &SocketAccess,
-    admin_subscribed: &tokio::sync::RwLock<bool>,
-    user_id: Uuid,
-    session_id: Option<Uuid>,
-) -> bool {
-    if !*admin_subscribed.read().await {
-        return false;
-    }
-    if access.admin_fresh() {
-        return true;
-    }
-    let Some(state) = state else {
-        return false;
-    };
-    let epoch = access.user_epoch_now();
-    let allowed = admin_events_allowed(state, user_id, session_id).await;
-    if !allowed {
-        *admin_subscribed.write().await = false;
-    }
-    access.set_admin_seen(epoch);
-    allowed
-}
-
 /// The `error` event for a `subscribe` beyond the socket's limit.
 fn too_many_subscriptions() -> OutboundMsg {
     OutboundMsg::Event(ServerEvent::Error {
@@ -2552,10 +2479,16 @@ pub(crate) async fn forward_pubsub_messages(
                                 .and_then(|id| Uuid::parse_str(id).ok());
                             if let Some(channel_id) = channel_id {
                                 if !params.access.insert_direct(channel_id) {
-                                    debug!(
-                                        "DM not auto-subscribed: connection at its subscription limit (user {})",
+                                    // The socket cannot follow one more DM:
+                                    // rather than announce a conversation
+                                    // whose messages it would then filter, it
+                                    // closes so the client resynchronises
+                                    // (and subscribes to what it shows).
+                                    warn!(
+                                        "Closing socket: new DM beyond the subscription limit (user {})",
                                         params.user_id
                                     );
+                                    return PubsubExit::AccessResync;
                                 }
                             } else {
                                 warn!(
@@ -2573,18 +2506,10 @@ pub(crate) async fn forward_pubsub_messages(
         }
         // Handle admin events
         else if channel_name == channels::ADMIN_EVENTS {
-            // Only forward if user is subscribed to admin events, checked at
-            // the current user access epoch (an elevation can end); checked
-            // again when the frame is written.
-            if admin_events_hold(
-                params.state.as_ref(),
-                &params.access,
-                &params.admin_subscribed,
-                params.user_id,
-                params.session_id,
-            )
-            .await
-            {
+            // Only while the socket is subscribed to the admin stream; the
+            // decision is taken when the frame is written, like a channel
+            // event's.
+            if params.access.may_forward_admin() {
                 if let Some(payload) = message.value.as_str() {
                     if let Ok(event) = serde_json::from_str::<ServerEvent>(&payload) {
                         try_forward!(@msg OutboundMsg::Admin(event));
@@ -3043,8 +2968,6 @@ mod pubsub_tests {
                 // Never connected: these tests cause no revalidation.
                 sqlx::PgPool::connect_lazy("postgres://localhost/unused").expect("lazy pool"),
             ),
-            state: None,
-            admin_subscribed: Arc::new(tokio::sync::RwLock::new(false)),
             blocked_users: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
             user_id: Uuid::from_u128(0x0192_0000_0000_7000_8000_0000_0000_00aa),
             session_id: Some(OWN_SESSION),
@@ -3071,6 +2994,73 @@ mod pubsub_tests {
             kind: MessageKind::PMessage,
             server: Server::new("127.0.0.1", 6379),
         }
+    }
+
+    /// A new DM that the socket cannot follow any more (it holds as many DMs
+    /// as it may) is not announced with its messages then filtered: the
+    /// pipeline ends so the socket closes with a resynchronising 1011. Server
+    /// channels do not count against DMs.
+    #[tokio::test]
+    async fn a_dm_beyond_the_limit_ends_the_socket_for_a_resync() {
+        use super::super::access::{
+            ChannelScope, SubscribeCommit, MAX_REQUESTED_CHANNELS, MAX_REQUESTED_DIRECT,
+        };
+        let dm_created = |id: Uuid| PubsubMessage {
+            channel: channels::user_events(Uuid::from_u128(
+                0x0192_0000_0000_7000_8000_0000_0000_00aa,
+            ))
+            .into(),
+            value: PubsubValue::from(
+                serde_json::to_string(&ServerEvent::DmCreated {
+                    channel: serde_json::json!({ "id": id }),
+                })
+                .expect("serialize"),
+            ),
+            kind: MessageKind::Message,
+            server: Server::new("127.0.0.1", 6379),
+        };
+
+        // Full of server channels: a new DM still fits.
+        let (params, mut rx) = test_params(16);
+        let scope = ChannelScope::Guild(Uuid::new_v4());
+        for _ in 0..MAX_REQUESTED_CHANNELS {
+            let snap = params.access.snapshot(scope);
+            assert_eq!(
+                params
+                    .access
+                    .commit_subscribe(Uuid::new_v4(), scope, snap, true),
+                SubscribeCommit::Recorded
+            );
+        }
+        let (btx, brx) = tokio::sync::broadcast::channel(8);
+        btx.send(dm_created(CHANNEL)).unwrap();
+        drop(btx);
+        assert!(matches!(
+            forward_pubsub_messages(brx, &params).await,
+            PubsubExit::StreamEnded
+        ));
+        assert!(params.access.is_requested(CHANNEL));
+        assert!(matches!(
+            rx.recv().await,
+            Some(OutboundMsg::Event(ServerEvent::DmCreated { .. }))
+        ));
+
+        // Full of DMs as well: the next one ends the pipeline, unannounced.
+        for _ in 1..MAX_REQUESTED_DIRECT {
+            assert!(params.access.insert_direct(Uuid::new_v4()));
+        }
+        let one_more = Uuid::new_v4();
+        let (btx, brx) = tokio::sync::broadcast::channel(8);
+        btx.send(dm_created(one_more)).unwrap();
+        drop(btx);
+        let exit = forward_pubsub_messages(brx, &params).await;
+        assert_eq!(exit, PubsubExit::AccessResync);
+        assert_eq!(
+            (exit.close_code(), exit.close_reason()),
+            (Some(1011), "RESYNC")
+        );
+        assert!(!params.access.is_requested(one_more));
+        assert!(rx.try_recv().is_err(), "the DM was announced all the same");
     }
 
     #[tokio::test]

@@ -636,22 +636,20 @@ async fn probation_admin_cannot_subscribe_to_admin_events(pool: PgPool) {
     vc_server::admin::cache_elevated_status(&app.state.redis, sid, true, 60).await;
 
     let (tx, mut rx) = tokio::sync::mpsc::channel(10);
-    let subscribed = vc_server::ws::access::SocketAccess::new(admin, app.state.db.clone());
-    let admin_subscribed = std::sync::Arc::new(tokio::sync::RwLock::new(false));
+    let subscribed =
+        vc_server::ws::access::SocketAccess::for_session(admin, Some(sid), app.state.db.clone());
     let mut msg_state = vc_server::ws::ClientMessageState::default();
-    msg_state.session_id = Some(sid);
     vc_server::ws::handle_client_message(
         r#"{"type":"admin_subscribe"}"#,
         admin,
         &app.state,
         &tx,
         &subscribed,
-        &admin_subscribed,
         &mut msg_state,
     )
     .await
     .unwrap();
-    assert!(!*admin_subscribed.read().await);
+    assert!(!subscribed.admin_subscribed());
     match tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
         .await
         .unwrap()
