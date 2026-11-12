@@ -612,6 +612,71 @@ class TextChannelViewModelTest {
     }
 
     @Test
+    fun `the failure notice names the failed message and ends when it is deleted`() = runTest {
+        viewModel = loadedViewModel()
+        advanceUntilIdle()
+        assertNull(viewModel.failureNotice.value)
+        coEvery { chatRepository.sendMessage("ch-1", "hi", 1L) } throws RuntimeException("boom")
+        viewModel.onMessageInputChanged("hi")
+        viewModel.onSendMessage()
+        advanceUntilIdle()
+        val id = viewModel.pendingMessages.value.single().localId
+        assertEquals(id, viewModel.failureNotice.value)
+
+        viewModel.onDiscardPending(id)
+        advanceUntilIdle()
+
+        assertNull(viewModel.failureNotice.value)
+    }
+
+    @Test
+    fun `the failure notice ends when the message is retried from its row and sent`() = runTest {
+        viewModel = loadedViewModel()
+        advanceUntilIdle()
+        coEvery { chatRepository.sendMessage("ch-1", "hi", 1L) } throws RuntimeException("boom")
+        viewModel.onMessageInputChanged("hi")
+        viewModel.onSendMessage()
+        advanceUntilIdle()
+        val id = viewModel.pendingMessages.value.single().localId
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        coEvery { chatRepository.sendMessage("ch-1", "hi", 1L) } coAnswers { gate.await() }
+
+        viewModel.onRetryPending(id)
+        advanceUntilIdle()
+        assertNull(viewModel.failureNotice.value) // sending again: the notice no longer applies
+
+        gate.complete(Unit)
+        advanceUntilIdle()
+        assertNull(viewModel.failureNotice.value)
+        assertTrue(viewModel.pendingMessages.value.isEmpty())
+    }
+
+    @Test
+    fun `a second failure of the retried message brings the notice back`() = runTest {
+        viewModel = loadedViewModel()
+        advanceUntilIdle()
+        coEvery { chatRepository.sendMessage("ch-1", "hi", 1L) } throws RuntimeException("boom")
+        viewModel.onMessageInputChanged("hi")
+        viewModel.onSendMessage()
+        advanceUntilIdle()
+        val id = viewModel.pendingMessages.value.single().localId
+
+        viewModel.onRetryPending(id)
+        advanceUntilIdle()
+
+        assertEquals(id, viewModel.failureNotice.value)
+    }
+
+    @Test
+    fun `only not-sent texts are tied to a failed message`() {
+        assertTrue(isPendingFailureRes(R.string.chat_send_failed))
+        assertTrue(isPendingFailureRes(R.string.chat_upload_failed))
+        assertTrue(isPendingFailureRes(R.string.chat_upload_too_large))
+        assertFalse(isPendingFailureRes(R.string.chat_edit_failed))
+        assertFalse(isPendingFailureRes(R.string.chat_load_failed))
+    }
+
+    @Test
     fun `draft survives leaving the chat`() = runTest {
         viewModel = loadedViewModel()
         advanceUntilIdle()

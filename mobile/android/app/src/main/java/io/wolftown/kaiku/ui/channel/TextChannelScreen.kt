@@ -14,6 +14,8 @@ import androidx.compose.ui.semantics.heading
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -86,11 +88,21 @@ fun TextChannelScreen(
         viewModel.error.filterNotNull().collectLatest { res ->
             viewModel.clearError()
             val retry = res == R.string.chat_send_failed || res == R.string.chat_upload_failed
-            val result = snackbarHostState.showSnackbar(
-                message = context.getString(res),
-                actionLabel = if (retry) context.getString(R.string.common_retry) else null,
-                withDismissAction = true
-            )
+            // A "not sent" snackbar goes away once its message is deleted, retried or sent.
+            val failedId = if (isPendingFailureRes(res)) viewModel.failureNotice.value else null
+            val result = coroutineScope {
+                val watcher = failedId?.let { id ->
+                    launch {
+                        viewModel.failureNotice.first { it != id }
+                        snackbarHostState.currentSnackbarData?.dismiss()
+                    }
+                }
+                snackbarHostState.showSnackbar(
+                    message = context.getString(res),
+                    actionLabel = if (retry) context.getString(R.string.common_retry) else null,
+                    withDismissAction = true
+                ).also { watcher?.cancel() }
+            }
             if (retry && result == SnackbarResult.ActionPerformed) viewModel.onRetryFailed()
         }
     }

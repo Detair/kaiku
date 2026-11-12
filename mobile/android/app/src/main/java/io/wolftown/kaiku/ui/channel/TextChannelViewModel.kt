@@ -108,6 +108,15 @@ class TextChannelViewModel @Inject constructor(
     private val _error = MutableStateFlow<Int?>(null)
     val error: StateFlow<Int?> = _error.asStateFlow()
 
+    private val _failureNotice = MutableStateFlow<String?>(null)
+
+    /**
+     * Local id of the failed message the "not sent" snackbar is about, or null
+     * once that message is no longer failed (deleted, retried or sent). The
+     * screen dismisses the snackbar when this stops naming its message.
+     */
+    val failureNotice: StateFlow<String?> = _failureNotice.asStateFlow()
+
     /** True while a picked photo or video of this chat is being uploaded. */
     val isUploading: StateFlow<Boolean> = pendingMessages
         .map { list -> list.any { it.attachment != null && it.state == PendingMessage.State.SENDING } }
@@ -141,7 +150,20 @@ class TextChannelViewModel @Inject constructor(
         // A send that fails while this chat is open is also reported in a snackbar.
         viewModelScope.launch {
             outgoing.failures.collect { failed ->
-                if (failed.channelId == channelId) _error.value = pendingFailureRes(failed.failure)
+                if (failed.channelId == channelId) {
+                    // Set before the error, so the screen sees the id when it shows the snackbar.
+                    _failureNotice.value = failed.localId
+                    _error.value = pendingFailureRes(failed.failure)
+                }
+            }
+        }
+        // The snapshot, not the emitted list: the failure may be newer than the list.
+        viewModelScope.launch {
+            outgoing.pending(channelId).collect {
+                val id = _failureNotice.value ?: return@collect
+                val stillFailed = outgoing.pendingNow(channelId)
+                    .any { it.localId == id && it.state == PendingMessage.State.FAILED }
+                if (!stillFailed) _failureNotice.compareAndSet(id, null)
             }
         }
         // C28: coalescing edits older notices, so the Kaiku DM reloads its latest page on every reconnect.

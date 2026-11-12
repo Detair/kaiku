@@ -30,6 +30,10 @@ internal fun pendingFailureRes(failure: PendingMessage.Failure?): Int = when (fa
     PendingMessage.Failure.SEND_FAILED, null -> R.string.chat_send_failed
 }
 
+/** True for the texts [pendingFailureRes] gives, i.e. errors about a message that was not sent. */
+internal fun isPendingFailureRes(@StringRes res: Int): Boolean =
+    PendingMessage.Failure.entries.any { pendingFailureRes(it) == res }
+
 /** Retrying cannot help a file that is too large or of a refused type. */
 internal fun canRetry(failure: PendingMessage.Failure?): Boolean =
     failure != PendingMessage.Failure.TOO_LARGE && failure != PendingMessage.Failure.UNSUPPORTED_TYPE
