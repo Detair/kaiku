@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use sqlx::PgPool;
 use uuid::Uuid;
 use vc_server::chat::storage_cleanup::{
-    backfill_batch, drain_pending_deletes, DrainLimits, ObjectStore,
+    backfill_batch, drain_pending_deletes, spawn_with, DrainLimits, ObjectStore,
 };
 use vc_server::permissions::GuildPermissions;
 
@@ -232,6 +232,154 @@ async fn hanging_store_keeps_the_tick_bounded(pool: PgPool) {
     queue(&pool, "sweep/untouched", 0.0).await;
     let _ = vc_server::auth::timers::run_once(&app.state).await;
     assert_eq!(attempts(&pool, "sweep/untouched").await.0, 0);
+}
+
+/// Retries are served however many new keys arrive: with a steady inflow
+/// larger than a tick's budget, keys that failed once (storage has since
+/// recovered) are retried within ceil(retries / half budget) ticks, and
+/// every tick still deletes half a budget of new keys.
+#[sqlx::test]
+async fn retries_are_served_despite_steady_inflow(pool: PgPool) {
+    let store = Fake::default();
+    for i in 0..3 {
+        queue(&pool, &format!("retry/{i}"), 600.0).await;
+    }
+    sqlx::query(
+        "UPDATE storage_pending_deletes
+         SET attempts = 1, last_attempt_at = NOW() - INTERVAL '2 minutes',
+             next_attempt_at = NOW() - INTERVAL '1 minute'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Budget 4 rows: 2 per lane. Bound for 3 retries: 2 ticks.
+    let mut retried_by_tick = Vec::new();
+    for tick in 0..4 {
+        for j in 0..6 {
+            queue(&pool, &format!("new/{tick}/{j}"), 0.0).await;
+        }
+        let r = drain_pending_deletes(&pool, Some(&store), limits(4))
+            .await
+            .unwrap();
+        assert_eq!(r.deleted, 4, "tick {tick}: full budget used");
+        let left: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM storage_pending_deletes WHERE s3_key LIKE 'retry/%'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        retried_by_tick.push(left);
+        let new_deleted = store
+            .calls
+            .lock()
+            .unwrap()
+            .keys()
+            .filter(|k| k.starts_with(&format!("new/{tick}/")))
+            .count();
+        assert!(
+            new_deleted >= 2,
+            "tick {tick}: new keys served ({new_deleted})"
+        );
+    }
+    assert_eq!(retried_by_tick, [1, 0, 0, 0], "retries done within 2 ticks");
+}
+
+/// `shutdown` ends a tick after the store call in progress (bounded by the
+/// per-delete limit) and leaves every key queued: the one in progress
+/// rescheduled, the rest released and due again.
+#[sqlx::test]
+async fn shutdown_stops_the_tick_without_losing_keys(pool: PgPool) {
+    for i in 0..5 {
+        queue(&pool, &format!("k/{i}"), 0.0).await;
+    }
+    let worker = spawn_with(
+        pool.clone(),
+        Some(Fake {
+            delay: Duration::from_secs(60),
+            ..Fake::default()
+        }),
+        Duration::from_millis(10),
+        DrainLimits {
+            max_rows: 5,
+            budget: Duration::from_secs(30),
+            per_delete: Duration::from_millis(300),
+        },
+    );
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let started = Instant::now();
+    worker.shutdown().await;
+    let took = started.elapsed();
+    assert!(took < Duration::from_secs(1), "shutdown took {took:?}");
+
+    let rows: Vec<(i32, bool)> = sqlx::query_as(
+        "SELECT attempts, next_attempt_at <= NOW() FROM storage_pending_deletes ORDER BY s3_key",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(rows.len(), 5, "no key lost");
+    let failed = rows.iter().filter(|(a, _)| *a == 1).count();
+    let due = rows.iter().filter(|(a, due)| *a == 0 && *due).count();
+    assert!(
+        failed <= 1,
+        "at most the call in progress counted: {rows:?}"
+    );
+    assert_eq!(
+        failed + due,
+        5,
+        "the rest released, none left leased: {rows:?}"
+    );
+}
+
+/// A tick killed mid-call (process crash) keeps its keys leased; once the
+/// lease runs out they are claimed and deleted again.
+#[sqlx::test]
+async fn killed_tick_keys_return_after_the_lease(pool: PgPool) {
+    for i in 0..3 {
+        queue(&pool, &format!("k/{i}"), 0.0).await;
+    }
+    let hanging = {
+        let pool = pool.clone();
+        tokio::spawn(async move {
+            let store = Fake {
+                delay: Duration::from_secs(60),
+                ..Fake::default()
+            };
+            let _ = drain_pending_deletes(
+                &pool,
+                Some(&store),
+                DrainLimits {
+                    max_rows: 3,
+                    budget: Duration::from_secs(60),
+                    per_delete: Duration::from_secs(60),
+                },
+            )
+            .await;
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    hanging.abort();
+    let _ = hanging.await;
+
+    let store = Fake::default();
+    let r = drain_pending_deletes(&pool, Some(&store), limits(10))
+        .await
+        .unwrap();
+    assert_eq!(r, Default::default(), "leased keys are not taken twice");
+
+    // The lease (5 min) runs out.
+    sqlx::query(
+        "UPDATE storage_pending_deletes SET next_attempt_at = next_attempt_at - INTERVAL '5 minutes'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let r = drain_pending_deletes(&pool, Some(&store), limits(10))
+        .await
+        .unwrap();
+    assert_eq!(r.deleted, 3);
+    assert!(queued(&pool).await.is_empty());
 }
 
 /// Deleting an object that is already gone counts as success.

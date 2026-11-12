@@ -544,19 +544,21 @@ pub(super) async fn lookup_usernames(
 }
 
 /// Delete a user by id, cascading to memberships, sessions, etc.
-/// Returns the number of rows deleted (0 or 1).
+/// Returns the number of rows deleted (0 or 1) and the object keys of the
+/// user's files.
 ///
 /// Messages stay (anonymized); their files are removed like in the
 /// self-service deletion (same helper). The caller rolls back on 0.
 pub(super) async fn delete_user(
     conn: &mut sqlx::PgConnection,
     user_id: Uuid,
-) -> Result<u64, AdminError> {
-    crate::chat::storage_cleanup::remove_attachments_of_user(&mut *conn, user_id).await?;
+) -> Result<(u64, Vec<String>), AdminError> {
+    let keys =
+        crate::chat::storage_cleanup::remove_attachments_of_user(&mut *conn, user_id).await?;
     let result = sqlx::query!("DELETE FROM users WHERE id = $1 AND NOT is_system", user_id)
         .execute(conn)
         .await?;
-    Ok(result.rows_affected())
+    Ok((result.rows_affected(), keys))
 }
 
 // ============================================================================

@@ -323,6 +323,11 @@ async fn deleting_message_removes_rows_and_objects(pool: PgPool) {
     let message = insert_message(&pool, channel, owner, "file").await;
     let (attachment, keys) = stored_attachment(&app, message).await;
     let token = generate_access_token(&app.config, owner);
+    // An older queued key is the worker's; the post-delete drain leaves it.
+    sqlx::query("INSERT INTO storage_pending_deletes (s3_key) VALUES ('other/untouched')")
+        .execute(&pool)
+        .await
+        .unwrap();
 
     let req = TestApp::request(Method::DELETE, &format!("/api/messages/{message}"))
         .header("Authorization", format!("Bearer {token}"))
@@ -335,7 +340,7 @@ async fn deleting_message_removes_rows_and_objects(pool: PgPool) {
     // The objects are deleted right after the commit (background task).
     let s3 = app.state.s3.as_ref().unwrap();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while !pending_keys(&pool).await.is_empty() {
+    while pending_keys(&pool).await != ["other/untouched"] {
         assert!(
             std::time::Instant::now() < deadline,
             "objects still queued: {:?}",

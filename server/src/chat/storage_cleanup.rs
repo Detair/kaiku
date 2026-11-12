@@ -11,8 +11,14 @@
 //! - **Claim.** Due keys (`next_attempt_at <= now()`) are claimed with `FOR UPDATE SKIP LOCKED` and
 //!   leased for [`LEASE`], so overlapping drains (a second server instance, the post-delete
 //!   [`spawn_drain`]) never take the same key. A crashed drain's lease simply runs out.
-//! - **Order.** Keys never tried come first, newest first, so a file deleted just now does not wait
-//!   behind an old backlog; failed keys follow.
+//! - **Two lanes.** Each tick's row budget is split in half: the *fresh* lane takes never-tried
+//!   keys, newest first, so a file deleted just now does not wait behind an old backlog; the
+//!   *retry* lane takes due retries (`attempts > 0`, `next_attempt_at <= now()`), the longest-due
+//!   first, so a key that failed is retried once its backoff ran out however many new keys arrive.
+//!   A lane may use what the other leaves unused. Within the tick the two lanes alternate, so a
+//!   slow store shares the wall time between them.
+//! - **Try now.** After a delete commits, [`spawn_drain`] tries exactly the keys that delete queued
+//!   (fresh only), nothing older.
 //! - **Bounds.** At most [`TICK_ROWS`] keys and [`TICK_BUDGET`] wall time per tick; every object
 //!   delete gives up after [`DELETE_TIMEOUT`]. Keys claimed but not reached in time are released
 //!   without counting.
@@ -42,7 +48,7 @@ pub const TICK_BUDGET: Duration = Duration::from_secs(20);
 /// Keys handled per tick at most.
 pub const TICK_ROWS: i64 = 200;
 /// Keys handled by the post-delete drain ([`spawn_drain`]).
-pub const TRY_NOW_ROWS: i64 = 20;
+pub const TRY_NOW_ROWS: i64 = 50;
 /// Time limit of one object delete (SDK retries included).
 pub const DELETE_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long a claimed key is reserved for the drain that claimed it.
@@ -133,28 +139,97 @@ const fn interval_secs(d: Duration) -> f64 {
     d.as_secs_f64()
 }
 
-/// Claim up to `limit` due keys: never-tried first, newest first.
-async fn claim(pool: &PgPool, limit: i64) -> sqlx::Result<Vec<(String, i32)>> {
-    sqlx::query_as(
-        "UPDATE storage_pending_deletes d
-         SET next_attempt_at = NOW() + make_interval(secs => $2)
-         FROM (
-             SELECT s3_key FROM storage_pending_deletes
-             WHERE next_attempt_at <= NOW()
-             ORDER BY attempts, created_at DESC, s3_key
-             LIMIT $1
-             FOR UPDATE SKIP LOCKED
-         ) due
-         WHERE d.s3_key = due.s3_key
-         RETURNING d.s3_key, d.attempts",
-    )
-    .bind(limit)
-    .bind(interval_secs(LEASE))
-    .fetch_all(pool)
-    .await
+/// Which keys a claim may take.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Lane {
+    /// Never-tried keys, newest first.
+    Fresh,
+    /// Due retries (`attempts > 0`), longest-due first.
+    Retry,
 }
 
-/// Delete up to `limits.max_rows` due objects within `limits.budget`.
+/// Claim up to `limit` due keys of one lane (optionally only `only`), and
+/// lease them. One atomic statement; committed before any store call.
+async fn claim(
+    pool: &PgPool,
+    lane: Lane,
+    limit: i64,
+    only: Option<&[String]>,
+) -> sqlx::Result<Vec<(String, i32)>> {
+    if limit <= 0 {
+        return Ok(Vec::new());
+    }
+    // Two literal statements (one per lane); only the filter and order differ.
+    let sql = match lane {
+        Lane::Fresh => {
+            "UPDATE storage_pending_deletes d
+             SET next_attempt_at = NOW() + make_interval(secs => $2)
+             FROM (
+                 SELECT s3_key FROM storage_pending_deletes
+                 WHERE next_attempt_at <= NOW() AND attempts = 0
+                   AND ($3::text[] IS NULL OR s3_key = ANY($3))
+                 ORDER BY created_at DESC, s3_key
+                 LIMIT $1
+                 FOR UPDATE SKIP LOCKED
+             ) due
+             WHERE d.s3_key = due.s3_key
+             RETURNING d.s3_key, d.attempts"
+        }
+        Lane::Retry => {
+            "UPDATE storage_pending_deletes d
+             SET next_attempt_at = NOW() + make_interval(secs => $2)
+             FROM (
+                 SELECT s3_key FROM storage_pending_deletes
+                 WHERE next_attempt_at <= NOW() AND attempts > 0
+                   AND ($3::text[] IS NULL OR s3_key = ANY($3))
+                 ORDER BY next_attempt_at, s3_key
+                 LIMIT $1
+                 FOR UPDATE SKIP LOCKED
+             ) due
+             WHERE d.s3_key = due.s3_key
+             RETURNING d.s3_key, d.attempts"
+        }
+    };
+    sqlx::query_as(sql)
+        .bind(limit)
+        .bind(interval_secs(LEASE))
+        .bind(only)
+        .fetch_all(pool)
+        .await
+}
+
+/// Claim one tick's keys: half the budget per lane, each lane may use what
+/// the other leaves. Returns `(fresh, retries)`.
+async fn claim_lanes(
+    pool: &PgPool,
+    max_rows: i64,
+) -> sqlx::Result<(Vec<(String, i32)>, Vec<(String, i32)>)> {
+    let half = max_rows / 2;
+    let mut retries = claim(pool, Lane::Retry, half, None).await?;
+    let fresh = claim(pool, Lane::Fresh, max_rows - len_i64(&retries), None).await?;
+    let left = max_rows - len_i64(&retries) - len_i64(&fresh);
+    retries.extend(claim(pool, Lane::Retry, left, None).await?);
+    Ok((fresh, retries))
+}
+
+fn len_i64<T>(v: &[T]) -> i64 {
+    i64::try_from(v.len()).unwrap_or(i64::MAX)
+}
+
+/// The two lanes alternating: fresh, retry, fresh, retry, …
+fn interleave<T>(a: Vec<T>, b: Vec<T>) -> Vec<T> {
+    let mut out = Vec::with_capacity(a.len() + b.len());
+    let (mut a, mut b) = (a.into_iter(), b.into_iter());
+    loop {
+        match (a.next(), b.next()) {
+            (None, None) => return out,
+            (x, y) => out.extend(x.into_iter().chain(y)),
+        }
+    }
+}
+
+/// Delete up to `limits.max_rows` due objects within `limits.budget`
+/// (both lanes, see the module docs).
 ///
 /// Without object storage nothing happens (the keys stay queued).
 pub async fn drain_pending_deletes<S: ObjectStore>(
@@ -162,19 +237,28 @@ pub async fn drain_pending_deletes<S: ObjectStore>(
     store: Option<&S>,
     limits: DrainLimits,
 ) -> sqlx::Result<DrainReport> {
-    let mut report = DrainReport::default();
     let Some(store) = store else {
-        return Ok(report);
+        return Ok(DrainReport::default());
     };
-    let started = Instant::now();
-    let mut claimed = claim(pool, limits.max_rows).await?;
-    // RETURNING has no order; keep the claim order.
-    claimed.sort_by_key(|(_, attempts)| *attempts);
+    let (fresh, retries) = claim_lanes(pool, limits.max_rows).await?;
+    delete_claimed(pool, store, limits, interleave(fresh, retries), None).await
+}
 
+/// Delete the claimed keys in order; stop early at the wall-time budget or
+/// when `stop` fires (after the store call in progress), releasing the rest.
+async fn delete_claimed<S: ObjectStore>(
+    pool: &PgPool,
+    store: &S,
+    limits: DrainLimits,
+    claimed: Vec<(String, i32)>,
+    stop: Option<&tokio::sync::watch::Receiver<bool>>,
+) -> sqlx::Result<DrainReport> {
+    let mut report = DrainReport::default();
+    let started = Instant::now();
     let mut rest = claimed.into_iter();
     for (key, attempts) in rest.by_ref() {
         let left = limits.budget.saturating_sub(started.elapsed());
-        if left.is_zero() {
+        if left.is_zero() || stop.is_some_and(|s| *s.borrow()) {
             release(pool, &key).await?;
             report.released += 1;
             break;
@@ -312,10 +396,29 @@ async fn record_queue_state(pool: &PgPool) -> sqlx::Result<()> {
 
 /// One worker tick: a backfill batch, a bounded drain, the gauges.
 pub async fn run_tick<S: ObjectStore>(pool: &PgPool, store: Option<&S>) {
+    let (_keep, never) = tokio::sync::watch::channel(false);
+    run_tick_until(pool, store, DrainLimits::TICK, &never).await;
+}
+
+async fn run_tick_until<S: ObjectStore>(
+    pool: &PgPool,
+    store: Option<&S>,
+    limits: DrainLimits,
+    stop: &tokio::sync::watch::Receiver<bool>,
+) {
     if let Err(e) = backfill_batch(pool, BACKFILL_BATCH).await {
         tracing::warn!(error = %e, "Clean-up of files of earlier deleted messages failed");
     }
-    match drain_pending_deletes(pool, store, DrainLimits::TICK).await {
+    let drained = match store {
+        Some(store) => match claim_lanes(pool, limits.max_rows).await {
+            Ok((fresh, retries)) => {
+                delete_claimed(pool, store, limits, interleave(fresh, retries), Some(stop)).await
+            }
+            Err(e) => Err(e),
+        },
+        None => Ok(DrainReport::default()),
+    };
+    match drained {
         Ok(r) if r.deleted + r.failed + r.released > 0 => tracing::debug!(
             deleted = r.deleted,
             failed = r.failed,
@@ -335,46 +438,128 @@ pub async fn run_tick<S: ObjectStore>(pool: &PgPool, store: Option<&S>) {
 /// The trigger queues their objects. For account deletion (self-service
 /// and admin): the messages stay anonymized, their files go. Call in the
 /// transaction that deletes the user row.
+///
+/// Returns the queued object keys (for [`spawn_drain`] after the commit).
 pub async fn remove_attachments_of_user(
     conn: &mut sqlx::PgConnection,
     user_id: uuid::Uuid,
-) -> sqlx::Result<u64> {
-    Ok(sqlx::query(
+) -> sqlx::Result<Vec<String>> {
+    let rows: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as(
         "DELETE FROM file_attachments fa USING messages m
-         WHERE m.id = fa.message_id AND m.user_id = $1",
+         WHERE m.id = fa.message_id AND m.user_id = $1
+         RETURNING fa.s3_key, fa.thumbnail_s3_key, fa.medium_s3_key",
     )
     .bind(user_id)
-    .execute(conn)
-    .await?
-    .rows_affected())
+    .fetch_all(conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .flat_map(|(a, b, c)| [Some(a), b, c])
+        .flatten()
+        .filter(|k| !k.is_empty())
+        .collect())
+}
+
+/// The running object-cleanup worker.
+///
+/// [`CleanupWorker::shutdown`] stops it and waits; dropping the handle
+/// stops it after the current tick without waiting.
+#[must_use = "keep the handle to shut the worker down"]
+pub struct CleanupWorker {
+    stop: tokio::sync::watch::Sender<bool>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl CleanupWorker {
+    /// Stop the worker and wait for it: a tick in progress ends after the
+    /// object-store call it is in (at most [`DELETE_TIMEOUT`]) and releases
+    /// the keys it has not reached. A killed tick loses nothing either: its
+    /// keys come back when their [`LEASE`] runs out.
+    pub async fn shutdown(self) {
+        let _ = self.stop.send(true);
+        if let Err(e) = self.task.await {
+            if e.is_panic() {
+                tracing::error!(error = %e, "Object clean-up worker panicked");
+            }
+        }
+    }
 }
 
 /// Start the object-cleanup worker (its own task, every [`TICK_INTERVAL`]).
-pub fn spawn(state: &AppState) -> tokio::task::JoinHandle<()> {
-    let pool = state.db.clone();
-    let s3 = state.s3.clone();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(TICK_INTERVAL);
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        loop {
-            interval.tick().await;
-            run_tick(&pool, s3.as_ref()).await;
-        }
-    })
+pub fn spawn(state: &AppState) -> CleanupWorker {
+    spawn_with(
+        state.db.clone(),
+        state.s3.clone(),
+        TICK_INTERVAL,
+        DrainLimits::TICK,
+    )
 }
 
-/// Try the newest due keys right after a delete committed (background).
-pub fn spawn_drain(state: &AppState) {
-    if state.s3.is_none() {
+/// [`spawn`] with an explicit store, interval and bounds (tests).
+pub fn spawn_with<S: ObjectStore + Send + 'static>(
+    pool: PgPool,
+    store: Option<S>,
+    every: Duration,
+    limits: DrainLimits,
+) -> CleanupWorker {
+    let (stop, mut stopped) = tokio::sync::watch::channel(false);
+    let task = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(every);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {}
+                _ = stopped.changed() => return,
+            }
+            if *stopped.borrow() {
+                return;
+            }
+            run_tick_until(&pool, store.as_ref(), limits, &stopped).await;
+        }
+    });
+    CleanupWorker { stop, task }
+}
+
+/// Try the keys a just-committed delete queued (and only those), in the
+/// background. Older keys are the worker's.
+pub fn spawn_drain(state: &AppState, keys: Vec<String>) {
+    if state.s3.is_none() || keys.is_empty() {
         return;
     }
     let pool = state.db.clone();
     let s3 = state.s3.clone();
     tokio::spawn(async move {
-        if let Err(e) = drain_pending_deletes(&pool, s3.as_ref(), DrainLimits::TRY_NOW).await {
+        let result = async {
+            let mut claimed = Vec::new();
+            for chunk in keys.chunks(usize::try_from(TRY_NOW_ROWS).unwrap_or(50)) {
+                claimed.extend(claim(&pool, Lane::Fresh, TRY_NOW_ROWS, Some(chunk)).await?);
+            }
+            match s3.as_ref() {
+                Some(s3) => delete_claimed(&pool, s3, DrainLimits::TRY_NOW, claimed, None).await,
+                None => Ok(DrainReport::default()),
+            }
+        }
+        .await;
+        if let Err(e) = result {
             tracing::warn!(error = %e, "Draining pending object deletes failed");
         }
     });
+}
+
+/// Object keys (original and variants) of a message's attachments; read
+/// before deleting it, to hand to [`spawn_drain`] afterwards.
+pub async fn attachment_keys_of_message(
+    pool: &PgPool,
+    message_id: uuid::Uuid,
+) -> sqlx::Result<Vec<String>> {
+    sqlx::query_scalar(
+        "SELECT k FROM file_attachments fa,
+             unnest(ARRAY[fa.s3_key, fa.thumbnail_s3_key, fa.medium_s3_key]) AS k
+         WHERE fa.message_id = $1 AND k IS NOT NULL AND k <> ''",
+    )
+    .bind(message_id)
+    .fetch_all(pool)
+    .await
 }
 
 #[cfg(test)]

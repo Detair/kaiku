@@ -913,13 +913,16 @@ pub async fn delete(
     let channel_id = message.channel_id;
     let parent_id = message.parent_id;
 
+    // Its files' keys, to delete the objects right after the commit.
+    let keys = super::storage_cleanup::attachment_keys_of_message(&state.db, id).await?;
+
     // Delete message
     let deleted = db::delete_message(&state.db, id, auth_user.id).await?;
 
     if deleted {
         // The delete removed the attachment rows and queued their objects
-        // (database trigger); delete the objects now.
-        super::storage_cleanup::spawn_drain(&state);
+        // (database trigger); delete exactly these objects now.
+        super::storage_cleanup::spawn_drain(&state, keys);
 
         // Clean up channel pin if message was pinned
         if matches!(
