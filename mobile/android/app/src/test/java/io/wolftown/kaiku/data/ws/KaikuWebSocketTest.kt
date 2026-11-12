@@ -10,6 +10,7 @@ import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -190,7 +191,7 @@ class KaikuWebSocketTest {
     }
 
     @Test
-    fun `sendIfAuthenticated sends nothing before Ready and names the socket after it`() = runTest {
+    fun `sendOn sends nothing before Ready and only on the socket it names after it`() = runTest {
         val authenticated = CountDownLatch(1)
         val received = java.util.Collections.synchronizedList(mutableListOf<String>())
         mockServer.enqueue(
@@ -210,21 +211,96 @@ class KaikuWebSocketTest {
 
         ws.events.test(timeout = 10.seconds) {
             ws.connect(serverUrl(), TOKEN)
-            // Still authenticating: nothing is sent.
-            assertEquals(null, ws.sendIfAuthenticated(ClientEvent.VoiceJoin("ch-1")))
-            assertEquals(null, ws.authenticatedSocket)
+            // Still authenticating: there is no authenticated socket and nothing is sent,
+            // not even for the id this socket is about to get.
+            assertEquals(null, ws.authenticatedSocket.value)
+            assertFalse(ws.sendOn(1L, ClientEvent.VoiceJoin("ch-1")))
 
             authenticated.countDown()
             awaitItem() // Ready
-            assertEquals(1L, ws.sendIfAuthenticated(ClientEvent.VoiceJoin("ch-1")))
-            assertEquals(1L, ws.authenticatedSocket)
+            assertEquals(1L, ws.authenticatedSocket.value)
+            assertFalse(ws.sendOn(2L, ClientEvent.VoiceJoin("ch-1")))
+            assertTrue(ws.sendOn(1L, ClientEvent.VoiceJoin("ch-1")))
 
             val deadline = System.currentTimeMillis() + 5_000
             while (received.none { it.contains("voice_join") } && System.currentTimeMillis() < deadline) {
                 Thread.sleep(10)
             }
-            // Exactly one voice_join reached the server: the one sent after Ready.
+            // Exactly one voice_join reached the server: the one sent on socket 1 after its Ready.
             assertEquals(1, received.count { it.contains("voice_join") })
+
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `every authenticated socket gets a new id and a frame for an old socket is not sent`() = runTest {
+        val received = java.util.Collections.synchronizedList(mutableListOf<String>())
+        repeat(2) {
+            mockServer.enqueue(
+                MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
+                    override fun onMessage(webSocket: WebSocket, text: String) {
+                        received += text
+                        if (text.contains("authenticate")) {
+                            webSocket.send("""{"type":"ready","user_id":"usr-001"}""")
+                        }
+                    }
+                })
+            )
+        }
+
+        ws.authenticatedSocket.test(timeout = 10.seconds) {
+            assertEquals(null, awaitItem())
+
+            ws.connect(serverUrl(), TOKEN)
+            assertEquals(1L, awaitItem())
+            assertEquals(ConnectionState.Connected, ws.connectionState.value)
+
+            ws.disconnect()
+            assertEquals(null, awaitItem())
+            // Its socket is gone: nothing is sent, on no socket.
+            assertFalse(ws.sendOn(1L, ClientEvent.VoiceJoin("old")))
+
+            ws.connect(serverUrl(), TOKEN)
+            // Not authenticated yet, or already socket 2: never socket 1 again.
+            assertFalse(ws.sendOn(1L, ClientEvent.VoiceJoin("old")))
+            assertEquals(2L, awaitItem())
+            assertFalse(ws.sendOn(1L, ClientEvent.VoiceJoin("old")))
+            assertTrue(ws.sendOn(2L, ClientEvent.VoiceJoin("new")))
+
+            val deadline = System.currentTimeMillis() + 5_000
+            while (received.none { it.contains("voice_join") } && System.currentTimeMillis() < deadline) {
+                Thread.sleep(10)
+            }
+            assertEquals(listOf(true), received.filter { it.contains("voice_join") }.map { it.contains("new") })
+
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `a closed socket is no authenticated socket any more`() = runTest {
+        val close = CountDownLatch(1)
+        mockServer.enqueue(
+            MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
+                override fun onOpen(webSocket: WebSocket, response: Response) {
+                    webSocket.send("""{"type":"ready","user_id":"usr-001"}""")
+                    Thread {
+                        close.await(5, TimeUnit.SECONDS)
+                        webSocket.close(1000, "Server shutdown")
+                    }.start()
+                }
+            })
+        )
+
+        ws.authenticatedSocket.test(timeout = 10.seconds) {
+            assertEquals(null, awaitItem())
+            ws.connect(serverUrl(), TOKEN)
+            assertEquals(1L, awaitItem())
+
+            close.countDown()
+            assertEquals(null, awaitItem())
+            assertFalse(ws.sendOn(1L, ClientEvent.VoiceLeave("ch-1")))
 
             cancelAndIgnoreRemainingEvents()
         }

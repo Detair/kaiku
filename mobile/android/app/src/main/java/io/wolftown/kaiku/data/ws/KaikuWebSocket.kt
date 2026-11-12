@@ -63,14 +63,25 @@ class KaikuWebSocket @Inject constructor(
     /** Counts authenticated sockets: bumped with each socket's Ready. Guarded by [lock]. */
     private var authenticatedSockets = 0L
 
+    private val _authenticatedSocket = MutableStateFlow<Long?>(null)
+
     /**
-     * The number of the socket that is authenticated now (it changes with every
-     * new authenticated socket), or null while no socket is authenticated.
+     * The id of the socket that is authenticated now (its Ready was received),
+     * or null while there is none. Every authenticated socket gets a new id
+     * and ids never repeat, so "is the socket I used still there?" is the
+     * plain comparison with the current value, and it never turns true again
+     * once it was false.
+     *
+     * Changes together with [connectionState], under the same lock: non-null
+     * exactly while that is Connected.
      */
-    val authenticatedSocket: Long?
-        get() = synchronized(lock) {
-            if (_connectionState.value == ConnectionState.Connected) authenticatedSockets else null
-        }
+    val authenticatedSocket: StateFlow<Long?> = _authenticatedSocket.asStateFlow()
+
+    /** Sets [connectionState] and, with it, [authenticatedSocket]. Call with [lock] held. */
+    private fun setState(state: ConnectionState) {
+        _authenticatedSocket.value = if (state == ConnectionState.Connected) ++authenticatedSockets else null
+        _connectionState.value = state
+    }
 
     /**
      * Opens a WebSocket connection to [serverUrl] and authenticates with
@@ -92,11 +103,11 @@ class KaikuWebSocket @Inject constructor(
                 Request.Builder().url(toWsUrl(serverUrl)).build()
             } catch (e: IllegalArgumentException) {
                 logger.warning("connect failed: invalid server URL")
-                _connectionState.value = ConnectionState.Disconnected
+                setState(ConnectionState.Disconnected)
                 return
             }
 
-            _connectionState.value = ConnectionState.Connecting
+            setState(ConnectionState.Connecting)
             socketOpen = false
             webSocket = okHttpClient.newWebSocket(request, Listener(accessToken))
         }
@@ -112,7 +123,7 @@ class KaikuWebSocket @Inject constructor(
                 // A socket still upgrading is aborted; an open one gets a close handshake.
                 if (!open || !socket.close(NORMAL_CLOSURE, null)) socket.cancel()
             }
-            _connectionState.value = ConnectionState.Disconnected
+            setState(ConnectionState.Disconnected)
         }
     }
 
@@ -126,25 +137,31 @@ class KaikuWebSocket @Inject constructor(
     }
 
     /**
-     * Sends [event] only on an authenticated socket (its Ready was received)
-     * and returns that socket's number, or null without sending anything.
+     * Sends [event] on the authenticated socket [socketId] and on no other.
+     * Returns true if the frame went out on that socket, false (nothing was
+     * sent) if it is not the authenticated socket any more. The check and the
+     * send are one step under the socket lock, so the frame can never end up
+     * on a newer socket, or on one that is still authenticating.
      *
-     * Voice signalling uses this so nothing voice-related goes out while the
-     * socket is still Connecting: such a frame may or may not reach the server
-     * (it is processed when it arrives after the Authenticate frame, dropped
-     * when sent before the socket opened), so its effect would be unknown.
+     * Voice signalling sends every frame this way, with the id it read from
+     * [authenticatedSocket]. Nothing voice-related goes out while a socket is
+     * still Connecting (such a frame is processed if it arrives after the
+     * Authenticate frame and dropped otherwise, so its effect would be
+     * unknown), and the caller knows which socket carried each frame.
+     *
+     * A socket that refuses the frame although it is still the authenticated
+     * one is closing; its close is reported next.
      */
-    fun sendIfAuthenticated(event: ClientEvent): Long? {
-        val (socket, number) = synchronized(lock) {
-            if (_connectionState.value != ConnectionState.Connected) return null
-            webSocket to authenticatedSockets
+    fun sendOn(socketId: Long, event: ClientEvent): Boolean {
+        val text = json.encodeToString<ClientEvent>(event)
+        val sent = synchronized(lock) {
+            if (_authenticatedSocket.value != socketId) return false
+            webSocket?.send(text) ?: false
         }
-        val sent = socket?.send(json.encodeToString<ClientEvent>(event)) ?: false
         if (!sent) {
-            logger.warning("send failed (not connected): ${event::class.simpleName}")
-            return null
+            logger.warning("send failed (socket closing): ${event::class.simpleName}")
         }
-        return number
+        return sent
     }
 
     // -- Internal -------------------------------------------------------------
@@ -163,11 +180,9 @@ class KaikuWebSocket @Inject constructor(
             if (webSocket !== socket) return
             webSocket = null
             socketOpen = false
-            _connectionState.value = if (code == AUTH_REJECTED_CLOSE_CODE) {
-                ConnectionState.AuthRejected
-            } else {
-                ConnectionState.Disconnected
-            }
+            setState(
+                if (code == AUTH_REJECTED_CLOSE_CODE) ConnectionState.AuthRejected else ConnectionState.Disconnected
+            )
         }
     }
 
@@ -199,8 +214,7 @@ class KaikuWebSocket @Inject constructor(
                 if (this@KaikuWebSocket.webSocket !== webSocket) return
                 if (event is ServerEvent.Ready && _connectionState.value == ConnectionState.Connecting) {
                     logger.info("ready received, state=Connected")
-                    authenticatedSockets++
-                    _connectionState.value = ConnectionState.Connected
+                    setState(ConnectionState.Connected)
                 }
                 if (!_events.tryEmit(event)) {
                     logger.warning("event buffer full, dropped: ${event::class.simpleName}")
