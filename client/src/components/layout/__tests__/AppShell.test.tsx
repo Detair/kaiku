@@ -11,9 +11,11 @@ const [dmsState, setDmsState] = createStore({
   navigationCount: 0,
 });
 const [guildsState, setGuildsState] = createStore({
-  guilds: [{ id: "g1" }] as { id: string }[],
+  guilds: [{ id: "g1", name: "Familie" }] as { id: string; name: string }[],
   guildUnreadCounts: {} as Record<string, number>,
+  activeGuildId: null as string | null,
 });
+const [chan, setChan] = createStore({ selected: null as { id: string; name: string } | null });
 
 vi.mock("@/lib/useBreakpoint", () => ({ useIsMobile: () => () => true }));
 vi.mock("@/stores/dms", () => ({
@@ -21,11 +23,18 @@ vi.mock("@/stores/dms", () => ({
     return dmsState;
   },
   getTotalUnreadCount: () => dms.unread,
+  getSelectedDM: () =>
+    dmsState.selectedDMId
+      ? { id: "dm-1", name: "", participants: [{ user_id: "me", display_name: "Me" }, { user_id: "u2", display_name: "Oma" }] }
+      : null,
 }));
+vi.mock("@/stores/channels", () => ({ selectedChannel: () => chan.selected }));
+vi.mock("@/stores/auth", () => ({ currentUser: () => ({ id: "me" }) }));
 vi.mock("@/stores/guilds", () => ({
   get guildsState() {
     return guildsState;
   },
+  getActiveGuild: () => guildsState.guilds.find((g) => g.id === guildsState.activeGuildId) ?? null,
 }));
 vi.mock("../ServerRail", () => ({ default: () => <div /> }));
 vi.mock("../Sidebar", () => ({ default: () => <div /> }));
@@ -42,7 +51,8 @@ import AppShell from "../AppShell";
 afterEach(() => {
   cleanup();
   setDmsState({ selectedDMId: null, isShowingFriends: true, navigationCount: 0 });
-  setGuildsState({ guilds: [{ id: "g1" }], guildUnreadCounts: {} });
+  setGuildsState({ guilds: [{ id: "g1", name: "Familie" }], guildUnreadCounts: {}, activeGuildId: null });
+  setChan({ selected: null });
 });
 
 describe("AppShell", () => {
@@ -67,16 +77,35 @@ describe("AppShell", () => {
     dms.unread = 0;
     setGuildsState({ guildUnreadCounts: { g1: 1, "old-account-server": 5 } });
     render(() => <AppShell />);
-    expect(document.title).toBe("(1) Kaiku");
+    expect(document.title).toBe("(1) Friends – Kaiku");
   });
 
   it("puts the unread count in the browser tab title", () => {
     dms.unread = 2;
     setGuildsState({ guildUnreadCounts: { g1: 1 } });
     render(() => <AppShell />);
-    expect(document.title).toBe("(3) Kaiku");
+    expect(document.title).toBe("(3) Friends – Kaiku");
     dms.unread = 0;
     setGuildsState({ guildUnreadCounts: { g1: 0 } });
-    expect(document.title).toBe("Kaiku");
+    expect(document.title).toBe("Friends – Kaiku");
+  });
+
+  it("names the open channel and server, or the person you are writing with (A11Y-18)", () => {
+    dms.unread = 0;
+    render(() => <AppShell />);
+    setGuildsState({ activeGuildId: "g1" });
+    setChan({ selected: { id: "c1", name: "general" } });
+    expect(document.title).toBe("#general – Familie – Kaiku");
+    setGuildsState({ activeGuildId: null });
+    setDmsState({ selectedDMId: "dm-1", isShowingFriends: false });
+    expect(document.title).toBe("Oma – Kaiku");
+  });
+
+  it("main is the target of the skip link and can take focus", () => {
+    render(() => <AppShell />);
+    const main = screen.getByRole("main");
+    expect(main.id).toBe("main-content");
+    main.focus();
+    expect(document.activeElement).toBe(main);
   });
 });

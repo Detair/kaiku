@@ -8,6 +8,7 @@ export const common = {
   "common.copy": "Copy",
   "common.copied": "Copied",
   "common.dismiss": "Dismiss",
+  "common.skipToContent": "Skip to content",
   "common.notifications": "Notifications",
   "common.password.show": "Show password",
   "common.password.hide": "Hide password",

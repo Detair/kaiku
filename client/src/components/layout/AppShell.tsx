@@ -28,8 +28,11 @@ import {
   on,
   onCleanup,
 } from "solid-js";
-import { dmsState, getTotalUnreadCount } from "@/stores/dms";
-import { guildsState } from "@/stores/guilds";
+import { dmsState, getSelectedDM, getTotalUnreadCount } from "@/stores/dms";
+import { selectedChannel } from "@/stores/channels";
+import { currentUser } from "@/stores/auth";
+import { t } from "@/i18n";
+import { getActiveGuild, guildsState } from "@/stores/guilds";
 import { APP_NAME } from "@/lib/brand";
 import { useIsMobile } from "@/lib/useBreakpoint";
 import ServerRail from "./ServerRail";
@@ -77,9 +80,24 @@ const AppShell: Component<AppShellProps> = (props) => {
   const unreadTotal = () =>
     getTotalUnreadCount() +
     guildsState.guilds.reduce((sum, g) => sum + (guildsState.guildUnreadCounts[g.id] ?? 0), 0);
+  // A11Y-18: the title also says where you are ("#general – Family – Kaiku").
+  const place = (): string[] => {
+    const guild = guildsState.activeGuildId ? getActiveGuild() : null;
+    if (guild) {
+      const channel = selectedChannel();
+      return channel ? [`#${channel.name}`, guild.name] : [guild.name];
+    }
+    if (dmsState.isShowingFriends) return [t("home.sidebar.friends")];
+    const dm = getSelectedDM();
+    if (!dm) return [];
+    const me = currentUser()?.id;
+    const others = dm.participants.filter((p) => p.user_id !== me);
+    return [others.length === 1 ? others[0].display_name : dm.name];
+  };
   createEffect(() => {
     const n = unreadTotal();
-    document.title = n > 0 ? `(${n > 99 ? "99+" : n}) ${APP_NAME}` : APP_NAME;
+    const base = [...place().filter(Boolean), APP_NAME].join(" – ");
+    document.title = n > 0 ? `(${n > 99 ? "99+" : n}) ${base}` : base;
   });
   onCleanup(() => {
     document.title = APP_NAME;
@@ -139,7 +157,12 @@ const AppShell: Component<AppShellProps> = (props) => {
       </Show>
 
       {/* Main Stage */}
-      <main class="flex-1 flex flex-col min-w-0 min-h-0 bg-surface-layer1 relative border-l border-border-solid">
+      {/* Target of the "Skip to content" link (NAV-21, A11Y-19). */}
+      <main
+        id="main-content"
+        tabIndex={-1}
+        class="flex-1 flex flex-col min-w-0 min-h-0 bg-surface-layer1 relative border-l border-border-solid outline-none"
+      >
         {props.children}
       </main>
 

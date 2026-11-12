@@ -59,6 +59,7 @@ import { initDrafts } from "./stores/drafts";
 import { initTrayBadge } from "./lib/trayBadge";
 import { initUpdater } from "./lib/updater";
 import { initTrayVoiceSync } from "./stores/voice";
+import { t } from "./i18n";
 
 // Global modal state
 const [blockTarget, setBlockTarget] = createSignal<{
@@ -102,13 +103,23 @@ const Layout: Component<ParentProps> = (props) => {
 
   return (
     <div class="h-dvh bg-background-tertiary text-text-primary">
+      {/* Skip link (NAV-21, A11Y-19): jumps past the server and channel
+          lists to the page's <main> and moves keyboard focus there. */}
       <a
         href="#main-content"
-        class="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-50 focus:px-4 focus:py-2 focus:bg-accent-primary focus:text-on-accent focus:rounded-lg focus:text-sm focus:font-medium"
+        onClick={(e) => {
+          const target =
+            document.getElementById("main-content") ?? document.querySelector<HTMLElement>("main");
+          if (!target) return;
+          e.preventDefault();
+          if (!target.hasAttribute("tabindex")) target.setAttribute("tabindex", "-1");
+          target.focus();
+        }}
+        class="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-[200] focus:px-4 focus:py-2 focus:bg-accent-primary focus:text-on-accent focus:rounded-lg focus:text-sm focus:font-medium"
       >
-        Skip to content
+        {t("common.skipToContent")}
       </a>
-      <div id="main-content">
+      <div>
         {props.children}
       </div>
       <ToastContainer />
