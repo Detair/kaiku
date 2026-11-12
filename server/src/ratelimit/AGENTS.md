@@ -33,6 +33,7 @@
 ```rust
 pub enum RateLimitCategory {
     AuthLogin,      // 5 req/60s per IP + blocking after 10 failures
+    BotGateway,     // AuthLogin limits, own bucket; own failure block (record_bot_gateway_failure / is_bot_gateway_blocked)
     AuthRegister,   // 3 req/3600s per IP (prevent mass account creation)
     AuthOther,      // 10 req/60s per IP (token refresh, OIDC)
     Write,          // 30 req/60s per user (API mutations)

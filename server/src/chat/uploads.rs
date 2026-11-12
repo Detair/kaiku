@@ -98,6 +98,20 @@ fn validate_file_content(data: &[u8], claimed_mime: &str) -> Result<String, Chat
     })
 }
 
+/// Most attachments one message can carry.
+pub const MAX_ATTACHMENTS_PER_MESSAGE: i64 = 10;
+
+/// Number of attachments on `message_id`.
+async fn attachment_count<'e, E: sqlx::PgExecutor<'e>>(
+    exec: E,
+    message_id: Uuid,
+) -> sqlx::Result<i64> {
+    sqlx::query_scalar("SELECT COUNT(*) FROM file_attachments WHERE message_id = $1")
+        .bind(message_id)
+        .fetch_one(exec)
+        .await
+}
+
 // ============================================================================
 // Handlers
 // ============================================================================
@@ -125,9 +139,6 @@ pub async fn upload_file(
     auth_user: AuthUser,
     mut multipart: Multipart,
 ) -> Result<(StatusCode, Json<UploadedFile>), ChatError> {
-    // Check S3 is configured
-    let s3 = state.s3.as_ref().ok_or(ChatError::StorageNotConfigured)?;
-
     let mut file_data: Option<Vec<u8>> = None;
     let mut filename: Option<String> = None;
     let mut content_type: Option<String> = None;
@@ -208,15 +219,40 @@ pub async fn upload_file(
     // Validate actual file content matches claimed MIME type (magic byte check)
     let content_type = validate_file_content(&file_data, &content_type)?;
 
-    // Verify message exists and user has access
+    // Verify message exists (and is not deleted)
     let message = db::find_message_by_id(&state.db, message_id)
         .await?
+        .filter(|m| m.deleted_at.is_none())
         .ok_or(ChatError::MessageNotFound)?;
 
     // Only message author can attach files (anonymized messages cannot have files added)
     if message.user_id != Some(auth_user.id) {
         return Err(ChatError::Forbidden);
     }
+
+    // Same rules as sending a message with a file, checked now (the author
+    // may have lost access, `ATTACH_FILES` or been blocked since).
+    super::send::authorize_send(
+        &state,
+        auth_user.id,
+        message.channel_id,
+        &super::send::SendIntent {
+            content: "",
+            encrypted: false,
+            has_attachment: true,
+        },
+    )
+    .await?;
+
+    // Early refusal; re-checked under the message lock when storing.
+    if attachment_count(&state.db, message_id).await? >= MAX_ATTACHMENTS_PER_MESSAGE {
+        return Err(ChatError::TooManyAttachments {
+            max: MAX_ATTACHMENTS_PER_MESSAGE,
+        });
+    }
+
+    // Check S3 is configured
+    let s3 = state.s3.as_ref().ok_or(ChatError::StorageNotConfigured)?;
 
     // Generate S3 key
     let file_id = Uuid::now_v7();
@@ -249,23 +285,43 @@ pub async fn upload_file(
         return Err(ChatError::Storage(e.to_string()));
     }
 
-    // Save metadata to database
-    let attachment = db::create_file_attachment(
-        &state.db,
-        message_id,
-        &safe_filename,
-        &content_type,
-        file_size,
-        &s3_key,
-        media.width,
-        media.height,
-        media.blurhash.as_deref(),
-        media.thumb_key.as_deref(),
-        media.medium_key.as_deref(),
-        media.processing_status,
-    )
-    .await
-    .map_err(|e| {
+    // Save metadata to database: lock the message, re-check the cap.
+    let stored = async {
+        let mut tx = state.db.begin().await?;
+        let live: Option<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM messages WHERE id = $1 AND deleted_at IS NULL FOR UPDATE",
+        )
+        .bind(message_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if live.is_none() {
+            return Err(ChatError::MessageNotFound);
+        }
+        if attachment_count(&mut *tx, message_id).await? >= MAX_ATTACHMENTS_PER_MESSAGE {
+            return Err(ChatError::TooManyAttachments {
+                max: MAX_ATTACHMENTS_PER_MESSAGE,
+            });
+        }
+        let attachment = db::create_file_attachment(
+            &mut *tx,
+            message_id,
+            &safe_filename,
+            &content_type,
+            file_size,
+            &s3_key,
+            media.width,
+            media.height,
+            media.blurhash.as_deref(),
+            media.thumb_key.as_deref(),
+            media.medium_key.as_deref(),
+            media.processing_status,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(attachment)
+    }
+    .await;
+    let attachment = stored.map_err(|e| {
         // Clean up orphaned S3 objects (original + variants)
         let mut keys = vec![s3_key.clone()];
         if let Some(k) = media.thumb_key.clone() {
@@ -275,9 +331,9 @@ pub async fn upload_file(
             keys.push(k);
         }
         cleanup_s3_objects(s3.clone(), keys);
-        tracing::error!(
+        tracing::warn!(
             message_id = %message_id,
-            "Failed to create attachment record, cleaning up S3 objects: {e}"
+            "Attachment not stored, cleaning up S3 objects: {e}"
         );
         e
     })?;
@@ -610,13 +666,7 @@ pub async fn get_attachment(
     auth_user: AuthUser,
     Path(id): Path<Uuid>,
 ) -> Result<Json<AttachmentResponse>, ChatError> {
-    let has_access = db::check_attachment_access(&state.db, id, auth_user.id)
-        .await
-        .map_err(ChatError::Database)?;
-
-    if !has_access {
-        return Err(ChatError::Forbidden);
-    }
+    authorize_attachment_read(&state, auth_user.id, id).await?;
 
     let attachment = db::find_file_attachment_by_id(&state.db, id)
         .await?
@@ -625,38 +675,111 @@ pub async fn get_attachment(
     Ok(Json(attachment.into()))
 }
 
+/// A deprecated `?token=` taken off a download URI (see
+/// [`strip_download_token`]). Never logged.
+#[derive(Clone)]
+pub struct QueryToken(String);
+
+impl std::fmt::Debug for QueryToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("QueryToken([REDACTED])")
+    }
+}
+
+/// Outermost middleware: on attachment download URIs, remove the deprecated
+/// `token` query parameter and hand it to the handler as a [`QueryToken`]
+/// extension, so request spans, access logs and metrics never see it.
+pub async fn strip_download_token(
+    mut request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let path = request.uri().path();
+    let is_download = path.starts_with("/api/messages/attachments/") && path.ends_with("/download");
+    if is_download {
+        if let Some(query) = request.uri().query() {
+            let pairs: Vec<(String, String)> =
+                serde_urlencoded::from_str(query).unwrap_or_default();
+            if pairs.iter().any(|(k, _)| k == "token") {
+                let mut token = None;
+                let kept: Vec<(String, String)> = pairs
+                    .into_iter()
+                    .filter_map(|(k, v)| {
+                        if k == "token" {
+                            token.get_or_insert(v);
+                            None
+                        } else {
+                            Some((k, v))
+                        }
+                    })
+                    .collect();
+                let rest = serde_urlencoded::to_string(&kept).unwrap_or_default();
+                let path_and_query = if rest.is_empty() {
+                    path.to_string()
+                } else {
+                    format!("{path}?{rest}")
+                };
+                let mut parts = request.uri().clone().into_parts();
+                parts.path_and_query = path_and_query.parse().ok();
+                match axum::http::Uri::from_parts(parts) {
+                    Ok(uri) => *request.uri_mut() = uri,
+                    // Never pass the token on in the URI.
+                    Err(_) => return ChatError::Forbidden.into_response(),
+                }
+                if let Some(token) = token {
+                    request.extensions_mut().insert(QueryToken(token));
+                }
+            }
+        }
+    }
+    next.run(request).await
+}
+
+/// Set once the deprecated `?token=` was seen by this process.
+static QUERY_TOKEN_WARNED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// Download a file (stream from S3).
 ///
 /// GET /api/messages/attachments/:id/download
 ///
 /// Supports two authentication methods:
 /// 1. Authorization header (Bearer token) - standard API auth
-/// 2. `token` query parameter - **deprecated**, use presigned URLs via `/url` endpoint instead
+/// 2. `token` query parameter - **deprecated**, kept for one more release for old clients; use the
+///    header or presigned URLs via the `/url` endpoint
 #[utoipa::path(
     get,
     path = "/api/messages/attachments/{id}/download",
     tag = "messages",
-    params(("id" = Uuid, Path, description = "Attachment ID")),
+    params(
+        ("id" = Uuid, Path, description = "Attachment ID"),
+        ("variant" = Option<String>, Query, description = "Variant: 'thumbnail' or 'medium'"),
+        ("token" = Option<String>, Query, deprecated,
+            description = "Deprecated: access token in the URL. Send `Authorization: Bearer` \
+                           instead, or use `/api/messages/attachments/{id}/url`. Removed in a \
+                           later release."),
+    ),
     responses(
         (status = 200, description = "File download"),
     ),
-    security(),
+    security((), ("bearer_auth" = [])),
 )]
 pub async fn download(
     State(state): State<AppState>,
     auth_user: Option<AuthUser>,
+    query_token: Option<axum::Extension<QueryToken>>,
     Path(id): Path<Uuid>,
     Query(query): Query<DownloadQuery>,
 ) -> Result<Response, ChatError> {
     // Get user ID from either AuthUser (header) or token query parameter
     let user_id = if let Some(user) = auth_user {
         user.id
-    } else if let Some(token) = query.token {
-        tracing::warn!(
-            attachment_id = %id,
-            "Deprecated: JWT token passed via ?token= query parameter. \
-             Use GET /api/messages/attachments/<id>/url with Authorization header instead."
-        );
+    } else if let Some(axum::Extension(QueryToken(token))) = query_token {
+        if !QUERY_TOKEN_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            tracing::warn!(
+                "Deprecated: an attachment download authenticated with ?token= (logged once \
+                 per process). Clients should send an Authorization header instead."
+            );
+        }
         // Validate token from query parameter
         let claims = validate_access_token(&token, &state.config.jwt_public_key)
             .map_err(|_| ChatError::Forbidden)?;
@@ -690,14 +813,7 @@ pub async fn download(
     // PASSWORD_CHANGE_REQUIRED even without storage).
     let s3 = state.s3.as_ref().ok_or(ChatError::StorageNotConfigured)?;
 
-    // Check permissions
-    let has_access = db::check_attachment_access(&state.db, id, user_id)
-        .await
-        .map_err(ChatError::Database)?;
-
-    if !has_access {
-        return Err(ChatError::Forbidden);
-    }
+    authorize_attachment_read(&state, user_id, id).await?;
 
     // Get attachment metadata
     let attachment = db::find_file_attachment_by_id(&state.db, id)
@@ -777,7 +893,9 @@ pub async fn download(
         ),
         (
             axum::http::header::CACHE_CONTROL,
-            "private, max-age=31536000, immutable".to_string(),
+            // Only the viewer's own cache, and at most an hour: a deleted
+            // file or lost access is not served from cache for long.
+            "private, max-age=3600".to_string(),
         ),
         (
             HeaderName::from_static("x-content-type-options"),
@@ -818,14 +936,7 @@ pub async fn get_signed_url(
 ) -> Result<Json<SignedUrlResponse>, ChatError> {
     let s3 = state.s3.as_ref().ok_or(ChatError::StorageNotConfigured)?;
 
-    // Check permissions
-    let has_access = db::check_attachment_access(&state.db, id, auth_user.id)
-        .await
-        .map_err(ChatError::Database)?;
-
-    if !has_access {
-        return Err(ChatError::Forbidden);
-    }
+    authorize_attachment_read(&state, auth_user.id, id).await?;
 
     // Get attachment metadata
     let attachment = db::find_file_attachment_by_id(&state.db, id)
@@ -869,6 +980,32 @@ pub async fn get_signed_url(
 // ============================================================================
 // Helpers
 // ============================================================================
+
+/// Check that `user_id` may read attachment `attachment_id`.
+///
+/// The attachment's message must not be deleted, and the user needs the same
+/// access as for reading that message's channel (`VIEW_CHANNEL` with
+/// overrides in a guild, participation in a DM or group DM). An unknown
+/// attachment answers like a refused one (403), so ids cannot be probed.
+async fn authorize_attachment_read(
+    state: &AppState,
+    user_id: Uuid,
+    attachment_id: Uuid,
+) -> Result<(), ChatError> {
+    let channel_id = db::find_attachment_channel(&state.db, attachment_id)
+        .await?
+        .ok_or(ChatError::Forbidden)?;
+    crate::permissions::require_channel_access(&state.db, user_id, channel_id)
+        .await
+        .map_err(|e| match e {
+            crate::permissions::PermissionError::DatabaseError(msg) => {
+                tracing::error!(error = %msg, "Attachment access check failed");
+                ChatError::Database(sqlx::Error::Protocol(msg))
+            }
+            _ => ChatError::Forbidden,
+        })?;
+    Ok(())
+}
 
 /// Output of image processing + variant S3 upload pipeline.
 struct MediaProcessingOutput {

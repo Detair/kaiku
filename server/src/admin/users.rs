@@ -604,9 +604,10 @@ pub async fn bulk_ban_users(
         let bumped = match ban_and_end_sessions(&state, *user_id, admin.user_id, &body).await {
             Ok(bumped) => bumped,
             Err(e) => {
+                tracing::error!(user_id = %user_id, error = %e, "Bulk ban failed");
                 failed.push(BulkActionFailure {
                     id: *user_id,
-                    reason: format!("Database error: {e}"),
+                    reason: "Internal error".to_string(),
                 });
                 continue;
             }
@@ -687,7 +688,7 @@ pub async fn delete_user(
     )
     .await
     .map_err(|e| AdminError::Internal(e.to_string()))?;
-    let deleted = queries::delete_user(&mut tx, user_id).await?;
+    let (deleted, keys) = queries::delete_user(&mut tx, user_id).await?;
     if deleted == 0 {
         return Err(AdminError::NotFound("User".to_string()));
     }
@@ -695,6 +696,8 @@ pub async fn delete_user(
     // The account's sessions ended above (its sockets close); its access
     // epoch cell goes with it.
     crate::ws::access::registry().forget_user(user_id);
+    // The user's files were queued in the transaction; delete them now.
+    crate::chat::storage_cleanup::spawn_drain(&state, keys);
 
     // Log the action
     let ip_address = addr.ip().to_string();

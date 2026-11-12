@@ -108,6 +108,11 @@ jobs:
     env:
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/canis_test
       REDIS_URL: redis://localhost:6379
+      # Object storage tests (attachments): they fail instead of skipping
+      # when CI is set and this endpoint is not reachable.
+      TEST_S3_ENDPOINT: http://localhost:9000
+      AWS_ACCESS_KEY_ID: rustfsdev
+      AWS_SECRET_ACCESS_KEY: rustfsdev_secret
     services:
       postgres:
         image: postgres:16
@@ -130,6 +135,15 @@ jobs:
           --health-retries 5
         ports:
           - 6379:6379
+      # Same image and dev credentials as docker-compose.dev.yml (rustfs);
+      # the image's default command serves /data.
+      rustfs:
+        image: rustfs/rustfs@sha256:9f59d29d3eeb8c716eaa7705795a46e606dc2d655d6d9bd314347bc09635c879
+        env:
+          RUSTFS_ACCESS_KEY: rustfsdev
+          RUSTFS_SECRET_KEY: rustfsdev_secret
+        ports:
+          - 9000:9000
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -175,6 +189,15 @@ jobs:
 
       - name: Run migrations
         run: sqlx migrate run --source server/migrations
+
+      - name: Wait for object storage
+        run: |
+          for _ in $(seq 1 30); do
+            curl -sf http://localhost:9000/health && exit 0
+            sleep 2
+          done
+          echo "object storage did not become ready" >&2
+          exit 1
 
       - name: Run tests
         timeout-minutes: 40

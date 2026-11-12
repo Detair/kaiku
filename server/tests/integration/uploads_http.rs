@@ -498,3 +498,177 @@ async fn test_dispatch_skips_crosspost_without_text(pool: PgPool) {
         "follower must only get the text crosspost"
     );
 }
+
+// ============================================================================
+// Adding a file to an existing message follows the send rules
+// ============================================================================
+
+/// `POST /api/messages/upload` for `message_id` with a small text file.
+fn message_upload_request(token: &str, message_id: Uuid) -> axum::http::Request<Body> {
+    let boundary = "----TestBoundary";
+    let body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"message_id\"\r\n\r\n{message_id}\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"test.txt\"\r\nContent-Type: text/plain\r\n\r\nhello\r\n--{boundary}--\r\n"
+    );
+    TestApp::request(Method::POST, "/api/messages/upload")
+        .header("Authorization", format!("Bearer {token}"))
+        .header(
+            "Content-Type",
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .body(Body::from(body))
+        .unwrap()
+}
+
+/// A member with `perms` in a fresh guild and a message they wrote in a
+/// channel there. Returns (guild, member, message, member token).
+async fn member_with_message(app: &TestApp, perms: GuildPermissions) -> (Uuid, Uuid, Uuid, String) {
+    let (owner, _) = create_test_user(&app.pool).await;
+    let guild = create_guild_with_default_role(&app.pool, owner, perms).await;
+    let channel = create_channel(&app.pool, guild, "files").await;
+    let (member, _) = create_test_user(&app.pool).await;
+    add_guild_member(&app.pool, guild, member).await;
+    let message = super::helpers::insert_message(&app.pool, channel, member, "mine").await;
+    (
+        guild,
+        member,
+        message,
+        generate_access_token(&app.config, member),
+    )
+}
+
+fn file_perms() -> GuildPermissions {
+    GuildPermissions::VIEW_CHANNEL
+        | GuildPermissions::SEND_MESSAGES
+        | GuildPermissions::ATTACH_FILES
+}
+
+#[sqlx::test]
+async fn upload_to_own_message_after_kick_is_403(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (guild, member, message, token) = member_with_message(&app, file_perms()).await;
+    sqlx::query("DELETE FROM guild_members WHERE guild_id = $1 AND user_id = $2")
+        .bind(guild)
+        .bind(member)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let resp = app.oneshot(message_upload_request(&token, message)).await;
+    assert_eq!(resp.status(), 403);
+    assert_eq!(body_to_json(resp).await["error"], "FORBIDDEN");
+}
+
+#[sqlx::test]
+async fn upload_to_own_message_without_attach_files_is_403(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let perms = GuildPermissions::VIEW_CHANNEL | GuildPermissions::SEND_MESSAGES;
+    let (_, _, message, token) = member_with_message(&app, perms).await;
+
+    let resp = app.oneshot(message_upload_request(&token, message)).await;
+    assert_eq!(resp.status(), 403);
+    assert_eq!(body_to_json(resp).await["error"], "FORBIDDEN");
+}
+
+#[sqlx::test]
+async fn eleventh_attachment_is_400(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (_, _, message, token) = member_with_message(&app, file_perms()).await;
+    for _ in 0..10 {
+        super::helpers::insert_attachment(&pool, message).await;
+    }
+
+    let resp = app.oneshot(message_upload_request(&token, message)).await;
+    assert_eq!(resp.status(), 400);
+    assert_eq!(body_to_json(resp).await["error"], "TOO_MANY_ATTACHMENTS");
+}
+
+#[sqlx::test]
+async fn upload_to_deleted_message_is_404(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (_, _, message, token) = member_with_message(&app, file_perms()).await;
+    sqlx::query("UPDATE messages SET deleted_at = NOW() WHERE id = $1")
+        .bind(message)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let resp = app.oneshot(message_upload_request(&token, message)).await;
+    assert_eq!(resp.status(), 404);
+}
+
+// ============================================================================
+// Body limits
+// ============================================================================
+
+#[sqlx::test]
+async fn two_mb_json_on_normal_route_is_413(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (channel, token) = guild_member_channel(&app, file_perms(), "text").await;
+    let body = serde_json::json!({ "content": "x".repeat(2 * 1024 * 1024) }).to_string();
+    let req = TestApp::request(Method::POST, &format!("/api/messages/channel/{channel}"))
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(body))
+        .unwrap();
+    assert_eq!(app.oneshot(req).await.status(), 413);
+}
+
+/// Regression guard: passes on the code before this change too (the earlier body limit was 50 MB
+/// everywhere; pins that uploads keep it).
+#[sqlx::test]
+async fn twenty_mb_upload_still_works(pool: PgPool) {
+    if !rustfs_available().await {
+        eprintln!("skipping: object storage not reachable");
+        return;
+    }
+    let (app, _bucket) = super::helpers::fresh_test_app_with_s3_and_pool(pool.clone()).await;
+    let (channel, token) = guild_member_channel(&app, file_perms(), "text").await;
+    let boundary = "----TestBoundary";
+    let mut body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"big.txt\"\r\nContent-Type: text/plain\r\n\r\n"
+    )
+    .into_bytes();
+    body.extend(std::iter::repeat_n(b'a', 20 * 1024 * 1024));
+    body.extend(format!("\r\n--{boundary}--\r\n").into_bytes());
+    let req = TestApp::request(
+        Method::POST,
+        &format!("/api/messages/channel/{channel}/upload"),
+    )
+    .header("Authorization", format!("Bearer {token}"))
+    .header(
+        "Content-Type",
+        format!("multipart/form-data; boundary={boundary}"),
+    )
+    .body(Body::from(body))
+    .unwrap();
+    assert_eq!(app.oneshot(req).await.status(), 201);
+}
+
+/// The encrypted key backup (up to 1 MiB, base64 in JSON) is above the
+/// 1 MiB default and keeps its own limit.
+///
+/// Regression guard: passes on the code before this change too (the earlier body limit was 50 MB
+/// everywhere; pins the 2 MiB key backup limit).
+#[sqlx::test]
+async fn key_backup_of_one_mib_is_accepted(pool: PgPool) {
+    use base64::Engine;
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let token = generate_access_token(&app.config, user);
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let body = serde_json::json!({
+        "salt": b64.encode([1u8; 16]),
+        "nonce": b64.encode([2u8; 12]),
+        "ciphertext": b64.encode(vec![3u8; 1_048_576]),
+        "version": 1,
+    })
+    .to_string();
+    assert!(body.len() > 1024 * 1024);
+    let req = TestApp::request(Method::POST, "/api/keys/backup")
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(body))
+        .unwrap();
+    let status = app.oneshot(req).await.status();
+    assert!(status.is_success(), "backup upload: {status}");
+}

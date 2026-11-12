@@ -443,12 +443,19 @@ pub async fn list_user_export_s3_keys(pool: &PgPool, user_id: Uuid) -> sqlx::Res
 }
 
 /// Delete a user row, cascading to all dependent tables. Returns rows affected.
+///
+/// The user's messages stay (anonymized), but their files go: the attachment
+/// rows are removed in the same transaction, which queues the stored objects
+/// for deletion (`storage_pending_deletes`).
 #[tracing::instrument(skip(pool))]
 pub async fn delete_user(pool: &PgPool, user_id: Uuid) -> sqlx::Result<u64> {
+    let mut tx = pool.begin().await?;
+    crate::chat::storage_cleanup::remove_attachments_of_user(&mut tx, user_id).await?;
     let result = sqlx::query("DELETE FROM users WHERE id = $1")
         .bind(user_id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
+    tx.commit().await?;
     Ok(result.rows_affected())
 }
 

@@ -83,7 +83,12 @@ pub struct Config {
     /// S3 bucket name
     pub s3_bucket: String,
 
-    /// S3 presigned URL expiry in seconds (default: 3600 = 1 hour)
+    /// S3 presigned URL expiry in seconds (default: 300 = 5 minutes).
+    ///
+    /// A presigned URL keeps working until it expires, even after the
+    /// viewer lost access to the channel; clients fetch it right before
+    /// use (the response carries `expires_in`), so a short lifetime costs
+    /// nothing. A download that started in time is not cut off.
     pub s3_presign_expiry: i64,
 
     /// Public S3 base URL for client-facing file URLs (e.g., avatar images).
@@ -111,7 +116,9 @@ pub struct Config {
 
     /// Maximum file upload size in bytes (default: 50MB)
     ///
-    /// Used by `DefaultBodyLimit` middleware as final safety net for all uploads.
+    /// Request body limit (`DefaultBodyLimit`) of the routes that accept files
+    /// (message uploads, DM icon, guild banner, emoji); all other routes use
+    /// `api::DEFAULT_BODY_LIMIT` (1 MiB).
     /// Should be ≥ all specific upload limits (avatar, emoji).
     pub max_upload_size: usize,
 
@@ -452,7 +459,7 @@ impl Config {
             s3_presign_expiry: env::var("S3_PRESIGN_EXPIRY")
                 .ok()
                 .and_then(|v| v.parse().ok())
-                .unwrap_or(3600) // 1 hour
+                .unwrap_or(300) // 5 minutes
                 .max(1),
             s3_access_key: env_opt("AWS_ACCESS_KEY_ID"),
             s3_secret_key: env_opt("AWS_SECRET_ACCESS_KEY"),

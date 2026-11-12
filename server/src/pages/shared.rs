@@ -39,6 +39,20 @@ pub(super) async fn check_manage_pages_permission(
         .map_err(map_permission_error)
 }
 
+/// Require guild membership (pending screening members count) for reading
+/// guild pages, their revisions and categories.
+pub(super) async fn require_guild_member(
+    state: &AppState,
+    guild_id: Uuid,
+    user_id: Uuid,
+) -> Result<(), PagesError> {
+    if crate::db::is_guild_member(&state.db, guild_id, user_id).await? {
+        Ok(())
+    } else {
+        Err(PagesError::NotGuildMember)
+    }
+}
+
 pub(super) fn validate_create_request(req: &CreatePageRequest) -> Result<(), PagesError> {
     if req.title.is_empty() {
         return Err(PagesError::Validation("Title is required".to_string()));
