@@ -111,6 +111,7 @@ import ReportModal from "../modals/ReportModal";
 import BlockConfirmModal from "../modals/BlockConfirmModal";
 import ImageLightbox from "../ui/ImageLightbox";
 import Modal from "../ui/Modal";
+import ContextMenuContainer, { showContextMenuAt } from "../ui/ContextMenu";
 import Avatar from "../ui/Avatar";
 import StatusIndicator from "../ui/StatusIndicator";
 import EventsModal from "../guilds/EventsModal";
@@ -402,6 +403,26 @@ describe("tabs (KONTO-10)", () => {
 });
 
 describe("nested dialogs", () => {
+  it("Escape with a context menu open over a dialog closes the menu first, then the dialog (W1)", async () => {
+    document.body.innerHTML = "";
+    const onClose = vi.fn();
+    render(() => <ContextMenuContainer />);
+    render(() => (
+      <Modal onClose={onClose} label="Server settings">
+        <button>member</button>
+      </Modal>
+    ));
+    await tick();
+    showContextMenuAt(10, 10, [{ label: "Kick", action: () => {} }]);
+    expect(screen.getByRole("menu")).toBeTruthy();
+    // The menu does not take focus: focus stays in the dialog.
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it("Escape closes only the top dialog, then the one below; each returns focus to its opener", async () => {
     document.body.innerHTML = "";
     const [outer, setOuter] = createSignal(true);

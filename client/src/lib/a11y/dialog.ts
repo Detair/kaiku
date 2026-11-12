@@ -95,6 +95,9 @@ export function createDialog(opts: DialogOptions): DialogHandle {
       const popup =
         active && !el.contains(active) ? active.closest(`${OVERLAY}, [data-context-menu]`) : null;
       if (popup && !openDialogs.some((d) => d.el() === popup)) return;
+      // An open context menu above the dialog closes first, even though it
+      // does not hold focus (W1).
+      if (document.querySelector("[data-context-menu]")) return;
       e.preventDefault();
       e.stopPropagation();
       opts.onClose();
