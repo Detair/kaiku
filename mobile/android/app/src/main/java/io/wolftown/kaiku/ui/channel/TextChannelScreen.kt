@@ -233,6 +233,8 @@ fun TextChannelScreen(
     val attachmentViewModel: AttachmentViewModel = hiltViewModel()
     val attachmentBusy by attachmentViewModel.busy.collectAsState()
     var viewerAttachment by remember { mutableStateOf<io.wolftown.kaiku.domain.model.Attachment?>(null) }
+    // The photo viewer is a dialog above this screen: its messages ("Saved to your phone.") go there.
+    val viewerSnackbarHostState = remember { SnackbarHostState() }
     var saveAsMime by remember { mutableStateOf("application/octet-stream") }
     val saveAsLauncher = rememberLauncherForActivityResult(
         object : ActivityResultContracts.CreateDocument("*/*") {
@@ -262,10 +264,13 @@ fun TextChannelScreen(
                     saveAsMime = event.mimeType
                     saveAsLauncher.launch(event.fileName)
                 }
-                is AttachmentEvent.Message -> snackbarHostState.showSnackbar(
-                    message = context.getString(event.text),
-                    withDismissAction = true,
-                )
+                is AttachmentEvent.Message -> {
+                    val host = if (viewerAttachment != null) viewerSnackbarHostState else snackbarHostState
+                    // Not awaited: the next event must not wait until this message is gone.
+                    launch {
+                        host.showSnackbar(message = context.getString(event.text), withDismissAction = true)
+                    }
+                }
             }
         }
     }
@@ -463,9 +468,13 @@ fun TextChannelScreen(
         ImageViewer(
             attachment = att,
             busy = attachmentBusy,
+            snackbarHostState = viewerSnackbarHostState,
             onSave = { attachmentViewModel.save(att) },
             onShare = { attachmentViewModel.share(att) },
-            onDismiss = { viewerAttachment = null },
+            onDismiss = {
+                viewerAttachment = null
+                viewerSnackbarHostState.currentSnackbarData?.dismiss()
+            },
         )
     }
 

@@ -16,6 +16,8 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -49,12 +51,15 @@ internal fun clampZoom(current: Float, factor: Float): Float = (current * factor
 /**
  * Full-screen photo (AND-B-4): pinch or double-tap to zoom, drag to move while
  * zoomed; "Save" and "Share" in the bar. Back or the close button leaves.
+ * "Save" is disabled while a save runs; its result is shown (and announced
+ * politely) in [snackbarHostState] inside the viewer, not behind it.
  * Always on black, so the bar uses white text and icons (21:1).
  */
 @Composable
 fun ImageViewer(
     attachment: Attachment,
     busy: Boolean,
+    snackbarHostState: SnackbarHostState,
     onSave: () -> Unit,
     onShare: () -> Unit,
     onDismiss: () -> Unit,
@@ -128,6 +133,14 @@ fun ImageViewer(
                     Icon(Icons.Filled.Share, contentDescription = stringResource(R.string.chat_attachment_share), tint = Color.White)
                 }
             }
+
+            // SnackbarHost is a polite live region, so TalkBack reads the result too.
+            SnackbarHost(
+                hostState = snackbarHostState,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .safeDrawingPadding(),
+            )
         }
     }
 }
