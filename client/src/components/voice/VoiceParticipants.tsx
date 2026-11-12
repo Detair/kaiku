@@ -20,7 +20,7 @@ interface Props {
  */
 const VoiceParticipants: Component<Props> = (props) => {
   // Check if we're connected or connecting to this channel
-  // Reconnecting keeps the list (R2); the own row says so in plain words.
+  // Reconnecting keeps the list; the own row says so in plain words.
   const isActiveInChannel = () =>
     voiceState.channelId === props.channelId &&
     (voiceState.state === "connected" ||

@@ -17,7 +17,7 @@ const DEAFEN_SHORTCUT = "Ctrl+Shift+D";
  * Voice controls for mute/deafen/settings.
  */
 const VoiceControls: Component = () => {
-  // Mute/deafen stay usable while reconnecting (R2); the store keeps the
+  // Mute/deafen stay usable while reconnecting; the store keeps the
   // choice and the next successful attempt applies it.
   const inSession = () =>
     voiceState.state === "connected" || voiceState.state === "reconnecting";

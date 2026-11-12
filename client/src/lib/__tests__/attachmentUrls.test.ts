@@ -116,7 +116,7 @@ describe("attachment URLs (C24)", () => {
   });
 });
 
-describe("attachment URL cache is bound to the session (R5)", () => {
+describe("attachment URL cache is bound to the session", () => {
   afterEach(() => {
     vi.useRealTimers();
   });
@@ -202,7 +202,7 @@ describe("attachment URL cache is bound to the session (R5)", () => {
     expect(getSignedUrl).toHaveBeenCalledTimes(2);
   });
 
-  it("forgets 'gone' after five minutes (access may be granted later, W1-N7)", async () => {
+  it("forgets 'gone' after five minutes (access may be granted later)", async () => {
     vi.useFakeTimers();
     vi.mocked(getSignedUrl).mockRejectedValueOnce(new HttpError(403, "forbidden"));
     await expect(getAttachmentUrl("later1")).rejects.toThrow(/403/);

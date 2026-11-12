@@ -1,6 +1,6 @@
 /**
  * A browser voice session is ended by its own handle (C32 amendment "leave
- * and voice_removed win"; W1-C1, Codex 2, W1d): ending it releases exactly
+ * and voice_removed win"): ending it releases exactly
  * what its join acquired, a join step that resumes afterwards releases what
  * it just got and never sends `voice_join`, and no other session is
  * touched. Each adapter step is suspended on a deferred so the end lands
@@ -197,7 +197,7 @@ describe("BrowserVoiceAdapter sessions (one handle per join)", () => {
     expect(pcs.filter((pc) => !pc.closed)).toHaveLength(2);
   });
 
-  it("a slow leave of A never touches B that was joined meanwhile (W1d)", async () => {
+  it("a slow leave of A never touches B that was joined meanwhile", async () => {
     const micA = fakeStream();
     const micB = fakeStream();
     gum.mockResolvedValueOnce(micA.stream).mockResolvedValueOnce(micB.stream);
@@ -283,7 +283,7 @@ describe("BrowserVoiceAdapter sessions (one handle per join)", () => {
   });
 });
 
-describe("BrowserVoiceAdapter leave with the socket down (W1-N1)", () => {
+describe("BrowserVoiceAdapter leave with the socket down", () => {
   beforeEach(() => {
     pcs.length = 0;
     wsSend.mockReset().mockResolvedValue(undefined);

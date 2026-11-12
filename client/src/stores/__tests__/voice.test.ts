@@ -186,7 +186,7 @@ describe("voice store", () => {
       expect(isInChannel("ch-2")).toBe(false);
     });
 
-    it("counts reconnecting as still in the channel (R2)", () => {
+    it("counts reconnecting as still in the channel", () => {
       setVoiceState({ state: "reconnecting", channelId: "ch-1" });
 
       expect(isInChannel("ch-1")).toBe(true);

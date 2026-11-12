@@ -61,7 +61,7 @@ afterEach(() => {
   mocks.voiceState.channelId = "c1";
 });
 
-describe("reconnecting voice session (R2)", () => {
+describe("reconnecting voice session", () => {
   it("channel view: no Join for the same channel, says it is reconnecting", () => {
     render(() => <VoiceChannelView channelId="c1" channelName="Lounge" />);
     expect(screen.queryByText("Join Voice")).toBeNull();

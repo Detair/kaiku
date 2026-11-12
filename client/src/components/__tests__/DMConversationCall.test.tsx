@@ -1,5 +1,5 @@
 /**
- * Starting a call from the DM view (W1 round 3): the outgoing state is set
+ * Starting a call from the DM view: the outgoing state is set
  * before the HTTP start, the voice session is joined after it under this
  * call's own token, and a failed start still rolls back via
  * abortOutgoingCall.

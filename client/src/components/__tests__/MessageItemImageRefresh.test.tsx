@@ -1,5 +1,5 @@
 /**
- * R5 / Codex 10: an inline image whose URL fails to load (e.g. expired
+ * An inline image whose URL fails to load (e.g. expired
  * while it waited off-screen) asks for a fresh URL exactly once.
  * (Kept outside components/messages/ on purpose: that folder is owned by a
  * parallel work stream.)
@@ -49,7 +49,7 @@ function imageMessage(): Message {
   } as unknown as Message;
 }
 
-describe("MessageItem image URL refresh (R5)", () => {
+describe("MessageItem image URL refresh", () => {
   it("refreshes the URL once on an image error, never in a loop", async () => {
     urls.getAttachmentUrl
       .mockResolvedValueOnce("https://s3.example/expired")
@@ -77,7 +77,7 @@ describe("MessageItem image URL refresh (R5)", () => {
     expect(urls.invalidateAttachmentUrl).toHaveBeenCalledTimes(1);
   });
 
-  it("a successful load allows one more refresh later (W1-N6)", async () => {
+  it("a successful load allows one more refresh later", async () => {
     urls.getAttachmentUrl
       .mockResolvedValueOnce("https://s3.example/one")
       .mockResolvedValueOnce("https://s3.example/two")

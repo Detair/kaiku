@@ -554,7 +554,7 @@ export async function handleServerEvent(event: ServerEvent): Promise<void> {
 
     case "voice_removed": {
       // Routed to whichever voice session is active: channel voice or the
-      // native voice of a DM call (R3).
+      // native voice of a DM call.
       const { handleVoiceRemoved, voiceRemovedText } = await import("@/stores/voice");
       if (!(await handleVoiceRemoved(event.channel_id, event.reason))) {
         const { handleCallVoiceRemoved } = await import("@/stores/call");
@@ -618,7 +618,7 @@ export async function handleServerEvent(event: ServerEvent): Promise<void> {
 
     case "call_declined": {
       console.log("[WebSocket] Call declined by:", event.user_id);
-      // Declined on another of my devices (R4): stop ringing here, not missed.
+      // Declined on another of my devices: stop ringing here, not missed.
       // For anyone else the event is informational.
       const me = currentUser();
       if (me && event.user_id === me.id) {

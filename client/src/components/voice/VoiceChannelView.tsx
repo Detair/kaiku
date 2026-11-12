@@ -22,7 +22,7 @@ interface VoiceChannelViewProps {
 }
 
 const VoiceChannelView: Component<VoiceChannelViewProps> = (props) => {
-  // Reconnecting is still this voice session (R2): grid, controls and no
+  // Reconnecting is still this voice session: grid, controls and no
   // Join button for this channel; VoicePanel keeps Leave.
   const isConnected = () =>
     (voiceState.state === "connected" || voiceState.state === "reconnecting") &&

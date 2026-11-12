@@ -771,7 +771,7 @@ describe("websocket store", () => {
       expect(call.answeredElsewhere).not.toHaveBeenCalled();
     });
 
-    it("call_declined by the own user stops the ring here (R4)", async () => {
+    it("call_declined by the own user stops the ring here", async () => {
       const call = await import("@/stores/call");
       await fire("ws:server_event", {
         type: "call_declined",
@@ -790,7 +790,7 @@ describe("websocket store", () => {
       expect(call.declinedElsewhere).not.toHaveBeenCalled();
     });
 
-    it("voice_removed not for channel voice goes to the DM call (R3)", async () => {
+    it("voice_removed not for channel voice goes to the DM call", async () => {
       const call = await import("@/stores/call");
       await fire("ws:server_event", {
         type: "voice_removed",
