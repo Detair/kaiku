@@ -84,6 +84,12 @@ state between tests**.
 - Do **not** delete rows manually at test end — the test's DB is
   dropped anyway.
 
+### Doc-tests
+
+`cargo test -p vc-server` also builds the doc-tests. With a `DATABASE_URL` that points at a
+database without the migrations (the `sqlx::test` master database), set `SQLX_OFFLINE=true` so the
+query macros use the `.sqlx/` cache.
+
 ### SQL fixtures
 
 `#[sqlx::test(fixtures("users", "channels"))]` loads seed files from
