@@ -32,7 +32,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.core.app.ActivityCompat
@@ -43,6 +45,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import io.wolftown.kaiku.R
+import io.wolftown.kaiku.data.voice.VoiceLinkState
 import io.wolftown.kaiku.data.voice.AudioRoute
 import io.wolftown.kaiku.data.ws.ScreenShareInfo
 import io.wolftown.kaiku.data.ws.VoiceParticipant
@@ -67,6 +70,7 @@ fun VoiceChannelScreen(
     val participants by viewModel.participants.collectAsState()
     val isMuted by viewModel.isMuted.collectAsState()
     val isConnected by viewModel.isConnected.collectAsState()
+    val linkState by viewModel.linkState.collectAsState()
     val isInChannel by viewModel.isInChannel.collectAsState()
     val screenShares by viewModel.screenShares.collectAsState()
     val remoteVideoTracks by viewModel.remoteVideoTracks.collectAsState()
@@ -217,6 +221,19 @@ fun VoiceChannelScreen(
             if (isInChannel && !isConnected) {
                 LinearProgressIndicator(
                     modifier = Modifier.fillMaxWidth()
+                )
+            }
+            if (isInChannel && linkState != VoiceLinkState.Stable) {
+                Text(
+                    text = stringResource(R.string.voice_call_reconnecting),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp)
+                        // Spoken when it appears: the call dropping is otherwise silent for TalkBack.
+                        .semantics { liveRegion = LiveRegionMode.Polite },
+                    textAlign = TextAlign.Center
                 )
             }
 

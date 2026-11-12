@@ -210,6 +210,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Android: signing the phone in by scanning a QR code from the desktop without any confirmation. The phone's scanner now only reads Kaiku sign-in and setup codes of its own server.
 
 ### Fixed
+- Android: when you are removed from a voice channel (kicked, banned, lost access, channel deleted, or joined from another device) the call ends with a short explanation and does not reconnect by itself (needs a server that reports the removal).
+- Android: a voice call now reconnects by itself after a short connection loss (network change, brief outage, server restart). It shows "Reconnecting…" in the call screen, the call bar and the notification, tries up to three times, and offers "Rejoin" if that fails or if it could not get back into the call within a minute. This also works when you are alone in the channel. Your mute setting is kept, also when you tap "Rejoin". Joining while the app has no connection waits for it, for up to a minute.
+- Android: muting yourself in a voice channel now reaches the server, so others see you as muted.
+- Android: screen shares of other people are now shown in a voice channel; the app had no video decoder before.
 - Client: a chat-only sign-in without a passkey now says exactly how to add a passkey for the computer, in the banner and in the security settings.
 - Client: in the desktop app and in browsers other than Firefox, avatars are now round, icons have their intended size, selected options and primary buttons show their accent background, QR codes have a white background, and clickable items show a hand cursor. These styles were dropped from the app's CSS; Firefox already showed them.
 - The message for actions that need a full session now says that a computer needs a passkey sign-in and that a phone can do it in the Kaiku app.

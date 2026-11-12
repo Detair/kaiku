@@ -7,11 +7,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.stateIn
 import org.webrtc.AudioSource
 import org.webrtc.AudioTrack
 import org.webrtc.DataChannel
@@ -52,6 +49,23 @@ import javax.inject.Singleton
  * Testable logic (ICE serialization, mute state) is kept in pure
  * data classes ([IceCandidateData]) and simple boolean fields so that
  * JVM unit tests can validate them without the Android WebRTC runtime.
+ *
+ * **Locks and WebRTC's threads.** Most calls into WebRTC (`setEnabled`,
+ * `close`, `dispose`, `createPeerConnection`, `createOffer`/`createAnswer`,
+ * `setLocalDescription`/`setRemoteDescription`, `addIceCandidate`,
+ * `addTransceiver`, `getStats`) wait for WebRTC's signalling thread, and
+ * WebRTC's callbacks (the observers below) run on that thread. A thread that
+ * calls into WebRTC while it holds a lock a callback may want therefore
+ * blocks for good. The rule:
+ * - Never call into WebRTC while holding [pcLock], the voice session lock
+ *   (`VoiceRepository.sessionLock`), the socket lock (`KaikuWebSocket`) or the
+ *   signalling state lock (`VoiceSignalling`). Those four are the locks
+ *   callbacks may take, each only for a short section that calls nothing
+ *   blocking.
+ * - [micLock] may be held across calls into WebRTC. No callback takes it,
+ *   nor the teardown mutex of the repository.
+ * - Callbacks may call back into WebRTC (they are on its thread), holding
+ *   none of these locks.
  */
 @Singleton
 class WebRtcManager @Inject constructor(
@@ -94,31 +108,53 @@ class WebRtcManager @Inject constructor(
     /** Test-only accessor for the buffered publisher ICE candidate count. */
     internal fun publisherPendingCandidatesSize(): Int = publisherPendingCandidates.size
 
-    /** Test-only mutator for publisher ICE state (drives [voiceIceConnected] in unit tests). */
+    /** Test-only mutator for publisher ICE state (drives [publisherLink] in unit tests). */
     internal fun setPublisherIceStateForTest(state: PeerConnection.IceConnectionState?) {
-        publisherIceState.value = state
+        synchronized(pcLock) { _publisherLink.value = PublisherLink(generation, state.isConnected()) }
     }
 
-    /** Test-only mutator for subscriber ICE state (drives [voiceIceConnected] in unit tests). */
-    internal fun setSubscriberIceStateForTest(state: PeerConnection.IceConnectionState?) {
-        subscriberIceState.value = state
-    }
+    /** Test-only: whether a subscriber / publisher connection is installed. */
+    internal fun hasSubscriberPcForTest(): Boolean = subscriberPc != null
+    internal fun hasPublisherPcForTest(): Boolean = publisherPc != null
+
+    /**
+     * Test-only: runs inside the publisher's ICE callback right after its
+     * identity check, while the callback holds the connection monitor (to
+     * interleave a concurrent [closePeerConnections] in tests).
+     */
+    @Volatile
+    internal var afterIdentityCheckForTest: (() -> Unit)? = null
 
     /**
      * Lazy so tests that never touch video rendering never trigger EGL init,
      * and so production startup defers the native cost until first use.
      *
-     * Exposed via the `eglBase` accessor below. One per process, like the factory:
-     * dispose() does not release it.
+     * Exposed via the `eglBase` accessor below. The same process-wide instance the
+     * video decoder of the factory uses ([EglBaseProvider]); dispose() does not release it.
      */
-    private val _eglBase: Lazy<EglBase> = lazy { eglBaseProvider.create() }
+    private val _eglBase: Lazy<EglBase> = lazy { eglBaseProvider.get() }
 
     /** Shared EGL context for video rendering (SurfaceViewRenderer). */
     val eglBase: EglBase get() = _eglBase.value
 
-    /** The local microphone audio track, null until [createPublisherOffer] is called. */
+    /**
+     * The local microphone audio track of the current connections, null
+     * until [createPublisherOffer] made it and after [closePeerConnections]
+     * disposed it. Written under [micLock].
+     */
+    @Volatile
     var localAudioTrack: AudioTrack? = null
         private set
+
+    /**
+     * Serialises everything that touches the microphone track: its creation
+     * ([createPublisherOffer]), [setMuted] and its disposal
+     * ([closePeerConnections]). So a mute never reaches a track that is being
+     * disposed, and a track is never created from a mute state that is just
+     * changing. Unlike [pcLock] it is held across the calls into WebRTC; that
+     * is safe because no WebRTC callback takes it (see the class comment).
+     */
+    private val micLock = Any()
 
     private val _remoteAudioTracks = MutableStateFlow<Map<String, AudioTrack>>(emptyMap())
     /** Remote audio tracks keyed by track ID. */
@@ -128,31 +164,43 @@ class WebRtcManager @Inject constructor(
     /** Remote video tracks (screen shares) keyed by track ID. */
     val remoteVideoTracks: StateFlow<Map<String, VideoTrack>> = _remoteVideoTracks.asStateFlow()
 
-    /** Whether the local audio track is muted. */
+    /** Whether the microphone is muted: the state every microphone track is created from. */
+    @Volatile
     var isMuted: Boolean = false
         private set
 
-    /** ICE connection state of the publisher PC (mic upload). */
-    private val publisherIceState =
-        MutableStateFlow<PeerConnection.IceConnectionState?>(null)
+    /**
+     * Guards [generation], the installed connections and [publisherLink].
+     * Retiring connections ([closePeerConnections]) and every publisher ICE
+     * state update (identity check + state change) happen under it, so a
+     * callback of a retired connection can never publish its state after the
+     * retirement. Never held while calling into WebRTC or into callers (see
+     * the class comment).
+     */
+    private val pcLock = Any()
 
-    /** ICE connection state of the subscriber PC (remote-track download). */
-    private val subscriberIceState =
-        MutableStateFlow<PeerConnection.IceConnectionState?>(null)
+    private val _publisherLink = MutableStateFlow(PublisherLink(generation = 0L, connected = false))
 
     /**
-     * Emits true only when both the publisher and subscriber PCs reach
-     * [PeerConnection.IceConnectionState.CONNECTED]. Emits false any time
-     * either PC is in a different state (or null/disposed).
-     *
-     * Backed by an eagerly-collected [combine] flow scoped to an internal
-     * IO scope so collectors always observe the latest combined value.
+     * Whether the publisher PC (the mic upload) is ICE-connected, together with
+     * the generation of that connection: the call is up (C32 amendment). The
+     * subscriber PC is not required: in a channel where nobody else publishes,
+     * the server never offers it. A success only counts for the connection
+     * whose generation it carries. Reset by [closePeerConnections].
      */
-    val voiceIceConnected: StateFlow<Boolean> =
-        combine(publisherIceState, subscriberIceState) { p, s ->
-            p == PeerConnection.IceConnectionState.CONNECTED &&
-                s == PeerConnection.IceConnectionState.CONNECTED
-        }.stateIn(voiceScope, SharingStarted.Eagerly, false)
+    val publisherLink: StateFlow<PublisherLink> = _publisherLink.asStateFlow()
+
+    /**
+     * Bumped by [closePeerConnections]. Every observer remembers the value it
+     * was created with and drops its callbacks once it differs, so a late ICE,
+     * track or SDP callback from a closed connection never reaches the current
+     * call (identity check). Written under [pcLock].
+     */
+    @Volatile
+    private var generation = 0L
+
+    /** The generation of the connections that are (or will be) installed now. */
+    val currentGeneration: Long get() = generation
 
     // -- Callbacks ------------------------------------------------------------
 
@@ -173,6 +221,15 @@ class WebRtcManager @Inject constructor(
 
     /** Called when an SDP or ICE error occurs that prevents voice connection. */
     @Volatile var onError: ((String) -> Unit)? = null
+
+    /**
+     * Called with the generation of the reporting connection when the
+     * publisher reports ICE `DISCONNECTED` (may recover by itself) or is
+     * connected again ([IceTrouble.Recovered]), and when either connection
+     * reports `FAILED` (will not recover). The caller decides what to do;
+     * nothing is torn down here. Runs on WebRTC's signalling thread.
+     */
+    @Volatile var onIceTrouble: ((IceTrouble, Long) -> Unit)? = null
 
     // -- Lifecycle ------------------------------------------------------------
 
@@ -198,8 +255,13 @@ class WebRtcManager @Inject constructor(
      * (see [createPublisherOffer]), so no local track is added here.
      *
      * Call [initialize] first.
+     *
+     * The new connection is installed through [guard] in one step with the
+     * caller's liveness check (under the caller's session monitor). If the
+     * session ended meanwhile, the new connection is closed at once and false
+     * is returned (nothing is installed).
      */
-    suspend fun createSubscriberPeerConnection() {
+    suspend fun createSubscriberPeerConnection(guard: SessionGuard = SessionGuard.Always): Boolean {
         val pcFactory = factory ?: throw IllegalStateException(
             "PeerConnectionFactory not initialized. Call initialize() first."
         )
@@ -225,10 +287,16 @@ class WebRtcManager @Inject constructor(
                 PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
         }
 
-        subscriberPc = pcFactory.createPeerConnection(rtcConfig, createSubscriberObserver())
+        if (!guard.runIfCurrent {}) return false
+        val pc = pcFactory.createPeerConnection(rtcConfig, createSubscriberObserver(generation))
             ?: throw IllegalStateException("Failed to create subscriber PeerConnection")
+        if (!guard.runIfCurrent { synchronized(pcLock) { subscriberPc = pc } }) {
+            discard(pc)
+            return false
+        }
 
         logger.info("Subscriber PeerConnection created with ${rtcIceServers.size} ICE servers")
+        return true
     }
 
     /**
@@ -241,8 +309,11 @@ class WebRtcManager @Inject constructor(
      *
      * The local mic ([audioSource] + [localAudioTrack]) is created here —
      * this is the single creation site post dual-PC refactor.
+     *
+     * [guard] works as in [createSubscriberPeerConnection]; returns whether
+     * the publisher was installed.
      */
-    suspend fun createPublisherOffer() {
+    suspend fun createPublisherOffer(guard: SessionGuard = SessionGuard.Always): Boolean {
         val pcFactory = factory ?: throw IllegalStateException(
             "PeerConnectionFactory not initialized. Call initialize() first."
         )
@@ -267,16 +338,26 @@ class WebRtcManager @Inject constructor(
                 PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
         }
 
-        val pub = pcFactory.createPeerConnection(rtcConfig, createPublisherObserver())
+        if (!guard.runIfCurrent {}) return false
+        val gen = generation
+        val pub = pcFactory.createPeerConnection(rtcConfig, createPublisherObserver(gen))
             ?: throw IllegalStateException("Failed to create publisher PeerConnection")
-        publisherPc = pub
+        if (!guard.runIfCurrent { synchronized(pcLock) { publisherPc = pub } }) {
+            discard(pub)
+            return false
+        }
 
         // Create and attach the local mic track — single site of creation.
-        audioSource = pcFactory.createAudioSource(MediaConstraints())
-        val track = pcFactory.createAudioTrack(LOCAL_AUDIO_TRACK_ID, audioSource).also {
-            it.setEnabled(!isMuted)
+        // One step with [setMuted]: a mute either comes before (the track is
+        // created from it) or after (it finds the track).
+        val track = synchronized(micLock) {
+            val source = pcFactory.createAudioSource(MediaConstraints())
+            audioSource = source
+            pcFactory.createAudioTrack(LOCAL_AUDIO_TRACK_ID, source).also {
+                it.setEnabled(!isMuted)
+                localAudioTrack = it
+            }
         }
-        localAudioTrack = track
 
         pub.addTransceiver(
             track,
@@ -286,12 +367,13 @@ class WebRtcManager @Inject constructor(
         )
 
         pub.createOffer(
-            object : SdpObserverAdapter("createPublisherOffer", onError) {
+            object : SdpObserverAdapter("createPublisherOffer", errorSink(gen)) {
                 override fun onCreateSuccess(desc: SessionDescription) {
                     pub.setLocalDescription(
-                        object : SdpObserverAdapter("setPublisherLocalDesc", onError) {
+                        object : SdpObserverAdapter("setPublisherLocalDesc", errorSink(gen)) {
                             override fun onSetSuccess() {
                                 super.onSetSuccess()
+                                if (gen != generation) return
                                 onPublisherOffer?.invoke(desc.description)
                                 logger.info("Publisher SDP offer created and set")
                             }
@@ -304,6 +386,19 @@ class WebRtcManager @Inject constructor(
         )
 
         logger.info("Publisher PeerConnection created with ${rtcIceServers.size} ICE servers")
+        return true
+    }
+
+    /** Closes a connection that was created for a session that ended meanwhile. */
+    private fun discard(pc: PeerConnection) {
+        pc.close()
+        pc.dispose()
+        logger.info("Discarded a PeerConnection created after the voice session ended")
+    }
+
+    /** [onError], but silent once the connections of generation [gen] are closed. */
+    private fun errorSink(gen: Long): (String) -> Unit = { message ->
+        if (gen == generation) onError?.invoke(message)
     }
 
     /**
@@ -314,37 +409,51 @@ class WebRtcManager @Inject constructor(
      * flows so that a subsequent [createPublisherOffer] /
      * [createSubscriberPeerConnection] starts from a clean slate.
      */
-    fun closePeerConnections() {
-        localAudioTrack?.dispose()
-        localAudioTrack = null
-        audioSource?.dispose()
-        audioSource = null
+    fun closePeerConnections(): Long {
+        // Retire under the monitor: from here on no callback of these
+        // connections passes its identity check or changes any state.
+        val retired = synchronized(pcLock) {
+            val newGeneration = ++generation
+            val gone = Retired(newGeneration, publisherPc, subscriberPc)
+            publisherPc = null
+            subscriberPc = null
+            publisherRemoteDescriptionSet = false
+            subscriberRemoteDescriptionSet = false
+            publisherPendingCandidates.clear()
+            subscriberPendingCandidates.clear()
+            // Clear remote-track flows first so observers don't reach into a disposed PC
+            _remoteAudioTracks.value = emptyMap()
+            _remoteVideoTracks.value = emptyMap()
+            _publisherLink.value = PublisherLink(newGeneration, connected = false)
+            gone
+        }
 
-        // Clear remote-track flows first so observers don't reach into a disposed PC
-        _remoteAudioTracks.value = emptyMap()
-        _remoteVideoTracks.value = emptyMap()
-        publisherRemoteDescriptionSet = false
-        subscriberRemoteDescriptionSet = false
-        publisherPendingCandidates.clear()
-        subscriberPendingCandidates.clear()
-
-        val pub = publisherPc
-        // Null first (with @Volatile on the field) so concurrent readers see null
-        // before close+dispose runs on the local reference.
-        publisherPc = null
-        pub?.close()
-        pub?.dispose()
-
-        val sub = subscriberPc
-        subscriberPc = null
-        sub?.close()
-        sub?.dispose()
-
-        publisherIceState.value = null
-        subscriberIceState.value = null
+        // Outside [pcLock]: dispose() and close() wait for WebRTC's thread and
+        // may call back into the observers.
+        // The microphone first, in one step with [setMuted]: from here on a
+        // mute finds no track, and one that is being applied finishes first.
+        synchronized(micLock) {
+            val track = localAudioTrack
+            val source = audioSource
+            localAudioTrack = null
+            audioSource = null
+            track?.dispose()
+            source?.dispose()
+        }
+        retired.publisher?.close()
+        retired.publisher?.dispose()
+        retired.subscriber?.close()
+        retired.subscriber?.dispose()
 
         logger.info("Publisher and subscriber PeerConnections closed")
+        return retired.generation
     }
+
+    private class Retired(
+        val generation: Long,
+        val publisher: PeerConnection?,
+        val subscriber: PeerConnection?,
+    )
 
     /**
      * Releases the peer connections, tracks and sources of the current call.
@@ -374,17 +483,20 @@ class WebRtcManager @Inject constructor(
 
         subscriberRemoteDescriptionSet = false
         val offer = SessionDescription(SessionDescription.Type.OFFER, sdp)
+        val gen = generation
 
-        pc.setRemoteDescription(object : SdpObserverAdapter("setSubscriberRemoteDesc", onError) {
+        pc.setRemoteDescription(object : SdpObserverAdapter("setSubscriberRemoteDesc", errorSink(gen)) {
             override fun onSetSuccess() {
+                if (gen != generation) return
                 logger.info("Subscriber remote description set successfully")
                 subscriberRemoteDescriptionSet = true
                 drainSubscriberCandidates()
-                pc.createAnswer(object : SdpObserverAdapter("createSubscriberAnswer", onError) {
+                pc.createAnswer(object : SdpObserverAdapter("createSubscriberAnswer", errorSink(gen)) {
                     override fun onCreateSuccess(desc: SessionDescription) {
-                        pc.setLocalDescription(object : SdpObserverAdapter("setSubscriberLocalDesc", onError) {
+                        pc.setLocalDescription(object : SdpObserverAdapter("setSubscriberLocalDesc", errorSink(gen)) {
                             override fun onSetSuccess() {
                                 super.onSetSuccess()
+                                if (gen != generation) return
                                 onSubscriberAnswer?.invoke(desc.description)
                                 logger.info("Subscriber SDP answer created and set")
                             }
@@ -407,9 +519,11 @@ class WebRtcManager @Inject constructor(
             return
         }
         val answer = SessionDescription(SessionDescription.Type.ANSWER, sdp)
-        pc.setRemoteDescription(object : SdpObserverAdapter("setPublisherRemoteDesc", onError) {
+        val gen = generation
+        pc.setRemoteDescription(object : SdpObserverAdapter("setPublisherRemoteDesc", errorSink(gen)) {
             override fun onSetSuccess() {
                 super.onSetSuccess()
+                if (gen != generation) return
                 publisherRemoteDescriptionSet = true
                 logger.info("Publisher remote description set successfully")
                 drainPublisherCandidates()
@@ -514,13 +628,27 @@ class WebRtcManager @Inject constructor(
     // -- Audio control --------------------------------------------------------
 
     /**
-     * Mutes or unmutes the local audio track.
+     * Mutes or unmutes the microphone: the track of the current connections
+     * is disabled (no audio is sent to peers), and every later track is
+     * created from this state. Without a track (no call, or the connections
+     * were closed for a rejoin) only the state is kept.
      *
-     * When muted, the audio track is disabled (no audio is sent to peers).
+     * `setEnabled` waits for WebRTC's signalling thread: call this while
+     * holding none of the locks a WebRTC callback may take (see the class
+     * comment).
      */
     fun setMuted(muted: Boolean) {
-        isMuted = muted
-        localAudioTrack?.setEnabled(!muted)
+        synchronized(micLock) {
+            isMuted = muted
+            val track = localAudioTrack ?: return
+            try {
+                track.setEnabled(!muted)
+            } catch (e: IllegalStateException) {
+                // Disposed underneath us: nothing is captured through it any
+                // more, and the next track is created from [isMuted].
+                logger.warning("mute ignored: the microphone track is disposed")
+            }
+        }
     }
 
     /**
@@ -535,8 +663,11 @@ class WebRtcManager @Inject constructor(
 
     // -- PeerConnection.Observer ----------------------------------------------
 
-    private fun createSubscriberObserver() = object : PeerConnection.Observer {
+    private fun createSubscriberObserver(gen: Long) = object : PeerConnection.Observer {
+        private val stale get() = gen != generation
+
         override fun onIceCandidate(candidate: IceCandidate) {
+            if (stale) return
             val data = IceCandidateData(
                 candidate = candidate.sdp,
                 sdpMLineIndex = candidate.sdpMLineIndex,
@@ -546,6 +677,7 @@ class WebRtcManager @Inject constructor(
         }
 
         override fun onTrack(transceiver: RtpTransceiver) {
+            if (stale) return
             val track = transceiver.receiver.track() ?: return
             // Build a track key from the mid (maps to stream_id in SDP)
             val mid = transceiver.mid ?: track.id()
@@ -572,13 +704,13 @@ class WebRtcManager @Inject constructor(
 
         override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {
             logger.info("Subscriber ICE connection state: $state")
-            subscriberIceState.value = state
-            when (state) {
-                PeerConnection.IceConnectionState.FAILED ->
-                    onError?.invoke("Voice subscriber connection failed (ICE)")
-                PeerConnection.IceConnectionState.DISCONNECTED ->
-                    logger.warning("Subscriber ICE disconnected, may recover")
-                else -> {}
+            if (stale) return
+            // The "reconnecting" indication and "connected" follow the
+            // publisher (the mic upload) only; a failed subscriber still
+            // needs a rejoin. The caller checks the generation again.
+            if (state == PeerConnection.IceConnectionState.FAILED) {
+                logger.warning("Subscriber ICE failed")
+                onIceTrouble?.invoke(IceTrouble.Failed, gen)
             }
         }
 
@@ -611,8 +743,11 @@ class WebRtcManager @Inject constructor(
         }
     }
 
-    private fun createPublisherObserver() = object : PeerConnection.Observer {
+    private fun createPublisherObserver(gen: Long) = object : PeerConnection.Observer {
+        private val stale get() = gen != generation
+
         override fun onIceCandidate(candidate: IceCandidate) {
+            if (stale) return
             val data = IceCandidateData(
                 candidate = candidate.sdp,
                 sdpMLineIndex = candidate.sdpMLineIndex,
@@ -632,12 +767,25 @@ class WebRtcManager @Inject constructor(
 
         override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {
             logger.info("Publisher ICE connection state: $state")
-            publisherIceState.value = state
+            // Identity check and state change in one step with retirement:
+            // a retired connection cannot publish CONNECTED afterwards.
+            synchronized(pcLock) {
+                if (stale) return
+                afterIdentityCheckForTest?.invoke()
+                _publisherLink.value = PublisherLink(gen, state.isConnected())
+            }
+            // Callers get the generation and drop troubles of retired connections.
             when (state) {
-                PeerConnection.IceConnectionState.FAILED ->
-                    onError?.invoke("Voice publisher connection failed (ICE)")
-                PeerConnection.IceConnectionState.DISCONNECTED ->
+                PeerConnection.IceConnectionState.CONNECTED,
+                PeerConnection.IceConnectionState.COMPLETED -> onIceTrouble?.invoke(IceTrouble.Recovered, gen)
+                PeerConnection.IceConnectionState.FAILED -> {
+                    logger.warning("Publisher ICE failed")
+                    onIceTrouble?.invoke(IceTrouble.Failed, gen)
+                }
+                PeerConnection.IceConnectionState.DISCONNECTED -> {
                     logger.warning("Publisher ICE disconnected, may recover")
+                    onIceTrouble?.invoke(IceTrouble.Disconnected, gen)
+                }
                 else -> {}
             }
         }
@@ -671,6 +819,33 @@ class WebRtcManager @Inject constructor(
         return builder.createIceServer()
     }
 }
+
+/**
+ * An ICE state change, see [WebRtcManager.onIceTrouble]. [Disconnected] and
+ * [Recovered] come from the publisher only (the "reconnecting" indication
+ * follows the mic upload); [Failed] from either connection.
+ */
+enum class IceTrouble { Disconnected, Failed, Recovered }
+
+/** The publisher connection of [generation] is (not) ICE-connected. */
+data class PublisherLink(val generation: Long, val connected: Boolean)
+
+/**
+ * The caller's session monitor: [runIfCurrent] runs the install step and
+ * returns true only while the session is live, as one atomic step against the
+ * session's end.
+ */
+fun interface SessionGuard {
+    fun runIfCurrent(install: () -> Unit): Boolean
+
+    companion object {
+        val Always = SessionGuard { install -> install(); true }
+    }
+}
+
+private fun PeerConnection.IceConnectionState?.isConnected(): Boolean =
+    this == PeerConnection.IceConnectionState.CONNECTED ||
+        this == PeerConnection.IceConnectionState.COMPLETED
 
 /**
  * Base [SdpObserver] adapter that logs failures and propagates them via [onError].

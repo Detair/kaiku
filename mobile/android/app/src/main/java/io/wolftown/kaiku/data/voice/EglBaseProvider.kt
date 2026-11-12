@@ -5,19 +5,34 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Indirection over [EglBase.create] so tests can substitute the EGL stack
- * without invoking native EGL14 JNI.
+ * The one process-wide [EglBase]. The video decoder of the
+ * [PeerConnectionFactory][org.webrtc.PeerConnectionFactory] and every
+ * `SurfaceViewRenderer` must share this EGL context, so every caller gets the
+ * same instance; it is created on first use and never released.
  *
  * Production code MUST inject this rather than calling [EglBase.create] directly.
  * In tests, provide a `mockk<EglBaseProvider>(relaxed = true)` via the
- * [WebRtcManager] constructor; the `create()` return is only read if the test
- * actually touches `webRtcManager.eglBase`.
+ * [WebRtcManager] constructor; `get()` is only read if the test actually
+ * touches `webRtcManager.eglBase`.
  */
 interface EglBaseProvider {
-    fun create(): EglBase
+    fun get(): EglBase
+}
+
+/** Creates its value on the first [get] and returns that same instance from then on. */
+internal class SharedInstance<T : Any>(private val create: () -> T) {
+    private val value: T by lazy(LazyThreadSafetyMode.SYNCHRONIZED) { create() }
+
+    fun get(): T = value
 }
 
 @Singleton
-class DefaultEglBaseProvider @Inject constructor() : EglBaseProvider {
-    override fun create(): EglBase = EglBase.create()
+class DefaultEglBaseProvider internal constructor(
+    private val shared: SharedInstance<EglBase>,
+) : EglBaseProvider {
+
+    @Inject
+    constructor() : this(SharedInstance { EglBase.create() })
+
+    override fun get(): EglBase = shared.get()
 }

@@ -506,4 +506,78 @@ class ServerEventParsingTest {
         assertEquals("m1", n.messageId)
         assertEquals(3, n.securityNotice.count)
     }
+
+    @Test
+    fun `ClientEvent VoiceMute and VoiceUnmute use the server's event names`() {
+        // The server knows `voice_mute` / `voice_unmute`; a wrong name is dropped as unknown.
+        val mute = WsJson.encodeToString<ClientEvent>(ClientEvent.VoiceMute("voice-001"))
+        assertTrue(mute, mute.contains(""""type":"voice_mute""""))
+        assertTrue(mute.contains(""""channel_id":"voice-001""""))
+        val unmute = WsJson.encodeToString<ClientEvent>(ClientEvent.VoiceUnmute("voice-001"))
+        assertTrue(unmute.contains(""""type":"voice_unmute""""))
+    }
+
+    // ========================================================================
+    // voice_removed (C31)
+    // ========================================================================
+
+    @Test
+    fun `voice_removed parses every known reason`() {
+        val expected = mapOf(
+            "kicked" to VoiceRemovedReason.Kicked,
+            "banned" to VoiceRemovedReason.Banned,
+            "permission_lost" to VoiceRemovedReason.PermissionLost,
+            "channel_deleted" to VoiceRemovedReason.ChannelDeleted,
+            "session_replaced" to VoiceRemovedReason.SessionReplaced,
+        )
+        expected.forEach { (wire, reason) ->
+            val event = WsJson.decodeFromString<ServerEvent>(
+                """{"type":"voice_removed","channel_id":"ch-1","reason":"$wire"}"""
+            )
+            assertIs<ServerEvent.VoiceRemoved>(event)
+            assertEquals("ch-1", event.channelId)
+            assertEquals(reason, event.removedReason)
+        }
+    }
+
+    @Test
+    fun `voice_removed with an unknown reason is treated like kicked`() {
+        val event = WsJson.decodeFromString<ServerEvent>(
+            """{"type":"voice_removed","channel_id":"ch-1","reason":"something_new"}"""
+        )
+        assertIs<ServerEvent.VoiceRemoved>(event)
+        assertEquals(VoiceRemovedReason.Kicked, event.removedReason)
+    }
+
+    @Test
+    fun `voice_removed without a reason is treated like kicked`() {
+        val event = WsJson.decodeFromString<ServerEvent>("""{"type":"voice_removed","channel_id":"ch-1"}""")
+        assertIs<ServerEvent.VoiceRemoved>(event)
+        assertEquals(VoiceRemovedReason.Kicked, event.removedReason)
+    }
+
+    @Test
+    fun `voice_removed with a null reason is treated like kicked`() {
+        val event = WsJson.decodeFromString<ServerEvent>(
+            """{"type":"voice_removed","channel_id":"ch-1","reason":null}"""
+        )
+        assertIs<ServerEvent.VoiceRemoved>(event)
+        assertEquals(VoiceRemovedReason.Kicked, event.removedReason)
+    }
+
+    @Test
+    fun `voice_removed without a channel id still parses and names no channel`() {
+        val event = WsJson.decodeFromString<ServerEvent>("""{"type":"voice_removed","reason":"banned"}""")
+        assertIs<ServerEvent.VoiceRemoved>(event)
+        assertEquals(null, event.channelId)
+        assertEquals(VoiceRemovedReason.Banned, event.removedReason)
+    }
+
+    @Test
+    fun `voice_removed ignores unknown extra fields`() {
+        val event = WsJson.decodeFromString<ServerEvent>(
+            """{"type":"voice_removed","channel_id":"ch-1","reason":"kicked","by":"x"}"""
+        )
+        assertIs<ServerEvent.VoiceRemoved>(event)
+    }
 }

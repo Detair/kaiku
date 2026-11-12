@@ -5,6 +5,8 @@ import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.wolftown.kaiku.data.repository.GuildRepository
 import io.wolftown.kaiku.data.repository.VoiceRepository
+import io.wolftown.kaiku.data.voice.VoiceEndNotice
+import io.wolftown.kaiku.data.voice.VoiceLinkState
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
@@ -37,6 +39,12 @@ class VoiceOverlayViewModel @Inject constructor(
     val currentChannelId: StateFlow<String?> = voiceRepository.currentChannelId
     val isMuted: StateFlow<Boolean> = voiceRepository.isMuted
 
+    /** Stable, interrupted or rejoining: the bar says "Reconnecting…" unless stable. */
+    val linkState: StateFlow<VoiceLinkState> = voiceRepository.linkState
+
+    /** Why the last call ended on its own, with the Rejoin action, or null. */
+    val endNotice: StateFlow<VoiceEndNotice?> = voiceRepository.endNotice
+
     /** Name of the channel the call runs in, or null if it is not in the loaded channel list. */
     val channelName: StateFlow<String?> =
         combine(voiceRepository.currentChannelId, guildRepository.channels) { id, channels ->
@@ -45,6 +53,14 @@ class VoiceOverlayViewModel @Inject constructor(
 
     fun onToggleMute() {
         voiceRepository.toggleMute()
+    }
+
+    fun onRejoin() {
+        voiceRepository.rejoin()
+    }
+
+    fun onDismissNotice() {
+        voiceRepository.dismissEndNotice()
     }
 
     fun onDisconnect() {

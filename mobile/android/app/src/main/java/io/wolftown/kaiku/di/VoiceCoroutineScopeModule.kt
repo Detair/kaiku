@@ -11,7 +11,7 @@ import javax.inject.Singleton
 
 /**
  * Provides the application-scoped [CoroutineScope] used by voice-layer
- * background collectors (e.g., `WebRtcManager.voiceIceConnected.stateIn(...)`).
+ * background collectors (e.g., the voice repository's connection collectors).
  *
  * Kept separate from [VoiceModule] because that module is `abstract` for
  * `@Binds` entries; Hilt requires `@Provides` to live in `object` or

@@ -196,6 +196,23 @@ sealed class ServerEvent {
     @SerialName("voice_error")
     data class VoiceError(val code: String, val message: String) : ServerEvent()
 
+    /**
+     * C31: the server removed this socket's voice peer (kick, ban, lost
+     * permission, deleted channel, same user joined elsewhere). [reason] is the
+     * wire string; read it with [removedReason]. Fields the server omits fall
+     * back to "kicked" / the current channel so a call is never left connected
+     * to nothing.
+     */
+    @Serializable
+    @SerialName("voice_removed")
+    data class VoiceRemoved(
+        val channelId: String? = null,
+        // Nullable: a JSON `null` must not drop the event (unknown/missing = kicked).
+        val reason: String? = null,
+    ) : ServerEvent() {
+        val removedReason: VoiceRemovedReason get() = VoiceRemovedReason.fromWire(reason)
+    }
+
     // -- Screen Share ---------------------------------------------------------
 
     @Serializable
@@ -228,6 +245,21 @@ sealed class ServerEvent {
         val trackSource: String,
         val activeLayer: String
     ) : ServerEvent()
+}
+
+/** Why the server removed us from a voice channel (C31). Unknown wire values are [Kicked]. */
+enum class VoiceRemovedReason {
+    Kicked, Banned, PermissionLost, ChannelDeleted, SessionReplaced;
+
+    companion object {
+        fun fromWire(reason: String?): VoiceRemovedReason = when (reason) {
+            "banned" -> Banned
+            "permission_lost" -> PermissionLost
+            "channel_deleted" -> ChannelDeleted
+            "session_replaced" -> SessionReplaced
+            else -> Kicked
+        }
+    }
 }
 
 @Serializable
