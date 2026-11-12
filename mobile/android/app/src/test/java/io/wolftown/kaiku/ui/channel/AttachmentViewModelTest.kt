@@ -46,17 +46,17 @@ class AttachmentViewModelTest {
         coEvery { files.saveToDevice(file, photo) } returns true
         val vm = AttachmentViewModel(files)
 
-        vm.save(photo)
+        vm.save(photo, origin = 7L)
         advanceUntilIdle()
         assertTrue(vm.busy.value) // the viewer disables Save while this is true
-        vm.save(photo)
+        vm.save(photo, origin = 7L)
         gate.complete(Unit)
         advanceUntilIdle()
 
         coVerify(exactly = 1) { files.download(photo) }
         coVerify(exactly = 1) { files.saveToDevice(file, photo) }
         assertFalse(vm.busy.value)
-        assertEquals(AttachmentEvent.Message(R.string.chat_attachment_saved), vm.events.first())
+        assertEquals(AttachmentEvent.Message(R.string.chat_attachment_saved, origin = 7L), vm.events.first())
     }
 
     @Test
@@ -64,10 +64,34 @@ class AttachmentViewModelTest {
         coEvery { files.download(photo) } throws java.io.IOException("offline")
         val vm = AttachmentViewModel(files)
 
-        vm.save(photo)
+        vm.save(photo, origin = 3L)
         advanceUntilIdle()
 
         assertFalse(vm.busy.value)
-        assertEquals(AttachmentEvent.Message(R.string.chat_attachment_save_failed), vm.events.first())
+        assertEquals(AttachmentEvent.Message(R.string.chat_attachment_save_failed, origin = 3L), vm.events.first())
+    }
+
+    @Test
+    fun `the save-as result keeps the viewer that started it`() = runTest(dispatcher) {
+        val file = File("photo.jpg")
+        coEvery { files.download(photo) } returns file
+        coEvery { files.saveToDevice(file, photo) } returns false
+        val vm = AttachmentViewModel(files)
+
+        vm.save(photo, origin = 5L)
+        advanceUntilIdle()
+        assertEquals(AttachmentEvent.ChooseSaveTarget("photo.jpg", "image/jpeg"), vm.events.first())
+        vm.saveTo(mockk(relaxed = true))
+        advanceUntilIdle()
+
+        assertEquals(AttachmentEvent.Message(R.string.chat_attachment_saved, origin = 5L), vm.events.first())
+    }
+
+    @Test
+    fun `a result shows in the viewer only while the viewer that started it is open`() {
+        assertTrue(showInViewer(origin = 4L, openViewer = 4L))
+        assertFalse(showInViewer(origin = 4L, openViewer = null)) // closed: the chat shows it
+        assertFalse(showInViewer(origin = 4L, openViewer = 5L)) // another photo: never there
+        assertFalse(showInViewer(origin = null, openViewer = 5L)) // started from the chat list
     }
 }

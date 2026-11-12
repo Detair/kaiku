@@ -31,9 +31,19 @@ sealed interface AttachmentEvent {
     /** Before Android 10: ask where to save with the system dialog, then call [AttachmentViewModel.saveTo]. */
     data class ChooseSaveTarget(val fileName: String, val mimeType: String) : AttachmentEvent
 
-    /** A short message for the user. */
-    data class Message(@StringRes val text: Int) : AttachmentEvent
+    /**
+     * A short message for the user. [origin] is the photo viewer that started
+     * the action (see [showInViewer]); null when it came from the chat list.
+     */
+    data class Message(@StringRes val text: Int, val origin: Long? = null) : AttachmentEvent
 }
+
+/**
+ * True when a result belongs in the photo viewer: the viewer that started the
+ * action ([origin]) is the one open now ([openViewer]). Once it is closed the
+ * chat shows it; another photo's viewer never does.
+ */
+internal fun showInViewer(origin: Long?, openViewer: Long?): Boolean = origin != null && origin == openViewer
 
 /** Opens, shares and saves received attachments; one action at a time. */
 @HiltViewModel
@@ -55,39 +65,51 @@ class AttachmentViewModel @Inject constructor(
 
     /** The file waiting for a target from the "save as" dialog. */
     private var pendingSave: File? = null
+    private var pendingSaveOrigin: Long? = null
 
     fun open(attachment: Attachment) = withFile(attachment, R.string.chat_attachment_open_failed) { file ->
         AttachmentEvent.Open(files.shareableUri(file), attachment.mimeType)
     }
 
-    fun share(attachment: Attachment) = withFile(attachment, R.string.chat_attachment_open_failed) { file ->
-        AttachmentEvent.Share(files.shareableUri(file), attachment.mimeType)
-    }
-
-    fun save(attachment: Attachment) = withFile(attachment, R.string.chat_attachment_save_failed) { file ->
-        if (files.saveToDevice(file, attachment)) {
-            AttachmentEvent.Message(R.string.chat_attachment_saved)
-        } else {
-            pendingSave = file
-            AttachmentEvent.ChooseSaveTarget(file.name, attachment.mimeType)
+    /** [origin]: the photo viewer this was started from, for [AttachmentEvent.Message.origin]. */
+    fun share(attachment: Attachment, origin: Long? = null) =
+        withFile(attachment, R.string.chat_attachment_open_failed, origin) { file ->
+            AttachmentEvent.Share(files.shareableUri(file), attachment.mimeType)
         }
-    }
+
+    /** [origin]: the photo viewer this was started from, for [AttachmentEvent.Message.origin]. */
+    fun save(attachment: Attachment, origin: Long? = null) =
+        withFile(attachment, R.string.chat_attachment_save_failed, origin) { file ->
+            if (files.saveToDevice(file, attachment)) {
+                AttachmentEvent.Message(R.string.chat_attachment_saved, origin)
+            } else {
+                pendingSave = file
+                pendingSaveOrigin = origin
+                AttachmentEvent.ChooseSaveTarget(file.name, attachment.mimeType)
+            }
+        }
 
     /** The user picked [target] in the "save as" dialog (null: cancelled). */
     fun saveTo(target: Uri?) {
         val file = pendingSave ?: return
         pendingSave = null
+        val origin = pendingSaveOrigin
+        pendingSaveOrigin = null
         if (target == null) return
-        run(R.string.chat_attachment_save_failed) {
+        run(R.string.chat_attachment_save_failed, origin) {
             files.copyTo(file, target)
-            AttachmentEvent.Message(R.string.chat_attachment_saved)
+            AttachmentEvent.Message(R.string.chat_attachment_saved, origin)
         }
     }
 
-    private fun withFile(attachment: Attachment, @StringRes failure: Int, next: suspend (File) -> AttachmentEvent) =
-        run(failure) { next(files.download(attachment)) }
+    private fun withFile(
+        attachment: Attachment,
+        @StringRes failure: Int,
+        origin: Long? = null,
+        next: suspend (File) -> AttachmentEvent,
+    ) = run(failure, origin) { next(files.download(attachment)) }
 
-    private fun run(@StringRes failure: Int, block: suspend () -> AttachmentEvent) {
+    private fun run(@StringRes failure: Int, origin: Long? = null, block: suspend () -> AttachmentEvent) {
         if (_busy.value) return
         _busy.value = true
         viewModelScope.launch {
@@ -97,7 +119,7 @@ class AttachmentViewModel @Inject constructor(
                 throw e
             } catch (e: Exception) {
                 logger.warning("attachment action failed (${e::class.simpleName})")
-                AttachmentEvent.Message(failure)
+                AttachmentEvent.Message(failure, origin)
             } finally {
                 _busy.value = false
             }

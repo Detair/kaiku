@@ -234,6 +234,8 @@ fun TextChannelScreen(
     val attachmentViewModel: AttachmentViewModel = hiltViewModel()
     val attachmentBusy by attachmentViewModel.busy.collectAsState()
     var viewerAttachment by remember { mutableStateOf<io.wolftown.kaiku.domain.model.Attachment?>(null) }
+    // Every opening of the viewer is its own instance; results go back only to the one that asked.
+    var viewerInstance by remember { mutableLongStateOf(0L) }
     // The photo viewer is a dialog above this screen: its messages ("Saved to your phone.") go there.
     val viewerSnackbarHostState = remember { SnackbarHostState() }
     var saveAsMime by remember { mutableStateOf("application/octet-stream") }
@@ -266,7 +268,8 @@ fun TextChannelScreen(
                     saveAsLauncher.launch(event.fileName)
                 }
                 is AttachmentEvent.Message -> {
-                    val host = if (viewerAttachment != null) viewerSnackbarHostState else snackbarHostState
+                    val openViewer = if (viewerAttachment != null) viewerInstance else null
+                    val host = if (showInViewer(event.origin, openViewer)) viewerSnackbarHostState else snackbarHostState
                     // Not awaited: the next event must not wait until this message is gone.
                     launch {
                         host.showSnackbar(message = context.getString(event.text), withDismissAction = true)
@@ -276,7 +279,12 @@ fun TextChannelScreen(
         }
     }
     val openAttachment: (io.wolftown.kaiku.domain.model.Attachment) -> Unit = { att ->
-        if (att.isImage()) viewerAttachment = att else attachmentViewModel.open(att)
+        if (att.isImage()) {
+            viewerInstance++
+            viewerAttachment = att
+        } else {
+            attachmentViewModel.open(att)
+        }
     }
 
     val titleText = when (val t = title) {
@@ -470,8 +478,8 @@ fun TextChannelScreen(
             attachment = att,
             busy = attachmentBusy,
             snackbarHostState = viewerSnackbarHostState,
-            onSave = { attachmentViewModel.save(att) },
-            onShare = { attachmentViewModel.share(att) },
+            onSave = { attachmentViewModel.save(att, origin = viewerInstance) },
+            onShare = { attachmentViewModel.share(att, origin = viewerInstance) },
             onDismiss = {
                 viewerAttachment = null
                 viewerSnackbarHostState.currentSnackbarData?.dismiss()
