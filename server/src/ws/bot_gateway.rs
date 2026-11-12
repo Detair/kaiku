@@ -218,6 +218,20 @@ pub async fn bot_gateway_handler(
     ip: Option<axum::Extension<crate::ratelimit::NormalizedIp>>,
     axum::extract::Query(query): axum::extract::Query<BotGatewayQuery>,
 ) -> Result<Response, (StatusCode, String)> {
+    // The bot gateway's own failed-sign-in block (not the login's).
+    if let (Some(rl), Some(ip)) = (&state.rate_limiter, &ip) {
+        let blocked = match rl.is_bot_gateway_blocked(&ip.0 .0).await {
+            Ok(blocked) => blocked,
+            Err(_) => !rl.allow_during_outage(RateLimitCategory::FailedAuth),
+        };
+        if blocked {
+            return Err((
+                StatusCode::TOO_MANY_REQUESTS,
+                "Too many failed sign-ins from this address; try again later".to_string(),
+            ));
+        }
+    }
+
     // Extract token from headers
     let token = extract_bot_token(&headers).ok_or_else(|| {
         (
@@ -232,7 +246,7 @@ pub async fn bot_gateway_handler(
         Err(refusal) => {
             if refusal.0 == StatusCode::UNAUTHORIZED {
                 if let (Some(rl), Some(ip)) = (&state.rate_limiter, &ip) {
-                    if rl.record_failed_auth(&ip.0 .0).await.is_err()
+                    if rl.record_bot_gateway_failure(&ip.0 .0).await.is_err()
                         && !rl.allow_during_outage(RateLimitCategory::FailedAuth)
                     {
                         return Err((
