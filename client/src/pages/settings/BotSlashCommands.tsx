@@ -19,6 +19,7 @@ import { showToast } from "../../components/ui/Toast";
 import { createConfirm } from "@/components/admin/confirmHost";
 import { actionErrorText } from "@/components/admin/actionErrors";
 import { t } from "@/i18n";
+import Modal from "@/components/ui/Modal";
 
 const OPTION_TYPES: CommandOption["type"][] = [
   "string",
@@ -337,18 +338,16 @@ const BotSlashCommands: Component = () => {
 
         {/* Create Command Modal */}
         <Show when={showCreateModal()}>
-          <div
-            class="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
-            onClick={() => {
+          <Modal
+            onClose={() => {
               setShowCreateModal(false);
               resetForm();
             }}
+            labelledBy="bot-command-create-title"
+            backdropClass="fixed inset-0 bg-black/50 flex items-center justify-center p-4"
+            class="bg-surface-800 rounded-lg p-6 w-full max-w-lg max-h-[80vh] overflow-y-auto"
           >
-            <div
-              class="bg-surface-800 rounded-lg p-6 w-full max-w-lg max-h-[80vh] overflow-y-auto"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <h2 class="text-xl font-bold mb-4">Register Slash Command</h2>
+              <h2 id="bot-command-create-title" class="text-xl font-bold mb-4">Register Slash Command</h2>
               <div class="space-y-4">
                 <div>
                   <label class="block text-sm font-medium mb-1">Name *</label>
@@ -489,8 +488,7 @@ const BotSlashCommands: Component = () => {
                   </button>
                 </div>
               </div>
-            </div>
-          </div>
+          </Modal>
         </Show>
       </div>
       <confirmDialog.Host />

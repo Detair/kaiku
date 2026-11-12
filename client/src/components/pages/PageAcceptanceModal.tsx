@@ -4,11 +4,15 @@
  * Modal for accepting pages with scroll-to-bottom requirement.
  */
 
-import { Show, createSignal, onMount, onCleanup } from "solid-js";
+import { Show, createSignal, createUniqueId, onMount } from "solid-js";
 import { X, Check, ChevronDown } from "lucide-solid";
 import type { Page } from "@/lib/types";
 import { SCROLL_TOLERANCE } from "@/lib/pageConstants";
 import MarkdownPreview from "./MarkdownPreview";
+import Modal from "@/components/ui/Modal";
+import Button from "@/components/ui/Button";
+import { t } from "@/i18n";
+import { errorText } from "@/i18n/errors";
 
 interface PageAcceptanceModalProps {
   page: Page;
@@ -19,13 +23,11 @@ interface PageAcceptanceModalProps {
 }
 
 export default function PageAcceptanceModal(props: PageAcceptanceModalProps) {
-  onMount(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !props.isBlocking) props.onClose?.();
-    };
-    document.addEventListener("keydown", handleKeyDown);
-    onCleanup(() => document.removeEventListener("keydown", handleKeyDown));
-  });
+  const titleId = createUniqueId();
+  // Escape and the backdrop close it only when it may be closed.
+  const close = () => {
+    if (!props.isBlocking) props.onClose?.();
+  };
 
   const [hasScrolledToBottom, setHasScrolledToBottom] = createSignal(false);
   const [isAccepting, setIsAccepting] = createSignal(false);
@@ -72,7 +74,7 @@ export default function PageAcceptanceModal(props: PageAcceptanceModalProps) {
     try {
       await props.onAccept();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to accept page");
+      setError(errorText(err, "pages.accept.failed"));
     } finally {
       setIsAccepting(false);
     }
@@ -86,37 +88,30 @@ export default function PageAcceptanceModal(props: PageAcceptanceModalProps) {
   const canAccept = () => hasScrolledToBottom() && !isAccepting();
 
   return (
-    <div
-      class="fixed inset-0 z-50 flex items-center justify-center p-4"
-      role="dialog"
-      aria-modal="true"
-      data-testid="page-acceptance-modal"
+    <Modal
+      onClose={close}
+      labelledBy={titleId}
+      closeOnBackdrop={!props.isBlocking && !!props.onClose}
+      backdropClass="fixed inset-0 flex items-center justify-center p-4 bg-black/70"
+      class="relative w-full max-w-2xl max-h-[90vh] bg-surface-layer1 rounded-lg shadow-xl flex flex-col"
+      testId="page-acceptance-modal"
     >
-      {/* Backdrop */}
-      <div
-        class="absolute inset-0 bg-black/70"
-        onClick={props.isBlocking ? undefined : props.onClose}
-      />
-
-      {/* Modal */}
-      <div class="relative w-full max-w-2xl max-h-[90vh] bg-surface-layer1 rounded-lg shadow-xl flex flex-col">
         {/* Header */}
         <div class="flex items-center justify-between px-6 py-4 border-b border-white/10">
           <div>
-            <h2 class="text-xl font-semibold text-text-primary">{props.page.title}</h2>
+            <h2 id={titleId} class="text-xl font-semibold text-text-primary">{props.page.title}</h2>
             <p class="text-sm text-text-secondary mt-1">
-              {props.isBlocking
-                ? "You must accept this to continue using the platform"
-                : "Please review and accept this page"}
+              {props.isBlocking ? t("pages.accept.required") : t("pages.accept.review")}
             </p>
           </div>
           <Show when={!props.isBlocking && props.onClose}>
             <button
               type="button"
-              onClick={props.onClose}
-              class="p-2 text-text-secondary hover:text-text-primary hover:bg-white/10 rounded transition-colors"
+              onClick={close}
+              aria-label={t("common.close")}
+              class="p-2 tap-target text-text-secondary hover:text-text-primary hover:bg-white/10 rounded transition-colors"
             >
-              <X class="w-5 h-5" />
+              <X class="w-5 h-5" aria-hidden="true" />
             </button>
           </Show>
         </div>
@@ -126,6 +121,10 @@ export default function PageAcceptanceModal(props: PageAcceptanceModalProps) {
           ref={contentRef}
           onScroll={checkScroll}
           data-testid="page-acceptance-content"
+          // Keyboard users scroll the text with the arrow keys to reach the end.
+          tabIndex={0}
+          role="region"
+          aria-label={props.page.title}
           class="flex-1 overflow-auto px-6 py-4 min-h-0"
         >
           <MarkdownPreview content={props.page.content} />
@@ -134,14 +133,14 @@ export default function PageAcceptanceModal(props: PageAcceptanceModalProps) {
         {/* Scroll indicator */}
         <Show when={!hasScrolledToBottom()}>
           <div class="flex items-center justify-center py-2 bg-surface-layer2/50 text-text-secondary text-sm">
-            <ChevronDown class="w-4 h-4 mr-1 animate-bounce" />
-            Scroll to bottom to enable acceptance
+            <ChevronDown class="w-4 h-4 mr-1 animate-bounce" aria-hidden="true" />
+            {t("pages.accept.scroll")}
           </div>
         </Show>
 
         {/* Error */}
         <Show when={error()}>
-          <div class="mx-6 mb-2 px-3 py-2 bg-status-error/15 border border-status-error/50 rounded text-sm text-text-primary">
+          <div role="alert" class="mx-6 mb-2 px-3 py-2 bg-status-error/15 border border-status-error/50 rounded text-sm text-text-primary">
             {error()}
           </div>
         </Show>
@@ -149,31 +148,21 @@ export default function PageAcceptanceModal(props: PageAcceptanceModalProps) {
         {/* Footer */}
         <div class="flex items-center justify-end gap-3 px-6 py-4 border-t border-white/10">
           <Show when={!props.isBlocking && props.onDefer}>
-            <button
-              type="button"
-              onClick={handleDefer}
-              data-testid="page-acceptance-remind-later"
-              class="px-4 py-2 text-sm font-medium text-text-primary hover:text-text-primary hover:bg-white/10 rounded-md transition-colors"
-            >
-              Remind Me Later
-            </button>
+            <Button variant="ghost" onClick={handleDefer} data-testid="page-acceptance-remind-later">
+              {t("pages.accept.later")}
+            </Button>
           </Show>
-          <button
-            type="button"
+          <Button
             onClick={handleAccept}
             data-testid="page-acceptance-accept"
             disabled={!canAccept()}
-            class={`px-6 py-2 text-sm font-medium rounded-md flex items-center gap-2 transition-colors ${
-              canAccept()
-                ? "bg-accent-primary hover:bg-accent-primary/90 text-on-accent"
-                : "bg-surface-highlight text-text-secondary cursor-not-allowed"
-            } state-disabled`}
+            disabledReason={!hasScrolledToBottom() && t("pages.accept.scroll")}
+            showReason={false}
           >
-            <Check class="w-4 h-4" />
-            {isAccepting() ? "Accepting..." : "I Accept"}
-          </button>
+            <Check class="w-4 h-4" aria-hidden="true" />
+            {isAccepting() ? t("pages.accept.accepting") : t("pages.accept.accept")}
+          </Button>
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 }

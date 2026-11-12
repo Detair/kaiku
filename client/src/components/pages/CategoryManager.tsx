@@ -4,13 +4,14 @@
  * Provides inline rename, creation, and deletion with confirmation.
  */
 
-import { type Component, createSignal, For, Show } from "solid-js";
+import { type Component, createSignal, createUniqueId, For, Show } from "solid-js";
 import { Check, Pencil, Plus, Trash2, X } from "lucide-solid";
 import type { PageCategory } from "@/lib/types";
 import { MAX_CATEGORY_NAME_LENGTH } from "@/lib/pageConstants";
 import { createConfirm } from "@/components/admin/confirmHost";
 import { actionErrorText } from "@/components/admin/actionErrors";
 import { t } from "@/i18n";
+import Modal from "@/components/ui/Modal";
 
 interface CategoryManagerProps {
   guildId: string;
@@ -33,10 +34,10 @@ const CategoryManager: Component<CategoryManagerProps> = (props) => {
   const validateName = (name: string): string | null => {
     const trimmed = name.trim();
     if (trimmed.length === 0) {
-      return "Category name cannot be empty.";
+      return t("pages.categories.nameEmpty");
     }
     if (trimmed.length > MAX_CATEGORY_NAME_LENGTH) {
-      return `Category name must be at most ${MAX_CATEGORY_NAME_LENGTH} characters.`;
+      return t("pages.categories.nameTooLong", { max: MAX_CATEGORY_NAME_LENGTH });
     }
     return null;
   };
@@ -120,10 +121,12 @@ const CategoryManager: Component<CategoryManagerProps> = (props) => {
     }
   };
 
-  const handleBackdropClick = (e: MouseEvent) => {
-    if (e.target === e.currentTarget) {
-      props.onClose();
-    }
+  const titleId = createUniqueId();
+  const newNameId = createUniqueId();
+  // Escape while renaming cancels the rename; otherwise it closes the window.
+  const handleEscape = () => {
+    if (editingId() !== null) cancelEditing();
+    else props.onClose();
   };
 
   const handleEditKeyDown = (e: KeyboardEvent) => {
@@ -143,20 +146,25 @@ const CategoryManager: Component<CategoryManagerProps> = (props) => {
   };
 
   return (
-    <div
-      class="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
-      onClick={handleBackdropClick}
+    <Modal
+      onClose={handleEscape}
+      labelledBy={titleId}
+      backdropClass="fixed inset-0 bg-black/50 flex items-center justify-center p-4"
+      class="bg-surface-layer1 rounded-lg shadow-xl w-full max-w-md"
+      testId="category-manager"
     >
-      <div class="bg-surface-layer1 rounded-lg shadow-xl w-full max-w-md mx-4">
         {/* Header */}
         <div class="flex items-center justify-between px-6 py-4 border-b border-white/10">
-          <h2 class="text-lg font-semibold text-text-primary">Manage Categories</h2>
+          <h2 id={titleId} class="text-lg font-semibold text-text-primary">
+            {t("pages.categories.title")}
+          </h2>
           <button
+            type="button"
             onClick={() => props.onClose()}
-            class="text-text-secondary hover:text-text-primary rounded-md p-1 transition-colors"
-            aria-label="Close"
+            class="tap-target text-text-secondary hover:text-text-primary rounded-md p-1 transition-colors"
+            aria-label={t("common.close")}
           >
-            <X size={20} />
+            <X size={20} aria-hidden="true" />
           </button>
         </div>
 
@@ -164,7 +172,7 @@ const CategoryManager: Component<CategoryManagerProps> = (props) => {
         <div class="px-6 py-4 max-h-96 overflow-y-auto">
           {/* Error display */}
           <Show when={error()}>
-            <div class="mb-3 px-3 py-2 bg-status-error/15 border border-status-error/50 rounded-md text-text-primary text-sm">
+            <div role="alert" class="mb-3 px-3 py-2 bg-status-error/15 border border-status-error/50 rounded-md text-text-primary text-sm">
               {error()}
             </div>
           </Show>
@@ -186,9 +194,9 @@ const CategoryManager: Component<CategoryManagerProps> = (props) => {
                           onClick={() => startEditing(category)}
                           class="text-text-secondary hover:text-text-primary p-1 rounded-md transition-colors flex-shrink-0 state-disabled-quiet"
                           disabled={loading()}
-                          aria-label={`Rename ${category.name}`}
+                          aria-label={t("pages.categories.rename", { name: category.name })}
                         >
-                          <Pencil size={14} />
+                          <Pencil size={14} aria-hidden="true" />
                         </button>
                         <button
                           onClick={() =>
@@ -196,9 +204,9 @@ const CategoryManager: Component<CategoryManagerProps> = (props) => {
                           }
                           class="text-text-primary hover:bg-status-error/15 p-1 rounded-md transition-colors flex-shrink-0 state-disabled-quiet"
                           disabled={loading()}
-                          aria-label={`Delete ${category.name}`}
+                          aria-label={t("pages.categories.delete", { name: category.name })}
                         >
-                          <Trash2 size={14} />
+                          <Trash2 size={14} aria-hidden="true" />
                         </button>
                       </>
                     }
@@ -209,6 +217,7 @@ const CategoryManager: Component<CategoryManagerProps> = (props) => {
                       value={editingName()}
                       onInput={(e) => setEditingName(e.currentTarget.value)}
                       onKeyDown={handleEditKeyDown}
+                      aria-label={t("pages.categories.nameLabel")}
                       maxLength={MAX_CATEGORY_NAME_LENGTH}
                       class="flex-1 px-2 py-1 bg-surface-base border border-white/15 rounded-md text-text-primary text-sm focus:outline-none focus:ring-2 focus:ring-accent-primary focus:border-transparent"
                       disabled={loading()}
@@ -218,17 +227,17 @@ const CategoryManager: Component<CategoryManagerProps> = (props) => {
                       onClick={() => handleUpdate()}
                       class="bg-accent-primary hover:bg-accent-primary/90 text-on-accent p-1 rounded-md transition-colors flex-shrink-0 state-disabled"
                       disabled={loading()}
-                      aria-label="Save"
+                      aria-label={t("common.save")}
                     >
-                      <Check size={14} />
+                      <Check size={14} aria-hidden="true" />
                     </button>
                     <button
                       onClick={cancelEditing}
                       class="text-text-secondary hover:text-text-primary p-1 rounded-md transition-colors flex-shrink-0 state-disabled-quiet"
                       disabled={loading()}
-                      aria-label="Cancel"
+                      aria-label={t("common.cancel")}
                     >
-                      <X size={14} />
+                      <X size={14} aria-hidden="true" />
                     </button>
                   </Show>
                 </div>
@@ -239,7 +248,7 @@ const CategoryManager: Component<CategoryManagerProps> = (props) => {
           {/* Empty state */}
           <Show when={props.categories.length === 0}>
             <p class="text-text-secondary text-sm text-center py-4">
-              No categories yet. Create one below.
+              {t("pages.categories.empty")}
             </p>
           </Show>
         </div>
@@ -247,13 +256,17 @@ const CategoryManager: Component<CategoryManagerProps> = (props) => {
         {/* Footer — Add category */}
         <div class="px-6 py-4 border-t border-white/10">
           <div class="flex items-center gap-2">
+            <label for={newNameId} class="sr-only">
+              {t("pages.categories.newLabel")}
+            </label>
             <input
+              id={newNameId}
               type="text"
               value={newCategoryName()}
               onInput={(e) => setNewCategoryName(e.currentTarget.value)}
               onKeyDown={handleCreateKeyDown}
               maxLength={MAX_CATEGORY_NAME_LENGTH}
-              placeholder="New category name..."
+              placeholder={t("pages.categories.newPlaceholder")}
               class="w-full px-3 py-2 bg-surface-base border border-white/15 rounded-md text-text-primary placeholder-text-placeholder focus:outline-none focus:ring-2 focus:ring-accent-primary focus:border-transparent"
               disabled={loading()}
             />
@@ -261,15 +274,14 @@ const CategoryManager: Component<CategoryManagerProps> = (props) => {
               onClick={() => handleCreate()}
               class="bg-accent-primary hover:bg-accent-primary/90 text-on-accent p-2 rounded-md transition-colors flex-shrink-0 state-disabled"
               disabled={loading() || newCategoryName().trim().length === 0}
-              aria-label="Add category"
+              aria-label={t("pages.categories.add")}
             >
-              <Plus size={18} />
+              <Plus size={18} aria-hidden="true" />
             </button>
           </div>
         </div>
-      </div>
       <confirmDialog.Host />
-    </div>
+    </Modal>
   );
 };
 

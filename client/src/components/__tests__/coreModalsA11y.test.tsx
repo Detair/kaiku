@@ -30,6 +30,7 @@ vi.mock("@floating-ui/dom", () => ({
 }));
 vi.mock("@/lib/featureFlags", () => ({ isE2EEEnabled: () => false }));
 vi.mock("@/stores/settings", () => ({ appSettings: () => null }));
+vi.mock("../pages/MarkdownPreview", () => ({ default: (p: { content: string }) => <p>{p.content}</p> }));
 vi.mock("qrcode", () => ({ default: { toDataURL: vi.fn() } }));
 vi.mock("@/components/ui/Toast", () => ({ showToast: vi.fn() }));
 vi.mock("../settings/AccountSettings", () => ({ default: () => null }));
@@ -111,6 +112,8 @@ import BlockConfirmModal from "../modals/BlockConfirmModal";
 import ImageLightbox from "../ui/ImageLightbox";
 import Modal from "../ui/Modal";
 import EventsModal from "../guilds/EventsModal";
+import PageAcceptanceModal from "../pages/PageAcceptanceModal";
+import CategoryManager from "../pages/CategoryManager";
 import CustomStatusModal from "../ui/CustomStatusModal";
 import KeyboardShortcutsDialog from "../ui/KeyboardShortcutsDialog";
 import PositionedEmojiPicker from "../emoji/PositionedEmojiPicker";
@@ -447,6 +450,53 @@ describe("nested dialogs", () => {
     fireEvent.click(dialog);
     expect(onClose).not.toHaveBeenCalled();
     fireEvent.click(dialog.parentElement!);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("pages", () => {
+  const page = { id: "p1", title: "House rules", content: "Be kind.", guild_id: "g1" } as never;
+
+  it("PageAcceptanceModal: closable when not required", async () => {
+    await expectModalContract("House rules", (onClose) => (
+      <PageAcceptanceModal page={page} onAccept={async () => {}} onClose={onClose} />
+    ));
+  });
+
+  it("PageAcceptanceModal: required pages do not close with Escape; the text is reachable by keyboard", async () => {
+    document.body.innerHTML = "";
+    const onClose = vi.fn();
+    render(() => (
+      <PageAcceptanceModal page={page} isBlocking onAccept={async () => {}} onClose={onClose} />
+    ));
+    await tick();
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog", { name: "House rules" })).toBeTruthy();
+    // Keyboard users scroll the text themselves to reach "I accept".
+    expect(screen.getByRole("region", { name: "House rules" }).tabIndex).toBe(0);
+  });
+
+  it("CategoryManager: Escape first cancels a rename, then closes", async () => {
+    document.body.innerHTML = "";
+    const onClose = vi.fn();
+    render(() => (
+      <CategoryManager
+        categories={[{ id: "c1", name: "Rules" } as never]}
+        onCreateCategory={async () => {}}
+        onUpdateCategory={async () => {}}
+        onDeleteCategory={async () => {}}
+        onClose={onClose}
+      />
+    ));
+    await tick();
+    screen.getByRole("dialog", { name: "Page categories" });
+    fireEvent.click(screen.getByRole("button", { name: "Rename Rules" }));
+    expect(screen.getByRole("textbox", { name: "Category name" })).toBeTruthy();
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(screen.queryByRole("textbox", { name: "Category name" })).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.keyDown(document.body, { key: "Escape" });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

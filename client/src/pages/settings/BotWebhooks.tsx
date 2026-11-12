@@ -32,6 +32,7 @@ import { showToast } from "../../components/ui/Toast";
 import { createConfirm } from "@/components/admin/confirmHost";
 import { actionErrorText } from "@/components/admin/actionErrors";
 import { t } from "@/i18n";
+import Modal from "@/components/ui/Modal";
 
 const ALL_EVENT_TYPES: WebhookEventType[] = [
   "message.created",
@@ -416,15 +417,13 @@ const BotWebhooks: Component = () => {
 
       {/* Create Webhook Modal */}
       <Show when={showCreateModal()}>
-        <div
-          class="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
-          onClick={() => setShowCreateModal(false)}
+        <Modal
+          onClose={() => setShowCreateModal(false)}
+          labelledBy="bot-webhook-create-title"
+          backdropClass="fixed inset-0 bg-black/50 flex items-center justify-center p-4"
+          class="bg-[var(--bg-primary)] rounded-lg p-6 w-full max-w-md border border-[var(--border)]"
         >
-          <div
-            class="bg-[var(--bg-primary)] rounded-lg p-6 w-full max-w-md border border-[var(--border)]"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h2 class="text-lg font-semibold mb-4">Create Webhook</h2>
+            <h2 id="bot-webhook-create-title" class="text-lg font-semibold mb-4">Create Webhook</h2>
 
             <div class="space-y-4">
               <div>
@@ -486,15 +485,20 @@ const BotWebhooks: Component = () => {
                 Create
               </button>
             </div>
-          </div>
-        </div>
+        </Modal>
       </Show>
 
       {/* Signing Secret Modal (shown once after creation) */}
       <Show when={showSecretModal() && createdWebhook()}>
-        <div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div class="bg-[var(--bg-primary)] rounded-lg p-6 w-full max-w-md border border-[var(--border)]">
-            <h2 class="text-lg font-semibold mb-2">Signing Secret</h2>
+        {/* Shown once: Escape and the backdrop do not close it, only "Done". */}
+        <Modal
+          onClose={() => {}}
+          closeOnBackdrop={false}
+          labelledBy="bot-webhook-secret-title"
+          backdropClass="fixed inset-0 bg-black/50 flex items-center justify-center p-4"
+          class="bg-[var(--bg-primary)] rounded-lg p-6 w-full max-w-md border border-[var(--border)]"
+        >
+            <h2 id="bot-webhook-secret-title" class="text-lg font-semibold mb-2">Signing Secret</h2>
             <p class="text-sm text-[var(--text-secondary)] mb-4">
               Copy this secret now. It will not be shown again. Use it to verify
               webhook signatures (X-Webhook-Signature header).
@@ -505,7 +509,8 @@ const BotWebhooks: Component = () => {
               <button
                 class="p-1.5 rounded hover:bg-[var(--bg-tertiary)] transition-colors shrink-0"
                 onClick={copySecret}
-                title="Copy"
+                title={t("common.copy")}
+                aria-label={t("common.copy")}
               >
                 <Show when={secretCopied()} fallback={<Copy size={16} />}>
                   <Check size={16} class="text-text-primary" />
@@ -525,8 +530,7 @@ const BotWebhooks: Component = () => {
                 Done
               </button>
             </div>
-          </div>
-        </div>
+        </Modal>
       </Show>
       <confirmDialog.Host />
     </div>

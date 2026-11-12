@@ -11,6 +11,7 @@ import { onboarding } from "./en/onboarding";
 import { security } from "./en/security";
 import { settings } from "./en/settings";
 import { voice } from "./en/voice";
+import { pages } from "./en/pages";
 
 export const enLazy = {
   ...admin,
@@ -20,4 +21,5 @@ export const enLazy = {
   ...voice,
   ...notifications,
   ...security,
+  ...pages,
 } as const;

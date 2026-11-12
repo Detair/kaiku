@@ -6,6 +6,7 @@
  */
 
 import {
+  createUniqueId,
   Component,
   createSignal,
   createEffect,
@@ -13,7 +14,6 @@ import {
   onCleanup,
   Show,
 } from "solid-js";
-import { Portal } from "solid-js/web";
 import { useNavigate } from "@solidjs/router";
 import {
   X,
@@ -35,6 +35,7 @@ import {
   ADMIN_MODE_MINUTES,
 } from "@/stores/admin";
 import { t } from "@/i18n";
+import Modal from "@/components/ui/Modal";
 
 interface AdminQuickModalProps {
   onClose: () => void;
@@ -77,52 +78,33 @@ const AdminQuickModal: Component<AdminQuickModalProps> = (props) => {
     props.onClose();
   };
 
-  // Close on escape key
-  const handleKeyDown = (e: KeyboardEvent) => {
-    if (e.key === "Escape") {
-      props.onClose();
-    }
-  };
-
-  // Close on backdrop click
-  const handleBackdropClick = (e: MouseEvent) => {
-    if (e.target === e.currentTarget) {
-      props.onClose();
-    }
-  };
+  const titleId = createUniqueId();
 
   return (
-    <Portal>
-      <div
-        class="fixed inset-0 z-50 flex items-center justify-center"
-        onKeyDown={handleKeyDown}
-        tabIndex={-1}
+    <>
+      {/* A modal dialog (A11Y-1); the passkey question opens above it. */}
+      <Modal
+        onClose={() => props.onClose()}
+        labelledBy={titleId}
+        backdropClass="fixed inset-0 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+        class="relative rounded-xl border border-white/10 w-[400px] max-w-full shadow-2xl animate-[fadeIn_0.15s_ease-out]"
+        style={{ "background-color": "var(--color-surface-layer1)" }}
+        testId="admin-quick-dialog"
       >
-        {/* Backdrop */}
-        <div
-          class="absolute inset-0 bg-black/60 backdrop-blur-sm"
-          onClick={handleBackdropClick}
-        />
-
-        {/* Modal */}
-        <div
-          class="relative rounded-xl border border-white/10 w-[400px] shadow-2xl animate-[fadeIn_0.15s_ease-out]"
-          style={{"background-color":"var(--color-surface-layer1)"}}
-        >
           {/* Header */}
           <div class="flex items-center justify-between px-5 py-4 border-b border-white/10">
             <div class="flex items-center gap-3">
               <div class="w-9 h-9 rounded-lg bg-accent-primary/20 flex items-center justify-center">
-                <Shield class="w-5 h-5 text-text-primary" />
+                <Shield class="w-5 h-5 text-text-primary" aria-hidden="true" />
               </div>
-              <h2 class="text-lg font-bold text-text-primary">{t("admin.quick.title")}</h2>
+              <h2 id={titleId} class="text-lg font-bold text-text-primary">{t("admin.quick.title")}</h2>
             </div>
             <button
               onClick={props.onClose}
               aria-label={t("common.close")}
-              class="p-1.5 text-text-secondary hover:text-text-primary hover:bg-white/10 rounded-lg transition-colors"
+              class="p-1.5 tap-target text-text-secondary hover:text-text-primary hover:bg-white/10 rounded-lg transition-colors"
             >
-              <X class="w-5 h-5" />
+              <X class="w-5 h-5" aria-hidden="true" />
             </button>
           </div>
 
@@ -231,12 +213,11 @@ const AdminQuickModal: Component<AdminQuickModalProps> = (props) => {
               <ExternalLink class="w-4 h-4" />
             </button>
           </div>
-        </div>
-      </div>
+      </Modal>
       <Show when={showElevate()}>
         <ElevateDialog onClose={() => setShowElevate(false)} />
       </Show>
-    </Portal>
+    </>
   );
 };
 
