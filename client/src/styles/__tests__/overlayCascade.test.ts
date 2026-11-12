@@ -127,7 +127,7 @@ function resolveOverlay(value: string, theme: string, ancestors: string[] = []):
 /** The class string of the first element in a source file that contains `needle`. */
 function classFrom(file: string, needle: string): string {
   const src = readFileSync(resolve(stylesDir, "..", file), "utf8");
-  const m = new RegExp(`class=\\{?[\`"]([^\`"]*${needle.replace(/[/.*+?^${}()|[\]\\]/g, "\\$&")}[^\`"]*)[\`"]`).exec(src);
+  const m = new RegExp(`(?:class|backdropClass)=\\{?[\`"]([^\`"]*${needle.replace(/[/.*+?^${}()|[\]\\]/g, "\\$&")}[^\`"]*)[\`"]`).exec(src);
   if (!m) throw new Error(`${needle} not found in ${file}`);
   return m[1].replace(/\$\{[^}]*\}/g, " ");
 }
