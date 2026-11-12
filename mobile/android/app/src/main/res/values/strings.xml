@@ -699,6 +699,7 @@
     <string name="chat_attachment_save">Save</string>
     <string name="chat_attachment_saved">Saved to your phone.</string>
     <string name="chat_attachment_save_failed">Couldn\'t save it. Try again.</string>
+    <string name="chat_attachment_load_failed">Couldn\'t load this picture.</string>
     <string name="chat_attachment_open_failed">Couldn\'t load the file. Check your connection and try again.</string>
     <string name="chat_attachment_no_app">No app on this phone can open this file.</string>
     <string name="common_close">Close</string>
