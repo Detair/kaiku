@@ -41,7 +41,9 @@
  * voice in `call.ts`) do their part. Asynchronous hooks may only configure
  * the adapter (devices, mute, push-to-talk); what the user sees changes in
  * the synchronous hooks, which the owner calls only while that wish is
- * still the intent.
+ * still the intent. The owner waits for a set-up or clean-up hook to
+ * finish (so they never overlap with the next step), but for no longer
+ * than `HOOK_LIMIT_MS`.
  */
 
 import type { VoiceAdapter, VoiceConnectionState, VoiceError } from "@/lib/webrtc/types";
@@ -58,6 +60,12 @@ export const RECOVERY_DELAYS_MS = [1000, 3000, 9000] as const;
 export const RECOVERY_ATTEMPT_TIMEOUT_MS = 15_000;
 /** Give up when no socket carried the rejoin this long after the loss. */
 export const RECOVERY_OFFLINE_CAP_MS = 60_000;
+/**
+ * Longest the owner waits for a set-up or clean-up hook (devices,
+ * push-to-talk, a settings write). They take milliseconds; one that hangs
+ * must not keep a leave or the next join waiting.
+ */
+export const HOOK_LIMIT_MS = 3000;
 
 export type VoiceKind = "channel" | "dm-call";
 
@@ -464,6 +472,27 @@ export class VoiceOwner {
     return { done: true, value: result.value };
   }
 
+  /**
+   * Wait for a set-up or clean-up hook, at most `HOOK_LIMIT_MS`. Hooks only
+   * configure the adapter, so one that is still running after the limit
+   * cannot hold or release anything of a session.
+   */
+  private async bounded(what: string, work: Promise<void> | undefined): Promise<void> {
+    if (!work) return;
+    let limit: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<void>((resolve) => {
+      limit = setTimeout(() => {
+        console.warn(`[VoiceOwner] ${what} is taking too long; going on without it`);
+        resolve();
+      }, HOOK_LIMIT_MS);
+    });
+    try {
+      await Promise.race([work, late]);
+    } finally {
+      clearTimeout(limit);
+    }
+  }
+
   private timer(ms: number): { fired: boolean; cancel: () => void } {
     const timer = {
       fired: false,
@@ -501,7 +530,7 @@ export class VoiceOwner {
       adapter = await this.adapterProvider();
       if (gone()) return;
       this.listen(adapter);
-      await hooks.prepare?.(adapter);
+      await this.bounded("Preparing the join", hooks.prepare?.(adapter));
       if (gone()) return;
     } catch (err) {
       if (gone()) return;
@@ -527,7 +556,7 @@ export class VoiceOwner {
 
     held.phase = "live";
     try {
-      await hooks.established?.(adapter, session);
+      await this.bounded("Setting up the call", hooks.established?.(adapter, session));
     } catch (err) {
       console.warn("[VoiceOwner] Setting up the call failed:", err);
     }
@@ -566,7 +595,7 @@ export class VoiceOwner {
       }
     }
     try {
-      await held.wish.hooks.released?.(adapter);
+      await this.bounded("Cleaning up after the call", held.wish.hooks.released?.(adapter));
     } catch (err) {
       console.warn("[VoiceOwner] Cleaning up after the voice session failed:", err);
     }
