@@ -7,7 +7,8 @@
  * - /guilds/:guildId/pages/:slug - Guild page
  */
 
-import { Component, Show, createResource, createEffect } from "solid-js";
+import { Component, Show, createResource, createEffect, onCleanup } from "solid-js";
+import { APP_NAME } from "@/lib/brand";
 import { useParams, useNavigate } from "@solidjs/router";
 import { ArrowLeft } from "lucide-solid";
 import { PageView } from "@/components/pages";
@@ -39,6 +40,15 @@ const PageViewRoute: Component = () => {
         el?.scrollIntoView({ behavior: "smooth" });
       }, 200);
     }
+  });
+
+  // A11Y-18: the window title names the page ("House rules – Kaiku").
+  createEffect(() => {
+    const title = page()?.title;
+    document.title = title ? `${title} – ${APP_NAME}` : APP_NAME;
+  });
+  onCleanup(() => {
+    document.title = APP_NAME;
   });
 
   const handleBack = () => {
