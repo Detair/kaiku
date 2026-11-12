@@ -69,7 +69,7 @@ interface AuthState {
 }
 
 // Create the store
-const [authState, setAuthState] = createStore<AuthState>({
+const [authState, setAuthStore] = createStore<AuthState>({
   user: null,
   serverUrl: null,
   isLoading: false,
@@ -88,6 +88,37 @@ export const currentUser = () => authState.user;
 
 // A voice session is only ever served for the user it was started by.
 voiceOwner.useIdentity(() => authState.user?.id ?? null);
+
+/** The user a store update would install, or `undefined` if it leaves the user alone. */
+function userAfter(args: readonly unknown[]): User | null | undefined {
+  const [first, second] = args;
+  if (args.length === 1 && typeof first === "object" && first !== null && "user" in first) {
+    return (first as { user: User | null }).user;
+  }
+  if (first === "user" && args.length === 2) {
+    return typeof second === "function"
+      ? (second as (prev: User | null) => User | null)(authState.user)
+      : (second as User | null);
+  }
+  return undefined;
+}
+
+/**
+ * The one way the auth state changes, and so the one place where the
+ * signed-in identity can change: sign-in over an existing session, account
+ * switch, a refresh that answers with another user, sign-out, expiry.
+ * Before another user (or nobody) takes the current user's place, voice is
+ * shut down: microphone released, no call, nothing left to rejoin. An
+ * update that keeps the same user does not touch voice.
+ */
+function changeAuthState(...args: unknown[]): void {
+  const next = userAfter(args);
+  if (next !== undefined && (next?.id ?? null) !== (authState.user?.id ?? null)) {
+    voiceOwner.shutdown();
+  }
+  (setAuthStore as (...a: unknown[]) => void)(...args);
+}
+const setAuthState = changeAuthState as typeof setAuthStore;
 
 /** The current session from `GET /auth/me` (C27); null when the server sent none. */
 export const sessionInfo = (): AuthSession | null => decodeAuthSession(authState.user?.session);

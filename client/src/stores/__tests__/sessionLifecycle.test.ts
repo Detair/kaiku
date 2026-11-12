@@ -322,6 +322,36 @@ describe("session lifecycle with the real service stores", () => {
       expect(adapter.join).toHaveBeenCalledTimes(1);
     });
 
+    it("another account takes the place of the signed-in one: voice ends before it is installed", async () => {
+      setAuthState({ user: { id: "u1", username: "anna" } as User });
+      const { voiceOwner, adapter, wish, userWhenEnded } = await inVoice();
+
+      // A sign-in result for someone else arrives (sign-in over the session,
+      // account switch, a refresh that answers with another user).
+      setAuthState({ user: { id: "u2", username: "ben" } as User, isLoading: false });
+
+      expect(adapter.leave).toHaveBeenCalledTimes(1);
+      // The microphone was released while the previous user was still set.
+      expect(userWhenEnded).toEqual([expect.objectContaining({ id: "u1" })]);
+      expect(voiceOwner.wants(wish)).toBe(false);
+      expect(authState.user?.id).toBe("u2");
+      setAuthState({ user: null });
+    });
+
+    it("the same user again (a refresh, a profile change) does not touch voice", async () => {
+      setAuthState({ user: { id: "u1", username: "anna" } as User });
+      const { voiceOwner, adapter, wish } = await inVoice();
+
+      setAuthState({ user: { id: "u1", username: "anna", display_name: "Anna" } as User });
+      setAuthState("user", (prev) => (prev ? { ...prev, display_name: "A." } : null));
+      setAuthState({ isLoading: false });
+
+      expect(adapter.leave).not.toHaveBeenCalled();
+      expect(voiceOwner.wants(wish)).toBe(true);
+      await voiceOwner.drop(wish);
+      setAuthState({ user: null });
+    });
+
     it("an ended session (expired, revoked) ends voice at once too", async () => {
       await expectSettled(initAuth(), "initAuth");
       setAuthState({ user: { id: "u1", username: "anna" } as User });
