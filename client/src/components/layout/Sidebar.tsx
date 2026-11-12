@@ -131,7 +131,7 @@ const Sidebar: Component<SidebarProps> = (props) => {
             <button
               data-testid="guild-settings-button"
               onClick={() => setShowGuildSettings(true)}
-              class="tap-target p-1.5 text-text-secondary hover:text-text-primary hover:bg-white/10 rounded-lg transition-colors"
+              class="tap-dense p-1.5 text-text-secondary hover:text-text-primary hover:bg-white/10 rounded-lg transition-colors"
               title={t("home.guildSidebar.settings")}
             >
               <Settings class="w-4 h-4" />

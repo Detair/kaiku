@@ -333,14 +333,14 @@ const DMConversation: Component = () => {
               />
               <button
                 onClick={saveEditedName}
-                class="tap-target p-1 rounded hover:bg-white/10 text-accent-success transition-colors"
+                class="tap-dense p-1 rounded hover:bg-white/10 text-accent-success transition-colors"
                 title={t("common.save")}
               >
                 <Check class="w-4 h-4" />
               </button>
               <button
                 onClick={cancelEditingName}
-                class="tap-target p-1 rounded hover:bg-white/10 text-text-secondary transition-colors"
+                class="tap-dense p-1 rounded hover:bg-white/10 text-text-secondary transition-colors"
                 title={t("common.cancel")}
               >
                 <X class="w-4 h-4" />

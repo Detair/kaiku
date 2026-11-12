@@ -107,6 +107,11 @@ export default defineConfig({
     // Input fields
     "input-field": "w-full px-3 py-2 bg-surface-layer2 rounded-lg text-text-input placeholder-text-placeholder outline-none focus:ring-2 focus:ring-accent-primary/70 focus:border-accent-primary/50 border border-border-input",
 
+    // Small icon buttons that sit next to other buttons (A11Y-12, NAV-19):
+    // a real box of at least 24 px, 44 px on touch screens. Real boxes in a
+    // flex row cannot overlap, unlike an enlarged invisible hit area.
+    "tap-dense": "inline-flex items-center justify-center shrink-0 min-w-6 min-h-6 touch:min-w-11 touch:min-h-11",
+
     // Interactive items
     "item-hover": "rounded-lg px-2 py-1 hover:bg-white/5 transition-colors cursor-pointer",
 

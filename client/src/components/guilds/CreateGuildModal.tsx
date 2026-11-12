@@ -387,7 +387,7 @@ const CreateGuildModal: Component<CreateGuildModalProps> = (props) => {
                                 onClick={() => handleRemoveTag(tag)}
                                 disabled={isCreating()}
                                 type="button"
-                                class="tap-target hover:text-text-primary transition-colors state-disabled-quiet"
+                                class="tap-dense hover:text-text-primary transition-colors state-disabled-quiet"
                                 aria-label={t("guilds.create.removeTag", { tag })}
                               >
                                 <X class="w-3 h-3" aria-hidden="true" />

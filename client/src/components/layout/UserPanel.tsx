@@ -148,7 +148,7 @@ const UserPanel: Component = () => {
           <div class="flex items-center gap-0.5 ml-auto">
           <Show when={adminState.isAdmin}>
             <button
-              class="tap-target p-1.5 hover:bg-white/10 rounded-lg transition-all duration-200"
+              class="tap-dense p-1.5 hover:bg-white/10 rounded-lg transition-all duration-200"
               classList={{
                 "text-accent-success": adminState.isElevated,
                 "text-text-secondary hover:text-accent-primary":
@@ -162,7 +162,7 @@ const UserPanel: Component = () => {
             </button>
           </Show>
           <button
-            class="tap-target p-1.5 text-text-secondary hover:text-accent-primary hover:bg-white/10 rounded-lg transition-all duration-200"
+            class="tap-dense p-1.5 text-text-secondary hover:text-accent-primary hover:bg-white/10 rounded-lg transition-all duration-200"
             data-testid="user-settings-button"
             title={t("home.userPanel.settings")} aria-label={t("home.userPanel.settings")}
             onClick={() => setShowSettings(true)}
@@ -172,7 +172,7 @@ const UserPanel: Component = () => {
           {/* Sign out sits apart from the gear and asks first (NAV-9, KONTO-7) */}
           <button
             data-testid="logout-button"
-            class="tap-target ml-1.5 p-1.5 text-text-secondary hover:text-text-primary hover:bg-white/10 rounded-lg transition-all duration-200"
+            class="tap-dense ml-1.5 p-1.5 text-text-secondary hover:text-text-primary hover:bg-white/10 rounded-lg transition-all duration-200"
             title={t("home.userPanel.logout")} aria-label={t("home.userPanel.logout")}
             aria-haspopup="dialog"
             onClick={() => setConfirmLogout(true)}
