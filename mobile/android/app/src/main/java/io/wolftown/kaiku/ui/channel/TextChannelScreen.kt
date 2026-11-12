@@ -17,6 +17,7 @@ import java.time.format.FormatStyle
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -116,6 +117,21 @@ fun TextChannelScreen(
     // AND-B-2: the keyboard must shrink the chat, not push the window (and the title bar) up.
     KeyboardResizesWindow()
 
+    // While the user is at the end of the chat, keep the whole last item in view when it
+    // grows (a failed message gets Retry and Delete) or the list gets smaller (keyboard, snackbar).
+    val endFollower = remember { EndFollower() }
+    // Set while older messages load; the list then keeps its place instead.
+    var loadAnchorId by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.isScrollInProgress to listState.canScrollForward }
+            .collect { (scrolling, canScrollForward) ->
+                endFollower.onScrollState(scrolling, canScrollForward)
+                if (loadAnchorId == null && endFollower.shouldReturnToEnd(scrolling, canScrollForward)) {
+                    listState.scrollToEnd()
+                }
+            }
+    }
+
     // When the keyboard opens while the newest message is in view, keep it in view.
     val imeVisible = WindowInsets.isImeVisible
     LaunchedEffect(imeVisible) {
@@ -190,7 +206,6 @@ fun TextChannelScreen(
 
     // AND-B-21: reaching the top loads older messages; the view stays on the
     // message that was first, instead of jumping to the oldest loaded one.
-    var loadAnchorId by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(listState, canLoadMore) {
         snapshotFlow { listState.firstVisibleItemIndex == 0 && initialScrollDone }
             .collect { atTop ->
@@ -209,6 +224,7 @@ fun TextChannelScreen(
             // +1 for "load-more"; -1 to show the day separator above it when there is one.
             val target = (index + 1 - if (index > 0 && rows[index - 1] is TimelineRow.Day) 1 else 0)
             listState.scrollToItem(target)
+            endFollower.leftEnd()
         }
         loadAnchorId = null
     }
@@ -271,7 +287,6 @@ fun TextChannelScreen(
     }
 
     Scaffold(
-        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = { Text(titleText) },
@@ -438,6 +453,9 @@ fun TextChannelScreen(
                     }
             )
         }
+        // In the layout below the list, not floating over it: a snackbar must never
+        // cover the end of the chat (a failed message's Retry and Delete).
+        SnackbarHost(snackbarHostState)
         }
     }
 
@@ -518,6 +536,17 @@ private fun DaySeparator(label: DayLabel) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.semantics { heading() },
         )
+    }
+}
+
+/** Scrolls to the very end, also when the last item is taller than the view. */
+private suspend fun androidx.compose.foundation.lazy.LazyListState.scrollToEnd() {
+    val last = layoutInfo.totalItemsCount - 1
+    if (last < 0) return
+    scrollToItem(last)
+    var steps = 0
+    while (canScrollForward && steps++ < 8) {
+        scrollBy(layoutInfo.viewportSize.height.coerceAtLeast(1).toFloat())
     }
 }
 

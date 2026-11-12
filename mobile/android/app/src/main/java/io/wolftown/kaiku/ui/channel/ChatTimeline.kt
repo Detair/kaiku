@@ -67,3 +67,27 @@ fun newIncoming(previousLastId: String?, messages: List<Message>, currentUserId:
     if (at < 0) return emptyList()
     return messages.subList(at + 1, messages.size).filter { it.author.id != currentUserId }
 }
+
+/**
+ * Keeps the end of the chat in view while the user is there. Whether the
+ * user is "at the end" changes only while the list scrolls; when the content
+ * below grows or the view gets smaller without a scroll (a message turns into
+ * "not sent" with Retry and Delete, the keyboard or a snackbar opens),
+ * [shouldReturnToEnd] asks the screen to scroll back to the end.
+ */
+internal class EndFollower {
+    private var following = true
+
+    /** Every change of the list's scroll state. */
+    fun onScrollState(scrolling: Boolean, canScrollForward: Boolean) {
+        if (scrolling) following = !canScrollForward
+    }
+
+    /** The screen moved the list away from the end itself (for example to keep older messages in place). */
+    fun leftEnd() {
+        following = false
+    }
+
+    fun shouldReturnToEnd(scrolling: Boolean, canScrollForward: Boolean): Boolean =
+        following && !scrolling && canScrollForward
+}
