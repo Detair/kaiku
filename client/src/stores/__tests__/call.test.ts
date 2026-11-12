@@ -24,6 +24,8 @@ vi.mock("@/lib/tauri", () => ({
   leaveVoiceSilently: vi.fn().mockResolvedValue(undefined),
   joinVoice: vi.fn().mockResolvedValue(undefined),
   leaveDMCall: vi.fn().mockResolvedValue(undefined),
+  startDMCall: vi.fn().mockResolvedValue({ call_id: "call-s" }),
+  joinDMCall: vi.fn().mockResolvedValue({ call_id: "call-j" }),
 }));
 
 import {
@@ -49,6 +51,8 @@ import {
   onNativeCallVoiceState,
   isCallRecoveryRunning,
   stopCallVoiceRecovery,
+  startOutgoingCall,
+  acceptCall,
   RING_CAP_MS,
 } from "../call";
 import { isVoiceEpochStale } from "@/lib/webrtc/voiceSession";
@@ -738,5 +742,65 @@ describe("declined on another device (R4)", () => {
       participants: ["u2", "u3"],
     }));
     expect(callState.currentCall.status).toBe("idle");
+  });
+});
+
+describe("call voice tokens are carried, not looked up (Codex W1c-1)", () => {
+  beforeEach(async () => {
+    reset();
+    vi.clearAllMocks();
+    const common = await import("@/lib/tauri/common");
+    vi.mocked(common.isTauri).mockReturnValue(true);
+  });
+  afterEach(async () => {
+    const common = await import("@/lib/tauri/common");
+    vi.mocked(common.isTauri).mockReturnValue(false);
+  });
+
+  it("call A cancelled while starting, call B started: A never joins, B joins with its own token", async () => {
+    const tauri = await import("@/lib/tauri");
+    let resolveA!: (v: { call_id: string }) => void;
+    vi.mocked(tauri.startDMCall)
+      .mockImplementationOnce(() => new Promise((r) => (resolveA = r)) as never)
+      .mockResolvedValueOnce({ call_id: "call-b" } as never);
+    vi.mocked(tauri.joinVoice).mockImplementation(async (_ch, token) => {
+      // The token a join runs under must still be current when it is used.
+      expect(isVoiceEpochStale(token)).toBe(false);
+    });
+
+    const a = startOutgoingCall("dm-x");
+    // A is cancelled (CallBanner: recovery stop + leave bump), then ended.
+    stopCallVoiceRecovery();
+    endCall("dm-x", "cancelled");
+    const b = startOutgoingCall("dm-x");
+    await b;
+    resolveA({ call_id: "call-a" });
+    await a;
+
+    expect(tauri.joinVoice).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(tauri.joinVoice).mock.calls[0][0]).toBe("dm-x");
+  });
+
+  it("accepting a call joins with the token taken when it was accepted", async () => {
+    const tauri = await import("@/lib/tauri");
+    receiveIncomingCall("dm-x", "u2", "Bob", "call-1");
+    await acceptCall("dm-x");
+    expect(tauri.joinDMCall).toHaveBeenCalledWith("dm-x");
+    expect(tauri.joinVoice).toHaveBeenCalledWith("dm-x", expect.any(Number));
+  });
+
+  it("a hang-up while accepting: no native join", async () => {
+    const tauri = await import("@/lib/tauri");
+    let resolveJoin!: (v: { call_id: string }) => void;
+    vi.mocked(tauri.joinDMCall).mockImplementationOnce(
+      () => new Promise((r) => (resolveJoin = r)) as never,
+    );
+    receiveIncomingCall("dm-x", "u2", "Bob", "call-1");
+    const accepting = acceptCall("dm-x");
+    await vi.waitFor(() => expect(resolveJoin).toBeTypeOf("function"));
+    stopCallVoiceRecovery();
+    resolveJoin({ call_id: "call-1" });
+    await accepting;
+    expect(tauri.joinVoice).not.toHaveBeenCalled();
   });
 });

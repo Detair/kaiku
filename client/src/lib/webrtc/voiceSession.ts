@@ -32,26 +32,6 @@ export function isVoiceEpochStale(joinEpoch: number | undefined): boolean {
   return joinEpoch !== undefined && joinEpoch !== epoch;
 }
 
-/** DM-call joins: the epoch captured when the call was started/accepted. */
-const callJoinEpochs = new Map<string, number>();
-
-/**
- * Capture the session epoch for the DM call in `channelId` right now (call
- * started or accepted, before any await). A leave before the native join
- * makes it stale, and the join then does nothing.
- */
-export function captureCallJoinEpoch(channelId: string): number {
-  callJoinEpochs.set(channelId, epoch);
-  return epoch;
-}
-
-/** The epoch captured for `channelId` (consumed), if any. */
-export function takeCallJoinEpoch(channelId: string): number | undefined {
-  const captured = callJoinEpochs.get(channelId);
-  callJoinEpochs.delete(channelId);
-  return captured;
-}
-
 /** Error a join returns when its epoch went stale; nobody shows it. */
 export const VOICE_JOIN_CANCELLED = {
   type: "cancelled",

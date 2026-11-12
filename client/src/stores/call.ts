@@ -10,16 +10,19 @@ import { showToast } from "@/components/ui/Toast";
 import { t } from "@/i18n";
 import type { CallStateResponse } from "@/lib/types";
 import { isTauri } from "@/lib/tauri/common";
-import {
-  bumpVoiceEpoch,
-  captureCallJoinEpoch,
-  isVoiceEpochStale,
-} from "@/lib/webrtc/voiceSession";
+import { bumpVoiceEpoch, isVoiceEpochStale } from "@/lib/webrtc/voiceSession";
 import {
   VoiceRecovery,
   RECOVERY_ATTEMPT_TIMEOUT_MS,
   type RecoverySession,
 } from "./voiceRecovery";
+
+/** `@/lib/tauri`, loaded once and shared (lazy: avoids an import cycle). */
+let tauriModule: Promise<typeof import("@/lib/tauri")> | null = null;
+function tauriApi(): Promise<typeof import("@/lib/tauri")> {
+  tauriModule ??= import("@/lib/tauri");
+  return tauriModule;
+}
 
 // Constants
 const CALL_ENDED_DISPLAY_MS = 3000;
@@ -227,7 +230,7 @@ async function dropCallVoice(
   opts: { leaveCall: boolean; silent?: boolean },
 ): Promise<void> {
   try {
-    const tauri = await import("@/lib/tauri");
+    const tauri = await tauriApi();
     await (opts.silent ? tauri.leaveVoiceSilently() : tauri.leaveVoice()).catch(
       (err: unknown) => console.warn("[Call] Leaving call voice failed:", err),
     );
@@ -292,7 +295,9 @@ async function resyncCall(
     return;
   }
   // The call moved on while the request ran: the newer state wins.
-  if (!stillCall(channelId, status)) return;
+  // The same call (object identity), not just "a call in this channel
+  // with this status": a new ring in the gap is not this answer's call.
+  if (callState.currentCall !== before) return;
 
   const serverCallId = knownCallId(server?.call_id);
   const gone =
@@ -420,12 +425,15 @@ export function isCallRecoveryRunning(): boolean {
 
 /** Native DM-call voice as a recovery session (browser DM calls carry none). */
 function callSession(channelId: string): RecoverySession {
+  // The call this flow recovers, by identity (W1c audit).
+  const call = callState.currentCall;
+  const ours = () => callState.currentCall === call && call.status === "connected";
   return {
     label: `call ${channelId}`,
     attempt: async (epoch) => {
-      const tauri = await import("@/lib/tauri");
+      const tauri = await tauriApi();
       await watchNativeCallVoice();
-      if (isVoiceEpochStale(epoch) || !stillCall(channelId, "connected")) return false;
+      if (isVoiceEpochStale(epoch) || !ours()) return false;
       // Fresh peer connections without `voice_leave` (C32).
       await tauri.leaveVoiceSilently();
       if (isVoiceEpochStale(epoch)) return false;
@@ -441,7 +449,7 @@ function callSession(channelId: string): RecoverySession {
     },
     abandon: async () => {
       settleNativeConnected(false);
-      const tauri = await import("@/lib/tauri");
+      const tauri = await tauriApi();
       await tauri.leaveVoiceSilently().catch(() => {});
     },
     restore: async () => {},
@@ -451,7 +459,7 @@ function callSession(channelId: string): RecoverySession {
     giveUp: async () => {
       settleNativeConnected(false);
       console.warn("[Call] Call voice rejoin gave up:", channelId);
-      if (stillCall(channelId, "connected")) {
+      if (ours()) {
         endCall(channelId, "last_left");
         await dropCallVoice(channelId, { leaveCall: true, silent: true });
       } else {
@@ -504,7 +512,7 @@ function cancelCallRecovery(): boolean {
   settleNativeConnected(false);
   // An attempt may already have joined natively: drop it without a leave
   // message (the hang-up or the server's end owns the signalling).
-  void import("@/lib/tauri")
+  void tauriApi()
     .then((tauri) => tauri.leaveVoiceSilently())
     .catch((err: unknown) => console.warn("[Call] Dropping recovery voice failed:", err));
   return true;
@@ -549,12 +557,13 @@ export async function handleCallVoiceRemoved(
 // Actions
 
 /**
- * Start an outgoing call.
+ * Start an outgoing call. Returns the voice session token of this call:
+ * the code that started it passes exactly this value to the native join
+ * after its HTTP start (`startOutgoingCall` does all of it).
  */
-export function startCall(channelId: string): void {
-  // The voice session of this call starts now: a leave before the native
-  // join makes it stale (the join after the HTTP start does nothing).
-  captureCallJoinEpoch(channelId);
+export function startCall(channelId: string): number {
+  // A new voice session: any older pending call join is stale from now on.
+  const token = bumpVoiceEpoch();
   stopRinging();
   setCallState(
     produce((state) => {
@@ -567,6 +576,22 @@ export function startCall(channelId: string): void {
     startedAt: Date.now(),
   });
   armRingCap(channelId);
+  return token;
+}
+
+/**
+ * Start an outgoing call and its voice: local state, server start, then the
+ * native join under the token taken when THIS call started (never looked
+ * up later, so a cancelled call's late response cannot join a newer call).
+ * Throws what the server start throws; the caller shows it.
+ */
+export async function startOutgoingCall(channelId: string): Promise<void> {
+  const token = startCall(channelId);
+  const tauri = await tauriApi();
+  const res = await tauri.startDMCall(channelId);
+  if (isVoiceEpochStale(token)) return; // cancelled meanwhile
+  setChannelCallId(channelId, res.call_id);
+  await tauri.joinVoice(channelId, token);
 }
 
 /**
@@ -615,16 +640,31 @@ export function receiveIncomingCall(
 }
 
 /**
- * Transition to connecting state when joining a call.
+ * Transition to connecting state when joining a call. Returns the voice
+ * session token of this accept (see `startCall`).
  */
-export function joinCall(channelId: string): void {
-  captureCallJoinEpoch(channelId);
+export function joinCall(channelId: string): number {
+  const token = bumpVoiceEpoch();
   // Stop ringing when answering the call
   stopRinging();
   setCallState("currentCall", {
     status: "connecting",
     channelId,
   });
+  return token;
+}
+
+/**
+ * Accept an incoming call and join its voice under the token taken when it
+ * was accepted. Throws what the server join throws; the caller cleans up.
+ */
+export async function acceptCall(channelId: string): Promise<void> {
+  const token = joinCall(channelId);
+  const tauri = await tauriApi();
+  const res = await tauri.joinDMCall(channelId);
+  if (isVoiceEpochStale(token)) return; // hung up meanwhile
+  setChannelCallId(channelId, res.call_id);
+  await tauri.joinVoice(channelId, token);
 }
 
 /**

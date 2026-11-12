@@ -5,33 +5,37 @@
 import { isTauri } from "./common";
 import {
   bumpVoiceEpoch,
-  currentVoiceEpoch,
   isNativeJoinCancelled,
   isVoiceEpochStale,
-  takeCallJoinEpoch,
 } from "@/lib/webrtc/voiceSession";
 
 /**
- * Native join (DM-call voice). Runs under the session epoch captured when
- * the call was started or accepted (`captureCallJoinEpoch`), or the one
- * given; read synchronously before any await. A leave since then makes it
- * stale and the join does nothing (it never reaches `join_voice`).
+ * Native join (DM-call voice) under `token`: the voice session token the
+ * caller got when it started or accepted the call (`startCall`/`joinCall`,
+ * or a recovery attempt's epoch). It is never looked up here; a leave since
+ * then makes it stale and the join does nothing (never reaches
+ * `join_voice`). Calling without a token is a programming error.
  */
-export async function joinVoice(channelId: string, epoch?: number): Promise<void> {
-  const sessionEpoch = epoch ?? takeCallJoinEpoch(channelId) ?? currentVoiceEpoch();
+export async function joinVoice(channelId: string, token?: number): Promise<void> {
+  if (token === undefined) {
+    const message = "joinVoice needs the call's voice session token";
+    if (import.meta.env.DEV) throw new Error(message);
+    console.error(`[Voice] ${message}; join refused`);
+    return;
+  }
   if (!isTauri()) {
     console.warn("Voice chat requires the native app");
     return;
   }
   const { invoke } = await import("@tauri-apps/api/core");
-  if (isVoiceEpochStale(sessionEpoch)) return;
+  if (isVoiceEpochStale(token)) return;
   const nativeEpoch = await invoke<number>("begin_voice_session");
-  if (isVoiceEpochStale(sessionEpoch)) return;
+  if (isVoiceEpochStale(token)) return;
   try {
     await invoke("join_voice", { channelId, epoch: nativeEpoch });
   } catch (err) {
     // Cancelled by the leave that made this session stale: not an error.
-    if (isVoiceEpochStale(sessionEpoch) && isNativeJoinCancelled(err)) return;
+    if (isVoiceEpochStale(token) && isNativeJoinCancelled(err)) return;
     throw err;
   }
 }

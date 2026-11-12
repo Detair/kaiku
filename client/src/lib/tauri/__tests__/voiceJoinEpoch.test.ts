@@ -13,7 +13,7 @@ vi.mock("../common", async (importOriginal) => ({
 }));
 
 import { joinVoice, leaveVoice } from "../voice";
-import { bumpVoiceEpoch, captureCallJoinEpoch } from "@/lib/webrtc/voiceSession";
+import { bumpVoiceEpoch, currentVoiceEpoch } from "@/lib/webrtc/voiceSession";
 
 beforeEach(() => {
   let last = 0;
@@ -26,22 +26,21 @@ const joins = () => invoke.mock.calls.filter(([cmd]) => cmd === "join_voice");
 
 describe("DM-call join epoch", () => {
   it("joins under a native epoch when nothing happened since the call started", async () => {
-    captureCallJoinEpoch("dm-1"); // startCall / joinCall
-    await joinVoice("dm-1");
+    const token = currentVoiceEpoch(); // returned by startCall / joinCall
+    await joinVoice("dm-1", token);
     expect(joins()).toEqual([["join_voice", { channelId: "dm-1", epoch: 1 }]]);
   });
 
   it("a hang-up between start and the native join: join_voice is never invoked", async () => {
-    captureCallJoinEpoch("dm-1");
+    const token = currentVoiceEpoch();
     // ... HTTP start/accept is in flight; the user hangs up meanwhile.
     await leaveVoice();
-    await joinVoice("dm-1");
+    await joinVoice("dm-1", token);
     expect(joins()).toEqual([]);
   });
 
   it("a leave while the wrapper is loading the native API is honoured", async () => {
-    captureCallJoinEpoch("dm-1");
-    const join = joinVoice("dm-1"); // epoch read synchronously here
+    const join = joinVoice("dm-1", currentVoiceEpoch());
     bumpVoiceEpoch(); // what leaveVoice / voice_removed do first, synchronously
     await join;
     expect(joins()).toEqual([]);
@@ -54,12 +53,16 @@ describe("DM-call join epoch", () => {
         ? new Promise<number>((r) => (release = r))
         : Promise.resolve(undefined),
     );
-    captureCallJoinEpoch("dm-1");
-    const join = joinVoice("dm-1");
+    const join = joinVoice("dm-1", currentVoiceEpoch());
     await vi.waitFor(() => expect(release).toBeTypeOf("function"));
     await leaveVoice();
     release(5);
     await join;
+    expect(joins()).toEqual([]);
+  });
+
+  it("a join without its session token is a programming error", async () => {
+    await expect(joinVoice("dm-1", undefined as unknown as number)).rejects.toThrow(/token/);
     expect(joins()).toEqual([]);
   });
 });

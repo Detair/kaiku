@@ -15,19 +15,12 @@ import {
 import { Users } from "lucide-solid";
 import {
   callState,
-  setChannelCallId,
-  joinCall,
+  acceptCall,
   declineCall,
   endCall,
   stopCallVoiceRecovery,
 } from "@/stores/call";
-import {
-  joinDMCall,
-  declineDMCall,
-  leaveDMCall,
-  joinVoice,
-  leaveVoice,
-} from "@/lib/tauri";
+import { declineDMCall, leaveDMCall, leaveVoice } from "@/lib/tauri";
 import { t } from "@/i18n";
 
 import { endReasonText, isCallAlreadyGoneError } from "@/lib/callEnd";
@@ -64,11 +57,9 @@ const CallBanner: Component<CallBannerProps> = (props) => {
   const handleAccept = async () => {
     setIsLoading(true);
     try {
-      joinCall(props.channelId);
-      const res = await joinDMCall(props.channelId);
-      setChannelCallId(props.channelId, res.call_id);
-      // Start voice connection after signaling join
-      await joinVoice(props.channelId);
+      // Accept, server join and native voice under this accept's own
+      // session token (the token never leaves the store).
+      await acceptCall(props.channelId);
     } catch (err) {
       console.error("Failed to join call:", err);
       // Reset state on error
