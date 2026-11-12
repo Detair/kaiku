@@ -326,3 +326,88 @@ async fn role_for_user_outside_guild_is_rejected(pool: PgPool) {
     .unwrap();
     assert_eq!(fx.app.oneshot(req).await.status(), 400);
 }
+
+/// Next interaction event (`command_invoked`) for the bot within `QUIET`.
+async fn next_command(
+    rx: &mut tokio::sync::broadcast::Receiver<fred::types::Message>,
+) -> Option<serde_json::Value> {
+    let deadline = tokio::time::Instant::now() + QUIET;
+    loop {
+        let msg = tokio::time::timeout_at(deadline, rx.recv())
+            .await
+            .ok()?
+            .ok()?;
+        let text = String::from_utf8(msg.value.as_bytes()?.to_vec()).ok()?;
+        let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+        if v["type"] == "command_invoked" {
+            return Some(v);
+        }
+    }
+}
+
+async fn webhook_items(fx: &Fx, url: &str) -> Vec<serde_json::Value> {
+    let items: Vec<String> = fx
+        .app
+        .state
+        .redis
+        .lrange("webhook:delivery:queue", 0, -1)
+        .await
+        .unwrap_or_default();
+    items
+        .iter()
+        .filter_map(|i| serde_json::from_str::<serde_json::Value>(i).ok())
+        .filter(|v| v["url"] == url)
+        .collect()
+}
+
+/// A slash command in a channel the bot cannot view is refused with
+/// `BOT_NOT_ALLOWED_IN_CHANNEL`; neither the gateway nor the bot's webhook
+/// hears about it. The same command in a public channel goes through.
+#[sqlx::test]
+async fn command_in_hidden_channel_reaches_no_bot(pool: PgPool) {
+    let fx = fixture(&pool).await;
+    sqlx::query(
+        "INSERT INTO slash_commands (application_id, name, description) VALUES ($1, 'peek', 'Peek')",
+    )
+    .bind(fx.app_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let url = format!("https://hooks.invalid/{}", Uuid::now_v7());
+    create_test_webhook(&pool, fx.app_id, &url, &["command.invoked"]).await;
+    let (_sub, mut rx) = bot_events(&fx).await;
+
+    let invoke = |channel: Uuid| {
+        TestApp::request(Method::POST, &format!("/api/messages/channel/{channel}"))
+            .header("Authorization", format!("Bearer {}", fx.owner_token))
+            .header("Content-Type", "application/json")
+            .body(Body::from(json!({ "content": "/peek now" }).to_string()))
+            .unwrap()
+    };
+
+    let resp = fx.app.oneshot(invoke(fx.private)).await;
+    assert_eq!(resp.status(), 403);
+    let body = super::helpers::body_to_json(resp).await;
+    assert_eq!(body["error"], "BOT_NOT_ALLOWED_IN_CHANNEL");
+    assert!(
+        next_command(&mut rx).await.is_none(),
+        "bot heard a command from a hidden channel"
+    );
+    assert!(webhook_items(&fx, &url).await.is_empty());
+
+    // Positive control: the public channel dispatches to both.
+    let resp = fx.app.oneshot(invoke(fx.public)).await;
+    assert_eq!(resp.status(), 202);
+    let ev = next_command(&mut rx).await.expect("public command");
+    assert_eq!(ev["channel_id"], fx.public.to_string());
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let mine = loop {
+        let mine = webhook_items(&fx, &url).await;
+        if !mine.is_empty() || std::time::Instant::now() > deadline {
+            break mine;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert_eq!(mine.len(), 1, "one webhook item for the public channel");
+    assert_eq!(mine[0]["payload"]["channel_id"], fx.public.to_string());
+}

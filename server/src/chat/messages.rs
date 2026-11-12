@@ -317,6 +317,20 @@ pub async fn create(
                     }
 
                     if let Some(bot_user_id) = command.bot_user_id {
+                        // The bot must be installed and see this channel;
+                        // otherwise neither its gateway nor its webhooks
+                        // learn about the invocation.
+                        let usable = crate::permissions::bot_can_use_channel(
+                            &state.db,
+                            bot_user_id,
+                            channel_id,
+                            crate::permissions::GuildPermissions::empty(),
+                        )
+                        .await?;
+                        if !usable {
+                            return Err(ChatError::BotNotAllowedInChannel);
+                        }
+
                         let mut option_map = serde_json::Map::new();
                         let args: Vec<String> = parts.map(str::to_string).collect();
 

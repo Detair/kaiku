@@ -241,6 +241,7 @@ async fn chat_codes_are_upper_snake() {
         ChatError::Storage(s()),
         ChatError::RoleNotFound,
         ChatError::NotMember,
+        ChatError::BotNotAllowedInChannel,
         ChatError::InvalidQuery(s()),
         ChatError::Database(db()),
     ];

@@ -305,6 +305,7 @@ async fn handle_bot_socket(
     // Spawn subscriber task
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<BotServerEvent>();
     let subscriber_intents = intents.clone();
+    let subscriber_db = state.db.clone();
     let subscriber_handle = tokio::spawn(async move {
         let subscriber = redis_client.clone_new();
         let _connect_handle = subscriber.connect();
@@ -332,6 +333,9 @@ async fn handle_bot_socket(
                         Ok(event) => {
                             // Filter events based on declared intents
                             if !intent_permits_event(&subscriber_intents, &event) {
+                                continue;
+                            }
+                            if !bot_may_receive(&subscriber_db, bot_user_id, &event).await {
                                 continue;
                             }
                             if tx.send(event).is_err() {
@@ -402,6 +406,42 @@ async fn handle_bot_socket(
     bot_receiver.abort();
     subscriber_handle.abort();
     info!(bot_user_id = %bot_user_id, "Bot disconnected from gateway");
+}
+
+/// Interactions (slash commands, component clicks) reach the bot only while
+/// it is installed in the guild and can view the channel. The invoking side
+/// checks this too; this is the last gate before the socket, so a component
+/// click or an interaction queued before an uninstall cannot slip through.
+/// Fails closed on a database error.
+async fn bot_may_receive(pool: &sqlx::PgPool, bot_user_id: Uuid, event: &BotServerEvent) -> bool {
+    let channel_id = match event {
+        BotServerEvent::CommandInvoked { channel_id, .. }
+        | BotServerEvent::ComponentInvoked { channel_id, .. } => *channel_id,
+        _ => return true,
+    };
+    match crate::permissions::bot_can_use_channel(
+        pool,
+        bot_user_id,
+        channel_id,
+        crate::permissions::GuildPermissions::empty(),
+    )
+    .await
+    {
+        Ok(allowed) => {
+            if !allowed {
+                warn!(
+                    bot_user_id = %bot_user_id,
+                    channel_id = %channel_id,
+                    "Interaction dropped: bot cannot view the channel"
+                );
+            }
+            allowed
+        }
+        Err(e) => {
+            warn!(error = %e, "Interaction dropped: bot permission check failed");
+            false
+        }
+    }
 }
 
 /// Refuse bot writes into a channel whose optional feature is off (forum
@@ -584,6 +624,66 @@ async fn handle_bot_event(
                 return Err("Interaction does not belong to this bot".to_string());
             }
 
+            // Where the response goes (the invoking user and channel).
+            let context_key = format!("interaction:{interaction_id}:context");
+            let context_raw: Option<String> = state.redis.get(&context_key).await.map_err(|e| {
+                error!("Failed to fetch interaction context: {e}");
+                format!("Failed to fetch interaction context: {e}")
+            })?;
+
+            let Some(context_raw) = context_raw else {
+                warn!(interaction_id = %interaction_id, "Interaction context not found");
+                return Err("Interaction not found or expired".to_string());
+            };
+
+            let context: serde_json::Value = serde_json::from_str(&context_raw).map_err(|e| {
+                error!("Failed to parse interaction context: {e}");
+                format!("Failed to parse interaction context: {e}")
+            })?;
+
+            let user_id = context["user_id"]
+                .as_str()
+                .and_then(|s| Uuid::parse_str(s).ok())
+                .ok_or("Invalid user_id in interaction context")?;
+            let channel_id = context["channel_id"]
+                .as_str()
+                .and_then(|s| Uuid::parse_str(s).ok())
+                .ok_or("Invalid channel_id in interaction context")?;
+            let command_name = context["command_name"]
+                .as_str()
+                .ok_or("Invalid command_name in interaction context")?
+                .to_string();
+
+            // The bot must still be installed and see the channel; a
+            // message into the channel also needs SEND_MESSAGES. Checked
+            // now, not at invocation: the bot may have been removed or
+            // lost a role since.
+            let required = if ephemeral {
+                crate::permissions::GuildPermissions::empty()
+            } else {
+                crate::permissions::GuildPermissions::SEND_MESSAGES
+            };
+            let allowed = crate::permissions::bot_can_use_channel(
+                &state.db,
+                bot_user_id,
+                channel_id,
+                required,
+            )
+            .await
+            .map_err(|e| {
+                error!("Failed to check bot channel permissions: {e}");
+                "Failed to verify channel access".to_string()
+            })?;
+            if !allowed {
+                warn!(
+                    interaction_id = %interaction_id,
+                    bot_user_id = %bot_user_id,
+                    channel_id = %channel_id,
+                    "Bot response refused: not installed or no channel rights"
+                );
+                return Err("Bot cannot send messages in this channel".to_string());
+            }
+
             // Store command response in Redis with expiry (5 minutes)
             // The command invoker's WebSocket client will poll/listen for this
             let response_key = format!("interaction:{interaction_id}:response");
@@ -624,36 +724,6 @@ async fn handle_bot_event(
                     error!("Failed to publish command response: {e}");
                     format!("Failed to publish response: {e}")
                 })?;
-
-            // Deliver response to the invoking user/channel
-            let context_key = format!("interaction:{interaction_id}:context");
-            let context_raw: Option<String> = state.redis.get(&context_key).await.map_err(|e| {
-                error!("Failed to fetch interaction context: {e}");
-                format!("Failed to fetch interaction context: {e}")
-            })?;
-
-            let Some(context_raw) = context_raw else {
-                warn!(interaction_id = %interaction_id, "Interaction context not found, skipping delivery");
-                return Ok(());
-            };
-
-            let context: serde_json::Value = serde_json::from_str(&context_raw).map_err(|e| {
-                error!("Failed to parse interaction context: {e}");
-                format!("Failed to parse interaction context: {e}")
-            })?;
-
-            let user_id = context["user_id"]
-                .as_str()
-                .and_then(|s| Uuid::parse_str(s).ok())
-                .ok_or("Invalid user_id in interaction context")?;
-            let channel_id = context["channel_id"]
-                .as_str()
-                .and_then(|s| Uuid::parse_str(s).ok())
-                .ok_or("Invalid channel_id in interaction context")?;
-            let command_name = context["command_name"]
-                .as_str()
-                .ok_or("Invalid command_name in interaction context")?
-                .to_string();
 
             let bot_user = crate::db::find_user_by_id(&state.db, bot_user_id)
                 .await
@@ -965,5 +1035,163 @@ mod feature_gate_tests {
             ))
             .await
             .unwrap();
+    }
+
+    /// Owner and context keys of a fresh interaction of `bot` in `channel`.
+    async fn seed_interaction(state: &AppState, bot: Uuid, channel: Uuid) -> (Uuid, [String; 3]) {
+        let interaction_id = Uuid::new_v4();
+        let keys = [
+            format!("interaction:{interaction_id}:owner"),
+            format!("interaction:{interaction_id}:context"),
+            format!("interaction:{interaction_id}:response"),
+        ];
+        let context = serde_json::json!({
+            "user_id": bot,
+            "channel_id": channel,
+            "command_name": "hi",
+        });
+        state
+            .redis
+            .set::<(), _, _>(&keys[0], bot.to_string(), None, None, false)
+            .await
+            .unwrap();
+        state
+            .redis
+            .set::<(), _, _>(&keys[1], context.to_string(), None, None, false)
+            .await
+            .unwrap();
+        (interaction_id, keys)
+    }
+
+    async fn respond(
+        state: &AppState,
+        bot: Uuid,
+        interaction_id: Uuid,
+        ephemeral: bool,
+    ) -> Result<(), String> {
+        handle_bot_event(
+            BotClientEvent::CommandResponse {
+                interaction_id,
+                content: "answer".to_string(),
+                ephemeral,
+            },
+            state,
+            bot,
+        )
+        .await
+    }
+
+    async fn everyone_override(
+        pool: &PgPool,
+        channel: Uuid,
+        deny: crate::permissions::GuildPermissions,
+    ) {
+        let everyone: Uuid = sqlx::query_scalar(
+            "SELECT r.id FROM guild_roles r JOIN channels c ON c.guild_id = r.guild_id
+             WHERE c.id = $1 AND r.is_default",
+        )
+        .bind(channel)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO channel_overrides (id, channel_id, role_id, allow_permissions, deny_permissions)
+             VALUES ($1, $2, $3, 0, $4)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(channel)
+        .bind(everyone)
+        .bind(deny.to_db())
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    /// A visible command response is a message: it needs `SEND_MESSAGES`
+    /// at response time. Nothing is stored or published when refused.
+    #[sqlx::test]
+    async fn command_response_without_send_is_rejected(pool: PgPool) {
+        let (bot, forum) = bot_in_forum(&pool).await;
+        everyone_override(
+            &pool,
+            forum,
+            crate::permissions::GuildPermissions::SEND_MESSAGES,
+        )
+        .await;
+        let state = state_with(pool.clone(), true).await;
+        let (iid, keys) = seed_interaction(&state, bot, forum).await;
+
+        let err = respond(&state, bot, iid, false).await.unwrap_err();
+        assert_eq!(err, "Bot cannot send messages in this channel");
+        assert_eq!(message_count(&pool, forum).await, 0);
+        let stored: Option<String> = state.redis.get(&keys[2]).await.unwrap();
+        assert!(stored.is_none(), "refused response was stored");
+
+        // Ephemeral replies only need the bot to see the channel.
+        respond(&state, bot, iid, true).await.expect("ephemeral ok");
+        let _: () = state.redis.del(keys.to_vec()).await.unwrap();
+    }
+
+    /// After an uninstall, pending interactions are dead: neither a visible
+    /// nor an ephemeral response goes through.
+    #[sqlx::test]
+    async fn command_response_after_uninstall_is_rejected(pool: PgPool) {
+        let (bot, forum) = bot_in_forum(&pool).await;
+        let state = state_with(pool.clone(), true).await;
+        let (iid, keys) = seed_interaction(&state, bot, forum).await;
+        sqlx::query(
+            "DELETE FROM guild_bot_installations gbi USING bot_applications ba
+             WHERE ba.id = gbi.application_id AND ba.bot_user_id = $1",
+        )
+        .bind(bot)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        for ephemeral in [false, true] {
+            let err = respond(&state, bot, iid, ephemeral).await.unwrap_err();
+            assert_eq!(err, "Bot cannot send messages in this channel");
+        }
+        assert_eq!(message_count(&pool, forum).await, 0);
+        let _: () = state.redis.del(keys.to_vec()).await.unwrap();
+    }
+
+    /// The gateway forwards command and component interactions only for
+    /// channels the bot can view; other events pass unchanged.
+    #[sqlx::test]
+    async fn interactions_for_hidden_channels_are_not_forwarded(pool: PgPool) {
+        let (bot, forum) = bot_in_forum(&pool).await;
+        let command = super::BotServerEvent::CommandInvoked {
+            interaction_id: Uuid::new_v4(),
+            command_name: "hi".to_string(),
+            guild_id: None,
+            channel_id: forum,
+            user_id: bot,
+            options: serde_json::json!({}),
+        };
+        let component = super::BotServerEvent::ComponentInvoked {
+            interaction_id: Uuid::new_v4(),
+            custom_id: "b".to_string(),
+            message_id: Uuid::new_v4(),
+            guild_id: None,
+            channel_id: forum,
+            user_id: bot,
+            values: vec![],
+        };
+        assert!(super::bot_may_receive(&pool, bot, &command).await);
+        assert!(super::bot_may_receive(&pool, bot, &component).await);
+
+        everyone_override(
+            &pool,
+            forum,
+            crate::permissions::GuildPermissions::VIEW_CHANNEL,
+        )
+        .await;
+        assert!(!super::bot_may_receive(&pool, bot, &command).await);
+        assert!(!super::bot_may_receive(&pool, bot, &component).await);
+        let other = super::BotServerEvent::GuildLeft {
+            guild_id: Uuid::new_v4(),
+        };
+        assert!(super::bot_may_receive(&pool, bot, &other).await);
     }
 }

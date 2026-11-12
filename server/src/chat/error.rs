@@ -82,6 +82,10 @@ pub enum ChatError {
     #[error("Not a member of this guild")]
     NotMember,
 
+    /// A slash command whose bot is not installed or cannot see the channel.
+    #[error("This bot can't be used in this channel")]
+    BotNotAllowedInChannel,
+
     #[error("{0}")]
     Permission(#[from] PermissionError),
 
@@ -165,6 +169,11 @@ impl IntoResponse for ChatError {
             // Override
             Self::RoleNotFound => (StatusCode::NOT_FOUND, "ROLE_NOT_FOUND", self.to_string()),
             Self::NotMember => (StatusCode::FORBIDDEN, "NOT_MEMBER", self.to_string()),
+            Self::BotNotAllowedInChannel => (
+                StatusCode::FORBIDDEN,
+                "BOT_NOT_ALLOWED_IN_CHANNEL",
+                self.to_string(),
+            ),
             Self::Permission(e) => (StatusCode::FORBIDDEN, "PERMISSION_DENIED", e.to_string()),
 
             // DM Search

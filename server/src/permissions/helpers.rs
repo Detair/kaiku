@@ -657,6 +657,22 @@ pub async fn bot_channel_permissions(
     )))
 }
 
+/// Whether the bot is installed in the channel's guild and holds
+/// `VIEW_CHANNEL` plus every flag in `required` there (overrides applied).
+///
+/// The one check for every bot-triggered read or write of a channel:
+/// command and component dispatch, command responses, gateway sends.
+pub async fn bot_can_use_channel(
+    pool: &PgPool,
+    bot_user_id: Uuid,
+    channel_id: Uuid,
+    required: GuildPermissions,
+) -> sqlx::Result<bool> {
+    Ok(bot_channel_permissions(pool, bot_user_id, channel_id)
+        .await?
+        .is_some_and(|p| p.contains(GuildPermissions::VIEW_CHANNEL | required)))
+}
+
 /// Installed bots among `bot_user_ids` that can view `channel_id`.
 ///
 /// `VIEW_CHANNEL` after overrides, evaluated exactly like a member's access.
