@@ -37,7 +37,7 @@ import {
 } from "@/stores/pages";
 import ChannelList from "@/components/channels/ChannelList";
 import PageSection from "@/components/pages/PageSection";
-import SearchPanel from "@/components/search/SearchPanel";
+import LazyDialog from "@/components/ui/LazyDialog";
 import UserPanel from "./UserPanel";
 import VoicePanel from "@/components/voice/VoicePanel";
 import { ModalFallback, LazyErrorBoundary } from "@/components/ui/LazyFallback";
@@ -48,6 +48,8 @@ const GuildSettingsModal = lazy(
   () => import("@/components/guilds/GuildSettingsModal"),
 );
 const EventsModal = lazy(() => import("@/components/guilds/EventsModal"));
+// Opens on demand: loads with the first search.
+const SearchPanel = lazy(() => import("@/components/search/SearchPanel"));
 
 interface SidebarProps {
   /** Called after a navigation action (e.g. channel selected). Used by AppShell to close the mobile drawer. */
@@ -231,7 +233,9 @@ const Sidebar: Component<SidebarProps> = (props) => {
 
       {/* Search Panel Overlay */}
       <Show when={showSearch() && activeGuild()}>
-        <SearchPanel onClose={handleCloseSearch} />
+        <LazyDialog name="SearchPanel">
+          <SearchPanel onClose={handleCloseSearch} />
+        </LazyDialog>
       </Show>
     </aside>
   );

@@ -4,21 +4,25 @@ import {
   Show,
   createMemo,
   createSignal,
+  lazy,
   onMount,
 } from "solid-js";
 import { t, plural } from "@/i18n";
 import { Users, Plus, ChevronDown, SquarePen } from "lucide-solid";
 import { dmsState, loadDMs, selectFriendsTab } from "@/stores/dms";
 import DMItem from "./DMItem";
-import NewMessageModal from "./NewMessageModal";
 import UserPanel from "@/components/layout/UserPanel";
 import VoicePanel from "@/components/voice/VoicePanel";
 import { getIncomingRequestCount } from "@/stores/friends";
 import { voiceState } from "@/stores/voice";
 import AddFriend from "@/components/social/AddFriend";
-import SearchPanel from "@/components/search/SearchPanel";
+import LazyDialog from "@/components/ui/LazyDialog";
 import { createVirtualizer } from "@/lib/virtualizer";
 import flokiThinking from "@/assets/emotes/floki_emote_2.webp";
+
+// Open on demand: each loads with its first use, off the startup payload.
+const NewMessageModal = lazy(() => import("./NewMessageModal"));
+const SearchPanel = lazy(() => import("@/components/search/SearchPanel"));
 
 const HomeSidebar: Component = () => {
   const [showNewMessage, setShowNewMessage] = createSignal(false);
@@ -229,7 +233,9 @@ const HomeSidebar: Component = () => {
 
       {/* New Message Modal */}
       <Show when={showNewMessage()}>
-        <NewMessageModal onClose={() => setShowNewMessage(false)} />
+        <LazyDialog name="NewMessageModal">
+          <NewMessageModal onClose={() => setShowNewMessage(false)} />
+        </LazyDialog>
       </Show>
 
       {/* Add Friend Modal */}
@@ -239,7 +245,9 @@ const HomeSidebar: Component = () => {
 
       {/* DM Search Panel */}
       <Show when={showDMSearch()}>
-        <SearchPanel mode="dm" onClose={() => setShowDMSearch(false)} />
+        <LazyDialog name="SearchPanel">
+          <SearchPanel mode="dm" onClose={() => setShowDMSearch(false)} />
+        </LazyDialog>
       </Show>
     </aside>
   );

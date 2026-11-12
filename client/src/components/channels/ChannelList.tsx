@@ -22,6 +22,7 @@ import {
   createSignal,
   createEffect,
   createMemo,
+  lazy,
 } from "solid-js";
 import { Plus, Mic, GripVertical } from "lucide-solid";
 import {
@@ -51,8 +52,7 @@ import type { ChannelWithUnread, ChannelCategory } from "@/lib/types";
 import { showToast } from "@/components/ui/Toast";
 import CategoryHeader from "./CategoryHeader";
 import ChannelItem from "./ChannelItem";
-import CreateChannelModal from "./CreateChannelModal";
-import ChannelSettingsModal from "./ChannelSettingsModal";
+import LazyDialog from "@/components/ui/LazyDialog";
 import MicrophoneTest from "../voice/MicrophoneTest";
 import VoiceParticipants from "../voice/VoiceParticipants";
 import flokiHappy from "@/assets/emotes/floki_emote_1.webp";
@@ -66,6 +66,10 @@ import {
   type DraggableType,
 } from "./ChannelDragContext";
 import { t } from "@/i18n";
+
+// Open on demand: each loads with its first use, off the startup payload.
+const CreateChannelModal = lazy(() => import("./CreateChannelModal"));
+const ChannelSettingsModal = lazy(() => import("./ChannelSettingsModal"));
 
 interface ChannelListProps {
   /** Called after a navigation action (e.g. channel selected). Used to close the mobile drawer. */
@@ -715,22 +719,26 @@ const ChannelList: Component<ChannelListProps> = (props) => {
 
       {/* Create Channel Modal */}
       <Show when={showCreateModal() && guildsState.activeGuildId}>
-        <CreateChannelModal
-          guildId={guildsState.activeGuildId!}
-          initialType={createModalType()}
-          categoryId={createModalCategoryId()}
-          onClose={() => setShowCreateModal(false)}
-          onCreated={handleChannelCreated}
-        />
+        <LazyDialog name="CreateChannelModal">
+          <CreateChannelModal
+            guildId={guildsState.activeGuildId!}
+            initialType={createModalType()}
+            categoryId={createModalCategoryId()}
+            onClose={() => setShowCreateModal(false)}
+            onCreated={handleChannelCreated}
+          />
+        </LazyDialog>
       </Show>
 
       {/* Channel Settings Modal */}
       <Show when={settingsChannelId() && guildsState.activeGuildId}>
-        <ChannelSettingsModal
-          channelId={settingsChannelId()!}
-          guildId={guildsState.activeGuildId!}
-          onClose={() => setSettingsChannelId(null)}
-        />
+        <LazyDialog name="ChannelSettingsModal">
+          <ChannelSettingsModal
+            channelId={settingsChannelId()!}
+            guildId={guildsState.activeGuildId!}
+            onClose={() => setSettingsChannelId(null)}
+          />
+        </LazyDialog>
       </Show>
     </nav>
   );

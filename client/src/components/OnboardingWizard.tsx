@@ -29,11 +29,8 @@ import {
   ChevronLeft,
   Users,
 } from "lucide-solid";
-import {
-  preferences,
-  updatePreference,
-  isInitialized as preferencesInitialized,
-} from "@/stores/preferences";
+import { updatePreference } from "@/stores/preferences";
+import { shouldShowOnboarding } from "@/lib/onboardingGate";
 import { currentUser, updateUser } from "@/stores/auth";
 import {
   setTheme,
@@ -41,7 +38,6 @@ import {
   theme,
   type ThemeDefinition,
 } from "@/stores/theme";
-import { authState } from "@/stores/auth";
 import flokiDone from "@/assets/images/floki_onboard_done.webp";
 import { getThemeImage } from "@/lib/themeImage";
 import { joinViaInviteCode, guildsState } from "@/stores/guilds";
@@ -60,17 +56,10 @@ const TOTAL_STEPS = 5;
 const JOIN_STEP = 3;
 const ALL_STEPS = [0, 1, 2, 3, 4];
 
-// Don't render if onboarding is complete, setup wizard is showing, or auth not initialized yet
-const shouldShow = () =>
-  authState.isInitialized &&
-  preferencesInitialized() &&
-  !preferences().onboarding_completed &&
-  !authState.setupRequired;
-
 // The dialog behaviour (focus in, focus trap, focus return) lives in an inner
 // component so it starts when the wizard actually appears.
 const OnboardingWizard: Component = () => (
-  <Show when={shouldShow()}>
+  <Show when={shouldShowOnboarding()}>
     <OnboardingDialog />
   </Show>
 );

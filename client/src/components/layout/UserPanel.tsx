@@ -29,13 +29,16 @@ import { adminState, checkAdminStatus } from "@/stores/admin";
 import { getUserPresence, setMyCustomStatus } from "@/stores/presence";
 import Avatar from "@/components/ui/Avatar";
 import StatusPicker from "@/components/ui/StatusPicker";
-import CustomStatusModal from "@/components/ui/CustomStatusModal";
+import LazyDialog from "@/components/ui/LazyDialog";
 import { ModalFallback, LazyErrorBoundary } from "@/components/ui/LazyFallback";
 import type { CustomStatus } from "@/lib/types";
 import { truncate } from "@/lib/utils";
 import LogoutConfirmDialog from "./LogoutConfirmDialog";
 
 const SettingsModal = lazy(() => import("@/components/settings/SettingsModal"));
+const CustomStatusModal = lazy(
+  () => import("@/components/ui/CustomStatusModal"),
+);
 const AdminQuickModal = lazy(
   () => import("@/components/admin/AdminQuickModal"),
 );
@@ -219,11 +222,13 @@ const UserPanel: Component = () => {
 
       {/* Custom Status Modal */}
       <Show when={showCustomStatusModal()}>
-        <CustomStatusModal
-          currentStatus={currentCustomStatus()}
-          onSave={handleCustomStatusSave}
-          onClose={() => setShowCustomStatusModal(false)}
-        />
+        <LazyDialog name="CustomStatusModal">
+          <CustomStatusModal
+            currentStatus={currentCustomStatus()}
+            onSave={handleCustomStatusSave}
+            onClose={() => setShowCustomStatusModal(false)}
+          />
+        </LazyDialog>
       </Show>
     </>
   );

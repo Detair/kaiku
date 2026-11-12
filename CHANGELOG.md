@@ -154,6 +154,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Admin area and server settings tell the truth: ban, lift ban, suspend and delete report success only after the server did it and otherwise say why (for example that admin mode ended); invites, roles, kick, filters, bots, webhooks and emojis show a failed change instead of doing nothing.
 - Admin mode has one name, says it lasts 15 minutes before you turn it on, turns on from the header badge in one step, can be turned off there, and announces when it runs out. The bulk ban names everyone, never includes people on other pages and lists who could not be banned.
 - Removing something in the admin area or server settings asks in one dialog that names it; opening registration to everyone asks first; closing server settings with unsaved changes asks first; expert tabs moved under "Advanced". Rules and info pages and the admin area follow the chosen theme's colors.
+- Windows that open on demand (channel settings, new channel, new message, search, pinned messages, custom status, keyboard shortcuts, report and block, the first-run setup and tour) load when first opened, so the app has less to download at start. If one cannot load, the page says so and offers a reload.
 
 ### Security
 - The end-to-end encryption library was updated to a release that clears key material from memory more thoroughly.
@@ -408,6 +409,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Channel lists work by keyboard, touch and screen reader: category headers are buttons, hidden buttons appear on focus and touch, unread dots are announced. The browser tab shows the number of unread messages.
 - Dialogs work by keyboard and screen reader: server settings, settings, creating a server or channel, search, the picture viewer, the emoji picker, report and block, events, custom status, keyboard shortcuts, quick actions (Ctrl+K), page acceptance and the phone menu take focus when they open, keep Tab inside, close with Escape wherever focus was and give focus back. A window opened from another closes on its own first; unsaved server settings still ask first.
 - The tabs of settings, server settings and channel settings are real tabs: the open tab is announced and arrow keys switch tabs.
+- The search over the channel list and over the direct messages takes the keyboard focus when it opens: you can type at once, Escape closes it and focus returns to the search button.
 - The window title names the open channel and server or the person you are writing with; "Skip to content" moves focus to the page.
 - Screen readers hear a person's online status and their name on avatars without a picture; small icon buttons react on a larger area (44 pixels on touch screens) without changing the layout.
 - The text of a page you must accept can be scrolled with the keyboard, so "I accept" can be reached without a mouse.

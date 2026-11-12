@@ -38,8 +38,9 @@ import { ContextMenuContainer } from "./components/ui/ContextMenu";
 import E2EESetupPrompt from "./components/E2EESetupPrompt";
 import { isE2EEEnabled } from "./lib/featureFlags";
 import { PageFallback, LazyErrorBoundary } from "./components/ui/LazyFallback";
-import SetupWizard from "./components/SetupWizard";
-import OnboardingWizard from "./components/OnboardingWizard";
+import LazyDialog from "./components/ui/LazyDialog";
+import { shouldShowOnboarding } from "./lib/onboardingGate";
+import { authState } from "./stores/auth";
 import SessionExpiredModal from "./components/auth/SessionExpiredModal";
 // Full-session, step-up and sign-out-others dialogs: a lazy chunk with a
 // visible failure (SessionDialogsSlot). Their state stays eager: a refusal
@@ -47,9 +48,16 @@ import SessionExpiredModal from "./components/auth/SessionExpiredModal";
 // (Fable r2 R2).
 import SessionDialogsSlot from "./components/auth/SessionDialogsSlot";
 import "./lib/fullSessionRequired";
-import BlockConfirmModal from "./components/modals/BlockConfirmModal";
-import ReportModal from "./components/modals/ReportModal";
 import type { ReportTarget } from "./components/modals/ReportModal";
+
+// Windows that open on demand or only on a first run: each loads when it
+// first shows, so none of them weighs on the startup payload.
+const SetupWizard = lazy(() => import("./components/SetupWizard"));
+const OnboardingWizard = lazy(() => import("./components/OnboardingWizard"));
+const BlockConfirmModal = lazy(
+  () => import("./components/modals/BlockConfirmModal"),
+);
+const ReportModal = lazy(() => import("./components/modals/ReportModal"));
 
 // Context menu callbacks
 import { onShowBlockConfirm, onShowReport } from "./lib/contextMenuBuilders";
@@ -114,21 +122,25 @@ const Layout: Component<ParentProps> = (props) => {
 
       <Show when={blockTarget()}>
         {(target) => (
-          <BlockConfirmModal
-            userId={target().id}
-            username={target().username}
-            displayName={target().display_name}
-            onClose={() => setBlockTarget(null)}
-          />
+          <LazyDialog name="BlockConfirmModal">
+            <BlockConfirmModal
+              userId={target().id}
+              username={target().username}
+              displayName={target().display_name}
+              onClose={() => setBlockTarget(null)}
+            />
+          </LazyDialog>
         )}
       </Show>
 
       <Show when={reportTarget()}>
         {(target) => (
-          <ReportModal
-            target={target()}
-            onClose={() => setReportTarget(null)}
-          />
+          <LazyDialog name="ReportModal">
+            <ReportModal
+              target={target()}
+              onClose={() => setReportTarget(null)}
+            />
+          </LazyDialog>
         )}
       </Show>
     </div>
@@ -138,11 +150,19 @@ const Layout: Component<ParentProps> = (props) => {
 // Protected route wrapper
 const ProtectedMain: Component = () => (
   <AuthGuard>
-    <SetupWizard />
+    <Show when={authState.setupRequired}>
+      <LazyDialog name="SetupWizard">
+        <SetupWizard />
+      </LazyDialog>
+    </Show>
     <Show when={isE2EEEnabled()}>
       <E2EESetupPrompt />
     </Show>
-    <OnboardingWizard />
+    <Show when={shouldShowOnboarding()}>
+      <LazyDialog name="OnboardingWizard">
+        <OnboardingWizard />
+      </LazyDialog>
+    </Show>
     <AcceptanceManager />
     <Main />
   </AuthGuard>

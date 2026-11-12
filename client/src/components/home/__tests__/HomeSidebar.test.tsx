@@ -59,13 +59,14 @@ describe("HomeSidebar", () => {
     expect(screen.queryByTestId("voice-panel-slot")).toBeNull();
   });
 
-  it("always shows a labelled New Message button", () => {
+  it("always shows a labelled New Message button", async () => {
     render(() => <HomeSidebar />);
     const button = screen.getByTestId("new-dm-button");
     expect(button.textContent).toContain("New Message");
     expect(button.className).not.toContain("opacity-0");
     button.click();
-    expect(screen.getByTestId("new-message-modal")).toBeTruthy();
+    // The dialog loads on first open.
+    expect(await screen.findByTestId("new-message-modal")).toBeTruthy();
   });
 
   it("counts friend requests waiting for an answer", () => {
