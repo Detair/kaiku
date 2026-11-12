@@ -134,7 +134,7 @@ export const voice = {
   "voice.call.inCall": "In call",
   "voice.call.leave": "Leave",
   "voice.call.reconnecting": "Reconnecting...",
-  "voice.call.reconnectingHint": "Connection lost, retrying ({{seconds}}s)",
+  "voice.call.reconnectingHint": "Connection lost. Getting the call's sound back.",
   "voice.call.duration": "Duration: {{duration}}",
   "voice.call.ended.cancelled": "Call cancelled",
   "voice.call.ended.declined": "Call declined",

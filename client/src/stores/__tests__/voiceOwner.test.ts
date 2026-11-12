@@ -4,7 +4,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { VoiceAdapter } from "@/lib/webrtc/types";
-import { HOOK_LIMIT_MS, VoiceOwner } from "../voiceOwner";
+import { HOOK_LIMIT_MS, TEARDOWN_LIMIT_MS, VoiceOwner } from "../voiceOwner";
 
 type Session = { token: number; channelId: string };
 
@@ -155,5 +155,189 @@ describe("voice owner", () => {
     expect(failed).toHaveBeenCalled();
     expect(log).toEqual([]);
     expect(owner.current).toBeNull();
+  });
+
+  describe("the signed-in session ends", () => {
+    it("ends the held session at once, by its handle, and nothing comes back", async () => {
+      const gaveUp = vi.fn();
+      const a = owner.wish("channel", "A", { gaveUp });
+      await owner.request(a);
+
+      owner.shutdown();
+      // Synchronously: the adapter was told before anything was awaited.
+      expect(log).toEqual(["join:A", "leave:A"]);
+      expect(owner.current).toBeNull();
+
+      // The next account's socket comes up within the minute.
+      owner.socketLost();
+      owner.socketReady();
+      await vi.advanceTimersByTimeAsync(90_000);
+      expect(log).toEqual(["join:A", "leave:A"]);
+      expect(gaveUp).not.toHaveBeenCalled(); // no "Rejoin" offer for the next account
+    });
+
+    it("during a recovery attempt: the attempt's session is ended at once", async () => {
+      const a = owner.wish("channel", "A", {});
+      await owner.request(a);
+      owner.socketReady(); // re-established socket: recovery
+      park("join:A"); // the attempt's join hangs
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(log).toEqual(["join:A", "teardown:A", "join:A"]);
+
+      owner.shutdown();
+      expect(log).toEqual(["join:A", "teardown:A", "join:A", "leave:A"]);
+      await vi.advanceTimersByTimeAsync(90_000);
+      expect(log).toHaveLength(4);
+      expect(owner.isRecovering()).toBe(false);
+    });
+
+    it("during a join that waits for the microphone: ended at once, the late grant joins nothing", async () => {
+      const prompt = park("join:A");
+      const a = owner.wish("channel", "A", {});
+      const joining = owner.request(a);
+      await settle();
+      owner.shutdown();
+      expect(log).toEqual(["join:A", "leave:A"]);
+      prompt.resolve();
+      expect(await joining).toEqual({ type: "superseded" });
+      await vi.advanceTimersByTimeAsync(90_000);
+      expect(log).toEqual(["join:A", "leave:A"]);
+    });
+
+    it("a session of another user is never recovered or joined (second line of defence)", async () => {
+      let user: string | null = "u1";
+      owner.useIdentity(() => user);
+      const gaveUp = vi.fn();
+      const a = owner.wish("channel", "A", { gaveUp });
+      await owner.request(a);
+      user = "u2"; // the account changed and nobody told the owner
+      owner.socketLost();
+      owner.socketReady();
+      await vi.advanceTimersByTimeAsync(90_000);
+      expect(log.filter((call) => call === "join:A")).toHaveLength(1);
+      expect(log[log.length - 1]).toMatch(/^(leave|teardown):A$/);
+      expect(owner.current).toBeNull();
+      expect(gaveUp).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("real elapsed time (the device slept)", () => {
+    /** Time passes without any timer running, as while suspended. */
+    function sleep(ms: number): void {
+      vi.setSystemTime(Date.now() + ms);
+    }
+
+    it("resume after 5 minutes: gives up instead of rejoining, media released at once", async () => {
+      const gaveUp = vi.fn();
+      const a = owner.wish("channel", "A", { gaveUp });
+      await owner.request(a);
+      await vi.advanceTimersByTimeAsync(20_000); // in the call for a while
+
+      sleep(5 * 60_000);
+      // On resume the socket turns out to be gone and comes back.
+      owner.socketLost();
+      expect(gaveUp).toHaveBeenCalledTimes(1);
+      expect(log).toEqual(["join:A", "teardown:A"]); // at once, without voice_leave
+      owner.socketReady();
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(log).toEqual(["join:A", "teardown:A"]);
+      expect(owner.current).toBeNull();
+    });
+
+    it("resume after 5 minutes when only the socket's return is reported", async () => {
+      const gaveUp = vi.fn();
+      const a = owner.wish("channel", "A", { gaveUp });
+      await owner.request(a);
+      await vi.advanceTimersByTimeAsync(20_000);
+      sleep(5 * 60_000);
+      owner.socketReady();
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(gaveUp).toHaveBeenCalledTimes(1);
+      expect(log).toEqual(["join:A", "teardown:A"]);
+    });
+
+    it("resume after 5 minutes without any socket event: the wake-up check gives up", async () => {
+      const gaveUp = vi.fn();
+      const a = owner.wish("channel", "A", { gaveUp });
+      await owner.request(a);
+      await vi.advanceTimersByTimeAsync(20_000);
+      sleep(5 * 60_000);
+      owner.wake(); // visibilitychange / online / the next heartbeat
+      expect(gaveUp).toHaveBeenCalledTimes(1);
+      expect(log).toEqual(["join:A", "teardown:A"]);
+    });
+
+    it("the next heartbeat after a long gap gives up by itself", async () => {
+      const gaveUp = vi.fn();
+      const a = owner.wish("channel", "A", { gaveUp });
+      await owner.request(a);
+      await vi.advanceTimersByTimeAsync(20_000);
+      sleep(5 * 60_000);
+      await vi.advanceTimersByTimeAsync(10_000); // timers run again after resume
+      expect(gaveUp).toHaveBeenCalledTimes(1);
+      expect(log).toEqual(["join:A", "teardown:A"]);
+    });
+
+    it("resume after 20 seconds: rejoins", async () => {
+      const gaveUp = vi.fn();
+      const a = owner.wish("channel", "A", { gaveUp });
+      await owner.request(a);
+      await vi.advanceTimersByTimeAsync(20_000);
+      sleep(20_000);
+      owner.socketLost();
+      owner.socketReady();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(log).toEqual(["join:A", "teardown:A", "join:A"]);
+      expect(gaveUp).not.toHaveBeenCalled();
+    });
+
+    it("slept through most of the minute while reconnecting: the deadline counts the sleep", async () => {
+      const gaveUp = vi.fn();
+      const a = owner.wish("channel", "A", { gaveUp });
+      await owner.request(a);
+      owner.socketLost(); // t = 0, awake
+      await vi.advanceTimersByTimeAsync(5_000);
+      sleep(50_000); // t = 55 s, no timer ran
+      expect(gaveUp).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(5_000); // t = 60 s of real time
+      expect(gaveUp).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("a teardown that does not return", () => {
+    it("the owner goes on after 5 s and joins the next wish", async () => {
+      park("leave:A"); // native leave hangs for good
+      const a = owner.wish("channel", "A", {});
+      await owner.request(a);
+      const b = owner.wish("channel", "B", {});
+      const toB = owner.request(b);
+      await vi.advanceTimersByTimeAsync(TEARDOWN_LIMIT_MS - 1);
+      expect(log).toEqual(["join:A", "leave:A"]);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await toB).toEqual({ type: "established" });
+      expect(log).toEqual(["join:A", "leave:A", "join:B"]);
+    });
+
+    it("inside a recovery: the attempt goes on after 5 s", async () => {
+      const a = owner.wish("channel", "A", {});
+      await owner.request(a);
+      park("teardown:A"); // dropping the old connection hangs
+      owner.socketReady();
+      await vi.advanceTimersByTimeAsync(1000 + TEARDOWN_LIMIT_MS);
+      expect(log).toEqual(["join:A", "teardown:A", "join:A"]);
+    });
+
+    it("a leave resolves for its caller although the teardown never returned", async () => {
+      park("leave:A");
+      const a = owner.wish("channel", "A", {});
+      await owner.request(a);
+      let left = false;
+      void owner.drop(a).then(() => {
+        left = true;
+      });
+      await vi.advanceTimersByTimeAsync(TEARDOWN_LIMIT_MS);
+      await settle();
+      expect(left).toBe(true);
+    });
   });
 });

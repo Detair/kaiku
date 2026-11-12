@@ -128,7 +128,7 @@ describe("TauriVoiceAdapter native events", () => {
     const adapter = new TauriVoiceAdapter();
     await flushListen();
 
-    for (const name of ["voice:state_change", "voice:audio_error", "voice:remote_track"]) {
+    for (const name of ["voice:session_state", "voice:audio_error", "voice:remote_track"]) {
       expect(listenerCount(name), name).toBe(0);
     }
     expect(errors).toHaveBeenCalled();
@@ -299,7 +299,7 @@ describe("TauriVoiceAdapter sessions (one handle per join)", () => {
     expect(adapter.getChannelId()).toBeNull();
   });
 
-  it("native VOICE_JOIN_CANCELLED while this window still wants the join is a failure (W1-N4)", async () => {
+  it("native VOICE_JOIN_CANCELLED while this window still wants the join is a failure", async () => {
     const { invoke } = await import("@tauri-apps/api/core");
     vi.mocked(invoke).mockImplementation((async (cmd: string) => {
       if (cmd === "begin_voice_session") return 1;
@@ -320,7 +320,7 @@ describe("TauriVoiceAdapter sessions (one handle per join)", () => {
     }) as typeof invoke);
     const adapter = new TauriVoiceAdapter();
     expect((await adapter.join(A)).ok).toBe(false);
-    expect(invoke).toHaveBeenCalledWith("leave_voice", { silent: true, epoch: 4 });
+    expect(invoke).toHaveBeenCalledWith("leave_voice", { silent: false, epoch: 4 });
     expect(adapter.getChannelId()).toBeNull();
   });
 

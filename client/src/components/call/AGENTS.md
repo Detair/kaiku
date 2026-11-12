@@ -17,8 +17,9 @@ Call status banner shown at top of DM conversations.
 - `incoming_ringing` - Show Accept/Decline buttons with caller name
 - `outgoing_ringing` - Show Cancel button with "Calling..." text
 - `connecting` - Show connecting spinner
-- `connected` - Show duration, participant count, Leave button
-- `reconnecting` - Show retry countdown
+- `connected` - Show duration, participant count, Leave button. While
+  `callState.voiceReconnecting` is set (the call's voice is being restored
+  after a connection loss) the banner says "Reconnecting..." and Leave stays
 - `ended` - Show end reason with duration
 
 **Features:**
@@ -74,9 +75,9 @@ Re-exports CallBanner for cleaner imports.
    - Participant count shows number of other users
    - Leave → sends leave to server, marks as "last_left"
 
-4. **Reconnecting:**
-   - Shows countdown from call state
-   - User can't interact during reconnect
+4. **Reconnecting (voice of a connected call):**
+   - The connected banner says "Reconnecting..." with one line of text
+   - Leave stays available and ends the call at once
 
 5. **Ended:**
    - Shows end reason and duration (if available)

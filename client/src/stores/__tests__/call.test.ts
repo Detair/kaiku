@@ -704,7 +704,7 @@ describe("DM call voice is a session of the voice owner (C32, desktop)", () => {
     expect(mockAdapter.join).not.toHaveBeenCalled();
   });
 
-  it("hang-up during the recovery pause: no rejoin, even with a slow server leave (W1-N3)", async () => {
+  it("hang-up during the recovery pause: no rejoin, even with a slow server leave", async () => {
     const tauri = await import("@/lib/tauri");
     const first = await connectedCall();
     void resyncCallAfterReconnect("me", activeWithMe);
@@ -766,7 +766,7 @@ describe("DM call voice is a session of the voice owner (C32, desktop)", () => {
     expect(mockAdapter.teardown).not.toHaveBeenCalled();
   });
 
-  it("an outgoing ring answered in the gap becomes connected and recovers voice (R4)", async () => {
+  it("an outgoing ring answered in the gap becomes connected and recovers voice", async () => {
     const starting = startOutgoingCall("dm-x");
     await starting;
     const first = joinedSessions()[0]!;
@@ -791,6 +791,7 @@ describe("DM call voice is a session of the voice owner (C32, desktop)", () => {
     const first = joinedSessions()[0]!;
     adapterHandlers!.onStateChange("connected", first);
     voiceOwner.socketLost();
+    voiceOwner.socketReady(); // the new socket, then its resync
     joinConnects();
     const done = resyncCallAfterReconnect("me", async () => ({
       channel_id: "dm-x",
@@ -806,6 +807,84 @@ describe("DM call voice is a session of the voice owner (C32, desktop)", () => {
     // Long after the 60 s deadline the ring's voice is still there.
     await vi.advanceTimersByTimeAsync(70_000);
     expect(endedWith("teardown", joinedSessions()[1])).toBe(false);
+  });
+
+  it("while the call's voice reconnects the call says so, until it is back", async () => {
+    await connectedCall();
+    expect(callState.voiceReconnecting).toBe(false);
+    voiceOwner.socketLost();
+    expect(callState.voiceReconnecting).toBe(true);
+    expect(callState.currentCall.status).toBe("connected"); // still the same call
+    voiceOwner.socketReady();
+    joinConnects();
+    const done = resyncCallAfterReconnect("me", activeWithMe);
+    await vi.advanceTimersByTimeAsync(1000);
+    await done;
+    expect(callState.voiceReconnecting).toBe(false);
+  });
+
+  it("a resync answer that arrives after the socket dropped again starts nothing", async () => {
+    await connectedCall();
+    voiceOwner.socketLost();
+    voiceOwner.socketReady();
+    let answer!: (state: CallStateResponse) => void;
+    const done = resyncCallAfterReconnect(
+      "me",
+      () => new Promise<CallStateResponse>((resolve) => (answer = resolve)),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    voiceOwner.socketLost(); // gone again before the answer is in
+    answer(await activeWithMe());
+    await done;
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(mockAdapter.join).not.toHaveBeenCalled();
+    expect(voiceOwner.signallingDown).toBe(true);
+    expect(voiceOwner.attemptsUsed).toBe(0);
+  });
+
+  it("hanging up while the voice reconnects ends it at once", async () => {
+    const first = await connectedCall();
+    voiceOwner.socketLost();
+    expect(callState.voiceReconnecting).toBe(true);
+    void leaveCallVoice();
+    expect(callState.voiceReconnecting).toBe(false);
+    expect(isCallRecoveryRunning()).toBe(false);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(endedWith("leave", first)).toBe(true);
+    await vi.advanceTimersByTimeAsync(90_000);
+    expect(mockAdapter.join).not.toHaveBeenCalled();
+  });
+
+  it("a call whose voice could not be restored in time is left on the server", async () => {
+    const tauri = await import("@/lib/tauri");
+    await connectedCall();
+    voiceOwner.socketLost();
+    await vi.advanceTimersByTimeAsync(RECOVERY_OFFLINE_CAP_MS);
+    expect(callState.currentCall.status).toBe("ended");
+    expect(callState.voiceReconnecting).toBe(false);
+    expect(tauri.leaveDMCall).toHaveBeenCalledWith("dm-x");
+  });
+
+  it("the end of the signed-in session drops the call and its voice at once", async () => {
+    const first = await connectedCall();
+    voiceOwner.shutdown();
+    expect(endedWith("leave", first)).toBe(true); // before anything is awaited
+    expect(callState.currentCall.status).toBe("idle");
+    expect(callState.activeCallsByChannel).toEqual({});
+    expect(callState.voiceReconnecting).toBe(false);
+    voiceOwner.socketLost();
+    voiceOwner.socketReady();
+    await vi.advanceTimersByTimeAsync(90_000);
+    expect(mockAdapter.join).not.toHaveBeenCalled();
+  });
+
+  it("a ringing call is dropped with the signed-in session too", async () => {
+    receiveIncomingCall("dm-y", "u3", "Cleo", "call-9");
+    voiceOwner.shutdown();
+    expect(callState.currentCall.status).toBe("idle");
+    expect(stopRinging).toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(RING_CAP_MS);
+    expect(showToast).not.toHaveBeenCalled(); // no "missed call" for the next account
   });
 
   it("another voice session taking over ends the call here", async () => {
@@ -827,7 +906,7 @@ describe("DM call voice is a session of the voice owner (C32, desktop)", () => {
   });
 });
 
-describe("declined on another device (R4)", () => {
+describe("declined on another device", () => {
   beforeEach(() => {
     reset();
     vi.clearAllMocks();
@@ -869,7 +948,7 @@ describe("declined on another device (R4)", () => {
   });
 });
 
-describe("call voice tokens are carried, not looked up (Codex W1c-1)", () => {
+describe("call voice tokens are carried, not looked up", () => {
   beforeEach(async () => {
     reset();
     vi.clearAllMocks();

@@ -115,6 +115,7 @@ import {
   rejoinVoiceAfterReconnect,
 } from "../voice";
 import { resetVoiceAdapter } from "@/lib/webrtc";
+import { voiceOwner } from "../voiceOwner";
 
 // --- microphone and peer connections ---------------------------------------
 
@@ -250,7 +251,7 @@ describe("one owner for the voice session (browser adapter)", () => {
     vi.useRealTimers();
   });
 
-  it("A → B → C while A's leave is still running: only C is joined (W1d)", async () => {
+  it("A → B → C while A's leave is still running: only C is joined", async () => {
     await inChannel("A");
     const micA = mics[0]!;
 
@@ -474,5 +475,103 @@ describe("one owner for the voice session (browser adapter)", () => {
     publisherConnects();
     await settle();
     expect(voiceState.state).toBe("connected");
+  });
+
+  it("the signed-in session ends in a channel: microphone and connections are released before anything is awaited", async () => {
+    await inChannel("A");
+    const sentBefore = sent.length;
+
+    voiceOwner.shutdown();
+    // No await in between: this is the same turn as the sign-out click.
+    expect(openMics()).toHaveLength(0);
+    expect(openPcs()).toHaveLength(0);
+    expect(voiceState.state).toBe("disconnected");
+    expect(voiceState.channelId).toBeNull();
+
+    // The next account's socket comes up within the minute.
+    noteSignallingLost();
+    void rejoinVoiceAfterReconnect();
+    await vi.advanceTimersByTimeAsync(90_000);
+    await settle();
+    // Best effort the server was told once; nothing else was sent, nothing was acquired.
+    expect(sent.slice(sentBefore)).toEqual([{ type: "voice_leave", channel_id: "A" }]);
+    expect(gum).toHaveBeenCalledTimes(1);
+    expect(voiceState.lostChannelId).toBeNull();
+  });
+
+  it("the signed-in session ends while a join waits for the microphone: the late grant is stopped, nothing is sent", async () => {
+    const prompt = parkMic();
+    const toA = joinVoice("A").catch(() => undefined);
+    await settle();
+    expect(gum).toHaveBeenCalledTimes(1);
+
+    voiceOwner.shutdown();
+    expect(voiceState.state).toBe("disconnected");
+    prompt.resolve();
+    await toA;
+    await settle();
+    await vi.advanceTimersByTimeAsync(90_000);
+
+    expect(mics[0]!.stop).toHaveBeenCalledTimes(1);
+    expect(openPcs()).toHaveLength(0);
+    expect(sent).toHaveLength(0);
+  });
+
+  it("the signed-in session ends during a recovery attempt: released at once, no rejoin", async () => {
+    await inChannel("A");
+    noteSignallingLost();
+    void rejoinVoiceAfterReconnect();
+    const prompt = parkMic(); // the attempt's join waits for the microphone
+    await vi.advanceTimersByTimeAsync(1000);
+    await settle();
+    expect(gum).toHaveBeenCalledTimes(2);
+
+    voiceOwner.shutdown();
+    expect(openMics()).toHaveLength(0);
+    expect(openPcs()).toHaveLength(0);
+    prompt.resolve();
+    await settle();
+    await vi.advanceTimersByTimeAsync(90_000);
+    await settle();
+
+    expect(openMics()).toHaveLength(0);
+    expect(sentOf("voice_join")).toHaveLength(1); // only the very first join
+    expect(voiceState.lostChannelId).toBeNull();
+    expect(voiceState.state).toBe("disconnected");
+  });
+
+  it("the device slept for five minutes: no rejoin, microphone off, Rejoin offered", async () => {
+    await inChannel("A");
+    await vi.advanceTimersByTimeAsync(20_000);
+    // Suspended: the clock moves on, no timer runs, no socket event arrives.
+    vi.setSystemTime(Date.now() + 5 * 60_000);
+
+    // On resume the socket turns out to be gone and reconnects.
+    noteSignallingLost();
+    expect(openMics()).toHaveLength(0); // at once
+    void rejoinVoiceAfterReconnect();
+    await vi.advanceTimersByTimeAsync(30_000);
+    await settle();
+
+    expect(sentOf("voice_join")).toHaveLength(1);
+    expect(sentOf("voice_leave")).toHaveLength(0);
+    expect(voiceState.state).toBe("disconnected");
+    expect(voiceState.lostChannelId).toBe("A");
+    expect(openPcs()).toHaveLength(0);
+  });
+
+  it("the device slept for twenty seconds: back in the channel", async () => {
+    await inChannel("A");
+    await vi.advanceTimersByTimeAsync(20_000);
+    vi.setSystemTime(Date.now() + 20_000);
+    noteSignallingLost();
+    void rejoinVoiceAfterReconnect();
+    await vi.advanceTimersByTimeAsync(1000);
+    await settle();
+    expect(sentOf("voice_join")).toHaveLength(2);
+    publisherConnects();
+    await settle();
+    expect(voiceState.state).toBe("connected");
+    expect(voiceState.lostChannelId).toBeNull();
   });
 });

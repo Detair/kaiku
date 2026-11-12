@@ -15,6 +15,7 @@ import {
   type User,
 } from "@/lib/types";
 import { resetMeSecurity } from "./security";
+import { voiceOwner } from "./voiceOwner";
 import { clearAttachmentUrls } from "@/lib/attachmentUrls";
 import * as tauri from "@/lib/tauri";
 import {
@@ -84,6 +85,9 @@ const [authState, setAuthState] = createStore<AuthState>({
 // Derived state
 export const isAuthenticated = () => authState.user !== null;
 export const currentUser = () => authState.user;
+
+// A voice session is only ever served for the user it was started by.
+voiceOwner.useIdentity(() => authState.user?.id ?? null);
 
 /** The current session from `GET /auth/me` (C27); null when the server sent none. */
 export const sessionInfo = (): AuthSession | null => decodeAuthSession(authState.user?.session);
@@ -271,6 +275,9 @@ let sessionExpiredListenerRegistered = false;
 
 /** Tear down the session and show the sign-in prompt for `reason`. */
 async function endSession(reason: tauri.SessionEndReason): Promise<void> {
+  // Voice ends with the session, before anything of the account is cleared:
+  // microphone released, no call, nothing that could rejoin later.
+  voiceOwner.shutdown();
   // Claim the end first so a concurrent expiry report does not repeat it.
   setAuthState({ user: null });
   resetServerFeatures();
@@ -864,6 +871,9 @@ export async function register(
  * Logout and clear session.
  */
 export async function logout(): Promise<void> {
+  // Voice ends with the session, before anything of the account is cleared:
+  // microphone released, no call, nothing that could rejoin later.
+  voiceOwner.shutdown();
   invalidatePasskeySignIns();
   endSignInChoices();
   resetServerFeatures();

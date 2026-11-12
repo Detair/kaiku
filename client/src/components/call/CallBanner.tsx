@@ -86,13 +86,14 @@ const CallBanner: Component<CallBannerProps> = (props) => {
   /**
    * Hang up or cancel. The call's voice session is over from the first
    * line on (no join and no recovery attempt runs for it any more); the
-   * voice owner ends it while the server is told.
+   * voice owner ends it in the background while the server is told.
    */
   const hangUp = async (reason: "last_left" | "cancelled") => {
-    const voiceEnded = leaveCallVoice();
+    void leaveCallVoice();
     setIsLoading(true);
     try {
-      await voiceEnded;
+      // The server is told right away; it does not wait for the voice
+      // session to be gone on this device.
       await leaveDMCall(props.channelId);
     } catch (err) {
       if (!isCallAlreadyGoneError(err)) {
@@ -211,7 +212,14 @@ const CallBanner: Component<CallBannerProps> = (props) => {
                   <div style={{ "background-image": "var(--icon-pickup)" }} class="w-5 h-5 bg-contain bg-center bg-no-repeat" />
                 </div>
                 <div>
-                  <p class="text-text-primary font-medium">{t("voice.call.inCall")}</p>
+                  <p class="text-text-primary font-medium">
+                    {callState.voiceReconnecting
+                      ? t("voice.call.reconnecting")
+                      : t("voice.call.inCall")}
+                  </p>
+                  <Show when={callState.voiceReconnecting}>
+                    <p class="text-sm text-text-secondary">{t("voice.call.reconnectingHint")}</p>
+                  </Show>
                   <div class="flex items-center gap-2 text-sm text-text-secondary">
                     <span>{formatDuration(callDuration())}</span>
                     <Show
@@ -240,23 +248,6 @@ const CallBanner: Component<CallBannerProps> = (props) => {
               >
                 <div style={{ "background-image": "var(--icon-leave)" }} class="w-5 h-5 bg-contain bg-center bg-no-repeat opacity-90" />
               </button>
-            </div>
-          </Show>
-
-          {/* Reconnecting */}
-          <Show when={call().status === "reconnecting"}>
-            <div class="flex items-center gap-3">
-              <div class="w-10 h-10 rounded-full bg-yellow-500/20 flex items-center justify-center">
-                <div style={{ "background-image": "var(--icon-pickup)" }} class="w-5 h-5 bg-contain bg-center bg-no-repeat animate-pulse" />
-              </div>
-              <div>
-                <p class="text-text-primary font-medium">{t("voice.call.reconnecting")}</p>
-                <p class="text-sm text-text-secondary">
-                  {t("voice.call.reconnectingHint", {
-                    seconds: (call() as { countdown: number }).countdown,
-                  })}
-                </p>
-              </div>
             </div>
           </Show>
 

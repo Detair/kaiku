@@ -32,8 +32,13 @@
  *   that CARRIES this session's `voice_join`: it starts when the socket
  *   that carried the join is lost and is met only when a rejoin's
  *   `voice_join` went out. A socket that merely comes back does not reset
- *   it. When it passes, the owner gives up exactly as after the third
- *   failure;
+ *   it. It is measured in real elapsed time, including time the device
+ *   was suspended: the owner compares timestamps whenever it wakes up
+ *   (socket events, its heartbeat, `wake()`), it does not rely on a timer
+ *   having fired. A heartbeat every few seconds records the last moment
+ *   the session was provably carried; more than 60 s since then (or a gap
+ *   that long between two heartbeats: the device slept) means the owner
+ *   gives up instead of rejoining, exactly as after the third failure;
  * - a change of intent (leave, switch, hang-up, `voice_removed`) ends the
  *   recovery like any other work of a replaced intent.
  *
@@ -42,8 +47,15 @@
  * the adapter (devices, mute, push-to-talk); what the user sees changes in
  * the synchronous hooks, which the owner calls only while that wish is
  * still the intent. The owner waits for a set-up or clean-up hook to
- * finish (so they never overlap with the next step), but for no longer
- * than `HOOK_LIMIT_MS`.
+ * finish (so they normally never overlap with the next step), but for no
+ * longer than `HOOK_LIMIT_MS`. Every asynchronous hook is handed `mine()`:
+ * whether its session is still the one the owner holds. A hook works only
+ * on what it created itself and checks `mine()` after each await before it
+ * touches anything shared (mute, devices, what the user sees).
+ *
+ * The end of the signed-in session (`shutdown()`) ends everything at
+ * once: no intent, the held session released synchronously, nothing left
+ * that a later account could see or that could rejoin.
  */
 
 import type { VoiceAdapter, VoiceConnectionState, VoiceError } from "@/lib/webrtc/types";
@@ -66,6 +78,14 @@ export const RECOVERY_OFFLINE_CAP_MS = 60_000;
  * must not keep a leave or the next join waiting.
  */
 export const HOOK_LIMIT_MS = 3000;
+/**
+ * Longest the owner waits for the adapter to end a session. Ending
+ * releases the local side at once and completes by itself (natively in
+ * the background, in order with later joins); the owner only stops waiting.
+ */
+export const TEARDOWN_LIMIT_MS = 5000;
+/** How often the owner notes that the session is still carried. */
+export const HEARTBEAT_MS = 5000;
 
 export type VoiceKind = "channel" | "dm-call";
 
@@ -79,9 +99,13 @@ export interface VoiceHooks {
   /** Recovery waits for `confirm()` after each socket change (C33). */
   needsConfirmation?: boolean;
   /** Before the first join: hand settings to the adapter. */
-  prepare?(adapter: VoiceAdapter): Promise<void>;
+  prepare?(adapter: VoiceAdapter, mine: StillMine): Promise<void>;
   /** The first join succeeded: configure the adapter for the call. */
-  established?(adapter: VoiceAdapter, session: VoiceSessionHandle): Promise<void>;
+  established?(
+    adapter: VoiceAdapter,
+    session: VoiceSessionHandle,
+    mine: StillMine,
+  ): Promise<void>;
   /** The session is the user's call now (after `established`). */
   live?(adapter: VoiceAdapter, session: VoiceSessionHandle): void;
   /** Media state of the held connection (not while recovering). */
@@ -91,9 +115,17 @@ export interface VoiceHooks {
   /** A recovery attempt dropped the old connection and joins again. */
   attemptStarts?(adapter: VoiceAdapter): void;
   /** A recovery attempt's `voice_join` went out. */
-  rejoined?(adapter: VoiceAdapter, session: VoiceSessionHandle): Promise<void>;
+  rejoined?(
+    adapter: VoiceAdapter,
+    session: VoiceSessionHandle,
+    mine: StillMine,
+  ): Promise<void>;
   /** A recovery attempt connected: restore mute, deafen, devices. */
-  restore?(adapter: VoiceAdapter, session: VoiceSessionHandle): Promise<void>;
+  restore?(
+    adapter: VoiceAdapter,
+    session: VoiceSessionHandle,
+    mine: StillMine,
+  ): Promise<void>;
   /** Recovery succeeded. */
   recovered?(adapter: VoiceAdapter, session: VoiceSessionHandle): void;
   /** The first join failed; the wish is over. */
@@ -102,9 +134,18 @@ export interface VoiceHooks {
   gaveUp?(): void;
   /** Another wish replaced this one. */
   superseded?(): void;
-  /** What was held for this wish has been ended in the adapter. */
-  released?(adapter: VoiceAdapter | null): Promise<void>;
+  /**
+   * What was held for this wish has been ended in the adapter. `mine()`
+   * turns false once the owner holds something newer.
+   */
+  released?(adapter: VoiceAdapter | null, mine: StillMine): Promise<void>;
 }
+
+/**
+ * Whether the session a hook was started for is still the one the owner
+ * holds. Hooks ask it after every await before touching shared state.
+ */
+export type StillMine = () => boolean;
 
 /** How a wish ended up. */
 export type VoiceOutcome =
@@ -124,6 +165,8 @@ export interface VoiceWish {
 }
 
 class Wish implements VoiceWish {
+  /** Who was signed in when the wish was requested. */
+  user: string | null = null;
   readonly outcome: Promise<VoiceOutcome>;
   readonly released: Promise<void>;
   private resolveOutcome!: (outcome: VoiceOutcome) => void;
@@ -169,8 +212,19 @@ interface Held {
   used: number;
   /** Recovery may run (see `VoiceHooks.needsConfirmation`). */
   confirmed: boolean;
-  /** The 60 s deadline, armed at the loss of the socket that carried the join. */
-  offline: { timer: ReturnType<typeof setTimeout>; passed: boolean } | null;
+  /**
+   * Last moment (wall clock) the session was provably carried by an
+   * authenticated socket: its join went out, or a heartbeat ran while it
+   * was live with the socket up.
+   */
+  aliveAt: number;
+  /**
+   * The 60 s deadline applies (the socket that carried the join is gone).
+   * The timer only wakes the owner; the deadline itself is `aliveAt`.
+   */
+  offline: { timer: ReturnType<typeof setTimeout> } | null;
+  /** An end of the session started outside the runner's turn (`releaseNow`). */
+  ending: Promise<unknown> | null;
 }
 
 interface Tick {
@@ -203,6 +257,14 @@ export class VoiceOwner {
   private tick = newTick();
   private adapterProvider: () => Promise<VoiceAdapter> = async () =>
     (await import("@/lib/webrtc")).createVoiceAdapter();
+  /** The adapter, once the owner has used it (for a synchronous release). */
+  private adapter: VoiceAdapter | null = null;
+  /** Who is signed in (a wish is only ever served for its own user). */
+  private identity: () => string | null = () => null;
+  private shutdownListeners: Array<() => void> = [];
+  private heartbeat: ReturnType<typeof setInterval> | null = null;
+  /** Wall clock of the last heartbeat or wake-up check. */
+  private lastBeat = Date.now();
 
   // --- intent (synchronous) -------------------------------------------------
 
@@ -219,6 +281,7 @@ export class VoiceOwner {
     const next = wish as Wish;
     const previous = this.intent;
     if (previous === next) return next.outcome;
+    next.user = this.identity();
     this.intent = next;
     if (previous) this.retire(previous, false, true);
     this.kick();
@@ -261,6 +324,67 @@ export class VoiceOwner {
   }
 
   /**
+   * The signed-in session ends or is replaced (sign-out, expiry,
+   * revocation, account switch, the window closes). Synchronously: nothing
+   * is wanted any more, the held session is ended in the adapter (local
+   * media released before this returns, `voice_leave` best effort), and
+   * whoever registered with `onShutdown` clears what the user sees. No
+   * intent, recovery or rejoin offer outlives it.
+   */
+  shutdown(): void {
+    const wish = this.intent;
+    this.intent = null;
+    if (wish) this.retire(wish, false, false);
+    if (this.held) this.releaseNow(this.held);
+    for (const listener of this.shutdownListeners) this.tell(listener);
+    this.kick();
+  }
+
+  /** Run `listener` at every `shutdown()` (stores clear their screen state). */
+  onShutdown(listener: () => void): void {
+    this.shutdownListeners.push(listener);
+  }
+
+  /** Who is signed in right now (null: nobody). */
+  useIdentity(identity: () => string | null): void {
+    this.identity = identity;
+  }
+
+  /**
+   * End the held session's adapter session right now, outside the runner's
+   * turn (sign-out, give-up): the adapter releases the local side before
+   * its first await. The runner then finds nothing left to end, and waits
+   * for this end before it joins anything.
+   */
+  private releaseNow(held: Held): void {
+    const session = held.session;
+    const adapter = this.adapter;
+    if (!session || !adapter) return;
+    held.session = null;
+    held.connected = false;
+    try {
+      const ending = held.silent ? adapter.teardown(session) : adapter.leave(session);
+      held.ending = Promise.resolve(ending).catch((err: unknown) => {
+        console.warn("[VoiceOwner] Ending the voice session failed:", err);
+      });
+    } catch (err) {
+      console.warn("[VoiceOwner] Ending the voice session failed:", err);
+    }
+  }
+
+  /**
+   * A wish of someone who is no longer signed in must not be served: end
+   * it like a shutdown (second line of defence behind `shutdown()`).
+   */
+  private endIfForeign(): boolean {
+    const wish = this.intent ?? this.held?.wish ?? null;
+    if (!wish || wish.user === this.identity()) return false;
+    console.warn("[VoiceOwner] The signed-in user changed: ending the voice session");
+    this.shutdown();
+    return true;
+  }
+
+  /**
    * The server removed this socket's peer from `channelId` (C31): a session
    * held for that channel is ended without `voice_leave`, whatever is wanted
    * by now. The caller drops its wish itself.
@@ -275,12 +399,19 @@ export class VoiceOwner {
   socketLost(): void {
     if (!this.socketUp) return;
     this.socketUp = false;
+    if (this.endIfForeign()) return;
     const held = this.held;
     if (held && held.wish === this.intent && held.phase !== "joining") {
-      // The socket that carried this session's join is gone.
+      // The socket that carried this session's join is gone. Reported
+      // right away (the heartbeat is recent) it carried the session until
+      // now; reported after a silence (the device slept) nobody knows when
+      // it went, and the last heartbeat stays the last proof.
+      const now = Date.now();
+      if (held.phase === "live" && now - held.aliveAt <= 2 * HEARTBEAT_MS) held.aliveAt = now;
       this.armOffline(held);
       if (held.wish.hooks.needsConfirmation) held.confirmed = false;
       this.startRecovery(held);
+      this.checkDeadline(held);
     }
     this.kick();
   }
@@ -302,15 +433,41 @@ export class VoiceOwner {
    */
   socketReady(): void {
     this.socketUp = true;
+    if (this.endIfForeign()) return;
     const held = this.held;
     if (held && held.wish === this.intent && held.phase === "live") {
       // The socket that carried this session's join is gone, even if its
-      // loss was never reported: the deadline runs from now at the latest.
+      // loss was never reported: the deadline runs since the last proof.
       this.armOffline(held);
       if (held.wish.hooks.needsConfirmation) held.confirmed = false;
       this.startRecovery(held);
     }
+    if (held && held.wish === this.intent) this.checkDeadline(held);
     this.kick();
+  }
+
+  /**
+   * Compare the clocks: called by the heartbeat, and by whoever notices
+   * that the device may have been away (the page becomes visible, the
+   * network is back). Timers do not run while a device sleeps, so the
+   * deadline is checked against real time here.
+   */
+  wake(): void {
+    const now = Date.now();
+    const gap = now - this.lastBeat;
+    this.lastBeat = now;
+    if (this.endIfForeign()) return;
+    const held = this.held;
+    if (!held || held.wish !== this.intent || held.phase === "joining") return;
+    if (gap >= RECOVERY_OFFLINE_CAP_MS) {
+      // Nothing ran for a minute or more: the device slept, and whatever
+      // carried the session is long gone, reported or not.
+      this.armOffline(held);
+      this.startRecovery(held);
+    } else if (held.phase === "live" && this.socketUp) {
+      held.aliveAt = now;
+    }
+    if (this.checkDeadline(held)) this.kick();
   }
 
   /** The recovery of `wish` may run on the current socket (C33 resync). */
@@ -350,7 +507,7 @@ export class VoiceOwner {
     return this.held?.phase === "recovering" ? this.held.used : 0;
   }
 
-  /** Whether the socket is known to be down (tests). */
+  /** Whether the socket is known to be down. */
   get signallingDown(): boolean {
     return !this.socketUp;
   }
@@ -363,6 +520,13 @@ export class VoiceOwner {
   /** Where the adapter comes from (tests). */
   useAdapter(provider: () => Promise<VoiceAdapter>): void {
     this.adapterProvider = provider;
+    this.adapter = null;
+  }
+
+  private async getAdapter(): Promise<VoiceAdapter> {
+    const adapter = await this.adapterProvider();
+    this.adapter = adapter;
+    return adapter;
   }
 
   // --- adapter events -------------------------------------------------------
@@ -426,6 +590,7 @@ export class VoiceOwner {
   private async run(): Promise<void> {
     for (;;) {
       this.poke();
+      this.endIfForeign();
       const held = this.held;
       if (held && held.wish !== this.intent) {
         // Not wanted any more: end it completely before anything else.
@@ -473,24 +638,29 @@ export class VoiceOwner {
   }
 
   /**
-   * Wait for a set-up or clean-up hook, at most `HOOK_LIMIT_MS`. Hooks only
-   * configure the adapter, so one that is still running after the limit
-   * cannot hold or release anything of a session.
+   * Wait for `work`, at most `ms`; afterwards go on without it (logged
+   * once). Used for hooks, which only configure and are bound to their
+   * session, and for the adapter's end of a session, which has released
+   * the local side before its first await and completes by itself.
    */
-  private async bounded(what: string, work: Promise<void> | undefined): Promise<void> {
-    if (!work) return;
+  private async limited<T>(what: string, work: Promise<T>, ms: number): Promise<T | undefined> {
     let limit: ReturnType<typeof setTimeout> | undefined;
-    const late = new Promise<void>((resolve) => {
+    const late = new Promise<undefined>((resolve) => {
       limit = setTimeout(() => {
-        console.warn(`[VoiceOwner] ${what} is taking too long; going on without it`);
-        resolve();
-      }, HOOK_LIMIT_MS);
+        console.warn(`[VoiceOwner] ${what} did not finish within ${ms} ms; going on without it`);
+        resolve(undefined);
+      }, ms);
     });
     try {
-      await Promise.race([work, late]);
+      return await Promise.race([work, late]);
     } finally {
       clearTimeout(limit);
     }
+  }
+
+  /** Wait for a set-up or clean-up hook, at most `HOOK_LIMIT_MS`. */
+  private async bounded(what: string, work: Promise<void> | undefined): Promise<void> {
+    if (work) await this.limited(what, work, HOOK_LIMIT_MS);
   }
 
   private timer(ms: number): { fired: boolean; cancel: () => void } {
@@ -515,11 +685,15 @@ export class VoiceOwner {
       connected: false,
       used: 0,
       confirmed: true,
+      aliveAt: Date.now(),
       offline: null,
+      ending: null,
     };
     this.held = held;
     const hooks = wish.hooks;
     const gone = () => this.intent !== wish;
+    /** For this wish's hooks: its session is still what the owner holds and wants. */
+    const mine = () => this.held === held && this.intent === wish;
 
     let adapter: VoiceAdapter;
     try {
@@ -527,10 +701,10 @@ export class VoiceOwner {
         const ready = await this.until(hooks.ready, gone);
         if (!ready.done || gone()) return;
       }
-      adapter = await this.adapterProvider();
+      adapter = await this.getAdapter();
       if (gone()) return;
       this.listen(adapter);
-      await this.bounded("Preparing the join", hooks.prepare?.(adapter));
+      await this.bounded("Preparing the join", hooks.prepare?.(adapter, mine));
       if (gone()) return;
     } catch (err) {
       if (gone()) return;
@@ -555,8 +729,12 @@ export class VoiceOwner {
     }
 
     held.phase = "live";
+    held.aliveAt = Date.now(); // its `voice_join` went out just now
+    this.startHeartbeat();
     try {
-      await this.bounded("Setting up the call", hooks.established?.(adapter, session));
+      // Wish-level `mine`: what `established` sets up (push-to-talk) stays
+      // with the wish across recovery attempts.
+      await this.bounded("Setting up the call", hooks.established?.(adapter, session, mine));
     } catch (err) {
       console.warn("[VoiceOwner] Setting up the call failed:", err);
     }
@@ -573,6 +751,7 @@ export class VoiceOwner {
   /** The first join failed: nothing is held, the wish is over. */
   private fail(held: Held, error: VoiceError): void {
     this.held = null;
+    this.stopHeartbeat();
     if (this.intent === held.wish) this.intent = null;
     this.tell(() => held.wish.hooks.failed?.(error));
     held.wish.settle({ type: "failed", error });
@@ -585,21 +764,38 @@ export class VoiceOwner {
     const session = held.session;
     held.session = null;
     let adapter: VoiceAdapter | null = null;
+    if (held.ending) {
+      // Already ended outside the runner's turn (sign-out, give-up).
+      await this.limited("Ending the voice session", held.ending, TEARDOWN_LIMIT_MS);
+      held.ending = null;
+    }
     if (session) {
       try {
-        adapter = await this.adapterProvider();
-        const result = await (held.silent ? adapter.teardown(session) : adapter.leave(session));
-        if (!result.ok) console.error("[VoiceOwner] Ending the voice session failed:", result.error);
+        adapter = await this.getAdapter();
+        const result = await this.limited(
+          "Ending the voice session",
+          held.silent ? adapter.teardown(session) : adapter.leave(session),
+          TEARDOWN_LIMIT_MS,
+        );
+        if (result && !result.ok) {
+          console.error("[VoiceOwner] Ending the voice session failed:", result.error);
+        }
       } catch (err) {
         console.error("[VoiceOwner] Ending the voice session failed:", err);
       }
     }
     try {
-      await this.bounded("Cleaning up after the call", held.wish.hooks.released?.(adapter));
+      await this.bounded(
+        "Cleaning up after the call",
+        held.wish.hooks.released?.(adapter ?? this.adapter, () => this.held === held),
+      );
     } catch (err) {
       console.warn("[VoiceOwner] Cleaning up after the voice session failed:", err);
     }
-    if (this.held === held) this.held = null;
+    if (this.held === held) {
+      this.held = null;
+      this.stopHeartbeat();
+    }
     held.wish.settle({ type: "superseded" });
     held.wish.settleReleased();
   }
@@ -611,11 +807,43 @@ export class VoiceOwner {
     held.session = null;
     held.connected = false;
     try {
-      const result = await adapter.teardown(session);
-      if (!result.ok) console.warn("[VoiceOwner] Dropping the connection failed:", result.error);
+      const result = await this.limited(
+        "Dropping the connection",
+        adapter.teardown(session),
+        TEARDOWN_LIMIT_MS,
+      );
+      if (result && !result.ok) {
+        console.warn("[VoiceOwner] Dropping the connection failed:", result.error);
+      }
     } catch (err) {
       console.warn("[VoiceOwner] Dropping the connection failed:", err);
     }
+  }
+
+  // --- the heartbeat and the deadline in real time ----------------------------
+
+  private startHeartbeat(): void {
+    if (this.heartbeat) return;
+    this.lastBeat = Date.now();
+    this.heartbeat = setInterval(() => this.wake(), HEARTBEAT_MS);
+  }
+
+  private stopHeartbeat(): void {
+    if (!this.heartbeat) return;
+    clearInterval(this.heartbeat);
+    this.heartbeat = null;
+  }
+
+  /** The deadline applies and 60 s of real time have passed since the last proof. */
+  private expired(held: Held): boolean {
+    return !!held.offline && Date.now() - held.aliveAt >= RECOVERY_OFFLINE_CAP_MS;
+  }
+
+  /** Give up if the deadline has passed. Safe to call from any event. */
+  private checkDeadline(held: Held): boolean {
+    if (this.intent !== held.wish || !this.expired(held)) return false;
+    this.giveUp(held, "no socket carried the rejoin for 60 s");
+    return true;
   }
 
   // --- recovery (a phase of the held session) --------------------------------
@@ -628,16 +856,17 @@ export class VoiceOwner {
   }
 
   private armOffline(held: Held): void {
-    // Runs from the first loss; a later loss does not restart it.
+    // Runs from the last proof before the first loss; a later loss does not
+    // restart it. The timer is only a wake-up for the case that the device
+    // stays awake; the deadline itself is compared against the clock.
     if (held.offline) return;
-    const offline = {
-      passed: false,
+    const remaining = Math.max(0, held.aliveAt + RECOVERY_OFFLINE_CAP_MS - Date.now());
+    held.offline = {
       timer: setTimeout(() => {
-        offline.passed = true;
+        if (this.held === held) this.checkDeadline(held);
         this.poke();
-      }, RECOVERY_OFFLINE_CAP_MS),
+      }, remaining),
     };
-    held.offline = offline;
   }
 
   private clearOffline(held: Held): void {
@@ -655,7 +884,7 @@ export class VoiceOwner {
     const gone = () => this.intent !== wish;
     const waiting = () => !this.socketUp || !held.confirmed;
     while (!gone()) {
-      if (held.offline?.passed) return this.giveUp(held, "no socket carried the rejoin for 60 s");
+      if (this.checkDeadline(held)) return;
       if (held.used >= RECOVERY_DELAYS_MS.length) return this.giveUp(held, "three attempts failed");
       if (waiting()) {
         // For the next authenticated socket (and the resync, for a call).
@@ -663,7 +892,7 @@ export class VoiceOwner {
         continue;
       }
       const pause = this.timer(RECOVERY_DELAYS_MS[held.used]);
-      const interrupted = () => gone() || waiting() || !!held.offline?.passed;
+      const interrupted = () => gone() || waiting() || this.expired(held);
       while (!pause.fired && !interrupted()) await this.tick.promise;
       pause.cancel();
       if (interrupted()) continue;
@@ -679,23 +908,29 @@ export class VoiceOwner {
     }
   }
 
-  /** Third failure or the 60 s deadline: the owner itself ends the wish. */
+  /**
+   * Third failure or the 60 s deadline: the owner itself ends the wish.
+   * The local media is released before this returns; the runner then finds
+   * the wish over and finishes the clean-up.
+   */
   private giveUp(held: Held, why: string): void {
+    if (this.intent !== held.wish) return;
     console.warn(`[VoiceOwner] ${this.label(held)}: ${why}, giving up`);
     held.silent = true;
-    if (this.intent === held.wish) this.intent = null;
+    this.intent = null;
+    this.releaseNow(held);
     this.tell(() => held.wish.hooks.gaveUp?.());
-    // The runner now ends what is held, like for any intent that is over.
+    this.kick();
   }
 
   private async attempt(held: Held): Promise<AttemptResult> {
     const wish = held.wish;
     const gone = () => this.intent !== wish;
-    const interrupted = () => gone() || !this.socketUp || !!held.offline?.passed;
+    const interrupted = () => gone() || !this.socketUp || this.expired(held);
 
     let adapter: VoiceAdapter;
     try {
-      adapter = await this.adapterProvider();
+      adapter = await this.getAdapter();
     } catch (err) {
       console.warn("[VoiceOwner] No voice adapter for the rejoin:", err);
       return "failed";
@@ -732,6 +967,9 @@ export class VoiceOwner {
     interrupted: () => boolean,
   ): Promise<AttemptResult> {
     const hooks = held.wish.hooks;
+    /** For this attempt's hooks: its session is still held and wanted. */
+    const mine = () =>
+      this.held === held && this.intent === held.wish && isSameSession(held.session, session);
     const clock = this.timer(RECOVERY_ATTEMPT_TIMEOUT_MS);
     const stop = () => interrupted() || clock.fired;
     const ended = (): AttemptResult => (interrupted() ? "interrupted" : "failed");
@@ -747,10 +985,11 @@ export class VoiceOwner {
       if (interrupted()) return "interrupted";
       // This session's `voice_join` went out on an authenticated socket:
       // the deadline that runs since the loss is met.
+      held.aliveAt = Date.now();
       this.clearOffline(held);
       if (hooks.rejoined) {
         await this.until(
-          hooks.rejoined(adapter, session).catch(() => undefined),
+          hooks.rejoined(adapter, session, mine).catch(() => undefined),
           stop,
         );
       }
@@ -767,7 +1006,7 @@ export class VoiceOwner {
     try {
       if (hooks.restore) {
         await this.until(
-          hooks.restore(adapter, session).catch((err: unknown) => {
+          hooks.restore(adapter, session, mine).catch((err: unknown) => {
             console.warn(`[VoiceOwner] ${this.label(held)}: restore failed:`, err);
           }),
           () => interrupted() || finishing.fired,
@@ -781,6 +1020,7 @@ export class VoiceOwner {
 
     held.phase = "live";
     held.used = 0;
+    held.aliveAt = Date.now();
     this.tell(() => hooks.recovered?.(adapter, session));
     return "connected";
   }

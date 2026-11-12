@@ -28,8 +28,6 @@ import {
   type VoiceSessionHandle,
 } from "./voiceSession";
 
-export { isNativeJoinCancelled, NATIVE_JOIN_CANCELLED } from "./voiceSession";
-
 import * as Sentry from "@sentry/browser";
 
 /** Audio device as returned by the `get_audio_devices` command. */
@@ -159,8 +157,9 @@ export class TauriVoiceAdapter implements VoiceAdapter {
     } catch (err) {
       if (session.ended) return cancelled();
       // The join failed: its session ends here, including whatever native
-      // set up before the error.
-      await this.end(handle, false);
+      // set up before the error. Native tells the server only if it had
+      // got as far as entering the channel.
+      await this.end(handle, true);
       if (isNativeJoinCancelled(err)) {
         // Native cancelled a join this window still wants (e.g. a leave in
         // another window): a failure the user sees, not a silent cancel.

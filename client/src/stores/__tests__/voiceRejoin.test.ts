@@ -394,7 +394,7 @@ describe("voice rejoin (C32)", () => {
     expect(voiceState.sessionId).toBeNull();
   });
 
-  it("no Join for the same channel while reconnecting (R2)", async () => {
+  it("no Join for the same channel while reconnecting", async () => {
     await inCall();
     noteSignallingLost();
     await joinVoice("ch-1");
@@ -541,7 +541,7 @@ describe("voice rejoin (C32)", () => {
     expect(voiceState.state).toBe("connected");
   });
 
-  it("a deafened rejoin is deafened before it reports connected (W1-M10)", async () => {
+  it("a deafened rejoin is deafened before it reports connected", async () => {
     await inCall();
     setVoiceState({ muted: true, deafened: true });
     const hang = joinHangs();
@@ -555,7 +555,7 @@ describe("voice rejoin (C32)", () => {
     await leaveVoice();
   });
 
-  it("Leave while the socket is down always ends the session; the next socket does not rejoin (W1-N1)", async () => {
+  it("Leave while the socket is down always ends the session; the next socket does not rejoin", async () => {
     await inCall();
     noteSignallingLost();
     mockAdapter.leave.mockRejectedValueOnce(new Error("WebSocket not connected"));
@@ -569,7 +569,7 @@ describe("voice rejoin (C32)", () => {
     expect(mockAdapter.join).toHaveBeenCalledTimes(1);
   });
 
-  it("a manual Join that fails during a socket loss leaves no hidden recovery (W1-N2)", async () => {
+  it("a manual Join that fails during a socket loss leaves no hidden recovery", async () => {
     const hang = joinHangs();
     const joining = joinVoice("ch-1").catch(() => undefined);
     await flush();
@@ -585,12 +585,12 @@ describe("voice rejoin (C32)", () => {
     expect(mockAdapter.join).toHaveBeenCalledTimes(1);
   });
 
-  it("a socket drop while the rejoin restores mute keeps recovery and its 60 s deadline (Codex W1b-3)", async () => {
+  it("a socket drop while the rejoin restores mute keeps recovery and its 60 s deadline", async () => {
     await inCall();
     setVoiceState({ deafened: true, muted: true });
     let finishRestore!: () => void;
     mockAdapter.setDeafen
-      .mockResolvedValueOnce({ ok: true }) // right after join (W1-M10)
+      .mockResolvedValueOnce({ ok: true }) // right after join
       .mockImplementationOnce(
         () => new Promise((r) => (finishRestore = () => r({ ok: true }))),
       );
@@ -634,7 +634,7 @@ describe("voice rejoin (C32)", () => {
     expect(mockAdapter.join).toHaveBeenCalledTimes(3);
   });
 
-  it("an attempt the adapter reports as cancelled is ended and the flow goes on (W1-N5)", async () => {
+  it("an attempt the adapter reports as cancelled is ended and the flow goes on", async () => {
     await inCall();
     mockAdapter.join.mockImplementationOnce(async () => ({
       ok: false,
@@ -707,7 +707,7 @@ describe("voice rejoin (C32)", () => {
     expect(voiceState.state).toBe("connected");
   });
 
-  it("a slow leave does not reset a session started after it (W1c audit)", async () => {
+  it("a slow leave does not reset a session started after it", async () => {
     await inCall();
     let leaveDone!: () => void;
     mockAdapter.leave.mockImplementationOnce(

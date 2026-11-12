@@ -141,7 +141,8 @@ const VoicePanel: Component = () => {
                 class="text-xs font-semibold hover:underline"
                 classList={{
                   "text-accent-success": isConnected(),
-                  "text-amber-400 animate-pulse": isConnecting(),
+                  // Readable text keeps the text colour; the icon carries the amber.
+                  "text-text-primary animate-pulse": isConnecting(),
                 }}
               >
                 {statusText()}

@@ -55,7 +55,6 @@ export type CallState =
       participants: string[];
       startedAt: number;
     }
-  | { status: "reconnecting"; channelId: string; countdown: number }
   | {
       status: "ended";
       channelId: string;
@@ -74,6 +73,11 @@ interface CallStoreState {
   callIds: Record<string, string>;
   /** Recently ended call_ids per DM channel; their late events are ignored. */
   endedCallIds: Record<string, string[]>;
+  /**
+   * The voice of the connected call is being restored after a connection
+   * loss (C32): the banner says so; the call itself is still the same.
+   */
+  voiceReconnecting: boolean;
 }
 
 const [callState, setCallState] = createStore<CallStoreState>({
@@ -81,6 +85,7 @@ const [callState, setCallState] = createStore<CallStoreState>({
   activeCallsByChannel: {},
   callIds: {},
   endedCallIds: {},
+  voiceReconnecting: false,
 });
 
 const MAX_ENDED_IDS = 5;
@@ -229,8 +234,10 @@ async function dropCallVoice(
   channelId: string,
   opts: { leaveCall: boolean; silent?: boolean },
 ): Promise<void> {
-  await releaseCallVoice({ silent: opts.silent ?? false });
+  // The server is told without waiting for the voice session to be gone.
+  const released = releaseCallVoice({ silent: opts.silent ?? false });
   if (opts.leaveCall) await leaveCallOnServer(channelId);
+  await released;
 }
 
 /** Tell the server this client left the call (best effort). */
@@ -326,7 +333,7 @@ async function resyncCall(
 
   if (status === "incoming_ringing") {
     if (meIn) answeredElsewhere(channelId);
-    // Declined on another of my devices (R4): handled, not missed.
+    // Declined on another of my devices: handled, not missed.
     else if (!!myUserId && (server!.declined_by ?? []).includes(myUserId)) {
       declinedElsewhere(channelId);
     }
@@ -339,7 +346,7 @@ async function resyncCall(
     return;
   }
   if (!meIn) {
-    // An active call that does not list me is no call for me (R4).
+    // An active call that does not list me is no call for me.
     stopRinging();
     rememberEnded(channelId);
     setCallState("currentCall", { status: "idle" });
@@ -348,7 +355,7 @@ async function resyncCall(
   }
   if (status === "outgoing_ringing") {
     // Answered during the gap: connected, and the voice that went with the
-    // old socket comes back through the recovery (R4, Codex 9).
+    // old socket comes back through the recovery.
     callConnected(
       channelId,
       participants.filter((id) => id !== myUserId),
@@ -392,10 +399,16 @@ function requestCallVoice(
     // C32/C33: rejoin only once the resync says the call is still active
     // and this user is in it.
     needsConfirmation: true,
-    recovered: () => console.info("[Call] Rejoined call voice:", channelId),
+    recovering: () => setCallState("voiceReconnecting", true),
+    recovered: () => {
+      setCallState("voiceReconnecting", false);
+      console.info("[Call] Rejoined call voice:", channelId);
+    },
     gaveUp: () => {
-      // Third failure or 60 s without the rejoin: the call ends here.
+      // Third failure or 60 s without the rejoin: the call ends here and
+      // is left on the server (C33).
       console.warn("[Call] Call voice rejoin gave up:", channelId);
+      setCallState("voiceReconnecting", false);
       if (callVoice === wish) callVoice = null;
       if (callIsLive(token, channelId) && stillCall(channelId, "connected")) {
         endCall(channelId, "last_left");
@@ -405,7 +418,10 @@ function requestCallVoice(
     superseded: () => {
       // The user joined a voice channel instead: that leaves this call.
       // (A newer call has its own token and is not touched.)
-      if (callVoice === wish) callVoice = null;
+      if (callVoice === wish) {
+        callVoice = null;
+        setCallState("voiceReconnecting", false);
+      }
       if (callIsLive(token, channelId)) {
         endCall(channelId, "last_left");
         void leaveCallOnServer(channelId);
@@ -425,11 +441,31 @@ function requestCallVoice(
 function releaseCallVoice(opts: { silent: boolean }): Promise<void> {
   const wish = callVoice;
   callVoice = null;
+  setCallState("voiceReconnecting", false);
   return voiceOwner.drop(wish, opts);
 }
 
+// The signed-in session ends: no call, no ring and no call voice of it is
+// left for whoever signs in next (the owner has already ended the session).
+voiceOwner.onShutdown(() => {
+  callVoice = null;
+  callToken = null;
+  if (ringCapTimer) clearTimeout(ringCapTimer);
+  ringCapTimer = null;
+  if (callEndedTimeoutId) clearTimeout(callEndedTimeoutId);
+  callEndedTimeoutId = null;
+  stopRinging();
+  setCallState({
+    currentCall: { status: "idle" },
+    activeCallsByChannel: {},
+    callIds: {},
+    endedCallIds: {},
+    voiceReconnecting: false,
+  });
+});
+
 /**
- * Hang-up / cancel, step 1 (W1-N3): the voice session of the call is over
+ * Hang-up / cancel, step 1: the voice session of the call is over
  * BEFORE the server is told, so nothing can rejoin behind the hang-up.
  * Call it synchronously, before any await.
  */
@@ -442,13 +478,16 @@ export function leaveCallVoice(): Promise<void> {
  * the recovery may run on the new socket.
  */
 function rejoinCallVoice(): Promise<void> {
+  // The answer came over the new socket. If that socket has dropped again
+  // meanwhile, the next one brings its own resync.
+  if (voiceOwner.signallingDown) return Promise.resolve();
   voiceOwner.socketReady();
   voiceOwner.confirm(callVoice);
   return isCallRecoveryRunning() ? voiceOwner.whenCalm() : Promise.resolve();
 }
 
 /**
- * C31 `voice_removed` for the DM call's voice (R3, W1-I4): the voice
+ * C31 `voice_removed` for the DM call's voice: the voice
  * session is over without `voice_leave` and is never rejoined, and the
  * call is left here without ending it on the server (with
  * `session_replaced` it goes on on the other device). The call goes idle,

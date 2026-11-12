@@ -288,6 +288,54 @@ describe("session lifecycle with the real service stores", () => {
     await flush();
   });
 
+  describe("voice ends with the signed-in session", () => {
+    /** A voice session held by the voice owner, as if the user were in a channel. */
+    async function inVoice() {
+      const { voiceOwner } = await import("../voiceOwner");
+      const userWhenEnded: unknown[] = [];
+      const adapter = {
+        join: vi.fn(async (session: unknown) => ({ ok: true, value: session })),
+        leave: vi.fn(async () => {
+          userWhenEnded.push(authState.user);
+          return { ok: true };
+        }),
+        teardown: vi.fn(async () => ({ ok: true })),
+        setEventHandlers: vi.fn(),
+      };
+      voiceOwner.useAdapter(async () => adapter as never);
+      const wish = voiceOwner.wish("channel", "ch-voice", {});
+      await voiceOwner.request(wish);
+      return { voiceOwner, adapter, wish, userWhenEnded };
+    }
+
+    it("sign-out ends voice before the account is cleared, and nothing rejoins", async () => {
+      setAuthState({ user: { id: "u1", username: "anna" } as User });
+      const { voiceOwner, adapter, wish, userWhenEnded } = await inVoice();
+
+      const signingOut = logout();
+      // Synchronously with the sign-out, while the account is still there.
+      expect(adapter.leave).toHaveBeenCalledTimes(1);
+      expect(userWhenEnded).toEqual([expect.objectContaining({ id: "u1" })]);
+      expect(voiceOwner.wants(wish)).toBe(false);
+      await expectSettled(signingOut, "logout");
+      expect(authState.user).toBeNull();
+      expect(adapter.join).toHaveBeenCalledTimes(1);
+    });
+
+    it("an ended session (expired, revoked) ends voice at once too", async () => {
+      await expectSettled(initAuth(), "initAuth");
+      setAuthState({ user: { id: "u1", username: "anna" } as User });
+      const { adapter, voiceOwner, wish } = await inVoice();
+
+      window.dispatchEvent(
+        new CustomEvent("kaiku:session-ended", { detail: { reason: "revoked" } }),
+      );
+      expect(adapter.leave).toHaveBeenCalledTimes(1);
+      expect(voiceOwner.wants(wish)).toBe(false);
+      await flush();
+    });
+  });
+
   it("logout while the WebSocket listeners register leaves no Tauri listener behind", async () => {
     // Restore A: every listener registration (6 WebSocket + 1 presence) is
     // still waiting on IPC when the user signs out.
