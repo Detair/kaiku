@@ -15,10 +15,18 @@
 //!   keys, newest first, so a file deleted just now does not wait behind an old backlog; the
 //!   *retry* lane takes due retries (`attempts > 0`, `next_attempt_at <= now()`), the longest-due
 //!   first, so a key that failed is retried once its backoff ran out however many new keys arrive.
-//!   A lane may use what the other leaves unused. Within the tick the two lanes alternate, so a
-//!   slow store shares the wall time between them.
+//!   A lane may use what the other leaves unused. The claimed keys are sorted explicitly (claims
+//!   return no order) and executed alternating, a retry first, so both lanes progress when the time
+//!   budget ends mid-tick. A claimed key that was not attempted is released with its original due
+//!   time and attempt count; only a failed attempt advances the backoff.
+//! - **Retry guarantee.** Every tick attempts at least one due retry, always the longest-due one:
+//!   the first call of a tick is a retry, and a delete is limited to [`DELETE_TIMEOUT`], half of
+//!   [`TICK_BUDGET`], so at least two calls fit. Unattempted retries keep their place, and keys
+//!   that become due later queue behind them. So the retry at position p of the due queue is
+//!   attempted within p ticks (p × [`TICK_INTERVAL`]), however slow the store and however many new
+//!   keys arrive.
 //! - **Try now.** After a delete commits, [`spawn_drain`] tries exactly the keys that delete queued
-//!   (fresh only), nothing older.
+//!   (fresh only, at most [`TRY_NOW_ROWS`]); the rest is the worker's.
 //! - **Bounds.** At most [`TICK_ROWS`] keys and [`TICK_BUDGET`] wall time per tick; every object
 //!   delete gives up after [`DELETE_TIMEOUT`]. Keys claimed but not reached in time are released
 //!   without counting.
@@ -148,14 +156,25 @@ enum Lane {
     Retry,
 }
 
+/// A claimed key with the state it had before the claim's lease.
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct Claimed {
+    s3_key: String,
+    attempts: i32,
+    /// `next_attempt_at` before the lease; restored on release.
+    due_at: chrono::DateTime<chrono::Utc>,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
 /// Claim up to `limit` due keys of one lane (optionally only `only`), and
 /// lease them. One atomic statement; committed before any store call.
+/// `RETURNING` has no order: callers sort with [`sort_lane`].
 async fn claim(
     pool: &PgPool,
     lane: Lane,
     limit: i64,
     only: Option<&[String]>,
-) -> sqlx::Result<Vec<(String, i32)>> {
+) -> sqlx::Result<Vec<Claimed>> {
     if limit <= 0 {
         return Ok(Vec::new());
     }
@@ -165,7 +184,7 @@ async fn claim(
             "UPDATE storage_pending_deletes d
              SET next_attempt_at = NOW() + make_interval(secs => $2)
              FROM (
-                 SELECT s3_key FROM storage_pending_deletes
+                 SELECT s3_key, next_attempt_at AS due_at FROM storage_pending_deletes
                  WHERE next_attempt_at <= NOW() AND attempts = 0
                    AND ($3::text[] IS NULL OR s3_key = ANY($3))
                  ORDER BY created_at DESC, s3_key
@@ -173,13 +192,13 @@ async fn claim(
                  FOR UPDATE SKIP LOCKED
              ) due
              WHERE d.s3_key = due.s3_key
-             RETURNING d.s3_key, d.attempts"
+             RETURNING d.s3_key, d.attempts, due.due_at, d.created_at"
         }
         Lane::Retry => {
             "UPDATE storage_pending_deletes d
              SET next_attempt_at = NOW() + make_interval(secs => $2)
              FROM (
-                 SELECT s3_key FROM storage_pending_deletes
+                 SELECT s3_key, next_attempt_at AS due_at FROM storage_pending_deletes
                  WHERE next_attempt_at <= NOW() AND attempts > 0
                    AND ($3::text[] IS NULL OR s3_key = ANY($3))
                  ORDER BY next_attempt_at, s3_key
@@ -187,7 +206,7 @@ async fn claim(
                  FOR UPDATE SKIP LOCKED
              ) due
              WHERE d.s3_key = due.s3_key
-             RETURNING d.s3_key, d.attempts"
+             RETURNING d.s3_key, d.attempts, due.due_at, d.created_at"
         }
     };
     sqlx::query_as(sql)
@@ -198,25 +217,36 @@ async fn claim(
         .await
 }
 
-/// Claim one tick's keys: half the budget per lane, each lane may use what
-/// the other leaves. Returns `(fresh, retries)`.
-async fn claim_lanes(
-    pool: &PgPool,
-    max_rows: i64,
-) -> sqlx::Result<(Vec<(String, i32)>, Vec<(String, i32)>)> {
+/// Put a lane's claimed keys in execution order: retries longest-due
+/// first, fresh keys newest first (key as tie-breaker).
+fn sort_lane(lane: Lane, keys: &mut [Claimed]) {
+    match lane {
+        Lane::Retry => keys.sort_by(|a, b| (a.due_at, &a.s3_key).cmp(&(b.due_at, &b.s3_key))),
+        Lane::Fresh => {
+            keys.sort_by(|a, b| (b.created_at, &a.s3_key).cmp(&(a.created_at, &b.s3_key)));
+        }
+    }
+}
+
+/// Claim one tick's keys (half the budget per lane, each lane may use what
+/// the other leaves) and return them in execution order: the lanes
+/// alternate, a retry first.
+async fn claim_tick(pool: &PgPool, max_rows: i64) -> sqlx::Result<Vec<Claimed>> {
     let half = max_rows / 2;
     let mut retries = claim(pool, Lane::Retry, half, None).await?;
-    let fresh = claim(pool, Lane::Fresh, max_rows - len_i64(&retries), None).await?;
+    let mut fresh = claim(pool, Lane::Fresh, max_rows - len_i64(&retries), None).await?;
     let left = max_rows - len_i64(&retries) - len_i64(&fresh);
     retries.extend(claim(pool, Lane::Retry, left, None).await?);
-    Ok((fresh, retries))
+    sort_lane(Lane::Retry, &mut retries);
+    sort_lane(Lane::Fresh, &mut fresh);
+    Ok(interleave(retries, fresh))
 }
 
 fn len_i64<T>(v: &[T]) -> i64 {
     i64::try_from(v.len()).unwrap_or(i64::MAX)
 }
 
-/// The two lanes alternating: fresh, retry, fresh, retry, …
+/// Two lanes alternating: a, b, a, b, … (the rest of the longer one last).
 fn interleave<T>(a: Vec<T>, b: Vec<T>) -> Vec<T> {
     let mut out = Vec::with_capacity(a.len() + b.len());
     let (mut a, mut b) = (a.into_iter(), b.into_iter());
@@ -240,8 +270,8 @@ pub async fn drain_pending_deletes<S: ObjectStore>(
     let Some(store) = store else {
         return Ok(DrainReport::default());
     };
-    let (fresh, retries) = claim_lanes(pool, limits.max_rows).await?;
-    delete_claimed(pool, store, limits, interleave(fresh, retries), None).await
+    let claimed = claim_tick(pool, limits.max_rows).await?;
+    delete_claimed(pool, store, limits, claimed, None).await
 }
 
 /// Delete the claimed keys in order; stop early at the wall-time budget or
@@ -250,23 +280,24 @@ async fn delete_claimed<S: ObjectStore>(
     pool: &PgPool,
     store: &S,
     limits: DrainLimits,
-    claimed: Vec<(String, i32)>,
+    claimed: Vec<Claimed>,
     stop: Option<&tokio::sync::watch::Receiver<bool>>,
 ) -> sqlx::Result<DrainReport> {
     let mut report = DrainReport::default();
     let started = Instant::now();
     let mut rest = claimed.into_iter();
-    for (key, attempts) in rest.by_ref() {
+    for claimed in rest.by_ref() {
         let left = limits.budget.saturating_sub(started.elapsed());
         if left.is_zero() || stop.is_some_and(|s| *s.borrow()) {
-            release(pool, &key).await?;
+            release(pool, &claimed).await?;
             report.released += 1;
             break;
         }
-        match store.delete_object(&key, limits.per_delete.min(left)).await {
+        let (key, attempts) = (&claimed.s3_key, claimed.attempts);
+        match store.delete_object(key, limits.per_delete.min(left)).await {
             Ok(()) => {
                 sqlx::query("DELETE FROM storage_pending_deletes WHERE s3_key = $1")
-                    .bind(&key)
+                    .bind(key)
                     .execute(pool)
                     .await?;
                 report.deleted += 1;
@@ -293,7 +324,7 @@ async fn delete_claimed<S: ObjectStore>(
                          next_attempt_at = NOW() + make_interval(secs => $3)
                      WHERE s3_key = $1",
                 )
-                .bind(&key)
+                .bind(key)
                 .bind(attempts)
                 .bind(interval_secs(backoff(attempts)))
                 .execute(pool)
@@ -302,17 +333,20 @@ async fn delete_claimed<S: ObjectStore>(
             }
         }
     }
-    for (key, _) in rest {
-        release(pool, &key).await?;
+    for claimed in rest {
+        release(pool, &claimed).await?;
         report.released += 1;
     }
     Ok(report)
 }
 
-/// Give a claimed key back without counting an attempt.
-async fn release(pool: &PgPool, key: &str) -> sqlx::Result<()> {
-    sqlx::query("UPDATE storage_pending_deletes SET next_attempt_at = NOW() WHERE s3_key = $1")
-        .bind(key)
+/// Give a claimed key back unattempted: its original due time (its place
+/// in the queue) and attempt count are restored; only a failed attempt
+/// advances the backoff.
+async fn release(pool: &PgPool, claimed: &Claimed) -> sqlx::Result<()> {
+    sqlx::query("UPDATE storage_pending_deletes SET next_attempt_at = $2 WHERE s3_key = $1")
+        .bind(&claimed.s3_key)
+        .bind(claimed.due_at)
         .execute(pool)
         .await?;
     Ok(())
@@ -410,10 +444,8 @@ async fn run_tick_until<S: ObjectStore>(
         tracing::warn!(error = %e, "Clean-up of files of earlier deleted messages failed");
     }
     let drained = match store {
-        Some(store) => match claim_lanes(pool, limits.max_rows).await {
-            Ok((fresh, retries)) => {
-                delete_claimed(pool, store, limits, interleave(fresh, retries), Some(stop)).await
-            }
+        Some(store) => match claim_tick(pool, limits.max_rows).await {
+            Ok(claimed) => delete_claimed(pool, store, limits, claimed, Some(stop)).await,
             Err(e) => Err(e),
         },
         None => Ok(DrainReport::default()),
@@ -529,21 +561,30 @@ pub fn spawn_drain(state: &AppState, keys: Vec<String>) {
     let pool = state.db.clone();
     let s3 = state.s3.clone();
     tokio::spawn(async move {
-        let result = async {
-            let mut claimed = Vec::new();
-            for chunk in keys.chunks(usize::try_from(TRY_NOW_ROWS).unwrap_or(50)) {
-                claimed.extend(claim(&pool, Lane::Fresh, TRY_NOW_ROWS, Some(chunk)).await?);
-            }
-            match s3.as_ref() {
-                Some(s3) => delete_claimed(&pool, s3, DrainLimits::TRY_NOW, claimed, None).await,
-                None => Ok(DrainReport::default()),
-            }
-        }
-        .await;
-        if let Err(e) = result {
+        let Some(s3) = s3 else { return };
+        if let Err(e) = drain_keys(&pool, &s3, &keys).await {
             tracing::warn!(error = %e, "Draining pending object deletes failed");
         }
     });
+}
+
+/// The post-delete drain: claim and delete up to [`TRY_NOW_ROWS`] of
+/// `keys` (fresh, due ones only); the rest stay queued for the worker.
+pub async fn drain_keys<S: ObjectStore>(
+    pool: &PgPool,
+    store: &S,
+    keys: &[String],
+) -> sqlx::Result<DrainReport> {
+    let mut claimed: Vec<Claimed> = Vec::new();
+    for chunk in keys.chunks(usize::try_from(TRY_NOW_ROWS).unwrap_or(50)) {
+        let room = TRY_NOW_ROWS - len_i64(&claimed);
+        if room <= 0 {
+            break;
+        }
+        claimed.extend(claim(pool, Lane::Fresh, room, Some(chunk)).await?);
+    }
+    sort_lane(Lane::Fresh, &mut claimed);
+    delete_claimed(pool, store, DrainLimits::TRY_NOW, claimed, None).await
 }
 
 /// Object keys (original and variants) of a message's attachments; read
@@ -572,6 +613,13 @@ mod tests {
         assert_eq!(mins, [1, 2, 4, 8, 16, 32, 64, 128, 256, 360]);
         assert_eq!(backoff(0), BACKOFF_BASE);
         assert_eq!(backoff(i32::MAX), BACKOFF_MAX);
+    }
+
+    /// The retry guarantee needs at least two store calls per tick.
+    #[test]
+    fn two_deletes_fit_into_a_tick() {
+        assert!(DELETE_TIMEOUT * 2 <= TICK_BUDGET);
+        assert!(TICK_ROWS >= 2);
     }
 
     #[test]

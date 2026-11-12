@@ -8,7 +8,8 @@ use std::time::{Duration, Instant};
 use sqlx::PgPool;
 use uuid::Uuid;
 use vc_server::chat::storage_cleanup::{
-    backfill_batch, drain_pending_deletes, spawn_with, DrainLimits, ObjectStore,
+    backfill_batch, drain_keys, drain_pending_deletes, spawn_with, DrainLimits, ObjectStore,
+    TRY_NOW_ROWS,
 };
 use vc_server::permissions::GuildPermissions;
 
@@ -283,6 +284,123 @@ async fn retries_are_served_despite_steady_inflow(pool: PgPool) {
         );
     }
     assert_eq!(retried_by_tick, [1, 0, 0, 0], "retries done within 2 ticks");
+}
+
+/// A slow store (about three deletes per tick), a full retry backlog and
+/// new keys on every tick: retries are attempted strictly longest-due
+/// first, at least one per tick, and a claimed-but-unattempted retry keeps
+/// its original due time and attempt count (it never loses its place).
+/// Bound: the retry at position p of the due queue is attempted by tick p.
+#[sqlx::test]
+async fn slow_store_keeps_retry_order_and_bound(pool: PgPool) {
+    let store = Fake {
+        delay: Duration::from_millis(100),
+        ..Fake::default()
+    };
+    // 12 due retries, retry/00 the longest due.
+    for i in 0..12 {
+        let key = format!("retry/{i:02}");
+        queue(&pool, &key, 3600.0).await;
+        sqlx::query(
+            "UPDATE storage_pending_deletes
+             SET attempts = 1, next_attempt_at = NOW() - make_interval(mins => $2)
+             WHERE s3_key = $1",
+        )
+        .bind(&key)
+        .bind(60 - i)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    let due_before: HashMap<String, (i32, f64)> = retry_rows(&pool).await;
+    let tick = DrainLimits {
+        max_rows: 20,
+        budget: Duration::from_millis(350),
+        per_delete: Duration::from_secs(1),
+    };
+
+    let mut attempted_total = 0;
+    for t in 1..=6 {
+        for j in 0..10 {
+            queue(&pool, &format!("new/{t}/{j}"), 0.0).await;
+        }
+        drain_pending_deletes(&pool, Some(&store), tick)
+            .await
+            .unwrap();
+
+        // Attempted = deleted, or failed (the delete hit the tick's time
+        // bound) and so rescheduled with one more attempt.
+        let left = retry_rows(&pool).await;
+        let was_attempted = |key: &str| left.get(key).is_none_or(|row| row.0 != due_before[key].0);
+        let attempted = (0..12)
+            .filter(|i| was_attempted(&format!("retry/{i:02}")))
+            .count();
+        assert!(
+            attempted >= t,
+            "tick {t}: only {attempted} retries attempted"
+        );
+        assert!(attempted > attempted_total, "tick {t}: no retry attempted");
+        attempted_total = attempted;
+        for i in 0..12 {
+            let key = format!("retry/{i:02}");
+            // Strict order: the attempted retries are exactly the oldest.
+            assert_eq!(
+                was_attempted(&key),
+                i < attempted,
+                "tick {t}: {key} out of order"
+            );
+            // Not attempted: original due time and attempts kept.
+            if i >= attempted {
+                let (row, before) = (left[&key], due_before[&key]);
+                assert!(
+                    (row.1 - before.1).abs() < 0.001,
+                    "tick {t}: {key} lost its place"
+                );
+            }
+        }
+        let fresh_done = store
+            .calls
+            .lock()
+            .unwrap()
+            .keys()
+            .filter(|k| k.starts_with(&format!("new/{t}/")))
+            .count();
+        assert!(fresh_done >= 1, "tick {t}: no new key served");
+    }
+}
+
+/// Due retry rows: key → (attempts, due time as epoch seconds).
+async fn retry_rows(pool: &PgPool) -> HashMap<String, (i32, f64)> {
+    let rows: Vec<(String, i32, f64)> = sqlx::query_as(
+        "SELECT s3_key, attempts, EXTRACT(EPOCH FROM next_attempt_at)::float8
+         FROM storage_pending_deletes WHERE s3_key LIKE 'retry/%'",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap();
+    rows.into_iter().map(|(k, a, d)| (k, (a, d))).collect()
+}
+
+/// The post-delete drain handles at most `TRY_NOW_ROWS` keys, however many
+/// the delete queued; the rest stay due for the worker, untouched.
+#[sqlx::test]
+async fn try_now_drain_is_capped(pool: PgPool) {
+    let store = Fake::default();
+    let keys: Vec<String> = (0..300).map(|i| format!("acct/{i:03}")).collect();
+    for k in &keys {
+        queue(&pool, k, 0.0).await;
+    }
+    let r = drain_keys(&pool, &store, &keys).await.unwrap();
+    let cap = usize::try_from(TRY_NOW_ROWS).unwrap();
+    assert_eq!(r.deleted, cap);
+    assert_eq!(store.calls.lock().unwrap().len(), cap);
+    let due_untouched: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM storage_pending_deletes WHERE attempts = 0 AND next_attempt_at <= NOW()",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(due_untouched, 300 - i64::try_from(cap).unwrap());
 }
 
 /// `shutdown` ends a tick after the store call in progress (bounded by the
