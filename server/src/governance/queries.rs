@@ -444,11 +444,24 @@ pub async fn list_user_export_s3_keys(pool: &PgPool, user_id: Uuid) -> sqlx::Res
 
 /// Delete a user row, cascading to all dependent tables. Returns rows affected.
 #[tracing::instrument(skip(pool))]
+///
+/// The user's messages stay (anonymized), but their files go: the attachment
+/// rows are removed in the same transaction, which queues the stored objects
+/// for deletion (`storage_pending_deletes`).
 pub async fn delete_user(pool: &PgPool, user_id: Uuid) -> sqlx::Result<u64> {
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "DELETE FROM file_attachments fa USING messages m
+         WHERE m.id = fa.message_id AND m.user_id = $1",
+    )
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await?;
     let result = sqlx::query("DELETE FROM users WHERE id = $1")
         .bind(user_id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
+    tx.commit().await?;
     Ok(result.rows_affected())
 }
 

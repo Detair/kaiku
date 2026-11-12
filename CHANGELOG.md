@@ -147,6 +147,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Password and single sign-on sign-ins on a second phone are confirmed by scanning with your key phone.
 
 ### Security
+- Deleting a message now also deletes its files, including previews. Files of messages deleted earlier, of deleted channels and servers, and of deleted accounts are removed from storage as well; a failed removal is retried every minute.
 - Files in a channel can only be opened by people who can see that channel: download, previews and file links now follow the channel's permissions (and DM membership), not just server membership. Files of deleted messages can no longer be opened.
 - Losing access now also ends a running voice call: a member who is kicked, banned, leaves the server, loses the permission to see or join the voice channel, or whose channel is deleted is removed from the voice channel at once. Their app gets the new `voice_removed` event with the reason; the others see them leave.
 - Removing a member, taking a role away, changing a role's permissions or a channel's permissions, and deleting a channel now take effect immediately on open connections: a member who can no longer see a channel stops receiving its messages and typing at once. Every connection also re-checks its channels and admin events at least once a minute.

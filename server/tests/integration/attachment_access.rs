@@ -257,3 +257,155 @@ async fn deleted_message_attachment_is_refused(pool: PgPool) {
 
     assert_eq!(read_statuses(&app, &token, attachment).await, [403, 403, 403]);
 }
+
+// ---------------------------------------------------------------------------
+// Deleting a message deletes its files
+// ---------------------------------------------------------------------------
+
+async fn pending_keys(pool: &PgPool) -> Vec<String> {
+    sqlx::query_scalar("SELECT s3_key FROM storage_pending_deletes ORDER BY s3_key")
+        .fetch_all(pool)
+        .await
+        .unwrap()
+}
+
+async fn attachment_rows(pool: &PgPool, message: Uuid) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM file_attachments WHERE message_id = $1")
+        .bind(message)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// The author deletes a message: its attachment rows go in the same
+/// transaction, the stored objects (original and thumbnail) are deleted and
+/// the file cannot be opened any more.
+#[sqlx::test]
+async fn deleting_message_removes_rows_and_objects(pool: PgPool) {
+    if !rustfs_available().await {
+        eprintln!("skipping: object storage not reachable");
+        return;
+    }
+    let (app, _bucket) = fresh_test_app_with_s3_and_pool(pool.clone()).await;
+    let (owner, _) = create_test_user(&pool).await;
+    let guild = create_guild_with_default_role(&pool, owner, member_perms()).await;
+    let channel = create_channel(&pool, guild, "general").await;
+    let message = insert_message(&pool, channel, owner, "file").await;
+    let (attachment, keys) = stored_attachment(&app, message).await;
+    let token = generate_access_token(&app.config, owner);
+
+    let req = TestApp::request(Method::DELETE, &format!("/api/messages/{message}"))
+        .header("Authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(app.oneshot(req).await.status(), 204);
+
+    assert_eq!(attachment_rows(&pool, message).await, 0, "rows removed");
+
+    // The objects are deleted right after the commit (background task).
+    let s3 = app.state.s3.as_ref().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !pending_keys(&pool).await.is_empty() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "objects still queued: {:?}",
+            pending_keys(&pool).await
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    for key in &keys {
+        assert!(
+            s3.get_object_stream(key).await.is_err(),
+            "object {key} still stored"
+        );
+    }
+
+    assert_eq!(read_statuses(&app, &token, attachment).await, [403, 403, 403]);
+}
+
+/// Rows removed by a cascade (channel deletion) queue their objects too.
+#[sqlx::test]
+async fn channel_delete_queues_objects(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (owner, _) = create_test_user(&pool).await;
+    let guild = create_guild_with_default_role(&pool, owner, member_perms()).await;
+    let channel = create_channel(&pool, guild, "general").await;
+    let message = insert_message(&pool, channel, owner, "file").await;
+    sqlx::query(
+        "INSERT INTO file_attachments (message_id, filename, mime_type, size_bytes, s3_key, thumbnail_s3_key, medium_s3_key)
+         VALUES ($1, 'a.png', 'image/png', 1, 'k/a.png', 'k/a_thumb.webp', 'k/a_medium.webp')",
+    )
+    .bind(message)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    sqlx::query("DELETE FROM channels WHERE id = $1")
+        .bind(channel)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        pending_keys(&pool).await,
+        vec!["k/a.png", "k/a_medium.webp", "k/a_thumb.webp"]
+    );
+}
+
+/// A failed object delete is logged and stays queued for the next sweep.
+#[sqlx::test]
+async fn failed_object_delete_stays_queued(pool: PgPool) {
+    let app = TestApp::with_pool_and_unreachable_s3(pool.clone()).await;
+    let (owner, _) = create_test_user(&pool).await;
+    let guild = create_guild_with_default_role(&pool, owner, member_perms()).await;
+    let channel = create_channel(&pool, guild, "general").await;
+    let message = insert_message(&pool, channel, owner, "file").await;
+    super::helpers::insert_attachment(&pool, message).await;
+    sqlx::query("UPDATE messages SET deleted_at = NOW() WHERE id = $1")
+        .bind(message)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(attachment_rows(&pool, message).await, 0);
+
+    let deleted = vc_server::chat::storage_cleanup::drain_pending_deletes(
+        &pool,
+        app.state.s3.as_ref(),
+        10,
+    )
+    .await
+    .unwrap();
+    assert_eq!(deleted, 0);
+    let attempts: i32 =
+        sqlx::query_scalar("SELECT attempts FROM storage_pending_deletes WHERE s3_key = $1")
+            .bind("uploads/test.png")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(attempts, 1);
+}
+
+/// Account deletion removes the files of the (anonymized) messages.
+#[sqlx::test]
+async fn account_deletion_removes_files(pool: PgPool) {
+    let _app = TestApp::with_pool(pool.clone()).await;
+    let (owner, _) = create_test_user(&pool).await;
+    let (leaver, _) = create_test_user(&pool).await;
+    let guild = create_guild_with_default_role(&pool, owner, member_perms()).await;
+    add_guild_member(&pool, guild, leaver).await;
+    let channel = create_channel(&pool, guild, "general").await;
+    let message = insert_message(&pool, channel, leaver, "file").await;
+    super::helpers::insert_attachment(&pool, message).await;
+    sqlx::query("UPDATE users SET deletion_scheduled_at = NOW() - INTERVAL '1 minute' WHERE id = $1")
+        .bind(leaver)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    vc_server::governance::deletion::process_pending_deletions(&pool, &None)
+        .await
+        .unwrap();
+
+    assert_eq!(attachment_rows(&pool, message).await, 0);
+    assert_eq!(pending_keys(&pool).await, vec!["uploads/test.png"]);
+}

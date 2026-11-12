@@ -903,6 +903,10 @@ pub async fn delete(
     let deleted = db::delete_message(&state.db, id, auth_user.id).await?;
 
     if deleted {
+        // The delete removed the attachment rows and queued their objects
+        // (database trigger); delete the objects now.
+        super::storage_cleanup::spawn_drain(&state);
+
         // Clean up channel pin if message was pinned
         if matches!(
             queries::delete_channel_pin(&state.db, channel_id, id).await,

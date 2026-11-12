@@ -49,6 +49,8 @@ Text messaging with end-to-end encryption (E2EE) using vodozemac (Olm/Megolm), f
 
 **Soft Deletes**: Messages set `deleted_at` timestamp instead of hard delete. Content replaced with `[deleted]` in responses.
 
+**Attachment clean-up** (migration `20261123000000`): a message that becomes soft-deleted loses its `file_attachments` rows in the same transaction (trigger `messages_soft_delete_attachments`), and every removed attachment row (also by FK cascade: channel, server, forum post) queues its original/thumbnail/medium keys in `storage_pending_deletes` (trigger `file_attachments_queue_objects`). `storage_cleanup::drain_pending_deletes` deletes the objects: right after a message delete (`spawn_drain`) and every minute in the auth sweep (`auth/timers.rs`), which retries failed deletes. Account deletion removes the attachment rows of the user's messages before the user row.
+
 ### Author Shape and Presence
 
 `AuthorProfile` (`types.rs`) is `{ id, username, display_name, avatar_url, status }`. `status` is a wire-compat placeholder that is always `"offline"` (`AUTHOR_STATUS_PLACEHOLDER`); message, pin, thread and bot-gateway payloads never carry live presence. Live presence reaches clients only through the WebSocket presence store (`presence_update` events to the presence audience). Do not populate `status` from `users.status`.
@@ -76,6 +78,8 @@ Text messaging with end-to-end encryption (E2EE) using vodozemac (Olm/Megolm), f
   uploaded objects
 - New send paths must go through `send::authorize_send` and
   `send::dispatch_new_message`; do not duplicate the checks
+
+**Attachment access** (`get_attachment`, `download`, `get_signed_url`): `authorize_attachment_read` resolves the attachment's channel (`db::find_attachment_channel`, message not deleted) and requires `permissions::require_channel_access`. Unknown, deleted and refused attachments all answer 403 `FORBIDDEN`.
 
 **Download Endpoint**: `GET /api/messages/attachments/:id/download`
 - Public route with auth via `?token=jwt` query parameter (browser compatibility)

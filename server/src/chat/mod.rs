@@ -22,6 +22,7 @@ pub mod reactions;
 pub mod read_only;
 pub mod s3;
 pub mod send;
+pub mod storage_cleanup;
 pub mod types;
 pub mod unread;
 pub(crate) mod uploads;
