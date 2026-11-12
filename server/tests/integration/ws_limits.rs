@@ -203,3 +203,85 @@ async fn per_ip_cap_uses_trusted_proxy_header(pool: PgPool) {
         assert_alive(ws).await;
     }
 }
+
+/// A household behind one address reconnects every device at once after a
+/// restart (5 people x 3 devices) with the default limits, rate limiting
+/// switched on: every socket gets `ready`, twice in a row within the rate
+/// window (a second reconnect wave).
+#[sqlx::test]
+async fn household_reconnect_wave_fits_the_default_limits(pool: PgPool) {
+    use std::collections::HashSet;
+
+    use vc_server::api::{AppState, AppStateConfig};
+    use vc_server::config::Config;
+    use vc_server::ratelimit::{RateLimitConfig, RateLimiter, RateLimits};
+    use vc_server::voice::sfu::SfuServer;
+
+    let config = Config::default_for_test();
+    let redis = vc_server::db::create_redis_client(&config.redis_url)
+        .await
+        .expect("test Valkey");
+    let mut limiter = RateLimiter::new(
+        redis.clone(),
+        RateLimitConfig {
+            enabled: true,
+            redis_key_prefix: format!("test:rl:{}", uuid::Uuid::new_v4()),
+            fail_open: false,
+            trusted_proxies: TrustedProxies::default(),
+            allowlist: HashSet::new(),
+            limits: RateLimits::default(),
+        },
+    );
+    limiter.init().await.expect("init limiter");
+    let state = AppState::new(AppStateConfig {
+        db: pool.clone(),
+        redis,
+        config: config.clone(),
+        s3: None,
+        sfu: SfuServer::new(Arc::new(config.clone()), None).expect("sfu"),
+        rate_limiter: Some(limiter),
+        screen_share_limiter: None,
+        email: None,
+        oidc_manager: None,
+        http_client: reqwest::Client::new(),
+    });
+    let server = spawn_test_server(create_router(state)).await;
+
+    let mut tokens = Vec::new();
+    for _ in 0..5 {
+        let (user, _) = create_test_user(&pool).await;
+        tokens.push(generate_access_token(&config, user));
+    }
+    for _wave in 0..2 {
+        let connects = tokens
+            .iter()
+            .flat_map(|t| std::iter::repeat_n(t, 3))
+            .map(|t| connect_ready(&server, t));
+        let mut sockets = futures::future::join_all(connects).await;
+        assert_eq!(sockets.len(), 15);
+        for ws in &mut sockets {
+            assert_alive(ws).await;
+        }
+        for ws in &mut sockets {
+            ws.close(None).await.expect("close");
+        }
+        drop(sockets);
+        // The slots are released once each socket task finished its cleanup.
+        let deadline = tokio::time::Instant::now() + EVENT_TIMEOUT;
+        while tokio::time::Instant::now() < deadline && server_ip_slots_busy(&server).await {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+}
+
+/// Whether a probe socket is refused at the address cap (the previous wave's
+/// slots not released yet). A probe that gets through is closed again.
+async fn server_ip_slots_busy(server: &TestServer) -> bool {
+    match connect_with_headers(server, None, &[]).await {
+        Ok(mut ws) => {
+            let _ = ws.close(None).await;
+            false
+        }
+        Err(_) => true,
+    }
+}

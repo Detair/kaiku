@@ -280,6 +280,56 @@ mod tests {
     }
 
     #[test]
+    fn ipv4_mapped_clients_bucket_by_their_ipv4_address() {
+        let t = tracker(10, 1);
+        let headers = HeaderMap::new();
+        let mapped = |ip: &str| {
+            ConnectInfo(SocketAddr::new(
+                IpAddr::V6(ip.parse::<std::net::Ipv6Addr>().unwrap()),
+                1000,
+            ))
+        };
+        let a = t.client_ip_key(&headers, Some(&mapped("::ffff:192.0.2.1")));
+        let b = t.client_ip_key(&headers, Some(&mapped("::ffff:198.51.100.2")));
+        assert_eq!(a, "192.0.2.1");
+        assert_eq!(b, "198.51.100.2");
+        let _held = t.try_acquire_ip(a).expect("first client");
+        assert!(
+            t.try_acquire_ip(b).is_some(),
+            "other client shares the bucket"
+        );
+    }
+
+    #[test]
+    fn proxy_warning_only_without_trusted_proxy_off_loopback() {
+        let open = tracker(10, 30);
+        assert!(open.proxy_warning_applies("0.0.0.0:8080"));
+        assert!(open.proxy_warning_applies("[::]:8080"));
+        assert!(!open.proxy_warning_applies("127.0.0.1:8080"));
+        assert!(!open.proxy_warning_applies("[::1]:8080"));
+        assert!(!open.proxy_warning_applies("localhost:8080"));
+        let proxied = WsConnectionTracker::new(
+            ConnectionLimits {
+                per_user: 10,
+                per_ip: 30,
+            },
+            TrustedProxies::parse("10.0.0.0/8").unwrap(),
+        );
+        assert!(!proxied.proxy_warning_applies("0.0.0.0:8080"));
+    }
+
+    #[test]
+    fn shutdown_token_reaches_every_holder() {
+        let t = tracker(10, 30);
+        let token = t.shutdown_token();
+        assert!(!token.is_cancelled());
+        let _permit = t.try_acquire_ip("192.0.2.1".into()).expect("permit");
+        assert_eq!(t.open_sockets(), 1);
+        t.begin_shutdown();
+        assert!(token.is_cancelled());
+    }
+
+    #[test]
     fn forwarded_header_counts_only_from_trusted_proxy() {
         let t = WsConnectionTracker::new(
             ConnectionLimits {
