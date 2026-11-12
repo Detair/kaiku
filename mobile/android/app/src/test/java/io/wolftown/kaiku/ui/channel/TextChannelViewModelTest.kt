@@ -32,6 +32,7 @@ import org.junit.Test
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class TextChannelViewModelTest {
@@ -665,6 +666,24 @@ class TextChannelViewModelTest {
         advanceUntilIdle()
 
         assertEquals(id, viewModel.failureNotice.value)
+    }
+
+    @Test
+    fun `a failure event that arrives after the message was deleted brings no notice back`() = runTest {
+        viewModel = loadedViewModel()
+        advanceUntilIdle()
+        coEvery { chatRepository.sendMessage("ch-1", "hi", 1L) } throws RuntimeException("boom")
+        // Deletes the message right when its failure is emitted, before the view model sees the event.
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            outgoing.failures.collect { failed -> viewModel.onDiscardPending(failed.localId) }
+        }
+        viewModel.onMessageInputChanged("hi")
+        viewModel.onSendMessage()
+        advanceUntilIdle()
+
+        assertTrue(viewModel.pendingMessages.value.isEmpty())
+        assertNull(viewModel.failureNotice.value)
+        assertNull(viewModel.error.value) // nothing left to report
     }
 
     @Test

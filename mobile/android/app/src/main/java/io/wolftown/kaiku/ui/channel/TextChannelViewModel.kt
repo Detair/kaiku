@@ -150,20 +150,20 @@ class TextChannelViewModel @Inject constructor(
         // A send that fails while this chat is open is also reported in a snackbar.
         viewModelScope.launch {
             outgoing.failures.collect { failed ->
-                if (failed.channelId == channelId) {
+                // The event can arrive after the message was already deleted, retried or
+                // dropped (sign-out): then there is nothing left to report.
+                if (failed.channelId == channelId && isStillFailed(failed.localId)) {
                     // Set before the error, so the screen sees the id when it shows the snackbar.
                     _failureNotice.value = failed.localId
                     _error.value = pendingFailureRes(failed.failure)
                 }
             }
         }
-        // The snapshot, not the emitted list: the failure may be newer than the list.
+        // Reconciled against the current snapshot on every change of the pending messages.
         viewModelScope.launch {
             outgoing.pending(channelId).collect {
                 val id = _failureNotice.value ?: return@collect
-                val stillFailed = outgoing.pendingNow(channelId)
-                    .any { it.localId == id && it.state == PendingMessage.State.FAILED }
-                if (!stillFailed) _failureNotice.compareAndSet(id, null)
+                if (!isStillFailed(id)) _failureNotice.compareAndSet(id, null)
             }
         }
         // C28: coalescing edits older notices, so the Kaiku DM reloads its latest page on every reconnect.
@@ -176,6 +176,9 @@ class TextChannelViewModel @Inject constructor(
             }
         }
     }
+
+    private fun isStillFailed(localId: String): Boolean =
+        outgoing.pendingNow(channelId).any { it.localId == localId && it.state == PendingMessage.State.FAILED }
 
     /** The screen is resumed: no notifications for this channel, and clear the shown one. */
     fun onVisible() {

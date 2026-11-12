@@ -69,9 +69,10 @@ fun newIncoming(previousLastId: String?, messages: List<Message>, currentUserId:
 }
 
 /**
- * Keeps the end of the chat in view while the user is there. Whether the
- * user is "at the end" changes only while the list scrolls; when the content
- * below grows or the view gets smaller without a scroll (a message turns into
+ * Keeps the end of the chat in view while the user is there. A scroll that
+ * leaves the end stops following; a list that rests at the end (after the
+ * user's or the screen's own scroll) follows again. When the content below
+ * grows or the view gets smaller without a scroll (a message turns into
  * "not sent" with Retry and Delete, the keyboard or a snackbar opens),
  * [shouldReturnToEnd] asks the screen to scroll back to the end.
  */
@@ -80,7 +81,10 @@ internal class EndFollower {
 
     /** Every change of the list's scroll state. */
     fun onScrollState(scrolling: Boolean, canScrollForward: Boolean) {
-        if (scrolling) following = !canScrollForward
+        when {
+            scrolling -> following = !canScrollForward
+            !canScrollForward -> following = true // resting at the end
+        }
     }
 
     /** The screen moved the list away from the end itself (for example to keep older messages in place). */

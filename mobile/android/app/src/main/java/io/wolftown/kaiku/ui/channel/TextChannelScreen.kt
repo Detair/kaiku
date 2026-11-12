@@ -14,7 +14,6 @@ import androidx.compose.ui.semantics.heading
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import androidx.compose.foundation.gestures.scrollBy
@@ -89,20 +88,18 @@ fun TextChannelScreen(
         viewModel.error.filterNotNull().collectLatest { res ->
             viewModel.clearError()
             val retry = res == R.string.chat_send_failed || res == R.string.chat_upload_failed
-            // A "not sent" snackbar goes away once its message is deleted, retried or sent.
-            val failedId = if (isPendingFailureRes(res)) viewModel.failureNotice.value else null
-            val result = coroutineScope {
-                val watcher = failedId?.let { id ->
-                    launch {
-                        viewModel.failureNotice.first { it != id }
-                        snackbarHostState.currentSnackbarData?.dismiss()
-                    }
+            val message = context.getString(res)
+            val actionLabel = if (retry) context.getString(R.string.common_retry) else null
+            val result = if (isPendingFailureRes(res)) {
+                // A "not sent" snackbar belongs to one failed message. Already handled
+                // (deleted, retried, sent) before it got here: nothing to show.
+                val failedId = viewModel.failureNotice.value ?: return@collectLatest
+                // Withdrawn as soon as that message is handled, also while still queued.
+                snackbarHostState.showSnackbarUntil(message, actionLabel) {
+                    viewModel.failureNotice.first { it != failedId }
                 }
-                snackbarHostState.showSnackbar(
-                    message = context.getString(res),
-                    actionLabel = if (retry) context.getString(R.string.common_retry) else null,
-                    withDismissAction = true
-                ).also { watcher?.cancel() }
+            } else {
+                snackbarHostState.showSnackbar(message = message, actionLabel = actionLabel, withDismissAction = true)
             }
             if (retry && result == SnackbarResult.ActionPerformed) viewModel.onRetryFailed()
         }
@@ -127,7 +124,11 @@ fun TextChannelScreen(
             .collect { (scrolling, canScrollForward) ->
                 endFollower.onScrollState(scrolling, canScrollForward)
                 if (loadAnchorId == null && endFollower.shouldReturnToEnd(scrolling, canScrollForward)) {
-                    listState.scrollToEnd()
+                    // Someone else's message taller than the view is shown from its start.
+                    val lastIsIncoming = pendingMessages.isEmpty() &&
+                        messages.lastOrNull()?.author?.id.let { it != null && it != currentUserId }
+                    // A touch or another scroll may interrupt this; following must survive that.
+                    ignoringInterruption { listState.scrollToEnd(alignStartOfTallLast = lastIsIncoming) }
                 }
             }
     }
@@ -548,11 +549,20 @@ private fun DaySeparator(label: DayLabel) {
     }
 }
 
-/** Scrolls to the very end, also when the last item is taller than the view. */
-private suspend fun androidx.compose.foundation.lazy.LazyListState.scrollToEnd() {
+/**
+ * Scrolls to the very end, also when the last item is taller than the view.
+ * With [alignStartOfTallLast], such a tall last item is shown from its start instead.
+ */
+private suspend fun androidx.compose.foundation.lazy.LazyListState.scrollToEnd(alignStartOfTallLast: Boolean) {
     val last = layoutInfo.totalItemsCount - 1
     if (last < 0) return
     scrollToItem(last)
+    if (alignStartOfTallLast) {
+        val info = layoutInfo
+        val item = info.visibleItemsInfo.lastOrNull { it.index == last }
+        val viewport = info.viewportEndOffset - info.viewportStartOffset
+        if (item != null && item.size > viewport) return
+    }
     var steps = 0
     while (canScrollForward && steps++ < 8) {
         scrollBy(layoutInfo.viewportSize.height.coerceAtLeast(1).toFloat())
