@@ -60,6 +60,14 @@ describe("FriendsList", () => {
     expect(mocks.openDirectMessage).toHaveBeenCalledTimes(2);
   });
 
+  it("the row says who is online and their status, not only the name (UX2 K12)", () => {
+    render(() => <FriendsList />);
+    const row = screen.getByTestId("friend-open");
+    const desc = document.getElementById(row.getAttribute("aria-describedby")!);
+    expect(desc?.textContent).toContain("Online");
+    expect(desc?.textContent).toContain("@anna");
+  });
+
   it("asks before removing a friend", () => {
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     render(() => <FriendsList />);

@@ -163,6 +163,7 @@ export const chat = {
   "chat.search.syntax.exclude": "Without this word",
   "chat.emoji.search": "Search emoji",
   "chat.emoji.pickerLabel": "Choose an emoji",
+  "chat.suggestions.label": "Suggestions",
   "chat.lightbox.label": "Picture",
   "chat.emoji.noResults": "No emoji found. Try another word.",
   "chat.emoji.recent": "Recently used",

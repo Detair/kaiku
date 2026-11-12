@@ -4,7 +4,7 @@
  * Displays friends with tabs for Online, All, Pending, and Blocked.
  */
 
-import { Component, createEffect, createSignal, For, onMount, Show } from "solid-js";
+import { Component, createEffect, createSignal, createUniqueId, For, onMount, Show } from "solid-js";
 import { Users, Search, UserPlus, MessageSquare } from "lucide-solid";
 import { t, plural } from "@/i18n";
 import type { MessageKey } from "@/i18n";
@@ -392,6 +392,8 @@ const FriendItem: Component<FriendItemProps> = (props) => {
 
   const canMessage = () => props.tab === "all" || props.tab === "online";
 
+  const infoId = createUniqueId();
+
   return (
     <div data-testid="friend-item" class="flex items-center gap-3 p-3 rounded-lg hover:bg-white/5 transition-colors">
       {/* Avatar and name open the conversation for friends (NAV-3) */}
@@ -402,6 +404,7 @@ const FriendItem: Component<FriendItemProps> = (props) => {
         disabled={!canMessage()}
         onClick={() => props.onMessage(props.friend.user_id)}
         aria-label={canMessage() ? t("home.friends.messageTo", { name: props.friend.display_name }) : undefined}
+        aria-describedby={infoId}
       >
       {/* Avatar */}
       <div class="relative" aria-hidden="true">
@@ -413,8 +416,11 @@ const FriendItem: Component<FriendItemProps> = (props) => {
         </Show>
       </div>
 
-      {/* Info */}
-      <div class="flex-1 min-w-0">
+      {/* Info: also the description of the button above (UX2 K12) */}
+      <div id={infoId} class="flex-1 min-w-0">
+        <Show when={props.friend.is_online && props.tab !== "blocked"}>
+          <span class="sr-only">{t("home.status.online")}</span>
+        </Show>
         <div class="font-semibold text-text-primary truncate">
           {props.friend.display_name}
         </div>

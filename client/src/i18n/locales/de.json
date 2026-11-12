@@ -635,6 +635,7 @@
   "chat.send.limitExceeded": "",
   "chat.send.readOnly": "",
   "chat.send.uploadsUnavailable": "",
+  "chat.suggestions.label": "",
   "chat.thread.close": "",
   "chat.thread.empty": "",
   "chat.thread.lastReply": "",
