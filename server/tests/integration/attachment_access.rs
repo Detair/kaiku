@@ -379,7 +379,7 @@ async fn channel_delete_queues_objects(pool: PgPool) {
     );
 }
 
-/// A failed object delete is logged and stays queued for the next sweep.
+/// A failed object delete is logged and stays queued for a later tick.
 #[sqlx::test]
 async fn failed_object_delete_stays_queued(pool: PgPool) {
     let app = TestApp::with_pool_and_unreachable_s3(pool.clone()).await;
@@ -395,11 +395,15 @@ async fn failed_object_delete_stays_queued(pool: PgPool) {
         .unwrap();
     assert_eq!(attachment_rows(&pool, message).await, 0);
 
-    let deleted =
-        vc_server::chat::storage_cleanup::drain_pending_deletes(&pool, app.state.s3.as_ref(), 10)
-            .await
-            .unwrap();
-    assert_eq!(deleted, 0);
+    let report = vc_server::chat::storage_cleanup::drain_pending_deletes(
+        &pool,
+        app.state.s3.as_ref(),
+        vc_server::chat::storage_cleanup::DrainLimits::TICK,
+    )
+    .await
+    .unwrap();
+    assert_eq!(report.deleted, 0);
+    assert_eq!(report.failed, 1);
     let attempts: i32 =
         sqlx::query_scalar("SELECT attempts FROM storage_pending_deletes WHERE s3_key = $1")
             .bind("uploads/test.png")

@@ -94,17 +94,5 @@ pub async fn run_once(state: &AppState) -> anyhow::Result<()> {
         }
     }
 
-    // 8. Stored objects of removed attachments (retries failed deletes).
-    if let Err(e) = crate::chat::storage_cleanup::drain_pending_deletes(
-        &state.db,
-        state.s3.as_ref(),
-        crate::chat::storage_cleanup::DRAIN_BATCH,
-    )
-    .await
-    {
-        tracing::warn!(error = %e, "sweep: pending object deletes failed");
-        first_err.get_or_insert_with(|| e.into());
-    }
-
     first_err.map_or(Ok(()), Err)
 }

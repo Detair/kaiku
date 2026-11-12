@@ -296,6 +296,39 @@ pub fn register_metrics() {
             .with_description("Spans dropped due to queue overflow")
             .build()
     });
+    register_storage_cleanup_gauges(&meter);
+}
+
+/// Object keys waiting for deletion (outbox `storage_pending_deletes`).
+static STORAGE_PENDING_DELETES: AtomicU64 = AtomicU64::new(0);
+/// Age in seconds of the oldest key waiting for deletion.
+static STORAGE_OLDEST_PENDING_SECONDS: AtomicU64 = AtomicU64::new(0);
+
+/// Record the object-cleanup queue state (set once per worker tick).
+pub fn set_storage_pending_deletes(pending: u64, oldest_age_seconds: u64) {
+    STORAGE_PENDING_DELETES.store(pending, Ordering::Relaxed);
+    STORAGE_OLDEST_PENDING_SECONDS.store(oldest_age_seconds, Ordering::Relaxed);
+}
+
+fn register_storage_cleanup_gauges(meter: &opentelemetry::metrics::Meter) {
+    static REGISTERED: std::sync::Once = std::sync::Once::new();
+    REGISTERED.call_once(|| {
+        meter
+            .u64_observable_gauge("kaiku_storage_pending_deletes")
+            .with_description("Stored objects waiting for deletion")
+            .with_callback(|observer| {
+                observer.observe(STORAGE_PENDING_DELETES.load(Ordering::Relaxed), &[]);
+            })
+            .build();
+        meter
+            .u64_observable_gauge("kaiku_storage_oldest_pending_delete_seconds")
+            .with_description("Age of the oldest stored object waiting for deletion")
+            .with_unit("s")
+            .with_callback(|observer| {
+                observer.observe(STORAGE_OLDEST_PENDING_SECONDS.load(Ordering::Relaxed), &[]);
+            })
+            .build();
+    });
 }
 
 /// Register database pool metrics as observable gauges with callbacks.
