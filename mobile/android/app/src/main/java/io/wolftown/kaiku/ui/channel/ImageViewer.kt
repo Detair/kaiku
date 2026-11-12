@@ -38,12 +38,46 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import coil3.compose.AsyncImage
+import coil3.compose.LocalPlatformContext
+import coil3.request.ImageRequest
+import coil3.request.maxBitmapSize
+import coil3.size.Precision
+import coil3.size.Scale
+import coil3.size.Size as CoilSize
+import kotlin.math.roundToInt
 import io.wolftown.kaiku.R
 import io.wolftown.kaiku.domain.model.Attachment
 import io.wolftown.kaiku.ui.shared.resolveServerUrl
 
 private const val MAX_ZOOM = 5f
 private const val DOUBLE_TAP_ZOOM = 2.5f
+
+/**
+ * Longest side the viewer decodes a photo at. Large enough that zooming shows
+ * real detail, small enough for memory (about 64 MB at most) and for the GPU's
+ * texture limit on common devices.
+ */
+internal const val MAX_VIEWER_DECODE_PX = 4096
+
+internal data class DecodeSize(val width: Int, val height: Int)
+
+/**
+ * The size the viewer decodes a photo of [width] x [height] at: its own size,
+ * scaled down so the longest side is at most [MAX_VIEWER_DECODE_PX]. Unknown
+ * dimensions give the cap on both sides (only a bound; the photo is never scaled up).
+ */
+internal fun viewerDecodeSize(width: Int?, height: Int?): DecodeSize {
+    if (width == null || height == null || width <= 0 || height <= 0) {
+        return DecodeSize(MAX_VIEWER_DECODE_PX, MAX_VIEWER_DECODE_PX)
+    }
+    val longest = maxOf(width, height)
+    if (longest <= MAX_VIEWER_DECODE_PX) return DecodeSize(width, height)
+    val factor = MAX_VIEWER_DECODE_PX.toDouble() / longest
+    return DecodeSize(
+        (width * factor).roundToInt().coerceAtLeast(1),
+        (height * factor).roundToInt().coerceAtLeast(1),
+    )
+}
 
 /** Next zoom after a pinch; pure so the bounds can be unit tested. */
 internal fun clampZoom(current: Float, factor: Float): Float = (current * factor).coerceIn(1f, MAX_ZOOM)
@@ -76,8 +110,22 @@ fun ImageViewer(
                 .fillMaxSize()
                 .background(Color.Black)
         ) {
+            // The original, decoded at full resolution (up to the cap) instead of
+            // the screen size, so zooming in shows detail instead of pixels.
+            val context = LocalPlatformContext.current
+            val url = resolveServerUrl(attachment.url)
+            val request = remember(url, attachment.width, attachment.height) {
+                val target = viewerDecodeSize(attachment.width, attachment.height)
+                ImageRequest.Builder(context)
+                    .data(url)
+                    .size(target.width, target.height)
+                    .scale(Scale.FIT)
+                    .precision(Precision.INEXACT) // never scale a smaller photo up
+                    .maxBitmapSize(CoilSize(MAX_VIEWER_DECODE_PX, MAX_VIEWER_DECODE_PX))
+                    .build()
+            }
             AsyncImage(
-                model = resolveServerUrl(attachment.url),
+                model = request,
                 contentDescription = attachment.filename,
                 contentScale = ContentScale.Fit,
                 modifier = Modifier
