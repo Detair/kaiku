@@ -518,7 +518,7 @@ describe("voice rejoin (C32)", () => {
     const joining = joinVoice("ch-1").catch(() => undefined);
     await flush();
     noteSignallingLost();
-    expect(isVoiceRejoinRunning()).toBe(true);
+    expect(isVoiceRejoinRunning()).toBe(false); // a pending join has no session to recover
     hang.release(false); // the join fails (WS timeout)
     await joining;
     expect(voiceState.state).toBe("disconnected");
@@ -599,5 +599,79 @@ describe("voice rejoin (C32)", () => {
     await flush();
     expect(voiceRejoinAttemptsUsed()).toBe(0);
     await leaveVoice();
+  });
+
+  it("(b) manual join pending through a socket loss, then fails: no recovery, no voice_join", async () => {
+    const hang = joinHangs();
+    const joining = joinVoice("ch-1").catch(() => undefined);
+    await flush();
+    noteSignallingLost();
+    expect(isVoiceRejoinRunning()).toBe(false); // nothing established yet
+    void rejoinVoiceAfterReconnect(); // socket back
+    await vi.advanceTimersByTimeAsync(1000); // where an attempt would bump the epoch
+    hang.release(false);
+    await joining;
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(mockAdapter.join).toHaveBeenCalledTimes(1);
+    expect(isVoiceRejoinRunning()).toBe(false);
+    expect(voiceState.state).toBe("disconnected");
+    expect(voiceState.channelId).toBeNull();
+  });
+
+  it("(c) manual join succeeded, then a socket loss: recovery runs (control)", async () => {
+    await inCall();
+    noteSignallingLost();
+    expect(isVoiceRejoinRunning()).toBe(true);
+    joinConnects();
+    const flow = rejoinVoiceAfterReconnect();
+    await vi.advanceTimersByTimeAsync(1000);
+    await flow;
+    expect(mockAdapter.join).toHaveBeenCalledTimes(2);
+    expect(voiceState.state).toBe("connected");
+  });
+
+  it("(d) an older join failing late leaves a newer session and its recovery alone", async () => {
+    const older = joinHangs();
+    const olderJoin = joinVoice("ch-1").catch(() => undefined);
+    await flush();
+    // The user leaves and joins another channel while the old one hangs.
+    await leaveVoice();
+    mockAdapter.join.mockResolvedValueOnce({ ok: true });
+    await joinVoice("ch-2");
+    handlers!.onStateChange("connected");
+    expect(voiceState.channelId).toBe("ch-2");
+
+    noteSignallingLost();
+    expect(isVoiceRejoinRunning()).toBe(true);
+    older.release(false);
+    await olderJoin;
+    expect(isVoiceRejoinRunning()).toBe(true);
+    expect(voiceState.channelId).toBe("ch-2");
+
+    joinConnects();
+    const flow = rejoinVoiceAfterReconnect();
+    await vi.advanceTimersByTimeAsync(1000);
+    await flow;
+    expect(mockAdapter.join).toHaveBeenLastCalledWith("ch-2", { epoch: expect.any(Number) });
+    expect(voiceState.state).toBe("connected");
+  });
+
+  it("a slow leave does not reset a session started after it (W1c audit)", async () => {
+    await inCall();
+    let leaveDone!: () => void;
+    mockAdapter.leave.mockImplementationOnce(
+      () => new Promise((r) => (leaveDone = () => r({ ok: true }))),
+    );
+    const leaving = leaveVoice();
+    await flush();
+    mockAdapter.join.mockResolvedValueOnce({ ok: true });
+    const joining = joinVoice("ch-2");
+    await flush();
+    leaveDone();
+    await leaving;
+    await joining;
+    expect(voiceState.channelId).toBe("ch-2");
+    expect(voiceState.state).not.toBe("disconnected");
   });
 });

@@ -31,6 +31,8 @@ export const RECOVERY_OFFLINE_CAP_MS = 60_000;
 export interface RecoverySession {
   /** For logs. */
   label: string;
+  /** Token of the join that established the session this flow recovers. */
+  owner?: number;
   /**
    * One attempt under `epoch`: drop the old connections without
    * `voice_leave`, join again and resolve once the publisher is connected
@@ -69,6 +71,11 @@ export class VoiceRecovery {
   /** Whether a flow is running (waiting, sleeping or attempting). */
   get running(): boolean {
     return this.session !== null;
+  }
+
+  /** Owner token of the running flow (`RecoverySession.owner`). */
+  get owner(): number | undefined {
+    return this.session?.owner;
   }
 
   /** Attempts used up by the running flow (tests). */
