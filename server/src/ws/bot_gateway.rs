@@ -878,7 +878,7 @@ mod feature_gate_tests {
         assert_eq!(message_count(&pool, forum).await, 1);
     }
 
-    /// Sending needs the bot's own VIEW_CHANNEL: a channel hidden from
+    /// Sending needs the bot's own `VIEW_CHANNEL`: a channel hidden from
     /// `@everyone` refuses the bot (it would not receive its messages either).
     #[sqlx::test]
     async fn bot_cannot_send_into_hidden_channel(pool: PgPool) {

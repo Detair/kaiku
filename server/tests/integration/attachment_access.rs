@@ -545,7 +545,7 @@ async fn query_token_still_works_and_stays_out_of_traces(pool: PgPool) {
     };
     let capture = Capture::default();
     let subscriber = tracing_subscriber::registry().with(capture.clone());
-    let _guard = tracing::subscriber::set_default(subscriber);
+    let guard = tracing::subscriber::set_default(subscriber);
 
     let req = TestApp::request(
         Method::GET,
@@ -554,7 +554,7 @@ async fn query_token_still_works_and_stays_out_of_traces(pool: PgPool) {
     .body(Body::empty())
     .unwrap();
     let status = app.oneshot(req).await.status();
-    drop(_guard);
+    drop(guard);
     assert_eq!(status, 200);
 
     let recorded = capture.0.lock().unwrap().clone();
