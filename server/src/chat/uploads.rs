@@ -268,7 +268,7 @@ pub async fn upload_file(
     // Every object this upload may write is queued for deletion first; the
     // transaction that stores the attachment row takes the keys out again.
     // An error or a cancelled request in between leaves nothing behind.
-    let pending = announce_upload(&state.db, s3, &s3_key).await?;
+    let mut pending = announce_upload(&state.db, s3, &s3_key).await?;
 
     // Process image before S3 upload (clones data internally for spawn_blocking)
     let file_size = file_data.len() as i64;
@@ -312,7 +312,9 @@ pub async fn upload_file(
             media.processing_status,
         )
         .await?;
-        pending.keep_in(&mut tx).await?;
+        pending
+            .keep_in(&mut tx, stored_keys(&s3_key, &media))
+            .await?;
         tx.commit().await?;
         Ok(attachment)
     }
@@ -487,7 +489,7 @@ pub async fn upload_message_with_file(
     // transaction that stores the message and its attachment takes the keys
     // out again. An error or a cancelled request in between leaves nothing
     // behind.
-    let pending = announce_upload(&state.db, s3, &s3_key).await?;
+    let mut pending = announce_upload(&state.db, s3, &s3_key).await?;
 
     // Process image before S3 upload (clones data internally for spawn_blocking)
     let file_size = file_data.len() as i64;
@@ -526,7 +528,9 @@ pub async fn upload_message_with_file(
             media.processing_status,
         )
         .await?;
-        pending.keep_in(&mut tx).await?;
+        pending
+            .keep_in(&mut tx, stored_keys(&s3_key, &media))
+            .await?;
         tx.commit().await?;
         Ok::<_, sqlx::Error>((message, attachment))
     }
@@ -1131,6 +1135,15 @@ fn variant_keys(base_s3_key: &str) -> [String; 2] {
         format!("{base_key}_thumb.webp"),
         format!("{base_key}_medium.webp"),
     ]
+}
+
+/// The keys an attachment row references: the original and the variants
+/// that were stored.
+fn stored_keys(s3_key: &str, media: &MediaProcessingOutput) -> Vec<String> {
+    std::iter::once(s3_key.to_string())
+        .chain(media.thumb_key.clone())
+        .chain(media.medium_key.clone())
+        .collect()
 }
 
 /// Queue the original and both possible variants of an upload for deletion

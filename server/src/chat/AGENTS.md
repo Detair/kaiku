@@ -49,7 +49,7 @@ Text messaging with end-to-end encryption (E2EE) using vodozemac (Olm/Megolm), f
 
 **Soft Deletes**: Messages set `deleted_at` timestamp instead of hard delete. Content replaced with `[deleted]` in responses.
 
-**Attachment clean-up** (migration `20261123000000`): a message that becomes soft-deleted loses its `file_attachments` rows in the same transaction (trigger `messages_soft_delete_attachments`), and every removed attachment row (also by FK cascade: channel, server, forum post) queues its original/thumbnail/medium keys in `storage_pending_deletes` (trigger `file_attachments_queue_objects`). The object-cleanup worker (`storage_cleanup::spawn`, its own task every 30 s, started in `main.rs`) deletes the objects; `spawn_drain(state, keys)` tries exactly the keys a delete just queued (message delete, admin account deletion). Claims use `FOR UPDATE SKIP LOCKED` plus a 5-min lease, each delete has a 10 s limit, a tick at most 200 keys and 20 s, split into two lanes of 100 (due retries, longest-due first; never-tried keys, newest first; each lane may use what the other leaves); `spawn` returns a `CleanupWorker` whose `shutdown()` stops it after the store call in progress; failures back off 1 min doubling to 6 h (`attempts`, `next_attempt_at`) and are logged at error level every 20 attempts, never dropped. The same worker removes attachment rows of messages deleted before the migration in batches of 200 (`storage_cleanup_backfill`). Gauges `kaiku_storage_pending_deletes`, `kaiku_storage_oldest_pending_delete_seconds`. Account deletion removes the attachment rows of the user's messages before the user row. **Uploads** (`uploads.rs`) use the same outbox the other way round: `storage_cleanup::UploadKeys::announce` queues the keys of the original and both variants, due after `UPLOAD_GRACE` (30 min), **before** the first write to the object store; the transaction that inserts the attachment row takes them out again (`keep_in`), so its commit hands the objects to the row. An upload that fails or whose request is cancelled at any point (client gone, server shutting down, process killed) leaves its keys queued and the worker deletes the objects; dropping the guard makes them due at once.
+**Attachment clean-up** (migration `20261123000000`): a message that becomes soft-deleted loses its `file_attachments` rows in the same transaction (trigger `messages_soft_delete_attachments`), and every removed attachment row (also by FK cascade: channel, server, forum post) queues its original/thumbnail/medium keys in `storage_pending_deletes` (trigger `file_attachments_queue_objects`). The object-cleanup worker (`storage_cleanup::spawn`, its own task every 30 s, started in `main.rs`) deletes the objects; `spawn_drain(state, keys)` tries exactly the keys a delete just queued (message delete, admin account deletion). Claims use `FOR UPDATE SKIP LOCKED` plus a 5-min lease, each delete has a 10 s limit, a tick at most 200 keys and 20 s, split into two lanes of 100 (due retries, longest-due first; never-tried keys, newest first; each lane may use what the other leaves); `spawn` returns a `CleanupWorker` whose `shutdown()` stops it after the store call in progress; failures back off 1 min doubling to 6 h (`attempts`, `next_attempt_at`) and are logged at error level once per key — at its 8th failed attempt or after 6 h in the queue, whichever comes first (`escalates`) — never dropped; the admin guide (`docs/admin-guide/ops/observability-runbook.md`, "Files that cannot be deleted") says how to find them. The same worker removes attachment rows of messages deleted before the migration in batches of 200 (`storage_cleanup_backfill`). Gauges `kaiku_storage_pending_deletes`, `kaiku_storage_oldest_pending_delete_seconds`. Account deletion removes the attachment rows of the user's messages before the user row. **Uploads** (`uploads.rs`) use the same outbox the other way round: `storage_cleanup::UploadKeys::announce` queues the keys of the original and both variants, due after `UPLOAD_GRACE` (30 min), **before** the first write to the object store; the transaction that inserts the attachment row takes the keys it references out again (`keep_in`), so its commit hands those objects to the row; an announced variant that was not stored stays queued and is removed. An upload that fails or whose request is cancelled at any point (client gone, server shutting down, process killed) leaves its keys queued and the worker deletes the objects; dropping the guard makes them due at once.
 
 ### Author Shape and Presence
 
@@ -74,8 +74,10 @@ Text messaging with end-to-end encryption (E2EE) using vodozemac (Olm/Megolm), f
   variants + original under `attachments/{channel}/{message_id}/{file_id}.{ext}`
   → one transaction inserting message (pre-chosen UUIDv7) + attachment →
   `send::dispatch_new_message`
-- Atomic: a storage failure leaves no message row; a DB failure deletes the
-  uploaded objects
+- Atomic: a storage failure leaves no message row; the keys of the original
+  and both variants are queued in `storage_pending_deletes` before anything
+  is stored and taken out by the transaction that inserts the rows, so a DB
+  failure or a cancelled request leaves the objects to the clean-up worker
 - New send paths must go through `send::authorize_send` and
   `send::dispatch_new_message`; do not duplicate the checks
 
@@ -84,17 +86,17 @@ Text messaging with end-to-end encryption (E2EE) using vodozemac (Olm/Megolm), f
 **Download Endpoint**: `GET /api/messages/attachments/:id/download`
 - Outside `require_auth`, layered with `optional_auth`: an `Authorization: Bearer` header works (a bad header → 401)
 - Deprecated `?token=jwt` (one more release for old clients): `uploads::strip_download_token`, the outermost router layer, moves it out of the URI into a `QueryToken` extension before the trace/metrics layers record the URI; first use per process logs one warning
-- Generates signed S3 URL (presigned URL with 1-hour expiry)
+- Generates signed S3 URL (presigned, `S3_PRESIGN_EXPIRY`, default 300 s)
 - Returns redirect to S3 URL or proxied file content
 
-**Size Limits**: Controlled by `AppState` body limit (default 50MB). Adjust `max_upload_size` in config.
+**Size Limits**: request bodies are limited to 1 MiB (`api::DEFAULT_BODY_LIMIT`); only the routes that accept files raise it — message uploads to `max_upload_size` (`MAX_UPLOAD_SIZE`), avatars to `max_avatar_size` (5 MiB), emojis to `max_emoji_size`.
 
 **Security Considerations**:
 - Validate file type (future: restrict to images, videos, documents)
 - Scan for malware (future: integrate with ClamAV or similar)
 - Check user has permission to upload to channel
 - S3 bucket should be private (no public-read ACL)
-- Use presigned URLs with short expiry (1 hour)
+- Use presigned URLs with short expiry (300 s by default)
 
 ### S3 Configuration
 

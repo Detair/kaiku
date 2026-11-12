@@ -65,8 +65,11 @@ pub const LEASE: Duration = Duration::from_mins(5);
 pub const BACKOFF_BASE: Duration = Duration::from_mins(1);
 /// Longest retry delay.
 pub const BACKOFF_MAX: Duration = Duration::from_hours(6);
-/// Every this many failed attempts a key is logged at error level.
-pub const ESCALATE_EVERY: i32 = 20;
+/// A key that still cannot be deleted is logged at error level once: when
+/// it has failed this many times…
+pub const ESCALATE_ATTEMPTS: i32 = 8;
+/// …or has been queued this long, whichever comes first.
+pub const ESCALATE_AFTER: Duration = Duration::from_hours(6);
 /// Attachment rows removed per backfill batch.
 pub const BACKFILL_BATCH: i64 = 200;
 
@@ -137,10 +140,25 @@ pub fn backoff(attempts: i32) -> Duration {
         .min(BACKOFF_MAX)
 }
 
-/// Whether reaching `attempts` failed attempts is an escalation step.
+/// Whether a key with `attempts` failed attempts, queued for `age`, is
+/// overdue.
+const fn overdue(attempts: i32, age: Duration) -> bool {
+    attempts >= ESCALATE_ATTEMPTS || age.as_secs() >= ESCALATE_AFTER.as_secs()
+}
+
+/// Whether failed attempt number `attempts` is the one to log at error level.
+///
+/// It is the first at which the key is overdue ([`ESCALATE_ATTEMPTS`]
+/// failures or [`ESCALATE_AFTER`] in the queue, whichever comes first).
+/// `age` is how long the key has been queued now, `age_before` how long it
+/// had been at its previous failed attempt (`None`: this is the first).
 #[must_use]
-pub const fn escalates(attempts: i32) -> bool {
-    attempts > 0 && attempts % ESCALATE_EVERY == 0
+pub const fn escalates(attempts: i32, age: Duration, age_before: Option<Duration>) -> bool {
+    let before = match age_before {
+        Some(age_before) => overdue(attempts - 1, age_before),
+        None => false,
+    };
+    overdue(attempts, age) && !before
 }
 
 const fn interval_secs(d: Duration) -> f64 {
@@ -164,6 +182,8 @@ struct Claimed {
     /// `next_attempt_at` before the lease; restored on release.
     due_at: chrono::DateTime<chrono::Utc>,
     created_at: chrono::DateTime<chrono::Utc>,
+    /// When it last failed (`None`: never tried).
+    last_attempt_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// Claim up to `limit` due keys of one lane (optionally only `only`), and
@@ -192,7 +212,7 @@ async fn claim(
                  FOR UPDATE SKIP LOCKED
              ) due
              WHERE d.s3_key = due.s3_key
-             RETURNING d.s3_key, d.attempts, due.due_at, d.created_at"
+             RETURNING d.s3_key, d.attempts, due.due_at, d.created_at, d.last_attempt_at"
         }
         Lane::Retry => {
             "UPDATE storage_pending_deletes d
@@ -206,7 +226,7 @@ async fn claim(
                  FOR UPDATE SKIP LOCKED
              ) due
              WHERE d.s3_key = due.s3_key
-             RETURNING d.s3_key, d.attempts, due.due_at, d.created_at"
+             RETURNING d.s3_key, d.attempts, due.due_at, d.created_at, d.last_attempt_at"
         }
     };
     sqlx::query_as(sql)
@@ -310,11 +330,17 @@ async fn delete_claimed<S: ObjectStore>(
                     error = %e,
                     "Failed to delete stored object; will retry"
                 );
-                if escalates(attempts) {
+                let age = |at: chrono::DateTime<chrono::Utc>| {
+                    (at - claimed.created_at).to_std().unwrap_or_default()
+                };
+                let queued_for = age(chrono::Utc::now());
+                if escalates(attempts, queued_for, claimed.last_attempt_at.map(age)) {
                     tracing::error!(
                         s3_key = %key,
                         attempts,
-                        "Stored object still not deleted after repeated attempts; kept queued"
+                        queued_hours = queued_for.as_secs() / 3600,
+                        "Stored object still cannot be deleted; it stays queued and is retried \
+                         (see the admin guide, \"Files that cannot be deleted\")"
                     );
                 }
                 sqlx::query(
@@ -569,15 +595,16 @@ pub const UPLOAD_GRACE: Duration = Duration::from_mins(30);
 /// atomically. Whatever else happens to the request — an error, its future
 /// dropped at any point (the client went away, the server is shutting down),
 /// the process killed — the keys are still queued and the worker deletes the
-/// objects. Dropping the guard without [`UploadKeys::kept`] makes them due at
-/// once and tries them right away.
+/// objects. Dropping the guard makes whatever was not kept due at once and
+/// tries it right away.
 #[must_use = "an upload that does not keep its keys has them deleted"]
 pub struct UploadKeys<S: ObjectStore + Clone + Send + 'static> {
     pool: PgPool,
     store: S,
     keys: Vec<String>,
     announced: std::time::Instant,
-    kept: bool,
+    /// The keys the committed row references (set by `keep_in`).
+    referenced: Vec<String>,
 }
 
 impl<S: ObjectStore + Clone + Send + 'static> UploadKeys<S> {
@@ -598,15 +625,22 @@ impl<S: ObjectStore + Clone + Send + 'static> UploadKeys<S> {
             store: store.clone(),
             keys,
             announced: std::time::Instant::now(),
-            kept: false,
+            referenced: Vec::new(),
         })
     }
 
     /// Inside the transaction that stores the attachment row: take the keys
-    /// out of the queue, so that from its commit on the row owns them. Fails
-    /// (and so fails the transaction) if the clean-up already took one: the
-    /// upload outlived its grace period and its objects are going away.
-    pub async fn keep_in(&self, tx: &mut sqlx::PgConnection) -> sqlx::Result<()> {
+    /// the row references (`referenced`) out of the queue, so that from its
+    /// commit on the row owns them. Announced keys the row does not
+    /// reference (a variant that was not made, or whose upload failed) stay
+    /// queued and are deleted. Fails (and so fails the transaction) if the
+    /// clean-up already took a referenced key: the upload outlived its grace
+    /// period and its objects are going away.
+    pub async fn keep_in(
+        &mut self,
+        tx: &mut sqlx::PgConnection,
+        referenced: Vec<String>,
+    ) -> sqlx::Result<()> {
         // Until the grace period is over, nothing has claimed the keys.
         if self.announced.elapsed() + LEASE >= UPLOAD_GRACE {
             return Err(sqlx::Error::RowNotFound);
@@ -615,31 +649,37 @@ impl<S: ObjectStore + Clone + Send + 'static> UploadKeys<S> {
             "DELETE FROM storage_pending_deletes
              WHERE s3_key = ANY($1) AND attempts = 0 AND next_attempt_at > NOW()",
         )
-        .bind(&self.keys)
+        .bind(&referenced)
         .execute(tx)
         .await?
         .rows_affected();
-        if usize::try_from(removed).ok() == Some(self.keys.len()) {
+        if usize::try_from(removed).ok() == Some(referenced.len()) {
+            self.referenced = referenced;
             Ok(())
         } else {
             Err(sqlx::Error::RowNotFound)
         }
     }
 
-    /// The transaction with [`Self::keep_in`] committed: nothing to clean up.
+    /// The transaction with [`Self::keep_in`] committed: what the row
+    /// references is its own now; the rest of the announced keys is removed
+    /// right away.
     pub fn kept(mut self) {
-        self.kept = true;
+        let referenced = std::mem::take(&mut self.referenced);
+        self.keys.retain(|key| !referenced.contains(key));
     }
 }
 
 impl<S: ObjectStore + Clone + Send + 'static> Drop for UploadKeys<S> {
     fn drop(&mut self) {
-        if self.kept {
+        // What is still announced here was not kept: every key of an upload
+        // that did not commit, or the unreferenced keys of one that did. (A
+        // request cancelled right after its commit finds its referenced rows
+        // gone and touches nothing of them.) They are due now. Without a
+        // runtime to do it on, they stay queued for their grace period.
+        if self.keys.is_empty() {
             return;
         }
-        // Not kept (or the request was cancelled after its commit, in which
-        // case the rows are gone and this finds nothing): due now. Without a
-        // runtime to do it on, the keys stay queued for their grace period.
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
             return;
         };
@@ -737,9 +777,28 @@ mod tests {
         assert!(TICK_ROWS >= 2);
     }
 
+    /// One error-level line per stuck key: at its 8th failed attempt, or at
+    /// the first failed attempt after 6 h in the queue, whichever comes
+    /// first — and never again.
     #[test]
-    fn escalation_every_twenty_attempts() {
-        let steps: Vec<i32> = (0..=60).filter(|a| escalates(*a)).collect();
-        assert_eq!(steps, [20, 40, 60]);
+    fn a_stuck_key_escalates_once() {
+        let hours = Duration::from_hours;
+        // Attempts alone (a store that fails fast): the 8th.
+        let by_attempts: Vec<i32> = (1..=60)
+            .filter(|n| {
+                let before = (*n > 1).then_some(Duration::ZERO);
+                escalates(*n, Duration::ZERO, before)
+            })
+            .collect();
+        assert_eq!(by_attempts, [ESCALATE_ATTEMPTS]);
+        // Age alone (few, slow attempts): the first failure past 6 h.
+        assert!(!escalates(2, hours(5), Some(hours(1))));
+        assert!(escalates(3, hours(7), Some(hours(5))));
+        assert!(!escalates(4, hours(13), Some(hours(7))), "escalated twice");
+        // A first failure of a key that is already old.
+        assert!(escalates(1, hours(6), None));
+        // With the real backoff the 8th attempt comes before the 6 h.
+        let until_eighth: Duration = (1..ESCALATE_ATTEMPTS).map(backoff).sum();
+        assert!(until_eighth < ESCALATE_AFTER);
     }
 }

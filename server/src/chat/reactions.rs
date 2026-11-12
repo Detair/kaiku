@@ -127,8 +127,10 @@ pub async fn add_reaction(
         return Err(ReactionsError::InvalidEmoji);
     }
 
-    // Check channel exists
-    let _ = db::find_channel_by_id(&state.db, channel_id)
+    // Check channel exists (its server is needed for reaction roles below;
+    // read here, so that nothing asks the pool for a second connection while
+    // the transaction holds one).
+    let channel = db::find_channel_by_id(&state.db, channel_id)
         .await?
         .ok_or(ReactionsError::ChannelNotFound)?;
 
@@ -168,9 +170,6 @@ pub async fn add_reaction(
     // Reaction-role hook (only for guild channels, only when newly inserted).
     let mut hook_outcome = None;
     if result.rows_affected() > 0 {
-        let channel = db::find_channel_by_id(&state.db, channel_id)
-            .await?
-            .ok_or(ReactionsError::ChannelNotFound)?;
         if let Some(guild_id) = channel.guild_id {
             hook_outcome = crate::guild::reaction_roles::apply_on_reaction_add(
                 &mut tx,
@@ -306,8 +305,10 @@ pub async fn remove_reaction(
     Path((channel_id, message_id, emoji)): Path<(Uuid, Uuid, String)>,
     auth_user: AuthUser,
 ) -> Result<impl IntoResponse, ReactionsError> {
-    // Check channel exists
-    let _ = db::find_channel_by_id(&state.db, channel_id)
+    // Check channel exists (its server is needed for reaction roles below;
+    // read here, so that nothing asks the pool for a second connection while
+    // the transaction holds one).
+    let channel = db::find_channel_by_id(&state.db, channel_id)
         .await?
         .ok_or(ReactionsError::ChannelNotFound)?;
 
@@ -343,10 +344,7 @@ pub async fn remove_reaction(
 
     let mut hook_outcome = None;
     if result.rows_affected() > 0 {
-        if let Some(guild_id) = db::find_channel_by_id(&state.db, channel_id)
-            .await?
-            .and_then(|c| c.guild_id)
-        {
+        if let Some(guild_id) = channel.guild_id {
             hook_outcome = crate::guild::reaction_roles::apply_on_reaction_remove(
                 &mut tx,
                 guild_id,

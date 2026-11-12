@@ -495,3 +495,65 @@ async fn cancelled_upload_leaves_no_objects(pool: PgPool) {
     .unwrap();
     assert_eq!(rows, (0, 0));
 }
+
+/// After a successful upload the clean-up queue is empty again and exactly
+/// the objects the attachment references are stored: the announced key of a
+/// variant that was not made does not stay behind in the queue.
+#[sqlx::test]
+async fn successful_upload_keeps_its_objects_and_nothing_queued(pool: PgPool) {
+    if !super::helpers::rustfs_available().await {
+        return;
+    }
+    let (app, _bucket) = super::helpers::fresh_test_app_with_s3_and_pool(pool.clone()).await;
+    let (user_id, _) = create_test_user(&app.pool).await;
+    let token = generate_access_token(&app.config, user_id);
+    let perms = GuildPermissions::VIEW_CHANNEL | GuildPermissions::SEND_MESSAGES;
+    let guild_id = super::helpers::create_guild_with_default_role(&app.pool, user_id, perms).await;
+    let channel_id = super::helpers::create_channel(&app.pool, guild_id, "media-test").await;
+    let s3 = app.state.s3.clone().expect("object storage configured");
+
+    // 500x400: a thumbnail, no medium variant.
+    let png_data = create_test_png(500, 400);
+    let (boundary, body) = build_upload_multipart("photo.png", "image/png", &png_data, "hello");
+    let req = TestApp::request(
+        Method::POST,
+        &format!("/api/messages/channel/{channel_id}/upload"),
+    )
+    .header("Authorization", format!("Bearer {token}"))
+    .header(
+        "Content-Type",
+        format!("multipart/form-data; boundary={boundary}"),
+    )
+    .body(Body::from(body))
+    .unwrap();
+    assert_eq!(app.oneshot(req).await.status(), 201);
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let left: Vec<String> = sqlx::query_scalar("SELECT s3_key FROM storage_pending_deletes")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        if left.is_empty() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "still queued: {left:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let (original, thumb, medium): (String, Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT s3_key, thumbnail_s3_key, medium_s3_key FROM file_attachments LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(medium.is_none(), "expected no medium variant for this size");
+    for key in std::iter::once(original).chain(thumb) {
+        assert!(
+            s3.get_object_stream(&key).await.is_ok(),
+            "object {key} of the stored attachment is gone"
+        );
+    }
+}
