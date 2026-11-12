@@ -1601,6 +1601,91 @@ async fn kick_fences_the_server_feed_at_commit(pool: PgPool) {
     .await;
 }
 
+/// Server deletion by a system admin: the same fence as the owner's.
+#[sqlx::test]
+async fn admin_guild_delete_fences_at_commit(pool: PgPool) {
+    let fx = fixture(&pool).await;
+    let channel = create_channel(&pool, fx.guild, "general").await;
+    let (admin, _) = create_test_user(&pool).await;
+    make_admin(&pool, admin).await;
+    let admin_token = create_elevated_session(&pool, &fx.app.config, admin).await;
+    vc_server::ws::test_hooks::disable_access_wake(fx.member);
+    let mut ws = connect_ready(&fx.server, &fx.member_token).await;
+    subscribe(&mut ws, channel).await;
+    assert_receives(&fx, &mut ws, channel).await;
+    assert_feed_reaches(&fx, &mut ws).await;
+
+    let held = vc_server::ws::test_hooks::pause_before_channel_write(fx.member);
+    post_message(&fx, channel, "queued").await;
+    held.reached.notified().await;
+    let url = format!("{}/api/admin/guilds/{}", fx.server.url, fx.guild);
+    fenced_at_commit(
+        fx.guild,
+        spawn_request(url, admin_token, reqwest::Method::DELETE, None),
+        async {
+            held.release.notify_one();
+            assert_none_of_type(&until_pong(&mut ws).await, "message_new");
+            assert_feed_cut_off(&fx, &mut ws).await;
+        },
+    )
+    .await;
+}
+
+/// Being given a role can take a channel away (an override that denies it
+/// to that role).
+#[sqlx::test]
+async fn role_assignment_fences_at_commit(pool: PgPool) {
+    let fx = fixture(&pool).await;
+    let channel = create_channel(&pool, fx.guild, "general").await;
+    let control = create_channel(&pool, fx.guild, "control").await;
+    let role = create_role(&pool, fx.guild, "muted").await;
+    set_override(
+        &pool,
+        channel,
+        role,
+        GuildPermissions::empty(),
+        GuildPermissions::VIEW_CHANNEL,
+    )
+    .await;
+    vc_server::ws::test_hooks::disable_access_wake(fx.member);
+    let mut ws = connect_ready(&fx.server, &fx.member_token).await;
+    subscribe(&mut ws, channel).await;
+    subscribe(&mut ws, control).await;
+    assert_receives(&fx, &mut ws, channel).await;
+    let url = format!(
+        "{}/api/guilds/{}/members/{}/roles/{role}",
+        fx.server.url, fx.guild, fx.member
+    );
+    fenced_at_commit(
+        fx.member,
+        spawn_request(url, fx.owner_token.clone(), reqwest::Method::POST, None),
+        assert_cut_off_before_control(&fx, &mut ws, channel, control),
+    )
+    .await;
+}
+
+/// Deleting the override that granted the channel.
+#[sqlx::test]
+async fn override_delete_fences_at_commit(pool: PgPool) {
+    let fx = fixture(&pool).await;
+    let p = private_channel(&pool, &fx).await;
+    vc_server::ws::test_hooks::disable_access_wake(fx.member);
+    let mut ws = connect_ready(&fx.server, &fx.member_token).await;
+    subscribe(&mut ws, p.private).await;
+    subscribe(&mut ws, p.control).await;
+    assert_receives(&fx, &mut ws, p.private).await;
+    let url = format!(
+        "{}/api/channels/{}/overrides/{}",
+        fx.server.url, p.private, p.role
+    );
+    fenced_at_commit(
+        fx.guild,
+        spawn_request(url, fx.owner_token.clone(), reqwest::Method::DELETE, None),
+        assert_cut_off_before_control(&fx, &mut ws, p.private, p.control),
+    )
+    .await;
+}
+
 /// A ban: nothing more is written to the banned account's sockets from the
 /// commit on (its sessions end with the ban; the sockets close afterwards).
 #[sqlx::test]

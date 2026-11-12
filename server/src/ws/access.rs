@@ -242,15 +242,17 @@ impl AccessRegistry {
         }
     }
 
-    /// Advance `guild_id`'s epoch and wake the sockets.
-    pub fn bump_guild(&self, guild_id: Uuid) {
+    /// Advance `guild_id`'s epoch and wake the sockets (only through
+    /// [`bump_after`] / [`bump_after_if`]).
+    fn bump_guild(&self, guild_id: Uuid) {
         self.guild_epoch(guild_id)
             .store(next_epoch(), Ordering::SeqCst);
         self.wake.send_modify(|n| *n = n.wrapping_add(1));
     }
 
-    /// Advance `user_id`'s epoch and wake the sockets.
-    pub fn bump_user(&self, user_id: Uuid) {
+    /// Advance `user_id`'s epoch and wake the sockets (only through
+    /// [`bump_after`] / [`bump_after_if`]).
+    fn bump_user(&self, user_id: Uuid) {
         self.user_epoch(user_id)
             .store(next_epoch(), Ordering::SeqCst);
         self.wake.send_modify(|n| *n = n.wrapping_add(1));
@@ -576,8 +578,7 @@ enum ScopeState {
 
 /// How a scope stands right now (see [`ScopeState`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-#[doc(hidden)]
-pub enum Phase {
+enum Phase {
     Current,
     Stale,
     Failing,
@@ -912,9 +913,8 @@ impl SocketAccess {
         self.lock().allowed.contains(&channel_id)
     }
 
-    /// Number of requested channels (tests).
-    #[doc(hidden)]
-    pub fn requested_len(&self) -> usize {
+    #[cfg(test)]
+    fn requested_len(&self) -> usize {
         self.lock().requested.len()
     }
 
@@ -1557,9 +1557,9 @@ impl SocketAccess {
         self.attention.notify_one();
     }
 
-    /// The phase of the scopes `channel_id` depends on (tests).
-    #[doc(hidden)]
-    pub fn channel_phase(&self, channel_id: Uuid) -> Option<Phase> {
+    /// The phase of the scopes `channel_id` depends on.
+    #[cfg(test)]
+    fn channel_phase(&self, channel_id: Uuid) -> Option<Phase> {
         let inner = self.lock();
         let &scope = inner.requested.get(&channel_id)?;
         Some(self.phase(&inner, Target::Channel(scope)))
