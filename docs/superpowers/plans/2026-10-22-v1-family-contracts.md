@@ -930,14 +930,28 @@ Server → client event, sent only to the socket that owned the removed voice pe
 
 ## C32 — Voice rejoin after a WebSocket reconnect (clients; no new wire messages)
 
+Binding for all clients (amended 2026-11-11).
+
 - Trigger: the WebSocket was re-established and the text re-subscription finished, and the local voice state
   still names a channel the user did not leave themselves and no `voice_removed` arrived for it.
 - Action: discard the old peer connections, send `voice_join` for that channel, restore the local mute/deafen
   state. Screen share and webcam are not restarted automatically.
-- If the server answers `voice_error` because it still holds the old peer ("Already in voice channel"), send
-  `voice_leave` then `voice_join` once.
+- Success: an attempt has succeeded when the publisher connection is connected. The subscriber connection is
+  not required (in a room without other publishers the server sends no subscriber offer at all).
+- Attempt timeout: an attempt that has not reached "publisher connected" after 15 s has failed.
 - Attempts: at most 3, spaced 1 s, 3 s, 9 s. While trying, the voice UI shows a "reconnecting" state. After the
   third failure the client clears voice state and offers "rejoin".
+- Socket loss during an attempt: the attempt is cancelled and its connections are discarded without using up
+  one of the three attempts; the client waits for the next authenticated socket and resumes with the remaining
+  attempts.
+- Overall cap while offline: if no authenticated socket comes back within 60 s of the loss, the client gives up
+  exactly as after the third failed attempt (clear voice state, release the microphone and any foreground
+  service, offer "rejoin").
+- Leave and `voice_removed` win: both cancel the recovery and wait for a running attempt to finish cancelling
+  before tearing down; after them no `voice_join` is sent and no connection is created for that session.
+- "Already in voice channel": the current server replaces a stale peer of the same user on `voice_join` and
+  does not send this `voice_error`. A client may still answer it with `voice_leave` then `voice_join` once
+  (optional).
 - DM calls: rejoin only if C33 says the call is still active and this user is a participant.
 
 ## C33 — Call state resync and local ring cap (clients, existing endpoints)
