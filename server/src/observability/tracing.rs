@@ -322,7 +322,7 @@ mod tests {
         // for the skip list fragment which must always be present.
         assert_contains(
             ws,
-            "skip(state, tx, subscribed_channels, admin_subscribed, msg_state, text),",
+            "skip(state, tx, access, admin_subscribed, msg_state, text),",
         );
 
         let voice = include_str!("../voice/call_handlers.rs");
