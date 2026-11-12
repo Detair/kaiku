@@ -1968,6 +1968,202 @@ async fn admin_events_survive_an_unrelated_change(pool: PgPool) {
     assert!(admin_event_arrives(&app, &mut ws, admin).await);
 }
 
+/// Publish `event` on `user`'s own feed, then a marker through the same
+/// connection (the socket's forwarder handles them in that order, and one
+/// socket's frames keep their order). Returns whether a frame matching
+/// `is_it` was written before the marker.
+async fn own_feed_event_arrives(
+    app: &TestApp,
+    ws: &mut WsClient,
+    user: Uuid,
+    event: &ServerEvent,
+    is_it: impl Fn(&Value) -> bool,
+) -> bool {
+    use futures::StreamExt;
+    vc_server::ws::broadcast_to_user(&app.state.redis, user, event)
+        .await
+        .expect("publish");
+    let marker = Uuid::new_v4();
+    vc_server::ws::broadcast_to_user(
+        &app.state.redis,
+        user,
+        &ServerEvent::Unsubscribed { channel_id: marker },
+    )
+    .await
+    .expect("publish marker");
+    let mut arrived = false;
+    let wait = async {
+        loop {
+            match ws.next().await {
+                Some(Ok(Message::Text(text))) => {
+                    let v: Value = serde_json::from_str(&text).unwrap();
+                    if is_it(&v) {
+                        arrived = true;
+                    }
+                    if v["type"] == "unsubscribed" && v["channel_id"] == marker.to_string() {
+                        return;
+                    }
+                }
+                Some(Ok(_)) => {}
+                other => panic!("socket ended before the marker: {other:?}"),
+            }
+        }
+    };
+    tokio::time::timeout(EVENT_TIMEOUT, wait)
+        .await
+        .expect("no marker");
+    arrived
+}
+
+/// A bot's answer to the user's command in `channel`, as the bot gateway
+/// publishes it on the user's own feed. Returns whether it was written.
+async fn bot_answer_arrives(fx: &Fixture, ws: &mut WsClient, channel: Uuid) -> bool {
+    let interaction = Uuid::new_v4();
+    let answer = ServerEvent::CommandResponse {
+        interaction_id: interaction,
+        content: "what was said in the channel".into(),
+        command_name: "recap".into(),
+        bot_name: "Recap".into(),
+        channel_id: channel,
+        ephemeral: true,
+    };
+    own_feed_event_arrives(&fx.app, ws, fx.member, &answer, |v| {
+        v["type"] == "command_response" && v["interaction_id"] == interaction.to_string()
+    })
+    .await
+}
+
+/// A bot's answer to a command belongs to the channel the command was sent
+/// in, although it travels on the user's own feed: it is written while the
+/// user may view that channel — whether or not this socket ever subscribed
+/// to it — and not once that access is gone, from the commit on.
+#[sqlx::test]
+async fn bot_answer_follows_channel_access(pool: PgPool) {
+    let fx = fixture(&pool).await;
+    let p = private_channel(&pool, &fx).await;
+    vc_server::ws::test_hooks::disable_access_wake(fx.member);
+    // Never subscribed on this socket: a decision of its own.
+    let mut ws = connect_ready(&fx.server, &fx.member_token).await;
+    assert!(bot_answer_arrives(&fx, &mut ws, p.private).await);
+    // Subscribed: decided like the channel's own events.
+    let mut subscribed = connect_ready(&fx.server, &fx.member_token).await;
+    subscribe(&mut subscribed, p.private).await;
+    assert!(bot_answer_arrives(&fx, &mut subscribed, p.private).await);
+
+    let url = format!(
+        "{}/api/guilds/{}/members/{}/roles/{}",
+        fx.server.url, fx.guild, fx.member, p.role
+    );
+    fenced_at_commit(
+        fx.member,
+        spawn_request(url, fx.owner_token.clone(), reqwest::Method::DELETE, None),
+        async {
+            assert!(
+                !bot_answer_arrives(&fx, &mut ws, p.private).await,
+                "answer written after access was lost (never subscribed)"
+            );
+            assert!(
+                !bot_answer_arrives(&fx, &mut subscribed, p.private).await,
+                "answer written after access was lost (subscribed)"
+            );
+        },
+    )
+    .await;
+    // A channel the user can still see keeps working.
+    assert!(bot_answer_arrives(&fx, &mut ws, p.control).await);
+    assert!(!bot_answer_arrives(&fx, &mut ws, p.private).await);
+}
+
+/// An event reminder names a server's event: it is written only while the
+/// user is a member of that server.
+#[sqlx::test]
+async fn event_reminder_follows_membership(pool: PgPool) {
+    let fx = fixture(&pool).await;
+    vc_server::ws::test_hooks::disable_access_wake(fx.member);
+    let mut ws = connect_ready(&fx.server, &fx.member_token).await;
+    let reminder = ServerEvent::GuildEventReminder {
+        guild_id: fx.guild,
+        event_id: Uuid::new_v4(),
+        name: "Game night".into(),
+    };
+    let is_reminder = |v: &Value| v["type"] == "guild_event_reminder";
+    assert!(own_feed_event_arrives(&fx.app, &mut ws, fx.member, &reminder, is_reminder).await);
+
+    owner_request(
+        &fx,
+        reqwest::Method::DELETE,
+        &format!("/api/guilds/{}/members/{}", fx.guild, fx.member),
+        None,
+    )
+    .await;
+    assert!(!own_feed_event_arrives(&fx.app, &mut ws, fx.member, &reminder, is_reminder).await);
+}
+
+/// A bot gateway socket is an open socket like any other for a shutdown: it
+/// is counted, gets Close 1012 at the signal and is gone when `serve`
+/// returns.
+#[sqlx::test]
+async fn shutdown_closes_bot_gateway_sockets(pool: PgPool) {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let fx = fixture(&pool).await;
+    let (app_id, _bot, bot_token) = super::helpers::create_bot_application(&pool, fx.owner).await;
+    // The gateway verifies the token against a password hash.
+    let token_hash = vc_server::auth::hash_password(&bot_token).expect("hash the bot token");
+    sqlx::query("UPDATE bot_applications SET token_hash = $2 WHERE id = $1")
+        .bind(app_id)
+        .bind(token_hash)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (signal_tx, signal_rx) = tokio::sync::oneshot::channel::<()>();
+    let drain = vc_server::shutdown::SocketDrain::from_state(&fx.app.state);
+    let serving = tokio::spawn(vc_server::shutdown::serve(
+        listener,
+        fx.app.router.clone(),
+        drain,
+        async move {
+            let _ = signal_rx.await;
+        },
+    ));
+
+    let mut request = format!("ws://{addr}/api/gateway/bot")
+        .into_client_request()
+        .unwrap();
+    request
+        .headers_mut()
+        .insert("Authorization", format!("Bot {bot_token}").parse().unwrap());
+    let (mut bot_ws, _) = tokio_tungstenite::connect_async(request)
+        .await
+        .expect("bot gateway connect");
+    let tracker = fx.app.state.ws_connections.clone();
+    let deadline = tokio::time::Instant::now() + EVENT_TIMEOUT;
+    while tracker.open_sockets() != 1 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the bot socket is not counted as open"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    let signalled = tokio::time::Instant::now();
+    signal_tx.send(()).unwrap();
+    let (_, code, reason) = until_close(&mut bot_ws).await;
+    assert_eq!((code, reason.as_str()), (1012, "SERVER_RESTART"));
+    assert!(
+        signalled.elapsed() < Duration::from_secs(2),
+        "close took {:?}",
+        signalled.elapsed()
+    );
+    let served = tokio::time::timeout(Duration::from_secs(3), serving)
+        .await
+        .expect("serve waited although every socket was closed");
+    served.expect("serve task").expect("serve");
+    assert_eq!(tracker.open_sockets(), 0);
+}
+
 /// A channel deleted while one of its events is queued: the
 /// revalidation finds it gone (not "allowed by default" once its overrides
 /// cascaded away), and the event is not written.

@@ -259,7 +259,17 @@ pub async fn elevate_session(
         Some(&client_ip),
     )
     .await?;
-    tx.commit().await?;
+    // Gaining the elevation moves the admin's access epoch like losing it
+    // does: a re-check that read "not elevated" just before is discarded
+    // instead of ending the admin event subscription of this session.
+    let ((), bumped) = crate::ws::access::bump_after(
+        crate::ws::access::AccessChange::AdminAccessChanged {
+            user_id: admin.user_id,
+        },
+        tx.commit(),
+    )
+    .await?;
+    crate::ws::access::access_changed(&state, bumped).await;
     super::cache_elevated_status(&state.redis, session_id, true, ELEVATION_MINUTES * 60).await;
 
     Ok(Json(ElevateResponse {

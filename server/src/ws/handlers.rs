@@ -50,7 +50,7 @@ const PUBSUB_READY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Upper bound for flushing a Close frame to the client before the socket is
 /// torn down.
-const CLOSE_FLUSH_TIMEOUT: Duration = Duration::from_secs(1);
+pub(super) const CLOSE_FLUSH_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// How long a post-connect socket may take to send its `Authenticate` frame.
 const AUTH_FRAME_TIMEOUT: Duration = Duration::from_secs(5);
@@ -91,10 +91,10 @@ const CLOSE_REASON_RESYNC: &str = "RESYNC";
 
 /// Close code: the server is restarting; reconnect (with backoff) and catch
 /// up. Clients treat every close code except 1008 as "reconnect" (C11).
-const CLOSE_SERVICE_RESTART: u16 = 1012;
+pub(super) const CLOSE_SERVICE_RESTART: u16 = 1012;
 
 /// Close reason sent with [`CLOSE_SERVICE_RESTART`].
-const CLOSE_REASON_RESTART: &str = "SERVER_RESTART";
+pub(super) const CLOSE_REASON_RESTART: &str = "SERVER_RESTART";
 
 /// Most `subscribe` checks in a row when access epochs keep moving.
 const SUBSCRIBE_ATTEMPTS: usize = 4;
@@ -168,7 +168,7 @@ pub async fn handler(
         .ws_connections
         .client_ip_key(&headers, connect_info.as_ref().map(|Extension(ci)| ci));
     let Some(ip_permit) = state.ws_connections.try_acquire_ip(ip_key) else {
-        debug!("WebSocket refused: too many connections from this client address");
+        connection_refused(Refusal::PerAddress, state.ws_connections.limits().per_ip);
         return error_response(429, TOO_MANY_CONNECTIONS);
     };
 
@@ -227,10 +227,7 @@ pub async fn handler(
         let session_id = claims.sid.as_deref().and_then(|sid| sid.parse().ok());
 
         let Some(user_permit) = state.ws_connections.try_acquire_user(user_id) else {
-            debug!(
-                "WebSocket refused: too many connections of user {}",
-                user_id
-            );
+            connection_refused(Refusal::PerAccount, state.ws_connections.limits().per_user);
             return error_response(429, TOO_MANY_CONNECTIONS);
         };
         let permits = [ip_permit, user_permit];
@@ -251,6 +248,56 @@ pub async fn handler(
     ws.max_message_size(256 * 1024)
         .max_frame_size(64 * 1024)
         .on_upgrade(move |socket| handle_post_connect_auth(socket, state, ip_permit))
+}
+
+/// Why a connection was refused before it became a socket task.
+#[derive(Clone, Copy)]
+enum Refusal {
+    /// The client address already holds its share of sockets.
+    PerAddress,
+    /// The account already holds its share of sockets.
+    PerAccount,
+}
+
+/// Count a refused connection and say so in the log.
+///
+/// At most one line a minute per reason, with the number refused since the
+/// last line, so that a reconnect loop cannot flood the log. The line names
+/// the reason and the limit only (nothing a client controls, no address):
+/// with a reverse proxy that is not listed in `RATE_LIMIT_TRUSTED_PROXIES`,
+/// "per address" means every client shares the proxy's address.
+fn connection_refused(refusal: Refusal, limit: usize) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    const EVERY_SECS: u64 = 60;
+    /// (unix second of the last line + 1, refusals since then) per reason.
+    static LOGGED: [(AtomicU64, AtomicU64); 2] = [
+        (AtomicU64::new(0), AtomicU64::new(0)),
+        (AtomicU64::new(0), AtomicU64::new(0)),
+    ];
+
+    let (reason, slot) = match refusal {
+        Refusal::PerAddress => ("per_address_limit", &LOGGED[0]),
+        Refusal::PerAccount => ("per_account_limit", &LOGGED[1]),
+    };
+    crate::observability::metrics::record_ws_refused(reason);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+        + 1;
+    let refused = slot.1.fetch_add(1, Ordering::Relaxed) + 1;
+    let last = slot.0.load(Ordering::Relaxed);
+    if now.saturating_sub(last) >= EVERY_SECS
+        && slot
+            .0
+            .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+    {
+        slot.1.fetch_sub(refused, Ordering::Relaxed);
+        info!(
+            reason,
+            limit, refused, "WebSocket connections refused: connection limit reached"
+        );
+    }
 }
 
 /// Handle post-connect authentication: wait for an `Authenticate` frame,
@@ -311,10 +358,7 @@ async fn handle_post_connect_auth(socket: WebSocket, state: AppState, ip_permit:
     // The user's connection cap: refused before the socket task and its
     // Valkey subscriber are set up.
     let Some(user_permit) = state.ws_connections.try_acquire_user(user_id) else {
-        debug!(
-            "WebSocket refused: too many connections of user {}",
-            user_id
-        );
+        connection_refused(Refusal::PerAccount, state.ws_connections.limits().per_user);
         close_pre_auth(ws_sender, CLOSE_TRY_AGAIN_LATER, TOO_MANY_CONNECTIONS).await;
         return;
     };
@@ -586,6 +630,13 @@ async fn handle_socket(
                 OutboundMsg::Channel { channel_id, event } => {
                     crate::ws::test_hooks::before_channel_write(user_id).await;
                     if !sender_access.admit(channel_id).await {
+                        continue;
+                    }
+                    write_event(&mut ws_sender, &event).await
+                }
+                OutboundMsg::ChannelBound { channel_id, event } => {
+                    crate::ws::test_hooks::before_channel_write(user_id).await;
+                    if !sender_access.admit_bound(channel_id).await {
                         continue;
                     }
                     write_event(&mut ws_sender, &event).await
@@ -1175,6 +1226,9 @@ async fn handle_socket(
             exit, code, user_id
         );
         let reason = exit.map_or(CLOSE_REASON_RESYNC, PubsubExit::close_reason);
+        if let (CLOSE_REASON_RESYNC, Some(cause)) = (reason, exit) {
+            crate::observability::metrics::record_ws_resync_close(cause.label());
+        }
         close_and_flush(&tx, &mut sender_handle, code, reason).await;
     }
 
@@ -2112,6 +2166,24 @@ impl PubsubExit {
         }
     }
 
+    /// A fixed name of the cause, for metrics.
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::ConnectFailed => "connect_failed",
+            Self::SubscribeFailed => "subscribe_failed",
+            Self::StreamEnded => "stream_ended",
+            Self::Lagged => "lagged",
+            Self::SlowClient => "slow_client",
+            Self::ClientGone => "client_gone",
+            Self::SessionRevoked => "session_revoked",
+            Self::SessionCheckUnavailable => "session_check_unavailable",
+            Self::AccountBanned => "account_banned",
+            Self::AccessCheckFailed => "access_check_failed",
+            Self::ServerShutdown => "server_shutdown",
+            Self::AccessResync => "access_resync",
+        }
+    }
+
     /// Close reason sent with [`Self::close_code`] (1011/1013: "RESYNC").
     pub(crate) const fn close_reason(self) -> &'static str {
         match self {
@@ -2290,6 +2362,43 @@ async fn forward_until_reconnect(
             );
             PubsubExit::StreamEnded
         }
+    }
+}
+
+/// The frame for an event from the user's own feed (`user:{id}`).
+///
+/// Most of that feed is the user's own state and is written as is. What is
+/// bound to a channel or a server is decided when it is written, like that
+/// channel's or server's own events:
+/// - a bot's answer to the user's command (and its timeout notice) by the channel the command was
+///   sent in, whether the client asked for that channel or not;
+/// - a new DM by the DM itself (the forwarder has just recorded it as requested, so the first read
+///   confirms the user is still in it);
+/// - an event reminder by membership of its server.
+fn own_feed_frame(event: ServerEvent) -> OutboundMsg {
+    enum Bound {
+        Channel(Uuid),
+        Requested(Uuid),
+        Guild(Uuid),
+    }
+    let bound = match &event {
+        ServerEvent::CommandResponse { channel_id, .. }
+        | ServerEvent::CommandResponseTimeout { channel_id, .. } => {
+            Some(Bound::Channel(*channel_id))
+        }
+        ServerEvent::DmCreated { channel } => channel
+            .get("id")
+            .and_then(|id| id.as_str())
+            .and_then(|id| Uuid::parse_str(id).ok())
+            .map(Bound::Requested),
+        ServerEvent::GuildEventReminder { guild_id, .. } => Some(Bound::Guild(*guild_id)),
+        _ => None,
+    };
+    match bound {
+        Some(Bound::Channel(channel_id)) => OutboundMsg::ChannelBound { channel_id, event },
+        Some(Bound::Requested(channel_id)) => OutboundMsg::Channel { channel_id, event },
+        Some(Bound::Guild(guild_id)) => OutboundMsg::Guild { guild_id, event },
+        None => OutboundMsg::Event(event),
     }
 }
 
@@ -2491,16 +2600,18 @@ pub(crate) async fn forward_pubsub_messages(
                                     return PubsubExit::AccessResync;
                                 }
                             } else {
+                                // Nothing to admit it by.
                                 warn!(
-                                    "DmCreated without a valid channel id (user {})",
+                                    "DmCreated without a valid channel id dropped (user {})",
                                     params.user_id
                                 );
+                                continue;
                             }
                         }
                         _ => {}
                     }
 
-                    try_forward!(event);
+                    try_forward!(@msg own_feed_frame(event));
                 }
             }
         }
@@ -2539,7 +2650,7 @@ pub(crate) async fn forward_pubsub_messages(
             // Forward all user-targeted events (read sync, etc.)
             if let Some(payload) = message.value.as_str() {
                 if let Ok(event) = serde_json::from_str::<ServerEvent>(&payload) {
-                    try_forward!(event);
+                    try_forward!(@msg own_feed_frame(event));
                 }
             }
         }
@@ -3042,7 +3153,10 @@ mod pubsub_tests {
         assert!(params.access.is_requested(CHANNEL));
         assert!(matches!(
             rx.recv().await,
-            Some(OutboundMsg::Event(ServerEvent::DmCreated { .. }))
+            Some(OutboundMsg::Channel {
+                event: ServerEvent::DmCreated { .. },
+                ..
+            })
         ));
 
         // Full of DMs as well: the next one ends the pipeline, unannounced.
@@ -3088,7 +3202,10 @@ mod pubsub_tests {
         assert!(params.access.is_requested(CHANNEL));
         assert!(matches!(
             rx.recv().await,
-            Some(OutboundMsg::Event(ServerEvent::DmCreated { .. }))
+            Some(OutboundMsg::Channel {
+                event: ServerEvent::DmCreated { .. },
+                ..
+            })
         ));
         assert!(matches!(
             rx.recv().await,

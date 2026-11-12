@@ -38,7 +38,8 @@
 //! | Frame (`OutboundMsg`) | Depends on | Decision |
 //! |---|---|---|
 //! | `Channel` | user scope + the channel's server scope | [`SocketAccess::admit`]: in the allowed set |
-//! | `Guild` (a server's own feed) | user scope + that server's scope | [`SocketAccess::admit_guild`]: member |
+//! | `ChannelBound` (a bot's answer to the user's command, from the user's own feed) | as `Channel`; for a channel that was never requested: one read at epochs that must still hold afterwards | [`SocketAccess::admit_bound`] |
+//! | `Guild` (a server's own feed, an event reminder) | user scope + that server's scope | [`SocketAccess::admit_guild`]: member |
 //! | `Voice` (everything of a voice room) | the voice scope: user epoch + the room's server epoch as of the join check | [`SocketAccess::admit_voice`]: the socket owns the peer and voice access holds |
 //! | `Admin` | the admin scope: user epoch | [`SocketAccess::admit_admin`]: subscribed, and the session is an elevated admin's |
 //!
@@ -323,7 +324,8 @@ pub enum AccessChange {
     GuildDeleted { guild_id: Uuid },
     /// The user left a group DM.
     DmLeft { user_id: Uuid, channel_id: Uuid },
-    /// The user's admin elevation ended (admin event subscription).
+    /// The user's admin elevation began or ended (admin event
+    /// subscription).
     AdminAccessChanged { user_id: Uuid },
     /// The account was deleted (memberships, roles and DM participations
     /// went with it; its sessions ended).
@@ -861,6 +863,8 @@ struct Script {
     then: bool,
     /// The server whose epoch a step's bump moves (`None`: the user's).
     bump_guild: Option<Uuid>,
+    /// The last read that was answered.
+    last_served: Option<ScriptStep>,
 }
 
 /// One socket's requested and allowed channels, server memberships and voice
@@ -1098,6 +1102,98 @@ impl SocketAccess {
             ))
         })
         .await
+    }
+
+    /// Delivery decision for an event that is bound to `channel_id` but came
+    /// on the user's own feed (a bot's answer to the user's command).
+    ///
+    /// A channel the client asked for is decided like its own events
+    /// ([`Self::admit`]). For any other channel this is a one-off decision
+    /// under the same rules — the epochs are read, then access, and the
+    /// answer counts only if the epochs are unchanged — and the channel does
+    /// not become requested. A decision that cannot be made (database
+    /// error, epochs kept moving, the socket in backoff) drops the event and
+    /// records it on the user scope, so the recovery resynchronises.
+    pub async fn admit_bound(&self, channel_id: Uuid) -> bool {
+        if self.is_requested(channel_id) {
+            return self.admit(channel_id).await;
+        }
+        for _ in 0..DECISION_REVALIDATIONS {
+            if Self::in_backoff(&self.lock()) {
+                break;
+            }
+            let read = tokio::time::timeout(REFRESH_TIMEOUT, self.read_bound(channel_id)).await;
+            match read {
+                // The channel is gone: nothing to deliver for it.
+                Ok(Ok(None)) => return false,
+                Ok(Ok(Some((scope, snap, granted)))) => {
+                    if self.snapshot(scope) == snap {
+                        return granted;
+                    }
+                }
+                Ok(Err(e)) => {
+                    warn!(error = %e, user_id = %self.user_id, "Channel access check failed");
+                    break;
+                }
+                Err(_) => {
+                    warn!(user_id = %self.user_id, "Channel access check timed out");
+                    break;
+                }
+            }
+        }
+        let mut inner = self.lock();
+        inner.user.state.drop_event();
+        drop(inner);
+        self.attention.notify_one();
+        false
+    }
+
+    /// One access read for [`Self::admit_bound`]: the channel's scope, the
+    /// epochs read before the check, and the answer (`None`: no such
+    /// channel).
+    async fn read_bound(
+        &self,
+        channel_id: Uuid,
+    ) -> Result<Option<(ChannelScope, EpochSnapshot, bool)>, String> {
+        if crate::ws::test_hooks::access_read_fails(self.user_id) {
+            return Err(sqlx::Error::PoolTimedOut.to_string());
+        }
+        let Some(channel) = crate::db::find_channel_by_id(&self.db, channel_id)
+            .await
+            .map_err(|e| e.to_string())?
+        else {
+            return Ok(None);
+        };
+        let scope = channel
+            .guild_id
+            .map_or(ChannelScope::Direct, ChannelScope::Guild);
+        let snap = self.snapshot(scope);
+        if self.banned().await? {
+            return Ok(Some((scope, snap, false)));
+        }
+        let granted =
+            match crate::permissions::require_channel_access(&self.db, self.user_id, channel_id)
+                .await
+            {
+                Ok(_) => true,
+                Err(crate::permissions::PermissionError::DatabaseError(e)) => return Err(e),
+                Err(_) => false,
+            };
+        Ok(Some((scope, snap, granted)))
+    }
+
+    /// Whether the account is banned now (a banned account keeps its rows —
+    /// membership, roles, DMs — but may see nothing).
+    async fn banned(&self) -> Result<bool, String> {
+        sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM global_bans gb
+                            WHERE gb.user_id = $1
+                              AND (gb.expires_at IS NULL OR gb.expires_at > NOW()))",
+        )
+        .bind(self.user_id)
+        .fetch_one(&self.db)
+        .await
+        .map_err(|e| e.to_string())
     }
 
     /// Delivery decision for an event of the server `guild_id`'s own feed
@@ -1601,18 +1697,9 @@ impl SocketAccess {
         if crate::ws::test_hooks::access_read_fails(self.user_id) {
             return Err(sqlx::Error::PoolTimedOut.to_string());
         }
-        // A banned account keeps its rows (membership, roles, DMs) but may
-        // see nothing: its sessions end with the ban, and until each socket
+        // A banned account's sessions end with the ban; until each socket
         // has closed, nothing more is written to it.
-        let banned: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM global_bans gb
-                            WHERE gb.user_id = $1
-                              AND (gb.expires_at IS NULL OR gb.expires_at > NOW()))",
-        )
-        .bind(self.user_id)
-        .fetch_one(&self.db)
-        .await
-        .map_err(|e| e.to_string())?;
+        let banned = self.banned().await?;
         if banned {
             return Ok(ReadResult {
                 viewable: HashSet::new(),
@@ -1700,6 +1787,7 @@ impl SocketAccess {
             bump: false,
             outcome: Some(script.then),
         });
+        script.last_served = Some(step);
         if step.bump {
             match script.bump_guild {
                 Some(g) => registry().bump_guild(g),
@@ -1727,9 +1815,39 @@ impl SocketAccess {
         }))
     }
 
+    /// Apply what a revalidation read found.
+    ///
+    /// An answer — a yes as much as a no — is applied to a scope only if the
+    /// epochs that were read before the read are still that scope's epochs.
+    /// Whatever a moved epoch touches is left exactly as it was (stale or
+    /// failing) and read again: nothing is decided, and nothing that cannot
+    /// be undone (forgetting a deleted channel, ending the admin
+    /// subscription, asking for a voice peer's removal) is done, on an
+    /// answer that is no longer the current one.
     fn apply(&self, plan: &Plan, found: ReadResult) {
         let mut guard = self.lock();
         let inner = &mut *guard;
+        // The database answered: the next attempt need not wait.
+        inner.failure = None;
+        // Every scope depends on the user's epoch.
+        if self.user_epoch.load(Ordering::SeqCst) != plan.user_now {
+            drop(guard);
+            self.attention.notify_one();
+            return;
+        }
+        let held: HashSet<Uuid> = plan
+            .guild_targets
+            .iter()
+            .filter(|(g, planned)| {
+                inner
+                    .guilds
+                    .get(g)
+                    .is_some_and(|gs| gs.epoch.load(Ordering::SeqCst) == *planned)
+            })
+            .map(|(g, _)| *g)
+            .collect();
+        let mut reread = held.len() != plan.guild_targets.len();
+
         let mut lost = Vec::new();
         let mut regained = Vec::new();
         // allowed = requested ∩ existing ∩ permitted; a deleted channel can
@@ -1737,7 +1855,7 @@ impl SocketAccess {
         for &(g, channel) in &plan.guild_channels {
             // Only channels still requested in the same scope (an
             // unsubscribe or a fresh subscribe during the read wins).
-            if inner.requested.get(&channel) == Some(&ChannelScope::Guild(g)) {
+            if held.contains(&g) && inner.requested.get(&channel) == Some(&ChannelScope::Guild(g)) {
                 if !found.existing.contains(&channel) {
                     inner.forget(channel);
                 }
@@ -1762,14 +1880,17 @@ impl SocketAccess {
         if plan.full {
             resync |= inner.user.state.settle(fresh);
             if fresh {
-                inner.user.seen = inner.user.seen.max(plan.user_now);
+                inner.user.seen = plan.user_now;
             }
         }
-        for &(g, now) in &plan.guild_targets {
+        for &(g, planned) in &plan.guild_targets {
+            if !held.contains(&g) {
+                continue;
+            }
             if let Some(gs) = inner.guilds.get_mut(&g) {
                 resync |= gs.state.settle(fresh);
                 if fresh {
-                    gs.seen = gs.seen.max(now);
+                    gs.seen = planned;
                 }
                 if let Some(member_of) = &found.member_of {
                     gs.member = Some(member_of.contains(&g));
@@ -1783,25 +1904,30 @@ impl SocketAccess {
                 .as_mut()
                 .filter(|v| v.session_id == planned.session_id)
             {
-                resync |= voice.state.settle(fresh);
-                if fresh {
-                    voice.seen_user = voice.seen_user.max(planned.user_now);
-                    voice.seen_guild = voice.seen_guild.max(planned.guild_now);
+                if voice.guild_now() == planned.guild_now {
+                    resync |= voice.state.settle(fresh);
+                    if fresh {
+                        voice.seen_user = planned.user_now;
+                        voice.seen_guild = planned.guild_now;
+                    }
+                    voice.allowed = ok;
+                    voice_denied = !ok && !voice.denial_taken;
+                } else {
+                    reread = true;
                 }
-                voice.allowed = ok;
-                voice_denied = !ok && !voice.denial_taken;
             }
         }
         if let Some(ok) = found.admin_ok {
             if let Some(admin) = inner.admin.as_mut() {
                 resync |= admin.state.settle(fresh);
                 if fresh {
-                    admin.seen = admin.seen.max(plan.user_now);
+                    admin.seen = plan.user_now;
                 }
                 admin.allowed = ok;
             }
-            // Only a read that answered "not elevated" ends the
-            // subscription; a failed read never does.
+            // Only a read that answered "not elevated" at the epoch that
+            // still holds ends the subscription; a failed read never does,
+            // and neither does an answer an epoch has moved past (above).
             if !ok {
                 inner.admin = None;
                 debug!(user_id = %self.user_id, "Admin events ended (no longer elevated)");
@@ -1815,12 +1941,11 @@ impl SocketAccess {
                     .values()
                     .any(|scope| *scope == ChannelScope::Guild(*g))
         });
-        inner.failure = None;
         if resync {
             inner.resync = true;
         }
         drop(guard);
-        if resync || voice_denied || !fresh {
+        if resync || voice_denied || !fresh || reread {
             self.attention.notify_one();
         }
         if !lost.is_empty() || !regained.is_empty() {
@@ -1836,6 +1961,7 @@ impl SocketAccess {
     /// A revalidation attempt failed: every scope it covered is failing
     /// until one succeeds (nothing of it is delivered meanwhile).
     fn fail(&self, plan: &Plan) {
+        crate::observability::metrics::record_ws_access_check_failure();
         let mut inner = self.lock();
         if plan.full {
             inner.user.state.fail();
@@ -2409,6 +2535,7 @@ mod tests {
             steps: steps.iter().copied().collect(),
             then,
             bump_guild,
+            last_served: None,
         });
     }
 
@@ -2510,11 +2637,25 @@ mod tests {
             ),
         };
         let current = subscribed && access.phase(&inner, target) == Phase::Current;
+        drop(inner);
+        // What the database said last, if that answer still stands (no epoch
+        // moved while it was read).
+        let last = access
+            .script
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|s| s.last_served);
+        let standing = |answer: bool| matches!(last, Some(ScriptStep { bump: false, outcome: Some(a) }) if a == answer);
         let case = format!("{kind:?} bump_guild={bump_guild:?} {start:?} {steps:?} then={then}");
         if admitted {
             assert!(
                 current && allowed,
                 "admitted without current authorization: {case}"
+            );
+            assert!(
+                last.is_none() || standing(true),
+                "admitted on an answer that does not stand: {case}"
             );
             return "admitted";
         }
@@ -2522,16 +2663,20 @@ mod tests {
             !(current && allowed),
             "refused although allowed at the current epoch: {case}"
         );
-        let denied = !subscribed || (current && !allowed);
-        assert!(
-            denied || recorded,
-            "dropped, not denied, not recorded: {case}"
-        );
-        if denied {
-            "denied"
-        } else {
-            "undecided, recorded"
+        if recorded {
+            return "undecided, recorded";
         }
+        // Refused without a record: only a "no" that still stands may do
+        // that — not a subscription that an outdated "no" took away.
+        assert!(
+            standing(false),
+            "dropped, not denied by a standing answer, not recorded: {case}"
+        );
+        assert!(
+            !subscribed || (current && !allowed),
+            "denied, but the state does not say so: {case}"
+        );
+        "denied"
     }
 
     /// Every way through the decision loop: all sequences of read outcomes
@@ -2619,6 +2764,54 @@ mod tests {
         assert_eq!(exit, "undecided, recorded");
     }
 
+    /// A re-check reads "not elevated"; the session is elevated and the
+    /// user's epoch moves before that answer is applied. The outdated "no"
+    /// must not end the subscription: the next read restores the feed.
+    #[tokio::test(start_paused = true)]
+    async fn an_outdated_admin_denial_does_not_end_the_subscription() {
+        let u = Uuid::new_v4();
+        let access = SocketAccess::new(u, lazy_pool());
+        assert!(access.commit_admin(access.user_epoch_now(), true));
+        registry().bump_user(u);
+        let no_while_elevated = ScriptStep {
+            bump: true,
+            outcome: Some(false),
+        };
+        install(&access, &[no_while_elevated], true, None);
+        assert!(
+            access.admit_admin().await,
+            "the feed did not come back after the elevation"
+        );
+        assert!(access.admin_subscribed());
+
+        // The same for the other things an answer can undo: an outdated
+        // "channel gone" keeps the request, an outdated "no voice access"
+        // asks for no removal.
+        let (g, c) = (Uuid::new_v4(), Uuid::new_v4());
+        let access = SocketAccess::new(u, lazy_pool());
+        let scope = ChannelScope::Guild(g);
+        assert_eq!(
+            access.commit_subscribe(c, scope, access.snapshot(scope), true),
+            SubscribeCommit::Recorded
+        );
+        let peer = OwnedVoicePeer {
+            channel_id: c,
+            session_id: Uuid::new_v4(),
+            admission: Some(VoiceAdmission {
+                guild_id: Some(g),
+                epochs: registry().snapshot(u, Some(g)),
+            }),
+        };
+        access.track_voice(Some(&peer));
+        registry().bump_guild(g);
+        install(&access, &[no_while_elevated], true, Some(g));
+        assert!(access.refresh().await.is_ok());
+        assert!(access.is_requested(c));
+        assert!(access.take_voice_denied().is_none());
+        assert!(access.admit(c).await);
+        assert!(access.admit_voice(Some(&peer)).await);
+    }
+
     /// The admin stream is a scope like the others. A read that says
     /// "elevated" while a de-elevation commits and bumps does not admit the
     /// frame (the epoch is compared after the read); a read that fails is
@@ -2695,32 +2888,34 @@ mod tests {
     /// it calls `access_changed` after its commit (or say why it need not),
     /// then update this list.
     const AUDITED_WRITERS: &[(&str, usize, &str)] = &[
-        ("admin/queries.rs", 6, "elevation delete: de-elevate handler calls access_changed; guild suspension: not an access input; guild delete: access_changed"),
+        ("admin/queries.rs", 10, "elevation delete: de-elevate handler calls access_changed; guild suspension: not an access input; guild delete: access_changed; ban (two inserts): bump_after(UserBanned) at the transaction's commit; unban: a grant for an account whose sessions ended with the ban (no socket); account delete: bump_after(AccountDeleted) at the commit"),
         ("auth/queries.rs", 1, "first-admin bootstrap: grant, admin flag re-checked on subscribe"),
+        ("auth/registration.rs", 1, "sweep of accounts whose registration bound nothing within 30 minutes: they never had a session, so no socket"),
         ("auth/revocation.rs", 1, "elevation ends with the session: the socket closes (1008)"),
-        ("chat/messages.rs", 6, "test fixtures"),
+        ("chat/messages.rs", 7, "test fixtures"),
         ("chat/queries.rs", 9, "channel create, DM rename/icon: no access change; DM and group-DM create (after the block check): a grant into a channel that did not exist, so no socket can hold it as requested, and every participant's sockets record it undecided on dm_created and confirm by a read (participants are only ever added at creation); DM leave: access_changed; overrides: access_changed"),
         ("cli/recovery.rs", 2, "CLI admin demote runs in another process: socket backstop (<= 60 s)"),
         ("db/queries.rs", 3, "channel create/update: no access change; channel delete: access_changed"),
         ("db/tests.rs", 13, "test fixtures"),
         ("discovery/queries.rs", 1, "discovery join: access_changed (grant)"),
+        ("governance/queries.rs", 1, "scheduled account deletion: bump_after_if(AccountDeleted) in governance/deletion.rs"),
         ("guild/core.rs", 1, "guild settings (name, icon, ...): not an access input"),
         ("guild/screening.rs", 3, "screening disabled (promotes pending) and accepted: access_changed (grant); enabling never demotes"),
         ("guild/settings.rs", 1, "guild settings: not an access input"),
-        ("guild/queries/core.rs", 9, "guild create (no sockets yet), banner, position, prompt: not access inputs; guild delete, member delete (kick/leave): access_changed; bot uninstall removes the bot's roles in its transaction: bump_after_if(MemberRolesChanged) in guild/bots.rs (bots hold no chat socket; their visibility is read from the database for every event)"),
+        ("guild/queries/core.rs", 11, "bot install: a grant for a bot (no chat socket; bot visibility is read per event at dispatch); guild create (no sockets yet), banner, position, prompt: not access inputs; guild delete, member delete (kick/leave): access_changed; bot uninstall removes the bot's roles in its transaction: bump_after_if(MemberRolesChanged) in guild/bots.rs (bots hold no chat socket; their visibility is read from the database for every event)"),
         ("guild/queries/invites.rs", 1, "invite join: access_changed (grant); admin-created account has no sockets"),
         ("guild/queries/reaction_roles.rs", 2, "reaction role add/remove/swap: access_changed"),
         ("guild/queries/roles.rs", 5, "role create (no members): none; role update with permissions, role delete, assign, remove: access_changed; assigning to an installed bot is the same handler and write"),
-        ("permissions/queries.rs", 12, "helpers without a production caller (admin grant/revoke, elevation, role CRUD, member roles); role creation is grant only"),
+        ("permissions/queries.rs", 12, "create_elevated_session: the elevate handler commits through bump_after (AdminAccessChanged); the other helpers have no production caller (admin grant/revoke, role CRUD, member roles); role creation is grant only"),
         ("system_account.rs", 2, "Kaiku DM creation for a new user: grant only"),
         ("voice/ws_handler_test.rs", 9, "test fixtures"),
-        ("ws/bot_gateway.rs", 6, "test fixtures"),
+        ("ws/bot_gateway.rs", 8, "test fixtures"),
     ];
 
     #[test]
     fn every_access_writer_is_audited() {
         let writes = regex::Regex::new(
-            r"(?is)\b(insert\s+into|update|delete\s+from)\s+(guild_members|guild_member_roles|guild_roles|channel_overrides|channels|dm_participants|system_admins|elevated_sessions|guilds)\b",
+            r"(?is)\b(insert\s+into|update|delete\s+from)\s+(guild_members|guild_member_roles|guild_roles|channel_overrides|channels|dm_participants|system_admins|elevated_sessions|guilds|global_bans|guild_bot_installations)\b|\bdelete\s+from\s+users\b",
         )
         .unwrap();
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");

@@ -45,6 +45,8 @@ pub struct ConnectionLimits {
 enum Slot {
     User(Uuid),
     Ip(String),
+    /// A bot gateway socket (counted, not capped).
+    Bot(Uuid),
 }
 
 type Counts = Arc<Mutex<HashMap<Slot, usize>>>;
@@ -105,17 +107,35 @@ impl WsConnectionTracker {
         self.shutdown.cancel();
     }
 
-    /// Open sockets (every socket holds an IP slot, also before it has
-    /// authenticated).
+    /// Open sockets: every user socket holds an IP slot (also before it has
+    /// authenticated), every bot gateway socket a bot slot.
     #[must_use]
     pub fn open_sockets(&self) -> usize {
         self.counts
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .iter()
-            .filter(|(slot, _)| matches!(slot, Slot::Ip(_)))
+            .filter(|(slot, _)| matches!(slot, Slot::Ip(_) | Slot::Bot(_)))
             .map(|(_, n)| *n)
             .sum()
+    }
+
+    /// Count a bot gateway socket of `bot_user_id` until the permit is
+    /// dropped. Bot sockets are not capped here (their sign-ins are rate
+    /// limited); they are counted so that a shutdown waits for them like for
+    /// user sockets.
+    pub fn track_bot(&self, bot_user_id: Uuid) -> ConnectionPermit {
+        let slot = Slot::Bot(bot_user_id);
+        *self
+            .counts
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(slot.clone())
+            .or_insert(0) += 1;
+        ConnectionPermit {
+            counts: self.counts.clone(),
+            slot,
+        }
     }
 
     /// Wait until every socket has finished (or `bound` passed). Returns the

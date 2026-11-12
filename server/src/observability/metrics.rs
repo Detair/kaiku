@@ -50,6 +50,9 @@ static WS_CONNECTIONS_ACTIVE: OnceLock<UpDownCounter<i64>> = OnceLock::new();
 /// Registered but not wired — needs reconnect token feature to distinguish
 /// new connections from re-connections.
 static WS_RECONNECTS_TOTAL: OnceLock<Counter<u64>> = OnceLock::new();
+static WS_REFUSED_TOTAL: OnceLock<Counter<u64>> = OnceLock::new();
+static WS_RESYNC_CLOSES_TOTAL: OnceLock<Counter<u64>> = OnceLock::new();
+static WS_ACCESS_CHECK_FAILURES_TOTAL: OnceLock<Counter<u64>> = OnceLock::new();
 static WS_MESSAGES_TOTAL: OnceLock<Counter<u64>> = OnceLock::new();
 static VOICE_SESSIONS_ACTIVE: OnceLock<UpDownCounter<i64>> = OnceLock::new();
 static VOICE_SESSION_DURATION_SECONDS: OnceLock<Histogram<f64>> = OnceLock::new();
@@ -227,6 +230,29 @@ pub fn register_metrics() {
         meter
             .u64_counter("kaiku_ws_reconnects_total")
             .with_description("WebSocket reconnection attempts")
+            .build()
+    });
+
+    WS_REFUSED_TOTAL.get_or_init(|| {
+        meter
+            .u64_counter("kaiku_ws_refused_total")
+            .with_description("WebSocket connections refused by a connection cap, by outcome")
+            .build()
+    });
+
+    WS_RESYNC_CLOSES_TOTAL.get_or_init(|| {
+        meter
+            .u64_counter("kaiku_ws_resync_closes_total")
+            .with_description(
+                "WebSockets closed by the server so the client reconnects and catches up, by outcome",
+            )
+            .build()
+    });
+
+    WS_ACCESS_CHECK_FAILURES_TOTAL.get_or_init(|| {
+        meter
+            .u64_counter("kaiku_ws_access_check_failures_total")
+            .with_description("Failed revalidations of a socket's channel access")
             .build()
     });
 
@@ -573,6 +599,30 @@ pub fn record_http_error(status: u16) {
                 KeyValue::new("error.type", status.to_string()),
             ],
         );
+    }
+}
+
+/// Record a WebSocket connection refused by a cap (`outcome`:
+/// `per_address_limit|per_account_limit`).
+pub fn record_ws_refused(outcome: &'static str) {
+    if let Some(counter) = WS_REFUSED_TOTAL.get() {
+        counter.add(1, &[KeyValue::new("outcome", outcome)]);
+    }
+}
+
+/// Record a socket closed so that its client reconnects and catches up
+/// (close codes 1011 and 1013; `outcome` names the cause).
+pub fn record_ws_resync_close(outcome: &'static str) {
+    if let Some(counter) = WS_RESYNC_CLOSES_TOTAL.get() {
+        counter.add(1, &[KeyValue::new("outcome", outcome)]);
+    }
+}
+
+/// Record a failed revalidation of a socket's channel access (database
+/// error or timeout).
+pub fn record_ws_access_check_failure() {
+    if let Some(counter) = WS_ACCESS_CHECK_FAILURES_TOTAL.get() {
+        counter.add(1, &[]);
     }
 }
 

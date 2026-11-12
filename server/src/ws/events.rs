@@ -1157,8 +1157,17 @@ pub enum OutboundMsg {
         channel_id: Uuid,
         event: ServerEvent,
     },
+    /// An event that is bound to a chat channel but reached the socket on
+    /// the user's own feed (a bot's answer to the user's command): written
+    /// only if the user may view the channel then, whether or not the client
+    /// ever asked for that channel.
+    ChannelBound {
+        channel_id: Uuid,
+        event: ServerEvent,
+    },
     /// An event of a server's own feed (`guild:{id}`: members, roles,
-    /// scheduled events, emoji): written only while the user is a member.
+    /// scheduled events, emoji) or one that is bound to a server (an event
+    /// reminder): written only while the user is a member.
     Guild {
         guild_id: Uuid,
         event: ServerEvent,

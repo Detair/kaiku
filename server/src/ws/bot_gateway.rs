@@ -312,6 +312,11 @@ async fn handle_bot_socket(
 ) {
     let (mut sender, mut receiver) = socket.split();
 
+    // Counted as an open socket and told about a server shutdown like a
+    // user socket: Close 1012, then the clean-up below.
+    let _open = state.ws_connections.track_bot(bot_user_id);
+    let shutdown = state.ws_connections.shutdown_token();
+
     // Create Redis subscriber for bot events
     let redis_client = state.redis.clone();
     let bot_channel = format!("bot:{bot_user_id}");
@@ -396,9 +401,17 @@ async fn handle_bot_socket(
         }
     });
 
-    // Forward events to bot (both Redis events and error events)
+    // Forward events to bot (both Redis events and error events), until the
+    // connection ends or the server shuts down. A send to a bot that does not
+    // read is interrupted by the shutdown too.
+    let mut shutting_down = false;
     loop {
         let event = tokio::select! {
+            biased;
+            () = shutdown.cancelled() => {
+                shutting_down = true;
+                break;
+            }
             Some(evt) = rx.recv() => evt,
             Some(err_evt) = error_rx.recv() => err_evt,
             else => break,
@@ -406,14 +419,30 @@ async fn handle_bot_socket(
 
         match serde_json::to_string(&event) {
             Ok(json) => {
-                if sender.send(Message::Text(json.into())).await.is_err() {
-                    break; // Connection closed
+                let sent = shutdown
+                    .run_until_cancelled(sender.send(Message::Text(json.into())))
+                    .await;
+                match sent {
+                    Some(Ok(())) => {}
+                    Some(Err(_)) => break, // Connection closed
+                    None => {
+                        shutting_down = true;
+                        break;
+                    }
                 }
             }
             Err(e) => {
                 error!("Failed to serialize bot event: {}", e);
             }
         }
+    }
+    if shutting_down {
+        info!(bot_user_id = %bot_user_id, "Server shutting down: closing bot gateway socket");
+        let close = sender.send(Message::Close(Some(axum::extract::ws::CloseFrame {
+            code: super::handlers::CLOSE_SERVICE_RESTART,
+            reason: super::handlers::CLOSE_REASON_RESTART.into(),
+        })));
+        let _ = tokio::time::timeout(super::handlers::CLOSE_FLUSH_TIMEOUT, close).await;
     }
 
     // Cleanup
