@@ -15,7 +15,7 @@ import {
   type User,
 } from "@/lib/types";
 import { resetMeSecurity } from "./security";
-import { voiceOwner } from "./voiceOwner";
+import { setVoiceIdentity, shutdownVoice } from "./voiceShutdownHook";
 import { clearAttachmentUrls } from "@/lib/attachmentUrls";
 import * as tauri from "@/lib/tauri";
 import {
@@ -86,8 +86,6 @@ const [authState, setAuthStore] = createStore<AuthState>({
 export const isAuthenticated = () => authState.user !== null;
 export const currentUser = () => authState.user;
 
-// A voice session is only ever served for the user it was started by.
-voiceOwner.useIdentity(() => authState.user?.id ?? null);
 
 /** The user a store update would install, or `undefined` if it leaves the user alone. */
 function userAfter(args: readonly unknown[]): User | null | undefined {
@@ -114,9 +112,11 @@ function userAfter(args: readonly unknown[]): User | null | undefined {
 function changeAuthState(...args: unknown[]): void {
   const next = userAfter(args);
   if (next !== undefined && (next?.id ?? null) !== (authState.user?.id ?? null)) {
-    voiceOwner.shutdown();
+    shutdownVoice();
   }
   (setAuthStore as (...a: unknown[]) => void)(...args);
+  // A voice session is only ever served for the user it was started by.
+  if (next !== undefined) setVoiceIdentity(next?.id ?? null);
 }
 const setAuthState = changeAuthState as typeof setAuthStore;
 
@@ -308,7 +308,7 @@ let sessionExpiredListenerRegistered = false;
 async function endSession(reason: tauri.SessionEndReason): Promise<void> {
   // Voice ends with the session, before anything of the account is cleared:
   // microphone released, no call, nothing that could rejoin later.
-  voiceOwner.shutdown();
+  shutdownVoice();
   // Claim the end first so a concurrent expiry report does not repeat it.
   setAuthState({ user: null });
   resetServerFeatures();
@@ -904,7 +904,7 @@ export async function register(
 export async function logout(): Promise<void> {
   // Voice ends with the session, before anything of the account is cleared:
   // microphone released, no call, nothing that could rejoin later.
-  voiceOwner.shutdown();
+  shutdownVoice();
   invalidatePasskeySignIns();
   endSignInChoices();
   resetServerFeatures();

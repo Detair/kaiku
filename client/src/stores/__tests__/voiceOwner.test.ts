@@ -51,7 +51,7 @@ const adapter = {
     await adapterCall("teardown", session);
     return { ok: true, value: undefined };
   },
-  probePublisher: async () => publisherAlive,
+  probePublisher: () => publisherProbe?.promise ?? Promise.resolve(publisherAlive),
   setEventHandlers: (handlers: typeof mediaEvents) => {
     mediaEvents = { ...mediaEvents, ...handlers };
   },
@@ -69,6 +69,17 @@ let mono = 0;
 let socketAnswers = true;
 /** What the publisher connection object itself says. */
 let publisherAlive = true;
+/** When set, the publisher probe answers only when this is resolved. */
+let publisherProbe: { promise: Promise<boolean>; resolve: (alive: boolean) => void } | null = null;
+
+function parkPublisherProbe(): NonNullable<typeof publisherProbe> {
+  let resolve!: (alive: boolean) => void;
+  const promise = new Promise<boolean>((r) => {
+    resolve = r;
+  });
+  publisherProbe = { promise, resolve };
+  return publisherProbe;
+}
 
 /** Time passes normally: timers run, both clocks move. */
 async function pass(ms: number): Promise<void> {
@@ -95,6 +106,7 @@ describe("voice owner", () => {
     owner.useClock(() => ({ wall: Date.now(), mono }));
     socketAnswers = true;
     publisherAlive = true;
+    publisherProbe = null;
     owner.usePing(async () => {
       if (socketAnswers) owner.noteInbound();
     });
@@ -494,6 +506,57 @@ describe("voice owner", () => {
       expect(gaveUp).not.toHaveBeenCalled();
       await pass(1);
       expect(gaveUp).toHaveBeenCalledTimes(1);
+    });
+
+    it("a publisher probe that never answers: verification ends at 5 s and the rule decides", async () => {
+      const gaveUp = vi.fn();
+      const verified = vi.fn();
+      await healthy({ gaveUp, verified });
+      suspend(8 * HOURS);
+      parkPublisherProbe(); // e.g. the native side is stuck behind a lock
+      const pings = vi.fn(async () => owner.noteInbound());
+      owner.usePing(pings);
+      owner.wake();
+      await pass(PROBE_LIMIT_MS - 1);
+      expect(gaveUp).not.toHaveBeenCalled();
+      await pass(1);
+      expect(gaveUp).toHaveBeenCalledTimes(1); // more than 60 s since the last proof
+      expect(verified).not.toHaveBeenCalled();
+      expect(pings).not.toHaveBeenCalled();
+      expect(log).toEqual(["join:A", "teardown:A"]);
+    });
+
+    it("a probe that never answers after a short sleep: recovery with the time that is left", async () => {
+      const gaveUp = vi.fn();
+      await healthy({ gaveUp });
+      suspend(20_000);
+      parkPublisherProbe();
+      owner.wake();
+      await pass(PROBE_LIMIT_MS);
+      expect(gaveUp).not.toHaveBeenCalled();
+      expect(owner.isRecovering()).toBe(true);
+      await pass(1000);
+      expect(log).toEqual(["join:A", "teardown:A", "join:A"]);
+    });
+
+    it("a probe result that arrives after the deadline changes nothing", async () => {
+      const gaveUp = vi.fn();
+      const verified = vi.fn();
+      const a = await healthy({ gaveUp, verified });
+      suspend(20_000);
+      const probe = parkPublisherProbe();
+      const pings = vi.fn(async () => owner.noteInbound());
+      owner.usePing(pings);
+      owner.wake();
+      await pass(PROBE_LIMIT_MS); // not observed in time: recovering
+      expect(owner.isRecovering()).toBe(true);
+
+      probe.resolve(true); // "alive", far too late
+      await settle();
+      expect(verified).not.toHaveBeenCalled();
+      expect(pings).not.toHaveBeenCalled(); // and nothing is sent for it any more
+      expect(owner.isRecovering()).toBe(true);
+      expect(owner.wants(a)).toBe(true);
     });
 
     it("a pong that arrived before the probe does not count; only a fresh frame does", async () => {

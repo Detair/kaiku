@@ -68,6 +68,7 @@
  */
 
 import type { VoiceAdapter, VoiceConnectionState, VoiceError } from "@/lib/webrtc/types";
+import { registerVoiceHooks, voiceIdentity } from "./voiceShutdownHook";
 import {
   isJoinCancelled,
   isSameSession,
@@ -293,7 +294,7 @@ export class VoiceOwner {
   /** The adapter, once the owner has used it (for a synchronous release). */
   private adapter: VoiceAdapter | null = null;
   /** Who is signed in (a wish is only ever served for its own user). */
-  private identity: () => string | null = () => null;
+  private identity: () => string | null = voiceIdentity;
   private shutdownListeners: Array<() => void> = [];
   private heartbeat: ReturnType<typeof setInterval> | null = null;
   private clock: () => Stamp = () => ({ wall: Date.now(), mono: performance.now() });
@@ -301,6 +302,8 @@ export class VoiceOwner {
   private ping: () => Promise<void> = async () => (await import("@/lib/tauri")).wsPing();
   /** Inbound frames seen on the signalling socket so far. */
   private inbound = 0;
+  /** Verifications started so far (a late result must match its own run). */
+  private verifications = 0;
   /** The last heartbeat or wake-up check. */
   private lastBeat: Stamp = this.clock();
 
@@ -530,10 +533,19 @@ export class VoiceOwner {
   private verify(held: Held): void {
     if (held.verifying) return;
     held.verifying = true;
+    const run = (this.verifications += 1);
     this.tell(() => held.wish.hooks.verifying?.());
-    void this.observe(held).then((carried) => {
-      // A loss reported meanwhile, or an end of the wish, already answered.
-      if (this.held !== held || !held.verifying) return;
+    // One deadline for the whole observation, from this moment: a probe
+    // that never answers ends as "not observed", like a pong that never comes.
+    const observed = this.limited(
+      "Checking the voice connections",
+      this.observe(held, run),
+      PROBE_LIMIT_MS,
+    );
+    void observed.then((carried) => {
+      // A loss reported meanwhile, an end of the wish, or a later
+      // verification already answered; a late result changes nothing.
+      if (this.held !== held || !held.verifying || this.verifications !== run) return;
       held.verifying = false;
       if (held.wish !== this.intent || held.phase !== "live") return;
       if (carried && this.socketUp && held.connected) {
@@ -548,7 +560,7 @@ export class VoiceOwner {
   }
 
   /** One observation of socket and publisher (see `verify`). Never throws. */
-  private async observe(held: Held): Promise<boolean> {
+  private async observe(held: Held, run: number): Promise<boolean> {
     const session = held.session;
     const adapter = this.adapter;
     try {
@@ -556,6 +568,8 @@ export class VoiceOwner {
       // The publisher: the connection object's own state, where the adapter can read it.
       if (typeof adapter.probePublisher === "function") {
         if (!(await adapter.probePublisher(session))) return false;
+        // Answered too late: this verification is over, nothing more is sent.
+        if (!held.verifying || this.verifications !== run) return false;
       }
       // The socket: ask for a pong; only a frame that arrives now counts.
       const seen = this.inbound;
@@ -1181,3 +1195,9 @@ export class VoiceOwner {
 
 /** The owner of this window's voice session. */
 export const voiceOwner = new VoiceOwner();
+
+// From now on the start-up path can end voice and report socket traffic.
+registerVoiceHooks({
+  shutdown: () => voiceOwner.shutdown(),
+  inbound: () => voiceOwner.noteInbound(),
+});
