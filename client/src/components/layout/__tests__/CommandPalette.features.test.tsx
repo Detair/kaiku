@@ -41,4 +41,25 @@ describe("CommandPalette", () => {
     expect(await screen.findByText("# general")).toBeTruthy();
     expect(screen.queryByText("# forumchan")).toBeNull();
   });
+
+  it("is a dialog with a combobox: focus in, arrows mark an option, Escape closes and focus returns (A11Y-1)", async () => {
+    const opener = document.createElement("button");
+    document.body.appendChild(opener);
+    opener.focus();
+    render(() => <CommandPalette />);
+    fireEvent.keyDown(window, { key: "k", ctrlKey: true });
+    const dialog = await screen.findByRole("dialog");
+    await new Promise((r) => setTimeout(r, 20));
+    const box = screen.getByRole("combobox");
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    expect(document.activeElement).toBe(box);
+    const first = screen.getAllByRole("option")[0];
+    expect(box.getAttribute("aria-activedescendant")).toBe(first.id);
+    expect(first.getAttribute("aria-selected")).toBe("true");
+    fireEvent.keyDown(box, { key: "ArrowDown" });
+    expect(box.getAttribute("aria-activedescendant")).toBe(screen.getAllByRole("option")[1].id);
+    fireEvent.keyDown(box, { key: "Escape" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.activeElement).toBe(opener);
+  });
 });

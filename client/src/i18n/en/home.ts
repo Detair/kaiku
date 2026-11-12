@@ -157,6 +157,8 @@ export const home = {
 
   "home.customStatus.title": "Set Custom Status",
   "home.customStatus.placeholder": "What's happening?",
+  "home.customStatus.emojiLabel": "Emoji for your status",
+  "home.customStatus.textLabel": "Your status",
   "home.customStatus.clearAfter": "Clear after",
   "home.customStatus.dontClear": "Don't clear",
   "home.customStatus.thirtyMinutes": "30 minutes",

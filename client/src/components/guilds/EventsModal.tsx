@@ -3,7 +3,7 @@
  * MANAGE_EVENTS) create new ones. Times display in the viewer's locale.
  */
 
-import { Component, For, Show, createResource, createSignal } from "solid-js";
+import { Component, For, Show, createResource, createSignal, createUniqueId } from "solid-js";
 import { Calendar, Users, Plus, X, MapPin } from "lucide-solid";
 import {
   listGuildEvents,
@@ -12,6 +12,10 @@ import {
   clearGuildEventRsvp,
   type GuildEvent,
 } from "@/lib/tauri";
+import { t } from "@/i18n";
+import { errorText } from "@/i18n/errors";
+import Modal from "@/components/ui/Modal";
+import Button from "@/components/ui/Button";
 
 const EventsModal: Component<{
   guildId: string;
@@ -28,6 +32,10 @@ const EventsModal: Component<{
   const [location, setLocation] = createSignal("");
   const [error, setError] = createSignal<string | null>(null);
   const [busy, setBusy] = createSignal(false);
+  const titleId = createUniqueId();
+  const nameId = createUniqueId();
+  const startId = createUniqueId();
+  const placeId = createUniqueId();
 
   const fmt = (iso: string) =>
     new Date(iso).toLocaleString(undefined, {
@@ -55,7 +63,7 @@ const EventsModal: Component<{
       setComposing(false);
       await refetch();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create event");
+      setError(errorText(err, "guilds.events.createFailed"));
     } finally {
       setBusy(false);
     }
@@ -75,144 +83,167 @@ const EventsModal: Component<{
   };
 
   return (
-    <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-      <div
-        class="w-full max-w-lg max-h-[80vh] rounded-xl flex flex-col overflow-hidden"
-        style={{ "background-color": "var(--color-surface-base)" }}
-      >
-        <header class="flex items-center justify-between p-4 border-b border-white/10">
-          <div class="flex items-center gap-2 text-text-primary font-semibold">
-            <Calendar class="w-5 h-5" />
-            Events
-          </div>
-          <div class="flex items-center gap-2">
-            <Show when={props.canManage}>
-              <button
-                class="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-accent-primary text-on-accent text-sm font-medium hover:bg-accent-primary/90"
-                onClick={() => setComposing((c) => !c)}
-              >
-                <Plus class="w-4 h-4" />
-                New
-              </button>
-            </Show>
-            <button
-              class="p-1.5 rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/10"
-              onClick={props.onClose}
+    <Modal
+      onClose={() => props.onClose()}
+      labelledBy={titleId}
+      class="w-full max-w-lg max-h-[80vh] rounded-xl flex flex-col overflow-hidden"
+      style={{ "background-color": "var(--color-surface-base)" }}
+      testId="events-dialog"
+    >
+      <header class="flex items-center justify-between p-4 border-b border-white/10">
+        <h2 id={titleId} class="flex items-center gap-2 text-text-primary font-semibold">
+          <Calendar class="w-5 h-5" aria-hidden="true" />
+          {t("guilds.events.title")}
+        </h2>
+        <div class="flex items-center gap-2">
+          <Show when={props.canManage}>
+            <Button
+              size="sm"
+              onClick={() => setComposing((c) => !c)}
+              aria-expanded={composing()}
             >
-              <X class="w-5 h-5" />
-            </button>
-          </div>
-        </header>
-
-        <div class="flex-1 overflow-y-auto p-4 space-y-3">
-          <Show when={composing()}>
-            <form
-              onSubmit={submit}
-              class="p-3 rounded-lg border border-white/10 space-y-2"
-              style={{ "background-color": "var(--color-surface-layer1)" }}
-            >
-              <input
-                class="w-full px-3 py-2 rounded-lg text-sm text-text-primary bg-[var(--color-surface-layer2)] border border-white/10 outline-none"
-                type="text"
-                placeholder="Event name"
-                maxlength={100}
-                value={name()}
-                onInput={(e) => setName(e.currentTarget.value)}
-              />
-              <input
-                class="w-full px-3 py-2 rounded-lg text-sm text-text-primary bg-[var(--color-surface-layer2)] border border-white/10 outline-none"
-                type="datetime-local"
-                value={startsAt()}
-                onInput={(e) => setStartsAt(e.currentTarget.value)}
-              />
-              <input
-                class="w-full px-3 py-2 rounded-lg text-sm text-text-primary bg-[var(--color-surface-layer2)] border border-white/10 outline-none"
-                type="text"
-                placeholder="Location (optional)"
-                value={location()}
-                onInput={(e) => setLocation(e.currentTarget.value)}
-              />
-              <Show when={error()}>
-                <div class="text-xs text-accent-danger">{error()}</div>
-              </Show>
-              <div class="flex justify-end">
-                <button
-                  type="submit"
-                  disabled={!name().trim() || !startsAt() || busy()}
-                  class="px-3 py-1.5 rounded-lg bg-accent-primary text-on-accent text-sm font-medium state-disabled"
-                >
-                  Create
-                </button>
-              </div>
-            </form>
+              <Plus class="w-4 h-4" aria-hidden="true" />
+              {t("guilds.events.new")}
+            </Button>
           </Show>
-
-          <Show
-            when={!events.loading}
-            fallback={<div class="text-center py-8 text-text-secondary">Loading…</div>}
+          <button
+            type="button"
+            class="p-1.5 tap-target rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/10"
+            onClick={() => props.onClose()}
+            aria-label={t("common.close")}
           >
-            <Show
-              when={(events()?.length ?? 0) > 0}
-              fallback={
-                <div class="text-center py-10 text-text-secondary text-sm">
-                  No upcoming events.
-                </div>
-              }
-            >
-              <For each={events()}>
-                {(ev) => (
-                  <div
-                    class="p-3 rounded-lg border border-white/10"
-                    style={{ "background-color": "var(--color-surface-layer1)" }}
-                  >
-                    <div class="font-medium text-text-primary">{ev.name}</div>
-                    <div class="text-xs text-text-secondary mt-0.5">
-                      {fmt(ev.starts_at)}
-                    </div>
-                    <Show when={ev.location}>
-                      <div class="text-xs text-text-secondary flex items-center gap-1 mt-0.5">
-                        <MapPin class="w-3 h-3" />
-                        {ev.location}
-                      </div>
-                    </Show>
-                    <div class="flex items-center gap-2 mt-2">
-                      <button
-                        class="px-2.5 py-1 rounded-lg text-xs font-medium transition-colors"
-                        classList={{
-                          "bg-accent-primary/20 text-text-primary":
-                            ev.my_response === "going",
-                          "bg-[var(--color-surface-layer2)] text-text-secondary hover:text-text-primary":
-                            ev.my_response !== "going",
-                        }}
-                        onClick={() => rsvp(ev, "going")}
-                      >
-                        Going · {ev.going_count}
-                      </button>
-                      <button
-                        class="px-2.5 py-1 rounded-lg text-xs font-medium transition-colors"
-                        classList={{
-                          "bg-accent-primary/20 text-text-primary":
-                            ev.my_response === "interested",
-                          "bg-[var(--color-surface-layer2)] text-text-secondary hover:text-text-primary":
-                            ev.my_response !== "interested",
-                        }}
-                        onClick={() => rsvp(ev, "interested")}
-                      >
-                        Interested · {ev.interested_count}
-                      </button>
-                      <span class="text-xs text-text-muted flex items-center gap-1 ml-auto">
-                        <Users class="w-3 h-3" />
-                        {ev.going_count + ev.interested_count}
-                      </span>
-                    </div>
-                  </div>
-                )}
-              </For>
-            </Show>
-          </Show>
+            <X class="w-5 h-5" aria-hidden="true" />
+          </button>
         </div>
+      </header>
+
+      <div class="flex-1 overflow-y-auto p-4 space-y-3">
+        <Show when={composing()}>
+          <form
+            onSubmit={submit}
+            class="p-3 rounded-lg border border-white/10 space-y-2"
+            style={{ "background-color": "var(--color-surface-layer1)" }}
+          >
+            <label for={nameId} class="block text-xs font-medium text-text-secondary">
+              {t("guilds.events.name")}
+            </label>
+            <input
+              id={nameId}
+              class="input-field text-sm"
+              type="text"
+              maxlength={100}
+              value={name()}
+              onInput={(e) => setName(e.currentTarget.value)}
+            />
+            <label for={startId} class="block text-xs font-medium text-text-secondary">
+              {t("guilds.events.start")}
+            </label>
+            <input
+              id={startId}
+              class="input-field text-sm"
+              type="datetime-local"
+              value={startsAt()}
+              onInput={(e) => setStartsAt(e.currentTarget.value)}
+            />
+            <label for={placeId} class="block text-xs font-medium text-text-secondary">
+              {t("guilds.events.place")}
+            </label>
+            <input
+              id={placeId}
+              class="input-field text-sm"
+              type="text"
+              value={location()}
+              onInput={(e) => setLocation(e.currentTarget.value)}
+            />
+            <Show when={error()}>
+              <div role="alert" class="text-xs text-error-text">{error()}</div>
+            </Show>
+            <div class="flex justify-end">
+              <Button
+                type="submit"
+                size="sm"
+                disabled={!name().trim() || !startsAt() || busy()}
+                disabledReason={
+                  !busy() && (!name().trim() || !startsAt()) && t("guilds.events.missing")
+                }
+              >
+                {t("guilds.events.create")}
+              </Button>
+            </div>
+          </form>
+        </Show>
+
+        <Show
+          when={!events.loading}
+          fallback={
+            <div role="status" class="text-center py-8 text-text-secondary">
+              {t("common.loading")}
+            </div>
+          }
+        >
+          <Show
+            when={(events()?.length ?? 0) > 0}
+            fallback={
+              <div class="text-center py-10 text-text-secondary text-sm">
+                {t("guilds.events.empty")}
+              </div>
+            }
+          >
+            <For each={events()}>
+              {(ev) => (
+                <div
+                  class="p-3 rounded-lg border border-white/10"
+                  style={{ "background-color": "var(--color-surface-layer1)" }}
+                >
+                  <div class="font-medium text-text-primary">{ev.name}</div>
+                  <div class="text-xs text-text-secondary mt-0.5">{fmt(ev.starts_at)}</div>
+                  <Show when={ev.location}>
+                    <div class="text-xs text-text-secondary flex items-center gap-1 mt-0.5">
+                      <MapPin class="w-3 h-3" aria-hidden="true" />
+                      {ev.location}
+                    </div>
+                  </Show>
+                  <div class="flex items-center gap-2 mt-2">
+                    <button
+                      type="button"
+                      aria-pressed={ev.my_response === "going"}
+                      class="px-2.5 py-1 rounded-lg text-xs font-medium transition-colors"
+                      classList={{
+                        "bg-accent-primary/20 text-text-primary": ev.my_response === "going",
+                        "bg-[var(--color-surface-layer2)] text-text-secondary hover:text-text-primary":
+                          ev.my_response !== "going",
+                      }}
+                      onClick={() => rsvp(ev, "going")}
+                    >
+                      {t("guilds.events.going", { count: ev.going_count })}
+                    </button>
+                    <button
+                      type="button"
+                      aria-pressed={ev.my_response === "interested"}
+                      class="px-2.5 py-1 rounded-lg text-xs font-medium transition-colors"
+                      classList={{
+                        "bg-accent-primary/20 text-text-primary": ev.my_response === "interested",
+                        "bg-[var(--color-surface-layer2)] text-text-secondary hover:text-text-primary":
+                          ev.my_response !== "interested",
+                      }}
+                      onClick={() => rsvp(ev, "interested")}
+                    >
+                      {t("guilds.events.interested", { count: ev.interested_count })}
+                    </button>
+                    <span class="text-xs text-text-secondary flex items-center gap-1 ml-auto">
+                      <Users class="w-3 h-3" aria-hidden="true" />
+                      <span>
+                        {t("guilds.events.total", { count: ev.going_count + ev.interested_count })}
+                      </span>
+                    </span>
+                  </div>
+                </div>
+              )}
+            </For>
+          </Show>
+        </Show>
       </div>
-    </div>
+    </Modal>
   );
 };
 

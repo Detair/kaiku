@@ -14,6 +14,7 @@ vi.mock("@/lib/tauri", () => ({
   discoverGuilds: vi.fn(async () => ({ guilds: [] })),
   joinDiscoverable: vi.fn(),
   createReport: vi.fn(() => new Promise(() => {})),
+  listGuildEvents: vi.fn(async () => []),
 }));
 vi.mock("@/stores/friends", () => ({ blockUser: vi.fn(() => new Promise(() => {})) }));
 vi.mock("@floating-ui/dom", () => ({
@@ -28,6 +29,7 @@ vi.mock("@floating-ui/dom", () => ({
   size: vi.fn(() => ({})),
 }));
 vi.mock("@/lib/featureFlags", () => ({ isE2EEEnabled: () => false }));
+vi.mock("@/stores/settings", () => ({ appSettings: () => null }));
 vi.mock("qrcode", () => ({ default: { toDataURL: vi.fn() } }));
 vi.mock("@/components/ui/Toast", () => ({ showToast: vi.fn() }));
 vi.mock("../settings/AccountSettings", () => ({ default: () => null }));
@@ -108,6 +110,9 @@ import ReportModal from "../modals/ReportModal";
 import BlockConfirmModal from "../modals/BlockConfirmModal";
 import ImageLightbox from "../ui/ImageLightbox";
 import Modal from "../ui/Modal";
+import EventsModal from "../guilds/EventsModal";
+import CustomStatusModal from "../ui/CustomStatusModal";
+import KeyboardShortcutsDialog from "../ui/KeyboardShortcutsDialog";
 import PositionedEmojiPicker from "../emoji/PositionedEmojiPicker";
 import GuildSettingsModal from "../guilds/GuildSettingsModal";
 import CreateGuildModal from "../guilds/CreateGuildModal";
@@ -258,6 +263,24 @@ describe("modal contract: focus in, Tab stays, Escape from anywhere, focus back"
   it("ChannelSettingsModal", async () => {
     await expectModalContract("general", (onClose) => (
       <ChannelSettingsModal channelId="c1" guildId="g1" onClose={onClose} />
+    ));
+  });
+
+  it("EventsModal", async () => {
+    await expectModalContract("Events", (onClose) => (
+      <EventsModal guildId="g1" canManage onClose={onClose} />
+    ));
+  });
+
+  it("CustomStatusModal", async () => {
+    await expectModalContract("Set Custom Status", (onClose) => (
+      <CustomStatusModal onSave={() => {}} onClose={onClose} />
+    ));
+  });
+
+  it("KeyboardShortcutsDialog", async () => {
+    await expectModalContract("Keyboard shortcuts", (onClose) => (
+      <KeyboardShortcutsDialog onClose={onClose} />
     ));
   });
 

@@ -21,6 +21,7 @@ import {
   Component,
   createSignal,
   createEffect,
+  createUniqueId,
   createMemo,
   For,
   Show,
@@ -28,6 +29,8 @@ import {
 } from "solid-js";
 import { Hash, Volume2, Search, Mic, MicOff, VolumeX } from "lucide-solid";
 import { t } from "@/i18n";
+import Modal from "@/components/ui/Modal";
+import { MODAL_LAYER } from "@/lib/a11y/modalLayer";
 import { channelsState, selectChannel, visibleChannels } from "@/stores/channels";
 import { setShowGlobalSearch } from "@/stores/search";
 import { toggleMute, toggleDeafen, voiceState } from "@/stores/voice";
@@ -177,32 +180,35 @@ const CommandPalette: Component = () => {
     setSelectedIndex(0);
   });
 
-  // Close on backdrop click
-  const handleBackdropClick = (e: MouseEvent) => {
-    if (e.target === e.currentTarget) {
-      setIsOpen(false);
-    }
-  };
+  const listId = createUniqueId();
+  const optionId = (i: number) => `${listId}-opt-${i}`;
 
+  // A modal dialog with a combobox (A11Y-1): focus goes to the field and
+  // back to where it was, Escape closes, the highlighted entry is announced.
   return (
     <Show when={isOpen()}>
-      {/* Backdrop */}
-      <div
-        class="fixed inset-0 bg-black/60 backdrop-blur-sm z-[100] flex items-start justify-center pt-[20vh]"
-        onClick={handleBackdropClick}
+      <Modal
+        onClose={() => setIsOpen(false)}
+        label={t("home.palette.placeholder")}
+        layer={MODAL_LAYER.dialog + 30}
+        backdropClass="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-start justify-center pt-[20vh] px-4"
+        class="w-[600px] max-w-full border border-white/10 shadow-2xl rounded-xl overflow-hidden animate-slide-up"
+        style={{ "background-color": "var(--color-surface-layer2)" }}
+        testId="command-palette"
       >
-        {/* Command Palette Dialog */}
-        <div
-          data-testid="command-palette"
-          class="w-[600px] max-w-[calc(100vw-2rem)] border border-white/10 shadow-2xl rounded-xl overflow-hidden animate-slide-up"
-          style={{"background-color":"var(--color-surface-layer2)"}}
-        >
           {/* Input */}
           <div class="border-b border-white/5">
             <input
               ref={inputRef}
               data-testid="command-palette-input"
               type="text"
+              role="combobox"
+              aria-expanded="true"
+              aria-autocomplete="list"
+              aria-controls={listId}
+              aria-activedescendant={
+                filteredItems().length > 0 ? optionId(selectedIndex()) : undefined
+              }
               placeholder={t("home.palette.placeholder")}
               aria-label={t("home.palette.placeholder")}
               class="w-full px-6 py-4 bg-transparent text-xl text-text-input outline-none placeholder:text-text-placeholder"
@@ -216,15 +222,19 @@ const CommandPalette: Component = () => {
             <Show
               when={filteredItems().length > 0}
               fallback={
-                <div class="px-6 py-8 text-center text-text-secondary">
+                <div role="status" class="px-6 py-8 text-center text-text-secondary">
                   {t("home.palette.noResults")}
                 </div>
               }
             >
+              <div id={listId} role="listbox" aria-label={t("home.palette.placeholder")}>
               <For each={filteredItems()}>
                 {(item, index) => (
-                  <button
-                    class="w-full px-6 py-3 flex items-center gap-3 transition-colors text-left"
+                  <div
+                    id={optionId(index())}
+                    role="option"
+                    aria-selected={index() === selectedIndex()}
+                    class="w-full px-6 py-3 flex items-center gap-3 transition-colors text-left cursor-pointer"
                     classList={{
                       "bg-surface-highlight": index() === selectedIndex(),
                       "hover:bg-surface-highlight/50":
@@ -233,7 +243,7 @@ const CommandPalette: Component = () => {
                     onClick={() => item.action()}
                     onMouseEnter={() => setSelectedIndex(index())}
                   >
-                    <div class="w-5 h-5 text-text-secondary flex-shrink-0">
+                    <div class="w-5 h-5 text-text-secondary flex-shrink-0" aria-hidden="true">
                       <item.icon />
                     </div>
                     <span class="text-text-primary font-medium">
@@ -244,14 +254,15 @@ const CommandPalette: Component = () => {
                         {t("home.palette.command")}
                       </span>
                     </Show>
-                  </button>
+                  </div>
                 )}
               </For>
+              </div>
             </Show>
           </div>
 
           {/* Footer Hint */}
-          <div class="px-6 py-2 border-t border-white/5 bg-surface-base">
+          <div class="px-6 py-2 border-t border-white/5 bg-surface-base" aria-hidden="true">
             <div class="flex items-center gap-4 text-xs text-text-secondary">
               <div>
                 <kbd class="px-1.5 py-0.5 bg-surface-layer2 rounded border border-white/10">
@@ -261,20 +272,19 @@ const CommandPalette: Component = () => {
               </div>
               <div>
                 <kbd class="px-1.5 py-0.5 bg-surface-layer2 rounded border border-white/10">
-                  Enter
+                  {t("common.key.enter")}
                 </kbd>
                 <span class="ml-1">{t("home.palette.hintSelect")}</span>
               </div>
               <div>
                 <kbd class="px-1.5 py-0.5 bg-surface-layer2 rounded border border-white/10">
-                  Esc
+                  {t("common.key.escape")}
                 </kbd>
                 <span class="ml-1">{t("common.close")}</span>
               </div>
             </div>
           </div>
-        </div>
-      </div>
+      </Modal>
     </Show>
   );
 };
