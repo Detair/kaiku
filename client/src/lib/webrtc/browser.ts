@@ -386,6 +386,17 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     return { ok: true, value: undefined };
   }
 
+  async probePublisher(handle: VoiceSessionHandle): Promise<boolean> {
+    const pc = this.sessionOf(handle)?.publisher?.pc;
+    if (!pc) return false;
+    // The object's own state, not the last event this adapter saw.
+    const ice = pc.iceConnectionState as RTCIceConnectionState | undefined;
+    return (
+      pc.connectionState === "connected" &&
+      (ice === undefined || ice === "connected" || ice === "completed")
+    );
+  }
+
   /** Whether `session` is still the adapter's open session. */
   private holds(session: BrowserSession): boolean {
     return !session.ended && this.session === session;

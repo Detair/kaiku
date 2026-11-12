@@ -36,6 +36,10 @@ interface NativeModel {
   wire: string[];
   /** Channels whose native session was torn down, in order. */
   tornDown: string[];
+  /** What the native peer connection object says when asked. */
+  publisherAlive: boolean;
+  /** Whether the server answers a ping on the native socket. */
+  socketAnswers: boolean;
   listeners: Map<string, Array<(event: { payload: unknown }) => void>>;
   parked: Map<string, Deferred<void>[]>;
 }
@@ -46,6 +50,8 @@ const native: NativeModel = {
   held: null,
   wire: [],
   tornDown: [],
+  publisherAlive: true,
+  socketAnswers: true,
   listeners: new Map(),
   parked: new Map(),
 };
@@ -97,6 +103,8 @@ async function fakeInvoke(command: string, args: Record<string, unknown> = {}): 
       nativeState("Disconnected", held.epoch);
       return undefined;
     }
+    case "voice_probe":
+      return native.held !== null && native.held.epoch === args.epoch && native.publisherAlive;
     default:
       return undefined;
   }
@@ -124,6 +132,9 @@ vi.mock("@/lib/tauri/common", () => ({
 }));
 
 vi.mock("@/lib/tauri", () => ({
+  wsPing: async () => {
+    if (native.socketAnswers) (await import("../voiceOwner")).voiceOwner.noteInbound();
+  },
   wsSend: vi.fn().mockResolvedValue(undefined),
   wsScreenShareStart: vi.fn(),
   wsScreenShareStop: vi.fn(),
@@ -185,6 +196,7 @@ import {
   rejoinVoiceAfterReconnect,
 } from "../voice";
 import { resetVoiceAdapter } from "@/lib/webrtc";
+import { voiceOwner } from "../voiceOwner";
 
 /** Let everything that can run, run (microtasks, due timers, module loads). */
 async function settle(rounds = 6): Promise<void> {
@@ -214,6 +226,8 @@ describe("one owner for the voice session (desktop adapter)", () => {
     native.held = null;
     native.wire = [];
     native.tornDown = [];
+    native.publisherAlive = true;
+    native.socketAnswers = true;
     native.parked.clear();
     for (const level of ["log", "info", "warn", "error"] as const) {
       vi.spyOn(console, level).mockImplementation(() => {});
@@ -261,6 +275,41 @@ describe("one owner for the voice session (desktop adapter)", () => {
     nativeState("Connected");
     expect(voiceState.state).toBe("connected");
     expect(voiceState.channelId).toBe("C");
+  });
+
+  it("slept 8 hours, native connections dead, nothing reported yet: given up, no rejoin", async () => {
+    await inChannel("A");
+    await vi.advanceTimersByTimeAsync(20_000);
+    vi.setSystemTime(Date.now() + 8 * 3_600_000);
+    native.publisherAlive = false; // what the native peer connection says when asked
+    native.socketAnswers = false;
+
+    voiceOwner.wake();
+    expect(voiceState.state).toBe("reconnecting");
+    await settle();
+    expect(voiceState.state).toBe("disconnected");
+    expect(voiceState.lostChannelId).toBe("A");
+    expect(native.held).toBeNull();
+    expect(native.wire).not.toContain("leave:A"); // given up: no voice_leave
+
+    noteSignallingLost();
+    void rejoinVoiceAfterReconnect();
+    await vi.advanceTimersByTimeAsync(60_000);
+    await settle();
+    expect(joinsOnWire()).toEqual(["join:A"]);
+  });
+
+  it("slept 8 hours and the native connection survived: the call goes on", async () => {
+    await inChannel("A");
+    await vi.advanceTimersByTimeAsync(20_000);
+    vi.setSystemTime(Date.now() + 8 * 3_600_000);
+
+    voiceOwner.wake();
+    await settle();
+    expect(voiceState.state).toBe("connected");
+    expect(native.held?.channelId).toBe("A");
+    expect(joinsOnWire()).toEqual(["join:A"]);
+    expect(voiceState.lostChannelId).toBeNull();
   });
 
   it("voice_removed for the channel being left does not touch the one being joined", async () => {

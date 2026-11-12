@@ -938,6 +938,35 @@ pub async fn leave_voice(
     .map_err(|e| format!("Voice teardown did not complete: {e}"))?
 }
 
+/// Whether a publisher connection in this state carries media.
+const fn publisher_alive(
+    state: webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState,
+) -> bool {
+    matches!(
+        state,
+        webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Connected
+    )
+}
+
+/// Whether the publisher connection of the voice session `epoch` is alive
+/// right now. Read from the peer connection itself, not from the last
+/// state event: after the computer slept, events may not have arrived yet.
+/// False when another session (or none) holds the connection.
+#[command]
+pub async fn voice_probe(epoch: Option<u64>, state: State<'_, AppState>) -> Result<bool, String> {
+    let publisher = {
+        let voice = state.voice.read().await;
+        let Some(voice_state) = voice.as_ref() else {
+            return Ok(false);
+        };
+        if voice_state.channel_id.is_none() || voice_state.session_epoch != epoch {
+            return Ok(false);
+        }
+        voice_state.webrtc.publisher_pc().await
+    };
+    Ok(publisher.is_some_and(|pc| publisher_alive(pc.connection_state())))
+}
+
 /// Set mute state.
 #[command]
 pub async fn set_mute(muted: bool, state: State<'_, AppState>) -> Result<(), String> {
@@ -1871,6 +1900,22 @@ mod tests {
         );
         assert_eq!(voice.read().await.as_ref().unwrap().epoch, None);
         assert!(sent_by(&ws).is_empty());
+    }
+
+    #[test]
+    fn only_a_connected_publisher_counts_as_alive() {
+        use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState as S;
+        assert!(publisher_alive(S::Connected));
+        for state in [
+            S::New,
+            S::Connecting,
+            S::Disconnected,
+            S::Failed,
+            S::Closed,
+            S::Unspecified,
+        ] {
+            assert!(!publisher_alive(state), "{state:?}");
+        }
     }
 
     #[test]

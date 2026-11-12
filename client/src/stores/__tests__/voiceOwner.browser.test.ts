@@ -45,7 +45,13 @@ async function fakeWsSend(message: Sent): Promise<void> {
   if (delay) await new Promise((r) => setTimeout(r, delay));
 }
 
+/** Whether the server answers a ping (the socket is in fact alive). */
+const pong = vi.hoisted(() => ({ answers: true }));
+
 vi.mock("@/lib/tauri", () => ({
+  wsPing: async () => {
+    if (pong.answers) (await import("../voiceOwner")).voiceOwner.noteInbound();
+  },
   wsSend: (m: Sent) => fakeWsSend(m),
   wsStatus: async () => ({ type: "connected" }),
   wsConnect: async () => undefined,
@@ -222,6 +228,7 @@ describe("one owner for the voice session (browser adapter)", () => {
     parkedSends.clear();
     parkedMics.length = 0;
     sendDelay.clear();
+    pong.answers = true;
     gum = vi.fn(async () => {
       const gate = parkedMics.shift();
       if (gate) await gate.promise;
@@ -558,6 +565,59 @@ describe("one owner for the voice session (browser adapter)", () => {
     expect(voiceState.state).toBe("disconnected");
     expect(voiceState.lostChannelId).toBe("A");
     expect(openPcs()).toHaveLength(0);
+  });
+
+  it("slept 8 hours, connections dead, the failure is reported 3 s after wake-up: no rejoin", async () => {
+    await inChannel("A");
+    await vi.advanceTimersByTimeAsync(20_000);
+    vi.setSystemTime(Date.now() + 8 * 3_600_000);
+    // Dead, but nothing has been reported: the connection object says so
+    // when asked, and no pong comes back.
+    pong.answers = false;
+    openPcs()[0]!.connectionState = "disconnected";
+
+    voiceOwner.wake(); // the page becomes visible again
+    expect(voiceState.state).toBe("reconnecting"); // not shown as fine
+    await vi.advanceTimersByTimeAsync(3_000);
+    noteSignallingLost();
+    void rejoinVoiceAfterReconnect();
+    await vi.advanceTimersByTimeAsync(60_000);
+    await settle();
+
+    expect(voiceState.state).toBe("disconnected");
+    expect(voiceState.lostChannelId).toBe("A");
+    expect(openMics()).toHaveLength(0);
+    expect(sentOf("voice_join")).toHaveLength(1);
+  });
+
+  it("slept 8 hours, connections dead and nothing is ever reported: given up within the probe window", async () => {
+    await inChannel("A");
+    await vi.advanceTimersByTimeAsync(20_000);
+    vi.setSystemTime(Date.now() + 8 * 3_600_000);
+    pong.answers = false;
+
+    voiceOwner.wake();
+    await vi.advanceTimersByTimeAsync(5_000);
+    await settle();
+    expect(voiceState.state).toBe("disconnected");
+    expect(voiceState.lostChannelId).toBe("A");
+    expect(openMics()).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(sentOf("voice_join")).toHaveLength(1);
+  });
+
+  it("slept 8 hours and the connection survived (fresh pong, publisher connected): the call goes on", async () => {
+    await inChannel("A");
+    await vi.advanceTimersByTimeAsync(20_000);
+    vi.setSystemTime(Date.now() + 8 * 3_600_000);
+
+    voiceOwner.wake();
+    expect(voiceState.state).toBe("reconnecting"); // until it is verified
+    await settle();
+    expect(voiceState.state).toBe("connected");
+    expect(openMics()).toHaveLength(1);
+    expect(sentOf("voice_join")).toHaveLength(1);
+    expect(voiceState.lostChannelId).toBeNull();
   });
 
   it("a clock correction during a healthy call changes nothing", async () => {

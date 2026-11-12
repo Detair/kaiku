@@ -4,6 +4,7 @@
  * Manages WebSocket connection and routes events to appropriate stores.
  */
 
+import { voiceOwner } from "../voiceOwner";
 import { loadServerFeatures, isHiddenChannel } from "@/stores/serverFeatures";
 import { isTextLikeChannelType } from "@/lib/channelTypes";
 import { createStore } from "solid-js/store";
@@ -385,6 +386,8 @@ function notifySecurityNotice(message: Message): void {
 
 export async function handleServerEvent(event: ServerEvent): Promise<void> {
   console.log("[WebSocket] Received event:", event.type);
+  // Any frame from the server shows that the socket is alive right now.
+  voiceOwner.noteInbound();
 
   switch (event.type) {
     case "message_new":

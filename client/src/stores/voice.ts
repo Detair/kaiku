@@ -150,19 +150,6 @@ let channelWish: VoiceWish | null = null;
 // here, so the owner does not wait for a module to load before a join).
 voiceOwner.useAdapter(createVoiceAdapter);
 
-// On a wake-up after a long gap the owner asks whether the socket is in
-// fact still open. The browser knows from the socket itself; the desktop
-// app's socket lives in the native process, which reports its state.
-voiceOwner.useSocketProbe(() => {
-  if (isTauri()) return true;
-  try {
-    const socket = tauri.getBrowserWebSocket();
-    return !socket || socket.readyState === WebSocket.OPEN;
-  } catch {
-    return true;
-  }
-});
-
 // The signed-in session ends: nothing of its voice stays on screen, and
 // the offer to rejoin does not reach whoever signs in next.
 voiceOwner.onShutdown(() => {
@@ -682,6 +669,10 @@ function channelHooks(channelId: string): VoiceHooks {
       setVoiceState({ state: "reconnecting" });
       stopMetricsLoop();
     },
+    // After a gap (the device slept): shown as reconnecting until the
+    // owner has seen that the connections are in fact alive.
+    verifying: () => setVoiceState({ state: "reconnecting" }),
+    verified: () => setVoiceState({ state: "connected" }),
     attemptStarts: () => {
       // The old connection is gone: its audio, shares and webcam with it
       // (screen share and webcam are not restarted, C32).

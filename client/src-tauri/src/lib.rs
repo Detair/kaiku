@@ -177,6 +177,7 @@ pub fn run() {
             commands::voice::is_in_voice,
             commands::voice::get_voice_channel,
             commands::voice::voice_connection_stats,
+            commands::voice::voice_probe,
             commands::voice::subscribe_video_frames,
             // Tray commands
             commands::tray::tray_set_unread,

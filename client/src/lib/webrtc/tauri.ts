@@ -182,6 +182,19 @@ export class TauriVoiceAdapter implements VoiceAdapter {
     return this.end(handle, false);
   }
 
+  async probePublisher(handle: VoiceSessionHandle): Promise<boolean> {
+    const session = this.session;
+    if (!session || session.ended || session.handle.token !== handle.token) return false;
+    if (session.nativeEpoch === null) return false;
+    try {
+      // Native reads the peer connection's own state for this epoch.
+      return await invoke<boolean>("voice_probe", { epoch: session.nativeEpoch });
+    } catch (err) {
+      console.warn("[TauriVoiceAdapter] Probing the voice connection failed:", err);
+      return false;
+    }
+  }
+
   /**
    * End the session `handle` names: local state at once, then the native
    * session by its epoch (native leaves a newer session alone). `notify`

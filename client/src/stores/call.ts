@@ -400,6 +400,8 @@ function requestCallVoice(
     // and this user is in it.
     needsConfirmation: true,
     recovering: () => setCallState("voiceReconnecting", true),
+    verifying: () => setCallState("voiceReconnecting", true),
+    verified: () => setCallState("voiceReconnecting", false),
     recovered: () => {
       setCallState("voiceReconnecting", false);
       console.info("[Call] Rejoined call voice:", channelId);

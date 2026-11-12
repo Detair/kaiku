@@ -335,6 +335,13 @@ export interface VoiceAdapter {
    */
   teardown(session: VoiceSessionHandle): Promise<VoiceResult<void>>;
 
+  /**
+   * Whether the publisher connection of `session` is alive right now, read
+   * from the connection itself (not from the last state event). False for a
+   * session the adapter does not hold.
+   */
+  probePublisher?(session: VoiceSessionHandle): Promise<boolean>;
+
   // Audio control
   setMute(muted: boolean): Promise<VoiceResult<void>>;
   setDeafen(deafened: boolean): Promise<VoiceResult<void>>;

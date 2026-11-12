@@ -355,6 +355,26 @@ describe("TauriVoiceAdapter sessions (one handle per join)", () => {
     expect(adapter.getState()).toBe("disconnected");
   });
 
+  it("the publisher probe asks native about this session's epoch, never from remembered state", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    let alive = true;
+    vi.mocked(invoke).mockImplementation((async (cmd: string) => {
+      if (cmd === "begin_voice_session") return 7;
+      if (cmd === "voice_probe") return alive;
+      return undefined;
+    }) as typeof invoke);
+    const adapter = new TauriVoiceAdapter();
+    await adapter.join(A);
+    expect(await adapter.probePublisher(A)).toBe(true);
+    expect(invoke).toHaveBeenLastCalledWith("voice_probe", { epoch: 7 });
+    alive = false; // no state event arrived, the adapter's own state is unchanged
+    expect(await adapter.probePublisher(A)).toBe(false);
+    // A session the adapter does not hold is never reported alive.
+    vi.mocked(invoke).mockClear();
+    expect(await adapter.probePublisher(B)).toBe(false);
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
   it("ending a session reports disconnected for that session only", async () => {
     await nativeCounter();
     const adapter = new TauriVoiceAdapter();

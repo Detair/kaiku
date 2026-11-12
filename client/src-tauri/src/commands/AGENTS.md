@@ -178,6 +178,7 @@ Failures with a server code are returned as the bare code (`OIDC_CLIENT_OUTDATED
 - `begin_voice_session()`: next voice session epoch (native counter, shared by reloads and windows); allocating one cancels nothing
 - `join_voice(channel_id, epoch?)`: Initialize WebRTC + Audio, send `VoiceJoin` event. Cancelled (`VOICE_JOIN_CANCELLED`) once the leave of its session raised the floor (`VoiceEpochGate`); rechecked after the socket lock and before each send. Emits `voice:session_state {epoch, state}`
 - `leave_voice(silent?, epoch?)`: Stop audio, disconnect WebRTC, send `VoiceLeave` event (not when `silent`). `epoch` names the session to end: its join (and older ones) is cancelled, and a newer native session is left alone (`leave_applies`); without `epoch` everything ends. The teardown runs as its own task (it completes even if the window stops waiting), each step bounded to 3 s, ordered with later joins by the voice lock
+- `voice_probe(epoch?)`: whether the publisher connection of that session is connected right now, read from the peer connection itself (used after the computer slept, before the app trusts what it remembers)
 - `handle_voice_offer(sdp)`: Process server SDP offer, return SDP answer
 - `handle_voice_ice_candidate(candidate)`: Add ICE candidate from server
 - `set_mute(muted)` / `set_deafen(deafened)`: Audio state
