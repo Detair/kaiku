@@ -113,6 +113,9 @@ Check contrast ratios using [WebAIM Contrast Checker](https://webaim.org/resourc
 | `text-primary` on `surface-base`     | 7:1            | WCAG AAA |
 | `text-secondary` on `surface-layer1` | 4.5:1          | WCAG AA  |
 | `accent-primary` on `surface-base`   | 4.5:1          | WCAG AA  |
+| `text-muted` on `surface-layer1`/`layer2` | 4.5:1     | WCAG AA (12 px helper text) |
+| `danger-text` on `surface-layer1`/`layer2` | 4.5:1    | WCAG AA (red text) |
+| `border-input` on every surface      | 3:1            | WCAG 1.4.11 |
 
 ---
 
@@ -311,3 +314,22 @@ Before submitting a community theme:
 - [ ] Preview colors match actual theme appearance
 - [ ] Theme description is concise and accurate
 - [ ] If pixel family: verified inheritance works correctly
+
+## Light themes, "Same as my device" and text size
+
+- A theme is "light" when its `ThemeDefinition` has `isDark: false` and its CSS block sets `color-scheme: light`.
+  "Same as my device" (`theme_follow_system`) shows `SYSTEM_LIGHT_THEME` (solarized-light) by day and the stored
+  dark theme at night. `resolveTheme()` in `stores/theme.ts` holds the rule; `public/theme-preload.js` repeats it
+  before first paint and `stores/__tests__/themeSystem.test.ts` checks both agree. Change one, change the other.
+- Components still draw faint borders and hover fills with white overlays (`border-white/10`, `bg-white/5`, up to
+  `/40`). `uno.config.ts` draws them with `--color-overlay-rgb` (white when unset) in a layer before the utilities,
+  so side, hover, focus and checked colours on the same element still win. A light theme sets
+  `--color-overlay-rgb: var(--color-text-primary-rgb)` in its block. Surfaces that stay dark or coloured in every
+  theme (`bg-black`, `bg-black/90`, `bg-accent-primary`, ...) put it back to white in `global.css`; add a class
+  there if a new media surface needs it. Do not redraw overlay classes with theme-scoped selectors: they beat every
+  state utility. Because the overlay classes sit before the other utilities, a breakpoint variant such as
+  `md:bg-white/10` loses against a plain background colour on the same element; put the overlay on its own element
+  instead. A new light theme also needs its own block in `highlight-theme.css`.
+- Text size is `data-font-size="large|xlarge"` on `<html>` (115 % / 130 % root font size). Size things in `rem`,
+  not `px`, or they will not follow.
+- Contrast for a selectable light theme is enforced by the "solarized-light as a selectable theme" tests.

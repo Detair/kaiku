@@ -32,6 +32,22 @@ interface MessageActionsProps {
 // Quick reaction emojis
 export const QUICK_EMOJIS = ["👍", "❤️", "😂", "😮"];
 
+/**
+ * The bar never grows wider than the screen: on a narrow phone the buttons
+ * keep their size and wrap into a second row instead of sliding off the edge.
+ */
+const ACTION_BAR_BASE =
+  "absolute top-0 right-4 -translate-y-1/2 flex flex-wrap justify-end items-center gap-1 max-w-[calc(100vw-1.5rem)] bg-surface-layer2 border border-white/10 rounded-lg shadow-xl px-1 py-1 transition-opacity";
+/**
+ * Hidden until the message is hovered or anything in the bar has keyboard
+ * focus. While hidden it takes no taps: on a touchscreen the first tap on a
+ * message reveals the bar (sticky hover) instead of hitting an unseen button.
+ */
+export const ACTION_BAR_HIDDEN =
+  "opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto focus-within:opacity-100 focus-within:pointer-events-auto";
+/** While the emoji picker is open the bar stays put. */
+const ACTION_BAR_SHOWN = "opacity-100";
+
 const MessageActions: Component<MessageActionsProps> = (props) => {
   const [showEmojiPicker, setShowEmojiPicker] = createSignal(false);
   let emojiButtonRef: HTMLButtonElement | undefined;
@@ -46,11 +62,16 @@ const MessageActions: Component<MessageActionsProps> = (props) => {
   };
 
   return (
-    <div data-testid="message-action-bar" class="absolute top-0 right-4 -translate-y-1/2 flex items-center gap-1 bg-surface-layer2 border border-white/10 rounded-lg shadow-xl px-1 py-1 opacity-0 group-hover:opacity-100 transition-opacity">
+    <div
+      data-testid="message-action-bar"
+      role="toolbar"
+      aria-label={t("chat.message.actions")}
+      class={`${ACTION_BAR_BASE} ${showEmojiPicker() ? ACTION_BAR_SHOWN : ACTION_BAR_HIDDEN}`}
+    >
       {/* Quick emoji reactions */}
       <For each={QUICK_EMOJIS}>{(emoji) => (
         <button
-          class="w-7 h-7 flex items-center justify-center rounded hover:bg-white/10 transition-colors"
+          class="w-7 h-7 touch:w-11 touch:h-11 shrink-0 flex items-center justify-center rounded hover:bg-white/10 transition-colors"
           onClick={() => handleQuickReaction(emoji)}
           title={t("chat.message.react", { emoji })}
           aria-label={t("chat.message.react", { emoji })}
@@ -62,7 +83,7 @@ const MessageActions: Component<MessageActionsProps> = (props) => {
       {/* Emoji picker button */}
       <button
         ref={emojiButtonRef}
-        class="w-7 h-7 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary hover:text-text-primary transition-colors"
+        class="w-7 h-7 touch:w-11 touch:h-11 shrink-0 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary hover:text-text-primary transition-colors"
         data-testid="message-action-react"
         onClick={() => setShowEmojiPicker(!showEmojiPicker())}
         title={t("chat.message.moreReactions")}
@@ -90,7 +111,7 @@ const MessageActions: Component<MessageActionsProps> = (props) => {
         }
       >
         <button
-          class="w-7 h-7 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary hover:text-text-primary transition-colors"
+          class="w-7 h-7 touch:w-11 touch:h-11 shrink-0 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary hover:text-text-primary transition-colors"
           data-testid="message-action-thread"
           onClick={() => props.onReplyInThread?.()}
           title={t("chat.message.replyInThread")}
@@ -103,7 +124,7 @@ const MessageActions: Component<MessageActionsProps> = (props) => {
       {/* Edit button (own messages only) */}
       <Show when={props.isOwn && props.onEdit}>
         <button
-          class="w-7 h-7 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary hover:text-text-primary transition-colors"
+          class="w-7 h-7 touch:w-11 touch:h-11 shrink-0 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary hover:text-text-primary transition-colors"
           data-testid="message-action-edit"
           onClick={() => props.onEdit?.()}
           title={t("chat.message.edit")}
@@ -118,9 +139,9 @@ const MessageActions: Component<MessageActionsProps> = (props) => {
 
       {/* Context menu button */}
       <button
-        class="w-7 h-7 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary hover:text-text-primary transition-colors"
+        class="w-7 h-7 touch:w-11 touch:h-11 shrink-0 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary hover:text-text-primary transition-colors"
         data-testid="message-action-more"
-        onClick={props.onShowContextMenu}
+        onClick={(e) => props.onShowContextMenu(e)}
         title={t("chat.message.moreActions")}
         aria-label={t("chat.message.moreActions")}
       >

@@ -37,4 +37,21 @@ describe("ChannelItem", () => {
     expect(screen.getByText("Ben Member")).toBeTruthy();
     expect(container.textContent).not.toMatch(/aaaaaaaa|bbbbbbbb/);
   });
+
+  it("says a click opens the voice channel and marks it as open (NAV-14)", () => {
+    render(() => (
+      <ChannelItem
+        channel={{ id: "v2", name: "Kitchen", channel_type: "voice" } as never}
+        isSelected={true}
+        onClick={() => {}}
+      />
+    ));
+    const button = screen.getByTestId("channel-item");
+    expect(button.getAttribute("aria-current")).toBe("page");
+    // isInChannel is mocked to true: the hint explains, it does not promise
+    // a disconnect.
+    expect(button.getAttribute("title")).toBe(
+      "You are in this voice channel. Click to open it.",
+    );
+  });
 });

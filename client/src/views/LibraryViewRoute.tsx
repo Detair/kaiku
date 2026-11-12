@@ -65,7 +65,10 @@ const LibraryViewRoute: Component = () => {
   };
 
   const handleDeleteCategory = async (categoryId: string) => {
-    await deleteCategory(params.guildId, categoryId);
+    // The store reports a failure as false: pass it on, so the confirmation
+    // stays open and says that it did not work.
+    const deleted = await deleteCategory(params.guildId, categoryId);
+    if (!deleted) throw new Error("category not deleted");
   };
 
   return (

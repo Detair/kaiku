@@ -34,6 +34,9 @@ import {
   handleUserBlocked,
   handleUserUnblocked,
   getOnlineFriends,
+  getIncomingRequestCount,
+  forgetSeenRequests,
+  bindFriendsToAccount,
 } from "../friends";
 
 function createFriend(overrides: Partial<Friend> = {}): Friend {
@@ -54,6 +57,7 @@ function createFriend(overrides: Partial<Friend> = {}): Friend {
 describe("friends store", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    forgetSeenRequests();
     setFriendsState({
       friends: [],
       pendingRequests: [],
@@ -97,7 +101,7 @@ describe("friends store", () => {
 
       expect(friendsState.friends).toEqual([]);
       expect(friendsState.isLoading).toBe(false);
-      expect(friendsState.error).toBe("Network error");
+      expect(friendsState.error).toBe("Could not load your friends. Please try again.");
     });
   });
 
@@ -110,6 +114,30 @@ describe("friends store", () => {
 
       expect(friendsState.pendingRequests).toEqual(pending);
       expect(friendsState.isPendingLoading).toBe(false);
+    });
+
+    it("announces a request that arrived after the first load", async () => {
+      const waiting = createFriend({ friendship_id: "fs-old", direction: "incoming" });
+      vi.mocked(tauri.getPendingFriends).mockResolvedValueOnce([waiting]);
+      await loadPendingRequests();
+      // Requests waiting at startup show as a count only.
+      expect(showToast).not.toHaveBeenCalled();
+      expect(getIncomingRequestCount()).toBe(1);
+
+      const fresh = createFriend({
+        friendship_id: "fs-new",
+        display_name: "Oma",
+        direction: "incoming",
+      });
+      const mine = createFriend({ friendship_id: "fs-out", direction: "outgoing" });
+      vi.mocked(tauri.getPendingFriends).mockResolvedValueOnce([waiting, fresh, mine]);
+      await loadPendingRequests();
+
+      expect(showToast).toHaveBeenCalledTimes(1);
+      expect(showToast).toHaveBeenCalledWith(
+        expect.objectContaining({ message: "Oma wants to be your friend." }),
+      );
+      expect(getIncomingRequestCount()).toBe(2);
     });
 
     it("clears loading on failure", async () => {
@@ -161,7 +189,7 @@ describe("friends store", () => {
       expect(showToast).toHaveBeenCalledWith(
         expect.objectContaining({
           type: "error",
-          title: "Friend Request Failed",
+          title: "Request not sent",
         }),
       );
     });
@@ -198,7 +226,7 @@ describe("friends store", () => {
       expect(showToast).toHaveBeenCalledWith(
         expect.objectContaining({
           type: "success",
-          title: "Friend Request Accepted",
+          title: "You are now friends",
         }),
       );
     });
@@ -218,7 +246,7 @@ describe("friends store", () => {
       expect(showToast).toHaveBeenCalledWith(
         expect.objectContaining({
           type: "error",
-          title: "Accept Failed",
+          title: "Could not accept",
         }),
       );
     });
@@ -253,7 +281,7 @@ describe("friends store", () => {
 
       await expect(removeFriend("fs-1")).rejects.toThrow();
       expect(showToast).toHaveBeenCalledWith(
-        expect.objectContaining({ type: "error", title: "Remove Failed" }),
+        expect.objectContaining({ type: "error", title: "Could not remove" }),
       );
     });
   });
@@ -333,6 +361,22 @@ describe("friends store", () => {
       const online = getOnlineFriends();
       expect(online).toHaveLength(2);
       expect(online.map((f) => f.user_id)).toEqual(["u1", "u3"]);
+    });
+  });
+
+  describe("bindFriendsToAccount (W3)", () => {
+    it("drops the previous account's friends and requests", () => {
+      bindFriendsToAccount("fabian");
+      setFriendsState({
+        friends: [createFriend()],
+        pendingRequests: [createFriend({ friendship_id: "fs-9", direction: "incoming" })],
+      });
+      expect(bindFriendsToAccount("fabian")).toBe(false);
+      expect(getIncomingRequestCount()).toBe(1);
+
+      expect(bindFriendsToAccount("matthias")).toBe(true);
+      expect(friendsState.friends).toEqual([]);
+      expect(getIncomingRequestCount()).toBe(0);
     });
   });
 });

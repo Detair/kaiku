@@ -16,6 +16,7 @@ import PopupList, { type PopupListItem } from "@/components/ui/PopupList";
 import Avatar from "@/components/ui/Avatar";
 import { Hash, Terminal } from "lucide-solid";
 import { searchEmojis } from "@/lib/emojiData";
+import { t } from "@/i18n";
 import { emojiState } from "@/stores/emoji";
 import type { GuildMember } from "@/lib/types";
 import type { ChannelWithUnread } from "@/lib/types";
@@ -152,7 +153,7 @@ const AutocompletePopup: Component<AutocompletePopupProps> = (props) => {
         ...customMatches.map((e) => ({
           id: `:${e.name}:`,
           label: e.name,
-          description: "Custom emoji",
+          description: t("chat.emoji.server"),
           icon: <img src={e.image_url} alt={e.name} class="w-5 h-5" />,
         })),
       );

@@ -37,9 +37,24 @@ export const CHAT_SEND_ERRORS: { byCode: ByCode; byStatus: ByStatus } = {
     BLOCKED: "chat.send.blocked",
     CONTENT_FILTERED: "chat.send.contentFiltered",
     FILE_TOO_LARGE: "chat.send.fileTooLarge",
+    INVALID_MIME_TYPE: "chat.send.fileTypeNotAllowed",
+    NO_FILE: "chat.send.fileEmpty",
+    INVALID_FILENAME: "chat.send.fileNameInvalid",
+    STORAGE_NOT_CONFIGURED: "chat.send.uploadsUnavailable",
     CHANNEL_NOT_FOUND: "chat.send.channelGone",
+    CHANNEL_READ_ONLY: "chat.send.readOnly",
   },
-  byStatus: { 413: "chat.send.fileTooLarge" },
+  byStatus: { 413: "chat.send.fileTooLarge", 415: "chat.send.fileTypeNotAllowed" },
+};
+
+/**
+ * Reasons a file upload can fail. Like `CHAT_SEND_ERRORS`, but the upload
+ * route's `VALIDATION_ERROR` carries parser text from the multipart reader,
+ * which must not reach the person.
+ */
+export const UPLOAD_ERRORS: { byCode: ByCode; byStatus: ByStatus } = {
+  byCode: { ...CHAT_SEND_ERRORS.byCode, VALIDATION_ERROR: "chat.send.fileFailed" },
+  byStatus: CHAT_SEND_ERRORS.byStatus,
 };
 
 /** Reasons starting a DM call can fail (server answers 403 BLOCKED). */

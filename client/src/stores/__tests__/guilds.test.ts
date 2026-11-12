@@ -48,6 +48,7 @@ import {
   setGuildsState,
   loadGuilds,
   loadGuildMembers,
+  loadAllGuildMembers,
   getActiveGuild,
   createGuild,
   updateGuild,
@@ -173,7 +174,7 @@ describe("guilds store", () => {
 
       await loadGuilds();
 
-      expect(guildsState.error).toBe("fail");
+      expect(guildsState.error).toBe("Could not load your servers. Click to try again.");
       expect(guildsState.isLoading).toBe(false);
     });
   });
@@ -187,6 +188,50 @@ describe("guilds store", () => {
 
       expect(guildsState.members["guild-1"]).toEqual(members);
       expect(guildsState.isMembersLoading).toBe(false);
+    });
+  });
+
+  describe("loadAllGuildMembers", () => {
+    it("refreshes every server's members, keeps old lists on failure", async () => {
+      setGuildsState({
+        guilds: [{ id: "a" }, { id: "b" }, { id: "c" }] as never,
+        members: { a: [createMember()] },
+      });
+      vi.mocked(tauri.getGuildMembers).mockImplementation(async (id: string) => {
+        if (id === "c") throw new Error("down");
+        return [createMember({ user_id: `in-${id}` })];
+      });
+
+      const failed = await loadAllGuildMembers();
+
+      // "a" was cached and is fetched again: someone may have joined.
+      expect(tauri.getGuildMembers).toHaveBeenCalledTimes(3);
+      expect(guildsState.members["a"]?.[0].user_id).toBe("in-a");
+      expect(guildsState.members["b"]?.[0].user_id).toBe("in-b");
+      expect(failed).toBe(1);
+      expect(guildsState.members["c"]).toBeUndefined();
+    });
+  });
+
+  describe("loadAllGuildMembers dedupe (N4)", () => {
+    it("joins a refresh that is still running instead of starting another", async () => {
+      setGuildsState({ guilds: [{ id: "a" }, { id: "b" }] as never });
+      let release: () => void = () => {};
+      const gate = new Promise<void>((r) => (release = r));
+      vi.mocked(tauri.getGuildMembers).mockImplementation(async () => {
+        await gate;
+        return [createMember()];
+      });
+
+      const first = loadAllGuildMembers();
+      const second = loadAllGuildMembers();
+      expect(tauri.getGuildMembers).toHaveBeenCalledTimes(2);
+      release();
+      await Promise.all([first, second]);
+
+      // Finished: the next open fetches again.
+      await loadAllGuildMembers();
+      expect(tauri.getGuildMembers).toHaveBeenCalledTimes(4);
     });
   });
 

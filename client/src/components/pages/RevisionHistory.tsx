@@ -9,6 +9,8 @@
 import { For, Show } from "solid-js";
 import { Clock, Eye, History, RotateCcw, X } from "lucide-solid";
 import type { PageRevision, RevisionListItem } from "@/lib/types";
+import { createConfirm } from "@/components/admin/confirmHost";
+import { t } from "@/i18n";
 
 interface RevisionHistoryProps {
   revisions: RevisionListItem[];
@@ -39,27 +41,27 @@ export default function RevisionHistory(props: RevisionHistoryProps) {
   const isViewing = (revisionNumber: number) =>
     props.currentRevision?.revision_number === revisionNumber;
 
-  const handleRestore = (revisionNumber: number) => {
-    const confirmed = confirm(
-      `Are you sure you want to restore revision #${revisionNumber}? This will create a new revision with the content from that version.`,
-    );
-    if (confirmed) {
-      props.onRestore(revisionNumber);
-    }
-  };
+  const confirmDialog = createConfirm();
+  const handleRestore = (revisionNumber: number) =>
+    confirmDialog.ask({
+      title: t("guildSettings.pages.restoreTitle", { number: revisionNumber }),
+      message: t("guildSettings.pages.restoreBody", { number: revisionNumber }),
+      confirmLabel: t("guildSettings.pages.restore"),
+      run: () => props.onRestore(revisionNumber),
+    });
 
   return (
-    <div class="flex flex-col h-full bg-zinc-800 border-l border-zinc-700">
+    <div class="flex flex-col h-full bg-surface-layer1 border-l border-white/10">
       {/* Header */}
-      <div class="flex items-center justify-between px-4 py-3 border-b border-zinc-700">
-        <div class="flex items-center gap-2 text-zinc-200 font-medium">
+      <div class="flex items-center justify-between px-4 py-3 border-b border-white/10">
+        <div class="flex items-center gap-2 text-text-primary font-medium">
           <History class="size-4" />
           <span>Revision History</span>
         </div>
         <button
           type="button"
           onClick={() => props.onClose()}
-          class="p-1 text-zinc-400 hover:text-white rounded hover:bg-zinc-700 transition-colors"
+          class="p-1 text-text-secondary hover:text-text-primary rounded hover:bg-white/10 transition-colors"
           aria-label="Close revision history"
         >
           <X class="size-4" />
@@ -71,7 +73,7 @@ export default function RevisionHistory(props: RevisionHistoryProps) {
         <Show
           when={props.revisions.length > 0}
           fallback={
-            <div class="flex flex-col items-center justify-center h-full gap-3 text-zinc-500 px-4">
+            <div class="flex flex-col items-center justify-center h-full gap-3 text-text-secondary px-4">
               <History class="size-8" />
               <p class="text-sm text-center">No revisions yet.</p>
             </div>
@@ -85,24 +87,24 @@ export default function RevisionHistory(props: RevisionHistoryProps) {
 
               return (
                 <div
-                  class={`px-4 py-3 border-b border-zinc-700/50 transition-colors ${
-                    viewing() ? "bg-zinc-700/50" : "hover:bg-zinc-700/30"
+                  class={`px-4 py-3 border-b border-white/10 transition-colors ${
+                    viewing() ? "bg-surface-layer2/50" : "hover:bg-white/5"
                   }`}
                 >
                   {/* Revision header line */}
                   <div class="flex items-center justify-between mb-1">
                     <div class="flex items-center gap-2">
-                      <span class="text-sm font-medium text-zinc-200">
+                      <span class="text-sm font-medium text-text-primary">
                         #{revision.revision_number}
                       </span>
                       <Show when={isLatest()}>
-                        <span class="px-2 py-0.5 bg-emerald-900/40 text-emerald-400 rounded text-xs font-medium">
+                        <span class="px-2 py-0.5 bg-status-success/20 text-text-primary rounded text-xs font-medium">
                           Current
                         </span>
                       </Show>
                     </div>
                     <Show when={revision.content_hash}>
-                      <span class="font-mono text-xs text-zinc-500 bg-zinc-900 px-1.5 py-0.5 rounded">
+                      <span class="font-mono text-xs text-text-secondary bg-surface-base px-1.5 py-0.5 rounded">
                         {revision.content_hash!.slice(0, 8)}
                       </span>
                     </Show>
@@ -110,19 +112,19 @@ export default function RevisionHistory(props: RevisionHistoryProps) {
 
                   {/* Title if available */}
                   <Show when={revision.title}>
-                    <p class="text-sm text-zinc-300 truncate mb-1">
+                    <p class="text-sm text-text-primary truncate mb-1">
                       {revision.title}
                     </p>
                   </Show>
 
                   {/* Date and author */}
-                  <div class="flex items-center gap-1.5 text-xs text-zinc-500 mb-2">
+                  <div class="flex items-center gap-1.5 text-xs text-text-secondary mb-2">
                     <Clock class="size-3" />
                     <span>{formatDate(revision.created_at)}</span>
                     <Show when={revision.created_by}>
-                      <span class="text-zinc-600">by</span>
+                      <span class="text-text-muted">by</span>
                       <span
-                        class="font-mono text-zinc-400"
+                        class="font-mono text-text-secondary"
                         title={revision.created_by!}
                       >
                         {revision.created_by!.slice(0, 8)}
@@ -139,8 +141,8 @@ export default function RevisionHistory(props: RevisionHistoryProps) {
                       }
                       class={`flex items-center gap-1 text-sm transition-colors ${
                         viewing()
-                          ? "text-white"
-                          : "text-zinc-400 hover:text-white"
+                          ? "text-text-primary"
+                          : "text-text-secondary hover:text-text-primary"
                       }`}
                     >
                       <Eye class="size-3.5" />
@@ -150,7 +152,7 @@ export default function RevisionHistory(props: RevisionHistoryProps) {
                       <button
                         type="button"
                         onClick={() => handleRestore(revision.revision_number)}
-                        class="flex items-center gap-1 text-sm text-amber-400 hover:text-amber-300 transition-colors"
+                        class="flex items-center gap-1 text-sm text-text-primary hover:underline transition-colors"
                       >
                         <RotateCcw class="size-3.5" />
                         <span>Restore</span>
@@ -167,24 +169,25 @@ export default function RevisionHistory(props: RevisionHistoryProps) {
       {/* Preview section when viewing a revision */}
       <Show when={props.currentRevision}>
         {(revision) => (
-          <div class="border-t border-zinc-700 px-4 py-3 bg-zinc-900/50">
+          <div class="border-t border-white/10 px-4 py-3 bg-surface-base/50">
             <div class="flex items-center gap-2 mb-2">
-              <Eye class="size-3.5 text-zinc-400" />
-              <span class="text-xs font-medium text-zinc-400 uppercase tracking-wide">
+              <Eye class="size-3.5 text-text-secondary" />
+              <span class="text-xs font-medium text-text-secondary uppercase tracking-wide">
                 Viewing Revision #{revision().revision_number}
               </span>
             </div>
             <Show when={revision().title}>
-              <p class="text-sm text-zinc-300 font-medium truncate">
+              <p class="text-sm text-text-primary font-medium truncate">
                 {revision().title}
               </p>
             </Show>
-            <p class="text-xs text-zinc-500 mt-1">
+            <p class="text-xs text-text-secondary mt-1">
               {formatDate(revision().created_at)}
             </p>
           </div>
         )}
       </Show>
+      <confirmDialog.Host />
     </div>
   );
 }

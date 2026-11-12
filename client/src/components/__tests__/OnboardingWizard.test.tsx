@@ -43,6 +43,7 @@ import OnboardingWizard from "../OnboardingWizard";
 import { setAuthState } from "@/stores/auth";
 import * as prefsModule from "@/stores/preferences";
 import { t } from "@/i18n";
+import { createModalLayer, MODAL_LAYER } from "@/lib/a11y/modalLayer";
 
 afterEach(() => {
   cleanup();
@@ -55,6 +56,20 @@ function open(): void {
 }
 
 describe("OnboardingWizard", () => {
+  it("goes above a window that opened first, so the window in front has the keyboard", () => {
+    // The tour's code loads on demand, so another window (a page to accept)
+    // can already be open on the dialog layer when it appears.
+    render(() => {
+      const layer = createModalLayer(MODAL_LAYER.dialog);
+      return <div data-testid="earlier" style={{ "z-index": layer }} />;
+    });
+    open();
+    const earlier = Number(screen.getByTestId("earlier").style.zIndex);
+    const wizard = Number(screen.getByTestId("onboarding-wizard").style.zIndex);
+    expect(earlier).toBe(MODAL_LAYER.dialog);
+    expect(wizard).toBeGreaterThan(earlier);
+  });
+
   it("wizard step titles render from the catalog", () => {
     open();
     expect(screen.getByRole("heading", { level: 2 }).textContent).toBe(

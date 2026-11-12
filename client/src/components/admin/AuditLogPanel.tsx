@@ -39,10 +39,10 @@ const ACTION_TYPES = [
   { value: "", label: "All Actions" },
   { value: "admin.users.ban", label: "User Ban" },
   { value: "admin.users.unban", label: "User Unban" },
-  { value: "admin.guilds.suspend", label: "Guild Suspend" },
-  { value: "admin.guilds.unsuspend", label: "Guild Unsuspend" },
-  { value: "admin.session.elevated", label: "Session Elevated" },
-  { value: "admin.session.de_elevated", label: "Session De-elevated" },
+  { value: "admin.guilds.suspend", label: "Server Suspend" },
+  { value: "admin.guilds.unsuspend", label: "Server Unsuspend" },
+  { value: "admin.session.elevated", label: "Admin mode on" },
+  { value: "admin.session.de_elevated", label: "Admin mode off" },
   { value: "admin.announcements.create", label: "Announcement Created" },
 ];
 

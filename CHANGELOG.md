@@ -89,6 +89,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Android security settings: your phones, passkeys, sessions, recovery codes and recovery contact, each change confirmed with your screen lock; password and authenticator app are shown and changed on the web or desktop.
 - Android shows Kaiku's security notices in the read-only "Kaiku" chat (with "That wasn't me", Cancel, Remove device and "I will help" where they apply) and as private lock-screen notifications, also on a key phone that is signed out, with the security log under Settings > Security and a full-screen prompt for an open request to change how you sign in.
 - **Android: admins set up phones from their own phone.** Create the account (no password), choose "Set up a phone", and type the code the new phone shows; existing accounts wait 24 hours with notices to everyone involved. "Remove device now" for stolen phones. See `docs/admin-guide/ops/phone-setup.md`.
+- **Light theme and "Same as my device":** Settings > Appearance now offers Solarized Light, and an option that switches between light and dark the way your phone or computer does. Nobody's theme changes unless they pick one.
+- **Text size:** three steps (Normal, Large, Very large) in Settings > Appearance make all text bigger.
+- Chat: progress and a Cancel button while files upload; paste a screenshot with Ctrl+V to attach it; the attachment tray says which kinds of files can be sent.
+- Chat: day separators (Today, Yesterday, date), a "Jump to newest" button whenever you have scrolled up, and names in the typing line ("Oma is typing...").
+- Screen readers hear new messages from others and who is typing; reactions say who reacted and whether yours is set.
+- Server and channel settings: rename and delete a channel, rename or delete your server (owner), leave a server (everyone else). Each asks first and names what it removes.
 
 ### Changed
 - The sign-in page puts passkey and phone first; the password field opens with "Sign in with a password".
@@ -145,6 +151,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - "New Messages" divider shows where you left off when returning to a channel
 - Opening a channel with unreads scrolls to your last read position
 - Password and single sign-on sign-ins on a second phone are confirmed by scanning with your key phone.
+- Admin area and server settings tell the truth: ban, lift ban, suspend and delete report success only after the server did it and otherwise say why (for example that admin mode ended); invites, roles, kick, filters, bots, webhooks and emojis show a failed change instead of doing nothing.
+- Admin mode has one name, says it lasts 15 minutes before you turn it on, turns on from the header badge in one step, can be turned off there, and announces when it runs out. The bulk ban names everyone, never includes people on other pages and lists who could not be banned.
+- Removing something in the admin area or server settings asks in one dialog that names it; opening registration to everyone asks first; closing server settings with unsaved changes asks first; expert tabs moved under "Advanced". Rules and info pages and the admin area follow the chosen theme's colors.
+- Windows that open on demand (channel settings, new channel, new message, search, pinned messages, custom status, keyboard shortcuts, report and block, the first-run setup and tour) load when first opened, so the app has less to download at start. If one cannot load, the page says so and offers a reload.
 
 ### Security
 - The end-to-end encryption library was updated to a release that clears key material from memory more thoroughly.
@@ -380,6 +390,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Desktop voice audio is now clear at session start (fixed RTP sequence number regression on reconnect)
 - Desktop screen share now actually reaches other participants (fixed VP8 payload type)
 - UI contrast: selected nav items, active state pills, and warning banners now render with their intended alpha tint instead of silently rendering as solid color. UnoCSS alpha-modifier classes (`bg-accent-primary/20` etc.) had been dropping their alpha because the underlying CSS variables held hex values; switched the affected tokens in `uno.config.ts` to consume new `-rgb` channel variants via the `rgb(var(...) / <alpha-value>)` pattern.
+- Helper text, red error text and the outline of text fields are easier to read in every theme (at least 4.5:1 and 3:1 contrast).
+- Pop-up messages (toasts) use the theme colours with readable labels, and wait while you point at them or tab into them.
+- Pulsing and bouncing animations stop when your device is set to reduce motion; loading spinners keep turning.
+- Pixel theme: buttons and navigation text are larger.
+- Avatar initials are readable on every colour.
+- Chat: a message or thread reply that fails to send stays in the text box and in its draft instead of disappearing.
+- Chat: a file the server refuses (wrong type, too big, empty) says why in one sentence and stays in the attachment tray; files already sent are not sent again when you retry.
+- Chat: the actions on a message (react, reply in thread, edit, more) appear when you reach them with the keyboard and cannot be tapped while hidden.
+- Chat: opening an older search result or pinned message loads the messages around it and scrolls there; "Show in chat" in the pin panel works.
+- Direct messages no longer offer "Reply in Thread", which did nothing there.
+- Search, pinned messages, threads and the emoji picker are translated; the search filter lists people by name instead of asking for an internal user ID.
+- New Message lists everyone you share a server with, friends first, so family members can write to each other without a friend request.
+- Joining through an invite link opens the server instead of stopping at "Redirecting…".
+- Opening Home, another server or Explore Servers keeps you in the voice call, and the call controls stay visible on Home.
+- Friends can be written to from the friends list; new friend requests show a notice and a count on Home, and unread direct messages show on the Home icon.
+- "New Message" is always visible, signing out asks first, and the phone menu closes after picking a conversation or voice channel.
+- Channel lists work by keyboard, touch and screen reader: category headers are buttons, hidden buttons appear on focus and touch, unread dots are announced. The browser tab shows the number of unread messages.
+- Dialogs work by keyboard and screen reader: server settings, settings, creating a server or channel, search, the picture viewer, the emoji picker, report and block, events, custom status, keyboard shortcuts, quick actions (Ctrl+K), page acceptance and the phone menu take focus when they open, keep Tab inside, close with Escape wherever focus was and give focus back. A window opened from another closes on its own first; unsaved server settings still ask first.
+- The tabs of settings, server settings and channel settings are real tabs: the open tab is announced and arrow keys switch tabs.
+- The search over the channel list and over the direct messages takes the keyboard focus when it opens: you can type at once, Escape closes it and focus returns to where it was.
+- The window title names the open channel and server or the person you are writing with; "Skip to content" moves focus to the page.
+- Screen readers hear a person's online status and their name on avatars without a picture; small icon buttons react on a larger area (44 pixels on touch screens) without changing the layout.
+- The text of a page you must accept can be scrolled with the keyboard, so "I accept" can be reached without a mouse.
 - Android: a message or photo sent right before leaving the chat is no longer lost. It shows as "Sending…" until it arrives; if it fails it stays in the chat with Retry and Delete. Unsent text stays in the field when you leave the chat.
 - Android: the message field stays above the keyboard and the navigation bar, and the chat title no longer slides away while typing.
 - Android: photos open full screen with zoom, Save and Share; videos and files open with an app on the phone. Links in messages can be tapped, and the message menu has Copy text.

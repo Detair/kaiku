@@ -29,11 +29,8 @@ import {
   ChevronLeft,
   Users,
 } from "lucide-solid";
-import {
-  preferences,
-  updatePreference,
-  isInitialized as preferencesInitialized,
-} from "@/stores/preferences";
+import { updatePreference } from "@/stores/preferences";
+import { shouldShowOnboarding } from "@/lib/onboardingGate";
 import { currentUser, updateUser } from "@/stores/auth";
 import {
   setTheme,
@@ -41,7 +38,6 @@ import {
   theme,
   type ThemeDefinition,
 } from "@/stores/theme";
-import { authState } from "@/stores/auth";
 import flokiDone from "@/assets/images/floki_onboard_done.webp";
 import { getThemeImage } from "@/lib/themeImage";
 import { joinViaInviteCode, guildsState } from "@/stores/guilds";
@@ -50,6 +46,7 @@ import { showToast } from "@/components/ui/Toast";
 import type { DiscoverableGuild } from "@/lib/types";
 import { discoverGuilds, joinDiscoverable } from "@/lib/tauri";
 import { createDialog } from "@/lib/a11y/dialog";
+import { createModalLayer, MODAL_LAYER } from "@/lib/a11y/modalLayer";
 import { isGuildDiscoveryOff } from "@/stores/serverFeatures";
 import { t } from "@/i18n";
 import { formatNumber } from "@/i18n/format";
@@ -60,17 +57,10 @@ const TOTAL_STEPS = 5;
 const JOIN_STEP = 3;
 const ALL_STEPS = [0, 1, 2, 3, 4];
 
-// Don't render if onboarding is complete, setup wizard is showing, or auth not initialized yet
-const shouldShow = () =>
-  authState.isInitialized &&
-  preferencesInitialized() &&
-  !preferences().onboarding_completed &&
-  !authState.setupRequired;
-
 // The dialog behaviour (focus in, focus trap, focus return) lives in an inner
 // component so it starts when the wizard actually appears.
 const OnboardingWizard: Component = () => (
-  <Show when={shouldShow()}>
+  <Show when={shouldShowOnboarding()}>
     <OnboardingDialog />
   </Show>
 );
@@ -81,6 +71,10 @@ const OnboardingDialog: Component = () => {
     onClose: () => {},
     initialFocus: () => displayNameRef,
   });
+  // The tour loads on demand and can appear after another window (a page to
+  // accept). It takes the keyboard when it opens, so it has to be in front
+  // as well: the shared layer puts it above whatever is already open.
+  const layer = createModalLayer(MODAL_LAYER.dialog);
 
   // The dialog is mounted only while the wizard is shown, so initial values
   // here are the (re)start state. Do not re-initialise from an effect: it would
@@ -293,7 +287,8 @@ const OnboardingDialog: Component = () => {
 
   return (
     <div
-      class="fixed inset-0 bg-black/80 flex items-center justify-center z-50"
+      class="fixed inset-0 bg-black/80 flex items-center justify-center"
+      style={{ "z-index": layer }}
       data-testid="onboarding-wizard"
     >
       <div

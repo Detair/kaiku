@@ -54,7 +54,7 @@ export default function PageSection(props: PageSectionProps) {
         <button
           type="button"
           onClick={handleToggle}
-          class="w-full flex items-center gap-2 px-3 py-2 text-xs font-semibold text-zinc-400 uppercase tracking-wide hover:text-zinc-200 transition-colors"
+          class="w-full flex items-center gap-2 px-3 py-2 text-xs font-semibold text-text-secondary uppercase tracking-wide hover:text-text-primary transition-colors"
         >
           <Show when={isExpanded()} fallback={<ChevronRight class="w-4 h-4" />}>
             <ChevronDown class="w-4 h-4" />
@@ -65,7 +65,7 @@ export default function PageSection(props: PageSectionProps) {
           <span class="flex-1 text-left">{props.title}</span>
 
           <Show when={hasPendingPages()}>
-            <span class="px-1.5 py-0.5 bg-amber-900/40 text-amber-400 rounded text-xs font-medium">
+            <span class="px-1.5 py-0.5 bg-status-warning/20 text-text-primary rounded text-xs font-medium">
               {pendingCount()}
             </span>
           </Show>
@@ -77,7 +77,7 @@ export default function PageSection(props: PageSectionProps) {
                 e.stopPropagation();
                 props.onCreatePage?.();
               }}
-              class="p-1 text-zinc-500 hover:text-white hover:bg-zinc-700 rounded transition-colors"
+              class="p-1 text-text-secondary hover:text-text-primary hover:bg-white/10 rounded transition-colors"
               title="Add page"
             >
               <Plus class="w-3.5 h-3.5" />
@@ -92,7 +92,7 @@ export default function PageSection(props: PageSectionProps) {
               when={props.pages.length > 0}
               fallback={
                 <Show when={props.canManage}>
-                  <div class="px-3 py-2 text-sm text-zinc-500 italic">
+                  <div class="px-3 py-2 text-sm text-text-secondary italic">
                     No pages yet
                   </div>
                 </Show>
