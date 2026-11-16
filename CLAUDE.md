@@ -1,153 +1,91 @@
-# Kaiku Platform — Claude Code Projektkontext
+# Kaiku
 
-Self-hosted Voice/Text-Chat für Gaming-Communities. Rust (Server + Tauri Client), Solid.js (Frontend), PostgreSQL, Valkey.
-**Lizenz:** MIT OR Apache-2.0 (Dual License)
+Self-hosted voice and text chat for gaming communities. Rust server (axum, sqlx), Tauri 2 desktop client with a Solid.js frontend, Android client under `mobile/android/`, PostgreSQL and Valkey. Dual licensed MIT OR Apache-2.0.
 
-## Hard Constraints
+Structure and "where to look" tables live in `AGENTS.md` at the root and in each directory. Read the `AGENTS.md` of a directory before changing code in it. This file holds the rules that apply everywhere.
 
-### Lizenz-Compliance (KRITISCH)
+## Constraints
+
+### Licenses
+
+Kaiku is distributed as a binary, so a copyleft dependency would force its terms on the whole product. Run `cargo deny check licenses` after adding or updating a dependency.
+
+- Allowed: MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, Zlib, CC0-1.0, Unlicense, MPL-2.0, Unicode-DFS-2016.
+- Not allowed: GPL, AGPL, LGPL (static linking), SSPL, proprietary.
+- `LICENSE_COMPLIANCE.md` records the check for every dependency.
+
+### Performance targets
+
+Voice latency under 50 ms end to end. Client idle: under 80 MB RAM and under 1 % CPU. Startup under 3 s.
+
+### Security
+
+- TLS 1.3 for every connection. Passwords with Argon2id. JWT valid for 15 minutes, EdDSA or RS256.
+- Validate input on the server, whatever the client already checked.
+- End-to-end encryption uses vodozemac only. No custom cryptography.
+- Changes under `server/src/auth/` and to crypto code need a security review before merge.
+
+### UI contrast
+
+Accent colours are for decoration and indicators. Text that must be readable uses the text tokens, because accent on accent has too little contrast.
+
+- Readable text: `text-text-primary`. Selected or active state: `text-text-primary` on `bg-accent-primary/20` or stronger, never `text-accent-primary` on `bg-accent-primary/*`.
+- No `opacity-*` below 50 % on text the user needs to read. `text-text-secondary` is the weakest readable tier.
+- On dark overlays use `text-text-muted`, not `text-white/40` or lower.
+- Targets (WCAG): `text-primary` at least 7:1 on `surface-base`, `text-secondary` at least 4.5:1 on `surface-layer1`, `text-muted` at least 3:1.
+
+## Conventions
+
+- **Wire format is `snake_case`.** TypeScript interface fields that mirror WebSocket, API or JSONB data use `snake_case` to match Rust serde defaults. Local variables and parameters stay camelCase. See `docs/developer-guide/development/standards.md` §5.
+- **Rust errors:** `thiserror` in library code, `anyhow` at the application edge. Async code runs on tokio with `tracing`.
+- **Package manager is Bun.** Node.js is only needed for the Playwright tests.
+- **Android strings** mirror the web client's keys; rules in `mobile/android/AGENTS.md`. `bun run i18n:check` in `client/` enforces them.
+- **Module layout** (Tier 1 and Tier 2, error/types/queries files, when to split handlers): `docs/superpowers/specs/2026-04-10-codebase-consistency-standards-design.md`.
+
+## Commands
+
 ```bash
-cargo deny check licenses
-# VERBOTEN: GPL, AGPL, LGPL (static linking)
-# ERLAUBT: MIT, Apache-2.0, BSD-2/3, ISC, Zlib, MPL-2.0
+# Server and workspace
+cargo test
+cargo fmt --check
+SQLX_OFFLINE=true cargo clippy -- -D warnings                 # whole workspace
+SQLX_OFFLINE=true cargo clippy -p vc-server -- -D warnings    # server only
+
+# Client (in client/)
+bun run test:run
+bun run lint
+bun run i18n:check
 ```
 
-### Performance-Ziele
-- Voice-Latenz: <50ms Ende-zu-Ende
-- Client RAM (Idle): <80MB
-- Client CPU (Idle): <1%
-- Startup: <3s
+`.sqlx/` holds the offline query cache. When a query changes, regenerate it and commit the new `.sqlx/*.json` files, otherwise the offline build fails. `make help` lists the development targets (setup, dev server, client).
 
-### UI Contrast Rules (KRITISCH)
-- **Text on backgrounds**: Use `text-text-primary` (not accent colors) for any text that must be readable. Accent colors are for decorative indicators only.
-- **Selected/active states**: Use `text-text-primary` + `bg-accent-primary/20` (or higher opacity). Never use `text-accent-primary` on `bg-accent-primary/*` — same hue, poor contrast.
-- **Interactive text opacity**: Never use `opacity-*` below 50% on text the user needs to read. `text-text-secondary` is the minimum readable tier.
-- **White-on-dark overlays**: `text-white/40` and below are invisible on dark themes. Use `text-text-muted` instead.
-- **WCAG targets**: text-primary ≥7:1 on surface-base (AAA), text-secondary ≥4.5:1 on surface-layer1 (AA), text-muted ≥3:1 (AA for UI components).
-- **Verify**: When adding colored text on colored backgrounds, check with https://webaim.org/resources/contrastchecker/
+## Git workflow
 
-### Security-Basics
-- TLS 1.3 für alle Verbindungen
-- Passwörter: Argon2id
-- JWT: 15min Gültigkeit, EdDSA oder RS256
-- Input-Validierung: Immer server-side
+Full specification: `docs/developer-guide/plans/2026-01-18-git-workflow-design.md`.
 
-## Code-Stil
+- Do not commit to `main`. Work on a branch in a worktree under `.claude/worktrees/<name>` and merge through a pull request. The main worktree stays on `main`.
+- Branch names: `feature/<name>`, `fix/<name>`, `refactor/<area>`, `docs/<topic>`.
+- Merge with squash: `gh pr merge <number> --squash`. Afterwards remove the worktree and the branch, locally and on the remote.
+- Before pushing: the tests and checks above pass, and you have read your own diff for secrets, scope and error handling. New modules, auth, crypto and API changes get a code review.
 
-### Rust
-```rust
-// Error Handling: thiserror für Library, anyhow für Application
-use thiserror::Error;
+### Commits
 
-#[derive(Error, Debug)]
-pub enum ChannelError {
-    #[error("Channel nicht gefunden: {0}")]
-    NotFound(Uuid),
-    #[error("Keine Berechtigung")]
-    Forbidden,
-}
+`type(scope): subject`, at most 72 characters, imperative mood. Breaking change: `type(scope)!: subject`.
 
-// Async: tokio mit tracing
-#[tracing::instrument(skip(pool))]
-async fn get_channel(pool: &PgPool, id: Uuid) -> Result<Channel, ChannelError> {
-    // ...
-}
-```
+- Types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `perf`, `style`.
+- Scopes: `auth`, `voice`, `chat`, `db`, `api`, `ws`, `ratelimit`, `infra`, `client`, `crypto`.
 
-### TypeScript/Solid.js
-```typescript
-// Signals für reaktiven State
-const [messages, setMessages] = createSignal<Message[]>([]);
+### Changelog
 
-// Tauri Commands typsicher aufrufen
-import { invoke } from '@tauri-apps/api/core';
-const channel = await invoke<Channel>('get_channel', { id });
-```
+Every change a user can notice goes into `CHANGELOG.md` under `[Unreleased]` ([Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/)): `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed` or `Security`, written from the user's point of view, with the issue reference `(#123)` if there is one. Pure refactorings, internal reorganisation, documentation and test-only changes stay out.
 
-### Naming Convention: snake_case for Serialized Data
-All TypeScript interface fields that represent wire format (WebSocket, API, DB JSONB) **must** use `snake_case` to match Rust serde defaults. Local variables and function parameters stay camelCase per TypeScript convention. See `docs/developer-guide/development/standards.md` §5.
+## Code reviews
 
-## Commit Convention
+`docs/developer-guide/development/code-review.md` defines the review format, the eight concern areas, the severity criteria and the reviewer characters (Faramir, Elrond, Gandalf, Éowyn, Pippin). "Review this PR" means the full review; a request can be scoped to a file or to one concern.
 
-**Format:** `type(scope): subject`
-**Types:** `feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `perf`, `style`
-**Scopes:** `auth`, `voice`, `chat`, `db`, `api`, `ws`, `ratelimit`, `infra`, `client`, `crypto`
-**Rules:** Max 72 chars, imperative mood, breaking changes: `type(scope)!: message`
+## Documentation
 
-## Changelog
-
-> Format: [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/)
-
-**Jede benutzerrelevante Änderung MUSS in `CHANGELOG.md` unter `[Unreleased]` dokumentiert werden.**
-- `### Added` / `### Changed` / `### Deprecated` / `### Removed` / `### Fixed` / `### Security`
-- Nutzer-Perspektive, konkret, mit Issue-Referenz `(#123)` wenn vorhanden
-- **Nicht** aktualisieren bei: reinen Refactorings, interner Reorganisation, Docs-Updates, Test-Änderungen ohne Feature-Bezug
-
-## Git Workflow
-
-> Full specification: `docs/developer-guide/plans/2026-01-18-git-workflow-design.md`
-
-**NEVER commit directly to `main`.** Always create a feature branch or worktree for changes and merge via PR.
-**Branch naming:** `feature/<name>`, `fix/<name>`, `refactor/<area>`, `docs/<topic>`
-**Worktrees:** Main worktree stays on `main`, one worktree per feature, clean up after merge:
-`git worktree remove .claude/worktrees/<name> && git branch -d <branch> && git push origin --delete <branch> && git fetch --prune`
-**Merge strategy:** Squash merge via `gh pr merge <number> --squash`
-
-### Pre-Push Quality Gates
-1. `cargo test` (server), `bun run test:run` (client, uses vitest)
-2. `cargo fmt --check && SQLX_OFFLINE=true cargo clippy -- -D warnings`
-3. Self-review: no secrets, correct scope, proper error handling
-4. Code review for significant changes (new modules, auth/crypto, API changes)
-
-## Code Reviews
-
-```
-Review this PR                                    # Full review (8 concerns)
-Review src/api/channels.rs for security only      # Scoped review
-Ask [Faramir|Elrond|Gandalf|Éowyn|Pippin] about [topic]  # Character deep-dive
-```
-
-See `docs/developer-guide/development/code-review.md` for full review format, concern areas, severity criteria, and character descriptions.
-
-## Quick Reference
-
-### Erlaubte Lizenzen
-MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, Zlib, CC0-1.0, Unlicense, MPL-2.0, Unicode-DFS-2016
-
-### Verbotene Lizenzen
-GPL-2.0, GPL-3.0, AGPL-3.0, LGPL-2.0, LGPL-2.1, LGPL-3.0, SSPL, Proprietary
-
-### Build Commands
-- Server only: `SQLX_OFFLINE=true cargo clippy -p vc-server -- -D warnings`
-- Full workspace: `SQLX_OFFLINE=true cargo clippy -- -D warnings`
-- `.sqlx/` contains offline query cache — commit new `.sqlx/*.json` files when queries change
-
-### Wichtige Crates
-- Web: axum, tower, tokio
-- OpenAPI: utoipa, utoipa-swagger-ui
-- WebRTC: webrtc
-- DB: sqlx (PostgreSQL)
-- Redis: fred
-- Auth: jsonwebtoken, argon2, openidconnect
-- E2EE Text: vodozemac
-- Crypto: rustls
-
-### Package Manager
-- Bun (for package management and script running)
-- Node.js (still required for Playwright tests)
-
-### Wichtige Frontend Packages
-- Framework: solid-js
-- Build: vite, typescript
-- Styling: unocss
-- Icons: lucide-solid
-
-## Documentation Pointers
-
-- `docs/developer-guide/project/specification.md` — Anforderungen und Entscheidungslog
-- `docs/developer-guide/architecture/overview.md` — Technische Architektur und Diagramme
-- `docs/developer-guide/development/standards.md` — Verwendete Protokolle und Libraries
-- `docs/superpowers/specs/2026-04-10-codebase-consistency-standards-design.md` — Canonical module structure and code organization patterns (Tier 1/Tier 2 layout, error/types/queries conventions, handler splitting rules)
-- `LICENSE_COMPLIANCE.md` — Lizenzprüfung aller Dependencies
-- `CHANGELOG.md` — Änderungsprotokoll
-- `docs/developer-guide/development/code-review.md` — Review-System, Concern Areas, Characters, Workflows
+- `docs/developer-guide/project/specification.md` – requirements and decision log.
+- `docs/developer-guide/architecture/overview.md` – architecture and diagrams.
+- `docs/developer-guide/development/standards.md` – protocols and libraries in use.
+- `docs/developer-guide/development/i18n.md` – translation rules for web and Android.
