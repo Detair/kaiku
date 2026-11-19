@@ -590,6 +590,9 @@
     <string name="security_notice_factor_restored">An admin made a sign-in factor of %1$s usable again</string>
     <string name="security_notice_throttle_reset">An admin allowed sign-in attempts for %1$s again</string>
     <string name="security_notice_may_approve_changed">An admin changed whether the phones of %1$s may confirm sign-ins</string>
+    <string name="security_notice_pc_setup_reported">A computer asked for full access to %1$s and was stopped with \"I didn\'t start this\"; its session was ended</string>
+    <string name="security_notice_pc_setup_failed">Too many wrong codes ended setting up a computer for %1$s</string>
+    <string name="security_notice_authenticator_added_pc_setup">A passkey for %5$s was added to %1$s, confirmed with %6$s</string>
     <string name="security_notice_generic">Security notice for %1$s</string>
     <string name="security_push_sign_in">New sign-in to %1$s</string>
     <string name="security_push_sign_in_not_finished">A sign-in to %1$s was not finished</string>
@@ -630,6 +633,8 @@
     <string name="security_push_factor_restored">A sign-in factor of %1$s is usable again</string>
     <string name="security_push_throttle_reset">Sign-in attempts for %1$s are allowed again</string>
     <string name="security_push_may_approve_changed">\"May confirm sign-ins\" changed for %1$s</string>
+    <string name="security_push_pc_setup_reported">Computer setup stopped for %1$s</string>
+    <string name="security_push_pc_setup_failed">Computer setup failed for %1$s</string>
     <string name="security_push_generic">Security notice for %1$s</string>
 
     <!-- Security notices: channel, Kaiku DM, actions, log, open request -->

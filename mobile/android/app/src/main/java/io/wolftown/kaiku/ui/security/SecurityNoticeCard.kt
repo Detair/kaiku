@@ -67,8 +67,9 @@ fun SecurityNoticeCard(notice: SecurityNotice, actions: NoticeActionsViewModel, 
                 )
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    stringResource(NoticeText.title(notice.eventType), subject, newest?.actor?.username.orEmpty(),
-                        newest?.authenticator?.label.orEmpty(), notice.count),
+                    stringResource(NoticeText.title(notice.eventType, newest), subject, newest?.actor?.username.orEmpty(),
+                        newest?.authenticator?.label.orEmpty(), notice.count,
+                        NoticeText.computer(newest).orEmpty(), NoticeText.phone(newest).orEmpty()),
                     fontSize = 18.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurface,

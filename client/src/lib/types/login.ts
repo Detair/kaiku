@@ -420,6 +420,9 @@ export const SECURITY_EVENT_TYPES = [
   "factor_restored",
   "throttle_reset",
   "may_approve_changed",
+  // "Set up this PC" (C28 additions 2026-11-08).
+  "pc_setup_reported",
+  "pc_setup_failed",
 ] as const;
 export type SecurityEventType = (typeof SECURITY_EVENT_TYPES)[number] | "unknown";
 

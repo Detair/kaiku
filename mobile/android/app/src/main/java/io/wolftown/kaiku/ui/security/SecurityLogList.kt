@@ -38,8 +38,8 @@ fun SecurityLogList(modifier: Modifier = Modifier, viewModel: SecurityLogViewMod
         }
         ui.items.forEach { e ->
             Column(Modifier.padding(vertical = 10.dp)) {
-                Text(stringResource(NoticeText.title(e.eventType), stringResource(R.string.security_subject_yours), e.actor?.username.orEmpty(),
-                    e.authenticator?.label.orEmpty(), 1), fontSize = 18.sp, color = MaterialTheme.colorScheme.onBackground)
+                Text(stringResource(NoticeText.title(e.eventType, e), stringResource(R.string.security_subject_yours), e.actor?.username.orEmpty(),
+                    e.authenticator?.label.orEmpty(), 1, NoticeText.computer(e).orEmpty(), NoticeText.phone(e).orEmpty()), fontSize = 18.sp, color = MaterialTheme.colorScheme.onBackground)
                 EventLines(e)
             }
             HorizontalDivider()
