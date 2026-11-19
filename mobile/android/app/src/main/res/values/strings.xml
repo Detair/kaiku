@@ -403,6 +403,7 @@
     <string name="setup_screen_lock_hint">Choose a PIN you can remember and keep a note of it in a safe place. When it is on, come back to Kaiku and tap \'I\'ve turned it on\'.</string>
     <string name="setup_screen_lock_open">Open screen lock settings</string>
     <string name="setup_fingerprint_open">Add a fingerprint</string>
+    <string name="setup_biometric_open">Add face or fingerprint unlock</string>
     <string name="setup_screen_lock_check">I\'ve turned it on</string>
     <string name="setup_other_server">This setup code is for another server.</string>
     <string name="setup_already_key">This phone is already your Kaiku key.</string>
@@ -674,11 +675,14 @@
     <string name="admin_type_code_hint">Type the code the new phone shows. Remotely, let them read it to you.</string>
     <string name="passkeys_error_wrong_server">This passkey request is for a different website than your Kaiku server, so Kaiku stopped it. Nothing was sent. Sign in another way and tell your admin.</string>
     <string name="security_only_key">This phone is the only key of this account, so it was not removed. It is still your key. To use another account on this phone, first add another phone or a passkey: tap Confirm it\'s you, then go to Settings, Security. Or ask your admin to remove this phone.</string>
-    <string name="setup_stopped_after_code">Setup stopped on this phone. If the code was already typed in on the other device, open Kaiku again to finish.</string>
+    <string name="setup_stopped_after_code">Setup stopped on this phone. If the code was already typed in on the other device, tap Keep waiting to finish.</string>
     <string name="setup_leave_title">Stop setting up this phone?</string>
     <string name="setup_leave_body">The code on this screen goes away. If it is not typed in yet, the person setting up Kaiku has to start again.</string>
     <string name="setup_leave_stay">Keep waiting</string>
     <string name="setup_leave_stop">Stop setup</string>
+    <string name="setup_leave_body_question">Nothing has been changed yet. To set up this phone later, open the setup link or scan the code again.</string>
+    <string name="setup_leave_continue">Continue setup</string>
+    <string name="setup_link_ignored">Another setup link was opened. It was not used, because this setup is still running.</string>
     <string name="auth_login_set_up_phone_hint">New here? Use the setup code or link you got from your admin.</string>
     <string name="auth_login_already_set_up">Already set up? Sign in</string>
     <string name="security_uv_after_setup">Sign in with your new key</string>

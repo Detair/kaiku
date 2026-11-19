@@ -69,9 +69,11 @@ class SetupFlowViewModelTest {
 
     class FakeSetupEnvironment : SetupEnvironment {
         var pinned: String? = null
+        /** When set, the pin follows the phone's state (as OriginPin does): the key's origin, else [pinned]. */
+        var pinFrom: (() -> String?)? = null
         var signedInUser: String? = null
         val saved = mutableListOf<String>()
-        override fun pinnedOrigin() = pinned
+        override fun pinnedOrigin() = pinFrom?.invoke() ?: pinned
         override fun signedInUserId() = signedInUser
         var stored: String? = null
         override fun saveServerOrigin(origin: String) { saved += origin; stored = origin }
@@ -581,7 +583,7 @@ class SetupFlowViewModelTest {
         v.confirmSubject(activity)
         assertTrue(v.ui.value is SetupUi.ShowCode)
         v.cancel()
-        assertEquals(SetupUi.Ended(R.string.setup_stopped_after_code, canRetry = false), v.ui.value)
+        assertEquals(SetupUi.Ended(R.string.setup_stopped_after_code, canRetry = true), v.ui.value)
         assertTrue(f.keyStore.hasKey())
         assertEquals(io.wolftown.kaiku.data.keydevice.KeyDevicePhase.CLAIMED, f.repo.phase())
     }
@@ -596,11 +598,12 @@ class SetupFlowViewModelTest {
         assertNull(f.repo.local())
     }
 
-    @Test fun `back asks at the code, cancels a question and waits while work runs`() {
+    @Test fun `back asks at the code and at a question and waits while work runs`() {
         assertEquals(SetupBack.ASK, setupBackAction(SetupUi.ShowCode("123 456", null)))
         assertEquals(SetupBack.ASK, setupBackAction(SetupUi.WaitingForCode))
-        assertEquals(SetupBack.CANCEL, setupBackAction(SetupUi.ConfirmServer("K", "chat.example.com")))
-        assertEquals(SetupBack.CANCEL, setupBackAction(SetupUi.ConfirmSubject("A", "a", "K")))
+        assertEquals(SetupBack.ASK, setupBackAction(SetupUi.ConfirmServer("K", "chat.example.com")))
+        assertEquals(SetupBack.ASK, setupBackAction(SetupUi.ConfirmSubject("A", "a", "K")))
+        assertEquals(SetupBack.STAY, setupBackAction(SetupUi.Claiming))
         assertEquals(SetupBack.CANCEL, setupBackAction(SetupUi.ScreenLockNeeded(io.wolftown.kaiku.approval.UnsuitableReason.NO_SCREEN_LOCK)))
         assertEquals(SetupBack.CANCEL, setupBackAction(SetupUi.Opening))
         assertEquals(SetupBack.STAY, setupBackAction(SetupUi.SigningIn))
@@ -611,8 +614,10 @@ class SetupFlowViewModelTest {
     }
 
     private fun TestScope.lapsedKeyVm(): Pair<SetupFlowViewModel, KeyDeviceFixture> {
-        env.pinned = SigFixtures.ORIGIN
         val f = KeyDeviceFixture(backgroundScope)
+        // The pin comes from the key (signed out): forgetting the key clears it, as on a phone.
+        env.pinned = null
+        env.pinFrom = { f.repo.pinnedOrigin() }
         f.authState.setLoggedOut() // a key without its session: "Confirm it's you"
         coEvery { deviceSignIn.signIn(any(), any()) } returns DeviceSignInResult.Success
         val v = SetupFlowViewModel(enroll.api, suitability, f.keyStore, f.signer, f.repo, { SigFixtures.DEVICE_ID }, deviceSignIn, env,
@@ -625,7 +630,8 @@ class SetupFlowViewModelTest {
         approval.failWith = apiError(403, "KEY_DEVICE_REVOKED")
         val (v, f) = lapsedKeyVm()
         v.start(entry)
-        assertTrue(v.ui.value.toString(), v.ui.value is SetupUi.ConfirmSubject)
+        // The pin went with the key: the now unconfigured app asks about the server first.
+        assertEquals(SetupUi.ConfirmServer("Familie Müller", "chat.example.com"), v.ui.value)
         assertEquals(SigFixtures.ORIGIN, approval.deviceLoginOrigin)
         assertNull(f.repo.local())
     }
@@ -645,6 +651,142 @@ class SetupFlowViewModelTest {
         v.start(entry)
         assertEquals(SetupUi.Ended(R.string.setup_already_key, canRetry = false), v.ui.value)
         assertTrue(f.repo.local() != null)
+    }
+
+    // ---- One link, one server: a later link or Back never redirects or disturbs a running step ----
+
+    private val token2 = "BAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+    private val otherServer = "https://elsewhere.example.org"
+
+    @Test fun `a link for another server while the old key is checked sends nothing there`() = runTest {
+        approval.failWith = apiError(403, "KEY_DEVICE_REVOKED")
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>().also { approval.challengeGate = it }
+        val (v, f) = lapsedKeyVm()
+        v.start(entry) // the old key's server is asked; the answer is slow
+        v.start(SetupEntry(otherServer, token2, SetupEntry.Source.LINK))
+        assertTrue(v.linkIgnored.value)
+        gate.complete(Unit)
+        runCurrent()
+        // The first link goes on with its own server and code; the other server got nothing.
+        assertEquals(SetupUi.ConfirmServer("Familie Müller", "chat.example.com"), v.ui.value)
+        assertEquals(listOf<String?>(SigFixtures.ORIGIN), enroll.origins)
+        assertEquals(listOf(token), enroll.openTokens)
+        assertNull(f.repo.local())
+    }
+
+    @Test fun `a second link for the same server while the old key is checked replaces the first`() = runTest {
+        approval.failWith = apiError(403, "KEY_DEVICE_REVOKED")
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>().also { approval.challengeGate = it }
+        val (v, _) = lapsedKeyVm()
+        v.start(entry)
+        v.start(entry.copy(tokenB64u = token2))
+        gate.complete(Unit)
+        runCurrent()
+        assertEquals(listOf(token2), enroll.openTokens)
+        assertEquals(SetupUi.ConfirmServer("Familie Müller", "chat.example.com"), v.ui.value)
+    }
+
+    @Test fun `a link for another server while the server is opened changes nothing`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>().also { enroll.openGate = it }
+        val (v, _) = vm()
+        v.start(entry)
+        v.start(SetupEntry(otherServer, token2, SetupEntry.Source.LINK))
+        gate.complete(Unit)
+        runCurrent()
+        assertEquals(SetupUi.ConfirmSubject("Oma", "oma", "Familie Müller", "chat.example.com"), v.ui.value)
+        assertTrue(enroll.origins.all { it == SigFixtures.ORIGIN })
+        assertTrue(v.linkIgnored.value)
+    }
+
+    @Test fun `cancel while the server is opened stops the step for good`() = runTest {
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>().also { enroll.openGate = it }
+        val (v, _) = vm()
+        v.start(entry)
+        v.cancel()
+        gate.complete(Unit)
+        runCurrent()
+        assertEquals(SetupUi.Ended(R.string.setup_stopped, canRetry = false), v.ui.value)
+        assertFalse(enroll.calls.contains("popChallenge"))
+    }
+
+    @Test fun `back while the signed claim is on its way waits for it`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>().also { enroll.claimGate = it }
+        val (v, f) = vm()
+        v.start(entry)
+        v.confirmSubject(activity)
+        assertEquals(SetupBack.STAY, setupBackAction(v.ui.value))
+        v.cancel() // also a stray Cancel
+        v.start(entry.copy(tokenB64u = token2)) // and a new link
+        gate.complete(Unit)
+        runCurrent()
+        assertEquals("123 456", (v.ui.value as SetupUi.ShowCode).code)
+        assertEquals(KeyDevicePhase.CLAIMED, f.repo.phase())
+        assertEquals(1, enroll.calls.count { it == "claim" })
+    }
+
+    @Test fun `the old key is kept when it changed while the server was asked`() = runTest {
+        approval.failWith = apiError(403, "KEY_DEVICE_REVOKED")
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>().also { approval.challengeGate = it }
+        val (v, f) = lapsedKeyVm()
+        v.start(entry)
+        f.authState.setLoggedIn(SigFixtures.USER_ID) // signed in meanwhile: no longer the lapsed key it asked about
+        runCurrent()
+        gate.complete(Unit)
+        runCurrent()
+        assertTrue(f.repo.local() != null)
+        assertEquals(SetupUi.Ended(R.string.setup_already_key, canRetry = false), v.ui.value)
+        assertTrue(enroll.calls.isEmpty())
+    }
+
+    @Test fun `back while the old key is checked says nothing was changed`() = runTest {
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>().also { approval.challengeGate = it }
+        val (v, f) = lapsedKeyVm()
+        v.start(entry)
+        v.cancel()
+        assertEquals(SetupUi.Ended(R.string.setup_stopped, canRetry = false), v.ui.value)
+        gate.complete(Unit)
+        runCurrent()
+        assertTrue(f.repo.local() != null)
+    }
+
+    @Test fun `after stopping at the code the phone can keep waiting`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        val (v, _) = vm()
+        v.start(entry)
+        v.confirmSubject(activity)
+        v.cancel()
+        assertEquals(SetupUi.Ended(R.string.setup_stopped_after_code, canRetry = true), v.ui.value)
+        v.retry()
+        assertEquals(SetupUi.Resume, v.ui.value)
+    }
+
+    @Test fun `a link on a phone whose session just ended is checked again`() = runTest {
+        // Signed in when the link opened: "already your key". The session then turns out dead
+        // (the admin removed this phone): the link is looked at again and the old key asked about.
+        approval.failWith = apiError(404, "KEY_DEVICE_UNKNOWN")
+        val f = KeyDeviceFixture(backgroundScope)
+        env.pinFrom = { f.repo.pinnedOrigin() }
+        coEvery { deviceSignIn.signIn(any(), any()) } returns DeviceSignInResult.Success
+        val v = SetupFlowViewModel(enroll.api, suitability, f.keyStore, f.signer, f.repo, { SigFixtures.DEVICE_ID }, deviceSignIn, env,
+            probe, keyDispatcher = keyDispatcher)
+        v.start(entry)
+        runCurrent()
+        assertEquals(SetupUi.Ended(R.string.setup_already_key, canRetry = false), v.ui.value)
+        f.authState.setLoggedOut()
+        runCurrent()
+        assertNull(f.repo.local())
+        assertEquals(SetupUi.ConfirmServer("Familie Müller", "chat.example.com"), v.ui.value)
+    }
+
+    @Test fun `a lapsed key is kept when its server answers with a removal code but another status`() = runTest {
+        approval.failWith = apiError(503, "KEY_DEVICE_UNKNOWN")
+        val (v, f) = lapsedKeyVm()
+        v.start(entry)
+        assertEquals(SetupUi.Ended(R.string.setup_already_key, canRetry = false), v.ui.value)
+        assertTrue(f.repo.local() != null)
+        assertTrue(enroll.calls.isEmpty())
     }
 
     @Test fun `the final sign-in after a slow prompt offers a fresh try`() = runTest {

@@ -40,6 +40,13 @@ class FakeEnrollmentApi {
     var popContext: (String) -> String = { it }
     /** The user id in the PoP prefix; null = the subject's. */
     var popPrefixUser: String? = null
+    /** Every origin a request was sent to, in order. */
+    val origins = mutableListOf<String?>()
+    /** The setup tokens of the `open` calls, in order. */
+    val openTokens = mutableListOf<String>()
+    /** Hold the next `open` / `claim` until completed (a slow network). */
+    var openGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+    var claimGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
 
     companion object {
         const val SUBJECT_ID = "66666666-6666-4666-8666-666666666666"
@@ -62,21 +69,23 @@ class FakeEnrollmentApi {
         }
         override suspend fun cancel(id: String) { calls += "cancel:$id" }
         override suspend fun open(setupToken: String, origin: String?): EnrollmentOpen {
-            calls += "open"; lastOrigin = origin
+            openGate?.await()
+            calls += "open"; lastOrigin = origin; origins += origin; openTokens += setupToken
             return EnrollmentOpen(serverName, SigFixtures.b64u(nonce), "2026-11-03T12:10:00Z")
         }
         override suspend fun popChallenge(setupToken: String, deviceId: String, publicKeyB64u: String, origin: String?): PopChallenge {
-            calls += "popChallenge"
+            calls += "popChallenge"; origins += origin
             popFailure?.let { throw it }
             return PopChallenge(popChallengeFor(publicKeyB64u), subject)
         }
         override suspend fun claim(req: EnrollmentClaim, ticket: String?, origin: String?): ClaimResult {
-            calls += "claim"; lastClaim = req; lastTicket = ticket
+            claimGate?.await()
+            calls += "claim"; lastClaim = req; lastTicket = ticket; origins += origin
             claimFailure?.let { throw it }
             return claimResult
         }
         override suspend fun status(enrollmentId: String, claimSecret: String, waitSeconds: Int, origin: String?): ClaimStatus {
-            calls += "status"
+            calls += "status"; origins += origin
             lastStatusWait = waitSeconds
             statusFailures.pollFirst()?.let { throw it }
             // A long-poll with nothing new waits (until the test ends).

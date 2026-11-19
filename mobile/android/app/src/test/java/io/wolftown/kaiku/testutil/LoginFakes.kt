@@ -64,7 +64,10 @@ class FakeApprovalApi : ApprovalApi {
     override suspend fun release(challengeId: String) { calls += "release:$challengeId" }
     /** The origin the last device-login challenge was sent to (null: the configured server). */
     var deviceLoginOrigin: String? = null
+    /** Holds the next device-login challenge until completed (a slow probe). */
+    var challengeGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
     override suspend fun deviceLoginChallenge(userId: String, deviceId: String, origin: String?): ApprovalChallenge {
+        challengeGate?.await()
         deviceLoginOrigin = origin
         return challenge("deviceLoginChallenge:$userId:$deviceId")
     }

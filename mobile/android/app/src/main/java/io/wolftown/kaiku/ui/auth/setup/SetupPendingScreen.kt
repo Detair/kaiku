@@ -1,10 +1,15 @@
 package io.wolftown.kaiku.ui.auth.setup
 
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
@@ -39,6 +44,29 @@ fun SetupPendingScreen(
         while (true) {
             delay(PENDING_CHECK_MS)
             viewModel.check()
+        }
+    }
+    // Back while a claim waits for its code asks first, as on the setup screen. "Stop setup" then
+    // leaves as Back did before; the claim stays and is checked again at the next start.
+    var askLeave by remember { mutableStateOf(false) }
+    var leaving by remember { mutableStateOf(false) }
+    val backDispatcher = LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
+    val asks = setupBackAction(ui) == SetupBack.ASK
+    BackHandler(enabled = asks && !leaving) { askLeave = true }
+    if (askLeave && asks) {
+        SetupLeaveDialog(
+            atCode = true,
+            onStay = { askLeave = false },
+            onStop = {
+                askLeave = false
+                leaving = true
+            },
+        )
+    }
+    LaunchedEffect(leaving) {
+        if (leaving) {
+            backDispatcher?.onBackPressed()
+            leaving = false
         }
     }
     LaunchedEffect(ui) {

@@ -86,8 +86,9 @@ private fun SetupFlowSteps(
     SecureScreen()
     val activity = currentFragmentActivity()
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { viewModel.recheckScreenLock() }
-    // AND-A-2: Back never drops the setup silently. A question is cancelled as with its button, the
-    // code asks first, a running prompt or sign-in keeps the screen; ended steps leave as usual.
+    // Back never drops the setup silently. A question or the code asks first, the progress before
+    // a question is cancelled as with its button, the claim on its way, a running prompt or sign-in
+    // keep the screen; ended steps leave as usual.
     var askLeave by remember { mutableStateOf(false) }
     val back = setupBackAction(ui)
     BackHandler(enabled = back != SetupBack.LEAVE) {
@@ -98,18 +99,12 @@ private fun SetupFlowSteps(
         }
     }
     if (askLeave && back == SetupBack.ASK) {
-        AlertDialog(
-            onDismissRequest = { askLeave = false },
-            title = { Text(stringResource(R.string.setup_leave_title)) },
-            text = { Text(stringResource(R.string.setup_leave_body)) },
-            confirmButton = {
-                TextButton(onClick = { askLeave = false }) { Text(stringResource(R.string.setup_leave_stay)) }
-            },
-            dismissButton = {
-                TextButton(onClick = {
-                    askLeave = false
-                    viewModel.cancel()
-                }) { Text(stringResource(R.string.setup_leave_stop)) }
+        SetupLeaveDialog(
+            atCode = ui is SetupUi.ShowCode || ui == SetupUi.WaitingForCode,
+            onStay = { askLeave = false },
+            onStop = {
+                askLeave = false
+                viewModel.cancel()
             },
         )
     }
@@ -121,9 +116,11 @@ private fun SetupFlowSteps(
         }
     }
 
+    val linkIgnored by viewModel.linkIgnored.collectAsState()
     KeyScreen {
+        if (linkIgnored) KeyNotice(stringResource(R.string.setup_link_ignored), warning = false)
         when (val u = ui) {
-            SetupUi.Opening -> Progress(stringResource(R.string.approval_checking))
+            SetupUi.Opening, SetupUi.Claiming -> Progress(stringResource(R.string.approval_checking))
             is SetupUi.ConfirmServer -> {
                 KeyTitle(stringResource(R.string.setup_title))
                 KeyBody(stringResource(R.string.setup_confirm_server, u.serverName, u.host))
@@ -185,6 +182,7 @@ internal fun SetupStatus(ui: SetupUi, onSignIn: () -> Unit, onRetry: (() -> Unit
             // An unclear answer or no connection is tried again; anything else starts the setup over.
             val retryLabel = when (ui.msg) {
                 R.string.setup_claim_unsure, R.string.security_network_error, R.string.errors_rate_limited -> R.string.common_try_again
+                R.string.setup_stopped_after_code -> R.string.setup_leave_stay
                 else -> R.string.setup_start_again
             }
             if (ui.canRetry && onRetry != null) KeyPrimaryButton(stringResource(retryLabel), onClick = onRetry)
@@ -197,6 +195,27 @@ internal fun SetupStatus(ui: SetupUi, onSignIn: () -> Unit, onRetry: (() -> Unit
         }
         else -> Unit
     }
+}
+
+/**
+ * "Stop setting up this phone?" for Back on a live setup step, shared by the setup and the
+ * waiting screen. [atCode]: the code is shown or awaited (otherwise a question is open).
+ */
+@Composable
+internal fun SetupLeaveDialog(atCode: Boolean, onStay: () -> Unit, onStop: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onStay,
+        title = { Text(stringResource(R.string.setup_leave_title)) },
+        text = { Text(stringResource(if (atCode) R.string.setup_leave_body else R.string.setup_leave_body_question)) },
+        confirmButton = {
+            TextButton(onClick = onStay) {
+                Text(stringResource(if (atCode) R.string.setup_leave_stay else R.string.setup_leave_continue))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onStop) { Text(stringResource(R.string.setup_leave_stop)) }
+        },
+    )
 }
 
 @Composable
