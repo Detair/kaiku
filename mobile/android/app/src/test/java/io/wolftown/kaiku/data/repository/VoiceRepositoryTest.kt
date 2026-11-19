@@ -1321,6 +1321,99 @@ class VoiceRepositoryTest {
         assertEquals(VoiceLinkState.Stable, repository.linkState.value)
     }
 
+    // -- DM call sessions (C32 "DM calls") ---------------------------------------
+
+    private fun kotlinx.coroutines.test.TestScope.collectCallEnds(): MutableList<io.wolftown.kaiku.data.call.CallVoiceEnd> {
+        val ends = mutableListOf<io.wolftown.kaiku.data.call.CallVoiceEnd>()
+        backgroundScope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
+            repository.callEnds.collect { ends += it }
+        }
+        return ends
+    }
+
+    @Test
+    fun `a call session asks the gate before a rejoin and a refusal ends it without Rejoin`() = runTest {
+        val ends = collectCallEnds()
+        var asked = 0
+        repository.joinCall("ch-1", "Anna") { asked++; io.wolftown.kaiku.data.voice.RejoinVerdict.Refused }
+        advanceUntilIdle()
+        verifyJoins(1)
+
+        reconnect()
+        advanceTimeBy(1_000); runCurrent()
+        advanceUntilIdle()
+
+        assertEquals(1, asked)
+        // No voice_join on the new socket: the call is over on the server.
+        verifyJoins(1)
+        assertEquals(null, repository.currentChannelId.value)
+        assertEquals(null, repository.endNotice.value)
+        assertEquals(
+            listOf(io.wolftown.kaiku.data.call.CallVoiceEnd("ch-1", io.wolftown.kaiku.data.call.VoiceEnd.Refused)),
+            ends,
+        )
+    }
+
+    @Test
+    fun `a call session rejoins when the gate allows it`() = runTest {
+        repository.joinCall("ch-1", "Anna") { io.wolftown.kaiku.data.voice.RejoinVerdict.Allowed }
+        advanceUntilIdle()
+        reconnect()
+        advanceTimeBy(1_000); runCurrent()
+        verifyJoins(2)
+    }
+
+    @Test
+    fun `a gate that cannot ask uses up an attempt and asks again`() = runTest {
+        var asked = 0
+        repository.joinCall("ch-1", "Anna") { asked++; io.wolftown.kaiku.data.voice.RejoinVerdict.Unknown }
+        advanceUntilIdle()
+        reconnect()
+        advanceTimeBy(1_000); runCurrent()
+        advanceTimeBy(3_000); runCurrent()
+        assertEquals(2, asked)
+        verifyJoins(1)
+    }
+
+    @Test
+    fun `a call session removed by the server reports it to the call layer, not as a notice`() = runTest {
+        val ends = collectCallEnds()
+        repository.joinCall("ch-1", "Anna") { io.wolftown.kaiku.data.voice.RejoinVerdict.Allowed }
+        advanceUntilIdle()
+
+        wsEvents.emit(ServerEvent.VoiceRemoved(channelId = "ch-1", reason = "session_replaced"))
+        advanceUntilIdle()
+        runCurrent() // the collector runs in backgroundScope
+
+        assertEquals(null, repository.currentChannelId.value)
+        assertEquals(null, repository.endNotice.value)
+        assertEquals(
+            listOf(
+                io.wolftown.kaiku.data.call.CallVoiceEnd(
+                    "ch-1",
+                    io.wolftown.kaiku.data.call.VoiceEnd.Removed(VoiceRemovedReason.SessionReplaced),
+                )
+            ),
+            ends,
+        )
+        verify(exactly = 0) { webSocket.send(ClientEvent.VoiceLeave("ch-1")) }
+    }
+
+    @Test
+    fun `leaving a call session reports Left and the call's name goes to the notification`() = runTest {
+        val ends = collectCallEnds()
+        repository.joinCall("ch-1", "Anna") { io.wolftown.kaiku.data.voice.RejoinVerdict.Allowed }
+        advanceUntilIdle()
+        verify { VoiceCallService.start(any(), "ch-1", "Anna") }
+
+        repository.leaveChannel()
+        runCurrent()
+        assertEquals(
+            listOf(io.wolftown.kaiku.data.call.CallVoiceEnd("ch-1", io.wolftown.kaiku.data.call.VoiceEnd.Left)),
+            ends,
+        )
+    }
+
     @Test
     fun `a give-up of a held join offers Rejoin`() = runTest {
         socketDown()

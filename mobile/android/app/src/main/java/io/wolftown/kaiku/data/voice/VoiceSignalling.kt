@@ -136,6 +136,13 @@ class VoiceSignalling(
 
         /** Its `voice_join` could not go out on the socket it was for. Not used up. */
         SocketGone,
+
+        /**
+         * The session may not rejoin at all (a DM call that is over on the
+         * server, C32 "DM calls"); nothing was sent. The session is given up
+         * at once with [GiveUp.Refused].
+         */
+        Refused,
     }
 
     /** Why the machine gave the session up ([Steps.giveUp]). */
@@ -145,6 +152,9 @@ class VoiceSignalling(
 
         /** The session was connected and could not be recovered (attempts or the 60 s deadline). */
         Lost,
+
+        /** A rejoin was refused ([Attempt.Refused]): the call it belongs to is over. */
+        Refused,
     }
 
     /** The steps of one session. Each is called by the owner only, one at a time. */
@@ -238,10 +248,17 @@ class VoiceSignalling(
                     End.AttemptsUsedUp -> "voice session gave up: ${delaysMs.size} rejoin attempts failed"
                     End.FirstJoinTimedOut ->
                         "voice session gave up: the first join did not connect within ${attemptTimeoutMs / 1000} s"
+                    End.Refused -> "voice session gave up: its rejoin was refused"
                     null -> "voice session gave up: no socket carried its voice_join for ${joinDeadlineMs / 1000} s"
                 }
             )
-            steps.giveUp(if (session.connectedOnce) GiveUp.Lost else GiveUp.NeverConnected)
+            steps.giveUp(
+                when {
+                    ended == End.Refused -> GiveUp.Refused
+                    session.connectedOnce -> GiveUp.Lost
+                    else -> GiveUp.NeverConnected
+                }
+            )
         } finally {
             synchronized(lock) {
                 if (current === session) {
@@ -268,7 +285,7 @@ class VoiceSignalling(
     // -- The machine ------------------------------------------------------------
 
     /** How [signal] ended by itself. */
-    private enum class End { AttemptsUsedUp, FirstJoinTimedOut }
+    private enum class End { AttemptsUsedUp, FirstJoinTimedOut, Refused }
 
     /** Returns when the session is given up; otherwise runs until cancelled. */
     private suspend fun signal(session: Session, steps: Steps): End {
@@ -323,6 +340,7 @@ class VoiceSignalling(
                 } ?: Attempt.SocketGone
                 when (outcome) {
                     Attempt.Connected -> break@recovering
+                    Attempt.Refused -> return End.Refused
                     Attempt.Failed -> {
                         logger.info("voice rejoin attempt ${failures + 1}/${delaysMs.size} failed")
                         if (++failures == delaysMs.size) return End.AttemptsUsedUp

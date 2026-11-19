@@ -22,6 +22,7 @@ import io.wolftown.kaiku.push.PushRegistrar
 import io.wolftown.kaiku.push.PushSessionObserver
 import io.wolftown.kaiku.push.ReadSyncObserver
 import okhttp3.OkHttpClient
+import io.wolftown.kaiku.data.call.CallController
 import io.wolftown.kaiku.data.repository.VoiceRepository
 import io.wolftown.kaiku.data.session.SessionEndHook
 import java.util.concurrent.TimeUnit
@@ -55,6 +56,10 @@ class KaikuApplication : Application(), SingletonImageLoader.Factory, Configurat
     @Inject
     lateinit var voiceRepository: VoiceRepository
 
+    /** The one owner of DM call state; observes the socket from the start. */
+    @Inject
+    lateinit var callController: CallController
+
     /** Clears message notifications read in another session. */
     @Inject
     lateinit var readSyncObserver: ReadSyncObserver
@@ -84,7 +89,12 @@ class KaikuApplication : Application(), SingletonImageLoader.Factory, Configurat
         resyncCoordinator.start()
         sessionTeardownRunner.start()
         // C32: voice and the microphone end before the account state is cleared.
-        SessionEndHook.install { voiceRepository.endForSignOut() }
+        SessionEndHook.install {
+            // The microphone first: a failure of the call part must not keep it open.
+            voiceRepository.endForSignOut()
+            callController.endForSignOut()
+        }
+        callController.start()
         readSyncObserver.start()
         pushSessionObserver.start()
         pushRegistrar.start()

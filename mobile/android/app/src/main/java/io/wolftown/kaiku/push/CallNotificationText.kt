@@ -43,6 +43,9 @@ interface CallNotificationSink {
     fun showCall(prepare: () -> CallNotification?): ShowResult
 
     fun cancelCall(channelId: String)
+
+    /** Removes every call notification (sign-out; message notifications stay for [NotificationSink.cancelAll]). */
+    fun cancelAllCalls() {}
 }
 
 /** A call notification as last posted in its channel (presenter bookkeeping). */

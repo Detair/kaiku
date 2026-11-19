@@ -5,7 +5,11 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import io.wolftown.kaiku.R
+import io.wolftown.kaiku.data.call.CallVoiceEnd
+import io.wolftown.kaiku.data.call.VoiceEnd
 import io.wolftown.kaiku.data.voice.AudioRouteManager
+import io.wolftown.kaiku.data.voice.RejoinGate
+import io.wolftown.kaiku.data.voice.RejoinVerdict
 import io.wolftown.kaiku.data.voice.ElapsedClock
 import io.wolftown.kaiku.data.voice.IceTrouble
 import io.wolftown.kaiku.data.voice.MicPermissionChecker
@@ -36,7 +40,10 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
@@ -131,7 +138,10 @@ class VoiceRepository @Inject constructor(
     //  4. A session never outlives its owner: when the owner is over without
     //     having been cancelled, it ends the session itself ([own]).
 
-    private class Session(val channelId: String) {
+    /** A DM call's voice session: its rejoin gate and the name for the ongoing notification. */
+    class CallSession(val gate: RejoinGate, val title: String?)
+
+    private class Session(val channelId: String, val call: CallSession? = null) {
         /** The coroutine that owns the session's signalling. Set once, before the session is visible. */
         lateinit var owner: Job
 
@@ -166,8 +176,8 @@ class VoiceRepository @Inject constructor(
     private class SessionEnded : CancellationException("voice session ended")
 
     /** Opens the session for [channelId] and starts its owner. */
-    private fun openSession(channelId: String): Session {
-        val session = Session(channelId)
+    private fun openSession(channelId: String, call: CallSession?): Session {
+        val session = Session(channelId, call)
         synchronized(sessionLock) {
             // Started below: `owner` is set before the owner runs or anybody can cancel it.
             session.owner = scope.launch(start = CoroutineStart.LAZY) { own(session) }
@@ -290,6 +300,15 @@ class VoiceRepository @Inject constructor(
      */
     val linkState: StateFlow<VoiceLinkState> = signalling.state
 
+    private val _callEnds = MutableSharedFlow<CallVoiceEnd>(extraBufferCapacity = 8)
+
+    /**
+     * How a DM call's voice session ended, once it was set up (the call layer
+     * turns it into the call's end). Call sessions publish no [endNotice]:
+     * a call is never offered "Rejoin" by the voice layer.
+     */
+    val callEnds: SharedFlow<CallVoiceEnd> = _callEnds.asSharedFlow()
+
     private val _endNotice = MutableStateFlow<VoiceEndNotice?>(null)
     /**
      * Why the last call ended without the user leaving: the rejoin gave up
@@ -360,7 +379,17 @@ class VoiceRepository @Inject constructor(
      * was set up (leave, `voice_removed`, give-up). Cancelling the caller
      * ends the session.
      */
-    suspend fun joinChannel(channelId: String, muted: Boolean = false) {
+    suspend fun joinChannel(channelId: String, muted: Boolean = false) = join(channelId, muted, call = null)
+
+    /**
+     * Joins the voice room of DM call [channelId] (the DM's id), like
+     * [joinChannel]. Before every rejoin attempt the session asks [gate]
+     * (C32 "DM calls"). Its end, once set up, is published on [callEnds].
+     */
+    suspend fun joinCall(channelId: String, title: String?, gate: RejoinGate) =
+        join(channelId, muted = false, call = CallSession(gate, title))
+
+    private suspend fun join(channelId: String, muted: Boolean, call: CallSession?) {
         // Fail fast: the microphone foreground service and capture cannot start
         // without RECORD_AUDIO, so don't touch WebRTC at all.
         if (!micPermissionChecker.isGranted()) {
@@ -377,7 +406,7 @@ class VoiceRepository @Inject constructor(
         // Both layers start from the same mute state (a Rejoin restores the user's last choice).
         _isMuted.value = muted
         applyMuteToMicrophone()
-        val session = openSession(channelId)
+        val session = openSession(channelId, call)
         try {
             session.firstJoin.await()
             logger.info("Joined voice channel: $channelId")
@@ -528,12 +557,18 @@ class VoiceRepository @Inject constructor(
         session: Session,
         sendLeave: Boolean,
         notice: ((Session) -> VoiceEndNotice)? = null,
+        /** For a call session: how it ended, when the notice does not say it ([VoiceEnd.Refused]). */
+        callEnd: VoiceEnd? = null,
     ) {
         leaveMutex.withLock {
             if (session.tornDown) return@withLock
             session.tornDown = true
             // Before the clean-up resets what the notice reads (the mute state).
-            val endNotice = notice?.invoke(session)
+            val notified = notice?.invoke(session)
+            // A call's end goes to the call layer instead (only once its join was set up:
+            // a join that fails before reports through joinCall).
+            val endNotice = if (session.call == null) notified else null
+            val firstJoinDone = session.firstJoin.isCompleted && !session.firstJoin.isCancelled
             // The channel goes before the call service is stopped ([cleanUp]):
             // from here on the service posts no notification any more.
             _currentChannelId.value = null
@@ -549,6 +584,14 @@ class VoiceRepository @Inject constructor(
             }
             cleanUp()
             if (endNotice != null) _endNotice.value = endNotice
+            if (session.call != null && firstJoinDone) {
+                val why = callEnd ?: when (notified) {
+                    null -> VoiceEnd.Left
+                    is VoiceEndNotice.RejoinFailed -> VoiceEnd.Lost
+                    is VoiceEndNotice.Removed -> VoiceEnd.Removed(notified.reason)
+                }
+                _callEnds.tryEmit(CallVoiceEnd(session.channelId, why))
+            }
             logger.info("Voice session ended: ${session.channelId}")
         }
     }
@@ -760,7 +803,7 @@ class VoiceRepository @Inject constructor(
                 }
             }
             try {
-                VoiceCallService.start(context, channelId, channelId)
+                VoiceCallService.start(context, channelId, session.call?.title ?: channelId)
             } catch (e: IllegalStateException) {
                 // ForegroundServiceStartNotAllowedException (API 31+) is one.
                 throw VoiceServiceStartException(e)
@@ -796,6 +839,14 @@ class VoiceRepository @Inject constructor(
             val job = currentCoroutineContext()[Job]
             val guard = guardFor(session, job)
             if (!isLive(session)) throw SessionEnded()
+            // C32 "DM calls": rejoin only while the call is still on with this user in it.
+            session.call?.let { call ->
+                when (call.gate.mayRejoin(channelId)) {
+                    RejoinVerdict.Allowed -> Unit
+                    RejoinVerdict.Refused -> return VoiceSignalling.Attempt.Refused
+                    RejoinVerdict.Unknown -> return VoiceSignalling.Attempt.Failed
+                }
+            }
             logger.info("Rejoining voice channel: $channelId")
             val own = RunningAttempt(webRtcManager.closePeerConnections())
             attempt = own
@@ -854,7 +905,11 @@ class VoiceRepository @Inject constructor(
             val neverConnected = why == VoiceSignalling.GiveUp.NeverConnected
             // The session is ended now: finish its teardown whatever happens to us.
             withContext(NonCancellable) {
-                tearDown(session, sendLeave = true) { rejoinFailedNotice(it, neverConnected) }
+                if (why == VoiceSignalling.GiveUp.Refused) {
+                    tearDown(session, sendLeave = true, callEnd = VoiceEnd.Refused)
+                } else {
+                    tearDown(session, sendLeave = true, notice = { rejoinFailedNotice(it, neverConnected) })
+                }
             }
             logger.warning("Voice session gave up: $channelId")
         }
@@ -913,7 +968,7 @@ class VoiceRepository @Inject constructor(
         scope.launch {
             // Wait until the owner (a running join or rejoin attempt) is gone.
             session.owner.join()
-            tearDown(session, sendLeave = false) { VoiceEndNotice.Removed(it.channelId, reason) }
+            tearDown(session, sendLeave = false, notice = { VoiceEndNotice.Removed(it.channelId, reason) })
             logger.info("Removed from voice channel ${session.channelId} by the server: $reason")
         }
     }

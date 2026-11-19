@@ -213,6 +213,67 @@ sealed class ServerEvent {
         val removedReason: VoiceRemovedReason get() = VoiceRemovedReason.fromWire(reason)
     }
 
+    // -- DM calls -------------------------------------------------------------
+    //
+    // Every call event carries the call's `call_id` (nil from very old
+    // servers: then it is matched by channel only). They go to every device
+    // of every DM participant, so a user's other devices see their own
+    // answer or decline.
+
+    /** A call rings this user (never sent to the caller). [initiatorName] is the caller's login name. */
+    @Serializable
+    @SerialName("incoming_call")
+    data class IncomingCall(
+        val channelId: String,
+        val callId: String = "",
+        val initiator: String,
+        val initiatorName: String = "",
+    ) : ServerEvent()
+
+    /** The caller's own devices learn the call's id. */
+    @Serializable
+    @SerialName("call_started")
+    data class CallStarted(
+        val channelId: String,
+        val callId: String = "",
+        val initiator: String = "",
+    ) : ServerEvent()
+
+    /** [reason]: `cancelled`, `all_declined`, `no_answer`, `last_left`. */
+    @Serializable
+    @SerialName("call_ended")
+    data class CallEnded(
+        val channelId: String,
+        val callId: String = "",
+        val reason: String = "",
+        val durationSecs: Long? = null,
+    ) : ServerEvent()
+
+    @Serializable
+    @SerialName("call_participant_joined")
+    data class CallParticipantJoined(
+        val channelId: String,
+        val callId: String = "",
+        val userId: String,
+        val username: String = "",
+    ) : ServerEvent()
+
+    @Serializable
+    @SerialName("call_participant_left")
+    data class CallParticipantLeft(
+        val channelId: String,
+        val callId: String = "",
+        val userId: String,
+    ) : ServerEvent()
+
+    @Serializable
+    @SerialName("call_declined")
+    data class CallDeclined(
+        val channelId: String,
+        val callId: String = "",
+        val userId: String,
+    ) : ServerEvent()
+
     // -- Screen Share ---------------------------------------------------------
 
     @Serializable

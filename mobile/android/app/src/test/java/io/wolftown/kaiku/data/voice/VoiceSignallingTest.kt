@@ -100,7 +100,7 @@ class VoiceSignallingTest {
                 val result = results.removeFirstOrNull() ?: Attempt.Failed
                 // An attempt that throws does so before its voice_join; one that
                 // found its socket gone sent none. Every other one sent it.
-                if (result !is Throwable && result != Attempt.SocketGone) {
+                if (result !is Throwable && result != Attempt.SocketGone && result != Attempt.Refused) {
                     this@Harness.joinSocket.value = socket
                     afterAttemptJoin(socket)
                 }
@@ -165,6 +165,20 @@ class VoiceSignallingTest {
         assertEquals(listOf(1L), h.joinSockets)
         assertTrue(h.attemptTimes.isEmpty())
         assertTrue(h.statesAtGiveUp.isEmpty())
+    }
+
+    @Test
+    fun `a refused rejoin gives up at once without using the budget`() = runTest {
+        val h = joined()
+        h.results += Attempt.Refused
+        h.reconnect(2L)
+        advanceTimeBy(1_000); runCurrent()
+
+        assertEquals(listOf(VoiceSignalling.GiveUp.Refused), h.giveUps)
+        assertEquals(1, h.attemptTimes.size)
+        advanceTimeBy(600_000); runCurrent()
+        assertEquals(1, h.attemptTimes.size)
+        assertEquals(VoiceLinkState.Stable, h.state)
     }
 
     // -- First join: the publisher must connect (M-4, M-10) ------------------------

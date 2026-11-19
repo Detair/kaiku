@@ -159,6 +159,15 @@ class AndroidNotificationPresenter internal constructor(
         manager?.cancel(channelId, CALL_ID)
     }
 
+    @Synchronized
+    override fun cancelAllCalls() {
+        postedCalls.clear()
+        val manager = manager ?: return
+        manager.activeNotifications
+            .filter { it.id == CALL_ID && it.tag != null }
+            .forEach { manager.cancel(it.tag, CALL_ID) }
+    }
+
     /** A plain heads-up on the DM channel: no full-screen intent, no actions, no ringtone loop. */
     private fun buildCall(n: CallNotification, plan: CallPostPlan): Notification {
         val text = CallNotificationText.of(n)

@@ -4,6 +4,8 @@ import dagger.Binds
 import dagger.Module
 import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
+import io.wolftown.kaiku.data.api.CallApi
+import io.wolftown.kaiku.data.api.CallApiImpl
 import io.wolftown.kaiku.data.api.DmApi
 import io.wolftown.kaiku.data.api.DmApiImpl
 import javax.inject.Singleton
@@ -15,4 +17,8 @@ abstract class DmModule {
     @Binds
     @Singleton
     abstract fun bindDmApi(impl: DmApiImpl): DmApi
+
+    @Binds
+    @Singleton
+    abstract fun bindCallApi(impl: CallApiImpl): CallApi
 }
