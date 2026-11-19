@@ -47,6 +47,9 @@ class FakeEnrollmentApi {
     /** Hold the next `open` / `claim` until completed (a slow network). */
     var openGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
     var claimGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+    var popGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+    /** `open` requests that left the phone, also those still waiting at [openGate]. */
+    var openStarts = 0
 
     companion object {
         const val SUBJECT_ID = "66666666-6666-4666-8666-666666666666"
@@ -69,11 +72,13 @@ class FakeEnrollmentApi {
         }
         override suspend fun cancel(id: String) { calls += "cancel:$id" }
         override suspend fun open(setupToken: String, origin: String?): EnrollmentOpen {
+            openStarts++
             openGate?.await()
             calls += "open"; lastOrigin = origin; origins += origin; openTokens += setupToken
             return EnrollmentOpen(serverName, SigFixtures.b64u(nonce), "2026-11-03T12:10:00Z")
         }
         override suspend fun popChallenge(setupToken: String, deviceId: String, publicKeyB64u: String, origin: String?): PopChallenge {
+            popGate?.await()
             calls += "popChallenge"; origins += origin
             popFailure?.let { throw it }
             return PopChallenge(popChallengeFor(publicKeyB64u), subject)

@@ -27,6 +27,7 @@ import io.wolftown.kaiku.testutil.FakeApprovalApi
 import io.wolftown.kaiku.testutil.apiError
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
@@ -58,12 +59,30 @@ class SetupFlowViewModelTest {
     private val approval = FakeApprovalApi()
     private val probe = KeyDeviceProbe(approval) { SigFixtures.DEVICE_ID }
 
-    /** Runs inline but marks that key work went through the key dispatcher (never Main). */
+    /**
+     * Runs inline but marks that key work went through the key dispatcher (never Main). With
+     * [holdKeyWork] it keeps the work until [releaseKeyWork], like a key generation that takes seconds.
+     */
     private var onKeyDispatcher = false
+    private var holdKeyWork = false
+    private val heldKeyWork = ArrayDeque<Runnable>()
     private val keyDispatcher = object : kotlinx.coroutines.CoroutineDispatcher() {
         override fun dispatch(context: kotlin.coroutines.CoroutineContext, block: Runnable) {
+            if (holdKeyWork) {
+                heldKeyWork.addLast(block)
+                return
+            }
             onKeyDispatcher = true
             try { block.run() } finally { onKeyDispatcher = false }
+        }
+    }
+
+    /** Runs the key work held so far (work it queues meanwhile is held again). */
+    private fun releaseKeyWork() {
+        repeat(heldKeyWork.size) {
+            val b = heldKeyWork.removeFirst()
+            onKeyDispatcher = true
+            try { b.run() } finally { onKeyDispatcher = false }
         }
     }
 
@@ -511,15 +530,25 @@ class SetupFlowViewModelTest {
         assertFalse(f.keyStore.hasKey())
     }
 
-    @Test fun `the same code again changes nothing, a newer one starts over`() = runTest {
+    @Test fun `the same code again changes nothing, a newer one waits until the setup is stopped`() = runTest {
         env.pinned = SigFixtures.ORIGIN
         val (v, _) = vm()
-        v.startIfNew(entry)
+        v.start(entry)
         val opens = enroll.calls.count { it == "open" }
-        v.startIfNew(entry.copy()) // a recreated screen passes the same code
+        val shown = v.ui.value
+        v.start(entry.copy()) // a recreated screen passes the same code
         assertEquals(opens, enroll.calls.count { it == "open" })
-        v.startIfNew(entry.copy(tokenB64u = "BAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8")) // a newer link
+        assertEquals(shown, v.ui.value)
+        assertFalse(v.linkIgnored.value)
+        val newer = entry.copy(tokenB64u = "BAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8")
+        v.start(newer) // a newer link while this setup runs: not used
+        assertEquals(opens, enroll.calls.count { it == "open" })
+        assertEquals(shown, v.ui.value)
+        assertTrue(v.linkIgnored.value)
+        v.cancel()
+        v.start(newer) // opened again after "Stop setup": now it starts
         assertEquals(opens + 1, enroll.calls.count { it == "open" })
+        assertEquals(listOf(token, newer.tokenB64u), enroll.openTokens)
     }
 
     @Test fun `the phone's suitability is known before the scanner opens`() = runTest {
@@ -604,7 +633,7 @@ class SetupFlowViewModelTest {
         assertEquals(SetupBack.ASK, setupBackAction(SetupUi.ConfirmServer("K", "chat.example.com")))
         assertEquals(SetupBack.ASK, setupBackAction(SetupUi.ConfirmSubject("A", "a", "K")))
         assertEquals(SetupBack.STAY, setupBackAction(SetupUi.Claiming))
-        assertEquals(SetupBack.CANCEL, setupBackAction(SetupUi.ScreenLockNeeded(io.wolftown.kaiku.approval.UnsuitableReason.NO_SCREEN_LOCK)))
+        assertEquals(SetupBack.ASK, setupBackAction(SetupUi.ScreenLockNeeded(io.wolftown.kaiku.approval.UnsuitableReason.NO_SCREEN_LOCK)))
         assertEquals(SetupBack.CANCEL, setupBackAction(SetupUi.Opening))
         assertEquals(SetupBack.STAY, setupBackAction(SetupUi.SigningIn))
         assertEquals(SetupBack.STAY, setupBackAction(SetupUi.Done))
@@ -674,15 +703,16 @@ class SetupFlowViewModelTest {
         assertNull(f.repo.local())
     }
 
-    @Test fun `a second link for the same server while the old key is checked replaces the first`() = runTest {
+    @Test fun `a second link for the same server while the old key is checked is not used`() = runTest {
         approval.failWith = apiError(403, "KEY_DEVICE_REVOKED")
         val gate = kotlinx.coroutines.CompletableDeferred<Unit>().also { approval.challengeGate = it }
         val (v, _) = lapsedKeyVm()
         v.start(entry)
         v.start(entry.copy(tokenB64u = token2))
+        assertTrue(v.linkIgnored.value)
         gate.complete(Unit)
         runCurrent()
-        assertEquals(listOf(token2), enroll.openTokens)
+        assertEquals(listOf(token), enroll.openTokens)
         assertEquals(SetupUi.ConfirmServer("Familie Müller", "chat.example.com"), v.ui.value)
     }
 
@@ -803,5 +833,184 @@ class SetupFlowViewModelTest {
         coEvery { deviceSignIn.signIn(any(), any()) } returns DeviceSignInResult.Success
         v.signIn(activity)
         assertEquals(SetupUi.Done, v.ui.value)
+    }
+
+    // ---- A setup in progress is never replaced by a link; the step in flight has one owner ----
+
+    @Test fun `on a phone tied to no server a link for another server leaves the running setup alone`() = runTest {
+        val (v, f) = vm() // no pin: nothing ties this phone to a server yet
+        v.start(entry)
+        v.confirmServer()
+        val atQuestion = v.ui.value
+        assertTrue(atQuestion is SetupUi.ConfirmSubject)
+        val spki = f.keyStore.publicKeySpki()!!
+        v.start(SetupEntry(otherServer, token2, SetupEntry.Source.LINK))
+        assertTrue(v.linkIgnored.value)
+        assertEquals(atQuestion, v.ui.value)
+        assertTrue(enroll.origins.all { it == SigFixtures.ORIGIN })
+        assertTrue(f.keyStore.publicKeySpki()!!.contentEquals(spki))
+        assertEquals(SigFixtures.ORIGIN, env.stored)
+    }
+
+    @Test fun `on a phone tied to no server a link for another server at the server question changes nothing`() = runTest {
+        val (v, _) = vm()
+        v.start(entry)
+        assertEquals(SetupUi.ConfirmServer("Familie Müller", "chat.example.com"), v.ui.value)
+        v.start(SetupEntry(otherServer, token2, SetupEntry.Source.LINK))
+        assertTrue(v.linkIgnored.value)
+        assertEquals(SetupUi.ConfirmServer("Familie Müller", "chat.example.com"), v.ui.value)
+        assertEquals(listOf(token), enroll.openTokens)
+    }
+
+    @Test fun `a second link for the same server never takes the code off the screen`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        val (v, f) = vm()
+        v.start(entry)
+        v.confirmSubject(activity)
+        assertEquals("123 456", (v.ui.value as SetupUi.ShowCode).code)
+        v.start(entry.copy(tokenB64u = token2))
+        assertTrue(v.linkIgnored.value)
+        assertEquals("123 456", (v.ui.value as SetupUi.ShowCode).code)
+        assertEquals(KeyDevicePhase.CLAIMED, f.repo.phase())
+        assertEquals(listOf(token), enroll.openTokens)
+    }
+
+    @Test fun `a link while the waiting screen is shown is not used and says so`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        val (v, f) = vm()
+        f.keyStore.generate(ByteArray(32), UvPolicy.choose(30, true, true) as UvDecision.Use)
+        f.repo.saveClaimed(LocalKeyDevice(null, FakeEnrollmentApi.SUBJECT_ID, SigFixtures.ORIGIN, UvClass.PER_USE, "e1", "claim-secret", "Oma"))
+        v.start(entry)
+        assertEquals(SetupUi.Resume, v.ui.value)
+        assertFalse(v.linkIgnored.value)
+        v.start(entry.copy(tokenB64u = token2))
+        assertTrue(v.linkIgnored.value)
+        assertEquals(SetupUi.Resume, v.ui.value)
+    }
+
+    @Test fun `the running link delivered again does not start it over`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>().also { enroll.openGate = it }
+        val (v, _) = vm()
+        v.start(entry)
+        v.start(entry.copy()) // the same link again while the server is opened
+        gate.complete(Unit)
+        runCurrent()
+        assertEquals(1, enroll.openStarts)
+        assertEquals(1, enroll.calls.count { it == "open" })
+        assertFalse(v.linkIgnored.value)
+        assertTrue(v.ui.value is SetupUi.ConfirmSubject)
+    }
+
+    @Test fun `a step that starts the next step at once is still the one Cancel stops`() = runTest {
+        // Signed in when the link opened ("already your key"); the session ends in the same moment
+        // the step begins to wait for it, so the step starts the next one before it ever suspends.
+        approval.failWith = apiError(404, "KEY_DEVICE_UNKNOWN")
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>().also { approval.challengeGate = it }
+        val f = KeyDeviceFixture(backgroundScope)
+        env.pinFrom = { f.repo.pinnedOrigin() }
+        coEvery { deviceSignIn.signIn(any(), any()) } returns DeviceSignInResult.Success
+        val v = SetupFlowViewModel(enroll.api, suitability, f.keyStore, f.signer, f.repo, { SigFixtures.DEVICE_ID }, deviceSignIn, env,
+            probe, keyDispatcher = keyDispatcher)
+        backgroundScope.launch(kotlinx.coroutines.Dispatchers.Main) {
+            v.ui.collect { if (it == SetupUi.Ended(R.string.setup_already_key, canRetry = false)) f.authState.setLoggedOut() }
+        }
+        v.start(entry)
+        assertEquals(SetupUi.Opening, v.ui.value) // the old key's server is being asked
+        v.cancel()
+        assertEquals(SetupUi.Ended(R.string.setup_stopped, canRetry = false), v.ui.value)
+        gate.complete(Unit)
+        runCurrent()
+        // The stopped step neither forgot the key nor opened the setup.
+        assertTrue(f.repo.local() != null)
+        assertTrue(enroll.calls.isEmpty())
+        assertEquals(SetupUi.Ended(R.string.setup_stopped, canRetry = false), v.ui.value)
+    }
+
+    @Test fun `a key made while the setup was stopped is deleted`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        val (v, f) = vm()
+        val generated = f.keyStore.generatedChallenges.size
+        holdKeyWork = true
+        v.start(entry)
+        releaseKeyWork() // the suitability check; the key generation is held next
+        assertEquals(1, heldKeyWork.size)
+        v.cancel() // Back while the key is made
+        assertEquals(SetupUi.Ended(R.string.setup_stopped, canRetry = false), v.ui.value)
+        holdKeyWork = false
+        releaseKeyWork() // the generation finishes after the stop
+        runCurrent()
+        assertEquals(generated + 1, f.keyStore.generatedChallenges.size)
+        assertFalse(f.keyStore.hasKey())
+        assertFalse(enroll.calls.contains("popChallenge"))
+        assertEquals(SetupUi.Ended(R.string.setup_stopped, canRetry = false), v.ui.value)
+    }
+
+    @Test fun `a claim saved meanwhile by another setup screen is never forgotten`() = runTest {
+        val (v, f) = vm()
+        v.start(entry)
+        assertTrue(v.ui.value is SetupUi.ConfirmServer)
+        // Another setup screen claimed a code while this one waited at the server question.
+        f.keyStore.generate(ByteArray(32), UvPolicy.choose(30, true, true) as UvDecision.Use)
+        val theirs = f.keyStore.publicKeySpki()!!
+        val record = LocalKeyDevice(null, FakeEnrollmentApi.SUBJECT_ID, SigFixtures.ORIGIN, UvClass.PER_USE, "e9", "claim-secret", "Oma")
+        f.repo.saveClaimed(record)
+        val generated = f.keyStore.generatedChallenges.size
+        v.confirmServer()
+        assertEquals(SetupUi.Resume, v.ui.value)
+        assertEquals(record, f.repo.local())
+        assertTrue(f.keyStore.publicKeySpki()!!.contentEquals(theirs))
+        assertEquals(generated, f.keyStore.generatedChallenges.size)
+    }
+
+    @Test fun `cancel while the PoP challenge is fetched deletes the new key and shows nothing more`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>().also { enroll.popGate = it }
+        val (v, f) = vm()
+        v.start(entry)
+        assertTrue(f.keyStore.hasKey())
+        v.cancel()
+        gate.complete(Unit)
+        runCurrent()
+        assertFalse(f.keyStore.hasKey())
+        assertEquals(SetupUi.Ended(R.string.setup_stopped, canRetry = false), v.ui.value)
+    }
+
+    @Test fun `a claim whose answer never comes ends as not sure after a while`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        enroll.claimGate = kotlinx.coroutines.CompletableDeferred() // never answered
+        val (v, f) = vm()
+        v.start(entry)
+        v.confirmSubject(activity)
+        assertEquals(SetupUi.Claiming, v.ui.value)
+        advanceTimeBy(SetupFlowViewModel.CLAIM_TIMEOUT_MS + 1)
+        runCurrent()
+        assertEquals(SetupUi.Ended(R.string.setup_claim_unsure, canRetry = true), v.ui.value)
+        assertEquals(KeyDevicePhase.CLAIMING, f.repo.phase())
+        assertTrue(f.keyStore.hasKey())
+    }
+
+    @Test fun `a final sign-in that never ends offers a fresh try after a while`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        enroll.statuses += ClaimStatus(EnrollmentState.DONE, "active")
+        val (v, _) = vm()
+        coEvery { deviceSignIn.signIn(any(), any()) } coAnswers { kotlinx.coroutines.awaitCancellation() }
+        v.start(entry)
+        v.confirmSubject(activity)
+        runCurrent()
+        v.signIn(activity)
+        assertEquals(SetupUi.SigningIn, v.ui.value)
+        advanceTimeBy(SetupFlowViewModel.SIGN_IN_TIMEOUT_MS + 1)
+        runCurrent()
+        assertEquals(SetupUi.SignInTimedOut, v.ui.value)
+    }
+
+    @Test fun `back on the waiting screen waits while the final sign-in runs`() {
+        assertEquals(SetupBack.STAY, pendingBackAction(SetupUi.SigningIn))
+        assertEquals(SetupBack.STAY, pendingBackAction(SetupUi.Done))
+        assertEquals(SetupBack.ASK, pendingBackAction(SetupUi.WaitingForCode))
+        assertEquals(SetupBack.LEAVE, pendingBackAction(SetupUi.Opening))
+        assertEquals(SetupBack.LEAVE, pendingBackAction(SetupUi.Pending(Instant.parse("2026-11-04T12:00:00Z"))))
+        assertEquals(SetupBack.LEAVE, pendingBackAction(SetupUi.Ended(R.string.setup_cancelled, canRetry = false)))
     }
 }

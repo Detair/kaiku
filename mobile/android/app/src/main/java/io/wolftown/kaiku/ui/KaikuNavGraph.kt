@@ -410,15 +410,19 @@ fun KaikuNavGraph(
                     // never loses the memory-only code); a newer link opened here replaces it.
                     // Memory only (never saved state): the setup code is a secret.
                     var entry by remember { mutableStateOf<SetupEntry?>(null) }
+                    // Counts deliveries: the same link opened again (after stopping a setup) is new.
+                    var delivery by remember { androidx.compose.runtime.mutableIntStateOf(0) }
                     val shown = pendingSetup ?: entry
                     LaunchedEffect(pendingSetup) {
                         pendingSetup?.let {
                             entry = it
+                            delivery++
                             PendingSetupLinks.consume(it)
                         }
                     }
                     SetupFlowScreen(
                         entry = shown,
+                        delivery = delivery,
                         onSignedIn = { navController.navigate("home") { popUpTo(0) { inclusive = true } } },
                         onBack = { if (!navController.popBackStack()) navController.navigate("login") },
                         // Restored without its (memory-only) setup code: scan it again.

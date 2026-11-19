@@ -10,7 +10,6 @@ import io.wolftown.kaiku.data.api.ApiException
 import io.wolftown.kaiku.data.api.EnrollmentApi
 import io.wolftown.kaiku.data.api.LongPoll
 import io.wolftown.kaiku.data.auth.DeviceSignIn
-import io.wolftown.kaiku.data.auth.DeviceSignInResult
 import io.wolftown.kaiku.data.auth.SignInPurpose
 import io.wolftown.kaiku.data.keydevice.KeyDevicePhase
 import io.wolftown.kaiku.data.keydevice.KeyDeviceProbe
@@ -19,11 +18,11 @@ import io.wolftown.kaiku.data.keydevice.KeyDeviceState
 import io.wolftown.kaiku.data.keydevice.LocalKeyDevice
 import io.wolftown.kaiku.data.keydevice.ServerKeyState
 import io.wolftown.kaiku.domain.model.EnrollmentState
-import io.wolftown.kaiku.ui.auth.signInResultText
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.IOException
 import javax.inject.Inject
 import kotlin.coroutines.cancellation.CancellationException
@@ -152,16 +151,14 @@ class SetupPendingViewModel @Inject constructor(
         signingIn = true
         _ui.value = SetupUi.SigningIn
         viewModelScope.launch {
-            // The end of a setup, as on the setup screen: a second prompt, and it says why.
-            val r = deviceSignIn.signIn(activity, SignInPurpose.AFTER_SETUP)
-            signingIn = false
-            _ui.value = when (r) {
-                DeviceSignInResult.Success -> SetupUi.Done
-                DeviceSignInResult.Cancelled -> SetupUi.SignInPaused
-                DeviceSignInResult.Expired -> SetupUi.SignInTimedOut
-                is DeviceSignInResult.Pending -> SetupUi.Pending(r.readyAt)
-                else -> SetupUi.Ended(signInResultText(r) ?: R.string.setup_failed_generic, canRetry = false)
+            // The end of a setup, as on the setup screen: a second prompt, and it says why. It cannot
+            // be stopped, so it is bounded: past the limit it counts as taking too long.
+            val r = try {
+                withTimeoutOrNull(SetupFlowViewModel.SIGN_IN_TIMEOUT_MS) { deviceSignIn.signIn(activity, SignInPurpose.AFTER_SETUP) }
+            } finally {
+                signingIn = false
             }
+            _ui.value = finalSignInUi(r)
         }
     }
 

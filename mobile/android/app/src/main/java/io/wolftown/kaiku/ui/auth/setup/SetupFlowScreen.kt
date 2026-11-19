@@ -54,14 +54,17 @@ fun SetupFlowScreen(
     onBack: (() -> Unit)?,
     viewModel: SetupFlowViewModel = hiltViewModel(),
     onRescan: (() -> Unit)? = null,
+    /** Changes with every delivery of a link, so the same link opened again reaches the flow. */
+    delivery: Int = 0,
 ) {
     val ui by viewModel.ui.collectAsState()
+    val linkIgnored by viewModel.linkIgnored.collectAsState()
 
-    LaunchedEffect(entry) {
+    LaunchedEffect(entry, delivery) {
         when {
-            // A newer link opened while this screen is up replaces the setup (unless a claim is
-            // unresolved: start() then hands over to the waiting screen).
-            entry != null -> viewModel.startIfNew(entry)
+            // Every link goes to the flow: it starts a setup only when none is in progress (the same
+            // link again changes nothing, another one is noted on the screen).
+            entry != null -> viewModel.start(entry)
             !viewModel.started -> viewModel.resumeWithoutEntry()
         }
     }
@@ -69,16 +72,17 @@ fun SetupFlowScreen(
     if (u0 is SetupUi.Pending || u0 == SetupUi.Resume) {
         // L2-A13: the wait (and any reconciliation) continues on the pending screen, also while
         // this screen stays open.
-        SetupPendingScreen(onSignedIn = onSignedIn, onEnded = { onBack?.invoke() })
+        SetupPendingScreen(onSignedIn = onSignedIn, onEnded = { onBack?.invoke() }, linkIgnored = linkIgnored)
         return
     }
-    SetupFlowSteps(ui = u0, viewModel = viewModel, onSignedIn = onSignedIn, onBack = onBack, onRescan = onRescan)
+    SetupFlowSteps(ui = u0, viewModel = viewModel, linkIgnored = linkIgnored, onSignedIn = onSignedIn, onBack = onBack, onRescan = onRescan)
 }
 
 @Composable
 private fun SetupFlowSteps(
     ui: SetupUi,
     viewModel: SetupFlowViewModel,
+    linkIgnored: Boolean,
     onSignedIn: () -> Unit,
     onBack: (() -> Unit)?,
     onRescan: (() -> Unit)?,
@@ -116,7 +120,6 @@ private fun SetupFlowSteps(
         }
     }
 
-    val linkIgnored by viewModel.linkIgnored.collectAsState()
     KeyScreen {
         if (linkIgnored) KeyNotice(stringResource(R.string.setup_link_ignored), warning = false)
         when (val u = ui) {

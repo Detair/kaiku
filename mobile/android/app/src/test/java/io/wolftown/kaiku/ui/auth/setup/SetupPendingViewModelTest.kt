@@ -26,6 +26,8 @@ import io.wolftown.kaiku.testutil.apiError
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
@@ -125,6 +127,18 @@ class SetupPendingViewModelTest {
         coEvery { deviceSignIn.signIn(any(), any()) } returns DeviceSignInResult.Success
         v.signIn(activity)
         assertEquals(SetupUi.Done, v.ui.value)
+    }
+
+    @Test fun `a resumed final sign-in that never ends offers a fresh try after a while`() = runTest {
+        val (repo, _) = repo()
+        repo.markEnrolled(pendingDevice().copy(claimSecret = null))
+        coEvery { deviceSignIn.signIn(any(), any()) } coAnswers { kotlinx.coroutines.awaitCancellation() }
+        val v = SetupPendingViewModel(enroll.api, repo, deviceSignIn, probe)
+        v.signIn(activity)
+        assertEquals(SetupUi.SigningIn, v.ui.value)
+        advanceTimeBy(SetupFlowViewModel.SIGN_IN_TIMEOUT_MS + 1)
+        runCurrent()
+        assertEquals(SetupUi.SignInTimedOut, v.ui.value)
     }
 
     @Test fun `a claim sent before the app closed is reconciled at app start`() = runTest {

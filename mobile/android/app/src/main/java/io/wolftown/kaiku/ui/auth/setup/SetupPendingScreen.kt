@@ -16,6 +16,7 @@ import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.compose.ui.res.stringResource
 import io.wolftown.kaiku.R
 import io.wolftown.kaiku.ui.shared.KeyBody
+import io.wolftown.kaiku.ui.shared.KeyNotice
 import io.wolftown.kaiku.ui.shared.KeyScreen
 import io.wolftown.kaiku.ui.shared.SecureScreen
 import io.wolftown.kaiku.ui.shared.currentFragmentActivity
@@ -33,6 +34,8 @@ private const val PENDING_CHECK_MS = 15 * 60 * 1000L
 fun SetupPendingScreen(
     onSignedIn: () -> Unit,
     onEnded: () -> Unit = {},
+    /** Shown inside the setup screen: a setup link opened meanwhile was not used. */
+    linkIgnored: Boolean = false,
     viewModel: SetupPendingViewModel = hiltViewModel(),
 ) {
     SecureScreen()
@@ -47,12 +50,14 @@ fun SetupPendingScreen(
         }
     }
     // Back while a claim waits for its code asks first, as on the setup screen. "Stop setup" then
-    // leaves as Back did before; the claim stays and is checked again at the next start.
+    // leaves as Back did before; the claim stays and is checked again at the next start. While the
+    // final sign-in runs, Back does nothing.
     var askLeave by remember { mutableStateOf(false) }
     var leaving by remember { mutableStateOf(false) }
     val backDispatcher = LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
-    val asks = setupBackAction(ui) == SetupBack.ASK
-    BackHandler(enabled = asks && !leaving) { askLeave = true }
+    val back = pendingBackAction(ui)
+    val asks = back == SetupBack.ASK
+    BackHandler(enabled = back != SetupBack.LEAVE && !leaving) { if (asks) askLeave = true }
     if (askLeave && asks) {
         SetupLeaveDialog(
             atCode = true,
@@ -77,6 +82,7 @@ fun SetupPendingScreen(
         }
     }
     KeyScreen {
+        if (linkIgnored) KeyNotice(stringResource(R.string.setup_link_ignored), warning = false)
         when (ui) {
             SetupUi.Opening -> {
                 CircularProgressIndicator()
