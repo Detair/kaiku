@@ -326,6 +326,25 @@ describe("createDialog with several dialogs open", () => {
     expect(document.activeElement).toBe(page);
   });
 
+  it("does not hand focus to an opener that lies behind a dialog still open", async () => {
+    // Asked for from the page, then another window opened underneath meanwhile
+    // (a slow download): closing the top one must stay inside the open window.
+    const { page, setUpper } = setup();
+    const [late, setLate] = createSignal(true);
+    render(() => (
+      <Show when={late()}>
+        <Named name="Top" opener={page} />
+      </Show>
+    ));
+    await tick();
+    expect(screen.getByRole("dialog", { name: "Top" }).contains(document.activeElement)).toBe(true);
+    void setUpper;
+    setLate(false);
+    await tick();
+    expect(document.activeElement).not.toBe(page);
+    expect(screen.getByRole("dialog", { name: "Lower" }).contains(document.activeElement)).toBe(true);
+  });
+
   it("returns focus to an explicit opener instead of what had focus when it opened", async () => {
     const asked = document.createElement("button");
     const elsewhere = document.createElement("button");

@@ -180,15 +180,19 @@ export function createDialog(opts: DialogOptions): DialogHandle {
       }
       return;
     }
-    if (opener?.isConnected && !opener.closest("[inert]")) {
+    // A dialog still open keeps the keyboard: focus goes to the opener only
+    // when the opener is inside it, never to something behind it.
+    const below = openDialogs[openDialogs.length - 1]?.el();
+    const reachable = (node: Element) => !below || below.contains(node);
+    if (opener?.isConnected && !opener.closest("[inert]") && reachable(opener)) {
       opener.focus();
       return;
     }
-    // The opener is gone or hidden (a drawer that closed, a menu item): keep
-    // focus out of nowhere (UX2 K11). Go to the dialog below, else the page.
+    // The opener is gone, hidden or behind (a drawer that closed, a menu
+    // item): keep focus out of nowhere (UX2 K11). Go to the dialog below,
+    // else the page.
     const active = document.activeElement;
-    if (active && active !== document.body && !el?.contains(active)) return;
-    const below = openDialogs[openDialogs.length - 1]?.el();
+    if (active && active !== document.body && !el?.contains(active) && reachable(active)) return;
     const fallback = below ?? document.getElementById("main-content");
     fallback?.focus();
   });

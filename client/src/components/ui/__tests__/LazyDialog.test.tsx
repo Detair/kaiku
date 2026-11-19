@@ -168,6 +168,8 @@ describe("LazyDialog", () => {
       const dialog = await screen.findByRole("alertdialog");
       expect(screen.getByRole("button", { name: "Reload" })).toBeTruthy();
       expect(screen.queryByRole("button", { name: "Close" })).toBeNull();
+      // Enter must retry, not reload: focus starts on Try again.
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Try again" }));
       fireEvent.keyDown(document.body, { key: "Escape" });
       expect(dialog.isConnected).toBe(true);
       // No forced reload: a reload during setup would lose its place.

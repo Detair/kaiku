@@ -77,9 +77,13 @@ const FailureDialog: Component<{
   /** What had focus when the window was asked for: focus goes back there. */
   opener: Element | null;
 }> = (props) => {
-  // Without a close the dialog stays: Escape does nothing.
+  let closeButton: HTMLButtonElement | undefined;
+  let retryButton: HTMLButtonElement | undefined;
+  // Without a close the dialog stays: Escape does nothing. Focus starts on
+  // Close, else on Try again, so Enter never reloads the page by accident.
   const dialog = createDialog({
     onClose: () => props.onClose?.(),
+    initialFocus: () => closeButton ?? retryButton,
     // eslint-disable-next-line solid/reactivity
     opener: props.opener,
   });
@@ -103,7 +107,7 @@ const FailureDialog: Component<{
           <div class="flex flex-wrap justify-end gap-2">
             <Show when={props.onClose}>
               {(close) => (
-                <button type="button" class={button} onClick={() => close()()}>
+                <button ref={closeButton} type="button" class={button} onClick={() => close()()}>
                   {t("common.close")}
                 </button>
               )}
@@ -113,7 +117,12 @@ const FailureDialog: Component<{
                 {t("common.reload")}
               </button>
             </Show>
-            <button type="button" class="btn-primary min-h-11 px-4 text-base" onClick={() => props.onRetry()}>
+            <button
+              ref={retryButton}
+              type="button"
+              class="btn-primary min-h-11 px-4 text-base"
+              onClick={() => props.onRetry()}
+            >
               {t("common.tryAgain")}
             </button>
           </div>
