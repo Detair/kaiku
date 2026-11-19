@@ -15,8 +15,9 @@ use vc_server::ws::ServerEvent;
 
 use super::helpers::{
     add_guild_member, create_channel, create_elevated_session, create_guild_with_default_role,
-    create_test_user, create_voice_channel, expect_no_ws_event, generate_access_token, make_admin,
-    next_ws_event, spawn_test_server, ws_connect, TestApp, TestServer, WsClient,
+    create_session_with_token, create_test_user, create_voice_channel, expect_no_ws_event,
+    generate_access_token, grant_step_up, make_admin, next_ws_event, spawn_test_server, ws_connect,
+    TestApp, TestServer, WsClient,
 };
 
 const EVENT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -1164,6 +1165,91 @@ async fn trigger_group_dm_leave(pool: PgPool) {
     assert_cut_off_before_control(&fx, &mut ws, dm.id, control).await;
 }
 
+/// An admin event marked with a fresh name, so a test can tell it from
+/// events published earlier that may still be on their way.
+fn admin_event() -> (ServerEvent, String) {
+    let name = format!("marker-{}", Uuid::new_v4());
+    let event = ServerEvent::AdminUserUnbanned {
+        user_id: Uuid::new_v4(),
+        username: name.clone(),
+    };
+    (event, name)
+}
+
+/// Reads frames until an admin event named in `names` arrives (`true`) or
+/// `stop` frame type arrives / `wait` ends (`false`).
+async fn admin_event_among(
+    ws: &mut WsClient,
+    names: &[String],
+    stop: Option<&str>,
+    wait: Duration,
+) -> bool {
+    use futures::StreamExt;
+    let read = async {
+        loop {
+            match ws.next().await {
+                Some(Ok(Message::Text(text))) => {
+                    let v: Value = serde_json::from_str(&text).unwrap();
+                    if v["type"] == "admin_user_unbanned"
+                        && names.iter().any(|n| v["username"] == n.as_str())
+                    {
+                        return true;
+                    }
+                    if stop.is_some_and(|t| v["type"] == t) {
+                        return false;
+                    }
+                }
+                Some(Ok(_)) => {}
+                other => panic!("socket ended: {other:?}"),
+            }
+        }
+    };
+    tokio::time::timeout(wait, read).await.unwrap_or(false)
+}
+
+/// Publishes admin events until one of them reaches `ws` (the subscription
+/// is live), or fails after [`EVENT_TIMEOUT`].
+async fn admin_events_arrive(app: &TestApp, ws: &mut WsClient, why: &str) {
+    let deadline = tokio::time::Instant::now() + EVENT_TIMEOUT;
+    let mut names = Vec::new();
+    loop {
+        let (event, name) = admin_event();
+        names.push(name);
+        vc_server::ws::broadcast_admin_event(&app.state.redis, &event)
+            .await
+            .expect("publish");
+        if admin_event_among(ws, &names, None, Duration::from_millis(200)).await {
+            return;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "{why}");
+    }
+}
+
+/// Publishes one admin event after the change, then a ping: its pong comes
+/// after that event if it was going to be written, so it must not come
+/// before. (Events published before the change may still arrive.)
+async fn admin_events_stopped(app: &TestApp, ws: &mut WsClient) {
+    let (event, name) = admin_event();
+    vc_server::ws::broadcast_admin_event(&app.state.redis, &event)
+        .await
+        .expect("publish");
+    send(ws, json!({ "type": "ping" })).await;
+    assert!(
+        !admin_event_among(ws, &[name], Some("pong"), EVENT_TIMEOUT).await,
+        "admin event after de-elevation"
+    );
+}
+
+async fn de_elevate(server: &TestServer, token: &str) {
+    let resp = reqwest::Client::new()
+        .delete(format!("{}/api/admin/elevate", server.url))
+        .bearer_auth(token)
+        .send()
+        .await
+        .expect("de-elevate");
+    assert!(resp.status().is_success(), "de-elevate: {}", resp.status());
+}
+
 /// Ending the admin elevation stops admin events at once (no backstop).
 #[sqlx::test]
 async fn trigger_de_elevation_stops_admin_events(pool: PgPool) {
@@ -1175,61 +1261,49 @@ async fn trigger_de_elevation_stops_admin_events(pool: PgPool) {
 
     let mut ws = connect_ready(&server, &token).await;
     send(&mut ws, json!({ "type": "admin_subscribe" })).await;
-    let event = ServerEvent::AdminUserUnbanned {
-        user_id: Uuid::new_v4(),
-        username: "someone".into(),
-    };
-    let deadline = tokio::time::Instant::now() + EVENT_TIMEOUT;
-    loop {
-        vc_server::ws::broadcast_admin_event(&app.state.redis, &event)
-            .await
-            .expect("publish");
-        let got = tokio::time::timeout(
-            Duration::from_millis(200),
-            next_ws_event(&mut ws, "admin_user_unbanned", EVENT_TIMEOUT),
-        )
-        .await;
-        if got.is_ok() {
-            break;
-        }
-        assert!(tokio::time::Instant::now() < deadline, "no admin event");
-    }
+    admin_events_arrive(&app, &mut ws, "no admin event").await;
 
-    let resp = reqwest::Client::new()
-        .delete(format!("{}/api/admin/elevate", server.url))
-        .bearer_auth(&token)
-        .send()
-        .await
-        .expect("de-elevate");
-    assert!(resp.status().is_success(), "de-elevate: {}", resp.status());
-    vc_server::ws::broadcast_admin_event(&app.state.redis, &event)
-        .await
-        .expect("publish");
-    // A ping round trip after the publish: its pong comes after any admin
-    // event that was going to be forwarded.
-    send(&mut ws, json!({ "type": "ping" })).await;
-    let wait = async {
-        use futures::StreamExt;
-        loop {
-            match ws.next().await {
-                Some(Ok(Message::Text(text))) => {
-                    let v: Value = serde_json::from_str(&text).unwrap();
-                    assert_ne!(
-                        v["type"], "admin_user_unbanned",
-                        "admin event after de-elevation"
-                    );
-                    if v["type"] == "pong" {
-                        return;
-                    }
-                }
-                Some(Ok(_)) => {}
-                other => panic!("socket ended: {other:?}"),
-            }
-        }
+    de_elevate(&server, &token).await;
+    admin_events_stopped(&app, &mut ws).await;
+}
+
+/// The socket keeps its admin subscription through a de-elevation whose
+/// re-check has completed: elevating again restores the admin events on
+/// the same socket without a new `admin_subscribe`.
+#[sqlx::test]
+async fn re_elevation_restores_admin_events(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let server = spawn_test_server(app.router.clone()).await;
+    let (admin, _) = create_test_user(&pool).await;
+    make_admin(&pool, admin).await;
+    let (sid, token) = create_session_with_token(&pool, &app.config, admin).await;
+    let elevate = || async {
+        grant_step_up(&pool, sid, "admin.elevate", "").await;
+        let resp = reqwest::Client::new()
+            .post(format!("{}/api/admin/elevate", server.url))
+            .bearer_auth(&token)
+            .json(&json!({ "reason": null }))
+            .send()
+            .await
+            .expect("elevate");
+        assert!(resp.status().is_success(), "elevate: {}", resp.status());
     };
-    tokio::time::timeout(EVENT_TIMEOUT, wait)
-        .await
-        .expect("pong");
+
+    elevate().await;
+    let mut ws = connect_ready(&server, &token).await;
+    send(&mut ws, json!({ "type": "admin_subscribe" })).await;
+    admin_events_arrive(&app, &mut ws, "no admin event").await;
+
+    de_elevate(&server, &token).await;
+    admin_events_stopped(&app, &mut ws).await;
+    // Let the re-check that the de-elevation woke complete ("not
+    // elevated" at the epoch that holds): an idle socket revalidates
+    // within 250 ms of a bump.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    admin_events_stopped(&app, &mut ws).await;
+
+    elevate().await;
+    admin_events_arrive(&app, &mut ws, "admin events did not come back").await;
 }
 
 /// A voice join whose permission check passed, then the role that
