@@ -101,7 +101,7 @@ fun NewMessageScreen(
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
             )
-            if (ui.failedServers > 0 && ui.people.isNotEmpty()) {
+            if (ui.partialFailure) {
                 Row(
                     Modifier.fillMaxWidth().padding(horizontal = 16.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -182,7 +182,7 @@ private fun PersonRow(person: Person, opening: Boolean, enabled: Boolean, onClic
         Modifier
             .fillMaxWidth()
             .heightIn(min = 64.dp)
-            .clickable(enabled = enabled, onClickLabel = stringResource(R.string.dm_new_title), onClick = onClick)
+            .clickable(enabled = enabled, onClickLabel = stringResource(R.string.dm_new_open_conversation), onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

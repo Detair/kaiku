@@ -278,6 +278,9 @@ class DmRepository @Inject constructor(
         if (active && !duplicate) markReadQuietly(event.channelId)
     }
 
+    /** Marks [channelId] read in the repository scope (leaving the screen does not stop it); failures are logged. */
+    fun markReadInBackground(channelId: String) = markReadQuietly(channelId)
+
     private fun markReadQuietly(channelId: String) {
         scope.launch {
             try {

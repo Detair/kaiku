@@ -1,6 +1,7 @@
 package io.wolftown.kaiku.ui.dm
 
 import androidx.annotation.StringRes
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -36,6 +37,9 @@ data class NewMessageUi(
     @StringRes val message: Int? = null,
 ) {
     val shown: List<Person> get() = if (query.isBlank()) people else people.filter { it.matches(query) }
+
+    /** "Some people could not be loaded" with Retry: whenever a server failed, also with nobody loaded. */
+    val partialFailure: Boolean get() = failedServers > 0 && loadError == null
 }
 
 /**
@@ -46,9 +50,10 @@ data class NewMessageUi(
 class NewMessageViewModel @Inject constructor(
     private val peopleRepository: PeopleRepository,
     private val dmRepository: DmRepository,
+    private val savedState: SavedStateHandle = SavedStateHandle(),
 ) : ViewModel() {
 
-    private val _ui = MutableStateFlow(NewMessageUi())
+    private val _ui = MutableStateFlow(NewMessageUi(query = savedState.get<String>(QUERY_KEY).orEmpty()))
     val ui: StateFlow<NewMessageUi> = _ui.asStateFlow()
 
     private val _openConversation = Channel<String>(Channel.BUFFERED)
@@ -78,7 +83,11 @@ class NewMessageViewModel @Inject constructor(
         }
     }
 
-    fun search(query: String) = _ui.update { it.copy(query = query) }
+    fun search(query: String) {
+        // Kept across the process being recreated.
+        savedState[QUERY_KEY] = query
+        _ui.update { it.copy(query = query) }
+    }
 
     /** Opens the conversation with [person]. Ignored while another one is opening (double tap). */
     fun open(person: Person) {
@@ -94,8 +103,9 @@ class NewMessageViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 val channelId = dmRepository.openDirectMessage(person.userId)
-                // Like a tap in the DM list: the open DM's new messages count as read.
+                // Like a tap in the DM list: the open DM is read, and its new messages count as read.
                 dmRepository.setActiveChannel(channelId)
+                dmRepository.markReadInBackground(channelId)
                 _openConversation.send(channelId)
             } catch (e: CancellationException) {
                 throw e
@@ -112,5 +122,6 @@ class NewMessageViewModel @Inject constructor(
 
     private companion object {
         val logger: Logger = Logger.getLogger("NewMessageViewModel")
+        const val QUERY_KEY = "query"
     }
 }

@@ -107,4 +107,39 @@ class NewMessageViewModelTest {
         vm.messageShown()
         assertNull(vm.ui.value.message)
     }
+
+    @Test
+    fun `opening an existing conversation marks it read like the chat list`() = runTest(dispatcher) {
+        coEvery { people.load() } returns People(listOf(anna), failedServers = 0)
+        coEvery { dms.openDirectMessage("anna") } returns "dm-anna"
+        val vm = NewMessageViewModel(people, dms)
+        advanceUntilIdle()
+
+        vm.open(anna)
+        advanceUntilIdle()
+
+        verify { dms.setActiveChannel("dm-anna") }
+        verify { dms.markReadInBackground("dm-anna") }
+    }
+
+    @Test
+    fun `a failed server shows the notice with Retry also when nobody could be loaded`() = runTest(dispatcher) {
+        coEvery { people.load() } returns People(emptyList(), failedServers = 1)
+        val vm = NewMessageViewModel(people, dms)
+        advanceUntilIdle()
+
+        assertEquals(true, vm.ui.value.partialFailure)
+    }
+
+    @Test
+    fun `the search text survives the process being recreated`() = runTest(dispatcher) {
+        coEvery { people.load() } returns People(listOf(anna, bert), failedServers = 0)
+        val saved = androidx.lifecycle.SavedStateHandle()
+        NewMessageViewModel(people, dms, saved).search("ber")
+
+        val restored = NewMessageViewModel(people, dms, saved)
+        advanceUntilIdle()
+        assertEquals("ber", restored.ui.value.query)
+        assertEquals(listOf(bert), restored.ui.value.shown)
+    }
 }
