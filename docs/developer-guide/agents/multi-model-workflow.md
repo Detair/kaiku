@@ -9,13 +9,13 @@ Decided 2026-10-22 for the v1.0 Family Release
 |------|-------|------|
 | **Builder** | Claude Opus 5.5 | Implementation, planning, consolidating findings |
 | **Primary reviewer** | Claude Fable 5.1 | Deepest reasoning: adversarial security, concurrency/correctness, final verification of every Blocker |
-| **External reviewer (mandatory)** | Gemini 4 Argon (`gemini-4-argon-high`) via `agy` (Antigravity CLI) | Independent second opinion from a different model family; very long context → whole-codebase sweeps (UI consistency, hardcoded strings, cross-file drift); Google-stack depth (Android, Kotlin/Compose, FCM/Firebase) |
-| **External reviewer (mandatory)** | GPT-6-Astra (`gpt-6-astra`, effort `max`) via `codex exec -s read-only` | OpenAI's frontier model; read-only sandbox can run grep/git, so it verifies claims against the tree; third independent model family |
+| **External reviewer (mandatory)** | Gemini 4 Neon (`gemini-4-neon-xhigh`) via `agy` (Antigravity CLI) | Independent second opinion from a different model family; very long context → whole-codebase sweeps (UI consistency, hardcoded strings, cross-file drift); Google-stack depth (Android, Kotlin/Compose, FCM/Firebase) |
+| **External reviewer (mandatory)** | GPT-6.2-Astra (`gpt-6.2-astra`, effort `max`) via `codex exec -s read-only` | OpenAI's frontier model; read-only sandbox can run grep/git, so it verifies claims against the tree; third independent model family |
 | **External reviewer (optional)** | Kimi K3 / Qwen 3.8 Max / GLM 5.3 via `opencode run --agent plan` (OpenCode Go subscription) | Further model families for cheap cross-checks (e.g. Blocker verification) and fallback when Codex hits its usage limit. DeepSeek V4 Pro needs the "Global regions" workspace setting (maintainer's call) |
 
 **Rule:** every review — lane review or PR review — gets at least one
 external-model pass (Gemini or Codex) in addition to Fable. Always use each
-provider's strongest model: `gemini-4-argon-high`, `gpt-6-astra` at `max`
+provider's strongest model: `gemini-4-neon-xhigh`, `gpt-6.2-astra` at `max`
 (`ultra` adds autonomous delegation — avoid for controlled reviews). Findings agreed by both carry more
 weight; disagreements are resolved by re-reading the code, not by vote.
 
@@ -81,4 +81,13 @@ directory. Briefs live in `docs/developer-guide/agents/experts/`.
   pick the adequate model — Sonnet for task reviews and re-reviews, Opus for
   concurrency or complex stage reviews. Goal: best result, token-efficient.
 - 2026-10-24 (maintainer): if Codex hits a rate limit, fall back to Gemini
-  (`gemini-3.8-flash-high`) immediately instead of waiting for the reset.
+  immediately instead of waiting for the reset.
+- 2026-11-19 model refresh (checked with `codex debug models` on Codex CLI
+  0.170.0 and `agy models` on agy 1.5.12; older Codex CLIs do not list the 6.2
+  models): Codex `gpt-6.2-astra` replaces `gpt-6-astra` (`high` for routine PR
+  reviews, `max` for verification passes; `gpt-6.2-sol` for small re-reviews).
+  Gemini 4 Neon (`gemini-4-neon-xhigh`) replaces Argon as the deep reviewer;
+  `gemini-4-hydrogen-high` replaces `gemini-3.8-flash-high` for small/medium
+  diffs and re-reviews. `gpt-oss-120b-medium` is announced for removal — do
+  not plan with it. Antigravity now shows one shared "Gemini Models" limit, so
+  the separate-quota note from 2026-10-23 no longer holds.
