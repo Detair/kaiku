@@ -22,6 +22,8 @@ import io.wolftown.kaiku.push.PushRegistrar
 import io.wolftown.kaiku.push.PushSessionObserver
 import io.wolftown.kaiku.push.ReadSyncObserver
 import okhttp3.OkHttpClient
+import io.wolftown.kaiku.data.repository.VoiceRepository
+import io.wolftown.kaiku.data.session.SessionEndHook
 import java.util.concurrent.TimeUnit
 import java.util.logging.Logger
 import javax.inject.Inject
@@ -48,6 +50,10 @@ class KaikuApplication : Application(), SingletonImageLoader.Factory, Configurat
     /** Tears down voice, realtime and caches whenever a session ends (logout or rejection). */
     @Inject
     lateinit var sessionTeardownRunner: SessionTeardownRunner
+
+    /** Ended synchronously before a stored session is removed (C32, [SessionEndHook]). */
+    @Inject
+    lateinit var voiceRepository: VoiceRepository
 
     /** Clears message notifications read in another session. */
     @Inject
@@ -77,6 +83,8 @@ class KaikuApplication : Application(), SingletonImageLoader.Factory, Configurat
         // Observe Ready before the first connect can produce one.
         resyncCoordinator.start()
         sessionTeardownRunner.start()
+        // C32: voice and the microphone end before the account state is cleared.
+        SessionEndHook.install { voiceRepository.endForSignOut() }
         readSyncObserver.start()
         pushSessionObserver.start()
         pushRegistrar.start()

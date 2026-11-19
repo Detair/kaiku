@@ -214,6 +214,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Android: signing the phone in by scanning a QR code from the desktop without any confirmation. The phone's scanner now only reads Kaiku sign-in and setup codes of its own server.
 
 ### Fixed
+- Android voice: when you sign out, your sign-in expires or the account changes during a call, the call ends and the microphone is released at once, before anything of the account is removed.
 - Android voice: joining a voice channel now says "Connecting…" until the call is actually up (also while the app waits for its connection), and gives up after 15 seconds with "Couldn't connect to the voice channel." instead of staying silent or saying "Couldn't reconnect".
 - Android voice: a call that loses its connection while the phone sleeps now ends after the minute it may wait, counting the time asleep, instead of trying to reconnect long after; screen shares keep the quality you picked after a reconnect; no stray "In voice channel" notification can appear as a call ends.
 - Android: when you are removed from a voice channel (kicked, banned, lost access, channel deleted, or joined from another device) the call ends with a short explanation and does not reconnect by itself (needs a server that reports the removal).

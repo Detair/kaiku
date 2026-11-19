@@ -478,6 +478,43 @@ class VoiceRepository @Inject constructor(
     }
 
     /**
+     * C32 "signed-in user": ends the call at once, synchronously, before the
+     * account state is cleared ([io.wolftown.kaiku.data.session.SessionEndHook]).
+     * From here on no `voice_join` and no new connection; `voice_leave` goes
+     * to the peer on its socket; the connections are closed (the microphone
+     * is released), audio focus and the call service are given up and no
+     * "Rejoin" is offered. It does not wait for the owner: the regular
+     * teardown ([leaveChannel], run by the session teardown afterwards)
+     * waits for it and finishes the clean-up.
+     *
+     * Holds no lock while it calls into WebRTC. Its caller may hold the token
+     * store's monitor, which no WebRTC callback takes.
+     */
+    fun endForSignOut() {
+        val session = synchronized(sessionLock) {
+            val running = live
+            live = null
+            running
+        }
+        synchronized(joinLock) { joinJob?.cancel() }
+        _endNotice.value = null
+        if (session == null) return
+        session.owner.cancel()
+        session.joinSocket.value?.let { socket ->
+            try {
+                webSocket.sendOn(socket, ClientEvent.VoiceLeave(session.channelId))
+            } catch (e: Exception) {
+                logger.log(Level.WARNING, "Failed to send VoiceLeave at sign-out", e)
+            }
+        }
+        _currentChannelId.value = null
+        webRtcManager.closePeerConnections()
+        audioRouteManager.abandonAudioFocus()
+        VoiceCallService.stop(context)
+        logger.info("Voice session ended at sign-out: ${session.channelId}")
+    }
+
+    /**
      * The teardown of [session], once per session, after its owner is gone:
      * clears the channel, sends `voice_leave` if [sendLeave], closes the peer
      * connections, releases audio focus and the foreground service, clears

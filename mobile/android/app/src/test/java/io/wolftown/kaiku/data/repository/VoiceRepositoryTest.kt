@@ -1296,6 +1296,32 @@ class VoiceRepositoryTest {
     }
 
     @Test
+    fun `sign-out ends the call at once and nothing of it goes out afterwards`() = runTest {
+        repository.joinChannel("ch-1")
+        advanceUntilIdle()
+        verifyJoins(1)
+
+        repository.endForSignOut()
+
+        // Synchronously, before the account state is cleared: microphone and service released.
+        assertEquals(null, repository.currentChannelId.value)
+        verify(exactly = 1) { webSocket.send(ClientEvent.VoiceLeave("ch-1")) }
+        verify(atLeast = 1) { webRtcManager.closePeerConnections() }
+        verify(atLeast = 1) { VoiceCallService.stop(any()) }
+        verify(atLeast = 1) { audioRouteManager.abandonAudioFocus() }
+
+        // No rejoin and no notice, whatever the socket does; the later teardown sends no second leave.
+        reconnect()
+        advanceTimeBy(120_000); runCurrent()
+        repository.leaveChannel()
+        advanceUntilIdle()
+        verifyJoins(1)
+        verify(exactly = 1) { webSocket.send(ClientEvent.VoiceLeave("ch-1")) }
+        assertEquals(null, repository.endNotice.value)
+        assertEquals(VoiceLinkState.Stable, repository.linkState.value)
+    }
+
+    @Test
     fun `a give-up of a held join offers Rejoin`() = runTest {
         socketDown()
         repository.startJoin("ch-1")
