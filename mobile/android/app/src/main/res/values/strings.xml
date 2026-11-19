@@ -674,4 +674,9 @@
     <string name="admin_type_code_hint">Type the code the new phone shows. Remotely, let them read it to you.</string>
     <string name="passkeys_error_wrong_server">This passkey request is for a different website than your Kaiku server, so Kaiku stopped it. Nothing was sent. Sign in another way and tell your admin.</string>
     <string name="security_only_key">This phone is the only key of this account, so it was not removed. It is still your key. To use another account on this phone, first add another phone or a passkey: tap Confirm it\'s you, then go to Settings, Security. Or ask your admin to remove this phone.</string>
+    <string name="setup_stopped_after_code">Setup stopped on this phone. If the code was already typed in on the other device, open Kaiku again to finish.</string>
+    <string name="setup_leave_title">Stop setting up this phone?</string>
+    <string name="setup_leave_body">The code on this screen goes away. If it is not typed in yet, the person setting up Kaiku has to start again.</string>
+    <string name="setup_leave_stay">Keep waiting</string>
+    <string name="setup_leave_stop">Stop setup</string>
 </resources>

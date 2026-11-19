@@ -1,13 +1,19 @@
 package io.wolftown.kaiku.ui.auth.setup
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
@@ -80,6 +86,33 @@ private fun SetupFlowSteps(
     SecureScreen()
     val activity = currentFragmentActivity()
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { viewModel.recheckScreenLock() }
+    // AND-A-2: Back never drops the setup silently. A question is cancelled as with its button, the
+    // code asks first, a running prompt or sign-in keeps the screen; ended steps leave as usual.
+    var askLeave by remember { mutableStateOf(false) }
+    val back = setupBackAction(ui)
+    BackHandler(enabled = back != SetupBack.LEAVE) {
+        when (back) {
+            SetupBack.CANCEL -> viewModel.cancel()
+            SetupBack.ASK -> askLeave = true
+            SetupBack.STAY, SetupBack.LEAVE -> Unit
+        }
+    }
+    if (askLeave && back == SetupBack.ASK) {
+        AlertDialog(
+            onDismissRequest = { askLeave = false },
+            title = { Text(stringResource(R.string.setup_leave_title)) },
+            text = { Text(stringResource(R.string.setup_leave_body)) },
+            confirmButton = {
+                TextButton(onClick = { askLeave = false }) { Text(stringResource(R.string.setup_leave_stay)) }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    askLeave = false
+                    viewModel.cancel()
+                }) { Text(stringResource(R.string.setup_leave_stop)) }
+            },
+        )
+    }
     LaunchedEffect(ui) {
         when (ui) {
             SetupUi.SigningIn -> activity?.let(viewModel::signIn)

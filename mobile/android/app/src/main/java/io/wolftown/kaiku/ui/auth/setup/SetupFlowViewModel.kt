@@ -590,11 +590,16 @@ class SetupFlowViewModel internal constructor(
         }
     }
 
-    /** "Cancel" before the claim: nothing was sent that binds anything; the new key goes. */
+    /**
+     * "Cancel" (or Back): before the claim nothing was sent that binds anything and the new key
+     * goes. After the claim the server cannot be told; the key and its record stay, so a code typed
+     * in anyway still finishes at the next start (the waiting screen), and the text says so.
+     */
     fun cancel() {
         job?.cancel()
         abandonUnclaimed()
-        _ui.value = SetupUi.Ended(R.string.setup_stopped, canRetry = false)
+        val claimed = keyDevices.local() != null
+        _ui.value = SetupUi.Ended(if (claimed) R.string.setup_stopped_after_code else R.string.setup_stopped, canRetry = false)
     }
 
     private fun forgetAndEnd(@StringRes msg: Int) {
@@ -609,6 +614,25 @@ class SetupFlowViewModel internal constructor(
     private fun fail(x: Exception) {
         _ui.value = setupErrorFor(x)
     }
+}
+
+/** What the Back gesture does on a setup step (AND-A-2). */
+enum class SetupBack {
+    /** A question before anything binds: the same as its "Cancel". */
+    CANCEL,
+    /** The code is out (or awaited): ask before leaving. */
+    ASK,
+    /** A prompt or the final sign-in runs: Back does nothing. */
+    STAY,
+    /** An ended step: leave as usual. */
+    LEAVE,
+}
+
+internal fun setupBackAction(ui: SetupUi): SetupBack = when (ui) {
+    is SetupUi.ShowCode, SetupUi.WaitingForCode -> SetupBack.ASK
+    SetupUi.Opening, is SetupUi.ConfirmServer, is SetupUi.ConfirmSubject, is SetupUi.ScreenLockNeeded -> SetupBack.CANCEL
+    SetupUi.SigningIn, SetupUi.Done -> SetupBack.STAY
+    else -> SetupBack.LEAVE
 }
 
 /**

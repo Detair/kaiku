@@ -572,4 +572,41 @@ class SetupFlowViewModelTest {
         assertEquals(SetupUi.Ended(R.string.setup_request_not_ready, canRetry = false),
             setupErrorFor(apiError(409, "ACCOUNT_REQUEST_NOT_READY", io.wolftown.kaiku.data.api.ApiErrorFields(state = "waiting"))))
     }
+
+    @Test fun `stopping while the code is shown keeps the claim and says what happens`() = runTest {
+        // AND-A-2: leaving at the code is explicit; a code typed in anyway still finishes at the next start.
+        env.pinned = SigFixtures.ORIGIN
+        val (v, f) = vm()
+        v.start(entry)
+        v.confirmSubject(activity)
+        assertTrue(v.ui.value is SetupUi.ShowCode)
+        v.cancel()
+        assertEquals(SetupUi.Ended(R.string.setup_stopped_after_code, canRetry = false), v.ui.value)
+        assertTrue(f.keyStore.hasKey())
+        assertEquals(io.wolftown.kaiku.data.keydevice.KeyDevicePhase.CLAIMED, f.repo.phase())
+    }
+
+    @Test fun `stopping before the claim still says nothing was changed`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        val (v, f) = vm()
+        v.start(entry)
+        assertTrue(v.ui.value is SetupUi.ConfirmSubject)
+        v.cancel()
+        assertEquals(SetupUi.Ended(R.string.setup_stopped, canRetry = false), v.ui.value)
+        assertNull(f.repo.local())
+    }
+
+    @Test fun `back asks at the code, cancels a question and waits while work runs`() {
+        assertEquals(SetupBack.ASK, setupBackAction(SetupUi.ShowCode("123 456", null)))
+        assertEquals(SetupBack.ASK, setupBackAction(SetupUi.WaitingForCode))
+        assertEquals(SetupBack.CANCEL, setupBackAction(SetupUi.ConfirmServer("K", "chat.example.com")))
+        assertEquals(SetupBack.CANCEL, setupBackAction(SetupUi.ConfirmSubject("A", "a", "K")))
+        assertEquals(SetupBack.CANCEL, setupBackAction(SetupUi.ScreenLockNeeded(io.wolftown.kaiku.approval.UnsuitableReason.NO_SCREEN_LOCK)))
+        assertEquals(SetupBack.CANCEL, setupBackAction(SetupUi.Opening))
+        assertEquals(SetupBack.STAY, setupBackAction(SetupUi.SigningIn))
+        assertEquals(SetupBack.STAY, setupBackAction(SetupUi.Done))
+        assertEquals(SetupBack.LEAVE, setupBackAction(SetupUi.SignInPaused))
+        assertEquals(SetupBack.LEAVE, setupBackAction(SetupUi.Ended(R.string.setup_stopped, canRetry = false)))
+        assertEquals(SetupBack.LEAVE, setupBackAction(SetupUi.Interrupted))
+    }
 }

@@ -40,8 +40,10 @@ fun SetupScanScreen(onSignedIn: () -> Unit, onBack: (() -> Unit)?, flow: SetupFl
     when {
         started -> SetupFlowScreen(entry = null, onSignedIn = onSignedIn, onBack = flow::reset, viewModel = flow)
         r == null -> KeyScreen { CircularProgressIndicator() }
-        r is UvDecision.Unsuitable && r.reason == UnsuitableReason.NO_SCREEN_LOCK ->
+        // AND-A-1: the guide is a column of its own content; it needs the screen frame like its neighbours.
+        r is UvDecision.Unsuitable && r.reason == UnsuitableReason.NO_SCREEN_LOCK -> KeyScreen {
             ScreenLockGuide(onCheck = flow::checkBeforeScan, onCancel = { onBack?.invoke() })
+        }
         r is UvDecision.Unsuitable -> KeyScreen {
             KeyNotice(stringResource(R.string.setup_cannot_be_key), warning = true)
             if (onBack != null) KeyPrimaryButton(stringResource(R.string.common_back), onClick = onBack)
