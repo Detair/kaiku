@@ -941,13 +941,13 @@ impl SfuServer {
                             // accepted). One that stays unannounced is never
                             // forwarded (contract C30).
                             RTPCodecType::Video => {
-                                match peer.take_video_source_within(UNANNOUNCED_TRACK_GRACE).await {
-                                    Some(source) => source,
-                                    None => {
-                                        reject_unannounced_track(&peer, &track).await;
-                                        return;
-                                    }
-                                }
+                                let Some(source) =
+                                    peer.take_video_source_within(UNANNOUNCED_TRACK_GRACE).await
+                                else {
+                                    reject_unannounced_track(&peer, &track).await;
+                                    return;
+                                };
+                                source
                             }
                             RTPCodecType::Unspecified => {
                                 warn!("Unspecified track kind: {:?}", track.kind());
@@ -1255,7 +1255,10 @@ impl SfuServer {
                 if since.elapsed() < SUBSCRIBER_ANSWER_TIMEOUT {
                     if !state.again {
                         state.again = true;
-                        Self::watch_stalled_offer(peer, SUBSCRIBER_ANSWER_TIMEOUT - since.elapsed());
+                        Self::watch_stalled_offer(
+                            peer,
+                            SUBSCRIBER_ANSWER_TIMEOUT.saturating_sub(since.elapsed()),
+                        );
                     }
                     return Ok(());
                 }
@@ -1582,7 +1585,13 @@ mod negotiation_tests {
         let sfu = SfuServer::new(Arc::new(config), None).expect("sfu");
         let (tx, mut rx) = mpsc::channel(16);
         let peer = sfu
-            .create_peer(Uuid::from_u128(1), "a".into(), "A".into(), Uuid::from_u128(2), tx)
+            .create_peer(
+                Uuid::from_u128(1),
+                "a".into(),
+                "A".into(),
+                Uuid::from_u128(2),
+                tx,
+            )
             .await
             .expect("peer");
         let client = sfu
@@ -1591,9 +1600,13 @@ mod negotiation_tests {
             .await
             .expect("client pc");
 
-        peer.add_outgoing_track(Uuid::from_u128(3), TrackSource::Microphone, audio_track("u3"))
-            .await
-            .expect("track 1");
+        peer.add_outgoing_track(
+            Uuid::from_u128(3),
+            TrackSource::Microphone,
+            audio_track("u3"),
+        )
+        .await
+        .expect("track 1");
         SfuServer::renegotiate(&peer).await.expect("offer 1");
         let first = offer_sdp(rx.try_recv().expect("first offer sent"));
 
@@ -1607,7 +1620,10 @@ mod negotiation_tests {
             .expect("more tracks");
             SfuServer::renegotiate(&peer).await.expect("coalesced");
         }
-        assert!(rx.try_recv().is_err(), "a second offer went out before the answer");
+        assert!(
+            rx.try_recv().is_err(),
+            "a second offer went out before the answer"
+        );
 
         client
             .set_remote_description(RTCSessionDescription::offer(first).unwrap())
@@ -1650,7 +1666,13 @@ mod host_candidate_tests {
 
         let (tx, _rx) = mpsc::channel(16);
         let peer = sfu
-            .create_peer(Uuid::from_u128(1), "a".into(), "A".into(), Uuid::from_u128(2), tx)
+            .create_peer(
+                Uuid::from_u128(1),
+                "a".into(),
+                "A".into(),
+                Uuid::from_u128(2),
+                tx,
+            )
             .await
             .expect("peer");
         let pc = &peer.subscriber_pc;

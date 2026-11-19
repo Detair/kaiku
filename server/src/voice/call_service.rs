@@ -879,7 +879,7 @@ pub struct LeftCall {
 /// How long after start-up an answered call of the previous process waits
 /// for a participant to rejoin its room (clients rejoin within 60 s of a
 /// lost connection, contract C32) before it is ended.
-pub const RESTART_REJOIN_GRACE: Duration = Duration::from_secs(60);
+pub const RESTART_REJOIN_GRACE: Duration = Duration::from_mins(1);
 
 /// Channels that have a call stream in Valkey (start-up clean-up).
 pub async fn channels_with_calls(redis: &Client) -> Result<Vec<Uuid>, CallError> {
@@ -896,9 +896,10 @@ pub async fn channels_with_calls(redis: &Client) -> Result<Vec<Uuid>, CallError>
         .collect())
 }
 
-/// Start-up clean-up, step 1: end every call in `channels` that is still
-/// ringing, as unanswered (`no_answer`, published as `call_ended`, phones
-/// woken with `ended` when the service has push): its ring timer died with
+/// Start-up clean-up, step 1: end the calls in `channels` that still ring.
+///
+/// They end as unanswered (`no_answer`, published as `call_ended`, phones
+/// woken with `ended` when the service has push): their ring timer died with
 /// the previous process. Answered calls are returned for step 2 and kept for
 /// now: their participants may rejoin the room (C32).
 ///
@@ -921,9 +922,13 @@ pub async fn end_calls_left_ringing(
                     })
                     .await;
                 match ended {
-                    Ok(Some(_)) => tracing::info!(%channel_id, "Ended a call left ringing by the previous process"),
+                    Ok(Some(_)) => {
+                        tracing::info!(%channel_id, "Ended a call left ringing by the previous process");
+                    }
                     Ok(None) => {}
-                    Err(e) => tracing::warn!(%channel_id, error = %e, "Failed to end a call left ringing"),
+                    Err(e) => {
+                        tracing::warn!(%channel_id, error = %e, "Failed to end a call left ringing");
+                    }
                 }
             }
             CallState::Active { .. } => active.push(LeftCall {
@@ -936,10 +941,11 @@ pub async fn end_calls_left_ringing(
     Ok(active)
 }
 
-/// Start-up clean-up, step 2 (after [`RESTART_REJOIN_GRACE`]): end each
-/// answered call of the previous process whose room is still empty, as
-/// `last_left`. Pinned to the call's id, so a newer call is never touched.
-/// Returns how many calls ended.
+/// Start-up clean-up, step 2: end the answered calls nobody came back to.
+///
+/// Runs after [`RESTART_REJOIN_GRACE`]: each answered call of the previous
+/// process whose room is still empty ends as `last_left`. Pinned to the
+/// call's id, so a newer call is never touched. Returns how many ended.
 pub async fn end_abandoned_calls(
     calls: &CallService,
     sfu: &crate::voice::SfuServer,
@@ -998,7 +1004,11 @@ pub fn spawn_restart_cleanup(
         tokio::time::sleep(RESTART_REJOIN_GRACE).await;
         if let Some(sfu) = sfu.upgrade() {
             let ended = end_abandoned_calls(&calls, &sfu, &left).await;
-            tracing::info!(ended, kept = left.len() - ended, "Checked answered calls of the previous process");
+            tracing::info!(
+                ended,
+                kept = left.len() - ended,
+                "Checked answered calls of the previous process"
+            );
         }
     })
 }

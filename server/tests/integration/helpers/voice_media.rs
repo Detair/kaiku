@@ -46,7 +46,7 @@ use super::{next_ws_event, ws_connect, TestApp, TestServer, WsClient};
 pub async fn media_app(pool: sqlx::PgPool) -> TestApp {
     install_crypto_provider();
     let mut config = vc_server::config::Config::default_for_test();
-    config.stun_server = "stun:127.0.0.1:3478".to_owned();
+    "stun:127.0.0.1:3478".clone_into(&mut config.stun_server);
     TestApp::with_config_and_screen_share_limiter(pool, config).await
 }
 
@@ -86,9 +86,8 @@ impl Drop for SimParticipant {
 /// DTLS needs a process-wide rustls provider (the server binary installs
 /// the same one at start).
 pub fn install_crypto_provider() {
-    let _ = rustls::crypto::CryptoProvider::install_default(
-        rustls::crypto::ring::default_provider(),
-    );
+    let _ =
+        rustls::crypto::CryptoProvider::install_default(rustls::crypto::ring::default_provider());
 }
 
 fn api() -> webrtc::api::API {
@@ -405,7 +404,7 @@ async fn pump(
             frame = ws.next() => {
                 let text = match frame {
                     Some(Ok(Message::Text(t))) => t,
-                    Some(Ok(Message::Close(_))) | None | Some(Err(_)) => return,
+                    Some(Ok(Message::Close(_)) | Err(_)) | None => return,
                     Some(Ok(_)) => continue,
                 };
                 let Ok(ev) = serde_json::from_str::<serde_json::Value>(&text) else { continue };

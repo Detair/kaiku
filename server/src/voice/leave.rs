@@ -172,8 +172,15 @@ pub(super) fn end_session_records(pool: &PgPool, peer: &Peer, guild_id: Option<U
         let mut delay = std::time::Duration::from_millis(100);
 
         for attempt in 1..=MAX_RETRIES {
-            match finalize_session(&pool, user_id, session_id, channel_id, guild_id, connected_at)
-                .await
+            match finalize_session(
+                &pool,
+                user_id,
+                session_id,
+                channel_id,
+                guild_id,
+                connected_at,
+            )
+            .await
             {
                 Ok(()) => {
                     if attempt > 1 {

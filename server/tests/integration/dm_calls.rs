@@ -763,7 +763,10 @@ async fn restart_ends_calls_left_ringing(pool: PgPool) {
     let ended = next_ws_event(&mut callee_ws, "call_ended", EVENT_TIMEOUT).await;
     assert_eq!(ended["channel_id"], fx.dm.to_string());
     assert_eq!(ended["reason"], "no_answer");
-    assert!(call_state(&fx).await.is_null(), "the call survived the restart");
+    assert!(
+        call_state(&fx).await.is_null(),
+        "the call survived the restart"
+    );
     // The caller can call again at once.
     assert_eq!(start(&fx, &fx.caller_token).await, StatusCode::CREATED);
 }
@@ -797,9 +800,11 @@ async fn restart_keeps_active_call_that_was_rejoined(pool: PgPool) {
     )
     .await;
     next_ws_event(&mut caller_ws, "voice_room_state", EVENT_TIMEOUT).await;
-    assert_eq!(end_abandoned_calls(&calls, &fx.app.state.sfu, &left_active).await, 0);
+    assert_eq!(
+        end_abandoned_calls(&calls, &fx.app.state.sfu, &left_active).await,
+        0
+    );
     assert_eq!(call_state(&fx).await["status"], "active");
-
 }
 
 /// An answered call whose room nobody rejoined ends as `last_left` after

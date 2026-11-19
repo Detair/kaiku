@@ -149,7 +149,11 @@ async fn refused_start_then_track_reaches_no_viewer(pool: PgPool) {
     assert_eq!(dropped["code"], "VIDEO_SOURCE_UNANNOUNCED", "{dropped}");
 
     tokio::time::sleep(Duration::from_secs(1)).await;
-    assert!(video_tracks_of(&b, a.user_id).is_empty(), "{:?}", b.seen_tracks());
+    assert!(
+        video_tracks_of(&b, a.user_id).is_empty(),
+        "{:?}",
+        b.seen_tracks()
+    );
     assert!(
         b.try_next_event("screen_share_started", Duration::from_millis(200))
             .await
@@ -254,14 +258,7 @@ async fn two_joins_within_200ms_hear_each_other(pool: PgPool) {
     b.add_track(false, "mic").await;
     tokio::join!(a.publish(), b.publish());
 
-    for (listener, speaker) in [
-        (&a, &b),
-        (&b, &a),
-        (&c, &a),
-        (&c, &b),
-        (&a, &c),
-        (&b, &c),
-    ] {
+    for (listener, speaker) in [(&a, &b), (&b, &a), (&c, &a), (&c, &b), (&a, &c), (&b, &c)] {
         assert!(
             listener
                 .wait_for_packets(&mic_track(speaker.user_id), 5, Duration::from_secs(20))
@@ -297,7 +294,10 @@ async fn subscriber_counts(app: &TestApp, channel: Uuid, user: Uuid) -> (usize, 
             with_track += 1;
         }
     }
-    (with_track, peer.subscriber_pc.get_transceivers().await.len())
+    (
+        with_track,
+        peer.subscriber_pc.get_transceivers().await.len(),
+    )
 }
 
 /// C7: ten joins and leaves of a second member leave the permanent
@@ -317,7 +317,8 @@ async fn ten_joins_and_leaves_keep_senders_constant(pool: PgPool) {
         let before = stay.packets(&mic_track(visitor));
         v.join_and_publish_mic().await;
         assert!(
-            stay.wait_for_packets(&mic_track(visitor), before + 5, WAIT).await,
+            stay.wait_for_packets(&mic_track(visitor), before + 5, WAIT)
+                .await,
             "round {round}: visitor not heard"
         );
         let (active, _) = subscriber_counts(&f.app, f.voice, stay.user_id).await;

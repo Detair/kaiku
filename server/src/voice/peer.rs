@@ -89,12 +89,12 @@ pub struct Peer {
 /// triggers exactly one new offer (coalescing). Held only over local
 /// WebRTC work (create offer, set descriptions), never over a socket send.
 #[derive(Debug, Default)]
-pub(crate) struct SubscriberNegotiation {
+pub struct SubscriberNegotiation {
     /// When the outstanding offer was sent; `None` when stable.
-    pub(crate) awaiting_answer_since: Option<std::time::Instant>,
+    pub awaiting_answer_since: Option<std::time::Instant>,
     /// Something changed while an offer was outstanding: offer again once
     /// the answer is in.
-    pub(crate) again: bool,
+    pub again: bool,
 }
 
 impl Peer {
@@ -231,7 +231,12 @@ impl Peer {
 
     /// The local tracks currently forwarded to this peer.
     pub async fn outgoing_track_list(&self) -> Vec<Arc<TrackLocalStaticRTP>> {
-        self.outgoing_tracks.read().await.values().cloned().collect()
+        self.outgoing_tracks
+            .read()
+            .await
+            .values()
+            .cloned()
+            .collect()
     }
 
     /// Returns the number of outgoing tracks on the subscriber `PeerConnection`.

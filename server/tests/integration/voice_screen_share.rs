@@ -23,14 +23,14 @@ const EVENT_TIMEOUT: Duration = Duration::from_secs(15);
 /// Version of the migration that gives @everyone `SCREEN_SHARE`.
 const EVERYONE_SCREEN_SHARE_MIGRATION: i64 = 20_261_124_000_000;
 
-pub(crate) async fn send(ws: &mut WsClient, value: serde_json::Value) {
+async fn send(ws: &mut WsClient, value: serde_json::Value) {
     ws.send(Message::Text(value.to_string().into()))
         .await
         .expect("send ws frame");
 }
 
 /// Connect, wait for `ready`, join the voice room and wait for its state.
-pub(crate) async fn connect_and_join(
+async fn connect_and_join(
     server: &super::helpers::TestServer,
     token: &str,
     channel: Uuid,
@@ -46,7 +46,7 @@ pub(crate) async fn connect_and_join(
     ws
 }
 
-pub(crate) fn share_start(channel: Uuid, stream_id: Uuid) -> serde_json::Value {
+fn share_start(channel: Uuid, stream_id: Uuid) -> serde_json::Value {
     serde_json::json!({
         "type": "voice_screen_share_start",
         "channel_id": channel,
@@ -116,12 +116,13 @@ async fn member_can_share_on_a_server_from_before_the_upgrade(pool: PgPool) {
     add_guild_member(&pool, guild, member).await;
     apply_from(&pool, EVERYONE_SCREEN_SHARE_MIGRATION).await;
 
-    let bits: i64 =
-        sqlx::query_scalar("SELECT permissions FROM guild_roles WHERE guild_id = $1 AND is_default")
-            .bind(guild)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let bits: i64 = sqlx::query_scalar(
+        "SELECT permissions FROM guild_roles WHERE guild_id = $1 AND is_default",
+    )
+    .bind(guild)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     assert!(GuildPermissions::from_db(bits).contains(GuildPermissions::SCREEN_SHARE));
 
     let app = TestApp::with_pool_and_screen_share_limiter(pool.clone()).await;
@@ -137,8 +138,8 @@ async fn override_deny_refuses_share_without_telling_others(pool: PgPool) {
     let (owner, _) = create_test_user(&pool).await;
     let (member, _) = create_test_user(&pool).await;
     let (viewer, _) = create_test_user(&pool).await;
-    let guild = create_guild_with_default_role(&pool, owner, GuildPermissions::EVERYONE_DEFAULT)
-        .await;
+    let guild =
+        create_guild_with_default_role(&pool, owner, GuildPermissions::EVERYONE_DEFAULT).await;
     add_guild_member(&pool, guild, member).await;
     add_guild_member(&pool, guild, viewer).await;
     let voice = create_voice_channel(&pool, guild, "voice").await;
@@ -168,7 +169,12 @@ async fn override_deny_refuses_share_without_telling_others(pool: PgPool) {
     send(&mut ws, share_start(voice, Uuid::new_v4())).await;
     let err = next_ws_event(&mut ws, "voice_error", EVENT_TIMEOUT).await;
     assert_eq!(err["code"], "SCREEN_SHARE_FORBIDDEN", "{err}");
-    expect_no_ws_event(&mut viewer_ws, "screen_share_started", Duration::from_secs(1)).await;
+    expect_no_ws_event(
+        &mut viewer_ws,
+        "screen_share_started",
+        Duration::from_secs(1),
+    )
+    .await;
     let room = app.state.sfu.get_room(voice).await.expect("room");
     assert!(room.get_screen_shares().await.is_empty());
 }
@@ -182,8 +188,8 @@ async fn channel_share_limit_answers_with_its_code(pool: PgPool) {
     let (owner, _) = create_test_user(&pool).await;
     let (a, _) = create_test_user(&pool).await;
     let (b, _) = create_test_user(&pool).await;
-    let guild = create_guild_with_default_role(&pool, owner, GuildPermissions::EVERYONE_DEFAULT)
-        .await;
+    let guild =
+        create_guild_with_default_role(&pool, owner, GuildPermissions::EVERYONE_DEFAULT).await;
     add_guild_member(&pool, guild, a).await;
     add_guild_member(&pool, guild, b).await;
     let voice = create_voice_channel(&pool, guild, "voice").await;
@@ -202,7 +208,12 @@ async fn channel_share_limit_answers_with_its_code(pool: PgPool) {
     send(&mut b_ws, share_start(voice, Uuid::new_v4())).await;
     let err = next_ws_event(&mut b_ws, "voice_error", EVENT_TIMEOUT).await;
     assert_eq!(err["code"], "SCREEN_SHARE_LIMIT", "{err}");
-    expect_no_ws_event(&mut a_ws, "screen_share_started", Duration::from_millis(500)).await;
+    expect_no_ws_event(
+        &mut a_ws,
+        "screen_share_started",
+        Duration::from_millis(500),
+    )
+    .await;
 
     if let Some(limiter) = &app.state.screen_share_limiter {
         limiter.stop(voice).await;
@@ -216,11 +227,10 @@ async fn rate_limited_start_is_answered(pool: PgPool) {
     let app = TestApp::with_pool_and_screen_share_limiter(pool.clone()).await;
     let server = spawn_test_server(app.router.clone()).await;
     let (owner, _) = create_test_user(&pool).await;
-    let guild = create_guild_with_default_role(&pool, owner, GuildPermissions::EVERYONE_DEFAULT)
-        .await;
+    let guild =
+        create_guild_with_default_role(&pool, owner, GuildPermissions::EVERYONE_DEFAULT).await;
     let voice = create_voice_channel(&pool, guild, "voice").await;
-    let mut ws =
-        connect_and_join(&server, &generate_access_token(&app.config, owner), voice).await;
+    let mut ws = connect_and_join(&server, &generate_access_token(&app.config, owner), voice).await;
 
     // Burst of 5 allowed (3 accepted, 2 over the per-user limit), then limited.
     for _ in 0..6 {

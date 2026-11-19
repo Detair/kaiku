@@ -90,7 +90,7 @@ pub enum VoiceError {
 }
 
 impl VoiceError {
-    /// Machine-readable code (UPPER_SNAKE), used in HTTP bodies and in the
+    /// Machine-readable code (`UPPER_SNAKE`), used in HTTP bodies and in the
     /// `code` of the WebSocket `voice_error` event.
     #[must_use]
     pub const fn code(&self) -> &'static str {

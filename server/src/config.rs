@@ -711,7 +711,7 @@ impl Config {
 
     /// Check if TURN is configured.
     #[must_use]
-    pub fn has_turn(&self) -> bool {
+    pub const fn has_turn(&self) -> bool {
         !self.turn_servers.is_empty()
     }
 
@@ -1161,10 +1161,6 @@ mod env_opt_tests {
     }
 }
 
-/// Returns true when a self-hosted TURN server is configured but STUN still
-/// points at Google's public server — a sovereignty leak (client IP
-/// discovery goes to a third party). Pure helper so the condition is unit
-/// tested without a tracing subscriber.
 /// Minimum supported client version per platform (see
 /// [`Config::min_client_version`]).
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, utoipa::ToSchema)]
@@ -1218,8 +1214,7 @@ fn parse_min_client_version(name: &str, raw: Option<&str>) -> Result<Option<Stri
             .all(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
     let pre_ok = pre.is_none_or(|p| {
         !p.is_empty()
-            && p
-                .split('.')
+            && p.split('.')
                 .all(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric()))
     });
     anyhow::ensure!(
@@ -1256,7 +1251,12 @@ mod client_facing_voice_config_tests {
 
     #[test]
     fn turn_server_rejects_other_urls() {
-        for bad in ["stun:t.example.test:3478", "t.example.test:3478", "turn:", "https://t.example.test"] {
+        for bad in [
+            "stun:t.example.test:3478",
+            "t.example.test:3478",
+            "turn:",
+            "https://t.example.test",
+        ] {
             let err = parse_turn_servers(Some(bad)).unwrap_err().to_string();
             assert!(err.contains("TURN_SERVER"), "{bad}: {err}");
         }
@@ -1269,7 +1269,10 @@ mod client_facing_voice_config_tests {
         assert_eq!(p(None).unwrap(), None);
         assert_eq!(p(Some("")).unwrap(), None);
         assert_eq!(p(Some("1.0.0")).unwrap().as_deref(), Some("1.0.0"));
-        assert_eq!(p(Some("1.0.0-rc.6")).unwrap().as_deref(), Some("1.0.0-rc.6"));
+        assert_eq!(
+            p(Some("1.0.0-rc.6")).unwrap().as_deref(),
+            Some("1.0.0-rc.6")
+        );
         for bad in ["1.0", "v1.0.0", "1.0.0-", "1.0.0-rc..1", "1.0.x", "latest"] {
             let err = p(Some(bad)).unwrap_err().to_string();
             assert!(err.contains("MIN_CLIENT_VERSION_WEB"), "{bad}: {err}");
@@ -1277,6 +1280,10 @@ mod client_facing_voice_config_tests {
     }
 }
 
+/// Returns true when a self-hosted TURN server is configured but STUN still
+/// points at Google's public server — a sovereignty leak (client IP
+/// discovery goes to a third party). Pure helper so the condition is unit
+/// tested without a tracing subscriber.
 fn stun_leaks_with_self_hosted_turn(stun_server: &str, turn_server: Option<&str>) -> bool {
     turn_server.is_some() && stun_server.contains("stun.l.google.com")
 }

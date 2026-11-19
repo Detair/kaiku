@@ -9,6 +9,7 @@ use sqlx::PgPool;
 use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
 use vc_server::db;
+use vc_server::permissions::GuildPermissions;
 use vc_server::voice::ScreenShareLimiter;
 
 use super::helpers::{
@@ -16,7 +17,6 @@ use super::helpers::{
     create_test_user, create_voice_channel, expect_no_ws_event, generate_access_token,
     next_ws_event, spawn_test_server, ws_connect, TestApp, WsClient,
 };
-use vc_server::permissions::GuildPermissions;
 
 const EVENT_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -224,8 +224,8 @@ async fn user_limit_refuses_extra_member_but_not_a_rejoin(pool: PgPool) {
     let (owner, _) = create_test_user(&pool).await;
     let (a, _) = create_test_user(&pool).await;
     let (b, _) = create_test_user(&pool).await;
-    let guild = create_guild_with_default_role(&pool, owner, GuildPermissions::EVERYONE_DEFAULT)
-        .await;
+    let guild =
+        create_guild_with_default_role(&pool, owner, GuildPermissions::EVERYONE_DEFAULT).await;
     add_guild_member(&pool, guild, a).await;
     add_guild_member(&pool, guild, b).await;
     let voice = create_voice_channel(&pool, guild, "voice").await;
