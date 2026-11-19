@@ -4,6 +4,7 @@ import { useNavigate } from "@solidjs/router";
 import { LogIn } from "lucide-solid";
 import { t } from "@/i18n";
 import { authState, setAuthState, logout } from "@/stores/auth";
+import { createModalLayer, MODAL_LAYER } from "@/lib/a11y/modalLayer";
 
 const REASON_TEXT = {
   expired: "connection.session.expired",
@@ -35,8 +36,12 @@ const SessionExpiredModal: Component = () => {
 
   return (
     <Show when={authState.sessionExpired}>
+      {(_shown) => {
+      // Taken when the session ends, so it is in front of every window open then.
+      const layer = createModalLayer(MODAL_LAYER.prompt);
+      return (
       <Portal>
-        <div class="fixed inset-0 z-50 flex items-center justify-center">
+        <div class="fixed inset-0 flex items-center justify-center" style={{ "z-index": layer }}>
           <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" />
 
           <div
@@ -71,6 +76,8 @@ const SessionExpiredModal: Component = () => {
           </div>
         </div>
       </Portal>
+      );
+      }}
     </Show>
   );
 };
