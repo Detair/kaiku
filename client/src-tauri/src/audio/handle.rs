@@ -19,8 +19,8 @@ use super::format::{
     negotiate_capture_format, push_chunk_len, CaptureFormat, CaptureFrontEnd, MAX_PUSH_SAMPLES,
 };
 use super::{
-    devices, AudioDevice, AudioDeviceList, AudioError, VadConfig, CHANNELS, FRAME_SIZE,
-    RNNOISE_FRAME_SIZE, SAMPLE_RATE,
+    devices, AudioDevice, AudioDeviceList, AudioError, OutputLevel, VadConfig, CHANNELS,
+    FRAME_SIZE, RNNOISE_FRAME_SIZE, SAMPLE_RATE,
 };
 
 /// Tauri event emitted when an audio stream dies at runtime; payload is an
@@ -1612,6 +1612,7 @@ impl AudioHandle {
     pub async fn start_pcm_playback(
         &mut self,
         input_rx: mpsc::Receiver<Vec<f32>>,
+        level: OutputLevel,
     ) -> Result<(), AudioError> {
         // Stop existing playback if running
         self.stop_playback().await;
@@ -1647,6 +1648,7 @@ impl AudioHandle {
                 },
                 deafened,
                 input_rx,
+                level,
                 &mut control_rx,
                 sink,
             );
@@ -2090,6 +2092,22 @@ impl CaptureProcessor {
     }
 }
 
+/// Samples waiting for the output device, and the level the mixer paces by.
+#[derive(Clone)]
+struct PlaybackQueue {
+    samples: Arc<std::sync::Mutex<std::collections::VecDeque<f32>>>,
+    level: OutputLevel,
+}
+
+impl PlaybackQueue {
+    fn new(level: OutputLevel) -> Self {
+        Self {
+            samples: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
+            level,
+        }
+    }
+}
+
 /// Run playback task (owns the Stream)
 fn run_playback_task(
     open: PlaybackOpen,
@@ -2106,7 +2124,8 @@ fn run_playback_task(
         }
     };
 
-    let playback_buffer = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
+    // Not paced by a mixer: the level is kept but nobody reads it.
+    let playback_buffer = PlaybackQueue::new(OutputLevel::new());
 
     // Spawn decoding task
     let decoder_clone = decoder;
@@ -2122,7 +2141,7 @@ fn run_playback_task(
                             .map(|&s| f32::from(s) / 32768.0)
                             .collect();
 
-                        if let Ok(mut buffer) = playback_buffer_clone.lock() {
+                        if let Ok(mut buffer) = playback_buffer_clone.samples.lock() {
                             buffer.extend(samples_f32);
                         }
                     }
@@ -2174,7 +2193,7 @@ fn open_playback_stream(
     fallback: Option<LabelledDevice>,
     active: &ActiveLabel,
     deafened: &Arc<AtomicBool>,
-    playback_buffer: &Arc<std::sync::Mutex<std::collections::VecDeque<f32>>>,
+    playback_buffer: &PlaybackQueue,
     sink: Option<&AudioErrorSink>,
 ) -> (Option<cpal::Stream>, FailureReporter, PlaybackStart) {
     let reporter_for = |device: &LabelledDevice| {
@@ -2222,7 +2241,7 @@ fn open_playback_stream(
 fn build_buffer_output_stream(
     device: &Device,
     deafened: &Arc<AtomicBool>,
-    playback_buffer: &Arc<std::sync::Mutex<std::collections::VecDeque<f32>>>,
+    playback_buffer: &PlaybackQueue,
     reporter: &FailureReporter,
 ) -> Result<cpal::Stream, AudioError> {
     use cpal::traits::StreamTrait;
@@ -2234,27 +2253,27 @@ fn build_buffer_output_stream(
         buffer_size: BufferSize::Default,
     };
 
-    let playback_buffer = playback_buffer.clone();
+    let queue = playback_buffer.clone();
     let deafened = deafened.clone();
 
     let stream = match device.build_output_stream(
         &config,
         move |data: &mut [f32], _| {
-            if deafened.load(Ordering::Relaxed) {
-                data.fill(0.0);
-                return;
-            }
-
-            if let Ok(mut buffer) = playback_buffer.lock() {
+            // Real-time thread: atomics, no allocation, no logging. The
+            // mutex is the pre-existing hand-over from the pusher thread
+            // (held only for a copy on both sides).
+            queue.level.note_request(data.len());
+            // Deafened still takes the samples (and plays silence), so the
+            // device keeps pacing the mixer and no stale audio piles up.
+            let deaf = deafened.load(Ordering::Relaxed);
+            if let Ok(mut buffer) = queue.samples.lock() {
                 let available = buffer.len().min(data.len());
-                #[allow(clippy::needless_range_loop)]
-                for i in 0..available {
-                    data[i] = buffer.pop_front().unwrap();
+                for (out, sample) in data.iter_mut().zip(buffer.drain(..available)) {
+                    *out = if deaf { 0.0 } else { sample };
                 }
-                #[allow(clippy::needless_range_loop)]
-                for i in available..data.len() {
-                    data[i] = 0.0;
-                }
+                data[available..].fill(0.0);
+                drop(buffer);
+                queue.level.consumed(available);
             } else {
                 data.fill(0.0);
             }
@@ -2288,7 +2307,7 @@ fn playback_control_loop(
     mut reporter: FailureReporter,
     active: &ActiveLabel,
     deafened: &Arc<AtomicBool>,
-    playback_buffer: &Arc<std::sync::Mutex<std::collections::VecDeque<f32>>>,
+    playback_buffer: &PlaybackQueue,
     control_rx: &mut mpsc::Receiver<PlaybackControl>,
     sink: Option<AudioErrorSink>,
 ) {
@@ -2335,25 +2354,30 @@ fn run_pcm_playback_task(
     open: PlaybackOpen,
     deafened: Arc<AtomicBool>,
     mut input_rx: mpsc::Receiver<Vec<f32>>,
+    level: OutputLevel,
     control_rx: &mut mpsc::Receiver<PlaybackControl>,
     sink: Option<AudioErrorSink>,
 ) {
-    let playback_buffer = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
+    let playback_buffer = PlaybackQueue::new(level);
 
     // Spawn thread to receive PCM frames and push into the ring buffer.
+    // The mixer only sends what the device consumes (`OutputLevel`), so the
+    // queue normally holds one device block plus a frame; the cap is a
+    // safety net. The thread ends when the mixer drops its sender.
     let playback_buffer_clone = playback_buffer.clone();
     std::thread::spawn(move || {
         // ~200ms at 48 kHz stereo (48000 * 2 channels * 0.2s)
         const MAX_BUFFER_SAMPLES: usize = 19200;
 
         while let Some(pcm_f32) = input_rx.blocking_recv() {
-            if let Ok(mut buffer) = playback_buffer_clone.lock() {
+            if let Ok(mut buffer) = playback_buffer_clone.samples.lock() {
                 buffer.extend(pcm_f32);
 
                 // Cap buffer to prevent unbounded growth under sustained backpressure.
                 if buffer.len() > MAX_BUFFER_SAMPLES {
                     let excess = buffer.len() - MAX_BUFFER_SAMPLES;
                     buffer.drain(..excess);
+                    playback_buffer_clone.level.consumed(excess);
                 }
             }
         }

@@ -15,11 +15,11 @@ use webrtc::track::track_local::TrackLocalWriter;
 use webrtc::track::track_remote::TrackRemote;
 
 use crate::audio::{
-    AudioDeviceList, AudioError, AudioErrorEvent, AudioErrorKind, AudioHandle, AUDIO_ERROR_EVENT,
-    CHANNELS, FRAME_SIZE, FRAME_SIZE_MS, SAMPLE_RATE,
+    AudioDeviceList, AudioError, AudioErrorEvent, AudioErrorKind, AudioHandle, OutputLevel,
+    AUDIO_ERROR_EVENT, FRAME_SIZE_MS, SAMPLE_RATE,
 };
 use crate::network::{ClientEvent, WebSocketManager};
-use crate::voice::audio_mixer::AudioMixer;
+use crate::voice::audio_mixer::{AudioMixer, RtpIn};
 use crate::webrtc::IceServerConfig;
 use crate::{voice, AppState, VoiceState};
 
@@ -399,8 +399,9 @@ pub async fn join_voice(
                         return;
                     };
 
-                    // Add track to mixer, get PCM sender
-                    let pcm_tx = mixer.add_track(track_id.clone()).await;
+                    // Add track to mixer (it gets its own jitter buffer and
+                    // decoder there), get the packet sender
+                    let packet_tx = mixer.add_track(track_id.clone()).await;
 
                     info!(
                         track_id = %track_id,
@@ -417,8 +418,8 @@ pub async fn join_voice(
                         }),
                     );
 
-                    // Decode RTP → Opus → PCM loop
-                    decode_remote_audio_track(track, pcm_tx, &track_id, &stats_registry).await;
+                    // RTP → mixer loop (decoding happens in the mixer)
+                    forward_remote_audio_track(track, packet_tx, &track_id, &stats_registry).await;
 
                     // Track ended — remove from mixer and stats registry
                     stats_registry.remove_track(&track_id);
@@ -607,6 +608,7 @@ trait CallAudio {
     fn start_pcm_playback(
         &mut self,
         input_rx: mpsc::Receiver<Vec<f32>>,
+        level: OutputLevel,
     ) -> impl std::future::Future<Output = Result<(), AudioError>> + Send;
     /// Device name for an audio error of `kind`.
     fn device_label(&self, kind: AudioErrorKind) -> String;
@@ -620,8 +622,9 @@ impl CallAudio for AudioHandle {
     async fn start_pcm_playback(
         &mut self,
         input_rx: mpsc::Receiver<Vec<f32>>,
+        level: OutputLevel,
     ) -> Result<(), AudioError> {
-        Self::start_pcm_playback(self, input_rx).await
+        Self::start_pcm_playback(self, input_rx, level).await
     }
 
     fn device_label(&self, kind: AudioErrorKind) -> String {
@@ -667,10 +670,12 @@ async fn start_call_audio<A: CallAudio + Send>(
     }
     spawn_sender(audio_rx);
 
-    // The mixer combines all decoded remote audio tracks into one stream.
+    // The mixer plays out all remote audio tracks (jitter buffer + decoder
+    // per track) as one stream, paced by what the output device consumes.
     let (pcm_output_tx, pcm_output_rx) = mpsc::channel::<Vec<f32>>(100);
-    let mixer = AudioMixer::with_gains(pcm_output_tx, gains);
-    if let Err(e) = audio.start_pcm_playback(pcm_output_rx).await {
+    let level = OutputLevel::new();
+    let mixer = AudioMixer::new(pcm_output_tx, gains, level.clone());
+    if let Err(e) = audio.start_pcm_playback(pcm_output_rx, level).await {
         fail(AudioErrorKind::PlaybackFailed, "Speaker", &e, audio);
     }
 
@@ -1360,46 +1365,38 @@ async fn send_audio_to_track(
 /// (mutex + insert) is throttled.
 const STATS_PUBLISH_INTERVAL_PACKETS: u64 = 50;
 
-/// Decode a remote audio track from RTP/Opus to PCM and send to the mixer.
+/// How often (in dropped packets) a full mixer queue is logged.
+const DROPPED_LOG_EVERY: u64 = 50;
+
+/// Forward a remote audio track's RTP packets to its jitter buffer in the
+/// mixer.
 ///
-/// Runs in a spawned task per remote audio track. Each task owns its own
-/// Opus decoder instance (`opus::Decoder` is `Send` but not `Sync`).
+/// Runs in a spawned task per remote audio track. Packets are stamped with
+/// their arrival time here; ordering, loss concealment and decoding happen
+/// in the mixer, which owns one jitter buffer and one Opus decoder per
+/// track. The queue to the mixer is bounded and never awaited: if the mixer
+/// stalls, packets are dropped here (counted) instead of piling up.
 ///
 /// Also measures per-track receive jitter (RFC 3550, from RTP timestamps)
 /// and packet loss (expected-vs-received, from RTP sequence numbers):
 /// webrtc-rs does not expose either in `get_stats()`, and this loop is
 /// where every inbound audio RTP packet already passes through.
-///
-/// Known limitation: arrival times are sampled after `read_rtp()` returns,
-/// so if the mixer backpressures `pcm_tx.send()`, buffered packets read in
-/// a burst inflate the jitter estimate — local stall shows up as network
-/// jitter. Acceptable: both indicate degraded audio.
-async fn decode_remote_audio_track(
+async fn forward_remote_audio_track(
     track: Arc<TrackRemote>,
-    pcm_tx: mpsc::Sender<Vec<f32>>,
+    packet_tx: mpsc::Sender<RtpIn>,
     track_id: &str,
     stats_registry: &voice::connection_stats::ConnectionStatsRegistry,
 ) {
-    let mut decoder = match opus::Decoder::new(SAMPLE_RATE, opus::Channels::Stereo) {
-        Ok(dec) => dec,
-        Err(e) => {
-            error!("Failed to create Opus decoder for remote track: {}", e);
-            return;
-        }
-    };
-
-    // Output buffer: one stereo frame at 48 kHz / 20 ms = 960 samples * 2 channels
-    let frame_samples = FRAME_SIZE * CHANNELS as usize;
-    let mut pcm_f32 = vec![0.0f32; frame_samples];
-
     let mut jitter = voice::connection_stats::JitterEstimator::new();
     let mut loss = voice::connection_stats::LossTracker::new();
     let mut packets_since_publish: u64 = 0;
+    let mut dropped: u64 = 0;
 
     loop {
         match track.read_rtp().await {
             Ok((rtp_packet, _attributes)) => {
-                jitter.on_packet(rtp_packet.header.timestamp, std::time::Instant::now());
+                let arrival = std::time::Instant::now();
+                jitter.on_packet(rtp_packet.header.timestamp, arrival);
                 loss.on_packet(rtp_packet.header.sequence_number);
                 packets_since_publish += 1;
                 if packets_since_publish >= STATS_PUBLISH_INTERVAL_PACKETS {
@@ -1413,22 +1410,31 @@ async fn decode_remote_audio_track(
                         },
                     );
                 }
-                let payload = &rtp_packet.payload[..];
-                if payload.is_empty() {
+                if rtp_packet.payload.is_empty() {
                     continue;
                 }
-
-                match decoder.decode_float(payload, &mut pcm_f32, false) {
-                    Ok(samples_per_channel) => {
-                        let total_samples = samples_per_channel * CHANNELS as usize;
-                        let frame = pcm_f32[..total_samples].to_vec();
-                        if pcm_tx.send(frame).await.is_err() {
-                            debug!("Mixer channel closed, stopping remote audio decode");
-                            break;
+                let packet = RtpIn {
+                    ssrc: rtp_packet.header.ssrc,
+                    seq: rtp_packet.header.sequence_number,
+                    ts: rtp_packet.header.timestamp,
+                    arrival,
+                    payload: rtp_packet.payload.to_vec(),
+                };
+                match packet_tx.try_send(packet) {
+                    Ok(()) => {}
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        dropped += 1;
+                        if dropped % DROPPED_LOG_EVERY == 1 {
+                            warn!(
+                                track_id = %track_id,
+                                dropped,
+                                "Mixer queue full, dropping remote audio packets"
+                            );
                         }
                     }
-                    Err(e) => {
-                        warn!("Opus decode error on remote track: {}", e);
+                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                        debug!("Mixer channel closed, stopping remote audio track");
+                        break;
                     }
                 }
             }
@@ -1469,6 +1475,7 @@ mod tests {
         async fn start_pcm_playback(
             &mut self,
             _rx: mpsc::Receiver<Vec<f32>>,
+            _level: OutputLevel,
         ) -> Result<(), AudioError> {
             self.log.push("playback");
             if self.playback_ok {

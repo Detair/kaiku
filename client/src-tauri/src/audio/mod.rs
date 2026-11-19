@@ -5,7 +5,7 @@
 //! This module provides a Send + Sync audio handle that moves non-thread-safe
 //! `cpal::Stream` objects into background tasks.
 
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use thiserror::Error;
@@ -39,7 +39,7 @@ pub const RNNOISE_FRAME_SIZE: usize = 480;
 /// fixed rather than following the measured loss like a browser does.
 pub const VOICE_PACKET_LOSS_PERC: i32 = 10;
 
-/// The Opus encoder for the microphone: 48 kHz mono, VoIP, 20 ms frames
+/// The Opus encoder for the microphone: 48 kHz mono, `Application::Voip`, 20 ms frames
 /// (set by the caller's frame size), in-band FEC on.
 pub fn voice_encoder() -> Result<opus::Encoder, AudioError> {
     let err = |e: opus::Error| AudioError::EncoderError(e.to_string());
@@ -51,6 +51,55 @@ pub fn voice_encoder() -> Result<opus::Encoder, AudioError> {
         .set_packet_loss_perc(VOICE_PACKET_LOSS_PERC)
         .map_err(err)?;
     Ok(encoder)
+}
+
+/// Audio queued between the mixer and the output device, in interleaved
+/// samples, plus the largest block the device has asked for at once.
+///
+/// The mixer adds what it sends, the output callback subtracts what the
+/// device consumed. Both sides only use atomics, so the real-time callback
+/// never waits on it. The mixer produces frames only while the queue is
+/// below one device block plus 20 ms: the device clock drives playout.
+#[derive(Clone, Default)]
+pub struct OutputLevel {
+    queued: Arc<AtomicUsize>,
+    request: Arc<AtomicUsize>,
+}
+
+impl OutputLevel {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The mixer sent `samples` towards the device.
+    pub fn produced(&self, samples: usize) {
+        self.queued.fetch_add(samples, Ordering::Relaxed);
+    }
+
+    /// The device consumed (or the queue discarded) `samples`.
+    pub fn consumed(&self, samples: usize) {
+        // Lock-free (a CAS loop); safe on the real-time thread.
+        let _ = self
+            .queued
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |q| {
+                Some(q.saturating_sub(samples))
+            });
+    }
+
+    /// The device asked for a block of `samples` (keeps the largest).
+    pub fn note_request(&self, samples: usize) {
+        self.request.fetch_max(samples, Ordering::Relaxed);
+    }
+
+    /// Samples sent but not yet played.
+    pub fn queued(&self) -> usize {
+        self.queued.load(Ordering::Relaxed)
+    }
+
+    /// Largest block the device asked for so far (0 before the first).
+    pub fn request(&self) -> usize {
+        self.request.load(Ordering::Relaxed)
+    }
 }
 
 /// Shared VAD + noise suppression state, accessible from CPAL callback thread
@@ -162,6 +211,24 @@ pub struct AudioDeviceList {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn output_level_counts_produced_and_consumed_samples() {
+        let level = OutputLevel::new();
+        let device_side = level.clone();
+        assert_eq!(level.queued(), 0);
+        level.produced(1920);
+        level.produced(1920);
+        device_side.consumed(1000);
+        assert_eq!(level.queued(), 2840);
+        // Never below zero (the queue may discard more than was counted).
+        device_side.consumed(10_000);
+        assert_eq!(level.queued(), 0);
+        assert_eq!(level.request(), 0);
+        device_side.note_request(2048);
+        device_side.note_request(512);
+        assert_eq!(level.request(), 2048);
+    }
 
     #[test]
     fn voice_encoder_plans_for_packet_loss_with_inband_fec() {
