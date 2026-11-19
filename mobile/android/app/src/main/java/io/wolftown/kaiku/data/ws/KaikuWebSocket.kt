@@ -8,9 +8,6 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -186,11 +183,7 @@ class KaikuWebSocket @Inject constructor(
         }
     }
 
-    private fun eventTypeOf(text: String): String = try {
-        json.parseToJsonElement(text).jsonObject["type"]?.jsonPrimitive?.contentOrNull ?: "unknown"
-    } catch (_: Exception) {
-        "unparseable"
-    }
+    private val decoder = ServerEventDecoder(json)
 
     private inner class Listener(private val accessToken: String) : WebSocketListener() {
         override fun onOpen(webSocket: WebSocket, response: Response) {
@@ -204,11 +197,13 @@ class KaikuWebSocket @Inject constructor(
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
-            val event = try {
-                json.decodeFromString<ServerEvent>(text)
-            } catch (e: Exception) {
-                logger.warning("failed to parse server event: type=${eventTypeOf(text)} (${e.javaClass.simpleName})")
-                return
+            val event = when (val decoded = decoder.decode(text)) {
+                is ServerEventDecoder.Result.Event -> decoded.event
+                is ServerEventDecoder.Result.Skipped -> return
+                is ServerEventDecoder.Result.Broken -> {
+                    logger.warning("failed to parse server event: type=${decoded.type} (${decoded.error.javaClass.simpleName})")
+                    return
+                }
             }
             synchronized(lock) {
                 if (this@KaikuWebSocket.webSocket !== webSocket) return
