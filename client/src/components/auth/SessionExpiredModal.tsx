@@ -17,7 +17,11 @@ const REASON_TEXT = {
 const SessionExpiredModal: Component = () => {
   const navigate = useNavigate();
 
+  // One sign-out per notice, however often Escape or the button fires.
+  let leaving = false;
   const handleLogin = async () => {
+    if (leaving) return;
+    leaving = true;
     try {
       await logout();
     } catch {
@@ -25,6 +29,7 @@ const SessionExpiredModal: Component = () => {
     }
     setAuthState({ sessionExpired: false });
     navigate("/login", { replace: true });
+    leaving = false;
   };
 
   return (

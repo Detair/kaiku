@@ -64,13 +64,17 @@ describe("SessionExpiredModal layer", () => {
     const logIn = screen.getByRole("button", { name: "Log in", hidden: true });
     expect(document.activeElement).toBe(logIn);
 
-    fireEvent.keyDown(logIn, { key: "Tab" });
+    // Cancelled by the trap (jsdom would not move focus on Tab by itself).
+    expect(fireEvent.keyDown(logIn, { key: "Tab" })).toBe(false);
     expect(document.activeElement).toBe(logIn);
-    fireEvent.keyDown(logIn, { key: "Tab", shiftKey: true });
+    expect(fireEvent.keyDown(logIn, { key: "Tab", shiftKey: true })).toBe(false);
     expect(document.activeElement).toBe(logIn);
 
     expect(logout).not.toHaveBeenCalled();
+    // Held Escape plus a click: still one sign-out.
     fireEvent.keyDown(logIn, { key: "Escape" });
+    fireEvent.keyDown(logIn, { key: "Escape" });
+    fireEvent.click(logIn);
     await new Promise((r) => setTimeout(r, 0));
     // Escape is Log in here, as before this change; the window below is not asked to close.
     expect(logout).toHaveBeenCalledTimes(1);
