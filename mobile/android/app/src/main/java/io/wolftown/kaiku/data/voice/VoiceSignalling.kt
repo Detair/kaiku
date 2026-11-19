@@ -240,12 +240,62 @@ class VoiceSignalling(
         var connectedOnce = false
 
         /**
-         * Set when a proof failed: the clock time of the last proof, from
-         * which the 60 s count (the session was not carried since then).
-         * Read once by the deadline.
+         * Since when the session has not been carried (null while it is):
+         * the start of the 60 s. Set by the deadline when the carrier is
+         * lost, or by a failed proof (then the time of the last proof).
          */
         @Volatile
-        var notCarriedSinceMs: Long? = null
+        var notCarriedSince: Moment? = null
+
+        /**
+         * The last moment the session was known to be carried: when a
+         * `voice_join` went out on the authenticated socket, and every look
+         * while up. A loss noticed only after a sleep counts from here.
+         */
+        @Volatile
+        var lastCarried: Moment? = null
+
+        /** The 60 s were found to be over; the machine is being given up. */
+        val deadlinePassed = AtomicBoolean(false)
+    }
+
+    /** A moment on both clocks (C32 counts the larger of the two differences). */
+    private data class Moment(val elapsedMs: Long, val wallMs: Long)
+
+    private fun now() = Moment(clock.nowMs(), clock.wallMs())
+
+    /** Real time since [m]: the larger of the elapsed and the wall-clock difference. */
+    private fun since(m: Moment): Long {
+        val n = now()
+        return maxOf(n.elapsedMs - m.elapsedMs, n.wallMs - m.wallMs)
+    }
+
+    /** Thrown inside the machine when the 60 s are over: give up, send nothing. */
+    private class DeadlinePassed : CancellationException("voice session not carried for too long")
+
+    /** Whether the session is carried right now: its join went out on the authenticated, usable socket. */
+    private fun carriedNow(session: Session, steps: Steps): Boolean {
+        val joined = steps.joinSocket.value ?: return false
+        return joined == socket.value && joined != session.unusable.value
+    }
+
+    /**
+     * Whether the session has not been carried for [joinDeadlineMs] of real
+     * time. Read from the clocks at the moment of asking, so a wake-up after
+     * a long sleep sees it before anything is sent.
+     */
+    private fun deadlineOver(session: Session, steps: Steps): Boolean {
+        if (carriedNow(session, steps)) return false
+        val start = session.notCarriedSince ?: session.lastCarried ?: return false
+        return since(start) >= joinDeadlineMs
+    }
+
+    /** Right before a `voice_join` goes out: over the 60 s, give up instead (C32). */
+    private fun checkDeadline(session: Session, steps: Steps) {
+        if (deadlineOver(session, steps)) {
+            session.deadlinePassed.set(true)
+            throw DeadlinePassed()
+        }
     }
 
     private val lock = Any()
@@ -313,8 +363,8 @@ class VoiceSignalling(
 
     // -- The machine ------------------------------------------------------------
 
-    /** How "up" ended: the connections failed (null), or no proof after a gap since that time. */
-    private data class UpEnd(val notProvenSinceMs: Long?)
+    /** How "up" ended: the connections failed (null), or no proof after a gap since that moment. */
+    private data class UpEnd(val notProvenSince: Moment?)
 
     /** How [signal] ended by itself. */
     private enum class End { AttemptsUsedUp, FirstJoinTimedOut, Refused }
@@ -328,6 +378,7 @@ class VoiceSignalling(
         var joined: Long
         while (true) {
             val id = usableSocket(session)
+            checkDeadline(session, steps)
             if (steps.join(id)) {
                 joined = id
                 break
@@ -355,13 +406,13 @@ class VoiceSignalling(
                 // authenticated one and the connections hold.
                 enter(session, Mode.Up(joined))
                 val lostAt = whileSocketIs(joined) {
-                    firstOf({ steps.awaitConnectionFailed(); UpEnd(null) }, { UpEnd(watchCarried(steps, joined)) })
-                }?.notProvenSinceMs
+                    firstOf({ steps.awaitConnectionFailed(); UpEnd(null) }, { UpEnd(watchCarried(session, steps, joined)) })
+                }?.notProvenSince
                 if (lostAt != null) {
                     // Not proven: the session is not carried since its last proof. The socket
                     // is treated as gone; the 60 s count from that proof.
                     logger.info("voice session not proven carried after a gap")
-                    session.notCarriedSinceMs = lostAt
+                    session.notCarriedSince = lostAt
                     session.unusable.value = joined
                 }
                 refresh()
@@ -377,6 +428,7 @@ class VoiceSignalling(
                 enter(session, Mode.Recovering(failures))
                 val outcome = whileSocketIs(id) {
                     delay(delaysMs[failures])
+                    checkDeadline(session, steps)
                     attempt(steps, id, number = failures + 1)
                 } ?: Attempt.SocketGone
                 when (outcome) {
@@ -405,20 +457,19 @@ class VoiceSignalling(
      * it is still carried; returns the clock time of the last proof once it
      * cannot. Otherwise runs until cancelled.
      */
-    private suspend fun watchCarried(steps: Steps, socket: Long): Long {
+    private suspend fun watchCarried(session: Session, steps: Steps, socket: Long): Moment {
         // A clock that never moves (unit tests) cannot show a gap: nothing to watch.
         if (clock === ElapsedClock.STOPPED) awaitCancellation()
-        var lastProof = clock.nowMs()
+        var lastProof = now()
+        session.lastCarried = lastProof
         while (true) {
             delay(DEADLINE_CHECK_MS)
-            val now = clock.nowMs()
-            if (now - lastProof > GAP_MS) {
+            if (since(lastProof) > GAP_MS) {
                 val proven = withTimeoutOrNull(PROOF_TIMEOUT_MS) { steps.proveCarried(socket) } == true
                 if (!proven) return lastProof
-                lastProof = clock.nowMs()
-            } else {
-                lastProof = now
             }
+            lastProof = now()
+            session.lastCarried = lastProof
         }
     }
 
@@ -506,19 +557,32 @@ class VoiceSignalling(
         steps: Steps,
         block: suspend () -> T,
     ): T? = coroutineScope {
-        val expired = AtomicBoolean(false)
+        val expired = session.deadlinePassed
         val work = async { block() }
         val watchdog = launch {
-            // Keeps [state] in step with the socket.
-            launch { usableSockets(session).collect { refresh() } }
+            // Keeps [state] in step with the socket, and looks at the 60 s at
+            // every socket update (a wake-up brings the socket back first).
+            launch {
+                usableSockets(session).collect {
+                    refresh()
+                    if (deadlineOver(session, steps)) {
+                        expired.set(true)
+                        work.cancel()
+                    }
+                }
+            }
             // A socket whose proof failed ([Session.unusable]) carries nothing.
             combine(socket, steps.joinSocket, session.unusable) { authenticated, joined, unusable ->
                 Carrier(joined, authenticated = joined != null && joined == authenticated && authenticated != unusable)
             }.distinctUntilChanged().collectLatest { carrier ->
-                if (!carrier.authenticated) {
-                    val since = session.notCarriedSinceMs
-                    session.notCarriedSinceMs = null
-                    awaitElapsed(joinDeadlineMs, since ?: clock.nowMs())
+                if (carrier.authenticated) {
+                    session.notCarriedSince = null
+                    session.lastCarried = now()
+                } else {
+                    // A loss noticed late (after a sleep) counts from the last moment it was carried.
+                    val start = session.notCarriedSince ?: session.lastCarried ?: now()
+                    session.notCarriedSince = start
+                    awaitElapsed(joinDeadlineMs, start)
                     expired.set(true)
                     work.cancel()
                 }
@@ -541,10 +605,10 @@ class VoiceSignalling(
      * device was suspended. Wakes at least every [DEADLINE_CHECK_MS] to
      * compare, so a long sleep is noticed at the first wake-up.
      */
-    private suspend fun awaitElapsed(ms: Long, start: Long) {
+    private suspend fun awaitElapsed(ms: Long, start: Moment) {
         var waited = 0L
         while (true) {
-            val elapsed = maxOf(waited, clock.nowMs() - start)
+            val elapsed = maxOf(waited, since(start))
             if (elapsed >= ms) return
             val step = minOf(ms - elapsed, DEADLINE_CHECK_MS)
             delay(step)

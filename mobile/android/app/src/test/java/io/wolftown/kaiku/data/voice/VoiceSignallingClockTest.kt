@@ -23,9 +23,13 @@ import org.junit.Test
 @OptIn(ExperimentalCoroutinesApi::class)
 class VoiceSignallingClockTest {
 
-    private class Rig(test: TestScope) {
-        val socket = MutableStateFlow<Long?>(1L)
+    private class Rig(test: TestScope, startSocket: Long? = 1L) {
+        val socket = MutableStateFlow<Long?>(startSocket)
         var realMs = 0L
+
+        /** Wall clock, moved apart from [realMs] only where a test says so. */
+        var wallOffsetMs = 0L
+        val joins = mutableListOf<Long>()
         val joinSocket = MutableStateFlow<Long?>(null)
         val gaveUp = CompletableDeferred<Unit>()
 
@@ -33,12 +37,16 @@ class VoiceSignallingClockTest {
         var proof = true
         val proofs = mutableListOf<Long>()
         var attempts = 0
-        val signalling = VoiceSignalling(socket, clock = { realMs })
+        val signalling = VoiceSignalling(socket, clock = object : ElapsedClock {
+            override fun nowMs() = realMs
+            override fun wallMs() = realMs + wallOffsetMs
+        })
 
         private val steps = object : VoiceSignalling.Steps {
             override val joinSocket: StateFlow<Long?> = this@Rig.joinSocket
             override suspend fun prepare() {}
             override suspend fun join(socket: Long): Boolean {
+                joins += socket
                 this@Rig.joinSocket.value = socket
                 return true
             }
@@ -52,6 +60,7 @@ class VoiceSignallingClockTest {
             override suspend fun awaitConnectionFailed() = awaitCancellation()
             override suspend fun rejoin(socket: Long): VoiceSignalling.Attempt {
                 attempts++
+                this@Rig.joinSocket.value = socket
                 return awaitCancellation()
             }
             override suspend fun giveUp(why: VoiceSignalling.GiveUp) {
@@ -79,14 +88,15 @@ class VoiceSignallingClockTest {
     }
 
     @Test
-    fun `without a sleep the deadline is the 60 s of the delays`() = runTest {
+    fun `the wall clock counts too, the larger difference wins`() = runTest {
         val rig = Rig(this)
         runCurrent()
         rig.socket.value = null
         runCurrent()
-        advanceTimeBy(59_999); runCurrent()
-        assertFalse(rig.gaveUp.isCompleted)
-        advanceTimeBy(1); runCurrent()
+        // The elapsed clock barely moves, the wall clock moves 70 s (C32: the larger difference).
+        rig.realMs += 1_000
+        rig.wallOffsetMs = 69_000
+        advanceTimeBy(VoiceSignalling.DEADLINE_CHECK_MS); runCurrent()
         assertTrue(rig.gaveUp.isCompleted)
     }
 
@@ -97,6 +107,8 @@ class VoiceSignallingClockTest {
         rig.realMs += 3_600_000
         advanceTimeBy(120_000); runCurrent()
         assertFalse(rig.gaveUp.isCompleted)
+        // It was looked at: after the gap the session proved it is still carried.
+        assertEquals(listOf(1L), rig.proofs)
         assertEquals(VoiceLinkState.Stable, rig.signalling.state.value)
         rig.owner.cancel()
     }
@@ -171,5 +183,71 @@ class VoiceSignallingClockTest {
         advanceTimeBy(1_000); runCurrent()
         assertEquals(1, rig.attempts)
         rig.owner.cancel()
+    }
+
+    // -- More than 60 s asleep: give up, never rejoin late ------------------------------
+
+    @Test
+    fun `90 s asleep with the socket back 1 s after waking sends no voice_join and gives up`() = runTest {
+        val rig = Rig(this)
+        runCurrent()
+        rig.socket.value = null // lost before the sleep
+        runCurrent()
+        rig.realMs += 90_000 // asleep; no coroutine delay ran
+        advanceTimeBy(500); runCurrent()
+        rig.socket.value = 2L // the connection manager reconnects right after waking
+        runCurrent()
+        advanceTimeBy(1_000); runCurrent()
+
+        assertEquals(0, rig.attempts)
+        assertTrue(rig.gaveUp.isCompleted)
+    }
+
+    @Test
+    fun `a held first join is not sent after more than 60 s asleep`() = runTest {
+        val rig = Rig(this, startSocket = null)
+        runCurrent()
+        rig.realMs += 90_000
+        advanceTimeBy(500); runCurrent()
+        rig.socket.value = 1L
+        runCurrent()
+
+        assertTrue(rig.joins.isEmpty())
+        assertTrue(rig.gaveUp.isCompleted)
+    }
+
+    @Test
+    fun `30 s asleep rejoins as before`() = runTest {
+        val rig = Rig(this)
+        runCurrent()
+        rig.socket.value = null
+        runCurrent()
+        rig.realMs += 30_000
+        advanceTimeBy(500); runCurrent()
+        rig.socket.value = 2L
+        runCurrent()
+        advanceTimeBy(1_000); runCurrent()
+
+        assertEquals(1, rig.attempts)
+        assertFalse(rig.gaveUp.isCompleted)
+        rig.owner.cancel()
+    }
+
+    @Test
+    fun `a socket lost during a sleep counts from before the sleep`() = runTest {
+        val rig = Rig(this)
+        runCurrent()
+        advanceTimeBy(VoiceSignalling.DEADLINE_CHECK_MS); runCurrent() // up, looked at
+        rig.realMs += VoiceSignalling.DEADLINE_CHECK_MS
+        // Asleep 90 s; on waking the closed socket is reported first, then a new one comes.
+        rig.realMs += 90_000
+        rig.socket.value = null
+        runCurrent()
+        rig.socket.value = 2L
+        runCurrent()
+        advanceTimeBy(1_000); runCurrent()
+
+        assertEquals(0, rig.attempts)
+        assertTrue(rig.gaveUp.isCompleted)
     }
 }

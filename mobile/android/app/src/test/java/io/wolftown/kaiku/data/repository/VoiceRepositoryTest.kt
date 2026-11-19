@@ -1327,6 +1327,8 @@ class VoiceRepositoryTest {
 
     // -- C32 proof of carried ------------------------------------------------------
 
+    private var deadSocketReports = 0
+
     private fun repositoryWithClock(clock: () -> Long) = VoiceRepository(
         webRtcManager = webRtcManager,
         webSocket = webSocket,
@@ -1336,6 +1338,7 @@ class VoiceRepositoryTest {
         context = context,
         voiceScope = voiceScope,
         elapsedClock = { clock() },
+        deadSocket = { deadSocketReports++ },
     )
 
     @Test
@@ -1373,6 +1376,8 @@ class VoiceRepositoryTest {
 
         assertEquals(VoiceLinkState.Interrupted, repository.linkState.value)
         verifyJoins(1)
+        // The connection is told at once instead of waiting for its watchdog.
+        assertEquals(1, deadSocketReports)
         // The connection manager replaces the dead socket: the call rejoins on it.
         socketUp()
         runCurrent()

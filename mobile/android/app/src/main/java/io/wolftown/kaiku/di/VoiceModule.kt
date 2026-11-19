@@ -4,6 +4,9 @@ import io.wolftown.kaiku.data.voice.AndroidElapsedClock
 import io.wolftown.kaiku.data.voice.ElapsedClock
 import dagger.Binds
 import dagger.Module
+import dagger.Provides
+import io.wolftown.kaiku.data.voice.DeadSocketReporter
+import io.wolftown.kaiku.data.ws.RealtimeConnectionManager
 import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
 import io.wolftown.kaiku.data.api.VoiceApi
@@ -40,4 +43,11 @@ abstract class VoiceModule {
 
     @Binds
     abstract fun bindElapsedClock(impl: AndroidElapsedClock): ElapsedClock
+
+    companion object {
+        /** A dead socket found by the voice call goes to the connection manager. */
+        @Provides
+        fun provideDeadSocketReporter(realtime: RealtimeConnectionManager): DeadSocketReporter =
+            DeadSocketReporter { realtime.reportDeadSocket() }
+    }
 }

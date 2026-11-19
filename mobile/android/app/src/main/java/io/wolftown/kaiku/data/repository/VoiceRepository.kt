@@ -8,6 +8,7 @@ import io.wolftown.kaiku.R
 import io.wolftown.kaiku.data.call.CallVoiceEnd
 import io.wolftown.kaiku.data.call.VoiceEnd
 import io.wolftown.kaiku.data.voice.AudioRouteManager
+import io.wolftown.kaiku.data.voice.DeadSocketReporter
 import io.wolftown.kaiku.data.voice.RejoinGate
 import io.wolftown.kaiku.data.voice.RejoinVerdict
 import io.wolftown.kaiku.data.voice.ElapsedClock
@@ -94,6 +95,8 @@ class VoiceRepository @Inject constructor(
     @VoiceCoroutineScope voiceScope: CoroutineScope,
     /** C32: the 60 s are real elapsed time, including device suspension. */
     elapsedClock: ElapsedClock = ElapsedClock.STOPPED,
+    /** A failed proof of carried makes the connection reconnect at once. */
+    private val deadSocket: DeadSocketReporter = DeadSocketReporter.NONE,
 ) : Closeable {
     companion object {
         private val logger = Logger.getLogger("VoiceRepository")
@@ -831,9 +834,12 @@ class VoiceRepository @Inject constructor(
             if (!webRtcManager.publisherConnectedNow()) return false
             val before = webSocket.inbound.value.takeIf { it.socket == socket }?.frames ?: 0L
             if (!webSocket.sendOn(socket, ClientEvent.Ping)) return false
-            return withTimeoutOrNull(VoiceSignalling.PROOF_TIMEOUT_MS) {
+            val fresh = withTimeoutOrNull(VoiceSignalling.PROOF_TIMEOUT_MS) {
                 webSocket.inbound.first { it.socket == socket && it.frames > before }
             } != null
+            // A socket that does not answer is dead: a new one now, not after the heartbeat watchdog.
+            if (!fresh && webSocket.authenticatedSocket.value == socket) deadSocket.report()
+            return fresh
         }
 
         /** The connections of the session as they are now reported ICE `FAILED`. */
