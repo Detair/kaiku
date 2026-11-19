@@ -60,10 +60,35 @@ pub fn voice_encoder() -> Result<opus::Encoder, AudioError> {
 /// device consumed. Both sides only use atomics, so the real-time callback
 /// never waits on it. The mixer produces frames only while the queue is
 /// below one device block plus 20 ms: the device clock drives playout.
+///
+/// The block size is the largest request of the current and the previous
+/// one-second window (the mixer rolls the window), capped at
+/// [`MAX_REQUEST_SAMPLES`], and forgotten when the output device changes.
+/// A single large priming callback therefore raises the output latency for
+/// at most two seconds.
 #[derive(Clone, Default)]
 pub struct OutputLevel {
     queued: Arc<AtomicUsize>,
-    request: Arc<AtomicUsize>,
+    recent: Arc<AtomicUsize>,
+    previous: Arc<AtomicUsize>,
+}
+
+/// One 20 ms stereo frame in interleaved samples.
+const FRAME_SAMPLES: usize = FRAME_SIZE * CHANNELS as usize;
+
+/// Largest device block the pacing follows: 400 ms of stereo 48 kHz. A
+/// device asking for more per callback is fed 400 ms + 20 ms and hears a
+/// short gap each callback instead of the mixer running ahead.
+pub const MAX_REQUEST_SAMPLES: usize = 400 * 96;
+
+/// Samples the playback queue holds at most before discarding the oldest:
+/// above the most the mixer ever queues (largest block + two frames), so in
+/// steady state nothing is discarded. A safety net only.
+pub const MAX_QUEUE_SAMPLES: usize = MAX_REQUEST_SAMPLES + 3 * FRAME_SAMPLES;
+
+/// How many of the oldest samples the playback queue discards at `len`.
+pub const fn queue_excess(len: usize) -> usize {
+    len.saturating_sub(MAX_QUEUE_SAMPLES)
 }
 
 impl OutputLevel {
@@ -86,9 +111,10 @@ impl OutputLevel {
             });
     }
 
-    /// The device asked for a block of `samples` (keeps the largest).
+    /// The device asked for a block of `samples` (real-time safe: one
+    /// atomic `fetch_max`).
     pub fn note_request(&self, samples: usize) {
-        self.request.fetch_max(samples, Ordering::Relaxed);
+        self.recent.fetch_max(samples, Ordering::Relaxed);
     }
 
     /// Samples sent but not yet played.
@@ -96,9 +122,25 @@ impl OutputLevel {
         self.queued.load(Ordering::Relaxed)
     }
 
-    /// Largest block the device asked for so far (0 before the first).
+    /// Recent device block size (0 before the first callback), at most
+    /// [`MAX_REQUEST_SAMPLES`].
     pub fn request(&self) -> usize {
-        self.request.load(Ordering::Relaxed)
+        self.recent
+            .load(Ordering::Relaxed)
+            .max(self.previous.load(Ordering::Relaxed))
+            .min(MAX_REQUEST_SAMPLES)
+    }
+
+    /// Start a new estimation window for the block size (once per second).
+    pub fn roll_window(&self) {
+        self.previous
+            .store(self.recent.swap(0, Ordering::Relaxed), Ordering::Relaxed);
+    }
+
+    /// Forget the block size (another device is now playing).
+    pub fn reset_request(&self) {
+        self.recent.store(0, Ordering::Relaxed);
+        self.previous.store(0, Ordering::Relaxed);
     }
 }
 

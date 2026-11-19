@@ -42,6 +42,10 @@ const MAX_FRAMES_PER_WAKE: usize = 3;
 /// drains them every 5 ms; a full queue means the mixer stalled.
 pub const PACKET_QUEUE: usize = 64;
 
+/// Packets taken from one track per wake at most, so a flooding peer cannot
+/// keep the mixer from mixing (16 per 5 ms is 16× a normal stream).
+const MAX_PACKETS_PER_WAKE: usize = 16;
+
 /// How often per-track counters are published.
 const STATS_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -264,6 +268,9 @@ impl AudioMixer {
             }
 
             ticker.tick().await;
+            if output_tx.is_closed() {
+                break; // playback stopped
+            }
 
             // 1. Pending commands (non-blocking).
             loop {
@@ -278,7 +285,7 @@ impl AudioMixer {
             // 2. Move arrived packets into the jitter buffers.
             let mut closed = Vec::new();
             for (id, track) in &mut tracks {
-                loop {
+                for _ in 0..MAX_PACKETS_PER_WAKE {
                     match track.packets.try_recv() {
                         Ok(p) => {
                             let arrival_ms = ms_since(epoch, p.arrival);
@@ -327,6 +334,7 @@ impl AudioMixer {
             // 4. Counters for the stats command and the debug log.
             if last_stats.elapsed() >= STATS_INTERVAL {
                 last_stats = Instant::now();
+                level.roll_window();
                 Self::publish_stats(&mut tracks, &stats);
             }
         }
@@ -640,6 +648,118 @@ mod tests {
         })
         .await;
         assert!(closed.is_ok(), "mixer task still running");
+    }
+
+    /// Simulated output device taking `block_ms` per callback, the pusher's
+    /// queue limit and the mixer's pacing, for 20 s (1 ms steps). Returns
+    /// frames produced, samples discarded by the queue and samples the
+    /// device found missing, all in the last 10 s.
+    fn device_run(block_ms: usize) -> (usize, usize, usize) {
+        let (produced, discarded, missing, _) = device_run_consumed(block_ms);
+        (produced, discarded, missing)
+    }
+
+    fn device_run_consumed(block_ms: usize) -> (usize, usize, usize, usize) {
+        let level = OutputLevel::new();
+        let block = block_ms * 96; // stereo samples at 48 kHz
+        let mut queue = 0usize;
+        let (mut produced, mut discarded, mut missing, mut consumed) = (0, 0, 0, 0);
+        for t in 0..20_000usize {
+            let steady = t >= 10_000;
+            if t % 5 == 0 {
+                for _ in 0..frames_needed(level.queued(), level.request()) {
+                    level.produced(FRAME_SAMPLES);
+                    queue += FRAME_SAMPLES;
+                    let excess = crate::audio::queue_excess(queue);
+                    queue -= excess;
+                    level.consumed(excess);
+                    if steady {
+                        produced += 1;
+                        discarded += excess;
+                    }
+                }
+            }
+            if t % block_ms == 0 {
+                level.note_request(block);
+                let take = queue.min(block);
+                queue -= take;
+                level.consumed(take);
+                if steady {
+                    missing += block - take;
+                    consumed += take;
+                }
+            }
+            if t % 1000 == 999 {
+                level.roll_window();
+            }
+        }
+        (produced, discarded, missing, consumed)
+    }
+
+    #[test]
+    fn device_blocks_from_10_to_400_ms_are_fed_in_real_time() {
+        for block_ms in [10, 20, 21, 40, 85, 100, 160, 180, 200, 250, 341, 400] {
+            let (produced, discarded, missing) = device_run(block_ms);
+            // 10 s at 50 frames per second, give or take the device blocks
+            // that straddle the edges of the window.
+            let slack = block_ms / 20 + 2;
+            assert!(
+                produced.abs_diff(500) <= slack,
+                "{block_ms} ms blocks: {produced} frames in 10 s"
+            );
+            assert_eq!(discarded, 0, "{block_ms} ms blocks: queue discarded audio");
+            assert_eq!(missing, 0, "{block_ms} ms blocks: device starved");
+        }
+    }
+
+    #[test]
+    fn blocks_beyond_the_supported_size_stay_real_time() {
+        // Larger than supported: each 500 ms callback finds 420 ms queued and
+        // plays a short gap. The mixer follows what is consumed and never
+        // runs ahead; nothing is discarded.
+        let (produced, discarded, missing, consumed) = device_run_consumed(500);
+        assert!(
+            produced.abs_diff(consumed / FRAME_SAMPLES) <= 30,
+            "{produced}"
+        );
+        assert!(produced <= 505, "{produced}");
+        assert!(missing > 0);
+        assert_eq!(discarded, 0);
+    }
+
+    #[test]
+    fn block_estimate_follows_the_device() {
+        let level = OutputLevel::new();
+        level.note_request(400 * 96); // one priming callback
+        level.roll_window();
+        for _ in 0..3 {
+            level.note_request(10 * 96);
+            level.roll_window();
+        }
+        assert_eq!(level.request(), 10 * 96);
+        level.reset_request();
+        assert_eq!(level.request(), 0);
+    }
+
+    #[tokio::test]
+    async fn mixer_stops_when_playback_closes_while_the_device_is_idle() {
+        let (out_tx, out_rx) = mpsc::channel(64);
+        let level = OutputLevel::new();
+        // The device holds plenty: the mixer has nothing to send.
+        level.produced(10 * FRAME_SAMPLES);
+        let mixer =
+            AudioMixer::with_decoder(out_tx, UserGains::default(), level.clone(), const_factory());
+        let tx = mixer.add_track("t:microphone".into()).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        drop(out_rx); // playback stopped
+        let stopped = tokio::time::timeout(Duration::from_secs(1), async {
+            while !tx.is_closed() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert!(stopped.is_ok(), "mixer kept running without playback");
+        drop(mixer);
     }
 
     #[test]

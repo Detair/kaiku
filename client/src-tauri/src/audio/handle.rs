@@ -2101,8 +2101,13 @@ struct PlaybackQueue {
 
 impl PlaybackQueue {
     fn new(level: OutputLevel) -> Self {
+        // Allocated once: the pusher appends a frame and trims while holding
+        // the lock the output callback takes, so it must never reallocate.
+        let capacity = super::MAX_QUEUE_SAMPLES + FRAME_SIZE * CHANNELS as usize;
         Self {
-            samples: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
+            samples: Arc::new(std::sync::Mutex::new(
+                std::collections::VecDeque::with_capacity(capacity),
+            )),
             level,
         }
     }
@@ -2328,6 +2333,8 @@ fn playback_control_loop(
                 ) {
                     Ok(new_stream) => {
                         stream = Some(new_stream);
+                        // The new device has its own block size.
+                        playback_buffer.level.reset_request();
                         reporter.recover();
                         reporter = new_reporter;
                         set_active(active, Some(reporter.event.device.clone()));
@@ -2366,16 +2373,14 @@ fn run_pcm_playback_task(
     // safety net. The thread ends when the mixer drops its sender.
     let playback_buffer_clone = playback_buffer.clone();
     std::thread::spawn(move || {
-        // ~200ms at 48 kHz stereo (48000 * 2 channels * 0.2s)
-        const MAX_BUFFER_SAMPLES: usize = 19200;
-
         while let Some(pcm_f32) = input_rx.blocking_recv() {
             if let Ok(mut buffer) = playback_buffer_clone.samples.lock() {
                 buffer.extend(pcm_f32);
 
-                // Cap buffer to prevent unbounded growth under sustained backpressure.
-                if buffer.len() > MAX_BUFFER_SAMPLES {
-                    let excess = buffer.len() - MAX_BUFFER_SAMPLES;
+                // Safety cap above anything the mixer queues (largest
+                // followed device block + two frames).
+                let excess = super::queue_excess(buffer.len());
+                if excess > 0 {
                     buffer.drain(..excess);
                     playback_buffer_clone.level.consumed(excess);
                 }
