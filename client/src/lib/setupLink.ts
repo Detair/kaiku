@@ -21,13 +21,23 @@ export function parseSetupFragment(hash: string): SetupFragment {
 /** The Kaiku Android app (`applicationId`); the hand-off goes to it and to no other app. */
 const ANDROID_PACKAGE = "io.wolftown.kaiku";
 
+/** The query of this page when a phone without the app comes back from the hand-off. */
+const APP_MISSING = "app=missing";
+
 /**
  * "Open in Kaiku" on Android, for the app's `kaiku://setup/v1` intent filter. The intent names
- * the Kaiku app's package, so the browser hands the code only to Kaiku (or, without the app,
- * offers to install it) and never to another app that registered the same scheme.
+ * the Kaiku app's package, so the browser hands the code only to Kaiku and never to another app
+ * that registered the same scheme. Without the app the browser opens this server's setup page
+ * again, without the code, where the page says what to do.
  */
 export function androidIntentUrl(origin: string, token: string): string {
-  return `intent://setup/v1?o=${encodeURIComponent(origin)}&t=${token}#Intent;scheme=kaiku;package=${ANDROID_PACKAGE};end`;
+  const fallback = encodeURIComponent(`${origin}/setup?${APP_MISSING}`);
+  return `intent://setup/v1?o=${encodeURIComponent(origin)}&t=${token}#Intent;scheme=kaiku;package=${ANDROID_PACKAGE};S.browser_fallback_url=${fallback};end`;
+}
+
+/** Whether this page was opened by the hand-off on a phone without the Kaiku app. */
+export function isAppMissingPage(search: string): boolean {
+  return new URLSearchParams(search).get("app") === "missing";
 }
 
 export function isAndroidBrowser(ua: string): boolean {

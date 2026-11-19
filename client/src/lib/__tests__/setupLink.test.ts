@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { androidIntentUrl, isAndroidBrowser, parseSetupFragment } from "../setupLink";
+import { androidIntentUrl, isAndroidBrowser, isAppMissingPage, parseSetupFragment } from "../setupLink";
 
 const TOKEN = "QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl8";
 
@@ -17,9 +17,22 @@ describe("setup links", () => {
   });
 
   it("builds the Android intent URL with the encoded origin, for the Kaiku app only", () => {
+    const fallback = encodeURIComponent("https://chat.example.com/setup?app=missing");
     expect(androidIntentUrl("https://chat.example.com", TOKEN)).toBe(
-      `intent://setup/v1?o=${encodeURIComponent("https://chat.example.com")}&t=${TOKEN}#Intent;scheme=kaiku;package=io.wolftown.kaiku;end`,
+      `intent://setup/v1?o=${encodeURIComponent("https://chat.example.com")}&t=${TOKEN}#Intent;scheme=kaiku;package=io.wolftown.kaiku;S.browser_fallback_url=${fallback};end`,
     );
+  });
+
+  it("sends a phone without the app back to this server's page, never with the setup code", () => {
+    const url = androidIntentUrl("https://chat.example.com", TOKEN);
+    const extra = url.split("#Intent;")[1].split(";").find((p) => p.startsWith("S.browser_fallback_url="));
+    expect(extra).toBeDefined();
+    const fallback = decodeURIComponent(extra!.slice("S.browser_fallback_url=".length));
+    expect(fallback).toBe("https://chat.example.com/setup?app=missing");
+    expect(fallback).not.toContain(TOKEN);
+    expect(isAppMissingPage(new URL(fallback).search)).toBe(true);
+    expect(isAppMissingPage("")).toBe(false);
+    expect(isAppMissingPage("?app=other")).toBe(false);
   });
 
   it("recognises Android browsers", () => {
