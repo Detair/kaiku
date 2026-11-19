@@ -10,6 +10,7 @@ import { X } from "lucide-solid";
 import { t } from "@/i18n";
 import { errorText } from "@/i18n/errors";
 import { createDialog } from "@/lib/a11y/dialog";
+import { createModalLayer, MODAL_LAYER } from "@/lib/a11y/modalLayer";
 import { joinViaInviteCode } from "@/stores/guilds";
 import { Portal } from "solid-js/web";
 import { extractInviteCode } from "@/lib/invites";
@@ -24,6 +25,8 @@ const JoinGuildModal: Component<JoinGuildModalProps> = (props) => {
     onClose: () => props.onClose(),
     initialFocus: () => inputEl,
   });
+  // Above every window already open: this one takes the keyboard.
+  const layer = createModalLayer(MODAL_LAYER.dialog);
 
   const [input, setInput] = createSignal("");
   const [isJoining, setIsJoining] = createSignal(false);
@@ -58,7 +61,8 @@ const JoinGuildModal: Component<JoinGuildModalProps> = (props) => {
     <Portal>
       {/* Backdrop click closes, like the other dialogs (NAV-11) */}
       <div
-        class="fixed inset-0 bg-black/60 flex items-center justify-center z-50"
+        class="fixed inset-0 bg-black/60 flex items-center justify-center"
+        style={{ "z-index": layer }}
         onClick={() => props.onClose()}
       >
         <div

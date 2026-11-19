@@ -16,6 +16,7 @@ import { openDirectMessage } from "@/stores/dms";
 import { guildsState, loadAllGuildMembers } from "@/stores/guilds";
 import { currentUser } from "@/stores/auth";
 import { createDialog } from "@/lib/a11y/dialog";
+import { createModalLayer, MODAL_LAYER } from "@/lib/a11y/modalLayer";
 
 interface NewMessageModalProps {
   onClose: () => void;
@@ -72,6 +73,8 @@ const NewMessageModal: Component<NewMessageModalProps> = (props) => {
     onClose: () => props.onClose(),
     initialFocus: () => searchInput,
   });
+  // Above every window already open: this one takes the keyboard.
+  const layer = createModalLayer(MODAL_LAYER.dialog);
 
   const [search, setSearch] = createSignal("");
   const [selectedIds, setSelectedIds] = createSignal<string[]>([]);
@@ -158,7 +161,8 @@ const NewMessageModal: Component<NewMessageModalProps> = (props) => {
   return (
     <Portal>
       <div
-        class="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
+        class="fixed inset-0 bg-black/50 flex items-center justify-center"
+        style={{ "z-index": layer }}
         onClick={props.onClose}
       >
         <div

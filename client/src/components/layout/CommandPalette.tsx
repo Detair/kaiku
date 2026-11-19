@@ -31,6 +31,7 @@ import { Hash, Volume2, Search, Mic, MicOff, VolumeX } from "lucide-solid";
 import { t } from "@/i18n";
 import Modal from "@/components/ui/Modal";
 import { MODAL_LAYER } from "@/lib/a11y/modalLayer";
+import { authState } from "@/stores/auth";
 import { channelsState, selectChannel, visibleChannels } from "@/stores/channels";
 import { setShowGlobalSearch } from "@/stores/search";
 import { toggleMute, toggleDeafen, voiceState } from "@/stores/voice";
@@ -128,6 +129,9 @@ const CommandPalette: Component = () => {
   const handleKeyDown = (e: KeyboardEvent) => {
     // Open palette with Ctrl+K / Cmd+K
     if ((e.ctrlKey || e.metaKey) && e.key === "k") {
+      // Signed out: the session-ended notice has the keyboard. Nothing opens
+      // above or behind it.
+      if (authState.sessionExpired) return;
       e.preventDefault();
       setIsOpen(true);
       setQuery("");
@@ -136,8 +140,11 @@ const CommandPalette: Component = () => {
       return;
     }
 
-    // Handle navigation when palette is open
+    // Handle navigation when palette is open and has the keyboard: a window
+    // opened above it (focus there) gets its own Enter and arrows.
     if (!isOpen()) return;
+    const palette = inputRef?.closest("[role=dialog]");
+    if (!palette?.contains(document.activeElement)) return;
 
     switch (e.key) {
       case "Escape":

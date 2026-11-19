@@ -18,6 +18,12 @@ export interface DialogOptions {
   onClose: () => void;
   /** Element to focus on open. Defaults to the first focusable, else the dialog. */
   initialFocus?: () => HTMLElement | undefined;
+  /**
+   * Where focus goes back on close, when the dialog opens later than it was
+   * asked for (a window whose code had to load first). Defaults to the
+   * element that has focus when the dialog is set up.
+   */
+  opener?: Element | null;
 }
 
 export interface DialogHandle {
@@ -86,7 +92,12 @@ export function createDialog(opts: DialogOptions): DialogHandle {
   // Focus on the page itself is no opener: a window whose code loads on
   // demand mounts after its menu item is gone, and "back to the page" would
   // leave the focus nowhere. Closing then uses the fallback below.
-  const focused = typeof document !== "undefined" ? document.activeElement : null;
+  const focused =
+    opts.opener !== undefined
+      ? opts.opener
+      : typeof document !== "undefined"
+        ? document.activeElement
+        : null;
   const opener =
     focused instanceof HTMLElement && focused !== document.body ? focused : null;
   let el: HTMLElement | undefined;
@@ -156,16 +167,32 @@ export function createDialog(opts: DialogOptions): DialogHandle {
   });
 
   onCleanup(() => {
+    // Only the dialog that has the keyboard hands focus back. One removed
+    // from under another leaves focus in the dialog still open above it.
+    const top = openDialogs[openDialogs.length - 1] === entry;
     unregister(entry);
-    if (opener?.isConnected && !opener.closest("[inert]")) {
+    if (!top) {
+      // If it held focus, the dialog still open gets it. A window in a Portal
+      // is already detached here, so its lost focus shows as the page itself.
+      const active = document.activeElement;
+      if (!active || active === document.body || el?.contains(active)) {
+        openDialogs[openDialogs.length - 1]?.el()?.focus();
+      }
+      return;
+    }
+    // A dialog still open keeps the keyboard: focus goes to the opener only
+    // when the opener is inside it, never to something behind it.
+    const below = openDialogs[openDialogs.length - 1]?.el();
+    const reachable = (node: Element) => !below || below.contains(node);
+    if (opener?.isConnected && !opener.closest("[inert]") && reachable(opener)) {
       opener.focus();
       return;
     }
-    // The opener is gone or hidden (a drawer that closed, a menu item): keep
-    // focus out of nowhere (UX2 K11). Go to the dialog below, else the page.
+    // The opener is gone, hidden or behind (a drawer that closed, a menu
+    // item): keep focus out of nowhere (UX2 K11). Go to the dialog below,
+    // else the page.
     const active = document.activeElement;
-    if (active && active !== document.body && !el?.contains(active)) return;
-    const below = openDialogs[openDialogs.length - 1]?.el();
+    if (active && active !== document.body && !el?.contains(active) && reachable(active)) return;
     const fallback = below ?? document.getElementById("main-content");
     fallback?.focus();
   });

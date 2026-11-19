@@ -65,6 +65,7 @@ const MobileDrawer: Component<MobileDrawerProps> = (props) => {
     }
   });
 
+  // Stays on z-50, not the modal layer: windows opened from inside it (the screen-share viewer) sit on 50 too.
   return (
     <div
       data-drawer-open={props.open ? "true" : "false"}

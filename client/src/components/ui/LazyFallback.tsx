@@ -20,9 +20,15 @@ export const ModalFallback: Component = () => (
   </div>
 );
 
-/** Error boundary for lazy-loaded components — catches chunk load failures with retry */
+/**
+ * Error boundary for lazy-loaded components — catches chunk load failures with
+ * retry. `fallback` may be a function of the error and the boundary's reset.
+ */
 export const LazyErrorBoundary: Component<
-  ParentProps<{ name?: string; fallback?: JSX.Element }>
+  ParentProps<{
+    name?: string;
+    fallback?: JSX.Element | ((err: unknown, reset: () => void) => JSX.Element);
+  }>
 > = (props) => (
   <ErrorBoundary
     fallback={(err, reset) => {
@@ -30,8 +36,10 @@ export const LazyErrorBoundary: Component<
         `[LazyLoad] Failed to load "${props.name ?? "component"}":`,
         err,
       );
+      const fallback = props.fallback;
+      if (typeof fallback === "function") return fallback(err, reset);
       return (
-        props.fallback ?? (
+        fallback ?? (
           <div class="flex flex-col items-center justify-center gap-3 p-6 text-text-secondary">
             <p class="text-sm">Failed to load this section.</p>
             <button

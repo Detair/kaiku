@@ -1,6 +1,7 @@
-import { describe, it, expect, vi } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import { createSignal, Show } from "solid-js";
-import { render, fireEvent, screen } from "@solidjs/testing-library";
+import { Portal } from "solid-js/web";
+import { cleanup, render, fireEvent, screen } from "@solidjs/testing-library";
 import { createDialog } from "../dialog";
 
 function TestDialog(props: { onClose: () => void }) {
@@ -222,3 +223,146 @@ describe("createDialog and other overlays", () => {
     }
   });
 });
+
+describe("createDialog with several dialogs open", () => {
+  afterEach(page_cleanup);
+
+  function Named(props: { name: string; opener?: HTMLElement }) {
+    // Read once on open, like the real windows do.
+    // eslint-disable-next-line solid/reactivity
+    const d = createDialog({ onClose: () => {}, opener: props.opener });
+    return (
+      <div {...d.dialogProps} ref={d.ref}>
+        <h2 id={d.titleId}>{props.name}</h2>
+        <button type="button">{`${props.name} button`}</button>
+      </div>
+    );
+  }
+
+  function setup() {
+    const page = document.createElement("button");
+    page.textContent = "page";
+    document.body.appendChild(page);
+    page.focus();
+    const [lower, setLower] = createSignal(true);
+    const [upper, setUpper] = createSignal(false);
+    render(() => (
+      <>
+        <Show when={lower()}>
+          <Named name="Lower" />
+        </Show>
+        <Show when={upper()}>
+          <Named name="Upper" />
+        </Show>
+      </>
+    ));
+    return { page, setLower, setUpper };
+  }
+
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+
+  it("removing the lower dialog leaves focus in the dialog still open above it", async () => {
+    const { setLower, setUpper } = setup();
+    await tick();
+    setUpper(true);
+    await tick();
+    const upper = screen.getByRole("dialog", { name: "Upper" });
+    expect(upper.contains(document.activeElement)).toBe(true);
+    setLower(false);
+    expect(upper.contains(document.activeElement)).toBe(true);
+  });
+
+  it("in Portals: removing the lower dialog that held focus moves focus into the one still open", async () => {
+    // Real windows call createDialog first and render into a Portal. The
+    // Portal's node is removed before the dialog's own cleanup runs, so by
+    // then focus has already fallen to the page.
+    function Portaled(props: { name: string }) {
+      const d = createDialog({ onClose: () => {} });
+      return (
+        <Portal>
+          <div {...d.dialogProps} ref={d.ref}>
+            <h2 id={d.titleId}>{props.name}</h2>
+            <button type="button">{`${props.name} button`}</button>
+          </div>
+        </Portal>
+      );
+    }
+    const [lower, setLower] = createSignal(true);
+    const [upper, setUpper] = createSignal(false);
+    render(() => (
+      <>
+        <Show when={lower()}>
+          <Portaled name="Lower" />
+        </Show>
+        <Show when={upper()}>
+          <Portaled name="Upper" />
+        </Show>
+      </>
+    ));
+    await tick();
+    setUpper(true);
+    await tick();
+    // The window underneath takes focus again, e.g. when its content arrives.
+    const lowerButton = screen.getByText("Lower button");
+    lowerButton.focus();
+    expect(document.activeElement).toBe(lowerButton);
+    setLower(false);
+    await tick();
+    expect(lowerButton.isConnected).toBe(false);
+    const up = screen.getByRole("dialog", { name: "Upper" });
+    expect(up.contains(document.activeElement)).toBe(true);
+  });
+
+  it("removing the upper dialog first returns focus to its opener in the lower one", async () => {
+    const { page, setLower, setUpper } = setup();
+    await tick();
+    const lowerButton = screen.getByText("Lower button");
+    expect(document.activeElement).toBe(lowerButton);
+    setUpper(true);
+    await tick();
+    setUpper(false);
+    expect(document.activeElement).toBe(lowerButton);
+    setLower(false);
+    expect(document.activeElement).toBe(page);
+  });
+
+  it("does not hand focus to an opener that lies behind a dialog still open", async () => {
+    // Asked for from the page, then another window opened underneath meanwhile
+    // (a slow download): closing the top one must stay inside the open window.
+    const { page, setUpper } = setup();
+    const [late, setLate] = createSignal(true);
+    render(() => (
+      <Show when={late()}>
+        <Named name="Top" opener={page} />
+      </Show>
+    ));
+    await tick();
+    expect(screen.getByRole("dialog", { name: "Top" }).contains(document.activeElement)).toBe(true);
+    void setUpper;
+    setLate(false);
+    await tick();
+    expect(document.activeElement).not.toBe(page);
+    expect(screen.getByRole("dialog", { name: "Lower" }).contains(document.activeElement)).toBe(true);
+  });
+
+  it("returns focus to an explicit opener instead of what had focus when it opened", async () => {
+    const asked = document.createElement("button");
+    const elsewhere = document.createElement("button");
+    document.body.append(asked, elsewhere);
+    elsewhere.focus();
+    const [open, setOpen] = createSignal(true);
+    render(() => (
+      <Show when={open()}>
+        <Named name="Late" opener={asked} />
+      </Show>
+    ));
+    await tick();
+    setOpen(false);
+    expect(document.activeElement).toBe(asked);
+  });
+});
+
+function page_cleanup() {
+  cleanup();
+  document.body.innerHTML = "";
+}

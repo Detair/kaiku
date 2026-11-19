@@ -21,6 +21,7 @@ import {
   onCleanup,
 } from "solid-js";
 import { useLocation } from "@solidjs/router";
+import { lazyWindow } from "@/lib/chunkLoadError";
 // Account-security overlays: lazy, nothing on the startup path needs them.
 import SecurityHostsSlot from "@/components/security/SecurityHostsSlot";
 import { refreshMeSecurity } from "@/stores/security";
@@ -42,13 +43,13 @@ import HomeView from "@/components/home/HomeView";
 import HomeSidebar from "@/components/home/HomeSidebar";
 // Search, the shortcut list and the pin drawer open on demand: each loads
 // on first open and stays out of the startup payload.
-const GlobalSearchDialog = lazy(
+const GlobalSearchDialog = lazyWindow(
   () => import("@/components/search/GlobalSearchDialog"),
 );
-const KeyboardShortcutsDialog = lazy(
+const KeyboardShortcutsDialog = lazyWindow(
   () => import("@/components/ui/KeyboardShortcutsDialog"),
 );
-const PinDrawer = lazy(() => import("@/components/channels/PinDrawer"));
+const PinDrawer = lazyWindow(() => import("@/components/channels/PinDrawer"));
 import { LazyErrorBoundary } from "@/components/ui/LazyFallback";
 import LazyDialog from "@/components/ui/LazyDialog";
 import { selectedChannel } from "@/stores/channels";
@@ -178,7 +179,7 @@ const Main: Component = () => {
 
       {/* Keyboard Shortcuts Dialog */}
       <Show when={showShortcuts()}>
-        <LazyDialog name="KeyboardShortcutsDialog">
+        <LazyDialog name="KeyboardShortcutsDialog" onClose={() => setShowShortcuts(false)}>
           <KeyboardShortcutsDialog onClose={() => setShowShortcuts(false)} />
         </LazyDialog>
       </Show>
@@ -186,7 +187,7 @@ const Main: Component = () => {
       {/* Global Search Overlay */}
       {/* A modal dialog (A11Y-1): Escape closes it, focus returns. */}
       <Show when={showGlobalSearch()}>
-        <LazyDialog name="GlobalSearchDialog">
+        <LazyDialog name="GlobalSearchDialog" onClose={closeGlobalSearch}>
           <GlobalSearchDialog
             initialScope={channelSearchScope() ? "channel" : "all"}
             channelId={channel()?.id}
@@ -322,7 +323,7 @@ const Main: Component = () => {
 
                 {/* Pin Drawer */}
                 <Show when={showPinDrawer()}>
-                  <LazyDialog name="PinDrawer">
+                  <LazyDialog name="PinDrawer" onClose={() => setShowPinDrawer(false)}>
                     <PinDrawer
                       channelId={channel()!.id}
                       canUnpin={(() => {

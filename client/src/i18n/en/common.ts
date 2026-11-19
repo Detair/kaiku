@@ -5,6 +5,7 @@ export const common = {
   "common.retry": "Retry",
   "common.reload": "Reload",
   "common.loadFailed": "Part of Kaiku could not be loaded. Check your connection, then reload.",
+  "common.windowFailed": "This window ran into a problem.",
   "common.copy": "Copy",
   "common.copied": "Copied",
   "common.dismiss": "Dismiss",

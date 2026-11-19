@@ -10,6 +10,7 @@ import { X } from "lucide-solid";
 import { t } from "@/i18n";
 import { errorText } from "@/i18n/errors";
 import { createDialog } from "@/lib/a11y/dialog";
+import { createModalLayer, MODAL_LAYER } from "@/lib/a11y/modalLayer";
 import { sendFriendRequest } from "@/stores/friends";
 
 interface AddFriendProps {
@@ -27,6 +28,8 @@ const AddFriend: Component<AddFriendProps> = (props) => {
     onClose: () => props.onClose(),
     initialFocus: () => input,
   });
+  // Above every window already open: this one takes the keyboard.
+  const layer = createModalLayer(MODAL_LAYER.dialog);
 
   let closeTimer: ReturnType<typeof setTimeout> | undefined;
   onCleanup(() => clearTimeout(closeTimer));
@@ -62,7 +65,8 @@ const AddFriend: Component<AddFriendProps> = (props) => {
   return (
     <Portal>
       <div
-        class="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
+        class="fixed inset-0 bg-black/50 flex items-center justify-center"
+        style={{ "z-index": layer }}
         onClick={props.onClose}
       >
         <div
