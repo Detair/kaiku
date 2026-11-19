@@ -14,6 +14,8 @@
     <!-- Incoming DM calls ring full-screen, also over the lock screen (Android 14+: the user may turn it off;
          the call then rings as a heads-up with Accept and Decline). -->
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <!-- The call screen turns the display off at the ear (proximity wake lock). Already merged from WorkManager. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.CAMERA" />
 

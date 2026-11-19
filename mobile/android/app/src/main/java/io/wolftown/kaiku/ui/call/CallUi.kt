@@ -22,6 +22,8 @@ data class CallUi(
     val durationSecs: Long? = null,
     val muted: Boolean = false,
     val speaker: Boolean = false,
+    /** The sound goes to the earpiece (the phone is held to the ear). */
+    val earpiece: Boolean = false,
 )
 
 /** Pure mapping from the call, the voice link and the audio route to [CallUi]. */
@@ -35,6 +37,20 @@ object CallUiMapper {
         titleOf: (String) -> String?,
     ): CallUi {
         val speaker = route == AudioRoute.Speaker
+        val earpiece = route == AudioRoute.Earpiece
+        return mapWithoutRoute(state, link, muted, speaker, nowMs, titleOf).let {
+            if (it.phase == CallPhase.None || it.phase == CallPhase.Ringing || it.phase == CallPhase.Ended) it else it.copy(earpiece = earpiece)
+        }
+    }
+
+    private fun mapWithoutRoute(
+        state: CallState,
+        link: VoiceLinkState,
+        muted: Boolean,
+        speaker: Boolean,
+        nowMs: Long,
+        titleOf: (String) -> String?,
+    ): CallUi {
         return when (state) {
             CallState.Idle -> CallUi(CallPhase.None)
             is CallState.Incoming ->

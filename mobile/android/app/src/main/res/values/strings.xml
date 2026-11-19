@@ -265,9 +265,7 @@
     <string name="voice_call_in_call">In call</string>
     <string name="voice_call_hang_up">Hang up</string>
     <string name="voice_call_mute">Mute</string>
-    <string name="voice_call_unmute">Unmute</string>
-    <string name="voice_call_speaker_on">Speaker on</string>
-    <string name="voice_call_speaker_off">Speaker off</string>
+    <string name="voice_call_speaker">Speaker</string>
     <string name="voice_call_start_description">Start a voice call</string>
     <string name="voice_call_unknown_person">Someone</string>
     <string name="voice_call_mic_needed">Kaiku needs the microphone for calls. Allow it in the app settings.</string>

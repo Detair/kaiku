@@ -243,7 +243,7 @@ class VoiceCallService : Service() {
         )
 
         return NotificationCompat.Builder(this, NotificationChannels.VOICE)
-            .setContentTitle(getString(status ?: R.string.voice_in_channel))
+            .setContentTitle(getString(status ?: if (forCall) R.string.voice_call_in_call else R.string.voice_in_channel))
             .setContentText(channelName)
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .setContentIntent(contentPendingIntent)

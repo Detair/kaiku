@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Call
@@ -19,7 +20,8 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilledIconButton
-import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
@@ -35,7 +37,6 @@ import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import io.wolftown.kaiku.R
@@ -141,6 +142,32 @@ private fun RingingActions(onAccept: () -> Unit, onDecline: () -> Unit) {
     }
 }
 
+/** A whole-row switch, at least 56 dp high. */
+@Composable
+private fun ToggleRow(label: String, checked: Boolean, onToggle: () -> Unit) {
+    Surface(
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 56.dp)
+            .toggleable(value = checked, role = Role.Switch, onValueChange = { onToggle() }),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                label,
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                modifier = Modifier.weight(1f),
+            )
+            Switch(checked = checked, onCheckedChange = null)
+        }
+    }
+}
+
 /** A large round button with its label below; the label is the button's accessible name. */
 @Composable
 private fun RoundAction(
@@ -177,27 +204,14 @@ private fun InCallActions(
     onToggleMute: () -> Unit,
     onToggleSpeaker: () -> Unit,
 ) {
-    val muteLabel = stringResource(if (ui.muted) R.string.voice_call_unmute else R.string.voice_call_mute)
-    val speakerLabel = stringResource(if (ui.speaker) R.string.voice_call_speaker_on else R.string.voice_call_speaker_off)
     Column(
         modifier = Modifier.fillMaxWidth(),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        FilledTonalButton(
-            onClick = onToggleMute,
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(min = 56.dp)
-                .semantics { stateDescription = muteLabel },
-        ) { Text(muteLabel, style = MaterialTheme.typography.titleMedium) }
-        FilledTonalButton(
-            onClick = onToggleSpeaker,
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(min = 56.dp)
-                .semantics { stateDescription = speakerLabel },
-        ) { Text(speakerLabel, style = MaterialTheme.typography.titleMedium) }
+        // Switches: TalkBack reads "Mute, switch, on" (the label is the setting, the switch its state).
+        ToggleRow(stringResource(R.string.voice_call_mute), checked = ui.muted, onToggle = onToggleMute)
+        ToggleRow(stringResource(R.string.voice_call_speaker), checked = ui.speaker, onToggle = onToggleSpeaker)
         Button(
             onClick = onHangUp,
             modifier = Modifier

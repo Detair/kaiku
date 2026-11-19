@@ -116,9 +116,11 @@ class MainActivity : FragmentActivity() {
      * when notifications are off, so the call can still be answered).
      */
     private fun openCallScreenWhenRinging() {
+        // Outside the lifecycle loop: after Back from a ring the app stays open, the ring
+        // does not reopen the call screen (only a new call does).
+        var opened: String? = null
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
-                var opened: String? = null
                 callController.state.collect { call ->
                     if (call is CallState.Incoming && call.callId != opened) {
                         opened = call.callId

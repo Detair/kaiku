@@ -7,6 +7,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.provider.Settings
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -79,6 +80,7 @@ class CallActivity : ComponentActivity() {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                     val ui by viewModel.ui.collectAsStateWithLifecycle()
                     val micNeeded by viewModel.micNeeded.collectAsStateWithLifecycle()
+                    LaunchedEffect(ui) { if (ui.phase != CallPhase.None) apply(CallScreenPolicy.of(ui)) }
                     CallScreen(
                         ui = ui,
                         micNeeded = micNeeded,
@@ -101,8 +103,22 @@ class CallActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
+        isStarted = true
+        applied?.let { if (it.proximityScreenOff) proximity.acquire() }
         // A socket that died while the phone slept is noticed now, not after the watchdog.
         realtimeConnectionManager.onAppForeground()
+    }
+
+    override fun onStop() {
+        // Not visible: nothing to turn off at the ear.
+        isStarted = false
+        proximity.release()
+        super.onStop()
+    }
+
+    override fun onDestroy() {
+        proximity.release()
+        super.onDestroy()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -179,16 +195,36 @@ class CallActivity : ComponentActivity() {
         )
     }
 
-    private fun showOverLockScreen() {
+    /** Until the call is known: as for a ring (a full-screen intent must show over the lock screen). */
+    private fun showOverLockScreen() = apply(CallScreenFlags(keepScreenOn = true, turnScreenOn = true, showWhenLocked = true, proximityScreenOff = false))
+
+    private var applied: CallScreenFlags? = null
+
+    /** Applies [flags] to the window and the proximity wake lock (only what changed). */
+    private fun apply(flags: CallScreenFlags) {
+        if (flags == applied) return
+        applied = flags
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
-            setShowWhenLocked(true)
-            setTurnScreenOn(true)
+            setShowWhenLocked(flags.showWhenLocked)
+            setTurnScreenOn(flags.turnScreenOn)
         } else {
             @Suppress("DEPRECATION")
-            window.addFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON)
+            setWindowFlag(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED, flags.showWhenLocked)
+            @Suppress("DEPRECATION")
+            setWindowFlag(WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON, flags.turnScreenOn)
         }
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        setWindowFlag(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON, flags.keepScreenOn)
+        if (flags.proximityScreenOff && isStarted) proximity.acquire() else proximity.release()
     }
+
+    private fun setWindowFlag(flag: Int, on: Boolean) {
+        if (on) window.addFlags(flag) else window.clearFlags(flag)
+    }
+
+    private var isStarted = false
+
+    /** The display off while the phone is at the ear (only while this screen is visible). */
+    private val proximity by lazy { ProximityLock(getSystemService(PowerManager::class.java)) }
 
     private companion object {
         /** How long a screen opened without a call waits for one (the ring is applied asynchronously). */

@@ -62,8 +62,8 @@ import javax.inject.Singleton
  *   signalling state lock (`VoiceSignalling`). Those four are the locks
  *   callbacks may take, each only for a short section that calls nothing
  *   blocking.
- * - [micLock] may be held across calls into WebRTC. No callback takes it,
- *   nor the teardown mutex of the repository.
+ * - [micLock] and [disposeLock] may be held across calls into WebRTC. No
+ *   callback takes them, nor the teardown mutex of the repository.
  * - Callbacks may call back into WebRTC (they are on its thread), holding
  *   none of these locks.
  */
@@ -207,14 +207,22 @@ class WebRtcManager @Inject constructor(
      * carried), not from the last callback. Waits for WebRTC's thread:
      * call it holding none of the locks a callback takes.
      */
-    fun publisherConnectedNow(): Boolean {
+    fun publisherConnectedNow(): Boolean = synchronized(disposeLock) {
+        // Under [disposeLock]: a connection retired meanwhile is not disposed while it is read.
         val pc = publisherPc ?: return false
-        return try {
+        try {
             pc.iceConnectionState().isConnected()
         } catch (e: IllegalStateException) {
-            false // disposed meanwhile
+            false
         }
     }
+
+    /**
+     * Held across closing and disposing the connections and across
+     * [publisherConnectedNow], so a connection is never read while it is
+     * disposed. No callback takes it; it may be held across calls into WebRTC.
+     */
+    private val disposeLock = Any()
 
     // -- Callbacks ------------------------------------------------------------
 
@@ -454,10 +462,12 @@ class WebRtcManager @Inject constructor(
             track?.dispose()
             source?.dispose()
         }
-        retired.publisher?.close()
-        retired.publisher?.dispose()
-        retired.subscriber?.close()
-        retired.subscriber?.dispose()
+        synchronized(disposeLock) {
+            retired.publisher?.close()
+            retired.publisher?.dispose()
+            retired.subscriber?.close()
+            retired.subscriber?.dispose()
+        }
 
         logger.info("Publisher and subscriber PeerConnections closed")
         return retired.generation
