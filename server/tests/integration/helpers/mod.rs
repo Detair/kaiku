@@ -22,6 +22,7 @@ pub mod login;
 pub mod migrations;
 pub mod passkeys;
 pub mod tokens;
+pub mod voice_media;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -231,7 +232,11 @@ impl TestApp {
     /// (`voice_screen_share_start` is refused while `screen_share_limiter` is
     /// `None`).
     pub async fn with_pool_and_screen_share_limiter(pool: PgPool) -> Self {
-        let config = Config::default_for_test();
+        Self::with_config_and_screen_share_limiter(pool, Config::default_for_test()).await
+    }
+
+    /// [`Self::with_pool_and_screen_share_limiter`] with a custom config.
+    pub async fn with_config_and_screen_share_limiter(pool: PgPool, config: Config) -> Self {
         let redis = db::create_redis_client(&config.redis_url)
             .await
             .expect("Failed to connect to test Redis");

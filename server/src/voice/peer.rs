@@ -64,6 +64,9 @@ pub struct Peer {
     /// The client sends e.g. `VoiceWebcamStart` before `addTrack()`, so the
     /// server can pop from this queue when `on_track` fires to identify the source.
     pending_track_sources: RwLock<Vec<TrackSource>>,
+    /// Woken whenever a source is announced (queued), for a track that
+    /// arrived before its announcement.
+    announced: tokio::sync::Notify,
     /// Whether this peer has already subscribed to existing tracks.
     /// Used for robust first-offer detection instead of checking `outgoing_tracks_count`.
     pub has_subscribed: AtomicBool,
@@ -100,6 +103,7 @@ impl Peer {
             session_id: Uuid::now_v7(),
             connected_at: Utc::now(),
             pending_track_sources: RwLock::new(Vec::new()),
+            announced: tokio::sync::Notify::new(),
             has_subscribed: AtomicBool::new(false),
             admission: std::sync::OnceLock::new(),
         }
@@ -183,6 +187,33 @@ impl Peer {
     pub async fn push_pending_source(&self, source: TrackSource) {
         let mut pending = self.pending_track_sources.write().await;
         pending.push(source);
+        drop(pending);
+        self.announced.notify_waiters();
+    }
+
+    /// Take the oldest announced video source; if none is queued, wait up to
+    /// `grace` for an announcement. `None`: the track stays unannounced.
+    ///
+    /// A track is matched to an announcement by arrival order, whichever of
+    /// the two comes first (contract C30).
+    pub async fn take_video_source_within(
+        &self,
+        grace: std::time::Duration,
+    ) -> Option<TrackSource> {
+        let deadline = tokio::time::Instant::now() + grace;
+        loop {
+            // Register for the wake-up before looking, so an announcement
+            // between the look and the wait is not missed.
+            let notified = self.announced.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if let Some(source) = self.pop_pending_video_source().await {
+                return Some(source);
+            }
+            if tokio::time::timeout_at(deadline, notified).await.is_err() {
+                return self.pop_pending_video_source().await;
+            }
+        }
     }
 
     /// Dequeue the first pending video source, if any.

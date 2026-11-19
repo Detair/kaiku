@@ -706,6 +706,10 @@ async fn rate_limit_voice_and_call_codes_are_upper_snake() {
             VoiceError::Internal(s()),
             VoiceError::Database(db()),
             VoiceError::Outbound(OutboundSendError::Closed),
+            VoiceError::ScreenShareForbidden,
+            VoiceError::ScreenShareLimit("x"),
+            VoiceError::VideoSourceUnannounced,
+            VoiceError::JoinRefused,
         ],
     )
     .await;

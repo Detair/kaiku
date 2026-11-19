@@ -1490,6 +1490,16 @@ async fn revalidate_socket(
     Ok(())
 }
 
+/// The `voice_error` event for a failed voice request: a machine-readable
+/// `code` (contract C30) and a text without internal details.
+#[must_use]
+pub fn voice_error_event(e: &crate::voice::VoiceError) -> ServerEvent {
+    ServerEvent::VoiceError {
+        code: e.code().to_string(),
+        message: e.client_message(),
+    }
+}
+
 /// Handle a client message.
 ///
 /// **Internal:** Exposed for integration tests only.
@@ -1731,14 +1741,7 @@ pub async fn handle_client_message(
                     return Err(Box::new(e));
                 }
                 warn!("Voice event error: {}", e);
-                send_outbound(
-                    tx,
-                    OutboundMsg::Event(ServerEvent::VoiceError {
-                        code: "VOICE_ERROR".to_string(),
-                        message: e.to_string(),
-                    }),
-                )
-                .await?;
+                send_outbound(tx, OutboundMsg::Event(voice_error_event(&e))).await?;
             }
         }
 

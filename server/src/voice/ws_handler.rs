@@ -78,6 +78,11 @@ pub async fn handle_voice_event(
                 event_class = class.as_scope(),
                 "voice_rate_limit_drop",
             );
+            // A share start is a request the client waits for (C30): answer
+            // it instead of dropping it silently.
+            if matches!(event, ClientEvent::VoiceScreenShareStart { .. }) {
+                return Err(VoiceError::RateLimited("screen_share_start"));
+            }
             return Ok(());
         }
     }
@@ -710,7 +715,7 @@ async fn handle_screen_share_start(
         .map_err(|e| map_permission_error(e, "screen share"))?;
 
     if !ctx.has_permission(crate::permissions::GuildPermissions::SCREEN_SHARE) {
-        return Err(VoiceError::Unauthorized);
+        return Err(VoiceError::ScreenShareForbidden);
     }
 
     // Validate source label
@@ -736,8 +741,8 @@ async fn handle_screen_share_start(
         const MAX_STREAMS_PER_USER: usize = 3;
         let count = room.get_user_stream_count(params.user_id).await;
         if count >= MAX_STREAMS_PER_USER {
-            return Err(VoiceError::Signaling(
-                "Maximum 3 concurrent screen shares per user".to_string(),
+            return Err(VoiceError::ScreenShareLimit(
+                "Maximum 3 concurrent screen shares per user",
             ));
         }
     }
@@ -767,11 +772,12 @@ async fn handle_screen_share_start(
         .ok_or_else(|| VoiceError::Signaling("Screen share limiter unavailable".to_string()))?;
     if let Err(e) = limiter.start(params.channel_id, max_shares).await {
         warn!(user_id = %params.user_id, channel_id = %params.channel_id, error = ?e, "Screen share limit check failed");
-        return Err(VoiceError::Signaling(match e {
-            ScreenShareError::LimitReached => "Screen share limit reached".to_string(),
-            ScreenShareError::InternalError => "Internal error".to_string(),
-            _ => format!("{e:?}"),
-        }));
+        return Err(match e {
+            ScreenShareError::LimitReached => {
+                VoiceError::ScreenShareLimit("Screen share limit reached")
+            }
+            other => VoiceError::Internal(format!("screen share limiter: {other:?}")),
+        });
     }
 
     // Queue pending track sources so setup_track_handler can identify them

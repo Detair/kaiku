@@ -83,6 +83,27 @@ pub struct StalePeer {
     pub session_id: Uuid,
 }
 
+/// How long a video track that arrived before its announcement waits for
+/// it (the rc.5 web client adds the track right before it sends the start).
+pub const UNANNOUNCED_TRACK_GRACE: Duration = Duration::from_secs(3);
+
+/// Drop a video track that has no announced source: it gets no forwarder
+/// and no subscriber tracks, and the sender learns why.
+async fn reject_unannounced_track(peer: &Peer, track: &webrtc::track::track_remote::TrackRemote) {
+    warn!(
+        user_id = %peer.user_id,
+        channel_id = %peer.channel_id,
+        track_id = %track.id(),
+        "Dropping video track without an announced source"
+    );
+    let event = OutboundMsg::Event(crate::ws::handlers::voice_error_event(
+        &VoiceError::VideoSourceUnannounced,
+    ));
+    if let Err(e) = send_outbound_within(&peer.signal_tx, event, PEER_SIGNAL_SEND_TIMEOUT).await {
+        debug!(user_id = %peer.user_id, error = %e, "Could not report dropped video track");
+    }
+}
+
 /// Default maximum participants per room.
 const DEFAULT_MAX_PARTICIPANTS: usize = 25;
 
@@ -891,14 +912,19 @@ impl SfuServer {
                                 .pop_pending_audio_source()
                                 .await
                                 .unwrap_or(TrackSource::Microphone),
-                            RTPCodecType::Video => peer
-                                .pop_pending_video_source()
-                                .await
-                                // Fallback: if no pending source was queued, assume
-                                // it is a screen-video track with a nil stream_id.
-                                // This keeps backwards compatibility for the initial
-                                // mic+screen two-track setup.
-                                .unwrap_or(TrackSource::ScreenVideo(Uuid::nil())),
+                            // A video track needs an announced source
+                            // (`voice_screen_share_start` / `voice_webcam_start`,
+                            // accepted). One that stays unannounced is never
+                            // forwarded (contract C30).
+                            RTPCodecType::Video => {
+                                match peer.take_video_source_within(UNANNOUNCED_TRACK_GRACE).await {
+                                    Some(source) => source,
+                                    None => {
+                                        reject_unannounced_track(&peer, &track).await;
+                                        return;
+                                    }
+                                }
+                            }
                             RTPCodecType::Unspecified => {
                                 warn!("Unspecified track kind: {:?}", track.kind());
                                 return;
