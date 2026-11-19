@@ -54,7 +54,7 @@ const StatusPicker: Component<StatusPickerProps> = (props) => {
               class="w-full flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-white/5 transition-colors text-left group"
             >
               <div class="group-hover:scale-110 transition-transform">
-                <StatusIndicator status={option.value} size="sm" />
+                <StatusIndicator status={option.value} size="sm" decorative />
               </div>
               <span class="text-sm font-medium text-text-primary">
                 {t(option.label)}

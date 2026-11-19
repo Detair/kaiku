@@ -8,7 +8,7 @@
  * 4. Moderation action log
  */
 
-import { Component, createSignal, For, Show, onMount } from "solid-js";
+import { Component, createEffect, createSignal, For, Show, onMount } from "solid-js";
 import {
   ShieldAlert,
   Plus,
@@ -34,9 +34,14 @@ import type {
   ModerationAction,
   TestFilterResponse,
 } from "@/lib/api/filters";
+import { t } from "@/i18n";
+import ConfirmActionDialog from "@/components/admin/ConfirmActionDialog";
+import { reportFailure, reportSuccess } from "./settingsAction";
 
 interface SafetyTabProps {
   guildId: string;
+  /** Unsaved filter changes, so the settings window can warn before closing (ADMIN-17). */
+  onDirtyChange?: (dirty: boolean) => void;
 }
 
 const CATEGORY_INFO: Record<string, { label: string; description: string }> = {
@@ -84,7 +89,7 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
   const [newIsRegex, setNewIsRegex] = createSignal(false);
   const [newDescription, setNewDescription] = createSignal("");
   const [addingPattern, setAddingPattern] = createSignal(false);
-  const [deleteConfirm, setDeleteConfirm] = createSignal<string | null>(null);
+  const [deletingPattern, setDeletingPattern] = createSignal<GuildFilterPattern | null>(null);
 
   // Test panel
   const [testInput, setTestInput] = createSignal("");
@@ -126,7 +131,7 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
       }
       setLocalConfigs(local);
     } catch (err) {
-      console.error("Failed to load filter configs:", err);
+      reportFailure(t("guildSettings.safety.loadFailed"), err);
     } finally {
       setConfigLoading(false);
     }
@@ -138,7 +143,7 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
       const data = await listCustomPatterns(props.guildId);
       setPatterns(data);
     } catch (err) {
-      console.error("Failed to load custom patterns:", err);
+      reportFailure(t("guildSettings.safety.loadFailed"), err);
     } finally {
       setPatternsLoading(false);
     }
@@ -154,8 +159,9 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
       }));
       const updated = await updateFilterConfigs(props.guildId, entries);
       setConfigs(updated);
+      reportSuccess(t("guildSettings.safety.saved"));
     } catch (err) {
-      console.error("Failed to save filter configs:", err);
+      reportFailure(t("guildSettings.safety.saveFailed"), err);
     } finally {
       setSavingConfig(false);
     }
@@ -190,25 +196,15 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
       setNewDescription("");
       setShowAddPattern(false);
     } catch (err) {
-      console.error("Failed to add pattern:", err);
+      reportFailure(t("guildSettings.safety.addPatternFailed"), err);
     } finally {
       setAddingPattern(false);
     }
   };
 
-  const handleDeletePattern = async (patternId: string) => {
-    if (deleteConfirm() === patternId) {
-      try {
-        await deleteCustomPattern(props.guildId, patternId);
-        setPatterns((prev) => prev.filter((p) => p.id !== patternId));
-      } catch (err) {
-        console.error("Failed to delete pattern:", err);
-      }
-      setDeleteConfirm(null);
-    } else {
-      setDeleteConfirm(patternId);
-      setTimeout(() => setDeleteConfirm(null), 3000);
-    }
+  const removePattern = async (patternId: string) => {
+    await deleteCustomPattern(props.guildId, patternId);
+    setPatterns((prev) => prev.filter((p) => p.id !== patternId));
   };
 
   const handleTest = async () => {
@@ -218,7 +214,7 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
       const result = await testFilter(props.guildId, testInput());
       setTestResult(result);
     } catch (err) {
-      console.error("Failed to test filter:", err);
+      reportFailure(t("guildSettings.safety.testFailed"), err);
     } finally {
       setTesting(false);
     }
@@ -232,7 +228,7 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
       setLogTotal(result.total);
       setLogOffset(offset);
     } catch (err) {
-      console.error("Failed to load moderation log:", err);
+      reportFailure(t("guildSettings.safety.loadFailed"), err);
     } finally {
       setLogLoading(false);
     }
@@ -263,6 +259,8 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
     }
     return false;
   };
+
+  createEffect(() => props.onDirtyChange?.(hasConfigChanges()));
 
   return (
     <div class="p-6 space-y-6">
@@ -360,7 +358,7 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
                           {info?.label ?? cat}
                         </span>
                         <Show when={local().enabled}>
-                          <span class="text-xs px-2 py-0.5 rounded-full bg-green-500/20 text-green-400">
+                          <span class="text-xs px-2 py-0.5 rounded-full bg-status-success/20 text-text-primary">
                             Active
                           </span>
                         </Show>
@@ -386,9 +384,11 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
                       </select>
                       <button
                         onClick={() => toggleCategory(cat)}
+                        aria-label={t("guildSettings.safety.filterNamed", { name: info?.label ?? cat })}
+                        aria-pressed={local().enabled}
                         class="text-2xl transition-colors"
                         classList={{
-                          "text-green-400": local().enabled,
+                          "text-accent-success": local().enabled,
                           "text-text-secondary": !local().enabled,
                         }}
                       >
@@ -413,7 +413,7 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
                 disabled={savingConfig()}
                 class="px-4 py-2 rounded-lg bg-accent-primary text-on-accent font-medium text-sm hover:bg-accent-primary/90 transition-colors state-disabled"
               >
-                {savingConfig() ? "Saving..." : "Save Changes"}
+                {savingConfig() ? t("guildSettings.working") : t("guildSettings.saveChanges")}
               </button>
             </div>
           </Show>
@@ -518,12 +518,12 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
                         {pattern.pattern}
                       </code>
                       <Show when={pattern.is_regex}>
-                        <span class="text-xs px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-400">
+                        <span class="text-xs px-1.5 py-0.5 rounded bg-accent-primary/20 text-text-primary">
                           regex
                         </span>
                       </Show>
                       <Show when={!pattern.enabled}>
-                        <span class="text-xs px-1.5 py-0.5 rounded bg-yellow-500/20 text-yellow-400">
+                        <span class="text-xs px-1.5 py-0.5 rounded bg-status-warning/20 text-text-primary">
                           disabled
                         </span>
                       </Show>
@@ -535,19 +535,10 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
                     </Show>
                   </div>
                   <button
-                    onClick={() => handleDeletePattern(pattern.id)}
-                    class="p-1.5 rounded-lg transition-colors"
-                    classList={{
-                      "text-red-400 bg-red-500/20":
-                        deleteConfirm() === pattern.id,
-                      "text-text-secondary hover:text-red-400 hover:bg-red-500/10":
-                        deleteConfirm() !== pattern.id,
-                    }}
-                    title={
-                      deleteConfirm() === pattern.id
-                        ? "Click again to confirm"
-                        : "Delete"
-                    }
+                    onClick={() => setDeletingPattern(pattern)}
+                    class="p-1.5 rounded-lg transition-colors text-text-secondary hover:text-text-primary hover:bg-white/10"
+                    title={t("guildSettings.safety.deletePatternNamed", { pattern: pattern.pattern })}
+                    aria-label={t("guildSettings.safety.deletePatternNamed", { pattern: pattern.pattern })}
                   >
                     <Trash2 class="w-4 h-4" />
                   </button>
@@ -589,16 +580,12 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
               <div
                 class="p-4 rounded-xl border"
                 classList={{
-                  "border-red-500/30 bg-red-500/5": result().blocked,
-                  "border-green-500/30 bg-green-500/5": !result().blocked,
+                  "border-status-error/30 bg-status-error/5": result().blocked,
+                  "border-status-success/30 bg-status-success/5": !result().blocked,
                 }}
               >
                 <p
-                  class="font-medium text-sm"
-                  classList={{
-                    "text-red-400": result().blocked,
-                    "text-green-400": !result().blocked,
-                  }}
+                  class="font-medium text-sm text-text-primary"
                 >
                   {result().blocked ? "Blocked" : "Allowed"} —{" "}
                   {result().matches.length} match
@@ -661,11 +648,11 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
                       <span
                         class="text-xs px-1.5 py-0.5 rounded"
                         classList={{
-                          "bg-red-500/20 text-red-400":
+                          "bg-status-error/20 text-text-primary":
                             entry.action === "block",
-                          "bg-yellow-500/20 text-yellow-400":
+                          "bg-status-warning/20 text-text-primary":
                             entry.action === "warn",
-                          "bg-blue-500/20 text-blue-400":
+                          "bg-accent-primary/20 text-text-primary":
                             entry.action === "log",
                         }}
                       >
@@ -722,6 +709,19 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
             </Show>
           </Show>
         </div>
+      </Show>
+      <Show when={deletingPattern()}>
+        {(pattern) => (
+          <ConfirmActionDialog
+            title={t("guildSettings.safety.deletePatternTitle")}
+            message={t("guildSettings.safety.deletePatternBody", { pattern: pattern().pattern })}
+            confirmLabel={t("guildSettings.safety.deletePattern")}
+            danger
+            onConfirm={() => removePattern(pattern().id)}
+            onDone={() => setDeletingPattern(null)}
+            onCancel={() => setDeletingPattern(null)}
+          />
+        )}
       </Show>
     </div>
   );

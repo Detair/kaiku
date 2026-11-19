@@ -369,9 +369,10 @@ const StatusBadge: Component<{ statusCode: string | null; isError: boolean }> =
 
 const DurationBadge: Component<{ ms: number }> = (props) => {
   const color = () => {
-    if (props.ms >= 5000) return "text-red-400";
-    if (props.ms >= 1000) return "text-yellow-400";
-    return "text-green-400";
+    // Weight, not hue, marks slow requests: readable in every theme (A11Y-15).
+    if (props.ms >= 5000) return "text-text-primary font-bold";
+    if (props.ms >= 1000) return "text-text-primary";
+    return "text-text-secondary";
   };
 
   return (
@@ -598,7 +599,7 @@ const CommandCenterPanel: Component = () => {
             <Show when={summary()!.voice_health_score != null}>
               <div class="w-px h-4 bg-white/10" />
               <div class="flex items-center gap-1.5">
-                <Heart class="w-3.5 h-3.5 text-green-400" />
+                <Heart class="w-3.5 h-3.5 text-text-primary" />
                 <span class="text-text-primary font-medium">
                   {(summary()!.voice_health_score! * 100).toFixed(0)}%
                 </span>
@@ -606,7 +607,7 @@ const CommandCenterPanel: Component = () => {
             </Show>
             <Show when={summary()!.active_alert_count > 0}>
               <div class="w-px h-4 bg-white/10" />
-              <div class="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-red-500/20 text-red-400 text-xs font-medium">
+              <div class="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-status-error/20 text-text-primary text-xs font-medium">
                 <AlertTriangle class="w-3 h-3" />
                 {summary()!.active_alert_count} alerts
               </div>
@@ -823,8 +824,8 @@ const CommandCenterPanel: Component = () => {
                       <span
                         class="text-right"
                         classList={{
-                          "text-red-400": route.error_rate_percent > 5,
-                          "text-yellow-400":
+                          "text-text-primary font-bold": route.error_rate_percent > 5,
+                          "text-text-primary":
                             route.error_rate_percent > 1 &&
                             route.error_rate_percent <= 5,
                           "text-text-secondary":
@@ -880,7 +881,7 @@ const CommandCenterPanel: Component = () => {
                           <span class="text-text-secondary"> {err.route}</span>
                         </Show>
                       </span>
-                      <span class="text-right text-red-400">{err.count}</span>
+                      <span class="text-right text-text-primary">{err.count}</span>
                       <span class="text-right text-text-secondary">
                         {err.avg_p95_ms != null
                           ? `${err.avg_p95_ms.toFixed(0)}ms`
@@ -1137,7 +1138,7 @@ const CommandCenterPanel: Component = () => {
                   rel="noopener noreferrer"
                   class="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/5 text-sm text-text-primary hover:bg-white/10 transition-colors"
                 >
-                  <ExternalLink class="w-4 h-4 text-blue-400" />
+                  <ExternalLink class="w-4 h-4 text-text-primary" />
                   Tempo
                 </a>
               </Show>
@@ -1148,7 +1149,7 @@ const CommandCenterPanel: Component = () => {
                   rel="noopener noreferrer"
                   class="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/5 text-sm text-text-primary hover:bg-white/10 transition-colors"
                 >
-                  <ExternalLink class="w-4 h-4 text-green-400" />
+                  <ExternalLink class="w-4 h-4 text-text-primary" />
                   Loki
                 </a>
               </Show>
@@ -1159,7 +1160,7 @@ const CommandCenterPanel: Component = () => {
                   rel="noopener noreferrer"
                   class="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/5 text-sm text-text-primary hover:bg-white/10 transition-colors"
                 >
-                  <ExternalLink class="w-4 h-4 text-red-400" />
+                  <ExternalLink class="w-4 h-4 text-text-primary" />
                   Prometheus
                 </a>
               </Show>

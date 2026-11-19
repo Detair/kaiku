@@ -24,7 +24,7 @@ const MobileHeader: Component<MobileHeaderProps> = (props) => {
   return (
     <header class="h-[44px] flex items-center px-3 gap-3 bg-surface-layer1 border-b border-border-default shrink-0">
       <button
-        class="p-2 rounded-lg hover:bg-white/10 transition-colors"
+        class="tap-target p-2 rounded-lg hover:bg-white/10 transition-colors"
         onClick={props.onMenuClick}
         aria-label={t("home.mobile.openNavigation")}
       >

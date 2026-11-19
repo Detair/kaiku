@@ -22,6 +22,7 @@ import {
   retryConnectionNow,
   wsState,
 } from "@/stores/websocket";
+import { MODAL_LAYER } from "@/lib/a11y/modalLayer";
 
 const SHOW_AFTER_MS = 2000;
 
@@ -70,7 +71,8 @@ const ConnectionIndicator: Component = () => {
     <div
       role="status"
       aria-live="polite"
-      class="fixed top-2 left-1/2 -translate-x-1/2 z-50 max-w-[calc(100vw-2rem)]"
+      class="fixed top-2 left-1/2 -translate-x-1/2 max-w-[calc(100vw-2rem)]"
+      style={{ "z-index": MODAL_LAYER.notice }}
     >
       <Show when={visible()}>
         <div class="rounded-lg bg-surface-base shadow-lg">

@@ -99,6 +99,8 @@ interface Pair {
   bg: string;
   /** Surface under the bg (for translucent backgrounds). */
   under?: string;
+  /** Opacity modifier on the bg class (bg-accent-danger/20 is 0.2). */
+  alpha?: number;
   min: number;
 }
 
@@ -107,7 +109,21 @@ function pairs(): Pair[] {
     // Documented tiers (CLAUDE.md "UI Contrast Rules").
     { fg: "--color-text-primary", bg: "--color-surface-base", min: 7 },
     { fg: "--color-text-secondary", bg: "--color-surface-layer1", min: 4.5 },
-    { fg: "--color-text-muted", bg: "--color-surface-layer1", min: 3 },
+    // A11Y-3: muted text is used as 12 px helper text, so it needs body-text
+    // contrast (4.5:1) on both panel layers, not only on layer1.
+    { fg: "--color-text-muted", bg: "--color-surface-layer1", min: 4.5 },
+    { fg: "--color-text-muted", bg: "--color-surface-layer2", min: 4.5 },
+    { fg: "--color-text-secondary", bg: "--color-surface-layer2", min: 4.5 },
+    // A11Y-7: red text (text-accent-danger, text-danger, text-status-error are
+    // mapped to --color-danger-text in uno.config.ts) on both panel layers.
+    { fg: "--color-danger-text", bg: "--color-surface-layer1", min: 4.5 },
+    { fg: "--color-danger-text", bg: "--color-surface-layer2", min: 4.5 },
+    // K1: red text on red-tinted panels (confirm buttons, error banners).
+    { fg: "--color-danger-text", bg: "--color-error-bg", under: "--color-surface-layer1", min: 4.5 },
+    { fg: "--color-danger-text", bg: "--color-error-bg", under: "--color-surface-layer2", min: 4.5 },
+    // Toast fills (A11Y-8): the label must be readable on every type colour.
+    { fg: "--color-text-on-success", bg: "--color-accent-success", min: 4.5 },
+    { fg: "--color-text-on-warning", bg: "--color-accent-warning", min: 4.5 },
     // Button labels, default state.
     { fg: "--color-text-on-accent", bg: "--color-accent-primary", min: 4.5 },
     // Danger buttons use their own darker fill; accent-danger stays the
@@ -119,6 +135,12 @@ function pairs(): Pair[] {
     { fg: "--color-toggle-knob-on", bg: "--color-toggle-track-on", min: 3 },
     { fg: "--color-toggle-knob-off", bg: "--color-toggle-track-off", min: 3 },
   ];
+  for (const s of ["--color-surface-layer1", "--color-surface-layer2"]) {
+    // K1: bg-accent-danger/10 to /20 behind red text, over both panel layers.
+    for (const alpha of [0.1, 0.15, 0.2]) {
+      list.push({ fg: "--color-danger-text", bg: "--color-accent-danger", alpha, under: s, min: 4.5 });
+    }
+  }
   for (const s of SURFACES) {
     // A disabled ghost button has no fill, so its label sits on the surface.
     list.push({ fg: "--color-disabled-text", bg: s, min: 3 });
@@ -130,11 +152,40 @@ function pairs(): Pair[] {
     list.push({ fg: "--color-text-placeholder", bg: s, min: 3 });
     // Focus indicator.
     list.push({ fg: "--color-focus-ring", bg: s, min: 3 });
+    // A11Y-6: the outline of a text field (input-field) must be findable on
+    // every surface the field can sit on (WCAG 1.4.11, 3:1).
+    list.push({ fg: "--color-border-input", bg: s, min: 3 });
   }
   return list;
 }
 
 const THEME_NAMES = [...themes.keys()];
+
+/**
+ * The light theme is offered to everyone (A11Y-10), so every accent that is
+ * used as text must read on both panel layers, and the text colours must be
+ * dark enough on all four surfaces.
+ */
+describe("solarized-light as a selectable theme", () => {
+  const theme = themes.get("solarized-light")!;
+  it.each([
+    ["--color-accent-primary", "--color-surface-layer1", 4.5],
+    ["--color-accent-primary", "--color-surface-layer2", 4.5],
+    ["--color-accent-success", "--color-surface-layer1", 4.5],
+    ["--color-accent-success", "--color-surface-layer2", 4.5],
+    ["--color-accent-warning", "--color-surface-layer1", 4.5],
+    ["--color-accent-warning", "--color-surface-layer2", 4.5],
+    ["--color-text-primary", "--color-surface-layer2", 7],
+    ["--color-text-primary", "--color-surface-highlight", 4.5],
+    ["--color-text-input", "--color-surface-layer2", 7],
+    ["--color-error-text", "--color-surface-layer2", 4.5],
+    ["--color-text-on-accent", "--color-accent-primary", 4.5],
+    ["--color-text-on-danger", "--color-danger-fill", 4.5],
+  ] as const)("%s on %s", (fg, bg, min) => {
+    const r = ratio(colour(theme, fg), colour(theme, bg));
+    expect(Number(r.toFixed(2)), `${fg} on ${bg}`).toBeGreaterThanOrEqual(min);
+  });
+});
 
 describe("theme contrast", () => {
   it("parses every theme from themes.css", () => {
@@ -152,15 +203,56 @@ describe("theme contrast", () => {
   describe.each(THEME_NAMES)("%s", (name) => {
     const theme = themes.get(name)!;
 
-    it.each(pairs().map((p) => [`${p.fg} on ${p.bg}`, p] as const))(
+    it.each(
+      pairs().map(
+        (p) =>
+          [`${p.fg} on ${p.bg}${p.alpha ? `/${p.alpha * 100}` : ""}${p.under ? ` over ${p.under}` : ""}`, p] as const,
+      ),
+    )(
       "%s",
       (_label, p) => {
-        const bg = colour(theme, p.bg, p.under ?? "--color-surface-layer2");
+        const under = p.under ?? "--color-surface-layer2";
+        const bg = p.alpha
+          ? over([...colour(theme, p.bg, under), p.alpha], colour(theme, under))
+          : colour(theme, p.bg, under);
         const fg = parseColor(resolve(theme, p.fg));
         const r = ratio(fg[3] >= 1 ? [fg[0], fg[1], fg[2]] : over(fg, bg), bg);
         expect(Number(r.toFixed(2)), `${name}: ${p.fg} on ${p.bg}`).toBeGreaterThanOrEqual(p.min);
       },
     );
+
+    // K2: muted text inside a selected or hovered row (surface-highlight).
+    // pixel-cozy keeps a lower floor: its secondary text is 4.45 there, and
+    // lifting muted to 4.5 would make it brighter than secondary on layer2
+    // (5.87 vs 5.74), so the tiers would collapse. Measured 3.53 (UX4a
+    // ledger). The floor stops it from getting worse until the pixel text
+    // tiers are retuned.
+    it("muted text on surface-highlight", () => {
+      const min = name === "pixel-cozy" ? 3.5 : 4.5;
+      const r = ratio(colour(theme, "--color-text-muted"), colour(theme, "--color-surface-highlight"));
+      expect(Number(r.toFixed(2)), `${name}: muted on highlight`).toBeGreaterThanOrEqual(min);
+    });
+
+    it("text tiers keep their order: primary > secondary > muted", () => {
+      for (const s of ["--color-surface-layer1", "--color-surface-layer2"]) {
+        const bg = colour(theme, s);
+        const p = ratio(colour(theme, "--color-text-primary"), bg);
+        const sec = ratio(colour(theme, "--color-text-secondary"), bg);
+        const mu = ratio(colour(theme, "--color-text-muted"), bg);
+        expect(p, `${name}: primary vs secondary on ${s}`).toBeGreaterThan(sec);
+        expect(sec, `${name}: secondary vs muted on ${s}`).toBeGreaterThan(mu);
+      }
+    });
+
+    it("every colour token has a matching -rgb token", () => {
+      for (const [key, value] of theme) {
+        if (!key.endsWith("-rgb") || !/^\d/.test(value)) continue;
+        const base = key.slice(0, -4);
+        if (!theme.has(base)) continue;
+        const c = colour(theme, base);
+        expect(value.split(/\s+/).map(Number), `${name}: ${key}`).toEqual(c);
+      }
+    });
 
     it("placeholder reads clearly dimmer than typed text", () => {
       for (const s of SURFACES) {
@@ -187,5 +279,96 @@ describe("theme contrast", () => {
       const accent = colour(theme, "--color-accent-primary");
       expect(ratio(disabled, accent), `${name}: disabled vs accent`).toBeGreaterThanOrEqual(1.5);
     });
+  });
+});
+
+describe("code highlighting in the light theme", () => {
+  const hl = readFileSync(join(__dirname, "..", "highlight-theme.css"), "utf8").replace(
+    /\/\*[\s\S]*?\*\//g,
+    "",
+  );
+  const theme = themes.get("solarized-light")!;
+  const colours = [
+    ...hl.matchAll(/:root\[data-theme="solarized-light"\][^{]*\{\s*color:\s*(#[0-9a-f]{6});/gi),
+  ].map((m) => m[1]);
+
+  it("overrides every highlight colour group", () => {
+    expect(colours.length).toBe(6);
+  });
+
+  it.each(colours)("%s reads on the code block (layer2) and layer1", (hex) => {
+    for (const s of ["--color-surface-layer1", "--color-surface-layer2"]) {
+      const c = parseColor(hex);
+      const r = ratio([c[0], c[1], c[2]], colour(theme, s));
+      expect(Number(r.toFixed(2)), `${hex} on ${s}`).toBeGreaterThanOrEqual(4.5);
+    }
+  });
+});
+
+/**
+ * Toasts (UX4a W2): the title, the message line and the action button all sit
+ * on the toast fill. The classes are read from Toast.tsx, so an opacity on the
+ * message or a tinted action background (rest or hover) is composited here
+ * before the ratio is taken. Text is 4.5:1, the dismiss icon 3:1.
+ */
+describe("toast text on every toast fill", () => {
+  const toastSrc = readFileSync(join(__dirname, "..", "..", "components", "ui", "Toast.tsx"), "utf8");
+  const fillToken: Record<string, string> = {
+    "accent-primary": "--color-accent-primary",
+    "accent-success": "--color-accent-success",
+    "accent-warning": "--color-accent-warning",
+    "accent-danger-fill": "--color-danger-fill",
+  };
+  const typeStyles = [...toastSrc.matchAll(/^\s*(\w+): "bg-([\w-]+) border-[\w-]+ text-(on-[\w]+)",$/gm)].map(
+    (m) => ({ type: m[1], fill: fillToken[m[2]], label: `--color-text-${m[3]}` }),
+  );
+  const classOf = (re: RegExp, what: string) => {
+    const m = re.exec(toastSrc);
+    if (!m) throw new Error(`${what} not found in Toast.tsx`);
+    return m[1];
+  };
+  const parts = [
+    ["title", classOf(/<p class="([^"]*)">\{props\.toast\.title\}/, "title"), 4.5],
+    ["message", classOf(/<p class="([^"]*)">\{props\.toast\.message\}/, "message"), 4.5],
+    ["action", classOf(/class="([^"]*)"\s*onClick=\{handleAction\}/, "action"), 4.5],
+    ["dismiss icon", classOf(/class="([^"]*)"\s*onClick=\{\(\) => dismissToast/, "dismiss"), 3],
+  ] as const;
+
+  /** Backgrounds drawn by a class list at rest and on hover (black/white tints). */
+  function tints(classes: string): { state: string; rgba: Rgba | null }[] {
+    const tint = (prefix: string) => {
+      const m = new RegExp(`(?:^|\\s)${prefix}bg-(black|white)/(\\d+)(?:\\s|$)`).exec(classes);
+      if (!m) return null;
+      const v = m[1] === "black" ? 0 : 255;
+      return [v, v, v, Number(m[2]) / 100] as Rgba;
+    };
+    const rest = tint("");
+    return [
+      { state: "rest", rgba: rest },
+      { state: "hover", rgba: tint("hover:") ?? rest },
+    ];
+  }
+
+  it("finds all four toast types and their parts", () => {
+    expect(typeStyles.map((t) => t.type)).toEqual(["info", "success", "warning", "error"]);
+    expect(typeStyles.every((t) => t.fill)).toBe(true);
+  });
+
+  describe.each(THEME_NAMES)("%s", (name) => {
+    const theme = themes.get(name)!;
+    for (const { type, fill, label } of typeStyles) {
+      it.each(parts.map((p) => [...p]))(`${type}: %s`, (part, classes, min) => {
+        const opacity = /(?:^|\s)opacity-(\d+)(?:\s|$)/.exec(classes as string);
+        const alpha = opacity ? Number(opacity[1]) / 100 : 1;
+        const base = colour(theme, fill);
+        for (const { state, rgba } of tints(classes as string)) {
+          const bg = rgba ? over(rgba, base) : base;
+          const c = colour(theme, label);
+          const fg = over([c[0], c[1], c[2], alpha], bg);
+          const r = ratio(fg, bg);
+          expect(Number(r.toFixed(2)), `${name} ${type} ${part} (${state})`).toBeGreaterThanOrEqual(min as number);
+        }
+      });
+    }
   });
 });

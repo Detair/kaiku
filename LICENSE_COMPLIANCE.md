@@ -67,7 +67,7 @@ This document tracks all direct third-party dependencies and their licenses for 
 
 | Crate | Version | License | Usage |
 |-------|---------|---------|-------|
-| vodozemac | 0.9 | Apache-2.0 | Olm/Megolm E2EE (Matrix protocol) |
+| vodozemac | 0.11 | Apache-2.0 | Olm/Megolm E2EE (Matrix protocol) |
 | rustls | 0.23 | Apache-2.0 OR ISC OR MIT | TLS 1.3 implementation |
 | aes-gcm | 0.10 | Apache-2.0 OR MIT | AES-GCM symmetric encryption |
 | hkdf | 0.12 | MIT OR Apache-2.0 | HMAC-based key derivation |

@@ -182,3 +182,53 @@ id = "RUSTSEC-2026-0387"
 # crypto-bigint 0.5.5 timing variability (2026-10-24). Fix only in 0.7.6;
 # pulled via elliptic-curve 0.13 (dtls, jsonwebtoken, openidconnect).
 reason = "Accepted via deny.toml; no 0.5.x fix, upstream crates not on elliptic-curve 0.14 yet."
+
+# ---------------------------------------------------------------------------
+# Keep-green 2026-11-11. Full rationale in deny.toml.
+# ---------------------------------------------------------------------------
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0429"
+reason = "Accepted via deny.toml; zip <9 only in utoipa-swagger-ui build-dep (trusted input) and Windows-only signature-verified tauri updater."
+
+[[IgnoredVulns]]
+id = "GHSA-m665-v7pm-7grj"
+reason = "Same zip 3/4 copies as RUSTSEC-2026-0429 (utoipa-swagger-ui build-dep, Windows-only signature-verified tauri updater); see deny.toml."
+
+[[IgnoredVulns]]
+id = "GHSA-8hxf-qr8p-62x4"
+reason = "Same zip 3/4 copies as RUSTSEC-2026-0429 (utoipa-swagger-ui build-dep, Windows-only signature-verified tauri updater); see deny.toml."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0446"
+# actix-http/actix-web are locked but not built for any target (optional dep
+# of utoipa-swagger-ui 9; `cargo tree --locked --offline --target all -i
+# actix-http` prints nothing).
+reason = "Accepted via deny.toml; actix-http locked but not compiled for any target."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0447"
+reason = "Accepted via deny.toml; actix-web locked but not compiled for any target."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0448"
+reason = "Accepted via deny.toml; actix-http locked but not compiled for any target."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0455"
+reason = "Accepted via deny.toml; actix-http locked but not compiled for any target."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0459"
+reason = "Accepted via deny.toml; libsqlite3-sys 0.36 blocked by sqlx-sqlite 0.9 (<0.38); desktop client opens only its own database."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0441"
+# pin-utils 0.1.1 (2026-10-01): unmaintained notice only, no vulnerability and
+# no patched release exists (the upgrade to 0.1.1 does not clear it). Pulled in
+# transitively by aws-smithy-http, aws-smithy-runtime, aws-smithy-types (AWS
+# SDK, server) and nix 0.26.4 (webrtc-util), per
+# `cargo tree --locked --offline --target all -i pin-utils`. cargo-audit
+# reports it as a warning and cargo-deny does not gate it, so only OSV needs
+# this entry. Re-check when the AWS SDK / webrtc stack drop pin-utils.
+reason = "pin-utils unmaintained, no patched release; transitive via the AWS SDK smithy crates and nix 0.26 (webrtc-util), no vulnerability."

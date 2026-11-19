@@ -71,6 +71,23 @@ describe("UserSecurityPanel", () => {
     expect(stepUp.mock.calls[0][0]).toEqual({ action: "admin.authenticator.remove", target: "d1", targetLabel: "Pixel 8" });
   });
 
+  it("marks a removed device, reloads the details and says so (ADMIN-9)", async () => {
+    api.adminRemoveAuthenticator.mockResolvedValue(undefined);
+    render(() => <UserSecurityPanel user={detail()} meId="me" />);
+    fireEvent.click(screen.getByRole("button", { name: "Remove device now: Pixel 8" }));
+    await waitFor(() => expect(adminStore.loadUserDetails).toHaveBeenCalledWith("oma"));
+    expect(screen.getByText(/removed/)).toBeTruthy();
+    expect(toast).toHaveBeenCalledWith(expect.objectContaining({ type: "success", title: "Pixel 8 was removed" }));
+  });
+
+  it("shows a failed removal next to the device (ADMIN-9)", async () => {
+    api.adminRemoveAuthenticator.mockRejectedValue(new TypeError("Failed to fetch"));
+    render(() => <UserSecurityPanel user={detail()} meId="me" />);
+    fireEvent.click(screen.getByRole("button", { name: "Remove device now: Pixel 8" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert.closest("li")?.textContent).toContain("Pixel 8");
+  });
+
   it("immediate actions are hidden for another admin", () => {
     render(() => <UserSecurityPanel user={detail({ is_admin: true, totp_state: "active" })} meId="me" />);
     expect(screen.queryByRole("button", { name: "Remove device now: Pixel 8" })).toBeNull();
@@ -93,7 +110,7 @@ describe("UserSecurityPanel", () => {
   it("may_approve toggle steps up with the user as target", async () => {
     api.adminSetMayApprove.mockResolvedValue(undefined);
     render(() => <UserSecurityPanel user={detail()} meId="me" />);
-    expect(screen.getByText("Lets this person's phones confirm sign-ins on other devices and add phones")).toBeTruthy();
+    expect(screen.getByText(/Lets this person's phones confirm sign-ins on other devices and add phones/)).toBeTruthy();
     fireEvent.click(screen.getByRole("switch", { name: "Phones may confirm sign-ins" }));
     await waitFor(() => expect(api.adminSetMayApprove).toHaveBeenCalledWith("oma", true));
     expect(stepUp.mock.calls[0][0]).toMatchObject({ action: "admin.may_approve", target: "oma" });

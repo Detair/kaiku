@@ -15,6 +15,7 @@ import {
   createEffect,
 } from "solid-js";
 import { Portal } from "solid-js/web";
+import { t } from "@/i18n";
 import {
   computePosition,
   flip,
@@ -177,7 +178,7 @@ const PopupList: Component<PopupListProps> = (props) => {
       <div
         ref={listRef}
         role="listbox"
-        aria-label="Suggestions"
+        aria-label={t("chat.suggestions.label")}
         aria-activedescendant={
           props.items[props.selectedIndex]
             ? `suggestion-${props.selectedIndex}`

@@ -31,7 +31,9 @@ const InviteJoin: Component = () => {
     try {
       await joinViaInviteCode(params.code);
       setStatus("success");
-      // The joinViaInviteCode function already navigates to the guild
+      // The server is joined and selected; leave the invite route so the app
+      // shows it (NAV-2). Replace, so Back and reload do not join again.
+      navigate("/", { replace: true });
     } catch (err) {
       setStatus("error");
       setErrorMessage(errorText(err, "auth.invite.failed"));

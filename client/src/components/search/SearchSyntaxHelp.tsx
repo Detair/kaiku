@@ -13,6 +13,7 @@ import {
   createEffect,
 } from "solid-js";
 import { HelpCircle } from "lucide-solid";
+import { t } from "@/i18n";
 
 const SearchSyntaxHelp: Component = () => {
   const [isOpen, setIsOpen] = createSignal(false);
@@ -44,7 +45,8 @@ const SearchSyntaxHelp: Component = () => {
           "text-text-primary bg-accent-primary/20": isOpen(),
           "text-text-secondary hover:text-text-primary": !isOpen(),
         }}
-        title="Search syntax help"
+        title={t("chat.search.syntax.open")}
+        aria-label={t("chat.search.syntax.open")}
       >
         <HelpCircle class="w-4 h-4" />
       </button>
@@ -52,33 +54,33 @@ const SearchSyntaxHelp: Component = () => {
       <Show when={isOpen()}>
         <div class="absolute right-0 top-full mt-1 w-64 rounded-lg border border-white/10 bg-surface-layer2 shadow-xl z-60 p-3">
           <h4 class="text-xs font-semibold text-text-primary mb-2">
-            Search Syntax
+            {t("chat.search.syntax.title")}
           </h4>
           <table class="w-full text-xs">
             <tbody>
               <tr class="border-b border-white/5">
-                <td class="py-1 pr-2 text-accent-primary font-mono">
-                  hello world
+                <td class="py-1 pr-2 text-text-primary font-mono">
+                  {t("chat.search.syntax.andExample")}
                 </td>
-                <td class="py-1 text-text-secondary">Both words (AND)</td>
+                <td class="py-1 text-text-secondary">{t("chat.search.syntax.and")}</td>
               </tr>
               <tr class="border-b border-white/5">
-                <td class="py-1 pr-2 text-accent-primary font-mono">
-                  hello OR world
+                <td class="py-1 pr-2 text-text-primary font-mono">
+                  {t("chat.search.syntax.orExample")}
                 </td>
-                <td class="py-1 text-text-secondary">Either word</td>
+                <td class="py-1 text-text-secondary">{t("chat.search.syntax.or")}</td>
               </tr>
               <tr class="border-b border-white/5">
-                <td class="py-1 pr-2 text-accent-primary font-mono">
-                  "exact phrase"
+                <td class="py-1 pr-2 text-text-primary font-mono">
+                  {t("chat.search.syntax.phraseExample")}
                 </td>
-                <td class="py-1 text-text-secondary">Exact match</td>
+                <td class="py-1 text-text-secondary">{t("chat.search.syntax.phrase")}</td>
               </tr>
               <tr>
-                <td class="py-1 pr-2 text-accent-primary font-mono">
-                  hello -world
+                <td class="py-1 pr-2 text-text-primary font-mono">
+                  {t("chat.search.syntax.excludeExample")}
                 </td>
-                <td class="py-1 text-text-secondary">Exclude word</td>
+                <td class="py-1 text-text-secondary">{t("chat.search.syntax.exclude")}</td>
               </tr>
             </tbody>
           </table>

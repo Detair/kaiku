@@ -25,12 +25,18 @@ import {
 } from "@/lib/permissionConstants";
 import type { GuildRole } from "@/lib/types";
 import { showToast } from "@/components/ui/Toast";
+import { t } from "@/i18n";
+import { actionErrorText } from "@/components/admin/actionErrors";
+import ConfirmActionDialog from "@/components/admin/ConfirmActionDialog";
+import { reportFailure } from "./settingsAction";
 
 interface RoleEditorProps {
   guildId: string;
   role: GuildRole | null; // null = creating new role
   onBack: () => void;
   onSave: () => void;
+  /** Unsaved edits, so the settings window can warn before closing (ADMIN-17). */
+  onDirtyChange?: (dirty: boolean) => void;
 }
 
 const RoleEditor: Component<RoleEditorProps> = (props) => {
@@ -40,6 +46,7 @@ const RoleEditor: Component<RoleEditorProps> = (props) => {
   const [isSaving, setIsSaving] = createSignal(false);
   const [showMemberPicker, setShowMemberPicker] = createSignal(false);
   const [hasChanges, setHasChanges] = createSignal(false);
+  const [confirmDiscard, setConfirmDiscard] = createSignal(false);
 
   const isOwner = () => isGuildOwner(props.guildId, authState.user?.id || "");
   const isNewRole = () => !props.role;
@@ -92,6 +99,7 @@ const RoleEditor: Component<RoleEditorProps> = (props) => {
       setHasChanges(name().trim() !== "");
     }
   });
+  createEffect(() => props.onDirtyChange?.(hasChanges()));
 
   const handlePermissionToggle = (bit: number) => {
     if (hasPermission(permissions(), bit)) {
@@ -119,8 +127,7 @@ const RoleEditor: Component<RoleEditorProps> = (props) => {
         });
         showToast({
           type: "success",
-          title: "Role Created",
-          message: `Role "${name()}" has been created successfully.`,
+          title: t("guildSettings.roles.created", { name: name() }),
           duration: 3000,
         });
       } else if (props.role) {
@@ -131,8 +138,7 @@ const RoleEditor: Component<RoleEditorProps> = (props) => {
         });
         showToast({
           type: "success",
-          title: "Role Updated",
-          message: "Role permissions have been saved.",
+          title: t("guildSettings.roles.saved", { name: name() }),
           duration: 3000,
         });
       }
@@ -141,8 +147,8 @@ const RoleEditor: Component<RoleEditorProps> = (props) => {
       console.error("Failed to save role:", err);
       showToast({
         type: "error",
-        title: "Failed to Save Role",
-        message: "Could not save role changes. Please try again.",
+        title: t("guildSettings.roles.saveFailed"),
+        message: actionErrorText(err),
         duration: 8000,
       });
     } finally {
@@ -152,9 +158,8 @@ const RoleEditor: Component<RoleEditorProps> = (props) => {
 
   const handleBack = () => {
     if (hasChanges()) {
-      if (!confirm("You have unsaved changes. Discard them?")) {
-        return;
-      }
+      setConfirmDiscard(true);
+      return;
     }
     props.onBack();
   };
@@ -202,8 +207,14 @@ const RoleEditor: Component<RoleEditorProps> = (props) => {
     if (!props.role) return;
     try {
       await assignMemberRole(props.guildId, userId, props.role.id);
+      const member = getGuildMembers(props.guildId).find((m) => m.user_id === userId);
+      showToast({
+        type: "success",
+        title: t("guildSettings.roles.memberAdded", { role: props.role.name, name: member?.display_name ?? "" }),
+        duration: 3000,
+      });
     } catch (err) {
-      console.error("Failed to assign role:", err);
+      reportFailure(t("guildSettings.roles.assignFailed"), err);
     }
     setShowMemberPicker(false);
   };
@@ -213,7 +224,7 @@ const RoleEditor: Component<RoleEditorProps> = (props) => {
     try {
       await removeMemberRole(props.guildId, userId, props.role.id);
     } catch (err) {
-      console.error("Failed to remove role:", err);
+      reportFailure(t("guildSettings.roles.removeFailed"), err);
     }
   };
 
@@ -234,12 +245,13 @@ const RoleEditor: Component<RoleEditorProps> = (props) => {
       <div class="flex items-center gap-3 px-6 py-4 border-b border-white/10">
         <button
           onClick={handleBack}
+          aria-label={t("guildSettings.back")}
           class="p-1.5 text-text-secondary hover:text-text-primary hover:bg-white/10 rounded-lg transition-colors"
         >
           <ArrowLeft class="w-5 h-5" />
         </button>
         <h3 class="text-lg font-semibold text-text-primary">
-          {isNewRole() ? "Create Role" : `Edit Role: ${name()}`}
+          {isNewRole() ? t("guildSettings.roles.createTitle") : t("guildSettings.roles.editTitle", { name: name() })}
         </h3>
       </div>
 
@@ -247,16 +259,17 @@ const RoleEditor: Component<RoleEditorProps> = (props) => {
       <div class="flex-1 overflow-y-auto p-6 space-y-6">
         {/* Name */}
         <div>
-          <label class="block text-sm font-medium text-text-secondary mb-2">
-            Role Name
+          <label for="role-editor-name" class="block text-sm font-medium text-text-secondary mb-2">
+            {t("guildSettings.roles.name")}
           </label>
           <input
+            id="role-editor-name"
             type="text"
             value={name()}
             data-testid="role-editor-name-input"
             onInput={(e) => setName(e.currentTarget.value)}
             disabled={isEveryoneRole()}
-            placeholder="Enter role name..."
+            placeholder={t("guildSettings.roles.namePlaceholder")}
             class="w-full px-3 py-2 rounded-lg border border-white/10 text-text-primary placeholder-text-placeholder state-disabled-quiet"
             style={{"background-color":"var(--color-surface-layer1)"}}
           />
@@ -264,9 +277,9 @@ const RoleEditor: Component<RoleEditorProps> = (props) => {
 
         {/* Color */}
         <div>
-          <label class="block text-sm font-medium text-text-secondary mb-2">
-            Color
-          </label>
+          <div class="block text-sm font-medium text-text-secondary mb-2">
+            {t("guildSettings.roles.color")}
+          </div>
           <div class="flex items-center gap-2 flex-wrap">
             <button
               onClick={() => setColor(null)}
@@ -276,7 +289,9 @@ const RoleEditor: Component<RoleEditorProps> = (props) => {
                 "border-white/20": color() !== null,
               }}
               style={{"background-color":"var(--color-surface-layer1)"}}
-              title="No color"
+              title={t("guildSettings.roles.noColor")}
+              aria-label={t("guildSettings.roles.noColor")}
+              aria-pressed={color() === null}
             />
             <For each={colorPresets}>
               {(preset) => (
@@ -288,6 +303,8 @@ const RoleEditor: Component<RoleEditorProps> = (props) => {
                     "border-transparent": color() !== preset,
                   }}
                   style={{ "background-color": preset }}
+                  aria-label={t("guildSettings.roles.colorNamed", { color: preset })}
+                  aria-pressed={color() === preset}
                 />
               )}
             </For>
@@ -296,9 +313,9 @@ const RoleEditor: Component<RoleEditorProps> = (props) => {
 
         {/* Permissions */}
         <div>
-          <label class="block text-sm font-medium text-text-secondary mb-3">
-            Permissions
-          </label>
+          <div class="block text-sm font-medium text-text-secondary mb-3">
+            {t("guildSettings.roles.permissions")}
+          </div>
           <div class="space-y-4">
             <For each={Object.entries(permissionsByCategory())}>
               {([category, perms]) => (
@@ -342,8 +359,8 @@ const RoleEditor: Component<RoleEditorProps> = (props) => {
                                   {perm.description}
                                 </div>
                                 <Show when={!canEdit}>
-                                  <div class="text-xs text-accent-warning mt-1">
-                                    You don't have this permission
+                                  <div class="text-xs text-text-secondary mt-1">
+                                    {t("guildSettings.roles.notYours")}
                                   </div>
                                 </Show>
                               </div>
@@ -364,15 +381,15 @@ const RoleEditor: Component<RoleEditorProps> = (props) => {
           <div>
             <div class="flex items-center justify-between mb-3">
               <label class="text-sm font-medium text-text-secondary">
-                Members with this role ({membersWithRole().length})
+                {t("guildSettings.roles.members", { count: membersWithRole().length })}
               </label>
               <div class="relative">
                 <button
                   onClick={() => setShowMemberPicker(!showMemberPicker())}
-                  class="flex items-center gap-1 px-2 py-1 text-sm text-accent-primary hover:bg-accent-primary/10 rounded-lg transition-colors"
+                  class="flex items-center gap-1 px-2 py-1 text-sm text-text-primary hover:bg-white/10 rounded-lg transition-colors"
                 >
                   <Plus class="w-4 h-4" />
-                  Add Member
+                  {t("guildSettings.roles.addMember")}
                 </button>
                 <Show when={showMemberPicker()}>
                   <div
@@ -383,7 +400,7 @@ const RoleEditor: Component<RoleEditorProps> = (props) => {
                       when={availableMembers().length > 0}
                       fallback={
                         <div class="px-3 py-2 text-sm text-text-secondary">
-                          All members have this role
+                          {t("guildSettings.roles.allHaveIt")}
                         </div>
                       }
                     >
@@ -422,7 +439,9 @@ const RoleEditor: Component<RoleEditorProps> = (props) => {
                     </div>
                     <button
                       onClick={() => handleRemoveMember(member.user_id)}
-                      class="p-1 text-text-secondary hover:text-accent-danger opacity-0 group-hover:opacity-100 transition-all"
+                      class="p-1 text-text-secondary hover:text-text-primary opacity-0 group-hover:opacity-100 focus-visible:opacity-100 touch:opacity-100 transition-all"
+                      title={t("guildSettings.roles.removeMemberNamed", { name: member.display_name, role: props.role?.name ?? "" })}
+                      aria-label={t("guildSettings.roles.removeMemberNamed", { name: member.display_name, role: props.role?.name ?? "" })}
                     >
                       <X class="w-4 h-4" />
                     </button>
@@ -431,7 +450,7 @@ const RoleEditor: Component<RoleEditorProps> = (props) => {
               </For>
               <Show when={membersWithRole().length === 0}>
                 <div class="text-sm text-text-secondary py-2">
-                  No members have this role yet
+                  {t("guildSettings.roles.noMembers")}
                 </div>
               </Show>
             </div>
@@ -445,7 +464,7 @@ const RoleEditor: Component<RoleEditorProps> = (props) => {
           onClick={handleBack}
           class="px-4 py-2 rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/10 transition-colors"
         >
-          Cancel
+          {t("common.cancel")}
         </button>
                 <button
                   onClick={handleSave}
@@ -454,12 +473,27 @@ const RoleEditor: Component<RoleEditorProps> = (props) => {
                   class="px-4 py-2 rounded-lg bg-accent-primary text-on-accent font-medium hover:bg-accent-primary/90 transition-colors state-disabled"
                 >
           {isSaving()
-            ? "Saving..."
+            ? t("guildSettings.working")
             : isNewRole()
-              ? "Create Role"
-              : "Save Changes"}
+              ? t("guildSettings.roles.createTitle")
+              : t("guildSettings.saveChanges")}
         </button>
       </div>
+
+      <Show when={confirmDiscard()}>
+        <ConfirmActionDialog
+          title={t("guildSettings.unsaved.title")}
+          message={t("guildSettings.unsaved.body")}
+          confirmLabel={t("guildSettings.unsaved.discard")}
+          danger
+          onConfirm={() => Promise.resolve()}
+          onDone={() => {
+            setConfirmDiscard(false);
+            props.onBack();
+          }}
+          onCancel={() => setConfirmDiscard(false)}
+        />
+      </Show>
     </div>
   );
 };

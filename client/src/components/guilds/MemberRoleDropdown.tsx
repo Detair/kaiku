@@ -14,8 +14,11 @@ import {
   canModerateMember,
 } from "@/stores/permissions";
 import { authState } from "@/stores/auth";
-import { isGuildOwner, kickMember } from "@/stores/guilds";
+import { isGuildOwner, kickMember, getGuildMembers } from "@/stores/guilds";
 import { PermissionBits } from "@/lib/permissionConstants";
+import { t } from "@/i18n";
+import ConfirmActionDialog from "@/components/admin/ConfirmActionDialog";
+import { reportFailure, reportSuccess } from "./settingsAction";
 
 interface MemberRoleDropdownProps {
   guildId: string;
@@ -29,8 +32,17 @@ const MemberRoleDropdown: Component<MemberRoleDropdownProps> = (props) => {
 
   const closeDropdown = () => {
     setIsOpen(false);
-    setKickConfirm(false);
     props.onClose?.();
+  };
+
+  let kickedName = "";
+  const kick = async () => {
+    kickedName = memberName();
+    await kickMember(props.guildId, props.userId);
+  };
+  const memberName = () => {
+    const m = getGuildMembers(props.guildId).find((x) => x.user_id === props.userId);
+    return m?.display_name || m?.username || "";
   };
 
   const isOwner = () => isGuildOwner(props.guildId, authState.user?.id || "");
@@ -59,30 +71,20 @@ const MemberRoleDropdown: Component<MemberRoleDropdownProps> = (props) => {
     );
   };
 
-  const handleToggleRole = async (roleId: string, hasRole: boolean) => {
+  const handleToggleRole = async (roleId: string, roleName: string, hasRole: boolean) => {
     try {
       if (hasRole) {
         await removeMemberRole(props.guildId, props.userId, roleId);
+        reportSuccess(t("guildSettings.roles.memberRemoved", { role: roleName, name: memberName() }));
       } else {
         await assignMemberRole(props.guildId, props.userId, roleId);
+        reportSuccess(t("guildSettings.roles.memberAdded", { role: roleName, name: memberName() }));
       }
     } catch (err) {
-      console.error("Failed to toggle role:", err);
-    }
-  };
-
-  const handleKick = async () => {
-    if (kickConfirm()) {
-      try {
-        await kickMember(props.guildId, props.userId);
-        closeDropdown();
-      } catch (err) {
-        console.error("Failed to kick member:", err);
-      }
-      setKickConfirm(false);
-    } else {
-      setKickConfirm(true);
-      setTimeout(() => setKickConfirm(false), 3000);
+      reportFailure(
+        hasRole ? t("guildSettings.roles.removeFailed") : t("guildSettings.roles.assignFailed"),
+        err,
+      );
     }
   };
 
@@ -106,9 +108,11 @@ const MemberRoleDropdown: Component<MemberRoleDropdownProps> = (props) => {
       <button
         onClick={() => setIsOpen(!isOpen())}
         data-testid="member-role-dropdown-trigger"
+        aria-expanded={isOpen()}
+        aria-label={t("guildSettings.members.manageNamed", { name: memberName() })}
         class="flex items-center gap-1 px-2 py-1 text-sm text-text-secondary hover:text-text-primary hover:bg-white/10 rounded-lg transition-colors"
       >
-        Manage
+        {t("guildSettings.members.manage")}
         <ChevronDown class="w-4 h-4" />
       </button>
 
@@ -122,13 +126,13 @@ const MemberRoleDropdown: Component<MemberRoleDropdownProps> = (props) => {
             <>
               {/* Role assignment section */}
               <div class="px-3 py-1.5 text-xs font-semibold text-text-secondary uppercase">
-                Assign Role
+                {t("guildSettings.members.roles")}
               </div>
               <Show
                 when={roles().length > 0}
                 fallback={
                   <div class="px-3 py-2 text-sm text-text-secondary">
-                    No roles available
+                    {t("guildSettings.members.noRoles")}
                   </div>
                 }
               >
@@ -152,7 +156,7 @@ const MemberRoleDropdown: Component<MemberRoleDropdownProps> = (props) => {
                           data-testid="member-role-checkbox"
                           disabled={!canManage}
                           onChange={() =>
-                            canManage && handleToggleRole(role.id, hasRole)
+                            canManage && handleToggleRole(role.id, role.name, hasRole)
                           }
                           class="w-4 h-4 rounded border-white/20 text-accent-primary"
                         />
@@ -185,15 +189,11 @@ const MemberRoleDropdown: Component<MemberRoleDropdownProps> = (props) => {
               }}
             >
               <button
-                onClick={handleKick}
-                class="w-full flex items-center gap-2 px-3 py-2 text-sm transition-colors"
-                classList={{
-                  "text-accent-danger bg-accent-danger/10": kickConfirm(),
-                  "text-text-primary hover:bg-white/10": !kickConfirm(),
-                }}
+                onClick={() => setKickConfirm(true)}
+                class="w-full flex items-center gap-2 px-3 py-2 text-sm transition-colors text-text-primary hover:bg-white/10"
               >
                 <UserX class="w-4 h-4" />
-                {kickConfirm() ? "Confirm Kick" : "Kick from Server"}
+                {t("guildSettings.members.kick")}
               </button>
             </div>
           </Show>
@@ -206,6 +206,22 @@ const MemberRoleDropdown: Component<MemberRoleDropdownProps> = (props) => {
           data-testid="member-role-dropdown-backdrop"
           class="fixed inset-0 z-10"
           onClick={closeDropdown}
+        />
+      </Show>
+
+      <Show when={kickConfirm()}>
+        <ConfirmActionDialog
+          title={t("guildSettings.members.kickTitle", { name: memberName() })}
+          message={t("guildSettings.members.kickBody", { name: memberName() })}
+          confirmLabel={t("guildSettings.members.kick")}
+          danger
+          onConfirm={kick}
+          onDone={() => {
+            setKickConfirm(false);
+            reportSuccess(t("guildSettings.members.kicked", { name: kickedName }));
+            closeDropdown();
+          }}
+          onCancel={() => setKickConfirm(false)}
         />
       </Show>
     </div>

@@ -33,6 +33,19 @@ export const I18N_GUARDED_FILES = [
   "src/components/ui/{Toast,PasswordInput}.tsx",
   "src/stores/websocket/index.ts",
   "src/lib/updater.ts",
+  // UX4b: dialogs moved onto the shared dialog building block.
+  "src/components/modals/{ReportModal,BlockConfirmModal}.tsx",
+  "src/components/ui/{Modal,StatusIndicator,Avatar,CustomStatusModal,KeyboardShortcutsDialog,PopupList}.tsx",
+  "src/components/emoji/{EmojiPicker,PositionedEmojiPicker}.tsx",
+  "src/components/guilds/{CreateGuildModal,JoinGuildModal,EventsModal,GuildSettingsModal}.tsx",
+  "src/components/channels/{CreateChannelModal,ChannelSettingsModal}.tsx",
+  "src/components/pages/{CategoryManager,PageAcceptanceModal,AcceptanceManager}.tsx",
+  "src/components/layout/{CommandPalette,AppShell,MobileDrawer,LogoutConfirmDialog}.tsx",
+  "src/components/social/{FriendsList,AddFriend}.tsx",
+  "src/components/search/{SearchPanel,SearchSyntaxHelp,GlobalSearchDialog}.tsx",
+  "src/components/layout/SkipLink.tsx",
+  "src/components/admin/AdminQuickModal.tsx",
+  "src/App.tsx",
 ];
 
 const MESSAGE = "User-facing text must use t() from @/i18n (see client/src/AGENTS.md).";

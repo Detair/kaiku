@@ -12,6 +12,7 @@ import { getChannel, channelsState } from "../channels";
 import { dmsState } from "../dms";
 import { guildsState } from "../guilds";
 import {
+  bufferLiveEdit,
   decryptMessageIfNeeded,
   messagesState,
   setMessagesState,
@@ -102,9 +103,13 @@ export async function applyMessageEdit(
   editedAt: string,
 ): Promise<void> {
   const messages = messagesState.byChannel[channelId];
-  if (!messages) return;
-  const index = messages.findIndex((m) => m.id === messageId);
-  if (index === -1) return;
+  const index = messages ? messages.findIndex((m) => m.id === messageId) : -1;
+  if (!messages || index === -1) {
+    // Not on screen yet: a page that is being loaded may still bring the old
+    // text, so the store keeps the edit for it (no-op when nothing loads).
+    bufferLiveEdit(channelId, messageId, content, editedAt);
+    return;
+  }
 
   const existingMsg = messages[index];
   let newContent = content;

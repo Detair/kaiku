@@ -2,7 +2,12 @@ import { Component, createSignal, Show, For, onCleanup, createEffect, createMemo
 import { PlusCircle, Send, Smile, UploadCloud, X, File as FileIcon, Bold, Italic, Code, EyeOff } from "lucide-solid";
 import { sendMessage, messagesState, addMessage } from "@/stores/messages";
 import { stopTyping, sendTyping } from "@/stores/websocket";
-import { uploadMessageWithFile, validateFileSize, getUploadLimitText } from "@/lib/tauri";
+import {
+  uploadMessageWithFile,
+  validateFileSize,
+  getUploadLimitText,
+  isUploadAborted,
+} from "@/lib/tauri";
 import { showToast } from "@/components/ui/Toast";
 import { getDraft, saveDraft, clearDraft } from "@/stores/drafts";
 import AutocompletePopup from "./AutocompletePopup";
@@ -11,7 +16,7 @@ import { channelsState } from "@/stores/channels";
 import { listGuildCommands, type GuildCommand } from "@/lib/api/bots";
 import PositionedEmojiPicker from "@/components/emoji/PositionedEmojiPicker";
 import { plural, t } from "@/i18n";
-import { CHAT_SEND_ERRORS, errorText } from "@/i18n/errors";
+import { UPLOAD_ERRORS, errorText } from "@/i18n/errors";
 
 interface MessageInputProps {
   channelId: string;
@@ -25,21 +30,76 @@ interface MessageInputProps {
 }
 
 interface PendingFile {
+  id: number;
+  /** Channel the file was added in; the tray only shows the current channel's. */
+  channelId: string;
   file: File;
   previewUrl: string | null;
+  /** Upload progress 0–100 while this file is being sent. */
+  progress: number | null;
+  /** Why the last send of this file failed (shown on the tile). */
+  error: string | null;
+}
+
+let nextPendingFileId = 1;
+
+/**
+ * Spreadsheets and office apps copy formatted text (HTML or RTF) plus a
+ * picture of it: the person wants the text. A file manager adds the path as
+ * plain text and a browser's "copy image" adds an <img> as HTML, but neither
+ * has formatted text with plain text: those are files to attach.
+ */
+export function isFormattedTextWithPicture(data: DataTransfer | null | undefined): boolean {
+  if (!data) return false;
+  const types = Array.from(data.types ?? []);
+  const formatted = types.includes("text/html") || types.includes("text/rtf");
+  return formatted && !!data.getData("text/plain");
+}
+
+/**
+ * What should stay in the box (or draft) after `sent` went out. `sent` is the
+ * box's text when the send began. Text typed afterwards is kept, the sent part
+ * goes. `null` when the sent text is no longer at the start (the person edited
+ * it): then nothing is touched.
+ */
+export function remainingAfterSend(current: string, sent: string): string | null {
+  if (current.startsWith(sent)) return current.slice(sent.length).replace(/^\s+/, "");
+  if (current.trim() === sent.trim()) return "";
+  return null;
 }
 
 const MessageInput: Component<MessageInputProps> = (props) => {
   const [content, setContent] = createSignal("");
-  const [isSending, setIsSending] = createSignal(false);
+  /** Channels with a send on its way (each has its own uploads and Cancel). */
+  const [sendingChannels, setSendingChannels] = createSignal<ReadonlySet<string>>(new Set());
+  const isSending = () => sendingChannels().has(props.channelId);
+  const setSendingIn = (channelId: string, sending: boolean) =>
+    setSendingChannels((prev) => {
+      const next = new Set(prev);
+      if (sending) next.add(channelId);
+      else next.delete(channelId);
+      return next;
+    });
   const [isDragging, setIsDragging] = createSignal(false);
-  const [uploadError, setUploadError] = createSignal<string | null>(null);
-  const [pendingFiles, setPendingFiles] = createSignal<PendingFile[]>([]);
+  /** File problems per channel: they stay with the channel they belong to. */
+  const [uploadErrors, setUploadErrors] = createSignal<Record<string, string | null>>({});
+  const uploadError = () => uploadErrors()[props.channelId] ?? null;
+  const setUploadErrorIn = (channelId: string, message: string | null) =>
+    setUploadErrors((prev) => ({ ...prev, [channelId]: message }));
+  const setUploadError = (message: string | null) => setUploadErrorIn(props.channelId, message);
+  const [allPendingFiles, setPendingFiles] = createSignal<PendingFile[]>([]);
+  /** Files waiting in the tray of the channel on screen. */
+  const pendingFiles = () => allPendingFiles().filter((pf) => pf.channelId === props.channelId);
+  const uploadControllers = new Map<string, AbortController>();
   const sendLabel = () =>
     pendingFiles().length > 0
       ? plural(pendingFiles().length, { one: "chat.composer.sendFiles.one", other: "chat.composer.sendFiles.other" })
       : t("chat.composer.send");
   const [isComposing, setIsComposing] = createSignal(false);
+  const placeholder = () =>
+    props.guildId
+      ? t("chat.composer.placeholder", { channel: props.channelName })
+      : t("chat.composer.placeholderDm", { name: props.channelName });
   // Autocomplete state
   const [autocompleteType, setAutocompleteType] = createSignal<"user" | "emoji" | "channel" | "command" | null>(null);
   // True only while the autocomplete popup has suggestions to navigate
@@ -152,8 +212,9 @@ const MessageInput: Component<MessageInputProps> = (props) => {
     if (resizeFrame) {
       cancelAnimationFrame(resizeFrame);
     }
+    uploadControllers.forEach((c) => c.abort());
     // Revoke object URLs to prevent memory leaks
-    pendingFiles().forEach((pf) => {
+    allPendingFiles().forEach((pf) => {
       if (pf.previewUrl) URL.revokeObjectURL(pf.previewUrl);
     });
   });
@@ -161,35 +222,70 @@ const MessageInput: Component<MessageInputProps> = (props) => {
   // Add file to pending list with preview
   const addPendingFile = (file: File) => {
     // Frontend validation before adding to pending list
-    const validationError = validateFileSize(file, 'attachment');
-    if (validationError) {
-      setUploadError(validationError);
-      setTimeout(() => setUploadError(null), 8000); // Clear after 8 seconds (toast convention)
+    if (validateFileSize(file, 'attachment')) {
+      setUploadError(
+        t("chat.composer.fileTooLarge", { file: file.name, limit: getUploadLimitText('attachment') }),
+      );
       return;
     }
 
     setUploadError(null);
     const isImage = file.type.startsWith("image/");
     const previewUrl = isImage ? URL.createObjectURL(file) : null;
-    setPendingFiles((prev) => [...prev, { file, previewUrl }]);
+    setPendingFiles((prev) => [
+      ...prev,
+      {
+        id: nextPendingFileId++,
+        channelId: props.channelId,
+        file,
+        previewUrl,
+        progress: null,
+        error: null,
+      },
+    ]);
+  };
+
+  const updatePendingFile = (id: number, patch: Partial<PendingFile>) => {
+    setPendingFiles((prev) => prev.map((pf) => (pf.id === id ? { ...pf, ...patch } : pf)));
   };
 
   // Remove file from pending list
-  const removePendingFile = (index: number) => {
-    setPendingFiles((prev) => {
-      const removed = prev[index];
-      if (removed?.previewUrl) URL.revokeObjectURL(removed.previewUrl);
-      return prev.filter((_, i) => i !== index);
-    });
+  const removePendingFile = (id: number) => {
+    const removed = allPendingFiles().find((pf) => pf.id === id);
+    if (!removed) return;
+    if (removed.previewUrl) URL.revokeObjectURL(removed.previewUrl);
+    setPendingFiles((prev) => prev.filter((pf) => pf.id !== id));
+    // The hint under the box names the rejected files: it goes with the last of them.
+    const rejectedLeft = allPendingFiles().some(
+      (pf) => pf.channelId === removed.channelId && pf.error,
+    );
+    if (removed.error && !rejectedLeft) setUploadErrorIn(removed.channelId, null);
   };
 
-  // Clear all pending files
+  /** Cancel only the uploads of the channel on screen. */
+  const cancelUpload = () => uploadControllers.get(props.channelId)?.abort();
+
+  // Paste: images (screenshots) and files from the clipboard become attachments.
+  const handlePaste = (e: ClipboardEvent) => {
+    const files = Array.from(e.clipboardData?.files ?? []);
+    if (files.length === 0) return;
+    if (isFormattedTextWithPicture(e.clipboardData)) return;
+    e.preventDefault();
+    files.forEach(addPendingFile);
+  };
+
+  // Clear the pending files of the channel on screen
   const clearPendingFiles = () => {
+    const visible = new Set(pendingFiles().map((pf) => pf.id));
     pendingFiles().forEach((pf) => {
       if (pf.previewUrl) URL.revokeObjectURL(pf.previewUrl);
     });
-    setPendingFiles([]);
+    setPendingFiles((prev) => prev.filter((pf) => !visible.has(pf.id)));
+    // With the files gone, the hint about them has nothing left to say.
+    setUploadError(null);
   };
+
+  const isStillPending = (id: number) => allPendingFiles().some((pf) => pf.id === id);
 
   const trackCursor = () => {
     if (textareaRef) setLastCursorPos(textareaRef.selectionStart);
@@ -285,11 +381,11 @@ const MessageInput: Component<MessageInputProps> = (props) => {
     }
 
     // Check for @user mentions
-    const userMatch = textBeforeCursor.match(/@(\w*)$/);
+    const userMatch = textBeforeCursor.match(/@([\p{L}\p{N}_]*)$/u);
     if (userMatch) {
       // Prevent false positives like email addresses or URLs
       const beforeAt = textBeforeCursor.substring(0, textBeforeCursor.length - userMatch[0].length);
-      if (beforeAt.match(/[a-zA-Z0-9]$/)) {
+      if (beforeAt.match(/[\p{L}\p{N}]$/u)) {
         setAutocompleteType(null);
         return;
       }
@@ -362,44 +458,118 @@ const MessageInput: Component<MessageInputProps> = (props) => {
     }
     stopTyping(props.channelId);
 
-    setIsSending(true);
+    const channelId = props.channelId;
+    const channelName = props.channelName;
+    setSendingIn(channelId, true);
+    // A new send starts clean: an old file problem must not outlive it.
+    setUploadErrorIn(channelId, null);
+    const sentRaw = content();
     try {
-      if (files.length > 0) {
-        // Upload files one at a time (first file gets the text, rest are separate)
-        for (let i = 0; i < files.length; i++) {
-          const messageText = i === 0 ? text || undefined : undefined;
-          const message = await uploadMessageWithFile(props.channelId, files[i].file, messageText);
+      const textSent = files.length > 0
+        ? await sendFiles(channelId, channelName, files, text)
+        : (await sendMessage(channelId, text)) !== null;
+      // A failed send keeps the text and the draft (sendMessage reports why).
+      if (textSent && text) afterTextSent(channelId, sentRaw);
+    } finally {
+      setSendingIn(channelId, false);
+      if (props.channelId === channelId) textareaRef?.focus();
+    }
+  };
+
+  /**
+   * Remove the sent text from where it still is: the box when it still shows
+   * that channel, otherwise only that channel's draft. Text typed after
+   * sending stays.
+   */
+  const afterTextSent = (channelId: string, sentRaw: string) => {
+    const isE2EE = props.isE2EE ?? false;
+    if (props.channelId === channelId) {
+      const rest = remainingAfterSend(content(), sentRaw);
+      if (rest === null) return;
+      setContent(rest);
+      if (rest) saveDraft(channelId, rest, isE2EE);
+      else clearDraft(channelId);
+      resizeTextarea();
+      return;
+    }
+    const rest = remainingAfterSend(getDraft(channelId), sentRaw);
+    if (rest === null) return;
+    if (rest) saveDraft(channelId, rest, isE2EE);
+    else clearDraft(channelId);
+  };
+
+  /**
+   * Upload `files` one by one; the text goes with the first file that gets
+   * through. A sent file leaves the tray at once, so retrying never sends it
+   * twice. A rejected file stays with its reason; the others still go out.
+   * Returns whether the text was sent.
+   */
+  const sendFiles = async (
+    channelId: string,
+    channelName: string,
+    files: PendingFile[],
+    text: string,
+  ): Promise<boolean> => {
+    const controller = new AbortController();
+    uploadControllers.set(channelId, controller);
+    let textSent = !text;
+    const failures: string[] = [];
+    try {
+      for (const pf of files) {
+        if (controller.signal.aborted) break;
+        // Removed from the tray while earlier files were uploading.
+        if (!isStillPending(pf.id)) continue;
+        updatePendingFile(pf.id, { progress: 0, error: null });
+        try {
+          const message = await uploadMessageWithFile(
+            channelId,
+            pf.file,
+            textSent ? undefined : text,
+            {
+              signal: controller.signal,
+              onProgress: (loaded, total) =>
+                updatePendingFile(pf.id, {
+                  progress: total > 0 ? Math.min(100, Math.round((loaded / total) * 100)) : 0,
+                }),
+            },
+          );
+          textSent = true;
+          removePendingFile(pf.id);
           await addMessage(message);
+        } catch (err) {
+          if (isUploadAborted(err)) {
+            updatePendingFile(pf.id, { progress: null });
+            break;
+          }
+          console.error("Upload failed:", err);
+          const reason = errorText(
+            err,
+            "chat.send.fileFailed",
+            UPLOAD_ERRORS.byCode,
+            UPLOAD_ERRORS.byStatus,
+          );
+          updatePendingFile(pf.id, { progress: null, error: reason });
+          failures.push(t("chat.composer.fileNotSent", { file: pf.file.name, reason }));
         }
-        clearPendingFiles();
-      } else {
-        // Text-only message
-        await sendMessage(props.channelId, text);
       }
-      setContent("");
-      // Clear draft after successful send
-      clearDraft(props.channelId);
-      // Reset textarea height after successful send
-      if (textareaRef) {
-        textareaRef.style.height = 'auto';
-      }
-    } catch (err) {
-      console.error("Send failed:", err);
+    } finally {
+      if (uploadControllers.get(channelId) === controller) uploadControllers.delete(channelId);
+    }
+
+    if (failures.length > 0) {
+      // Shown in the channel the files belong to, also after switching away.
+      setUploadErrorIn(channelId, failures.join(" "));
       showToast({
         type: "error",
-        title: t("chat.send.failed.title"),
-        message: errorText(
-          err,
-          "chat.send.failed.message",
-          CHAT_SEND_ERRORS.byCode,
-          CHAT_SEND_ERRORS.byStatus,
-        ),
+        title:
+          props.channelId === channelId
+            ? t("chat.send.failed.title")
+            : t("chat.send.failedIn", { channel: channelName }),
+        message: failures[0],
         duration: 8000,
       });
-    } finally {
-      setIsSending(false);
-      textareaRef?.focus();
     }
+    return textSent;
   };
 
   const handleKeyDown = (e: KeyboardEvent) => {
@@ -517,12 +687,16 @@ const MessageInput: Component<MessageInputProps> = (props) => {
           <UploadCloud class="w-12 h-12 text-accent-primary mb-2" />
           <p class="text-text-primary font-medium">{t("chat.composer.dropFiles")}</p>
           <p class="text-xs text-text-secondary mt-1">{t("chat.composer.maxSize", { limit: getUploadLimitText('attachment') })}</p>
+          <p class="text-xs text-text-secondary mt-1">{t("chat.composer.allowedTypes")}</p>
         </div>
       </Show>
 
       {/* Upload Error */}
       <Show when={uploadError()}>
-        <div class="mb-2 p-3 bg-error-bg border border-error-border rounded-lg text-sm text-error-text flex items-center justify-between">
+        <div
+          role="alert"
+          class="mb-2 p-3 bg-error-bg border border-error-border rounded-lg text-sm text-error-text flex items-center justify-between gap-2"
+        >
           <span>{uploadError()}</span>
           <button
             type="button"
@@ -539,29 +713,53 @@ const MessageInput: Component<MessageInputProps> = (props) => {
         <div class="mb-2 p-3 bg-surface-layer2 rounded-xl border border-white/5">
           <div class="flex items-center justify-between mb-2">
             <span class="text-xs text-text-secondary font-medium">
-              {plural(pendingFiles().length, {
-                one: "chat.composer.filesReady.one",
-                other: "chat.composer.filesReady.other",
-              })}
+              {isSending()
+                ? plural(pendingFiles().length, {
+                    one: "chat.composer.filesSending.one",
+                    other: "chat.composer.filesSending.other",
+                  })
+                : plural(pendingFiles().length, {
+                    one: "chat.composer.filesReady.one",
+                    other: "chat.composer.filesReady.other",
+                  })}
             </span>
-            <button
-              type="button"
-              onClick={clearPendingFiles}
-              class="text-xs text-text-secondary hover:text-accent-danger transition-colors"
+            <Show
+              when={isSending()}
+              fallback={
+                <button
+                  type="button"
+                  onClick={clearPendingFiles}
+                  class="text-xs text-text-secondary hover:text-accent-danger transition-colors"
+                >
+                  {t("chat.composer.clearAll")}
+                </button>
+              }
             >
-              {t("chat.composer.clearAll")}
-            </button>
+              <button
+                type="button"
+                onClick={cancelUpload}
+                class="text-xs text-text-primary px-2 py-0.5 rounded bg-white/10 hover:bg-white/20 transition-colors"
+              >
+                {t("chat.composer.cancelUpload")}
+              </button>
+            </Show>
           </div>
+          <p class="text-xs text-text-secondary mb-2">{t("chat.composer.allowedTypes")}</p>
           <div class="flex gap-2 overflow-x-auto pb-1">
             <For each={pendingFiles()}>
-              {(pf, index) => (
-                <div class="relative group flex-shrink-0">
+              {(pf) => (
+                <div
+                  class="relative group flex-shrink-0 rounded-lg"
+                  classList={{ "ring-2 ring-accent-danger": !!pf.error }}
+                  title={pf.error ?? pf.file.name}
+                  data-testid="pending-file"
+                >
                   <Show
                     when={pf.previewUrl}
                     fallback={
                       <div class="w-20 h-20 bg-surface-layer1 rounded-lg flex flex-col items-center justify-center border border-white/5">
                         <FileIcon class="w-6 h-6 text-text-secondary mb-1" />
-                        <span class="text-[10px] text-text-secondary truncate max-w-[70px] px-1">
+                        <span class="text-xs text-text-secondary truncate max-w-[70px] px-1">
                           {pf.file.name}
                         </span>
                       </div>
@@ -573,10 +771,23 @@ const MessageInput: Component<MessageInputProps> = (props) => {
                       class="w-20 h-20 object-cover rounded-lg border border-white/5"
                     />
                   </Show>
+                  <Show when={pf.progress !== null}>
+                    <div
+                      role="progressbar"
+                      aria-label={t("chat.composer.uploadProgress", { file: pf.file.name })}
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      aria-valuenow={pf.progress ?? 0}
+                      class="absolute inset-x-1 bottom-1 h-1.5 rounded-full bg-black/50 overflow-hidden"
+                    >
+                      <div class="h-full bg-accent-primary transition-all" style={{ width: `${pf.progress ?? 0}%` }} />
+                    </div>
+                  </Show>
                   <button
                     type="button"
-                    onClick={() => removePendingFile(index())}
-                    class="absolute -top-1.5 -right-1.5 p-0.5 bg-accent-danger rounded-full text-white opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity shadow-lg"
+                    onClick={() => removePendingFile(pf.id)}
+                    disabled={pf.progress !== null}
+                    class="absolute -top-1.5 -right-1.5 p-0.5 bg-accent-danger rounded-full text-white opacity-0 group-hover:opacity-100 focus:opacity-100 touch:opacity-100 transition-opacity shadow-lg disabled:hidden"
                     title={t("chat.composer.removeFile")}
                     aria-label={t("chat.composer.removeFile")}
                   >
@@ -628,10 +839,13 @@ const MessageInput: Component<MessageInputProps> = (props) => {
             onKeyUp={trackCursor}
             onCompositionStart={() => setIsComposing(true)}
             onCompositionEnd={() => setIsComposing(false)}
+            onPaste={handlePaste}
             class="flex-1 bg-transparent py-3 text-text-input placeholder-text-placeholder focus:outline-none resize-none overflow-y-auto"
             style={{ "min-height": "24px", "max-height": "192px" }}
-            placeholder={t("chat.composer.placeholder", { channel: props.channelName })}
-            disabled={isSending()}
+            placeholder={placeholder()}
+            aria-label={placeholder()}
+            aria-autocomplete="list"
+            aria-expanded={autocompleteActive()}
             rows={1}
           />
 
@@ -652,11 +866,11 @@ const MessageInput: Component<MessageInputProps> = (props) => {
             <Show when={isNearLimit()}>
               <div class="flex flex-col items-end pr-2 gap-0.5 pointer-events-none">
                 <Show when={lengthStats().totalLength > lengthStats().regularLength}>
-                  <span class={`text-[9px] ${lengthStats().totalLength > lengthStats().totalLimit ? 'text-accent-danger font-bold' : 'text-text-secondary'}`}>
+                  <span class={`text-xs leading-tight ${lengthStats().totalLength > lengthStats().totalLimit ? 'text-accent-danger font-bold' : 'text-text-secondary'}`}>
                     {t("chat.composer.lengthTotal", { length: lengthStats().totalLength, limit: lengthStats().totalLimit })}
                   </span>
                 </Show>
-                <span class={`text-[10px] leading-tight ${lengthStats().regularLength > lengthStats().regularLimit ? 'text-accent-danger font-bold' : 'text-text-secondary'}`}>
+                <span class={`text-xs leading-tight ${lengthStats().regularLength > lengthStats().regularLimit ? 'text-accent-danger font-bold' : 'text-text-secondary'}`}>
                   {t("chat.composer.lengthText", { length: lengthStats().regularLength, limit: lengthStats().regularLimit })}
                 </span>
               </div>

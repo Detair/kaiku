@@ -16,6 +16,13 @@ export const MODAL_LAYER = {
   dialog: 70,
   /** The full-screen open-request prompt. */
   prompt: 80,
+  /**
+   * Toasts and status notices: above every dialog, however many are stacked
+   * (a failed save inside a dialog must be readable), below menus and pickers.
+   */
+  notice: 1000,
+  /** Context menus, emoji picker, suggestion lists: above everything. */
+  popup: 9999,
 } as const;
 
 const open: number[] = [];

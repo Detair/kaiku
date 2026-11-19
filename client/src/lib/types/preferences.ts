@@ -66,10 +66,21 @@ export interface NotificationPreferences {
   flash_taskbar: boolean;
 }
 
+/** Text size steps (root font size 100 %, 115 %, 130 %). */
+export type FontSize = "default" | "large" | "xlarge";
+
 // User Preferences (synced across devices)
 export interface UserPreferences {
   // Theme
   theme: ThemeName;
+  /**
+   * "Same as system": follow prefers-color-scheme. `theme` then names the dark
+   * choice (a light stored theme falls back to focused-hybrid at night).
+   * Missing = false, so existing users keep their theme.
+   */
+  theme_follow_system?: boolean;
+  /** Text size, applied to the root font size. Missing = "default". */
+  font_size?: FontSize;
 
   // Sound settings
   sound: {

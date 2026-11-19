@@ -48,7 +48,7 @@ test.describe("Friends & DMs", () => {
     await expect(input).toBeVisible({ timeout: 3000 });
     await input.fill("bob");
 
-    const sendBtn = page.getByRole("button", { name: "Send Request" });
+    const sendBtn = page.getByRole("button", { name: "Send request" });
     await expect(sendBtn).toBeVisible({ timeout: 2000 });
     await sendBtn.click();
     await expect(async () => {
