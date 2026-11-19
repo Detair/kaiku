@@ -673,4 +673,5 @@
     <string name="admin_issue_code">Show the setup code</string>
     <string name="admin_type_code_hint">Type the code the new phone shows. Remotely, let them read it to you.</string>
     <string name="passkeys_error_wrong_server">This passkey request is for a different website than your Kaiku server, so Kaiku stopped it. Nothing was sent. Sign in another way and tell your admin.</string>
+    <string name="security_only_key">This phone is the only key of this account, so it was not removed. It is still your key. To use another account on this phone, first add another phone or a passkey: tap Confirm it\'s you, then go to Settings, Security. Or ask your admin to remove this phone.</string>
 </resources>

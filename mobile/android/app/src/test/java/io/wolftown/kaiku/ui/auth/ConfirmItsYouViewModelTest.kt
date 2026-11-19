@@ -80,4 +80,34 @@ class ConfirmItsYouViewModelTest {
         assertEquals(ConfirmDone.SIGNED_OUT, v.ui.value.done)
         coVerify(exactly = 0) { signOut.signOut() }
     }
+
+    @Test fun `the only key of the account is kept and the reason is shown`() = runTest {
+        // F3: the server refuses to remove the last strong authenticator (409 LAST_STRONG_AUTHENTICATOR).
+        val f = KeyDeviceFixture(backgroundScope)
+        f.authState.setLoggedOut()
+        val v = ConfirmItsYouViewModel(deviceSignIn, f.repo, signOut, SessionEndLog())
+        coEvery { deviceSignIn.signIn(activity) } returns DeviceSignInResult.Success
+        coEvery { signOut.signOutAndRemovePhone(activity) } returns StepUpOutcome.Failed("LAST_STRONG_AUTHENTICATOR")
+        v.removeThisPhone(activity)
+        // The session made only for the removal ends; the phone stays the key ("Sign out" state).
+        coVerify(exactly = 1) { signOut.signOut() }
+        assertEquals(R.string.security_only_key, v.ui.value.error)
+        assertEquals(false, v.ui.value.keyGone)
+        assertNull(v.ui.value.done)
+        assertEquals(false, v.ui.value.working)
+        org.junit.Assert.assertNotNull(f.repo.local())
+    }
+
+    @Test fun `the only key reason is also shown when the phone was already signed in`() = runTest {
+        val f = KeyDeviceFixture(backgroundScope)
+        f.authState.setLoggedOut()
+        val v = ConfirmItsYouViewModel(deviceSignIn, f.repo, signOut, SessionEndLog())
+        coEvery { deviceSignIn.signIn(activity) } returns DeviceSignInResult.Success
+        coEvery { signOut.signOutAndRemovePhone(activity) } returns StepUpOutcome.Failed("LAST_STRONG_AUTHENTICATOR")
+        v.removeThisPhone(activity)
+        coEvery { signOut.signOutAndRemovePhone(activity) } returns StepUpOutcome.Cancelled
+        v.removeThisPhone(activity)
+        // A later attempt clears the old reason.
+        assertNull(v.ui.value.error)
+    }
 }

@@ -46,6 +46,23 @@ internal fun signInResultText(r: DeviceSignInResult): Int? = when (r) {
         if (r.code == "UV_LOCKED_OUT") R.string.security_locked_out else R.string.security_sign_in_failed
 }
 
+/**
+ * What "Confirm it's you" says when "Use another account" did not remove this phone. The only key
+ * of an account is never removed by its owner (`LAST_STRONG_AUTHENTICATOR`): the phone stays the
+ * key, signed out, and the text names the ways on (add another phone or passkey, or the admin).
+ */
+@StringRes
+internal fun removalFailedText(out: StepUpOutcome): Int {
+    val code = (out as? StepUpOutcome.Failed)?.code
+    return when (code) {
+        "KEY_INVALIDATED" -> R.string.security_key_invalidated
+        "LAST_STRONG_AUTHENTICATOR" -> R.string.security_only_key
+        "UV_LOCKED_OUT" -> R.string.security_locked_out
+        "NETWORK" -> R.string.security_network_error
+        else -> R.string.security_sign_in_failed
+    }
+}
+
 /** L2-A11: the lapsed key device signs in again with its screen lock, never a password. */
 @HiltViewModel
 class ConfirmItsYouViewModel @Inject constructor(
@@ -117,16 +134,7 @@ class ConfirmItsYouViewModel @Inject constructor(
                 when (out) {
                     is StepUpOutcome.Granted -> it.copy(working = false, done = ConfirmDone.SIGNED_OUT)
                     StepUpOutcome.Cancelled -> it.copy(working = false)
-                    else -> it.copy(
-                        working = false,
-                        keyGone = keyGone,
-                        error = when {
-                            keyGone -> R.string.security_key_invalidated
-                            out is StepUpOutcome.Failed && out.code == "UV_LOCKED_OUT" -> R.string.security_locked_out
-                            out is StepUpOutcome.Failed && out.code == "NETWORK" -> R.string.security_network_error
-                            else -> R.string.security_sign_in_failed
-                        },
-                    )
+                    else -> it.copy(working = false, keyGone = keyGone, error = removalFailedText(out))
                 }
             }
         }
