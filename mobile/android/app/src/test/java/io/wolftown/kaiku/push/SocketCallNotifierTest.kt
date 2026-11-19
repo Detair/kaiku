@@ -18,9 +18,9 @@ class SocketCallNotifierTest {
 
     @Test
     fun `a ring posts once and a repeat keeps its start`() {
-        notifier.ring("dm-1", "c-1", "Anna")
+        notifier.ring("dm-1", "c-1", "anna", "Anna")
         now += 5_000
-        notifier.ring("dm-1", "c-1", "Anna")
+        notifier.ring("dm-1", "c-1", "anna", "Anna")
 
         assertEquals(2, sink.posts.size)
         assertEquals(1_000L, sink.posts.last().ringingSinceMs)
@@ -30,7 +30,7 @@ class SocketCallNotifierTest {
 
     @Test
     fun `a stopped ring leaves a tombstone so a late push does not ring again`() {
-        notifier.ring("dm-1", "c-1", "Anna")
+        notifier.ring("dm-1", "c-1", "anna", "Anna")
         notifier.stopRing("dm-1", "c-1")
 
         assertEquals(listOf("dm-1"), sink.cancelled)
@@ -38,13 +38,13 @@ class SocketCallNotifierTest {
         val intake = CallWakeIntake(mockk<TokenStorage> { every { getUserId() } returns "me" }, store)
         val lateRing = WakeSignal(WakeKind.CALL, "dm-1", count = 0, call = CallInfo("c-1", "anna", CallState.RINGING))
         assertEquals(false, intake.accept(lateRing))
-        notifier.ring("dm-1", "c-1", "Anna")
+        notifier.ring("dm-1", "c-1", "anna", "Anna")
         assertEquals(1, sink.posts.size)
     }
 
     @Test
     fun `a missed call is posted once, also after a stop, and ignores the push's ended`() {
-        notifier.ring("dm-1", "c-1", "Anna")
+        notifier.ring("dm-1", "c-1", "anna", "Anna")
         notifier.stopRing("dm-1", "c-1")
         notifier.missed("dm-1", "c-1", "Anna")
         notifier.missed("dm-1", "c-1", "Anna")
@@ -56,7 +56,7 @@ class SocketCallNotifierTest {
 
     @Test
     fun `stopping an older call leaves a newer ring alone`() {
-        notifier.ring("dm-1", "c-2", "Anna")
+        notifier.ring("dm-1", "c-2", "anna", "Anna")
         notifier.stopRing("dm-1", "c-1")
         assertTrue(sink.cancelled.isEmpty())
     }
@@ -64,7 +64,7 @@ class SocketCallNotifierTest {
     @Test
     fun `nothing rings or is missed while nobody is signed in`() {
         user = null
-        notifier.ring("dm-1", "c-1", "Anna")
+        notifier.ring("dm-1", "c-1", "anna", "Anna")
         notifier.missed("dm-1", "c-1", "Anna")
         assertTrue(sink.posts.isEmpty())
     }

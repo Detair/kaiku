@@ -173,7 +173,10 @@ class CallWakeProcessor @Inject constructor(
                 isStopped() -> null
                 !isCurrent(account) -> null.also { refused = CallOutcome.NOT_LOGGED_IN }
                 !commit() -> null
-                else -> CallNotification(account.userId, channelId, call.callId, kind, name, ringingSinceMs)
+                else -> CallNotification(
+                    account.userId, channelId, call.callId, kind, name, ringingSinceMs,
+                    callerId = call.callerId.takeIf { kind == CallKind.INCOMING },
+                )
             }
         }
         return when (result) {

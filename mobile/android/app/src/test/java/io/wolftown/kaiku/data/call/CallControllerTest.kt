@@ -72,7 +72,7 @@ class CallControllerTest {
 
     private class FakeNotifier : CallNotifier {
         val log = mutableListOf<String>()
-        override fun ring(channelId: String, callId: String, callerName: String?) { log += "ring:$callId:$callerName" }
+        override fun ring(channelId: String, callId: String, callerId: String, callerName: String?) { log += "ring:$callId:$callerName" }
         override fun stopRing(channelId: String, callId: String) { log += "stop:$callId" }
         override fun missed(channelId: String, callId: String, callerName: String?) { log += "missed:$callId" }
         override fun stopAll() { log += "stopAll" }
@@ -332,7 +332,6 @@ class CallControllerTest {
     fun `decline from the notification of a ring this process does not show tells the server`() = runTest {
         val r = rig()
         r.controller.declineFromNotification(dm, "c-5")
-        runCurrent()
         assertEquals(listOf("decline"), r.api.calls)
         assertEquals(listOf("stop:c-5"), r.notifier.log)
     }

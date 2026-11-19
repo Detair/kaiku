@@ -24,11 +24,11 @@ class SocketCallNotifier internal constructor(
     constructor(sink: CallNotificationSink, store: CallNotificationStore, authState: AuthState) :
         this(sink, store, { authState.currentUserId.value }, System::currentTimeMillis)
 
-    override fun ring(channelId: String, callId: String, callerName: String?) {
+    override fun ring(channelId: String, callId: String, callerId: String, callerName: String?) {
         val user = currentUser() ?: return
         val nowMs = now()
         val stored = store.shown(user, channelId)
-        val info = CallInfo(callId, callerId = "", state = CallState.RINGING)
+        val info = CallInfo(callId, callerId, state = CallState.RINGING)
         // Ending, missed or ended: this call never rings again.
         if (!CallRules.ringingApplies(stored, info, nowMs)) return
         val live = CallRules.live(stored, nowMs)
@@ -38,7 +38,7 @@ class SocketCallNotifier internal constructor(
             store.setShownIf(user, channelId, stored, ShownCall(callId, CallPhase.RINGING, nowMs))
             nowMs
         }
-        sink.showCall { CallNotification(user, channelId, callId, CallKind.INCOMING, callerName, since) }
+        sink.showCall { CallNotification(user, channelId, callId, CallKind.INCOMING, callerName, since, callerId) }
     }
 
     override fun stopRing(channelId: String, callId: String) {

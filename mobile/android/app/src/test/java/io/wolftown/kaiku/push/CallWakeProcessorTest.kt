@@ -90,7 +90,7 @@ class CallWakeProcessorTest {
     fun `ringing posts the incoming call with the caller name`() = runTest {
         assertEquals(CallOutcome.INCOMING, ring())
 
-        assertEquals(CallNotification("me", ch, callA, CallKind.INCOMING, "Bob", ringingSinceMs = clock), sink.shown[ch])
+        assertEquals(CallNotification("me", ch, callA, CallKind.INCOMING, "Bob", ringingSinceMs = clock, callerId = bob), sink.shown[ch])
         coVerify { names.lookupCaller(ch, bob) }
     }
 

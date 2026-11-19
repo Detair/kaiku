@@ -17,6 +17,9 @@ import androidx.core.content.ContextCompat
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.wolftown.kaiku.R
 import io.wolftown.kaiku.ui.MainActivity
+import io.wolftown.kaiku.ui.call.CallIntents
+import io.wolftown.kaiku.ui.call.IncomingCallPresentation
+import io.wolftown.kaiku.ui.call.IncomingCallStyle
 import java.util.logging.Logger
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -168,8 +171,73 @@ class AndroidNotificationPresenter internal constructor(
             .forEach { manager.cancel(it.tag, CALL_ID) }
     }
 
-    /** A plain heads-up on the DM channel: no full-screen intent, no actions, no ringtone loop. */
-    private fun buildCall(n: CallNotification, plan: CallPostPlan): Notification {
+    private fun buildCall(n: CallNotification, plan: CallPostPlan): Notification =
+        if (n.kind == CallKind.INCOMING && n.callerId != null) buildIncomingCall(n, n.callerId, plan) else buildMissedCall(n, plan)
+
+    /**
+     * The ringing call on [NotificationChannels.CALLS] (ringtone, vibration,
+     * the ringer mode and Do Not Disturb applied by the system), looping
+     * (`FLAG_INSISTENT`) until it is answered, declined or times out.
+     * Accept opens [CallActivity] (an activity: the microphone foreground
+     * service may only start while the app is visible); Decline is a
+     * broadcast. With the full-screen permission it is a `CallStyle` with a
+     * full-screen intent (also over the lock screen); without it a heads-up
+     * with the same two actions ([IncomingCallPresentation]).
+     */
+    private fun buildIncomingCall(n: CallNotification, callerId: String, plan: CallPostPlan): Notification {
+        val text = CallNotificationText.of(n)
+        val content = if (text.name != null) context.getString(text.res, text.name) else context.getString(text.res)
+        val ring = CallIntents.Ring(n.userId, n.channelId, n.callId, callerId, n.callerName)
+        val requestBase = "ring-${n.channelId}".hashCode()
+        val show = PendingIntent.getActivity(
+            context, requestBase, CallIntents.screen(context, ring, CallIntents.ACTION_SHOW),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val accept = PendingIntent.getActivity(
+            context, requestBase + 1, CallIntents.screen(context, ring, CallIntents.ACTION_ACCEPT),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val decline = PendingIntent.getBroadcast(
+            context, requestBase + 2, CallIntents.decline(context, ring),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val manager = manager
+        val fullScreen = IncomingCallPresentation.canUseFullScreenIntent(Build.VERSION.SDK_INT) {
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE &&
+                manager != null && Api34.canUseFullScreenIntent(manager)
+        }
+        val builder = NotificationCompat.Builder(context, NotificationChannels.CALLS)
+            .setSmallIcon(android.R.drawable.stat_sys_phone_call)
+            .setContentTitle(content)
+            .setContentText(context.getString(R.string.voice_call_incoming))
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setOngoing(true)
+            .setAutoCancel(false)
+            .setOnlyAlertOnce(plan.onlyAlertOnce)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setContentIntent(show)
+            .setWhen(System.currentTimeMillis())
+            .addExtras(Bundle().apply { putString(EXTRA_USER_ID, n.userId) })
+        plan.timeoutMs?.let { builder.setTimeoutAfter(it) }
+        when (IncomingCallPresentation.choose(fullScreen)) {
+            IncomingCallStyle.CallStyleFullScreen -> {
+                val caller = Person.Builder()
+                    .setName(text.name ?: context.getString(R.string.voice_call_unknown_person))
+                    .setImportant(true)
+                    .build()
+                builder.setFullScreenIntent(show, true)
+                    .setStyle(NotificationCompat.CallStyle.forIncomingCall(caller, decline, accept))
+            }
+            IncomingCallStyle.HeadsUpWithActions -> builder
+                .addAction(android.R.drawable.ic_menu_close_clear_cancel, context.getString(R.string.voice_call_decline), decline)
+                .addAction(android.R.drawable.stat_sys_phone_call, context.getString(R.string.voice_call_accept), accept)
+        }
+        return builder.build().apply { flags = flags or Notification.FLAG_INSISTENT }
+    }
+
+    /** A missed call (or a ring without a known caller): a plain notification on the DM channel. */
+    private fun buildMissedCall(n: CallNotification, plan: CallPostPlan): Notification {
         val text = CallNotificationText.of(n)
         val content = if (text.name != null) context.getString(text.res, text.name) else context.getString(text.res)
         val category = if (n.kind == CallKind.INCOMING) NotificationCompat.CATEGORY_CALL else NotificationCompat.CATEGORY_MISSED_CALL
@@ -196,6 +264,11 @@ class AndroidNotificationPresenter internal constructor(
         // Only a ringing call times out (its `ended` push may be lost); a missed call stays.
         plan.timeoutMs?.let { builder.setTimeoutAfter(it) }
         return builder.build()
+    }
+
+    @androidx.annotation.RequiresApi(34)
+    private object Api34 {
+        fun canUseFullScreenIntent(manager: NotificationManager): Boolean = manager.canUseFullScreenIntent()
     }
 
     private fun messageNotifications(manager: NotificationManager): List<StatusBarNotification> =

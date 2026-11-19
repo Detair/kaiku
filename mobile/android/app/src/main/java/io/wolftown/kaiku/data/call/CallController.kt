@@ -34,7 +34,7 @@ import javax.inject.Singleton
 /** Posts and removes the call notifications (the Android side is `AndroidCallNotifier`). */
 interface CallNotifier {
     /** The incoming-call notification: ringtone, full-screen where allowed, Accept and Decline. */
-    fun ring(channelId: String, callId: String, callerName: String?)
+    fun ring(channelId: String, callId: String, callerId: String, callerName: String?)
 
     fun stopRing(channelId: String, callId: String)
 
@@ -139,16 +139,17 @@ class CallController @Inject constructor(
 
     /**
      * Decline from the notification's action. If this process does not show
-     * that ring (it was started just for the action), the server is told directly.
+     * that ring (it was started just for the action), the server is told
+     * directly; returns once that request is done.
      */
-    fun declineFromNotification(channelId: String, callId: String) {
+    suspend fun declineFromNotification(channelId: String, callId: String) {
         val shown = _state.value
         if (shown is CallState.Incoming && shown.channelId == channelId) {
             decline(channelId)
             return
         }
         notifier.stopRing(channelId, callId)
-        scope.launch { quietly("decline") { api.decline(channelId) } }
+        quietly("decline") { api.decline(channelId) }
     }
 
     /**
@@ -246,7 +247,7 @@ class CallController @Inject constructor(
             is CallEffect.RestLeave -> scope.launch { quietly("leave") { api.leave(effect.channelId) } }
             is CallEffect.JoinVoice -> joinVoice(effect.channelId)
             is CallEffect.LeaveVoice -> leaveVoice(effect.channelId)
-            is CallEffect.Ring -> notifier.ring(effect.channelId, effect.callId, effect.callerName)
+            is CallEffect.Ring -> notifier.ring(effect.channelId, effect.callId, effect.callerId, effect.callerName)
             is CallEffect.StopRing -> notifier.stopRing(effect.channelId, effect.callId)
             is CallEffect.Missed -> notifier.missed(effect.channelId, effect.callId, effect.callerName)
             CallEffect.StopAllRings -> {
