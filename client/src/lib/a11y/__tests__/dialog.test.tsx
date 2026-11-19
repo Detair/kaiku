@@ -1,5 +1,6 @@
 import { afterEach, describe, it, expect, vi } from "vitest";
 import { createSignal, Show } from "solid-js";
+import { Portal } from "solid-js/web";
 import { cleanup, render, fireEvent, screen } from "@solidjs/testing-library";
 import { createDialog } from "../dialog";
 
@@ -269,6 +270,47 @@ describe("createDialog with several dialogs open", () => {
     expect(upper.contains(document.activeElement)).toBe(true);
     setLower(false);
     expect(upper.contains(document.activeElement)).toBe(true);
+  });
+
+  it("in Portals: removing the lower dialog that held focus moves focus into the one still open", async () => {
+    // Real windows call createDialog first and render into a Portal. The
+    // Portal's node is removed before the dialog's own cleanup runs, so by
+    // then focus has already fallen to the page.
+    function Portaled(props: { name: string }) {
+      const d = createDialog({ onClose: () => {} });
+      return (
+        <Portal>
+          <div {...d.dialogProps} ref={d.ref}>
+            <h2 id={d.titleId}>{props.name}</h2>
+            <button type="button">{`${props.name} button`}</button>
+          </div>
+        </Portal>
+      );
+    }
+    const [lower, setLower] = createSignal(true);
+    const [upper, setUpper] = createSignal(false);
+    render(() => (
+      <>
+        <Show when={lower()}>
+          <Portaled name="Lower" />
+        </Show>
+        <Show when={upper()}>
+          <Portaled name="Upper" />
+        </Show>
+      </>
+    ));
+    await tick();
+    setUpper(true);
+    await tick();
+    // The window underneath takes focus again, e.g. when its content arrives.
+    const lowerButton = screen.getByText("Lower button");
+    lowerButton.focus();
+    expect(document.activeElement).toBe(lowerButton);
+    setLower(false);
+    await tick();
+    expect(lowerButton.isConnected).toBe(false);
+    const up = screen.getByRole("dialog", { name: "Upper" });
+    expect(up.contains(document.activeElement)).toBe(true);
   });
 
   it("removing the upper dialog first returns focus to its opener in the lower one", async () => {

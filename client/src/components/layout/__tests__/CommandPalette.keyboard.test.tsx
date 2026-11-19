@@ -23,9 +23,11 @@ vi.mock("@/stores/voice", () => ({
 
 import CommandPalette from "../CommandPalette";
 import Modal from "@/components/ui/Modal";
+import { setAuthState } from "@/stores/auth";
 
 afterEach(() => {
   cleanup();
+  setAuthState({ sessionExpired: false });
   document.body.innerHTML = "";
   vi.clearAllMocks();
 });
@@ -33,6 +35,14 @@ afterEach(() => {
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 describe("CommandPalette keyboard", () => {
+  it("does not open while the session-ended notice is up", async () => {
+    render(() => <CommandPalette />);
+    setAuthState({ sessionExpired: true });
+    fireEvent.keyDown(window, { key: "k", ctrlKey: true });
+    await wait(30);
+    expect(screen.queryByTestId("command-palette")).toBeNull();
+  });
+
   it("leaves Enter to a window opened above it", async () => {
     render(() => <CommandPalette />);
     fireEvent.keyDown(window, { key: "k", ctrlKey: true });

@@ -172,7 +172,12 @@ export function createDialog(opts: DialogOptions): DialogHandle {
     const top = openDialogs[openDialogs.length - 1] === entry;
     unregister(entry);
     if (!top) {
-      if (el?.contains(document.activeElement)) openDialogs[openDialogs.length - 1]?.el()?.focus();
+      // If it held focus, the dialog still open gets it. A window in a Portal
+      // is already detached here, so its lost focus shows as the page itself.
+      const active = document.activeElement;
+      if (!active || active === document.body || el?.contains(active)) {
+        openDialogs[openDialogs.length - 1]?.el()?.focus();
+      }
       return;
     }
     if (opener?.isConnected && !opener.closest("[inert]")) {
