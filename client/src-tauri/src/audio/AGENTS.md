@@ -50,19 +50,21 @@ Audio tasks run in blocking threads, state is shared via `Arc<AtomicBool>`.
 1. **cpal callback** (real-time thread) receives `&[f32]` samples
 2. Accumulate in buffer until `FRAME_SIZE * CHANNELS` samples ready
 3. Convert f32 → i16 for Opus: `(sample * 32767.0) as i16`
-4. **Opus encode** frame (20ms = 960 samples/channel)
+4. **Opus encode** frame (20ms = 960 samples/channel; `audio::voice_encoder()`: mono VoIP, in-band FEC, 10 % expected loss)
 5. Send encoded packet via `mpsc::Sender<Vec<u8>>`
 
 **Critical:** Never block in audio callback. Use `try_send()`, not `send().await`.
 
-### Playback Pipeline
-1. Receive encoded packets via `mpsc::Receiver<Vec<u8>>`
-2. **Opus decode** in background thread (not audio callback)
-3. Convert i16 → f32: `f32::from(sample) / 32768.0`
-4. Store in `VecDeque<f32>` buffer
-5. **cpal callback** drains buffer to fill output `&mut [f32]`
+### Playback Pipeline (calls: `voice/audio_mixer.rs`, `voice/playout.rs`, `voice/jitter_buffer.rs`)
+1. Per remote track, `commands/voice.rs::forward_remote_audio_track` stamps each RTP packet's arrival and `try_send`s it (bounded, 64) to the mixer task
+2. The mixer owns one `TrackPlayout` per track: a `JitterBuffer` (pure, clock-injected: seq ordering, duplicates/late dropped, 40–160 ms adaptive target, drift drop/insert, resets) plus one Opus decoder (PLC, or FEC from the next packet)
+3. Every 5 ms the mixer drains the packet queues and produces frames only while `OutputLevel` (atomic samples queued for the device) is below one device block + 20 ms: **the device clock drives playout**; each track gives exactly one frame per output frame, nothing is dropped in the mixer
+4. A pusher thread appends mixed frames to the `VecDeque<f32>` (200 ms safety cap)
+5. **cpal callback** drains it and counts consumed samples into `OutputLevel` (also while deafened, then it plays zeros)
 
-**Jitter Buffer:** `VecDeque` provides basic buffering. Future: Add adaptive jitter buffer for network delays.
+Counters per track reach `voice_connection_stats` (`playout[]`) and a debug log every 5 s.
+
+**Real-time note:** the callback still takes a `std::sync::Mutex` for the hand-over (pre-existing); keep everything else there to atomics, no allocation, no logging.
 
 ### Mute/Deafen State
 - **Muted**: Capture stream runs but doesn't send encoded packets
@@ -132,7 +134,7 @@ Use `commands/voice.rs::start_mic_test` to verify:
 ## Future Improvements
 
 ### High Priority
-1. **Adaptive Jitter Buffer**: Adjust buffer size based on network jitter
+1. ~~**Adaptive Jitter Buffer**~~: done (see Playback Pipeline)
 2. **Echo Cancellation**: Use speexdsp or WebRTC AEC
 3. **Noise Suppression**: Use RNNoise or WebRTC NS
 
