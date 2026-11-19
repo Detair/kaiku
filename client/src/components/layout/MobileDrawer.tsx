@@ -6,20 +6,29 @@
  * Prevents body scroll while open.
  */
 
-import { Component, JSX, Show, createEffect, onCleanup } from "solid-js";
+import { Component, JSX, Show, createEffect, createSignal, onCleanup } from "solid-js";
 import { X } from "lucide-solid";
 import { t } from "@/i18n";
 import { createDialog } from "@/lib/a11y/dialog";
+import { createModalLayer, MODAL_LAYER } from "@/lib/a11y/modalLayer";
 
 /**
  * While the drawer is open it is a modal dialog (A11Y-1, NAV-11): focus moves
  * to it, Tab stays inside, Escape closes it, and focus returns to the menu
  * button. Mounted only while open; the panel itself stays for the animation.
+ * It also takes the drawer's layer, above every window already open.
  */
-const DrawerFocus: Component<{ panel: HTMLElement; onClose: () => void }> = (props) => {
+const DrawerFocus: Component<{
+  panel: HTMLElement;
+  onClose: () => void;
+  onLayer: (z: number) => void;
+}> = (props) => {
   const dialog = createDialog({ onClose: () => props.onClose() });
   // eslint-disable-next-line solid/reactivity
   dialog.ref(props.panel);
+  // Taken once per opening, like the focus trap above.
+  // eslint-disable-next-line solid/reactivity
+  props.onLayer(createModalLayer(MODAL_LAYER.dialog));
   return null;
 };
 
@@ -31,6 +40,8 @@ interface MobileDrawerProps {
 
 const MobileDrawer: Component<MobileDrawerProps> = (props) => {
   let startX = 0;
+  // Kept after closing, so the panel slides out on the layer it opened on.
+  const [layer, setLayer] = createSignal(50);
   let savedOverflow: string | null = null;
 
   // Swipe-left to close
@@ -68,7 +79,8 @@ const MobileDrawer: Component<MobileDrawerProps> = (props) => {
   return (
     <div
       data-drawer-open={props.open ? "true" : "false"}
-      class="fixed inset-0 z-50"
+      class="fixed inset-0"
+      style={{ "z-index": layer() }}
       classList={{ "pointer-events-none": !props.open }}
       inert={!props.open ? true : undefined}
     >
@@ -112,7 +124,7 @@ const MobileDrawer: Component<MobileDrawerProps> = (props) => {
         <div class="flex flex-1 min-h-0">{props.children}</div>
       </div>
       <Show when={props.open && panelRef}>
-        {(panel) => <DrawerFocus panel={panel()} onClose={() => props.onClose()} />}
+        {(panel) => <DrawerFocus panel={panel()} onClose={() => props.onClose()} onLayer={setLayer} />}
       </Show>
     </div>
   );

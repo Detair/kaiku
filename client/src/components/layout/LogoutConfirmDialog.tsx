@@ -10,6 +10,7 @@ import { Component } from "solid-js";
 import { Portal } from "solid-js/web";
 import { t } from "@/i18n";
 import { createDialog } from "@/lib/a11y/dialog";
+import { createModalLayer, MODAL_LAYER } from "@/lib/a11y/modalLayer";
 
 interface LogoutConfirmDialogProps {
   onConfirm: () => void;
@@ -22,11 +23,14 @@ const LogoutConfirmDialog: Component<LogoutConfirmDialogProps> = (props) => {
     onClose: () => props.onCancel(),
     initialFocus: () => cancelButton,
   });
+  // Above every window already open: this one takes the keyboard.
+  const layer = createModalLayer(MODAL_LAYER.prompt);
 
   return (
     <Portal>
       <div
-        class="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
+        class="fixed inset-0 bg-black/50 flex items-center justify-center"
+        style={{ "z-index": layer }}
         onClick={() => props.onCancel()}
       >
         <div

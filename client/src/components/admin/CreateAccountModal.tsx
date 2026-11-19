@@ -14,6 +14,7 @@ import { showToast } from "@/components/ui/Toast";
 import { copyHandoverText, canDismissCreateAccount } from "@/lib/adminHandover";
 import { t } from "@/i18n";
 import { createDialog } from "@/lib/a11y/dialog";
+import { createModalLayer, MODAL_LAYER } from "@/lib/a11y/modalLayer";
 import { errorText } from "@/i18n/errors";
 import ElevateDialog from "./ElevateDialog";
 import { contactCandidates } from "./recoveryContacts";
@@ -66,6 +67,8 @@ const CreateAccountModal: Component<CreateAccountModalProps> = (props) => {
       if (canDismissCreateAccount(created() !== null)) props.onClose();
     },
   });
+  // Above every window already open: this one takes the keyboard.
+  const layer = createModalLayer(MODAL_LAYER.dialog);
 
   const copy = async (text: string) => {
     try {
@@ -132,7 +135,8 @@ const CreateAccountModal: Component<CreateAccountModalProps> = (props) => {
 
   return (
     <div
-      class="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+      class="fixed inset-0 flex items-center justify-center bg-black/60"
+      style={{ "z-index": layer }}
       onClick={() => {
         if (canDismissCreateAccount(created() !== null)) props.onClose();
       }}
