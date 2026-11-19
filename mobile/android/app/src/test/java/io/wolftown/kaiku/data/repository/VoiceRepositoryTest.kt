@@ -93,6 +93,9 @@ class VoiceRepositoryTest {
     /** Generation of the fake WebRtcManager's connections; closePeerConnections bumps it. */
     private var rtcGen = 0L
 
+    /** Inbound frames per socket (C32 proof of carried). */
+    private val inbound = MutableStateFlow(KaikuWebSocket.Inbound(1L, 0L))
+
     /** The id of the authenticated socket (null: none). Ids never repeat. */
     private val authSocket = MutableStateFlow<Long?>(1L)
     private var sockets = 1L
@@ -171,6 +174,7 @@ class VoiceRepositoryTest {
         // the authenticated one (like KaikuWebSocket.sendOn); they are recorded
         // through the same mock send.
         every { webSocket.authenticatedSocket } returns authSocket
+        every { webSocket.inbound } returns inbound
         every { webSocket.sendOn(any(), any()) } answers {
             authSocket.value == firstArg<Long>() && webSocket.send(secondArg())
         }
@@ -1319,6 +1323,62 @@ class VoiceRepositoryTest {
         verify(exactly = 1) { webSocket.send(ClientEvent.VoiceLeave("ch-1")) }
         assertEquals(null, repository.endNotice.value)
         assertEquals(VoiceLinkState.Stable, repository.linkState.value)
+    }
+
+    // -- C32 proof of carried ------------------------------------------------------
+
+    private fun repositoryWithClock(clock: () -> Long) = VoiceRepository(
+        webRtcManager = webRtcManager,
+        webSocket = webSocket,
+        audioRouteManager = audioRouteManager,
+        voiceServiceEvents = voiceServiceEvents,
+        micPermissionChecker = micPermissionChecker,
+        context = context,
+        voiceScope = voiceScope,
+        elapsedClock = { clock() },
+    )
+
+    @Test
+    fun `after a gap a ping answered on the carrying socket keeps the call up`() = runTest {
+        var real = 0L
+        repository = repositoryWithClock { real }
+        every { webRtcManager.publisherConnectedNow() } returns true
+        every { webSocket.send(ClientEvent.Ping) } answers {
+            inbound.value = KaikuWebSocket.Inbound(1L, inbound.value.frames + 1)
+            true
+        }
+        repository.joinChannel("ch-1")
+        runCurrent()
+
+        real += 30_000
+        advanceTimeBy(5_000); runCurrent()
+
+        verify(exactly = 1) { webSocket.send(ClientEvent.Ping) }
+        assertEquals(VoiceLinkState.Stable, repository.linkState.value)
+        assertEquals("ch-1", repository.currentChannelId.value)
+        repository.leaveChannel()
+    }
+
+    @Test
+    fun `after a gap without a fresh frame the call is not carried and recovers on the next socket`() = runTest {
+        var real = 0L
+        repository = repositoryWithClock { real }
+        every { webRtcManager.publisherConnectedNow() } returns true
+        repository.joinChannel("ch-1")
+        runCurrent()
+
+        real += 30_000
+        advanceTimeBy(5_000); runCurrent()
+        advanceTimeBy(5_000); runCurrent() // the ping is not answered within 5 s
+
+        assertEquals(VoiceLinkState.Interrupted, repository.linkState.value)
+        verifyJoins(1)
+        // The connection manager replaces the dead socket: the call rejoins on it.
+        socketUp()
+        runCurrent()
+        advanceTimeBy(1_000); runCurrent()
+        verifyJoins(2)
+        repository.leaveChannel()
     }
 
     // -- DM call sessions (C32 "DM calls") ---------------------------------------

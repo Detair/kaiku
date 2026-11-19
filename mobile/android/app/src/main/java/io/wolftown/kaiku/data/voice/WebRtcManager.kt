@@ -202,6 +202,20 @@ class WebRtcManager @Inject constructor(
     /** The generation of the connections that are (or will be) installed now. */
     val currentGeneration: Long get() = generation
 
+    /**
+     * The publisher's ICE state read from the connection itself (C32 "proof
+     * of carried"), not from the last callback. Waits for WebRTC's thread:
+     * call it holding none of the locks a callback takes.
+     */
+    fun publisherConnectedNow(): Boolean {
+        val pc = publisherPc ?: return false
+        return try {
+            pc.iceConnectionState().isConnected()
+        } catch (e: IllegalStateException) {
+            false // disposed meanwhile
+        }
+    }
+
     // -- Callbacks ------------------------------------------------------------
 
     /** Called when an SDP answer has been created and is ready to send. */

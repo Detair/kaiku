@@ -50,6 +50,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.Closeable
@@ -816,6 +817,23 @@ class VoiceRepository @Inject constructor(
         override suspend fun awaitConnected() {
             val generation = webRtcManager.currentGeneration
             webRtcManager.publisherLink.first { it.connected && it.generation == generation }
+        }
+
+        /**
+         * C32 "proof of carried" after a gap: the publisher, read from the
+         * connection, is connected and has not failed, and a fresh inbound
+         * frame arrives on [socket] after a ping, within 5 s.
+         */
+        override suspend fun proveCarried(socket: Long): Boolean {
+            val generation = webRtcManager.currentGeneration
+            if (failedGeneration.value == generation) return false
+            // Outside every lock: the read waits for WebRTC's thread.
+            if (!webRtcManager.publisherConnectedNow()) return false
+            val before = webSocket.inbound.value.takeIf { it.socket == socket }?.frames ?: 0L
+            if (!webSocket.sendOn(socket, ClientEvent.Ping)) return false
+            return withTimeoutOrNull(VoiceSignalling.PROOF_TIMEOUT_MS) {
+                webSocket.inbound.first { it.socket == socket && it.frames > before }
+            } != null
         }
 
         /** The connections of the session as they are now reported ICE `FAILED`. */

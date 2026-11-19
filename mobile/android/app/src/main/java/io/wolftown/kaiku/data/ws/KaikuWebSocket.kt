@@ -74,6 +74,17 @@ class KaikuWebSocket @Inject constructor(
      */
     val authenticatedSocket: StateFlow<Long?> = _authenticatedSocket.asStateFlow()
 
+    /** Frames received on one authenticated socket so far. */
+    data class Inbound(val socket: Long?, val frames: Long)
+
+    private val _inbound = MutableStateFlow(Inbound(null, 0L))
+
+    /**
+     * Inbound frames of the authenticated socket, counted as they arrive:
+     * a fresh frame is the proof that the socket still carries (C32).
+     */
+    val inbound: StateFlow<Inbound> = _inbound.asStateFlow()
+
     /** Sets [connectionState] and, with it, [authenticatedSocket]. Call with [lock] held. */
     private fun setState(state: ConnectionState) {
         _authenticatedSocket.value = if (state == ConnectionState.Connected) ++authenticatedSockets else null
@@ -197,6 +208,14 @@ class KaikuWebSocket @Inject constructor(
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
+            // Any frame counts as a sign of life of this socket, also one this app does not model.
+            synchronized(lock) {
+                if (this@KaikuWebSocket.webSocket === webSocket) {
+                    val id = _authenticatedSocket.value
+                    val previous = _inbound.value
+                    _inbound.value = Inbound(id, if (previous.socket == id) previous.frames + 1 else 1L)
+                }
+            }
             val event = when (val decoded = decoder.decode(text)) {
                 is ServerEventDecoder.Result.Event -> decoded.event
                 is ServerEventDecoder.Result.Skipped -> return
