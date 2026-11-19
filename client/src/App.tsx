@@ -122,7 +122,7 @@ const Layout: Component<ParentProps> = (props) => {
 
       <Show when={blockTarget()}>
         {(target) => (
-          <LazyDialog name="BlockConfirmModal">
+          <LazyDialog name="BlockConfirmModal" onClose={() => setBlockTarget(null)}>
             <BlockConfirmModal
               userId={target().id}
               username={target().username}
@@ -135,7 +135,7 @@ const Layout: Component<ParentProps> = (props) => {
 
       <Show when={reportTarget()}>
         {(target) => (
-          <LazyDialog name="ReportModal">
+          <LazyDialog name="ReportModal" onClose={() => setReportTarget(null)}>
             <ReportModal
               target={target()}
               onClose={() => setReportTarget(null)}

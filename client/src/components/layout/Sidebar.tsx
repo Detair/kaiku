@@ -233,7 +233,7 @@ const Sidebar: Component<SidebarProps> = (props) => {
 
       {/* Search Panel Overlay */}
       <Show when={showSearch() && activeGuild()}>
-        <LazyDialog name="SearchPanel">
+        <LazyDialog name="SearchPanel" onClose={handleCloseSearch}>
           <SearchPanel onClose={handleCloseSearch} />
         </LazyDialog>
       </Show>

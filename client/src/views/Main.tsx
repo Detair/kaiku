@@ -178,7 +178,7 @@ const Main: Component = () => {
 
       {/* Keyboard Shortcuts Dialog */}
       <Show when={showShortcuts()}>
-        <LazyDialog name="KeyboardShortcutsDialog">
+        <LazyDialog name="KeyboardShortcutsDialog" onClose={() => setShowShortcuts(false)}>
           <KeyboardShortcutsDialog onClose={() => setShowShortcuts(false)} />
         </LazyDialog>
       </Show>
@@ -186,7 +186,7 @@ const Main: Component = () => {
       {/* Global Search Overlay */}
       {/* A modal dialog (A11Y-1): Escape closes it, focus returns. */}
       <Show when={showGlobalSearch()}>
-        <LazyDialog name="GlobalSearchDialog">
+        <LazyDialog name="GlobalSearchDialog" onClose={closeGlobalSearch}>
           <GlobalSearchDialog
             initialScope={channelSearchScope() ? "channel" : "all"}
             channelId={channel()?.id}
@@ -322,7 +322,7 @@ const Main: Component = () => {
 
                 {/* Pin Drawer */}
                 <Show when={showPinDrawer()}>
-                  <LazyDialog name="PinDrawer">
+                  <LazyDialog name="PinDrawer" onClose={() => setShowPinDrawer(false)}>
                     <PinDrawer
                       channelId={channel()!.id}
                       canUnpin={(() => {

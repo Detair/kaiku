@@ -719,7 +719,7 @@ const ChannelList: Component<ChannelListProps> = (props) => {
 
       {/* Create Channel Modal */}
       <Show when={showCreateModal() && guildsState.activeGuildId}>
-        <LazyDialog name="CreateChannelModal">
+        <LazyDialog name="CreateChannelModal" onClose={() => setShowCreateModal(false)}>
           <CreateChannelModal
             guildId={guildsState.activeGuildId!}
             initialType={createModalType()}
@@ -732,7 +732,7 @@ const ChannelList: Component<ChannelListProps> = (props) => {
 
       {/* Channel Settings Modal */}
       <Show when={settingsChannelId() && guildsState.activeGuildId}>
-        <LazyDialog name="ChannelSettingsModal">
+        <LazyDialog name="ChannelSettingsModal" onClose={() => setSettingsChannelId(null)}>
           <ChannelSettingsModal
             channelId={settingsChannelId()!}
             guildId={guildsState.activeGuildId!}

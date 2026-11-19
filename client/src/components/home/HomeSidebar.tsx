@@ -233,7 +233,7 @@ const HomeSidebar: Component = () => {
 
       {/* New Message Modal */}
       <Show when={showNewMessage()}>
-        <LazyDialog name="NewMessageModal">
+        <LazyDialog name="NewMessageModal" onClose={() => setShowNewMessage(false)}>
           <NewMessageModal onClose={() => setShowNewMessage(false)} />
         </LazyDialog>
       </Show>
@@ -245,7 +245,7 @@ const HomeSidebar: Component = () => {
 
       {/* DM Search Panel */}
       <Show when={showDMSearch()}>
-        <LazyDialog name="SearchPanel">
+        <LazyDialog name="SearchPanel" onClose={() => setShowDMSearch(false)}>
           <SearchPanel mode="dm" onClose={() => setShowDMSearch(false)} />
         </LazyDialog>
       </Show>

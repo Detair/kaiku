@@ -222,7 +222,7 @@ const UserPanel: Component = () => {
 
       {/* Custom Status Modal */}
       <Show when={showCustomStatusModal()}>
-        <LazyDialog name="CustomStatusModal">
+        <LazyDialog name="CustomStatusModal" onClose={() => setShowCustomStatusModal(false)}>
           <CustomStatusModal
             currentStatus={currentCustomStatus()}
             onSave={handleCustomStatusSave}
