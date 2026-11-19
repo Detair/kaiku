@@ -21,6 +21,7 @@ import io.wolftown.kaiku.data.repository.VoiceRepository
 import io.wolftown.kaiku.data.voice.VoiceServiceEvent
 import io.wolftown.kaiku.data.voice.VoiceServiceEvents
 import io.wolftown.kaiku.push.NotificationChannels
+import io.wolftown.kaiku.ui.call.CallIntents
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -49,6 +50,9 @@ class VoiceCallService : Service() {
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var channelName: String = ""
+
+    /** A DM call: a tap on the notification opens the call screen instead of the app. */
+    private var forCall: Boolean = false
 
     /**
      * Keeps the ongoing-call notification in step with the voice link
@@ -82,6 +86,7 @@ class VoiceCallService : Service() {
         private const val EXTRA_CHANNEL_ID = "channel_id"
         private const val EXTRA_CHANNEL_NAME = "channel_name"
         private const val EXTRA_ACTION = "extra_action"
+        private const val EXTRA_FOR_CALL = "for_call"
         const val ACTION_MUTE_TOGGLE = "io.wolftown.kaiku.MUTE_TOGGLE"
         const val ACTION_DISCONNECT = "io.wolftown.kaiku.DISCONNECT"
 
@@ -92,10 +97,11 @@ class VoiceCallService : Service() {
          * @param channelId Voice channel ID
          * @param channelName Display name for the notification
          */
-        fun start(context: Context, channelId: String, channelName: String) {
+        fun start(context: Context, channelId: String, channelName: String, forCall: Boolean = false) {
             val intent = Intent(context, VoiceCallService::class.java).apply {
                 putExtra(EXTRA_CHANNEL_ID, channelId)
                 putExtra(EXTRA_CHANNEL_NAME, channelName)
+                putExtra(EXTRA_FOR_CALL, forCall)
             }
             notificationGate.open()
             context.startForegroundService(intent)
@@ -128,6 +134,7 @@ class VoiceCallService : Service() {
         val channelName = intent?.getStringExtra(EXTRA_CHANNEL_NAME)
             ?: getString(R.string.voice_default_channel_name)
         this.channelName = channelName
+        this.forCall = intent?.getBooleanExtra(EXTRA_FOR_CALL, false) ?: false
 
         // A microphone foreground service may only start with RECORD_AUDIO granted
         // (Android 14 throws SecurityException otherwise).
@@ -197,9 +204,13 @@ class VoiceCallService : Service() {
     }
 
     private fun buildNotification(channelName: String, status: Int?): Notification {
-        // Tap notification to open the app
-        val launchIntent = packageManager.getLaunchIntentForPackage(packageName)?.apply {
-            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        // Tap: the call screen for a DM call, the app otherwise
+        val launchIntent = if (forCall) {
+            CallIntents.screen(this)
+        } else {
+            packageManager.getLaunchIntentForPackage(packageName)?.apply {
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            }
         }
         val contentPendingIntent = PendingIntent.getActivity(
             this,

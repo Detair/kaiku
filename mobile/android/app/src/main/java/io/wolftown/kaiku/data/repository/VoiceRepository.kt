@@ -803,7 +803,7 @@ class VoiceRepository @Inject constructor(
                 }
             }
             try {
-                VoiceCallService.start(context, channelId, session.call?.title ?: channelId)
+                VoiceCallService.start(context, channelId, session.call?.title ?: channelId, forCall = session.call != null)
             } catch (e: IllegalStateException) {
                 // ForegroundServiceStartNotAllowedException (API 31+) is one.
                 throw VoiceServiceStartException(e)

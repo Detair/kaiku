@@ -190,6 +190,8 @@ fun KaikuNavGraph(
     val voiceIsMuted by voiceOverlayViewModel.isMuted.collectAsState()
     val voiceLinkState by voiceOverlayViewModel.linkState.collectAsState()
     val voiceEndNotice by voiceOverlayViewModel.endNotice.collectAsState()
+    val voiceIsCall by voiceOverlayViewModel.isCall.collectAsState()
+    val context = androidx.compose.ui.platform.LocalContext.current
     val showOverlay = shouldShowVoiceOverlay(voiceChannelId, currentRoute)
 
     Column(modifier = Modifier.fillMaxSize()) {
@@ -470,8 +472,12 @@ fun KaikuNavGraph(
                 status = voiceLinkState.statusText(),
                 onMuteToggle = { voiceOverlayViewModel.onToggleMute() },
                 onTap = {
-                    voiceChannelId?.let { channelId ->
-                        navController.navigate("voice/$channelId") { launchSingleTop = true }
+                    if (voiceIsCall) {
+                        context.startActivity(io.wolftown.kaiku.ui.call.CallIntents.screen(context))
+                    } else {
+                        voiceChannelId?.let { channelId ->
+                            navController.navigate("voice/$channelId") { launchSingleTop = true }
+                        }
                     }
                 },
                 onDisconnect = { voiceOverlayViewModel.onDisconnect() }

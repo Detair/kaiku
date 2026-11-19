@@ -144,7 +144,7 @@ class VoiceRepositoryTest {
         // an Android Intent and would throw "Method putExtra in android.content.Intent not
         // mocked" under the default JVM test target. Stub the companion to a no-op.
         mockkObject(VoiceCallService.Companion)
-        every { VoiceCallService.start(any(), any(), any()) } answers {}
+        every { VoiceCallService.start(any(), any(), any(), any()) } answers {}
         every { VoiceCallService.stop(any()) } answers {}
 
         every { webSocket.events } returns wsEvents
@@ -411,7 +411,7 @@ class VoiceRepositoryTest {
         assertEquals(VoiceLinkState.Stable, repository.linkState.value)
         assertEquals("ch-1", repository.currentChannelId.value)
         verify(exactly = 0) { VoiceCallService.stop(any()) }
-        verify(exactly = 1) { VoiceCallService.start(any(), any(), any()) }
+        verify(exactly = 1) { VoiceCallService.start(any(), any(), any(), any()) }
     }
 
     @Test
@@ -1404,7 +1404,7 @@ class VoiceRepositoryTest {
         val ends = collectCallEnds()
         repository.joinCall("ch-1", "Anna") { io.wolftown.kaiku.data.voice.RejoinVerdict.Allowed }
         advanceUntilIdle()
-        verify { VoiceCallService.start(any(), "ch-1", "Anna") }
+        verify { VoiceCallService.start(any(), "ch-1", "Anna", true) }
 
         repository.leaveChannel()
         runCurrent()
@@ -1586,7 +1586,7 @@ class VoiceRepositoryTest {
         // after the tap, while the app is in the foreground; when the socket
         // is finally there, Android may not allow it any more.
         verifyNoVoiceFrames()
-        verify(exactly = 1) { VoiceCallService.start(any(), "ch-1", any()) }
+        verify(exactly = 1) { VoiceCallService.start(any(), "ch-1", any(), false) }
 
         socketUp()
         runCurrent()
@@ -1596,14 +1596,14 @@ class VoiceRepositoryTest {
         verifyJoins(2)
 
         // Never stopped or started again between the join and the rejoin.
-        verify(exactly = 1) { VoiceCallService.start(any(), any(), any()) }
+        verify(exactly = 1) { VoiceCallService.start(any(), any(), any(), any()) }
         verify(exactly = 0) { VoiceCallService.stop(any()) }
     }
 
     @Test
     fun `a call service that may not be started ends the join with its own message`() = runTest {
         // What Android 12+ throws for a foreground service start from the background.
-        every { VoiceCallService.start(any(), any(), any()) } throws
+        every { VoiceCallService.start(any(), any(), any(), any()) } throws
             IllegalStateException("startForegroundService() not allowed")
 
         repository.startJoin("ch-1")
@@ -1631,7 +1631,7 @@ class VoiceRepositoryTest {
         assertEquals(R.string.voice_join_failed, repository.error.value)
         assertEquals(null, repository.currentChannelId.value)
         // Nothing to stop before it reached the foreground.
-        verify(exactly = 0) { VoiceCallService.start(any(), any(), any()) }
+        verify(exactly = 0) { VoiceCallService.start(any(), any(), any(), any()) }
     }
 
     @Test

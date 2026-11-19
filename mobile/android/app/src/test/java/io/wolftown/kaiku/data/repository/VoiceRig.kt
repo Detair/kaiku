@@ -109,7 +109,7 @@ internal class VoiceRig(private val test: TestScope) {
 
     init {
         mockkObject(VoiceCallService.Companion)
-        every { VoiceCallService.start(any(), any(), any()) } answers {
+        every { VoiceCallService.start(any(), any(), any(), any()) } answers {
             log += "service:start"
             service.start()
         }

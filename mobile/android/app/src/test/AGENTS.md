@@ -66,7 +66,7 @@ import io.mockk.unmockkObject
 
 @Before fun setUp() {
     mockkObject(VoiceCallService.Companion)
-    every { VoiceCallService.start(any(), any(), any()) } answers {}
+    every { VoiceCallService.start(any(), any(), any(), any()) } answers {}
     every { VoiceCallService.stop(any()) } answers {}
     // ...
 }

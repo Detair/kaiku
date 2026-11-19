@@ -1,5 +1,9 @@
 package io.wolftown.kaiku.ui.voice
 
+import io.wolftown.kaiku.data.call.CallController
+import io.wolftown.kaiku.data.call.CallDirectory
+import io.wolftown.kaiku.data.call.CallState
+
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -34,7 +38,15 @@ internal fun shouldShowVoiceOverlay(voiceChannelId: String?, currentRoute: Strin
 class VoiceOverlayViewModel @Inject constructor(
     private val voiceRepository: VoiceRepository,
     guildRepository: GuildRepository,
+    callController: CallController,
+    callDirectory: CallDirectory,
 ) : ViewModel() {
+
+    /** The voice session is a DM call: the bar leads to the call screen instead of the voice screen. */
+    val isCall: StateFlow<Boolean> =
+        combine(voiceRepository.currentChannelId, callController.state) { id, call ->
+            id != null && call.channelId == id && call !is CallState.Ended && call !is CallState.Idle
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
 
     val currentChannelId: StateFlow<String?> = voiceRepository.currentChannelId
     val isMuted: StateFlow<Boolean> = voiceRepository.isMuted
@@ -48,7 +60,7 @@ class VoiceOverlayViewModel @Inject constructor(
     /** Name of the channel the call runs in, or null if it is not in the loaded channel list. */
     val channelName: StateFlow<String?> =
         combine(voiceRepository.currentChannelId, guildRepository.channels) { id, channels ->
-            id?.let { channelId -> channels.find { it.id == channelId }?.name }
+            id?.let { channelId -> channels.find { it.id == channelId }?.name ?: callDirectory.titleOf(channelId) }
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     fun onToggleMute() {
