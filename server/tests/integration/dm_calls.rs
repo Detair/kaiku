@@ -732,3 +732,98 @@ async fn test_leave_hook_compares_start_time_in_ms(pool: PgPool) {
         .unwrap());
     assert!(call_state(&fx).await.is_null());
 }
+
+// ---------------------------------------------------------------------------
+// Calls left behind by a previous server process (C3)
+// ---------------------------------------------------------------------------
+
+/// A "restarted" server finds the ringing call of the previous process in
+/// Valkey and ends it as unanswered: `call_ended` is published and
+/// `GET /api/dm/{id}/call` answers "no call" (contract C33).
+#[sqlx::test]
+async fn restart_ends_calls_left_ringing(pool: PgPool) {
+    use vc_server::voice::call_service::{channels_with_calls, end_calls_left_ringing};
+
+    let fx = setup(&pool).await;
+    let mut callee_ws = connect_ready(&fx.server, &fx.callee_token).await;
+    assert_eq!(start(&fx, &fx.caller_token).await, StatusCode::CREATED);
+    next_ws_event(&mut callee_ws, "incoming_call", EVENT_TIMEOUT).await;
+
+    // The start-up clean-up of a new process, against the same Valkey.
+    let calls = CallService::new(fx.app.state.redis.clone(), pool.clone());
+    let found = channels_with_calls(&fx.app.state.redis)
+        .await
+        .expect("scan call streams");
+    assert!(found.contains(&fx.dm), "the ringing call was not found");
+    let left_active = end_calls_left_ringing(&calls, [fx.dm])
+        .await
+        .expect("end ringing calls");
+    assert!(left_active.is_empty(), "{left_active:?}");
+
+    let ended = next_ws_event(&mut callee_ws, "call_ended", EVENT_TIMEOUT).await;
+    assert_eq!(ended["channel_id"], fx.dm.to_string());
+    assert_eq!(ended["reason"], "no_answer");
+    assert!(call_state(&fx).await.is_null(), "the call survived the restart");
+    // The caller can call again at once.
+    assert_eq!(start(&fx, &fx.caller_token).await, StatusCode::CREATED);
+}
+
+/// An answered call survives the restart clean-up while its room is
+/// occupied again (a participant rejoined within the grace).
+#[sqlx::test]
+async fn restart_keeps_active_call_that_was_rejoined(pool: PgPool) {
+    use vc_server::voice::call_service::{end_abandoned_calls, end_calls_left_ringing};
+
+    let fx = setup(&pool).await;
+    let mut caller_ws = connect_ready(&fx.server, &fx.caller_token).await;
+    assert_eq!(start(&fx, &fx.caller_token).await, StatusCode::CREATED);
+    assert_eq!(
+        call_post(&fx, &fx.callee_token, "join").await.status(),
+        StatusCode::OK
+    );
+    assert_eq!(call_state(&fx).await["status"], "active");
+
+    let calls = CallService::new(fx.app.state.redis.clone(), pool.clone());
+    let left_active = end_calls_left_ringing(&calls, [fx.dm])
+        .await
+        .expect("restart clean-up");
+    assert_eq!(left_active.len(), 1, "the active call is kept for rejoins");
+    assert_eq!(call_state(&fx).await["status"], "active");
+
+    // A participant rejoined the room: the call stays.
+    send_json(
+        &mut caller_ws,
+        serde_json::json!({ "type": "voice_join", "channel_id": fx.dm }),
+    )
+    .await;
+    next_ws_event(&mut caller_ws, "voice_room_state", EVENT_TIMEOUT).await;
+    assert_eq!(end_abandoned_calls(&calls, &fx.app.state.sfu, &left_active).await, 0);
+    assert_eq!(call_state(&fx).await["status"], "active");
+
+}
+
+/// An answered call whose room nobody rejoined ends as `last_left` after
+/// the grace.
+#[sqlx::test]
+async fn restart_ends_active_call_without_rejoin(pool: PgPool) {
+    use vc_server::voice::call_service::{end_abandoned_calls, end_calls_left_ringing};
+
+    let fx = setup(&pool).await;
+    let mut callee_ws = connect_ready(&fx.server, &fx.callee_token).await;
+    assert_eq!(start(&fx, &fx.caller_token).await, StatusCode::CREATED);
+    assert_eq!(
+        call_post(&fx, &fx.callee_token, "join").await.status(),
+        StatusCode::OK
+    );
+    let calls = CallService::new(fx.app.state.redis.clone(), pool.clone());
+    let left_active = end_calls_left_ringing(&calls, [fx.dm])
+        .await
+        .expect("restart clean-up");
+    assert_eq!(
+        end_abandoned_calls(&calls, &fx.app.state.sfu, &left_active).await,
+        1
+    );
+    let ended = next_ws_event(&mut callee_ws, "call_ended", EVENT_TIMEOUT).await;
+    assert_eq!(ended["reason"], "last_left");
+    assert!(call_state(&fx).await.is_null());
+}

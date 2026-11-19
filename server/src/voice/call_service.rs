@@ -868,6 +868,141 @@ pub async fn last_voice_peer_left(
         .is_some())
 }
 
+/// A call that a previous server process left in the store, still active
+/// (answered) when this process started.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeftCall {
+    pub channel_id: Uuid,
+    pub call_id: String,
+}
+
+/// How long after start-up an answered call of the previous process waits
+/// for a participant to rejoin its room (clients rejoin within 60 s of a
+/// lost connection, contract C32) before it is ended.
+pub const RESTART_REJOIN_GRACE: Duration = Duration::from_secs(60);
+
+/// Channels that have a call stream in Valkey (start-up clean-up).
+pub async fn channels_with_calls(redis: &Client) -> Result<Vec<Uuid>, CallError> {
+    use futures::TryStreamExt;
+
+    let keys: Vec<fred::types::Key> = redis
+        .scan_buffered("call_events:*", Some(100), None)
+        .try_collect()
+        .await
+        .map_err(|e| CallError::Redis(e.to_string()))?;
+    Ok(keys
+        .iter()
+        .filter_map(|k| k.as_str()?.strip_prefix("call_events:")?.parse().ok())
+        .collect())
+}
+
+/// Start-up clean-up, step 1: end every call in `channels` that is still
+/// ringing, as unanswered (`no_answer`, published as `call_ended`, phones
+/// woken with `ended` when the service has push): its ring timer died with
+/// the previous process. Answered calls are returned for step 2 and kept for
+/// now: their participants may rejoin the room (C32).
+///
+/// Kaiku runs one server process (v1), so every call in the store belongs to
+/// a process that is gone, and no room of this process exists yet.
+pub async fn end_calls_left_ringing(
+    calls: &CallService,
+    channels: impl IntoIterator<Item = Uuid>,
+) -> Result<Vec<LeftCall>, CallError> {
+    let mut active = Vec::new();
+    for channel_id in channels {
+        let Some((state, meta)) = calls.get_call(channel_id).await? else {
+            continue;
+        };
+        match state {
+            CallState::Ringing { .. } => {
+                let ended = calls
+                    .end_call_when(channel_id, Some(&meta.call_id), |state, _| {
+                        matches!(state, CallState::Ringing { .. }).then_some(EndReason::NoAnswer)
+                    })
+                    .await;
+                match ended {
+                    Ok(Some(_)) => tracing::info!(%channel_id, "Ended a call left ringing by the previous process"),
+                    Ok(None) => {}
+                    Err(e) => tracing::warn!(%channel_id, error = %e, "Failed to end a call left ringing"),
+                }
+            }
+            CallState::Active { .. } => active.push(LeftCall {
+                channel_id,
+                call_id: meta.call_id,
+            }),
+            CallState::Ended { .. } => {}
+        }
+    }
+    Ok(active)
+}
+
+/// Start-up clean-up, step 2 (after [`RESTART_REJOIN_GRACE`]): end each
+/// answered call of the previous process whose room is still empty, as
+/// `last_left`. Pinned to the call's id, so a newer call is never touched.
+/// Returns how many calls ended.
+pub async fn end_abandoned_calls(
+    calls: &CallService,
+    sfu: &crate::voice::SfuServer,
+    left: &[LeftCall],
+) -> usize {
+    let mut ended = 0;
+    for call in left {
+        let occupied = match sfu.get_room(call.channel_id).await {
+            Some(room) => !room.is_empty().await,
+            None => false,
+        };
+        if occupied {
+            continue;
+        }
+        match calls
+            .end_call_when(call.channel_id, Some(&call.call_id), |state, _| {
+                matches!(state, CallState::Active { .. }).then_some(EndReason::LastLeft)
+            })
+            .await
+        {
+            Ok(Some(_)) => ended += 1,
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!(channel_id = %call.channel_id, error = %e, "Failed to end an abandoned call");
+            }
+        }
+    }
+    ended
+}
+
+/// The start-up clean-up of DM calls (C3), in the background: ringing calls
+/// of the previous process end at once, answered ones after
+/// [`RESTART_REJOIN_GRACE`] if nobody rejoined their room.
+pub fn spawn_restart_cleanup(
+    calls: CallService,
+    sfu: std::sync::Weak<crate::voice::SfuServer>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let channels = match channels_with_calls(&calls.redis).await {
+            Ok(channels) => channels,
+            Err(e) => {
+                tracing::warn!(error = %e, "Could not list calls left by the previous process");
+                return;
+            }
+        };
+        let left = match end_calls_left_ringing(&calls, channels).await {
+            Ok(left) => left,
+            Err(e) => {
+                tracing::warn!(error = %e, "Could not end calls left by the previous process");
+                return;
+            }
+        };
+        if left.is_empty() {
+            return;
+        }
+        tokio::time::sleep(RESTART_REJOIN_GRACE).await;
+        if let Some(sfu) = sfu.upgrade() {
+            let ended = end_abandoned_calls(&calls, &sfu, &left).await;
+            tracing::info!(ended, kept = left.len() - ended, "Checked answered calls of the previous process");
+        }
+    })
+}
+
 /// Whether `user_id` may have a ringing call (cheap pre-check before
 /// [`caller_socket_closed`]).
 pub async fn may_have_ringing_calls(redis: &Client, user_id: Uuid) -> bool {

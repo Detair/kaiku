@@ -467,6 +467,13 @@ async fn main() -> Result<()> {
         .sfu
         .spawn_stale_peer_reaper(state.db.clone(), state.screen_share_limiter.clone());
 
+    // DM calls the previous process left: ringing ones end now (their ring
+    // timer is gone), answered ones after a grace if nobody rejoined (C3).
+    let call_cleanup_handle = vc_server::voice::call_service::spawn_restart_cleanup(
+        vc_server::voice::call_service::CallService::for_state(&state),
+        std::sync::Arc::downgrade(&state.sfu),
+    );
+
     // Kept for the shutdown of the open WebSockets (the router owns `state`).
     let mut socket_drain = vc_server::shutdown::SocketDrain::from_state(&state);
     socket_drain.storage_cleanup = Some(storage_cleanup);
@@ -509,6 +516,7 @@ async fn main() -> Result<()> {
     // 1. Abort non-draining background tasks
     voice_cleanup_handle.abort();
     stale_peer_reaper_handle.abort();
+    call_cleanup_handle.abort();
     db_cleanup_handle.abort();
     webhook_worker_handle.abort();
     auth_timers_handle.abort();
@@ -522,6 +530,7 @@ async fn main() -> Result<()> {
     let stopped = tokio::time::timeout(EXIT_STEP_TIMEOUT, async {
         let _ = voice_cleanup_handle.await;
         let _ = stale_peer_reaper_handle.await;
+        let _ = call_cleanup_handle.await;
         let _ = db_cleanup_handle.await;
         let _ = webhook_worker_handle.await;
         let _ = rtp_flush_handle.await;
