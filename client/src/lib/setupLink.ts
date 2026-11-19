@@ -18,9 +18,16 @@ export function parseSetupFragment(hash: string): SetupFragment {
   return { v: 1, token };
 }
 
-/** "Open in Kaiku" on Android, for the app's `kaiku://setup/v1` intent filter. */
+/** The Kaiku Android app (`applicationId`); the hand-off goes to it and to no other app. */
+const ANDROID_PACKAGE = "io.wolftown.kaiku";
+
+/**
+ * "Open in Kaiku" on Android, for the app's `kaiku://setup/v1` intent filter. The intent names
+ * the Kaiku app's package, so the browser hands the code only to Kaiku (or, without the app,
+ * offers to install it) and never to another app that registered the same scheme.
+ */
 export function androidIntentUrl(origin: string, token: string): string {
-  return `intent://setup/v1?o=${encodeURIComponent(origin)}&t=${token}#Intent;scheme=kaiku;end`;
+  return `intent://setup/v1?o=${encodeURIComponent(origin)}&t=${token}#Intent;scheme=kaiku;package=${ANDROID_PACKAGE};end`;
 }
 
 export function isAndroidBrowser(ua: string): boolean {

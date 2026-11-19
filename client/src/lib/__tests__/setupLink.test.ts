@@ -16,9 +16,9 @@ describe("setup links", () => {
     expect(parseSetupFragment("")).toEqual({ error: "missing" });
   });
 
-  it("builds the Android intent URL with the encoded origin", () => {
+  it("builds the Android intent URL with the encoded origin, for the Kaiku app only", () => {
     expect(androidIntentUrl("https://chat.example.com", TOKEN)).toBe(
-      `intent://setup/v1?o=${encodeURIComponent("https://chat.example.com")}&t=${TOKEN}#Intent;scheme=kaiku;end`,
+      `intent://setup/v1?o=${encodeURIComponent("https://chat.example.com")}&t=${TOKEN}#Intent;scheme=kaiku;package=io.wolftown.kaiku;end`,
     );
   });
 
