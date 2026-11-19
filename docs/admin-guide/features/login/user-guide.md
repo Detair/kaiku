@@ -472,7 +472,9 @@ On your **key phone** there are two choices:
   or passkey this way; add another one first.
 
 To use another account on a key phone, remove the phone as your key first (**Use another
-account**).
+account**). On a signed-out phone this signs in with your screen lock only to remove the phone. If
+the removal does not happen (you cancel, leave the screen, or the app closes), that sign-in ends
+again and the phone shows **Confirm it's you**.
 
 Kaiku also asks **Confirm it's you to stay signed in** on your key phone from time to time: after a
 week without use, or after 90 days at the latest. A browser sign-in lasts at most 30 days, the
@@ -498,7 +500,7 @@ device**.
 | *This passkey request is for a different website than your Kaiku server ...* | The Android app was asked for a passkey of another site than the server it is set up for. Kaiku stopped before anything was sent. This also happens when the app uses another address for your server than the server's own public address. | Sign in another way and tell your admin. |
 | *This phone is the only key of this account, so it was not removed ...* | "Use another account" on your only key phone. The phone stays your key and is signed out. | Add another phone or a passkey first (Confirm it's you, then Settings, Security), or ask your admin to remove the phone. |
 | *That took too long, so Kaiku stopped waiting ...* | The screen-lock prompt stayed open too long. Nothing was changed. | Try again. |
-| *Another setup link was opened. It was not used ...* | A second setup link arrived while a setup was running on the phone. | Finish or stop the running setup, then open the other link again. |
+| *Another setup link was opened. It was not used ...* | A second setup link arrived while a setup was running on the phone. A running setup is never replaced by a link. | Finish the running setup, or tap **Cancel** (or go back and choose **Stop setup**), then open the other link again. If the phone already waits for its code, it keeps waiting until that code is confirmed or runs out (5 minutes); then open the link again. |
 | *This passkey was removed from Kaiku.* | The passkey no longer exists on the server. | Remove it from your device and sign in another way. |
 | *This passkey is ready at <time>.* | It waits for a request to complete. | Wait until then. |
 | *This is your only phone or passkey. Add another one first.* | You tried to remove your last key. | Add another phone or passkey first. |

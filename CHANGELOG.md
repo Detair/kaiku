@@ -163,9 +163,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 - Android: passkey sign-in, confirmation and adding a passkey only run for exactly the server the app is set up for; a passkey request for any other website, including a parent domain of the server, is stopped before your passkey is used.
-- Android: a setup always talks to the server of the link it was started from; a second link opened during a setup can no longer take it over.
+- Android: a setup always talks to the server of the link it was started from; while a setup runs, every other setup link is left unused (the screen says so), whatever its server.
 - Android: the phone forgets its key only on the server's own answers for a removed key, never on the same code with another status.
-- Android: "Use another account" no longer leaves the phone signed in when the app is closed while the removal is being confirmed.
+- Android: "Use another account" no longer leaves the phone signed in when the app is closed, or the screen is left, while the removal is being confirmed; that sign-in is ended before the app opens again.
 - Web: "Open in Kaiku" on the setup page hands the setup code only to the Kaiku app.
 - Android: Kaiku data is no longer copied by cloud backup or when moving to a new phone. "Confirm it's you" is protected against screenshots and taps through other apps like the other key screens.
 - The end-to-end encryption library was updated to a release that clears key material from memory more thoroughly.
@@ -237,6 +237,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Android: on "Set up this phone" without a screen lock, the screen-lock guide no longer shows its text and buttons on top of each other.
 - Android: going back while the setup code is shown, at the server or account question, or on the waiting screen now asks "Stop setting up this phone?" instead of jumping to the password sign-in; after "Stop setup" at the code, "Keep waiting" goes back to waiting. Going back while the phone sends its claim waits for the answer.
 - Android: "Confirm it's you" no longer gets stuck when the phone stops being a key while the screen is open; it says so and offers OK.
+- Android: a setup link opened again after "Stop setup" now starts, and a setup link opened while the waiting screen is shown says it was not used.
+- Android: sending the setup claim and the last sign-in of a setup no longer wait forever on a server that does not answer; they end as "not sure whether it worked" or "took too long" and offer to try again.
+- Android: going back on the screen-lock step of a setup asks first, and going back on the waiting screen while the phone signs in waits for it.
+- Android: a passkey confirmation in the security settings for another website than your server now says so instead of "That didn't work".
+- Web: "Open in Kaiku" on a phone without the app brings you back to the setup page with what to do, instead of an app store page.
 - Android: a confirmation in the security settings that took too long now says so, and their "read only" notice no longer appears when loading failed.
 - Android: the security settings no longer show "not your key" or "0 recovery codes" while they are still loading; a failed load offers "Try again". Sessions without a device name show the kind of device.
 - Client: a chat-only sign-in without a passkey now says exactly how to add a passkey for the computer, in the banner and in the security settings.

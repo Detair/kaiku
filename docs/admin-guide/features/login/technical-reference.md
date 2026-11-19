@@ -610,7 +610,31 @@ New-device routes (public, rate class `AUTH_FLOW`):
 
 Setup link: `{PUBLIC_URL}/setup#v=1&t=<b64u token>`; the token is in the fragment, so neither the
 server nor a link preview receives it. On a phone the `/setup` page offers "Open in Kaiku"
-(`intent://setup/v1?o=…&t=…`); App Links only for hosts in the build's `kaikuAppLinkHosts`.
+(`intent://setup/v1?o=…&t=…`, bound to the Kaiku package, with `S.browser_fallback_url` =
+`{PUBLIC_URL}/setup?app=missing`, which carries no token and shows the "you need the app" text);
+App Links only for hosts in the build's `kaikuAppLinkHosts`.
+
+**Setup links on the Android app while a setup runs.** From the moment the app accepts a link until
+that setup ends (finished, stopped, failed), every other setup link is ignored with the notice
+"Another setup link was opened. It was not used …" (also on the waiting screen): same server or
+another, pinned or not yet tied to a server, whatever step is shown. The same link delivered again
+(a recreated screen) changes nothing. A running setup is never replaced by a link; the person stops
+it first, and the link opened again then starts (each delivery counts, not only a new value). Every
+request of a setup takes the code and the server from the one accepted link. The signed claim and
+the final device-key sign-in are not interrupted by a link, Back or Cancel; they end after 30 s and
+180 s at the latest, as "not sure whether it worked" (claim; the stored `CLAIMING` record is then
+reconciled) or "took too long" (sign-in). A key generated for a setup that was stopped meanwhile is
+deleted at once; a new key is never made while a claim of this phone is stored (the waiting screen
+reconciles it first).
+
+**The sign-in made only to remove the phone ("Use another account").** A signed-out key phone signs
+in with its key only to remove itself (`key_device.remove` needs a session). That session never
+becomes a usable sign-in: the app stores a mark before the sign-in; the flow's clean-up cannot be
+cancelled and, unless the removal was granted, signs that session out and clears the mark, also when
+the screen goes away half way. At every activity start, before the stored session is read, a mark
+left behind with no removal running in the process clears the stored tokens and the mark at once and
+opens "Confirm it's you"; only the server-side logout runs afterwards (best effort, 10 s). Any other
+device-key sign-in clears a stale mark.
 
 The issuing screen names the claimer as "a device calling itself '<label>'" because the label is
 self-reported. The 256-bit token is the binding secret; the 6-digit code only checks that the
