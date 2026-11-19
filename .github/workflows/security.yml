@@ -52,17 +52,9 @@ jobs:
           --ignore RUSTSEC-2026-0368
           --ignore RUSTSEC-2026-0369
           --ignore RUSTSEC-2026-0429
-          --ignore RUSTSEC-2026-0446
-          --ignore RUSTSEC-2026-0447
-          --ignore RUSTSEC-2026-0448
-          --ignore RUSTSEC-2026-0455
           --ignore RUSTSEC-2026-0459
-          --ignore RUSTSEC-2026-0543
           --ignore RUSTSEC-2026-0545
           --ignore RUSTSEC-2026-0548
-          --ignore RUSTSEC-2026-0552
-          --ignore RUSTSEC-2026-0553
-          --ignore RUSTSEC-2026-0554
 
       - name: Check for yanked crates
         run: >-
@@ -75,17 +67,9 @@ jobs:
           --ignore RUSTSEC-2026-0368
           --ignore RUSTSEC-2026-0369
           --ignore RUSTSEC-2026-0429
-          --ignore RUSTSEC-2026-0446
-          --ignore RUSTSEC-2026-0447
-          --ignore RUSTSEC-2026-0448
-          --ignore RUSTSEC-2026-0455
           --ignore RUSTSEC-2026-0459
-          --ignore RUSTSEC-2026-0543
           --ignore RUSTSEC-2026-0545
           --ignore RUSTSEC-2026-0548
-          --ignore RUSTSEC-2026-0552
-          --ignore RUSTSEC-2026-0553
-          --ignore RUSTSEC-2026-0554
 
   # ===========================================================================
   # Dependency Vulnerability Scan

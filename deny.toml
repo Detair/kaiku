@@ -20,20 +20,6 @@ ignore = [
     # only after their minisign signature is verified; the client only calls
     # downloadAndInstall). Remove with the utoipa 6 / Tauri updater upgrade.
     "RUSTSEC-2026-0429",
-    # actix-http 3.12.1 / actix-web 4.13.0 (2026-11-11): RUSTSEC-2026-0446
-    # (chunked trailer smuggling), -0447 (compressed request bodies), -0448
-    # (unbounded decompression), -0455 (Brotli window limit). The crates are
-    # only in Cargo.lock: they are an optional dependency of utoipa-swagger-ui
-    # 9 (its `actix-web` feature, which we do not enable; we use `axum`) and
-    # are not compiled for any target. Proof:
-    #   cargo tree --locked --offline --target all -i actix-http
-    # prints nothing. Fixes need actix-web >=4.18.2 / actix-http >=3.20.3,
-    # which utoipa-swagger-ui 9 does not allow to lock; 10.x needs utoipa 6.
-    # Remove with the utoipa 6 / utoipa-swagger-ui 10 migration.
-    "RUSTSEC-2026-0446",
-    "RUSTSEC-2026-0447",
-    "RUSTSEC-2026-0448",
-    "RUSTSEC-2026-0455",
     # libsqlite3-sys 0.36.0 bundles SQLite <3.54 (RUSTSEC-2026-0459 /
     # CVE-2026-119375, 2026-11-11): a database opened together with a -wal
     # file of a different page size can return uninitialized memory. Fix is
@@ -45,27 +31,17 @@ ignore = [
     # party. Remove when sqlx accepts libsqlite3-sys 0.39+ and rusqlite is
     # bumped to 0.41 together with it.
     "RUSTSEC-2026-0459",
-    # actix-http 3.12.1 (2026-11-19): RUSTSEC-2026-0552 (bare LF in chunked
-    # trailers), -0553 (malformed quoted chunk extensions), -0554 (partial
-    # requests bypass the header timeout). Same situation as the 2026-11-11
-    # actix advisories above: locked only as an optional dependency of
-    # utoipa-swagger-ui 9 and not compiled for any target
-    # (`cargo tree --locked --offline --target all -i actix-http` prints
-    # nothing). Fixes need actix-http >=3.21.1 / 3.21.2 / 3.21.3. Remove with
-    # the utoipa 6 / utoipa-swagger-ui 10 migration.
-    "RUSTSEC-2026-0552",
-    "RUSTSEC-2026-0553",
-    "RUSTSEC-2026-0554",
     # zip 3.0.0 and 4.6.1 (2026-11-19): RUSTSEC-2026-0545 (AES entry returned
     # without checking its authentication code when the data ends early) and
     # RUSTSEC-2026-0548 (ZipStreamReader uses local-header names; the fix is an
     # opt-in check). Fixed only in zip >=9.0.0 / >=9.0.5. Same two copies as
     # RUSTSEC-2026-0367..0369/0429: zip 3 is the utoipa-swagger-ui 9
     # build-dependency (trusted, pinned Swagger UI archive, no AES entries, no
-    # ZipStreamReader) and zip 4 is tauri-plugin-updater 2.x (all 2.x pin zip
-    # ^4; extracts only minisign-verified update bundles, no ZipStreamReader
-    # use of ours). Our own server dep is zip 9 and write-only. Remove with the
-    # utoipa 6 / Tauri updater upgrade.
+    # ZipStreamReader) and zip 4 is the locked tauri-plugin-updater 2.10.1
+    # (extracts only minisign-verified update bundles, no ZipStreamReader use
+    # of ours; 2.14.1 moves to zip 9 and needs tauri >=2.12). Our own server
+    # dep is zip 9 and write-only. Remove the zip 4 part with the next Tauri
+    # 2.x refresh, the zip 3 part with the utoipa 6 migration.
     "RUSTSEC-2026-0545",
     "RUSTSEC-2026-0548",
     # chrono 0.4.44 is marked unmaintained (RUSTSEC-2026-0543, 2026-11-19):
@@ -111,10 +87,13 @@ ignore = [
     #   utoipa 6). Its build.rs uses its own enclosed_name() loop, not
     #   ZipArchive::extract, on the pinned Swagger UI dist archive — trusted,
     #   build-time input only.
-    # - zip 4 is used by tauri-plugin-updater 2.x (all 2.x pin zip ^4) on
-    #   Windows only, extracting update bundles after minisign signature
+    # - zip 4 is used by the locked tauri-plugin-updater 2.10.1 on Windows
+    #   only, extracting update bundles after minisign signature
     #   verification. Windows has no SUID/SGID or Unix-mode semantics.
-    # Re-check when tauri-plugin-updater 3 is stable / utoipa 6 migration.
+    #   tauri-plugin-updater 2.14.1 moves to zip 9 but needs tauri >=2.12
+    #   (locked: 2.11.1), so it comes with the next Tauri 2.x refresh.
+    # Remove the zip 4 part with that refresh, the zip 3 part with the
+    # utoipa 6 migration.
     "RUSTSEC-2026-0367",
     "RUSTSEC-2026-0368",
     "RUSTSEC-2026-0369",

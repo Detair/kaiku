@@ -200,40 +200,8 @@ id = "GHSA-8hxf-qr8p-62x4"
 reason = "Same zip 3/4 copies as RUSTSEC-2026-0429 (utoipa-swagger-ui build-dep, Windows-only signature-verified tauri updater); see deny.toml."
 
 [[IgnoredVulns]]
-id = "RUSTSEC-2026-0446"
-# actix-http/actix-web are locked but not built for any target (optional dep
-# of utoipa-swagger-ui 9; `cargo tree --locked --offline --target all -i
-# actix-http` prints nothing).
-reason = "Accepted via deny.toml; actix-http locked but not compiled for any target."
-
-[[IgnoredVulns]]
-id = "RUSTSEC-2026-0447"
-reason = "Accepted via deny.toml; actix-web locked but not compiled for any target."
-
-[[IgnoredVulns]]
-id = "RUSTSEC-2026-0448"
-reason = "Accepted via deny.toml; actix-http locked but not compiled for any target."
-
-[[IgnoredVulns]]
-id = "RUSTSEC-2026-0455"
-reason = "Accepted via deny.toml; actix-http locked but not compiled for any target."
-
-[[IgnoredVulns]]
 id = "RUSTSEC-2026-0459"
 reason = "Accepted via deny.toml; libsqlite3-sys 0.36 blocked by sqlx-sqlite 0.9 (<0.38); desktop client opens only its own database."
-
-[[IgnoredVulns]]
-id = "RUSTSEC-2026-0552"
-# 2026-11-19: three more actix-http advisories, same not-built situation.
-reason = "Accepted via deny.toml; actix-http locked but not compiled for any target."
-
-[[IgnoredVulns]]
-id = "RUSTSEC-2026-0553"
-reason = "Accepted via deny.toml; actix-http locked but not compiled for any target."
-
-[[IgnoredVulns]]
-id = "RUSTSEC-2026-0554"
-reason = "Accepted via deny.toml; actix-http locked but not compiled for any target."
 
 [[IgnoredVulns]]
 id = "RUSTSEC-2026-0545"
