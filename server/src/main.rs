@@ -468,7 +468,7 @@ async fn main() -> Result<()> {
         .spawn_stale_peer_reaper(state.db.clone(), state.screen_share_limiter.clone());
 
     // DM calls the previous process left: ringing ones end now (their ring
-    // timer is gone), answered ones after a grace if nobody rejoined (C3).
+    // timer is gone), answered ones after a grace if nobody rejoined.
     let call_cleanup_handle = vc_server::voice::call_service::spawn_restart_cleanup(
         vc_server::voice::call_service::CallService::for_state(&state),
         std::sync::Arc::downgrade(&state.sfu),

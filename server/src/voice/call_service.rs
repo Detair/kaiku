@@ -976,7 +976,7 @@ pub async fn end_abandoned_calls(
     ended
 }
 
-/// The start-up clean-up of DM calls (C3), in the background: ringing calls
+/// The start-up clean-up of DM calls, in the background: ringing calls
 /// of the previous process end at once, answered ones after
 /// [`RESTART_REJOIN_GRACE`] if nobody rejoined their room.
 pub fn spawn_restart_cleanup(

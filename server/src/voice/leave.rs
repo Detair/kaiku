@@ -104,7 +104,7 @@ pub async fn leave_voice_internal(
         let guild_id = get_guild_id(pool, channel_id).await;
         end_session_records(pool, &peer, guild_id);
 
-        // Its tracks leave every other participant's connection (C7).
+        // Its tracks leave every other participant's connection.
         room.detach_media(&peer).await;
 
         // Close the peer connection

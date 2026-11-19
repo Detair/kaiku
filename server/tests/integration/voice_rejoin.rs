@@ -215,7 +215,7 @@ async fn same_socket_rejoin_is_not_told_it_was_replaced(pool: PgPool) {
     assert_eq!(room.participant_count().await, 1);
 }
 
-/// C8: a channel's `user_limit` refuses one more member with `CHANNEL_FULL`;
+/// A channel's `user_limit` refuses one more member with `CHANNEL_FULL`;
 /// a member who is already in the room may still join again (replacement).
 #[sqlx::test]
 async fn user_limit_refuses_extra_member_but_not_a_rejoin(pool: PgPool) {
@@ -260,7 +260,7 @@ async fn user_limit_refuses_extra_member_but_not_a_rejoin(pool: PgPool) {
     assert_eq!(room.participant_count().await, 2);
 }
 
-/// C8: in a group DM, a participant who blocked (or was blocked by) another
+/// In a group DM, a participant who blocked (or was blocked by) another
 /// participant cannot join the call; the refusal does not say who blocked
 /// whom. A third participant without blocks joins.
 #[sqlx::test]

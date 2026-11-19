@@ -734,7 +734,7 @@ async fn test_leave_hook_compares_start_time_in_ms(pool: PgPool) {
 }
 
 // ---------------------------------------------------------------------------
-// Calls left behind by a previous server process (C3)
+// Calls left behind by a previous server process
 // ---------------------------------------------------------------------------
 
 /// A "restarted" server finds the ringing call of the previous process in

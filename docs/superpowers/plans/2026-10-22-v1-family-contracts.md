@@ -1027,7 +1027,7 @@ Binding for all clients (amended 2026-11-11).
   `call_ended` events from the start-up reach only sockets that are already connected, so the resync is what
   clients rely on.
 
-## Minimum client version in `GET /api/settings` (package U; added 2026-11-20)
+## Minimum client version in `GET /api/settings` (added 2026-11-20)
 
 ```json
 { "min_client_version": { "web": "1.0.0", "desktop": null, "android": "1.0.0-rc.6" } }

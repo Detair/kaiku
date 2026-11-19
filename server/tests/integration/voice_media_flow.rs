@@ -235,7 +235,7 @@ async fn webcam_start_then_track_is_forwarded(pool: PgPool) {
     );
 }
 
-/// C6: two members join within 200 ms while a third is in the room; the
+/// Two members join within 200 ms while a third is in the room; the
 /// listeners answer offers slowly, so offers would overlap. Everyone hears
 /// everyone.
 #[sqlx::test]
@@ -300,7 +300,7 @@ async fn subscriber_counts(app: &TestApp, channel: Uuid, user: Uuid) -> (usize, 
     )
 }
 
-/// C7: ten joins and leaves of a second member leave the permanent
+/// Ten joins and leaves of a second member leave the permanent
 /// member's subscriber connection as it was: after each leave no sender
 /// carries a track of the departed member. A removed track's transceiver
 /// stays (inactive) in the session: at most one more per rejoin.
@@ -345,7 +345,7 @@ async fn ten_joins_and_leaves_keep_senders_constant(pool: PgPool) {
     }
 }
 
-/// C2 / C31: the same user joins from a second socket. Only the old socket
+/// C31 `session_replaced`: the same user joins from a second socket. Only the old socket
 /// gets `voice_removed { session_replaced }`; the room holds one entry for
 /// the user; the third participant keeps exactly one track of that user
 /// and hears the new session.
