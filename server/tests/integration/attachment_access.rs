@@ -293,7 +293,9 @@ async fn deleted_message_attachment_is_refused(pool: PgPool) {
 // ---------------------------------------------------------------------------
 
 async fn pending_keys(pool: &PgPool) -> Vec<String> {
-    sqlx::query_scalar("SELECT s3_key FROM storage_pending_deletes ORDER BY s3_key")
+    // Byte order, so the expected lists do not depend on the database
+    // collation (glibc and ICU locales ignore punctuation when sorting).
+    sqlx::query_scalar(r#"SELECT s3_key FROM storage_pending_deletes ORDER BY s3_key COLLATE "C""#)
         .fetch_all(pool)
         .await
         .unwrap()
