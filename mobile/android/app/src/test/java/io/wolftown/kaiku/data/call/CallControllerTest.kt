@@ -292,7 +292,7 @@ class CallControllerTest {
     }
 
     @Test
-    fun `voice_removed during a call ends it with the reason and leaves it on the server`() = runTest {
+    fun `voice_removed during a call ends it with the reason and does not leave it on the server`() = runTest {
         val r = rig()
         r.ring()
         r.controller.accept(dm)
@@ -300,7 +300,8 @@ class CallControllerTest {
         r.callEnds.tryEmit(CallVoiceEnd(dm, VoiceEnd.Removed(VoiceRemovedReason.SessionReplaced)))
         runCurrent()
         assertEquals(CallState.Ended(dm, CallEndReason.Removed, VoiceRemovedReason.SessionReplaced), r.state)
-        assertEquals(listOf("join", "leave"), r.api.calls)
+        // Taking the call on another device must not end it for everyone.
+        assertEquals(listOf("join"), r.api.calls)
     }
 
     @Test
@@ -382,5 +383,114 @@ class CallControllerTest {
         r.ring("c-2")
         assertEquals(CallState.Idle, r.state)
         assertTrue("ring:c-2:Anna" !in r.notifier.log)
+    }
+
+    // -- The call owns its voice join (hang-up at every point of it) --------------------
+
+    private enum class Point { LeavingPreviousChannel, SettingUp, Joined }
+
+    private fun TestScope.hangUpDuringJoin(point: Point) {
+        val r = rig()
+        val leavingPrevious = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val settingUp = kotlinx.coroutines.CompletableDeferred<Unit>()
+        r.voiceChannel.value = "guild-voice" // the user is in a guild voice channel
+        coEvery { r.voice.joinCall(any(), any(), any()) } coAnswers {
+            val ch = firstArg<String>()
+            try {
+                leavingPrevious.await() // like VoiceRepository leaving the guild channel first
+                r.voiceChannel.value = ch // the call's session is open, the microphone captured
+                settingUp.await()
+            } catch (c: kotlinx.coroutines.CancellationException) {
+                // Like VoiceRepository: a cancelled join ends its session.
+                if (r.voiceChannel.value == ch) r.voiceChannel.value = null
+                throw c
+            }
+        }
+        r.ring()
+        r.controller.accept(dm)
+        runCurrent()
+        when (point) {
+            Point.LeavingPreviousChannel -> Unit
+            Point.SettingUp -> { leavingPrevious.complete(Unit); runCurrent() }
+            Point.Joined -> { leavingPrevious.complete(Unit); settingUp.complete(Unit); runCurrent() }
+        }
+
+        r.controller.hangUp()
+        runCurrent()
+        // Whatever the join would have done next.
+        leavingPrevious.complete(Unit)
+        settingUp.complete(Unit)
+        runCurrent()
+
+        assertEquals(CallState.Ended(dm, CallEndReason.Left), r.state)
+        assertTrue("voice still in the call's room at $point", r.voiceChannel.value != dm)
+    }
+
+    @Test
+    fun `hang up while the join is still leaving the previous voice channel`() = runTest {
+        hangUpDuringJoin(Point.LeavingPreviousChannel)
+    }
+
+    @Test
+    fun `hang up while the join is setting up`() = runTest {
+        hangUpDuringJoin(Point.SettingUp)
+    }
+
+    @Test
+    fun `hang up after the join was set up`() = runTest {
+        hangUpDuringJoin(Point.Joined)
+    }
+
+    @Test
+    fun `the caller ending the call while the join runs also ends the join`() = runTest {
+        val r = rig()
+        val settingUp = kotlinx.coroutines.CompletableDeferred<Unit>()
+        coEvery { r.voice.joinCall(any(), any(), any()) } coAnswers {
+            r.voiceChannel.value = firstArg()
+            try { settingUp.await() } catch (c: kotlinx.coroutines.CancellationException) {
+                r.voiceChannel.value = null
+                throw c
+            }
+        }
+        r.ring()
+        r.controller.accept(dm)
+        runCurrent()
+        r.server(ServerEvent.CallEnded(dm, "c-1", "cancelled"))
+        runCurrent()
+        assertTrue(r.voiceChannel.value != dm)
+    }
+
+    @Test
+    fun `a late start answer after hang up is left on the server`() = runTest {
+        val r = rig()
+        val answer = kotlinx.coroutines.CompletableDeferred<Unit>()
+        coEvery { r.voice.joinCall(any(), any(), any()) } returns Unit
+        val api = r.api
+        r.controller.startCall(dm)
+        r.controller.hangUp()
+        runCurrent()
+        // FakeApi answers at once; the start is processed after the hang-up.
+        assertEquals(listOf("start", "leave"), api.calls)
+        answer.complete(Unit)
+    }
+
+    @Test
+    fun `a nil call id from an older server is no call id`() = runTest {
+        val r = rig()
+        r.server(ServerEvent.IncomingCall(dm, "00000000-0000-0000-0000-000000000000", "anna", "anna"))
+        assertEquals("", (r.state as CallState.Incoming).callId)
+        r.server(ServerEvent.CallParticipantJoined(dm, "00000000-0000-0000-0000-000000000000", "me", "me"))
+        assertEquals(CallState.Idle, r.state)
+    }
+
+    @Test
+    fun `a busy ring is missed after 100 s even without the server's end`() = runTest {
+        val r = rig()
+        r.ring()
+        r.controller.accept(dm)
+        runCurrent()
+        r.server(ServerEvent.IncomingCall("dm-2", "c-9", "bob", "bob"))
+        advanceTimeBy(100_000); runCurrent()
+        assertTrue("missed:c-9" in r.notifier.log)
     }
 }

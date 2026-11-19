@@ -1386,6 +1386,25 @@ class VoiceRepositoryTest {
         repository.leaveChannel()
     }
 
+    @Test
+    fun `a call join cancelled while it leaves the previous channel opens nothing`() = runTest {
+        recordWebRtcAndSocket()
+        repository.joinChannel("ch-1") // a guild voice channel
+        advanceUntilIdle()
+        lateinit var callJoin: kotlinx.coroutines.Job
+        // The hang-up comes while the join is still leaving ch-1.
+        stepHooks["close#1"] = { callJoin.cancel() }
+        callJoin = backgroundScope.launch {
+            repository.joinCall("dm-1", "Anna") { io.wolftown.kaiku.data.voice.RejoinVerdict.Allowed }
+        }
+        advanceUntilIdle()
+        runCurrent()
+
+        verify(exactly = 0) { webSocket.send(ClientEvent.VoiceJoin("dm-1")) }
+        assertEquals(null, repository.currentChannelId.value)
+        assertTrue(callJoin.isCancelled)
+    }
+
     // -- DM call sessions ---------------------------------------
 
     private fun kotlinx.coroutines.test.TestScope.collectCallEnds(): MutableList<io.wolftown.kaiku.data.call.CallVoiceEnd> {
