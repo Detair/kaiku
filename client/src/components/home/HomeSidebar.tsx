@@ -37,9 +37,10 @@ const HomeSidebar: Component = () => {
   // Voice bar on Home for every voice channel that is not a direct call
   // (NAV-6). A direct call has its own banner, and the bar's hang-up would
   // end it only half (W1). No server lookup: a channel created during the
-  // session is not in the channel→server map yet (N2).
+  // session is not in the channel→server map yet (N2). A reconnecting
+  // session keeps its channel; a lost one keeps the bar for "Rejoin".
   const inServerVoice = () => {
-    const id = voiceState.channelId;
+    const id = voiceState.channelId ?? voiceState.lostChannelId;
     if (!id) return false;
     return !dmsState.dms.some((d) => d.id === id);
   };
