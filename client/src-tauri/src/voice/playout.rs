@@ -513,8 +513,9 @@ mod tests {
             let t = (k * FRAME_SIZE + n) as f32 / SAMPLE_RATE as f32;
             let env = 0.45f32.mul_add((2.0 * PI * 3.0 * t).sin(), 0.55);
             // Phase of 150 Hz + 50 Hz · sin(2π · 0.7 Hz · t).
-            let phase =
-                2.0 * PI * (150.0 * t - 50.0 / (2.0 * PI * 0.7) * (2.0 * PI * 0.7 * t).cos());
+            let phase = 2.0
+                * PI
+                * (50.0 / (2.0 * PI * 0.7)).mul_add(-(2.0 * PI * 0.7 * t).cos(), 150.0 * t);
             let v: f32 = (1..=6).map(|h| (phase * h as f32).sin() / h as f32).sum();
             *s = (v * env * 0.15 * 32767.0) as i16;
         }

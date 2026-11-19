@@ -128,7 +128,7 @@ pub enum PushOutcome {
 }
 
 /// Counters of one buffer. They survive resets (per track lifetime).
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct BufferStats {
     pub packets_received: u64,
     /// Arrived after a packet with a higher sequence number (still played).
@@ -380,7 +380,7 @@ impl<P: Clone> JitterBuffer<P> {
         self.cooldown = self.cooldown.saturating_sub(1);
         if carry_ts >= FRAME_TS {
             let level = self.level_ms() + f64::from(carry_ts) / TS_PER_MS as f64;
-            self.level_ema += (level - self.level_ema) * LEVEL_EMA_ALPHA;
+            self.level_ema = (level - self.level_ema).mul_add(LEVEL_EMA_ALPHA, self.level_ema);
             return Playout::Carry;
         }
         match self.phase {
@@ -410,7 +410,7 @@ impl<P: Clone> JitterBuffer<P> {
         self.slots.iter().flatten().count()
     }
 
-    pub fn stats(&self) -> BufferStats {
+    pub const fn stats(&self) -> BufferStats {
         self.stats
     }
 
@@ -483,7 +483,8 @@ impl<P: Clone> JitterBuffer<P> {
             return Playout::Silence;
         };
         let target = self.target_ms();
-        self.level_ema += (self.level_ms() - self.level_ema) * LEVEL_EMA_ALPHA;
+        self.level_ema =
+            (self.level_ms() - self.level_ema).mul_add(LEVEL_EMA_ALPHA, self.level_ema);
         let can_adjust = self.cooldown == 0;
         let fast = self.level_ema > target + FAST_DROP_ABOVE_MS;
         let wants_insert = can_adjust && self.level_ema < target - INSERT_BELOW_MS;
@@ -585,7 +586,7 @@ impl<P: Clone> JitterBuffer<P> {
 
     /// Bookkeeping after inserting (+1) or dropping (−1) a frame.
     fn adjusted(&mut self, direction: f64, fast: bool) {
-        self.level_ema += direction * FRAME_MS;
+        self.level_ema = direction.mul_add(FRAME_MS, self.level_ema);
         self.cooldown = if direction > 0.0 {
             INSERT_COOLDOWN_TICKS
         } else if fast {
@@ -595,7 +596,7 @@ impl<P: Clone> JitterBuffer<P> {
         };
     }
 
-    fn advance_played(&mut self, next_ts: i64) {
+    const fn advance_played(&mut self, next_ts: i64) {
         self.cursor_seq += 1;
         self.cursor_ts = next_ts;
         self.played_mask = (self.played_mask << 1) | 1;
@@ -689,7 +690,7 @@ struct RawPacket {
     arrival_ms: u64,
 }
 
-fn slot_index(seq: i64) -> usize {
+const fn slot_index(seq: i64) -> usize {
     seq.rem_euclid(CAPACITY as i64) as usize
 }
 
@@ -977,10 +978,9 @@ mod tests {
             ts0: 4_000_000,
             tag: 2,
         };
-        let mut out = Vec::new();
         for tick in 0..100u64 {
             a.push(&mut jb, tick as u32, tick * 20);
-            out.push(jb.pop(tick * 20, 0));
+            jb.pop(tick * 20, 0);
         }
         assert_eq!(
             b.push(&mut jb, 0, 2000),
