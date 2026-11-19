@@ -1,5 +1,7 @@
 package io.wolftown.kaiku.di
 
+import io.wolftown.kaiku.data.voice.AndroidElapsedClock
+import io.wolftown.kaiku.data.voice.ElapsedClock
 import dagger.Binds
 import dagger.Module
 import dagger.hilt.InstallIn
@@ -35,4 +37,7 @@ abstract class VoiceModule {
     @Binds
     @Singleton
     abstract fun bindMicPermissionChecker(impl: AndroidMicPermissionChecker): MicPermissionChecker
+
+    @Binds
+    abstract fun bindElapsedClock(impl: AndroidElapsedClock): ElapsedClock
 }

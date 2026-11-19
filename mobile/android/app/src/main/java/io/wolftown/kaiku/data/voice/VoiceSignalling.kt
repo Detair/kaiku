@@ -93,6 +93,8 @@ class VoiceSignalling(
     private val delaysMs: List<Long> = DEFAULT_DELAYS_MS,
     private val attemptTimeoutMs: Long = ATTEMPT_TIMEOUT_MS,
     private val joinDeadlineMs: Long = JOIN_DEADLINE_MS,
+    /** Real elapsed time incl. suspension (C32); the deadline counts the larger of it and the delays waited. */
+    private val clock: ElapsedClock = ElapsedClock.STOPPED,
 ) {
     companion object {
         private val logger = Logger.getLogger("VoiceSignalling")
@@ -102,6 +104,13 @@ class VoiceSignalling(
 
         /** How long a session may be without an authenticated socket that carries its `voice_join`. */
         const val JOIN_DEADLINE_MS = 60_000L
+
+        /**
+         * The deadline wakes up at least this often to compare the real
+         * clock: after a device suspension the coroutine delay alone would
+         * still be counting.
+         */
+        const val DEADLINE_CHECK_MS = 5_000L
     }
 
     /** How a rejoin attempt ended. */
@@ -360,7 +369,7 @@ class VoiceSignalling(
                 Carrier(joined, authenticated = joined != null && joined == authenticated)
             }.distinctUntilChanged().collectLatest { carrier ->
                 if (!carrier.authenticated) {
-                    delay(joinDeadlineMs)
+                    awaitElapsed(joinDeadlineMs)
                     expired.set(true)
                     work.cancel()
                 }
@@ -375,6 +384,24 @@ class VoiceSignalling(
             false
         } finally {
             watchdog.cancel()
+        }
+    }
+
+    /**
+     * Waits until [ms] of real time have passed (C32): the larger of the
+     * delays waited and the [clock]'s difference, which also counts time the
+     * device was suspended. Wakes at least every [DEADLINE_CHECK_MS] to
+     * compare, so a long sleep is noticed at the first wake-up.
+     */
+    private suspend fun awaitElapsed(ms: Long) {
+        val start = clock.nowMs()
+        var waited = 0L
+        while (true) {
+            val elapsed = maxOf(waited, clock.nowMs() - start)
+            if (elapsed >= ms) return
+            val step = minOf(ms - elapsed, DEADLINE_CHECK_MS)
+            delay(step)
+            waited += step
         }
     }
 

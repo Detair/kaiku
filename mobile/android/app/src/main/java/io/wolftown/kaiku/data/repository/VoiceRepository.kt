@@ -6,6 +6,7 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import io.wolftown.kaiku.R
 import io.wolftown.kaiku.data.voice.AudioRouteManager
+import io.wolftown.kaiku.data.voice.ElapsedClock
 import io.wolftown.kaiku.data.voice.IceTrouble
 import io.wolftown.kaiku.data.voice.MicPermissionChecker
 import io.wolftown.kaiku.data.voice.MissingMicPermissionException
@@ -83,6 +84,8 @@ class VoiceRepository @Inject constructor(
     private val micPermissionChecker: MicPermissionChecker,
     @ApplicationContext private val context: Context,
     @VoiceCoroutineScope voiceScope: CoroutineScope,
+    /** C32: the 60 s are real elapsed time, including device suspension. */
+    elapsedClock: ElapsedClock = ElapsedClock.STOPPED,
 ) : Closeable {
     companion object {
         private val logger = Logger.getLogger("VoiceRepository")
@@ -277,7 +280,7 @@ class VoiceRepository @Inject constructor(
      */
     private val failedGeneration = MutableStateFlow<Long?>(null)
 
-    private val signalling = VoiceSignalling(socket = webSocket.authenticatedSocket)
+    private val signalling = VoiceSignalling(socket = webSocket.authenticatedSocket, clock = elapsedClock)
 
     /**
      * Whether the call is connected, interrupted (ICE trouble, or no
