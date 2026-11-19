@@ -22,6 +22,7 @@ import {
   createSignal,
   createEffect,
   createMemo,
+  lazy,
 } from "solid-js";
 import { Plus, Mic, GripVertical } from "lucide-solid";
 import {
@@ -51,8 +52,7 @@ import type { ChannelWithUnread, ChannelCategory } from "@/lib/types";
 import { showToast } from "@/components/ui/Toast";
 import CategoryHeader from "./CategoryHeader";
 import ChannelItem from "./ChannelItem";
-import CreateChannelModal from "./CreateChannelModal";
-import ChannelSettingsModal from "./ChannelSettingsModal";
+import LazyDialog from "@/components/ui/LazyDialog";
 import MicrophoneTest from "../voice/MicrophoneTest";
 import VoiceParticipants from "../voice/VoiceParticipants";
 import flokiHappy from "@/assets/emotes/floki_emote_1.webp";
@@ -66,6 +66,10 @@ import {
   type DraggableType,
 } from "./ChannelDragContext";
 import { t } from "@/i18n";
+
+// Open on demand: each loads with its first use, off the startup payload.
+const CreateChannelModal = lazy(() => import("./CreateChannelModal"));
+const ChannelSettingsModal = lazy(() => import("./ChannelSettingsModal"));
 
 interface ChannelListProps {
   /** Called after a navigation action (e.g. channel selected). Used to close the mobile drawer. */
@@ -170,6 +174,8 @@ const ChannelList: Component<ChannelListProps> = (props) => {
   const handleVoiceChannelClick = (channelId: string) => {
     // Just select the channel — VoiceChannelView handles join/leave
     selectChannel(channelId);
+    // Close the mobile drawer like text channels do (NAV-12)
+    props.onNavigate?.();
   };
 
   const openCreateModal = (
@@ -419,16 +425,14 @@ const ChannelList: Component<ChannelListProps> = (props) => {
         >
           <div class="flex items-center group">
             <Show when={draggable}>
-              <div class="cursor-grab text-text-secondary hover:text-text-primary opacity-0 group-hover:opacity-100 transition-opacity mr-1">
+              <div class="cursor-grab text-text-secondary hover:text-text-primary opacity-0 group-hover:opacity-100 transition-opacity mr-1" aria-hidden="true">
                 <GripVertical class="w-3 h-3" />
               </div>
             </Show>
             <div class="flex-1">
               <ChannelItem
                 channel={channel}
-                isSelected={
-                  !isVoice && channelsState.selectedChannelId === channel.id
-                }
+                isSelected={channelsState.selectedChannelId === channel.id}
                 onClick={
                   isVoice
                     ? () => handleVoiceChannelClick(channel.id)
@@ -624,22 +628,26 @@ const ChannelList: Component<ChannelListProps> = (props) => {
             <span class="text-xs font-bold text-text-secondary uppercase tracking-wider group-hover:text-text-primary transition-colors">
               {t("channels.list.uncategorized")}
             </span>
-            <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+            {/* Visible on hover, keyboard focus and touch screens (NAV-19) */}
+            <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 touch:opacity-100 transition-opacity">
               <button
-                class="p-1 text-text-secondary hover:text-accent-primary rounded-lg hover:bg-white/10 transition-all duration-200"
+                class="tap-dense p-1 text-text-secondary hover:text-accent-primary rounded-lg hover:bg-white/10 transition-all duration-200"
                 title={t("channels.list.testMicrophone")} aria-label={t("channels.list.testMicrophone")}
                 onClick={() => setShowMicTest(true)}
               >
-                <Mic class="w-4 h-4" />
+                <Mic class="w-4 h-4" aria-hidden="true" />
               </button>
-              <button
-                class="p-1 text-text-secondary hover:text-text-primary rounded-lg hover:bg-white/10 transition-all duration-200"
-                data-testid="create-channel-button"
-                title={t("channels.list.createChannel")} aria-label={t("channels.list.createChannel")}
-                onClick={() => openCreateModal("text", null)}
-              >
-                <Plus class="w-4 h-4" />
-              </button>
+              {/* Only for people who may create channels (NAV-18) */}
+              <Show when={canManageChannels()}>
+                <button
+                  class="tap-dense p-1 text-text-secondary hover:text-text-primary rounded-lg hover:bg-white/10 transition-all duration-200"
+                  data-testid="create-channel-button"
+                  title={t("channels.list.createChannel")} aria-label={t("channels.list.createChannel")}
+                  onClick={() => openCreateModal("text", null)}
+                >
+                  <Plus class="w-4 h-4" aria-hidden="true" />
+                </button>
+              </Show>
             </div>
           </div>
           <div class="space-y-0.5">
@@ -711,22 +719,26 @@ const ChannelList: Component<ChannelListProps> = (props) => {
 
       {/* Create Channel Modal */}
       <Show when={showCreateModal() && guildsState.activeGuildId}>
-        <CreateChannelModal
-          guildId={guildsState.activeGuildId!}
-          initialType={createModalType()}
-          categoryId={createModalCategoryId()}
-          onClose={() => setShowCreateModal(false)}
-          onCreated={handleChannelCreated}
-        />
+        <LazyDialog name="CreateChannelModal">
+          <CreateChannelModal
+            guildId={guildsState.activeGuildId!}
+            initialType={createModalType()}
+            categoryId={createModalCategoryId()}
+            onClose={() => setShowCreateModal(false)}
+            onCreated={handleChannelCreated}
+          />
+        </LazyDialog>
       </Show>
 
       {/* Channel Settings Modal */}
       <Show when={settingsChannelId() && guildsState.activeGuildId}>
-        <ChannelSettingsModal
-          channelId={settingsChannelId()!}
-          guildId={guildsState.activeGuildId!}
-          onClose={() => setSettingsChannelId(null)}
-        />
+        <LazyDialog name="ChannelSettingsModal">
+          <ChannelSettingsModal
+            channelId={settingsChannelId()!}
+            guildId={guildsState.activeGuildId!}
+            onClose={() => setSettingsChannelId(null)}
+          />
+        </LazyDialog>
       </Show>
     </nav>
   );

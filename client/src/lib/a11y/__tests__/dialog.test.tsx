@@ -88,6 +88,25 @@ describe("createDialog", () => {
   });
 });
 
+describe("createDialog without an opener", () => {
+  it("opened with the focus on the page, it hands the focus to the content on close", async () => {
+    // A window whose code loads on demand mounts after the menu item that
+    // opened it is gone: the focus is on the page, and must not stay there.
+    const main = document.createElement("main");
+    main.id = "main-content";
+    main.tabIndex = -1;
+    document.body.appendChild(main);
+    (document.activeElement as HTMLElement | null)?.blur();
+    expect(document.activeElement).toBe(document.body);
+    const view = render(() => <TestDialog onClose={() => {}} />);
+    await Promise.resolve();
+    expect(document.activeElement).toBe(screen.getByText("first"));
+    view.unmount();
+    expect(document.activeElement).toBe(main);
+    main.remove();
+  });
+});
+
 describe("isEscapeForOverlay", () => {
   it("is true for an Escape coming from inside a dialog", async () => {
     const { isEscapeForOverlay } = await import("../dialog");

@@ -65,4 +65,45 @@ describe("UnoCSS theme colors", () => {
     }
     expect(missing).toEqual([]);
   });
+
+  describe("red as text (A11Y-7)", () => {
+    it.each(["text-accent-danger", "text-danger", "text-status-error", "hover:text-accent-danger"])(
+      "%s uses the text token",
+      async (className) => {
+        const css = await cssFor(className);
+        expect(css).toContain("--color-danger-text-rgb");
+        expect(css).not.toContain("--color-accent-danger-rgb");
+      },
+    );
+
+    it("keeps the opacity modifier", async () => {
+      expect(await cssFor("text-accent-danger/80")).toContain("--color-danger-text-rgb) / 0.8");
+    });
+
+    it.each(["bg-accent-danger", "border-accent-danger", "bg-accent-danger/20", "ring-accent-danger"])(
+      "%s keeps the plain danger colour",
+      async (className) => {
+        expect(await cssFor(className)).toContain("--color-accent-danger-rgb");
+      },
+    );
+
+    it("does not touch the danger fill classes", async () => {
+      expect(await cssFor("text-on-danger")).toContain("--color-text-on-danger");
+      expect(await cssFor("bg-accent-danger-fill")).toContain("--color-danger-fill-rgb");
+    });
+  });
+
+  describe("text field outline (A11Y-6)", () => {
+    it("input-field draws its outline with the input border token", async () => {
+      const uno = await unoPromise;
+      const { css } = await uno.generate("input-field", { preflights: false });
+      expect(css).toContain("--color-border-input");
+      expect(css).not.toContain("255 255 255 / 0.05");
+    });
+
+    it("exposes border-border-input and text-on-warning", async () => {
+      expect(await cssFor("border-border-input")).toContain("--color-border-input");
+      expect(await cssFor("text-on-warning")).toContain("--color-text-on-warning");
+    });
+  });
 });

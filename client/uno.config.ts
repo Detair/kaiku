@@ -57,6 +57,7 @@ export default defineConfig({
       "on-accent": "var(--color-text-on-accent)",
       "on-success": "var(--color-text-on-success)",
       "on-danger": "var(--color-text-on-danger)",
+      "on-warning": "var(--color-text-on-warning)",
       accent: {
         primary: "rgb(var(--color-accent-primary-rgb) / <alpha-value>)",
         danger: "rgb(var(--color-accent-danger-rgb) / <alpha-value>)",
@@ -73,6 +74,8 @@ export default defineConfig({
         subtle: "var(--color-border-subtle)",
         DEFAULT: "var(--color-border-default)",
         solid: "var(--color-border-solid)",
+        // Outline of text fields: >= 3:1 on every surface (A11Y-6).
+        input: "var(--color-border-input)",
       },
       // Legacy compatibility (maps to new theme system)
       primary: {
@@ -102,7 +105,12 @@ export default defineConfig({
     "btn-danger": "btn bg-accent-danger-fill hover:bg-accent-danger-fill/90 text-on-danger",
 
     // Input fields
-    "input-field": "w-full px-3 py-2 bg-surface-layer2 rounded-lg text-text-input placeholder-text-placeholder outline-none focus:ring-2 focus:ring-accent-primary/70 focus:border-accent-primary/50 border border-white/5",
+    "input-field": "w-full px-3 py-2 bg-surface-layer2 rounded-lg text-text-input placeholder-text-placeholder outline-none focus:ring-2 focus:ring-accent-primary/70 focus:border-accent-primary/50 border border-border-input",
+
+    // Small icon buttons that sit next to other buttons (A11Y-12, NAV-19):
+    // a real box of at least 24 px, 44 px on touch screens. Real boxes in a
+    // flex row cannot overlap, unlike an enlarged invisible hit area.
+    "tap-dense": "inline-flex items-center justify-center shrink-0 min-w-6 min-h-6 touch:min-w-11 touch:min-h-11",
 
     // Interactive items
     "item-hover": "rounded-lg px-2 py-1 hover:bg-white/5 transition-colors cursor-pointer",
@@ -159,13 +167,39 @@ export default defineConfig({
       },
     },
   ],
+  layers: {
+    // White overlay classes (see the rule below) sit before the shortcuts and
+    // the default utilities, so every side, state or variant colour on the
+    // same element wins over them.
+    overlay: -20,
+  },
   rules: [
+    // Faint white overlays (border-white/10, bg-white/5, ... up to /40) are
+    // drawn with --color-overlay-rgb: white by default, the text colour in
+    // the light theme (themes.css), and white again on surfaces that stay
+    // dark or coloured in every theme, like the image viewer (global.css).
+    // The rule lives in its own layer before the shortcuts and utilities and
+    // has the specificity of a single class, so border-t-*, border-l-*,
+    // hover:, focus: and checked: colours on the same element still win.
+    [/^(bg|border)-white\/(3|5|8|10|15|20|30|40)$/, ([, kind, alpha]) => ({
+      [kind === "bg" ? "background-color" : "border-color"]:
+        `rgb(var(--color-overlay-rgb, 255 255 255) / ${Number(alpha) / 100})`,
+    }), { layer: "overlay" }],
     // Full-page heights follow the visible viewport (100dvh: phone address
     // bars), with 100vh first for webviews that predate dvh.
     ["h-dvh", [["height", "100vh"], ["height", "100dvh"]]],
     ["min-h-dvh", [["min-height", "100vh"], ["min-height", "100dvh"]]],
     [/^animate-\[slideUp/, () => ({
       animation: "slideUp 0.2s ease-out",
+    })],
+    // Red as TEXT uses its own token (A11Y-7). accent-danger is a fill colour
+    // and only reaches about 2.5:1 as text on the panel layers; the text token
+    // keeps the hue and is at least 4.5:1 on layer1 and layer2 in every theme.
+    // Fills, borders and rings keep using the plain danger colour.
+    [/^text-(?:accent-danger|danger|status-error)(?:\/(\d{1,3}))?$/, ([, alpha]) => ({
+      color: alpha
+        ? `rgb(var(--color-danger-text-rgb) / ${Number(alpha) / 100})`
+        : "rgb(var(--color-danger-text-rgb))",
     })],
   ],
 });

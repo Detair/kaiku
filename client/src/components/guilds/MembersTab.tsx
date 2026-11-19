@@ -263,7 +263,7 @@ const MembersTab: Component<MembersTabProps> = (props) => {
                                 </span>
                                 <Show when={isMemberOwner()}>
                                   <span title="Server Owner">
-                                    <Crown class="w-4 h-4 text-yellow-500" />
+                                    <Crown class="w-4 h-4 text-text-primary" />
                                   </span>
                                 </Show>
                               </div>

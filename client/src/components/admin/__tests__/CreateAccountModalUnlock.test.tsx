@@ -46,17 +46,17 @@ describe("CreateAccountModal unlock", () => {
     const username = screen.getByLabelText(/^Username/) as HTMLInputElement;
     expect(username.disabled).toBe(true);
 
-    fireEvent.click(screen.getByRole("button", { name: "Unlock admin actions" }));
+    fireEvent.click(screen.getByRole("button", { name: "Turn on admin mode" }));
     fireEvent.click(await screen.findByRole("button", { name: "Confirm elevation" }));
 
     expect((screen.getByLabelText(/^Username/) as HTMLInputElement).disabled).toBe(false);
-    expect(screen.queryByRole("button", { name: "Unlock admin actions" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Turn on admin mode" })).toBeNull();
     expect(screen.queryByRole("dialog", { name: "Elevate" })).toBeNull();
   });
 
   it("hides the unlock button when the session is already elevated", () => {
     mocks.setElevated(true);
     render(() => <CreateAccountModal onClose={() => {}} />);
-    expect(screen.queryByRole("button", { name: "Unlock admin actions" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Turn on admin mode" })).toBeNull();
   });
 });

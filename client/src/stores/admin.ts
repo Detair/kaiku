@@ -30,6 +30,14 @@ import type {
 import * as tauri from "@/lib/tauri";
 import type { AuditLogFilters } from "@/lib/tauri";
 
+/** The server answered, but the action did not take effect. */
+export class AdminActionNotDone extends Error {
+  constructor() {
+    super("ADMIN_ACTION_NOT_DONE");
+    this.name = "AdminActionNotDone";
+  }
+}
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -61,6 +69,8 @@ interface AdminStoreState {
   isAdmin: boolean;
   isElevated: boolean;
   elevationExpiresAt: string | null;
+  /** Admin mode ran out by itself (not turned off), so the UI can say so (ADMIN-3). */
+  elevationExpired: boolean;
 
   // Statistics
   stats: AdminStats | null;
@@ -72,6 +82,8 @@ interface AdminStoreState {
   selectedUserId: string | null;
   selectedUserDetails: UserDetailsResponse | null;
   selectedUserIds: Set<string>;
+  /** The last user list load failed (shown instead of "no users", ADMIN-18). */
+  usersLoadFailed: boolean;
 
   // Guilds list
   guilds: GuildSummary[];
@@ -134,6 +146,7 @@ const [adminState, setAdminState] = createStore<AdminStoreState>({
   isAdmin: false,
   isElevated: false,
   elevationExpiresAt: null,
+  elevationExpired: false,
 
   // Statistics
   stats: null,
@@ -145,6 +158,7 @@ const [adminState, setAdminState] = createStore<AdminStoreState>({
   selectedUserId: null,
   selectedUserDetails: null,
   selectedUserIds: new Set(),
+  usersLoadFailed: false,
 
   // Guilds list
   guilds: [],
@@ -227,11 +241,12 @@ function startElevationTimer(): void {
         setAdminState({
           isElevated: false,
           elevationExpiresAt: null,
+          elevationExpired: true,
         });
         stopElevationTimer();
       }
     }
-  }, 10000);
+  }, 2000);
 }
 
 /**
@@ -310,6 +325,7 @@ export async function elevateWithStepUp(reason: string | null = null): Promise<E
       isElevated: response.elevated,
       elevationExpiresAt: response.expires_at,
       isElevating: false,
+      elevationExpired: false,
     });
     if (response.elevated) startElevationTimer();
     return response;
@@ -339,29 +355,38 @@ export async function deElevateSession(): Promise<void> {
   }
 }
 
+/** How long admin mode lasts; the server sets it (`admin/system.rs` ELEVATION_MINUTES). */
+export const ADMIN_MODE_MINUTES = 15;
+
 /**
- * Get formatted time remaining for elevation
+ * Time left in admin mode as `m:ss`, or "" when it is off. No words, so the
+ * caller puts it into a translated sentence.
  */
 export function getElevationTimeRemaining(): string {
-  if (!adminState.elevationExpiresAt) {
-    return "Not elevated";
-  }
-
-  const expiresAt = new Date(adminState.elevationExpiresAt).getTime();
-  const now = Date.now();
-  const remainingMs = expiresAt - now;
-
-  if (remainingMs <= 0) {
-    return "Expired";
-  }
-
+  if (!adminState.elevationExpiresAt) return "";
+  const remainingMs = new Date(adminState.elevationExpiresAt).getTime() - Date.now();
+  if (remainingMs <= 0) return "0:00";
   const minutes = Math.floor(remainingMs / 60000);
   const seconds = Math.floor((remainingMs % 60000) / 1000);
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
 
-  if (minutes > 0) {
-    return `${minutes}m ${seconds}s`;
-  }
-  return `${seconds}s`;
+/** Turn admin mode off locally and say it ended (time up or server refusal). */
+export function markElevationEnded(): void {
+  if (!adminState.isElevated && !adminState.elevationExpiresAt) return;
+  setAdminState({ isElevated: false, elevationExpiresAt: null, elevationExpired: true });
+  stopElevationTimer();
+}
+
+/** Called by every countdown tick: ends admin mode the moment it is due (K3). */
+export function expireElevationIfDue(): void {
+  const at = adminState.elevationExpiresAt;
+  if (at && Date.now() >= new Date(at).getTime()) markElevationEnded();
+}
+
+/** Hide the "admin mode has ended" notice. */
+export function dismissElevationExpired(): void {
+  setAdminState({ elevationExpired: false });
 }
 
 // ============================================================================
@@ -380,7 +405,13 @@ export async function loadUsers(
     setAdminState({ usersSearch: search });
   }
 
-  setAdminState({ isUsersLoading: true, error: null });
+  // A selection only covers people the admin can see (ADMIN-7): another
+  // page or search clears it, so a bulk ban never hits hidden rows.
+  if (page !== adminState.usersPagination.page || search !== undefined) {
+    setAdminState({ selectedUserIds: new Set() });
+  }
+
+  setAdminState({ isUsersLoading: true, error: null, usersLoadFailed: false });
 
   try {
     const offset = (page - 1) * adminState.usersPagination.pageSize;
@@ -405,6 +436,7 @@ export async function loadUsers(
     setAdminState({
       error: err instanceof Error ? err.message : "Failed to load users",
       isUsersLoading: false,
+      usersLoadFailed: true,
     });
   }
 }
@@ -442,104 +474,55 @@ export async function searchUsers(query: string): Promise<void> {
 }
 
 /**
- * Ban a user
+ * Ban a user. Throws when the server refuses (for example the admin mode
+ * ran out), so the dialog can stay open and say why (ADMIN-1).
  */
-export async function banUser(
-  userId: string,
-  reason: string,
-): Promise<boolean> {
-  try {
-    const result = await tauri.adminBanUser(userId, reason);
-
-    // Update user in local state
-    if (result.banned) {
-      setAdminState("users", (users) =>
-        users.map((u) => (u.id === userId ? { ...u, is_banned: true } : u)),
-      );
-
-      // Update stats
-      if (adminState.stats) {
-        setAdminState("stats", {
-          ...adminState.stats,
-          banned_count: adminState.stats.banned_count + 1,
-        });
-      }
-    }
-
-    return result.banned;
-  } catch (err) {
-    console.error("[Admin] Failed to ban user:", err);
-    setAdminState({
-      error: err instanceof Error ? err.message : "Failed to ban user",
+export async function banUser(userId: string, reason: string): Promise<void> {
+  const result = await tauri.adminBanUser(userId, reason);
+  if (!result.banned) throw new AdminActionNotDone();
+  setAdminState("users", (users) =>
+    users.map((u) => (u.id === userId ? { ...u, is_banned: true } : u)),
+  );
+  if (adminState.stats) {
+    setAdminState("stats", {
+      ...adminState.stats,
+      banned_count: adminState.stats.banned_count + 1,
     });
-    return false;
   }
 }
 
 /**
- * Permanently delete a user
+ * Permanently delete a user. Throws when it did not happen.
  */
-export async function deleteUser(userId: string): Promise<boolean> {
-  try {
-    const result = await tauri.adminDeleteUser(userId);
-
-    if (result.deleted) {
-      // Remove user from local state
-      setAdminState("users", (users) => users.filter((u) => u.id !== userId));
-
-      // Update stats
-      if (adminState.stats) {
-        setAdminState("stats", {
-          ...adminState.stats,
-          user_count: adminState.stats.user_count - 1,
-        });
-      }
-
-      // Clear selection if this user was selected
-      if (adminState.selectedUserId === userId) {
-        setAdminState({ selectedUserId: null, selectedUserDetails: null });
-      }
-    }
-
-    return result.deleted;
-  } catch (err) {
-    console.error("[Admin] Failed to delete user:", err);
-    setAdminState({
-      error: err instanceof Error ? err.message : "Failed to delete user",
+export async function deleteUser(userId: string): Promise<void> {
+  const result = await tauri.adminDeleteUser(userId);
+  if (!result.deleted) throw new AdminActionNotDone();
+  setAdminState("users", (users) => users.filter((u) => u.id !== userId));
+  if (adminState.stats) {
+    setAdminState("stats", {
+      ...adminState.stats,
+      user_count: adminState.stats.user_count - 1,
     });
-    return false;
+  }
+  if (adminState.selectedUserId === userId) {
+    setAdminState({ selectedUserId: null, selectedUserDetails: null });
   }
 }
 
 /**
- * Unban a user
+ * Unban a user. Throws when it did not happen.
  */
-export async function unbanUser(userId: string): Promise<boolean> {
-  try {
-    const result = await tauri.adminUnbanUser(userId);
-
-    // Update user in local state
-    if (!result.banned) {
-      setAdminState("users", (users) =>
-        users.map((u) => (u.id === userId ? { ...u, is_banned: false } : u)),
-      );
-
-      // Update stats
-      if (adminState.stats && adminState.stats.banned_count > 0) {
-        setAdminState("stats", {
-          ...adminState.stats,
-          banned_count: adminState.stats.banned_count - 1,
-        });
-      }
-    }
-
-    return !result.banned;
-  } catch (err) {
-    console.error("[Admin] Failed to unban user:", err);
-    setAdminState({
-      error: err instanceof Error ? err.message : "Failed to unban user",
+export async function unbanUser(userId: string): Promise<void> {
+  const result = await tauri.adminUnbanUser(userId);
+  if (result.banned) throw new AdminActionNotDone();
+  setAdminState("users", (users) =>
+    users.map((u) => (u.id === userId ? { ...u, is_banned: false } : u)),
+  );
+  if (adminState.stats && adminState.stats.banned_count > 0) {
+    setAdminState("stats", {
+      ...adminState.stats,
+      banned_count: adminState.stats.banned_count - 1,
     });
-    return false;
   }
 }
 
@@ -649,50 +632,34 @@ export async function exportUsersCsv(): Promise<void> {
 }
 
 /**
- * Bulk ban selected users
+ * Ban the selected users. Throws when the call fails. Who could not be
+ * banned stays selected and is in `failed` (ADMIN-7).
  */
 export async function bulkBanUsers(
+  userIds: string[],
   reason: string,
-): Promise<BulkBanResponse | null> {
-  if (adminState.selectedUserIds.size === 0) {
-    setAdminState({ error: "No users selected" });
-    return null;
-  }
-
+): Promise<BulkBanResponse> {
   setAdminState({ isBulkActionLoading: true, error: null });
-
   try {
-    const userIds = Array.from(adminState.selectedUserIds);
+    // Exactly the people the dialog named, never a stale selection (W1).
     const result = await tauri.adminBulkBanUsers(userIds, reason);
+    const failed = new Set(result.failed.map((f) => f.id));
 
-    // Update local state for banned users
     setAdminState("users", (users) =>
       users.map((u) =>
-        userIds.includes(u.id) && !result.failed.some((f) => f.id === u.id)
-          ? { ...u, is_banned: true }
-          : u,
+        userIds.includes(u.id) && !failed.has(u.id) ? { ...u, is_banned: true } : u,
       ),
     );
-
-    // Update stats
     if (adminState.stats) {
       setAdminState("stats", {
         ...adminState.stats,
         banned_count: adminState.stats.banned_count + result.banned_count,
       });
     }
-
-    // Clear selection
-    setAdminState({ selectedUserIds: new Set(), isBulkActionLoading: false });
-
+    setAdminState({ selectedUserIds: failed });
     return result;
-  } catch (err) {
-    console.error("[Admin] Failed to bulk ban users:", err);
-    setAdminState({
-      error: err instanceof Error ? err.message : "Failed to bulk ban users",
-      isBulkActionLoading: false,
-    });
-    return null;
+  } finally {
+    setAdminState({ isBulkActionLoading: false });
   }
 }
 
@@ -710,6 +677,11 @@ export async function loadGuilds(
   // Update search state if provided
   if (search !== undefined) {
     setAdminState({ guildsSearch: search });
+  }
+
+  // As for users (ADMIN-7): a selection only covers visible servers.
+  if (page !== adminState.guildsPagination.page || search !== undefined) {
+    setAdminState({ selectedGuildIds: new Set() });
   }
 
   setAdminState({ isGuildsLoading: true, error: null });
@@ -757,96 +729,44 @@ export async function searchGuilds(query: string): Promise<void> {
 }
 
 /**
- * Suspend a guild
+ * Suspend a guild. Throws when it did not happen.
  */
-export async function suspendGuild(
-  guildId: string,
-  reason: string,
-): Promise<boolean> {
-  try {
-    const result = await tauri.adminSuspendGuild(guildId, reason);
-
-    // Update guild in local state
-    if (result.suspended) {
-      setAdminState("guilds", (guilds) =>
-        guilds.map((g) =>
-          g.id === guildId
-            ? { ...g, suspended_at: new Date().toISOString() }
-            : g,
-        ),
-      );
-    }
-
-    return result.suspended;
-  } catch (err) {
-    console.error("[Admin] Failed to suspend guild:", err);
-    setAdminState({
-      error: err instanceof Error ? err.message : "Failed to suspend guild",
-    });
-    return false;
-  }
+export async function suspendGuild(guildId: string, reason: string): Promise<void> {
+  const result = await tauri.adminSuspendGuild(guildId, reason);
+  if (!result.suspended) throw new AdminActionNotDone();
+  setAdminState("guilds", (guilds) =>
+    guilds.map((g) =>
+      g.id === guildId ? { ...g, suspended_at: new Date().toISOString() } : g,
+    ),
+  );
 }
 
 /**
- * Unsuspend a guild
+ * Unsuspend a guild. Throws when it did not happen.
  */
-export async function unsuspendGuild(guildId: string): Promise<boolean> {
-  try {
-    const result = await tauri.adminUnsuspendGuild(guildId);
-
-    // Update guild in local state
-    if (!result.suspended) {
-      setAdminState("guilds", (guilds) =>
-        guilds.map((g) =>
-          g.id === guildId ? { ...g, suspended_at: null } : g,
-        ),
-      );
-    }
-
-    return !result.suspended;
-  } catch (err) {
-    console.error("[Admin] Failed to unsuspend guild:", err);
-    setAdminState({
-      error: err instanceof Error ? err.message : "Failed to unsuspend guild",
-    });
-    return false;
-  }
+export async function unsuspendGuild(guildId: string): Promise<void> {
+  const result = await tauri.adminUnsuspendGuild(guildId);
+  if (result.suspended) throw new AdminActionNotDone();
+  setAdminState("guilds", (guilds) =>
+    guilds.map((g) => (g.id === guildId ? { ...g, suspended_at: null } : g)),
+  );
 }
 
 /**
- * Permanently delete a guild
+ * Permanently delete a guild. Throws when it did not happen.
  */
-export async function deleteGuild(guildId: string): Promise<boolean> {
-  try {
-    const result = await tauri.adminDeleteGuild(guildId);
-
-    if (result.deleted) {
-      // Remove guild from local state
-      setAdminState("guilds", (guilds) =>
-        guilds.filter((g) => g.id !== guildId),
-      );
-
-      // Update stats
-      if (adminState.stats) {
-        setAdminState("stats", {
-          ...adminState.stats,
-          guild_count: adminState.stats.guild_count - 1,
-        });
-      }
-
-      // Clear selection if this guild was selected
-      if (adminState.selectedGuildId === guildId) {
-        setAdminState({ selectedGuildId: null, selectedGuildDetails: null });
-      }
-    }
-
-    return result.deleted;
-  } catch (err) {
-    console.error("[Admin] Failed to delete guild:", err);
-    setAdminState({
-      error: err instanceof Error ? err.message : "Failed to delete guild",
+export async function deleteGuild(guildId: string): Promise<void> {
+  const result = await tauri.adminDeleteGuild(guildId);
+  if (!result.deleted) throw new AdminActionNotDone();
+  setAdminState("guilds", (guilds) => guilds.filter((g) => g.id !== guildId));
+  if (adminState.stats) {
+    setAdminState("stats", {
+      ...adminState.stats,
+      guild_count: adminState.stats.guild_count - 1,
     });
-    return false;
+  }
+  if (adminState.selectedGuildId === guildId) {
+    setAdminState({ selectedGuildId: null, selectedGuildDetails: null });
   }
 }
 
@@ -957,43 +877,29 @@ export async function exportGuildsCsv(): Promise<void> {
 }
 
 /**
- * Bulk suspend selected guilds
+ * Suspend the selected servers. Throws when the call fails; servers that
+ * could not be suspended stay selected and are in `failed`.
  */
 export async function bulkSuspendGuilds(
+  guildIds: string[],
   reason: string,
-): Promise<BulkSuspendResponse | null> {
-  if (adminState.selectedGuildIds.size === 0) {
-    setAdminState({ error: "No guilds selected" });
-    return null;
-  }
-
+): Promise<BulkSuspendResponse> {
   setAdminState({ isBulkActionLoading: true, error: null });
-
   try {
-    const guildIds = Array.from(adminState.selectedGuildIds);
+    // Exactly the servers the dialog named, never a stale selection (W1).
     const result = await tauri.adminBulkSuspendGuilds(guildIds, reason);
-
-    // Update local state for suspended guilds
+    const failed = new Set(result.failed.map((f) => f.id));
     setAdminState("guilds", (guilds) =>
       guilds.map((g) =>
-        guildIds.includes(g.id) && !result.failed.some((f) => f.id === g.id)
+        guildIds.includes(g.id) && !failed.has(g.id)
           ? { ...g, suspended_at: new Date().toISOString() }
           : g,
       ),
     );
-
-    // Clear selection
-    setAdminState({ selectedGuildIds: new Set(), isBulkActionLoading: false });
-
+    setAdminState({ selectedGuildIds: failed });
     return result;
-  } catch (err) {
-    console.error("[Admin] Failed to bulk suspend guilds:", err);
-    setAdminState({
-      error:
-        err instanceof Error ? err.message : "Failed to bulk suspend guilds",
-      isBulkActionLoading: false,
-    });
-    return null;
+  } finally {
+    setAdminState({ isBulkActionLoading: false });
   }
 }
 
@@ -1100,6 +1006,7 @@ export function resetAdminState(): void {
     isAdmin: false,
     isElevated: false,
     elevationExpiresAt: null,
+    elevationExpired: false,
     stats: null,
     users: [],
     usersPagination: { page: 1, pageSize: DEFAULT_PAGE_SIZE, total: 0 },
@@ -1107,6 +1014,7 @@ export function resetAdminState(): void {
     selectedUserId: null,
     selectedUserDetails: null,
     selectedUserIds: new Set(),
+    usersLoadFailed: false,
     guilds: [],
     guildsPagination: { page: 1, pageSize: DEFAULT_PAGE_SIZE, total: 0 },
     guildsSearch: "",
@@ -1343,126 +1251,6 @@ export function handleReportCreatedEvent(
  */
 export function handleReportResolvedEvent(reportId: string): void {
   console.log(`[Admin] Report resolved: ${reportId}`);
-}
-
-// ============================================================================
-// Undo Functionality
-// ============================================================================
-
-/** Pending undo action type */
-interface PendingUndo {
-  id: string;
-  type: "ban" | "suspend";
-  targetId: string;
-  targetName: string;
-  executeAt: number;
-  timer: ReturnType<typeof setTimeout>;
-}
-
-/** Map of pending undo actions */
-const pendingUndos = new Map<string, PendingUndo>();
-
-/** Undo delay in milliseconds (5 seconds) */
-const UNDO_DELAY_MS = 5000;
-
-/**
- * Schedule a ban action with undo capability.
- * Returns the undo ID for cancellation.
- */
-export function scheduleBanWithUndo(
-  userId: string,
-  username: string,
-  reason: string,
-  onExecute: () => void,
-  _onUndo: () => void,
-): string {
-  const undoId = `ban-${userId}-${Date.now()}`;
-
-  const timer = setTimeout(async () => {
-    // Execute the ban
-    const success = await banUser(userId, reason);
-    if (success) {
-      onExecute();
-    }
-    pendingUndos.delete(undoId);
-  }, UNDO_DELAY_MS);
-
-  pendingUndos.set(undoId, {
-    id: undoId,
-    type: "ban",
-    targetId: userId,
-    targetName: username,
-    executeAt: Date.now() + UNDO_DELAY_MS,
-    timer,
-  });
-
-  return undoId;
-}
-
-/**
- * Schedule a suspend action with undo capability.
- * Returns the undo ID for cancellation.
- */
-export function scheduleSuspendWithUndo(
-  guildId: string,
-  guildName: string,
-  reason: string,
-  onExecute: () => void,
-  _onUndo: () => void,
-): string {
-  const undoId = `suspend-${guildId}-${Date.now()}`;
-
-  const timer = setTimeout(async () => {
-    // Execute the suspend
-    const success = await suspendGuild(guildId, reason);
-    if (success) {
-      onExecute();
-    }
-    pendingUndos.delete(undoId);
-  }, UNDO_DELAY_MS);
-
-  pendingUndos.set(undoId, {
-    id: undoId,
-    type: "suspend",
-    targetId: guildId,
-    targetName: guildName,
-    executeAt: Date.now() + UNDO_DELAY_MS,
-    timer,
-  });
-
-  return undoId;
-}
-
-/**
- * Cancel a pending undo action
- */
-export function cancelPendingAction(undoId: string): boolean {
-  const pending = pendingUndos.get(undoId);
-  if (!pending) return false;
-
-  clearTimeout(pending.timer);
-  pendingUndos.delete(undoId);
-  console.log(
-    `[Admin] Cancelled pending ${pending.type} for ${pending.targetName}`,
-  );
-  return true;
-}
-
-/**
- * Get pending undo action info
- */
-export function getPendingAction(undoId: string): PendingUndo | undefined {
-  return pendingUndos.get(undoId);
-}
-
-/**
- * Check if there's a pending action for a target
- */
-export function hasPendingAction(targetId: string): boolean {
-  for (const pending of pendingUndos.values()) {
-    if (pending.targetId === targetId) return true;
-  }
-  return false;
 }
 
 // ============================================================================

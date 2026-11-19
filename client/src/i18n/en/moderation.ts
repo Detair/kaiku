@@ -1,0 +1,25 @@
+/** Report and block dialogs (A11Y-1, A11Y-17). */
+export const moderation = {
+  "moderation.report.titleUser": "Report person",
+  "moderation.report.titleMessage": "Report message",
+  "moderation.report.reason": "Why are you reporting this?",
+  "moderation.report.category.harassment": "Harassment",
+  "moderation.report.category.spam": "Spam",
+  "moderation.report.category.inappropriateContent": "Inappropriate content",
+  "moderation.report.category.impersonation": "Pretending to be someone else",
+  "moderation.report.category.other": "Something else",
+  "moderation.report.details": "Details (optional)",
+  "moderation.report.detailsPlaceholder": "What happened?",
+  "moderation.report.count": "{{count}} of 500 characters",
+  "moderation.report.submit": "Send report",
+  "moderation.report.submitting": "Sending...",
+  "moderation.report.sent": "Report sent. An admin will look at it. Thank you.",
+  "moderation.report.failed": "The report could not be sent. Please try again.",
+  "moderation.block.title": "Block person",
+  "moderation.block.question": "Block {{name}}?",
+  "moderation.block.effect":
+    "They can no longer message you, send you friend requests or call you. You will not see their messages in shared channels.",
+  "moderation.block.confirm": "Block",
+  "moderation.block.blocking": "Blocking...",
+  "moderation.block.failed": "Could not block this person. Please try again.",
+} as const satisfies Record<`moderation.${string}`, string>;

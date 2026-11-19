@@ -15,6 +15,9 @@ import {
   type IncomingWebhook,
 } from "@/lib/tauri";
 import { channelsState, visibleChannels } from "@/stores/channels";
+import { t } from "@/i18n";
+import { actionErrorText } from "@/components/admin/actionErrors";
+import ConfirmActionDialog from "@/components/admin/ConfirmActionDialog";
 
 interface WebhooksTabProps {
   guildId: string;
@@ -35,6 +38,9 @@ const WebhooksTab: Component<WebhooksTabProps> = (props) => {
   const [editName, setEditName] = createSignal("");
 
   const [copiedId, setCopiedId] = createSignal<string | null>(null);
+  const [deleting, setDeleting] = createSignal<IncomingWebhook | null>(null);
+  const fail = (key: Parameters<typeof t>[0], err: unknown) =>
+    setError(`${t(key)} ${actionErrorText(err)}`);
 
   // Text, announcement, and forum channels can host webhooks.
   const webhookChannels = () =>
@@ -45,7 +51,7 @@ const WebhooksTab: Component<WebhooksTabProps> = (props) => {
       .sort((a, b) => a.position - b.position);
 
   const channelName = (id: string): string =>
-    channelsState.channels.find((c) => c.id === id)?.name ?? "unknown channel";
+    channelsState.channels.find((c) => c.id === id)?.name ?? t("guildSettings.webhooks.unknownChannel");
 
   const refresh = async () => {
     setLoading(true);
@@ -53,7 +59,7 @@ const WebhooksTab: Component<WebhooksTabProps> = (props) => {
       setWebhooks(await listGuildWebhooks(props.guildId));
     } catch (err) {
       console.error("Failed to load webhooks:", err);
-      setError("Failed to load webhooks.");
+      fail("guildSettings.webhooks.loadFailed", err);
     } finally {
       setLoading(false);
     }
@@ -76,24 +82,15 @@ const WebhooksTab: Component<WebhooksTabProps> = (props) => {
       setName("");
       await refresh();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setError(msg || "Failed to create webhook.");
+      fail("guildSettings.webhooks.createFailed", err);
     } finally {
       setSubmitting(false);
     }
   };
 
-  const handleDelete = async (webhookId: string) => {
-    if (!confirm("Delete this webhook? Integrations using its URL will stop working.")) {
-      return;
-    }
-    try {
-      await deleteWebhook(webhookId);
-      await refresh();
-    } catch (err) {
-      console.error("Failed to delete webhook:", err);
-      setError("Failed to delete webhook.");
-    }
+  const remove = async (webhookId: string) => {
+    await deleteWebhook(webhookId);
+    await refresh();
   };
 
   const handleRename = async (webhookId: string) => {
@@ -105,7 +102,7 @@ const WebhooksTab: Component<WebhooksTabProps> = (props) => {
       await refresh();
     } catch (err) {
       console.error("Failed to rename webhook:", err);
-      setError("Failed to rename webhook.");
+      fail("guildSettings.webhooks.renameFailed", err);
     }
   };
 
@@ -118,7 +115,7 @@ const WebhooksTab: Component<WebhooksTabProps> = (props) => {
       setTimeout(() => setCopiedId(null), 2000);
     } catch (err) {
       console.error("Failed to copy webhook URL:", err);
-      setError("Failed to copy URL to clipboard.");
+      setError(t("guildSettings.webhooks.copyFailed"));
     }
   };
 
@@ -128,16 +125,14 @@ const WebhooksTab: Component<WebhooksTabProps> = (props) => {
   return (
     <div class="p-6">
       <div class="mb-4">
-        <h3 class="text-lg font-semibold text-text-primary">Webhooks</h3>
+        <h3 class="text-lg font-semibold text-text-primary">{t("guildSettings.webhooks.title")}</h3>
         <p class="text-sm text-text-secondary mt-1">
-          Webhooks let external services — game servers, CI, monitoring — post
-          messages into a channel. The URL is Discord-compatible: paste it
-          anywhere a Discord webhook URL is expected. Treat it as a secret.
+          {t("guildSettings.webhooks.hint")}
         </p>
       </div>
 
       <Show when={error()}>
-        <div class="mb-4 px-3 py-2 rounded-lg text-sm text-text-primary bg-accent-danger/20 border border-accent-danger/30">
+        <div role="alert" class="mb-4 px-3 py-2 rounded-lg text-sm text-text-primary bg-status-error/15 border border-status-error/50">
           {error()}
         </div>
       </Show>
@@ -150,26 +145,26 @@ const WebhooksTab: Component<WebhooksTabProps> = (props) => {
       >
         <div class="grid grid-cols-2 gap-3">
           <label class="block">
-            <span class="text-xs text-text-secondary">Channel</span>
+            <span class="text-xs text-text-secondary">{t("guildSettings.webhooks.channel")}</span>
             <select
               class={inputClass}
               value={channelId()}
               onChange={(e) => setChannelId(e.currentTarget.value)}
               data-testid="webhook-channel-select"
             >
-              <option value="">Select a channel…</option>
+              <option value="">{t("guildSettings.webhooks.pickChannel")}</option>
               <For each={webhookChannels()}>
                 {(c) => <option value={c.id}>#{c.name}</option>}
               </For>
             </select>
           </label>
           <label class="block">
-            <span class="text-xs text-text-secondary">Name</span>
+            <span class="text-xs text-text-secondary">{t("guildSettings.webhooks.name")}</span>
             <input
               class={inputClass}
               type="text"
               maxLength={80}
-              placeholder="e.g. Game Server"
+              placeholder={t("guildSettings.webhooks.namePlaceholder")}
               value={name()}
               onInput={(e) => setName(e.currentTarget.value)}
               data-testid="webhook-name-input"
@@ -184,7 +179,7 @@ const WebhooksTab: Component<WebhooksTabProps> = (props) => {
           class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-accent-primary text-on-accent text-sm font-medium hover:bg-accent-primary/90 transition-colors state-disabled"
         >
           <Plus class="w-4 h-4" />
-          Create webhook
+          {t("guildSettings.webhooks.create")}
         </button>
       </form>
 
@@ -192,14 +187,14 @@ const WebhooksTab: Component<WebhooksTabProps> = (props) => {
       <Show
         when={!loading()}
         fallback={
-          <div class="text-center py-8 text-text-secondary">Loading…</div>
+          <div class="text-center py-8 text-text-secondary">{t("guildSettings.loading")}</div>
         }
       >
         <Show
           when={webhooks().length > 0}
           fallback={
             <div class="text-center py-8 text-text-secondary text-sm">
-              No webhooks yet.
+              {t("guildSettings.webhooks.empty")}
             </div>
           }
         >
@@ -230,12 +225,13 @@ const WebhooksTab: Component<WebhooksTabProps> = (props) => {
                           if (e.key === "Enter") void handleRename(w.id);
                           if (e.key === "Escape") setEditingId(null);
                         }}
+                        data-escape-local
                       />
                     </Show>
                     <div class="text-xs text-text-secondary flex items-center gap-2 mt-0.5">
                       <span>#{channelName(w.channel_id)}</span>
                       <Show when={w.user}>
-                        <span>created by {w.user!.display_name}</span>
+                        <span>{t("guildSettings.webhooks.createdBy", { name: w.user!.display_name })}</span>
                       </Show>
                     </div>
                   </div>
@@ -248,7 +244,8 @@ const WebhooksTab: Component<WebhooksTabProps> = (props) => {
                           setEditingId(w.id);
                         }}
                         class="p-2 rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/10 transition-colors"
-                        title="Rename webhook"
+                        title={t("guildSettings.webhooks.renameNamed", { name: w.name })}
+                        aria-label={t("guildSettings.webhooks.renameNamed", { name: w.name })}
                       >
                         <Pencil class="w-4 h-4" />
                       </button>
@@ -257,14 +254,16 @@ const WebhooksTab: Component<WebhooksTabProps> = (props) => {
                     <button
                       onClick={() => void handleRename(w.id)}
                       class="p-2 rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/10 transition-colors"
-                      title="Save name"
+                      title={t("guildSettings.webhooks.saveName")}
+                      aria-label={t("guildSettings.webhooks.saveName")}
                     >
                       <Check class="w-4 h-4" />
                     </button>
                     <button
                       onClick={() => setEditingId(null)}
                       class="p-2 rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/10 transition-colors"
-                      title="Cancel"
+                      title={t("common.cancel")}
+                      aria-label={t("common.cancel")}
                     >
                       <X class="w-4 h-4" />
                     </button>
@@ -273,7 +272,7 @@ const WebhooksTab: Component<WebhooksTabProps> = (props) => {
                     onClick={() => void copyUrl(w)}
                     data-testid="webhook-copy-url"
                     class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-sm text-text-secondary hover:text-text-primary hover:bg-white/10 transition-colors"
-                    title="Copy webhook URL"
+                    title={t("guildSettings.webhooks.copyUrl")}
                   >
                     <Show
                       when={copiedId() === w.id}
@@ -281,13 +280,14 @@ const WebhooksTab: Component<WebhooksTabProps> = (props) => {
                     >
                       <Check class="w-4 h-4 text-accent-success" />
                     </Show>
-                    {copiedId() === w.id ? "Copied" : "Copy URL"}
+                    {copiedId() === w.id ? t("guildSettings.invites.copied") : t("guildSettings.webhooks.copyUrl")}
                   </button>
                   <button
-                    onClick={() => void handleDelete(w.id)}
+                    onClick={() => setDeleting(w)}
                     data-testid="webhook-delete"
-                    class="p-2 rounded-lg text-text-secondary hover:text-accent-danger hover:bg-white/10 transition-colors"
-                    title="Delete webhook"
+                    class="p-2 rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/10 transition-colors"
+                    title={t("guildSettings.webhooks.deleteNamed", { name: w.name })}
+                    aria-label={t("guildSettings.webhooks.deleteNamed", { name: w.name })}
                   >
                     <Trash2 class="w-4 h-4" />
                   </button>
@@ -296,6 +296,20 @@ const WebhooksTab: Component<WebhooksTabProps> = (props) => {
             </For>
           </div>
         </Show>
+      </Show>
+
+      <Show when={deleting()}>
+        {(w) => (
+          <ConfirmActionDialog
+            title={t("guildSettings.webhooks.deleteTitle", { name: w().name })}
+            message={t("guildSettings.webhooks.deleteBody", { name: w().name })}
+            confirmLabel={t("guildSettings.webhooks.delete")}
+            danger
+            onConfirm={() => remove(w().id)}
+            onDone={() => setDeleting(null)}
+            onCancel={() => setDeleting(null)}
+          />
+        )}
       </Show>
     </div>
   );

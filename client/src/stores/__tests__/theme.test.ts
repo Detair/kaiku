@@ -139,10 +139,10 @@ describe("theme store", () => {
   });
 
   describe("hidden themes", () => {
-    it("solarized themes are not selectable", () => {
+    it("solarized-dark is not selectable, solarized-light is (A11Y-10)", () => {
       const ids = selectableThemes.map((t) => t.id);
       expect(ids).not.toContain("solarized-dark");
-      expect(ids).not.toContain("solarized-light");
+      expect(ids).toContain("solarized-light");
       expect(ids).toContain("focused-hybrid");
     });
 

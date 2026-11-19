@@ -17,7 +17,7 @@ async function openDmWithFriend(
   await page.getByTestId("add-friend-button").click();
   await page.getByTestId("add-friend-input").fill(user2);
   await page.getByTestId("add-friend-submit").click();
-  await expect(page.getByText(/sent successfully/i)).toBeVisible({
+  await expect(page.getByText(/Request sent/i)).toBeVisible({
     timeout: 10000,
   });
 
@@ -70,7 +70,7 @@ test.describe("Direct Messages", () => {
     await page.getByTestId("add-friend-button").click();
     await page.getByTestId("add-friend-input").fill(user2);
     await page.getByTestId("add-friend-submit").click();
-    await expect(page.getByText(/sent successfully/i)).toBeVisible({
+    await expect(page.getByText(/Request sent/i)).toBeVisible({
       timeout: 10000,
     });
 

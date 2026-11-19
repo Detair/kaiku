@@ -46,10 +46,16 @@ import {
   getSelectedGuildCount,
   exportGuildsCsv,
   bulkSuspendGuilds,
+  ADMIN_MODE_MINUTES,
 } from "@/stores/admin";
 import Avatar from "@/components/ui/Avatar";
 import TableRowSkeleton from "./TableRowSkeleton";
 import { showToast } from "@/components/ui/Toast";
+import ConfirmActionDialog from "./ConfirmActionDialog";
+import { actionErrorText } from "./actionErrors";
+import { formatList } from "@/i18n/format";
+import { plural, t } from "@/i18n";
+import type { GuildSummary } from "@/lib/types";
 
 const PAGE_SIZE = 20;
 const DEBOUNCE_MS = 300;
@@ -62,7 +68,8 @@ const GuildsPanel: Component = () => {
   const [bulkSuspendReason, setBulkSuspendReason] = createSignal("");
   const [showDeleteDialog, setShowDeleteDialog] = createSignal(false);
   const [deleteConfirmText, setDeleteConfirmText] = createSignal("");
-  const [actionLoading, setActionLoading] = createSignal(false);
+  const [showUnsuspendDialog, setShowUnsuspendDialog] = createSignal(false);
+  const [bulkTargets, setBulkTargets] = createSignal<GuildSummary[]>([]);
   const [focusedIndex, setFocusedIndex] = createSignal(-1);
 
   let listRef: HTMLDivElement | undefined;
@@ -79,20 +86,24 @@ const GuildsPanel: Component = () => {
     await exportGuildsCsv();
   };
 
-  // Handle bulk suspend
-  const handleBulkSuspend = async () => {
-    if (!bulkSuspendReason().trim()) return;
+  const openBulkSuspend = () => {
+    setBulkTargets(adminState.guilds.filter((g) => isGuildSelected(g.id)));
+    setShowBulkSuspendDialog(true);
+  };
 
-    setActionLoading(true);
-    try {
-      const result = await bulkSuspendGuilds(bulkSuspendReason());
-      if (result) {
-        setShowBulkSuspendDialog(false);
-        setBulkSuspendReason("");
-      }
-    } finally {
-      setActionLoading(false);
-    }
+  // Bulk suspend: names every server, reports which could not be suspended.
+  const handleBulkSuspend = async () => {
+    const targets = bulkTargets();
+    const result = await bulkSuspendGuilds(targets.map((g) => g.id), bulkSuspendReason());
+    const failedIds = new Set(result.failed.map((f) => f.id));
+    const failedNames = targets.filter((g) => failedIds.has(g.id)).map((g) => g.name);
+    setBulkSuspendReason("");
+    showToast({
+      type: failedNames.length > 0 ? "warning" : "success",
+      title: plural(result.suspended_count, { one: "admin.servers.bulkSuspended.one", other: "admin.servers.bulkSuspended.other" }),
+      message: failedNames.length > 0 ? t("admin.servers.bulkFailed", { names: formatList(failedNames) }) : undefined,
+      duration: failedNames.length > 0 ? 10000 : 4000,
+    });
   };
 
   // Load guilds on mount
@@ -148,84 +159,40 @@ const GuildsPanel: Component = () => {
     }
   };
 
-  // Handle suspend action
-  const handleSuspend = async () => {
-    const guild = selectedGuild();
-    if (!guild || !suspendReason().trim()) return;
-
-    setActionLoading(true);
-    try {
-      await suspendGuild(guild.id, suspendReason());
-      setShowSuspendDialog(false);
-      setSuspendReason("");
-
-      // Show undo toast
-      const guildName = guild.name;
-      const guildId = guild.id;
-      showToast({
-        id: `suspend-undo-${guildId}`,
-        type: "success",
-        title: "Guild suspended",
-        message: `${guildName} has been suspended`,
-        duration: 5000,
-        action: {
-          label: "Undo",
-          onClick: async () => {
+  // Suspend: the toast appears only after the server did it (ADMIN-1).
+  const handleSuspend = async (guild: GuildSummary) => {
+    await suspendGuild(guild.id, suspendReason());
+    setSuspendReason("");
+    const name = guild.name;
+    const guildId = guild.id;
+    showToast({
+      id: `suspend-undo-${guildId}`,
+      type: "success",
+      title: t("admin.servers.suspended", { name }),
+      duration: 5000,
+      action: {
+        label: t("admin.users.undo"),
+        onClick: async () => {
+          try {
             await unsuspendGuild(guildId);
-            showToast({
-              type: "info",
-              title: "Suspension reversed",
-              message: `${guildName} has been unsuspended`,
-              duration: 3000,
-            });
-          },
+            showToast({ type: "info", title: t("admin.servers.unsuspended", { name }), duration: 3000 });
+          } catch (err) {
+            showToast({ type: "error", title: t("admin.servers.unsuspendFailed", { name }), message: actionErrorText(err, "admin.action.failed"), duration: 8000 });
+          }
         },
-      });
-    } finally {
-      setActionLoading(false);
-    }
+      },
+    });
   };
 
-  // Handle unsuspend action
-  const handleUnsuspend = async () => {
-    const guild = selectedGuild();
-    if (!guild) return;
-
-    setActionLoading(true);
-    try {
-      await unsuspendGuild(guild.id);
-      showToast({
-        type: "success",
-        title: "Guild unsuspended",
-        message: `${guild.name} has been unsuspended`,
-        duration: 3000,
-      });
-    } finally {
-      setActionLoading(false);
-    }
+  const handleUnsuspend = async (guild: GuildSummary) => {
+    await unsuspendGuild(guild.id);
+    showToast({ type: "success", title: t("admin.servers.unsuspended", { name: guild.name }), duration: 3000 });
   };
 
-  // Handle delete action
-  const handleDelete = async () => {
-    const guild = selectedGuild();
-    if (!guild) return;
-
-    setActionLoading(true);
-    try {
-      const success = await deleteGuild(guild.id);
-      if (success) {
-        setShowDeleteDialog(false);
-        setDeleteConfirmText("");
-        showToast({
-          type: "success",
-          title: "Guild deleted",
-          message: `${guild.name} has been permanently deleted`,
-          duration: 5000,
-        });
-      }
-    } finally {
-      setActionLoading(false);
-    }
+  const handleDelete = async (guild: GuildSummary) => {
+    await deleteGuild(guild.id);
+    setDeleteConfirmText("");
+    showToast({ type: "success", title: t("admin.servers.deleted", { name: guild.name }), duration: 5000 });
   };
 
   // Format date for display
@@ -283,7 +250,7 @@ const GuildsPanel: Component = () => {
       <div class="flex-1 flex flex-col min-w-0">
         {/* Header */}
         <div class="flex items-center justify-between p-4 border-b border-white/10">
-          <h2 class="text-lg font-bold text-text-primary">Guilds</h2>
+          <h2 class="text-lg font-bold text-text-primary">{t("admin.nav.servers")}</h2>
 
           <div class="flex items-center gap-3">
             {/* Export Button */}
@@ -306,7 +273,8 @@ const GuildsPanel: Component = () => {
               <Search class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-secondary" />
               <input
                 type="text"
-                placeholder="Search guilds..."
+                placeholder={t("admin.servers.search")}
+                aria-label={t("admin.servers.search")}
                 value={searchQuery()}
                 onInput={(e) => handleSearchInput(e.currentTarget.value)}
                 class="pl-9 pr-4 py-2 w-64 rounded-lg bg-white/5 border border-white/10 text-text-primary placeholder-text-placeholder focus:outline-none focus:border-accent-primary text-sm"
@@ -332,26 +300,25 @@ const GuildsPanel: Component = () => {
             <div class="flex items-center justify-between px-4 py-3 bg-accent-primary/20 border-b border-accent-primary/30">
               <div class="flex items-center gap-3">
                 <span class="text-sm font-medium text-text-primary">
-                  {getSelectedGuildCount()} guild
-                  {getSelectedGuildCount() !== 1 ? "s" : ""} selected
+                  {plural(getSelectedGuildCount(), { one: "admin.servers.selected.one", other: "admin.servers.selected.other" })}
                 </span>
                 <button
                   onClick={clearGuildSelection}
                   class="text-sm text-text-secondary hover:text-text-primary transition-colors"
                 >
-                  Clear selection
+                  {t("admin.users.clearSelection")}
                 </button>
               </div>
               <div class="flex items-center gap-2">
                 <button
-                  onClick={() => setShowBulkSuspendDialog(true)}
+                  onClick={openBulkSuspend}
                   disabled={
                     !adminState.isElevated || adminState.isBulkActionLoading
                   }
                   class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-accent-danger-fill text-on-danger text-sm font-medium transition-colors hover:bg-accent-danger-fill/90 state-disabled"
                 >
                   <Ban class="w-4 h-4" />
-                  Bulk Suspend
+                  {t("admin.servers.bulkSuspend")}
                 </button>
               </div>
             </div>
@@ -392,7 +359,7 @@ const GuildsPanel: Component = () => {
               each={filteredGuilds()}
               fallback={
                 <div class="flex items-center justify-center py-12">
-                  <div class="text-text-secondary">No guilds found</div>
+                  <div class="text-text-secondary">{t("admin.servers.empty")}</div>
                 </div>
               }
             >
@@ -419,6 +386,8 @@ const GuildsPanel: Component = () => {
                         e.stopPropagation();
                         toggleGuildSelection(guild.id);
                       }}
+                      aria-label={t("admin.users.selectNamed", { name: guild.name })}
+                      aria-pressed={isGuildSelected(guild.id)}
                       class="p-1 text-text-secondary hover:text-text-primary transition-colors"
                     >
                       <Show
@@ -522,7 +491,7 @@ const GuildsPanel: Component = () => {
             {/* Detail Header */}
             <div class="flex items-center justify-between p-4 border-b border-white/10">
               <h3 class="text-sm font-medium text-text-secondary uppercase tracking-wide">
-                Guild Details
+                {t("admin.servers.details")}
               </h3>
               <button
                 onClick={() => selectGuild(null)}
@@ -593,7 +562,7 @@ const GuildsPanel: Component = () => {
                                 .display_name
                             }
                           </span>
-                          <Crown class="w-3 h-3 text-amber-400 flex-shrink-0" />
+                          <Crown class="w-3 h-3 text-text-primary flex-shrink-0" />
                         </div>
                         <div class="text-xs text-text-secondary">
                           @{adminState.selectedGuildDetails!.owner.username}
@@ -741,7 +710,7 @@ const GuildsPanel: Component = () => {
 
                 <Show when={!adminState.isElevated}>
                   <div class="p-3 rounded-lg bg-status-warning/10 border border-status-warning/30 text-text-primary text-xs">
-                    Requires elevation to perform actions
+                    {t("admin.mode.neededServers", { minutes: ADMIN_MODE_MINUTES })}
                   </div>
                 </Show>
 
@@ -750,31 +719,31 @@ const GuildsPanel: Component = () => {
                   fallback={
                     <button
                       onClick={() => setShowSuspendDialog(true)}
-                      disabled={!adminState.isElevated || actionLoading()}
+                      disabled={!adminState.isElevated}
                       class="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-accent-danger-fill text-on-danger font-medium transition-colors hover:bg-accent-danger-fill/90 state-disabled"
                     >
                       <Ban class="w-4 h-4" />
-                      Suspend Guild
+                      {t("admin.servers.suspend")}
                     </button>
                   }
                 >
                   <button
-                    onClick={handleUnsuspend}
-                    disabled={!adminState.isElevated || actionLoading()}
+                    onClick={() => setShowUnsuspendDialog(true)}
+                    disabled={!adminState.isElevated}
                     class="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-status-success text-on-success font-medium transition-colors hover:bg-status-success/90 state-disabled"
                   >
                     <CheckCircle class="w-4 h-4" />
-                    {actionLoading() ? "Processing..." : "Unsuspend Guild"}
+                    {t("admin.servers.unsuspend")}
                   </button>
                 </Show>
 
                 <button
                   onClick={() => setShowDeleteDialog(true)}
-                  disabled={!adminState.isElevated || actionLoading()}
-                  class="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-status-error/50 text-status-error font-medium transition-colors hover:bg-status-error/10 state-disabled-quiet"
+                  disabled={!adminState.isElevated}
+                  class="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-status-error/50 text-text-primary font-medium transition-colors hover:bg-status-error/10 state-disabled-quiet"
                 >
                   <Trash2 class="w-4 h-4" />
-                  Delete Guild
+                  {t("admin.servers.delete")}
                 </button>
               </div>
             </div>
@@ -782,204 +751,117 @@ const GuildsPanel: Component = () => {
         )}
       </Show>
 
-      {/* Suspend Dialog */}
-      <Show when={showSuspendDialog()}>
-        <div class="fixed inset-0 z-50 flex items-center justify-center">
-          {/* Backdrop */}
-          <div
-            class="absolute inset-0 bg-black/60 backdrop-blur-sm"
-            onClick={() => setShowSuspendDialog(false)}
-          />
-
-          {/* Dialog */}
-          <div
-            class="relative rounded-xl border border-white/10 w-[400px] shadow-2xl animate-[fadeIn_0.15s_ease-out]"
-            style={{"background-color":"var(--color-surface-layer1)"}}
+      {/* Suspend: stays open with the reason when it fails (ADMIN-1). */}
+      <Show when={showSuspendDialog() && selectedGuild()}>
+        {(guild) => (
+          <ConfirmActionDialog
+            title={t("admin.servers.suspendTitle", { name: guild().name })}
+            message={t("admin.servers.suspendBody", { name: guild().name })}
+            confirmLabel={t("admin.servers.suspend")}
+            danger
+            confirmDisabled={!suspendReason().trim()}
+            failureFallback="admin.action.failed"
+            onConfirm={() => handleSuspend(guild())}
+            onDone={() => setShowSuspendDialog(false)}
+            onCancel={() => {
+              setShowSuspendDialog(false);
+              setSuspendReason("");
+            }}
+            testId="suspend-dialog"
           >
-            <div class="p-5 space-y-4">
-              <h3 class="text-lg font-bold text-text-primary">Suspend Guild</h3>
-
-              <p class="text-sm text-text-secondary">
-                Are you sure you want to suspend{" "}
-                <span class="font-medium text-text-primary">
-                  {selectedGuild()?.name}
-                </span>
-                ? All members will be unable to access this guild.
-              </p>
-
-              <div class="space-y-2">
-                <label class="text-sm font-medium text-text-secondary">
-                  Reason for suspension
-                </label>
-                <textarea
-                  value={suspendReason()}
-                  onInput={(e) => setSuspendReason(e.currentTarget.value)}
-                  placeholder="Enter reason..."
-                  rows={3}
-                  class="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-text-primary placeholder-text-placeholder focus:outline-none focus:border-accent-primary text-sm resize-none"
-                />
-              </div>
-
-              <div class="flex gap-3 pt-2">
-                <button
-                  onClick={() => {
-                    setShowSuspendDialog(false);
-                    setSuspendReason("");
-                  }}
-                  class="flex-1 px-4 py-2 rounded-lg bg-white/10 text-text-primary font-medium transition-colors hover:bg-white/20"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleSuspend}
-                  disabled={!suspendReason().trim() || actionLoading()}
-                  class="flex-1 px-4 py-2 rounded-lg bg-accent-danger-fill text-on-danger font-medium transition-colors hover:bg-accent-danger-fill/90 state-disabled"
-                >
-                  {actionLoading() ? "Suspending..." : "Confirm Suspend"}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
+            <label class="block space-y-2">
+              <span class="text-sm font-medium text-text-secondary">{t("admin.users.reason")}</span>
+              <textarea
+                value={suspendReason()}
+                onInput={(e) => setSuspendReason(e.currentTarget.value)}
+                placeholder={t("admin.users.reasonPlaceholder")}
+                rows={3}
+                class="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-text-primary placeholder-text-placeholder focus:outline-none focus:border-accent-primary text-sm resize-none"
+              />
+            </label>
+          </ConfirmActionDialog>
+        )}
       </Show>
 
-      {/* Bulk Suspend Dialog */}
+      <Show when={showUnsuspendDialog() && selectedGuild()}>
+        {(guild) => (
+          <ConfirmActionDialog
+            title={t("admin.servers.unsuspendTitle", { name: guild().name })}
+            message={t("admin.servers.unsuspendBody", { name: guild().name })}
+            confirmLabel={t("admin.servers.unsuspend")}
+            failureFallback="admin.action.failed"
+            onConfirm={() => handleUnsuspend(guild())}
+            onDone={() => setShowUnsuspendDialog(false)}
+            onCancel={() => setShowUnsuspendDialog(false)}
+          />
+        )}
+      </Show>
+
       <Show when={showBulkSuspendDialog()}>
-        <div class="fixed inset-0 z-50 flex items-center justify-center">
-          {/* Backdrop */}
-          <div
-            class="absolute inset-0 bg-black/60 backdrop-blur-sm"
-            onClick={() => setShowBulkSuspendDialog(false)}
-          />
-
-          {/* Dialog */}
-          <div
-            class="relative rounded-xl border border-white/10 w-[400px] shadow-2xl animate-[fadeIn_0.15s_ease-out]"
-            style={{"background-color":"var(--color-surface-layer1)"}}
-          >
-            <div class="p-5 space-y-4">
-              <h3 class="text-lg font-bold text-text-primary">
-                Bulk Suspend Guilds
-              </h3>
-
-              <p class="text-sm text-text-secondary">
-                Are you sure you want to suspend{" "}
-                <span class="font-medium text-text-primary">
-                  {getSelectedGuildCount()} guild
-                  {getSelectedGuildCount() !== 1 ? "s" : ""}
-                </span>
-                ? All members will be unable to access these guilds.
-              </p>
-
-              <div class="space-y-2">
-                <label class="text-sm font-medium text-text-secondary">
-                  Reason for suspension (applies to all)
-                </label>
-                <textarea
-                  value={bulkSuspendReason()}
-                  onInput={(e) => setBulkSuspendReason(e.currentTarget.value)}
-                  placeholder="Enter reason..."
-                  rows={3}
-                  class="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-text-primary placeholder-text-placeholder focus:outline-none focus:border-accent-primary text-sm resize-none"
-                />
-              </div>
-
-              <div class="flex gap-3 pt-2">
-                <button
-                  onClick={() => {
-                    setShowBulkSuspendDialog(false);
-                    setBulkSuspendReason("");
-                  }}
-                  class="flex-1 px-4 py-2 rounded-lg bg-white/10 text-text-primary font-medium transition-colors hover:bg-white/20"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleBulkSuspend}
-                  disabled={!bulkSuspendReason().trim() || actionLoading()}
-                  class="flex-1 px-4 py-2 rounded-lg bg-accent-danger-fill text-on-danger font-medium transition-colors hover:bg-accent-danger-fill/90 state-disabled"
-                >
-                  {actionLoading()
-                    ? "Suspending..."
-                    : `Suspend ${getSelectedGuildCount()} Guilds`}
-                </button>
-              </div>
+        <ConfirmActionDialog
+          title={plural(bulkTargets().length, { one: "admin.servers.bulkTitle.one", other: "admin.servers.bulkTitle.other" })}
+          message={
+            <div class="space-y-2">
+              <p>{t("admin.servers.bulkBody")}</p>
+              <ul class="max-h-40 overflow-y-auto list-disc pl-5">
+                <For each={bulkTargets()}>{(g) => <li>{g.name}</li>}</For>
+              </ul>
             </div>
-          </div>
-        </div>
+          }
+          confirmLabel={plural(bulkTargets().length, { one: "admin.servers.bulkConfirm.one", other: "admin.servers.bulkConfirm.other" })}
+          danger
+          confirmDisabled={!bulkSuspendReason().trim() || bulkTargets().length === 0}
+          failureFallback="admin.action.failed"
+          onConfirm={handleBulkSuspend}
+          onDone={() => setShowBulkSuspendDialog(false)}
+          onCancel={() => {
+            setShowBulkSuspendDialog(false);
+            setBulkSuspendReason("");
+          }}
+        >
+          <label class="block space-y-2">
+            <span class="text-sm font-medium text-text-secondary">{t("admin.users.reasonAll")}</span>
+            <textarea
+              value={bulkSuspendReason()}
+              onInput={(e) => setBulkSuspendReason(e.currentTarget.value)}
+              placeholder={t("admin.users.reasonPlaceholder")}
+              rows={3}
+              class="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-text-primary placeholder-text-placeholder focus:outline-none focus:border-accent-primary text-sm resize-none"
+            />
+          </label>
+        </ConfirmActionDialog>
       </Show>
 
-      {/* Delete Guild Dialog */}
-      <Show when={showDeleteDialog()}>
-        <div class="fixed inset-0 z-50 flex items-center justify-center">
-          {/* Backdrop */}
-          <div
-            class="absolute inset-0 bg-black/60 backdrop-blur-sm"
-            onClick={() => {
+      <Show when={showDeleteDialog() && selectedGuild()}>
+        {(guild) => (
+          <ConfirmActionDialog
+            title={t("admin.servers.deleteTitle", { name: guild().name })}
+            message={t("admin.servers.deleteBody", { name: guild().name })}
+            confirmLabel={t("admin.users.deleteConfirm")}
+            danger
+            confirmDisabled={deleteConfirmText() !== guild().name}
+            failureFallback="admin.action.failed"
+            onConfirm={() => handleDelete(guild())}
+            onDone={() => setShowDeleteDialog(false)}
+            onCancel={() => {
               setShowDeleteDialog(false);
               setDeleteConfirmText("");
             }}
-          />
-
-          {/* Dialog */}
-          <div
-            class="relative rounded-xl border border-white/10 w-[400px] shadow-2xl animate-[fadeIn_0.15s_ease-out]"
-            style={{"background-color":"var(--color-surface-layer1)"}}
           >
-            <div class="p-5 space-y-4">
-              <h3 class="text-lg font-bold text-status-error">Delete Guild</h3>
-
-              <p class="text-sm text-text-secondary">
-                Are you sure you want to permanently delete{" "}
-                <span class="font-medium text-text-primary">
-                  {selectedGuild()?.name}
-                </span>
-                ? This action is{" "}
-                <span class="font-bold text-status-error">irreversible</span>{" "}
-                and will remove all channels, messages, roles, and member data.
-              </p>
-
-              <div class="space-y-2">
-                <label class="text-sm font-medium text-text-secondary">
-                  Type{" "}
-                  <span class="font-mono text-text-primary">
-                    {selectedGuild()?.name}
-                  </span>{" "}
-                  to confirm
-                </label>
-                <input
-                  type="text"
-                  value={deleteConfirmText()}
-                  onInput={(e) => setDeleteConfirmText(e.currentTarget.value)}
-                  placeholder={selectedGuild()?.name}
-                  class="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-text-primary placeholder-text-placeholder focus:outline-none focus:border-status-error text-sm"
-                />
-              </div>
-
-              <div class="flex gap-3 pt-2">
-                <button
-                  onClick={() => {
-                    setShowDeleteDialog(false);
-                    setDeleteConfirmText("");
-                  }}
-                  class="flex-1 px-4 py-2 rounded-lg bg-white/10 text-text-primary font-medium transition-colors hover:bg-white/20"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleDelete}
-                  disabled={
-                    deleteConfirmText() !== selectedGuild()?.name ||
-                    actionLoading()
-                  }
-                  class="flex-1 px-4 py-2 rounded-lg bg-accent-danger-fill text-on-danger font-medium transition-colors hover:bg-accent-danger-fill/90 state-disabled"
-                >
-                  {actionLoading() ? "Deleting..." : "Delete Permanently"}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
+            <label class="block space-y-2">
+              <span class="text-sm font-medium text-text-secondary">
+                {t("admin.servers.typeToConfirm", { name: guild().name })}
+              </span>
+              <input
+                type="text"
+                value={deleteConfirmText()}
+                onInput={(e) => setDeleteConfirmText(e.currentTarget.value)}
+                placeholder={guild().name}
+                class="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-text-primary placeholder-text-placeholder focus:outline-none focus:border-status-error text-sm"
+              />
+            </label>
+          </ConfirmActionDialog>
+        )}
       </Show>
     </div>
   );

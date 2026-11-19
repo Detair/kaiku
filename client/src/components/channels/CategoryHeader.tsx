@@ -8,7 +8,7 @@
  * - Hover actions (create channel, settings)
  */
 
-import { Component, createSignal, Show } from "solid-js";
+import { Component, Show } from "solid-js";
 import { ChevronDown, ChevronRight, Plus, Settings, Hash, Volume2 } from "lucide-solid";
 import type { CategoryType } from "@/lib/types";
 import { t } from "@/i18n";
@@ -35,72 +35,79 @@ interface CategoryHeaderProps {
 }
 
 const CategoryHeader: Component<CategoryHeaderProps> = (props) => {
-  const [hovering, setHovering] = createSignal(false);
-
   return (
     <div
-      class={`flex items-center gap-1 px-2 py-1 cursor-pointer select-none group rounded-lg hover:bg-white/5 transition-colors ${
-        props.isSubcategory ? "ml-3 border-l-2 border-white/10 pl-2" : ""
+      class={`flex items-center gap-1 select-none group rounded-lg hover:bg-white/5 transition-colors ${
+        props.isSubcategory ? "ml-3 border-l-2 border-white/10" : ""
       }`}
-      onMouseEnter={() => setHovering(true)}
-      onMouseLeave={() => setHovering(false)}
-      onClick={props.onToggle}
     >
-      {/* Expand/Collapse chevron */}
-      <span class="text-text-secondary w-3 transition-transform duration-200">
-        {props.collapsed ? (
-          <ChevronRight class="w-3 h-3" />
-        ) : (
-          <ChevronDown class="w-3 h-3" />
-        )}
-      </span>
-
-      {/* Category name */}
-      <span
-        class={`text-xs font-semibold tracking-wide flex-1 transition-colors group-hover:text-text-primary ${
-          props.isSubcategory
-            ? "text-text-secondary"
-            : "text-text-secondary uppercase"
+      {/* A real button, so a collapsed category opens by keyboard and its
+          state is announced (NAV-20) */}
+      <button
+        type="button"
+        data-testid="category-toggle"
+        class={`flex items-center gap-1 flex-1 min-w-0 px-2 py-1 rounded-lg text-left cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/50 ${
+          props.isSubcategory ? "pl-2" : ""
         }`}
+        aria-expanded={!props.collapsed}
+        onClick={() => props.onToggle()}
       >
-        {props.name}
-      </span>
+        {/* Expand/Collapse chevron */}
+        <span class="text-text-secondary w-3 transition-transform duration-200" aria-hidden="true">
+          {props.collapsed ? (
+            <ChevronRight class="w-3 h-3" />
+          ) : (
+            <ChevronDown class="w-3 h-3" />
+          )}
+        </span>
 
-      {/* Category type icon */}
-      <Show when={props.categoryType === "text"}>
-        <span title={t("channels.category.textOnly")}><Hash class="w-3 h-3 text-text-muted shrink-0" /></span>
-      </Show>
-      <Show when={props.categoryType === "voice"}>
-        <span title={t("channels.category.voiceOnly")}><Volume2 class="w-3 h-3 text-text-muted shrink-0" /></span>
-      </Show>
-
-      {/* Unread indicator - shown when collapsed and has unread */}
-      <Show when={props.hasUnread && props.collapsed}>
-        <span class="w-2 h-2 rounded-full bg-white" />
-      </Show>
-
-      {/* Hover actions */}
-      <Show when={hovering()}>
-        <div
-          class="flex items-center gap-1"
-          onClick={(e) => e.stopPropagation()}
+        {/* Category name */}
+        <span
+          class={`text-xs font-semibold tracking-wide flex-1 truncate transition-colors group-hover:text-text-primary ${
+            props.isSubcategory
+              ? "text-text-secondary"
+              : "text-text-secondary uppercase"
+          }`}
         >
+          {props.name}
+        </span>
+
+        {/* Category type icon */}
+        <Show when={props.categoryType === "text"}>
+          <span title={t("channels.category.textOnly")}><Hash class="w-3 h-3 text-text-muted shrink-0" aria-hidden="true" /></span>
+        </Show>
+        <Show when={props.categoryType === "voice"}>
+          <span title={t("channels.category.voiceOnly")}><Volume2 class="w-3 h-3 text-text-muted shrink-0" aria-hidden="true" /></span>
+        </Show>
+
+        {/* Unread indicator - shown when collapsed and has unread */}
+        <Show when={props.hasUnread && props.collapsed}>
+          <span class="w-2 h-2 rounded-full bg-white" aria-hidden="true" />
+          <span class="sr-only">{t("channels.category.hasUnread")}</span>
+        </Show>
+      </button>
+
+      {/* Actions: on hover, keyboard focus and touch screens (NAV-19) */}
+      <Show when={props.onCreateChannel || props.onSettings}>
+        <div class="flex items-center gap-1 pr-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 touch:opacity-100 transition-opacity">
           <Show when={props.onCreateChannel}>
             <button
-              class="p-0.5 text-text-secondary hover:text-text-primary rounded hover:bg-white/10 transition-all duration-200"
-              onClick={props.onCreateChannel}
+              type="button"
+              class="tap-dense p-0.5 text-text-secondary hover:text-text-primary rounded hover:bg-white/10 transition-all duration-200"
+              onClick={() => props.onCreateChannel?.()}
               title={t("channels.category.createChannel")} aria-label={t("channels.category.createChannel")}
             >
-              <Plus class="w-3.5 h-3.5" />
+              <Plus class="w-3.5 h-3.5" aria-hidden="true" />
             </button>
           </Show>
           <Show when={props.onSettings}>
             <button
-              class="p-0.5 text-text-secondary hover:text-text-primary rounded hover:bg-white/10 transition-all duration-200"
-              onClick={props.onSettings}
+              type="button"
+              class="tap-dense p-0.5 text-text-secondary hover:text-text-primary rounded hover:bg-white/10 transition-all duration-200"
+              onClick={() => props.onSettings?.()}
               title={t("channels.category.settings")} aria-label={t("channels.category.settings")}
             >
-              <Settings class="w-3.5 h-3.5" />
+              <Settings class="w-3.5 h-3.5" aria-hidden="true" />
             </button>
           </Show>
         </div>

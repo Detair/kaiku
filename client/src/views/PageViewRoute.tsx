@@ -7,7 +7,8 @@
  * - /guilds/:guildId/pages/:slug - Guild page
  */
 
-import { Component, Show, createResource, createEffect } from "solid-js";
+import { Component, Show, createResource, createEffect, onCleanup } from "solid-js";
+import { APP_NAME } from "@/lib/brand";
 import { useParams, useNavigate } from "@solidjs/router";
 import { ArrowLeft } from "lucide-solid";
 import { PageView } from "@/components/pages";
@@ -41,17 +42,26 @@ const PageViewRoute: Component = () => {
     }
   });
 
+  // A11Y-18: the window title names the page ("House rules – Kaiku").
+  createEffect(() => {
+    const title = page()?.title;
+    document.title = title ? `${title} – ${APP_NAME}` : APP_NAME;
+  });
+  onCleanup(() => {
+    document.title = APP_NAME;
+  });
+
   const handleBack = () => {
     navigate(-1);
   };
 
   return (
-    <div class="h-dvh bg-zinc-900 flex flex-col">
+    <div class="h-dvh bg-surface-base flex flex-col">
       <Show
         when={!page.loading}
         fallback={
           <div class="flex-1 flex items-center justify-center">
-            <div class="text-zinc-400">Loading page...</div>
+            <div class="text-text-secondary">Loading page...</div>
           </div>
         }
       >
@@ -59,11 +69,11 @@ const PageViewRoute: Component = () => {
           when={page()}
           fallback={
             <div class="flex-1 flex flex-col items-center justify-center">
-              <div class="text-zinc-400 mb-4">Page not found</div>
+              <div class="text-text-secondary mb-4">Page not found</div>
               <button
                 type="button"
                 onClick={handleBack}
-                class="flex items-center gap-2 px-4 py-2 text-sm font-medium text-zinc-300 hover:text-white hover:bg-zinc-700 rounded-md transition-colors"
+                class="flex items-center gap-2 px-4 py-2 text-sm font-medium text-text-primary hover:text-text-primary hover:bg-white/10 rounded-md transition-colors"
               >
                 <ArrowLeft class="w-4 h-4" />
                 Go back

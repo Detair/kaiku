@@ -229,6 +229,9 @@ export const ContextMenuContainer: Component = () => {
     if (!state.visible) return;
 
     if (e.key === "Escape") {
+      // One Escape closes one layer: the menu, never a dialog underneath.
+      e.preventDefault();
+      e.stopImmediatePropagation();
       hideContextMenu();
       return;
     }
@@ -275,13 +278,15 @@ export const ContextMenuContainer: Component = () => {
 
   onMount(() => {
     document.addEventListener("click", handleClickOutside, true);
-    document.addEventListener("keydown", handleKeyDown);
+    // Capture phase, like the dialogs (lib/a11y/dialog.ts): the menu sits
+    // above them and must see Escape first.
+    document.addEventListener("keydown", handleKeyDown, true);
     window.addEventListener("scroll", handleScroll, true);
   });
 
   onCleanup(() => {
     document.removeEventListener("click", handleClickOutside, true);
-    document.removeEventListener("keydown", handleKeyDown);
+    document.removeEventListener("keydown", handleKeyDown, true);
     window.removeEventListener("scroll", handleScroll, true);
   });
 
@@ -291,6 +296,7 @@ export const ContextMenuContainer: Component = () => {
         <div
           ref={menuRef}
           data-testid="context-menu"
+          data-context-menu
           class="fixed z-[9999] min-w-48 bg-surface-base border border-white/10 rounded-lg shadow-xl py-1"
           style={{
             left: `${menuState().x}px`,

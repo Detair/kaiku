@@ -4,17 +4,17 @@
  * Reusable context menu item builders for common entities (users, etc.).
  */
 
-import { User, MessageSquare, UserPlus, Ban, Copy, Flag } from "lucide-solid";
+import { MessageSquare, UserPlus, Ban, Copy, Flag } from "lucide-solid";
 import {
   showContextMenu,
   showContextMenuAt,
   type ContextMenuEntry,
 } from "@/components/ui/ContextMenu";
 import { currentUser } from "@/stores/auth";
-import { createDM } from "@/lib/tauri";
-import { selectDM, loadDMs, dmsState } from "@/stores/dms";
-import { selectHome } from "@/stores/guilds";
+import { openDirectMessage } from "@/stores/dms";
 import { sendFriendRequest } from "@/stores/friends";
+import { showToast } from "@/components/ui/Toast";
+import { t } from "@/i18n";
 interface UserMenuTarget {
   id: string;
   username: string;
@@ -77,83 +77,53 @@ function buildUserContextMenuItems(user: UserMenuTarget): ContextMenuEntry[] {
   const me = currentUser();
   const isSelf = me?.id === user.id;
 
-  const items: ContextMenuEntry[] = [
-    {
-      label: "View Profile",
-      icon: User,
-      action: async () => {
-        // Navigate to DM with this user to see their profile info
-        try {
-          const existing = dmsState.dms.find(
-            (dm) =>
-              dm.participants?.some((p) => p.user_id === user.id) &&
-              dm.participants.length <= 2,
-          );
-          if (existing) {
-            selectHome();
-            selectDM(existing.id);
-          } else {
-            const dm = await createDM([user.id]);
-            const channelId = dm.channel?.id ?? (dm as { id?: string }).id;
-            if (!channelId) {
-              throw new Error("DM creation response missing channel id");
-            }
-            await loadDMs();
-            selectHome();
-            selectDM(channelId);
-          }
-        } catch (e) {
-          console.error("Failed to view profile:", e);
-        }
-      },
-    },
-  ];
+  // "View Profile" used to just open a DM; it duplicated "Send Message"
+  // under a misleading name, so it is gone (NAV-25).
+  const items: ContextMenuEntry[] = [];
 
   if (!isSelf) {
     items.push(
       {
-        label: "Send Message",
+        label: t("dm.userMenu.sendMessage"),
         icon: MessageSquare,
         action: async () => {
           try {
-            const existing = dmsState.dms.find(
-              (dm) =>
-                dm.participants?.some((p) => p.user_id === user.id) &&
-                dm.participants.length <= 2,
-            );
-            if (existing) {
-              selectHome();
-              selectDM(existing.id);
-            } else {
-              const dm = await createDM([user.id]);
-              const channelId = dm.channel?.id ?? (dm as { id?: string }).id;
-              if (!channelId) {
-                throw new Error("DM creation response missing channel id");
-              }
-              await loadDMs();
-              selectHome();
-              selectDM(channelId);
-            }
+            await openDirectMessage([user.id]);
           } catch (e) {
             console.error("Failed to open DM:", e);
+            showToast({
+              type: "error",
+              title: t("home.friends.toast.messageFailedTitle"),
+              message: t("home.friends.toast.messageFailed"),
+              duration: 8000,
+            });
           }
         },
       },
       { separator: true },
       {
-        label: "Add Friend",
+        label: t("dm.userMenu.addFriend"),
         icon: UserPlus,
         action: async () => {
           try {
             await sendFriendRequest(user.username);
+            showToast({
+              type: "success",
+              title: t("dm.userMenu.requestSentTitle"),
+              message: t("dm.userMenu.requestSent", {
+                name: user.display_name || user.username,
+              }),
+              duration: 3000,
+            });
           } catch (e) {
+            // The friends store already shows the failure.
             console.error("Failed to send friend request:", e);
           }
         },
       },
       { separator: true },
       {
-        label: "Report",
+        label: t("dm.userMenu.report"),
         icon: Flag,
         danger: true,
         action: () => {
@@ -163,7 +133,7 @@ function buildUserContextMenuItems(user: UserMenuTarget): ContextMenuEntry[] {
         },
       },
       {
-        label: "Block",
+        label: t("dm.userMenu.block"),
         icon: Ban,
         danger: true,
         action: () => {
@@ -176,10 +146,10 @@ function buildUserContextMenuItems(user: UserMenuTarget): ContextMenuEntry[] {
     );
   }
 
+  if (items.length > 0) items.push({ separator: true });
   items.push(
-    { separator: true },
     {
-      label: "Copy User ID",
+      label: t("dm.userMenu.copyId"),
       icon: Copy,
       action: () => navigator.clipboard.writeText(user.id),
     },

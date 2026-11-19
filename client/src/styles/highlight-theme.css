@@ -83,3 +83,45 @@
 .hljs-strong {
   font-weight: bold;
 }
+
+/* Light theme: the Solarized accents above are about 2.5:1 on a cream code
+   block. These are the same hues, darkened to 4.5:1 or more on layer2
+   (checked by styles/__tests__/contrast.test.ts). */
+:root[data-theme="solarized-light"] .hljs-keyword,
+:root[data-theme="solarized-light"] .hljs-selector-tag,
+:root[data-theme="solarized-light"] .hljs-literal,
+:root[data-theme="solarized-light"] .hljs-section,
+:root[data-theme="solarized-light"] .hljs-link {
+  color: #1d689e;
+}
+
+:root[data-theme="solarized-light"] .hljs-string,
+:root[data-theme="solarized-light"] .hljs-template-variable,
+:root[data-theme="solarized-light"] .hljs-addition {
+  color: #1d6f69;
+}
+
+:root[data-theme="solarized-light"] .hljs-title,
+:root[data-theme="solarized-light"] .hljs-title.function_,
+:root[data-theme="solarized-light"] .hljs-title.class_ {
+  color: #7e6000;
+}
+
+:root[data-theme="solarized-light"] .hljs-number,
+:root[data-theme="solarized-light"] .hljs-regexp,
+:root[data-theme="solarized-light"] .hljs-selector-id,
+:root[data-theme="solarized-light"] .hljs-selector-class {
+  color: #b7286d;
+}
+
+:root[data-theme="solarized-light"] .hljs-built_in,
+:root[data-theme="solarized-light"] .hljs-type,
+:root[data-theme="solarized-light"] .hljs-params {
+  color: #c22321;
+}
+
+:root[data-theme="solarized-light"] .hljs-meta,
+:root[data-theme="solarized-light"] .hljs-symbol,
+:root[data-theme="solarized-light"] .hljs-bullet {
+  color: #ae4013;
+}

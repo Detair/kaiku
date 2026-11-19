@@ -180,7 +180,7 @@ const DMItem: Component<DMItemProps> = (props) => {
               {kaiku() ? t("security.dm.name") : displayName()}
             </span>
             <Show when={kaiku()}>
-              <span class="px-1.5 py-0.5 text-[11px] rounded-md border border-white/15 text-text-primary flex-shrink-0">
+              <span class="px-1.5 py-0.5 text-xs rounded-md border border-white/15 text-text-primary flex-shrink-0">
                 {t("security.dm.label")}
               </span>
             </Show>

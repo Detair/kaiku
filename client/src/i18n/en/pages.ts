@@ -1,0 +1,22 @@
+/** Pages people must read and accept (house rules, terms). */
+export const pages = {
+  "pages.accept.required": "Please read and accept this to keep using Kaiku.",
+  "pages.accept.review": "Please read this and accept it.",
+  "pages.accept.scroll": "Scroll to the end to accept.",
+  "pages.accept.later": "Remind me later",
+  "pages.accept.accept": "I accept",
+  "pages.accept.accepting": "Accepting...",
+  "pages.accept.failed": "This could not be saved. Please try again.",
+  "pages.accept.loadFailedTitle": "Page not loaded",
+  "pages.accept.loadFailed": "A page you need to accept could not be loaded. Check your connection and try again.",
+  "pages.categories.title": "Page categories",
+  "pages.categories.nameEmpty": "Enter a name for the category.",
+  "pages.categories.nameTooLong": "A category name can have at most {{max}} characters.",
+  "pages.categories.rename": "Rename {{name}}",
+  "pages.categories.delete": "Delete {{name}}",
+  "pages.categories.nameLabel": "Category name",
+  "pages.categories.empty": "No categories yet. Add one below.",
+  "pages.categories.newLabel": "New category",
+  "pages.categories.newPlaceholder": "Name of the new category",
+  "pages.categories.add": "Add category",
+} as const satisfies Record<`pages.${string}`, string>;

@@ -25,6 +25,9 @@ import { authState } from "@/stores/auth";
 import { isGuildOwner } from "@/stores/guilds";
 import { PermissionBits } from "@/lib/permissionConstants";
 import type { GuildRole } from "@/lib/types";
+import { plural, t } from "@/i18n";
+import ConfirmActionDialog from "@/components/admin/ConfirmActionDialog";
+import { reportFailure } from "./settingsAction";
 
 interface RolesTabProps {
   guildId: string;
@@ -34,7 +37,7 @@ interface RolesTabProps {
 
 const RolesTab: Component<RolesTabProps> = (props) => {
   const [menuOpen, setMenuOpen] = createSignal<string | null>(null);
-  const [deleteConfirm, setDeleteConfirm] = createSignal<string | null>(null);
+  const [deleting, setDeleting] = createSignal<GuildRole | null>(null);
   const [draggedRoleId, setDraggedRoleId] = createSignal<string | null>(null);
   const [dropTargetId, setDropTargetId] = createSignal<string | null>(null);
 
@@ -120,7 +123,7 @@ const RolesTab: Component<RolesTabProps> = (props) => {
     try {
       await reorderRole(props.guildId, draggedId, targetRole.position);
     } catch (err) {
-      console.error("Failed to reorder role:", err);
+      reportFailure(t("guildSettings.roles.reorderFailed"), err);
     }
   };
 
@@ -137,26 +140,12 @@ const RolesTab: Component<RolesTabProps> = (props) => {
     return count;
   };
 
-  const handleDelete = async (roleId: string) => {
-    if (deleteConfirm() === roleId) {
-      try {
-        await deleteRole(props.guildId, roleId);
-      } catch (err) {
-        console.error("Failed to delete role:", err);
-      }
-      setDeleteConfirm(null);
-      setMenuOpen(null);
-    } else {
-      setDeleteConfirm(roleId);
-      setTimeout(() => setDeleteConfirm(null), 3000);
-    }
-  };
 
   return (
     <div class="p-6">
       {/* Header */}
       <div class="flex items-center justify-between mb-4">
-        <h3 class="text-lg font-semibold text-text-primary">Roles</h3>
+        <h3 class="text-lg font-semibold text-text-primary">{t("guildSettings.roles.title")}</h3>
         <Show when={canManageRoles()}>
           <button
             onClick={() => props.onCreateRole()}
@@ -164,14 +153,14 @@ const RolesTab: Component<RolesTabProps> = (props) => {
             class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-accent-primary text-on-accent text-sm font-medium hover:bg-accent-primary/90 transition-colors"
           >
             <Plus class="w-4 h-4" />
-            New Role
+            {t("guildSettings.roles.new")}
           </button>
         </Show>
       </div>
 
       {/* Loading */}
       <Show when={permissionsState.isRolesLoading}>
-        <div class="text-center py-8 text-text-secondary">Loading roles...</div>
+        <div class="text-center py-8 text-text-secondary">{t("guildSettings.loading")}</div>
       </Show>
 
       {/* Role List */}
@@ -201,7 +190,7 @@ const RolesTab: Component<RolesTabProps> = (props) => {
               >
                 {/* Drag handle */}
                 <Show when={canManageRoles() && canReorderRole(role)}>
-                  <div class="cursor-grab text-text-secondary hover:text-text-primary opacity-0 group-hover:opacity-100 transition-opacity">
+                  <div class="cursor-grab text-text-secondary hover:text-text-primary opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 touch:opacity-100 transition-opacity">
                     <GripVertical class="w-4 h-4" />
                   </div>
                 </Show>
@@ -224,19 +213,20 @@ const RolesTab: Component<RolesTabProps> = (props) => {
                   </div>
                   <div class="text-xs text-text-secondary">
                     {role.is_default
-                      ? "Base permissions for all members"
-                      : `${countPermissions(role.permissions)} permissions`}
+                      ? t("guildSettings.roles.everyoneHint")
+                      : plural(countPermissions(role.permissions), { one: "guildSettings.roles.permissionCount.one", other: "guildSettings.roles.permissionCount.other" })}
                   </div>
                 </div>
 
                 {/* Actions */}
                 <Show when={canManageRoles()}>
-                  <div class="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <div class="flex items-center gap-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 touch:opacity-100 transition-opacity">
                     <button
                       onClick={() => props.onEditRole(role)}
                       data-testid="roles-tab-role-edit"
                       class="p-2 rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/10 transition-colors"
-                      title="Edit role"
+                      title={t("guildSettings.roles.editNamed", { name: role.is_default ? "@everyone" : role.name })}
+                      aria-label={t("guildSettings.roles.editNamed", { name: role.is_default ? "@everyone" : role.name })}
                     >
                       <Settings class="w-4 h-4" />
                     </button>
@@ -246,6 +236,8 @@ const RolesTab: Component<RolesTabProps> = (props) => {
                           onClick={() =>
                             setMenuOpen(menuOpen() === role.id ? null : role.id)
                           }
+                          aria-label={t("guildSettings.roles.moreNamed", { name: role.name })}
+                          aria-expanded={menuOpen() === role.id}
                           class="p-2 rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/10 transition-colors"
                         >
                           <MoreVertical class="w-4 h-4" />
@@ -263,22 +255,17 @@ const RolesTab: Component<RolesTabProps> = (props) => {
                               class="w-full flex items-center gap-2 px-3 py-2 text-sm text-text-primary hover:bg-white/10 transition-colors"
                             >
                               <Users class="w-4 h-4" />
-                              Manage Members
+                              {t("guildSettings.roles.manageMembers")}
                             </button>
                             <button
-                              onClick={() => handleDelete(role.id)}
-                              class="w-full flex items-center gap-2 px-3 py-2 text-sm transition-colors"
-                              classList={{
-                                "text-accent-danger bg-accent-danger/10":
-                                  deleteConfirm() === role.id,
-                                "text-text-primary hover:bg-white/10":
-                                  deleteConfirm() !== role.id,
+                              onClick={() => {
+                                setDeleting(role);
+                                setMenuOpen(null);
                               }}
+                              class="w-full flex items-center gap-2 px-3 py-2 text-sm text-text-primary hover:bg-white/10 transition-colors"
                             >
                               <Trash2 class="w-4 h-4" />
-                              {deleteConfirm() === role.id
-                                ? "Confirm Delete"
-                                : "Delete Role"}
+                              {t("guildSettings.roles.delete")}
                             </button>
                           </div>
                         </Show>
@@ -290,6 +277,20 @@ const RolesTab: Component<RolesTabProps> = (props) => {
             )}
           </For>
         </div>
+      </Show>
+
+      <Show when={deleting()}>
+        {(role) => (
+          <ConfirmActionDialog
+            title={t("guildSettings.roles.deleteTitle", { name: role().name })}
+            message={t("guildSettings.roles.deleteBody", { name: role().name })}
+            confirmLabel={t("guildSettings.roles.delete")}
+            danger
+            onConfirm={() => deleteRole(props.guildId, role().id)}
+            onDone={() => setDeleting(null)}
+            onCancel={() => setDeleting(null)}
+          />
+        )}
       </Show>
     </div>
   );

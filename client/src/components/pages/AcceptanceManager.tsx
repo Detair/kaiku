@@ -15,6 +15,9 @@ import {
 } from "@/stores/pages";
 import * as tauri from "@/lib/tauri";
 import PageAcceptanceModal from "./PageAcceptanceModal";
+import Modal from "@/components/ui/Modal";
+import Button from "@/components/ui/Button";
+import { t } from "@/i18n";
 
 interface AcceptanceManagerProps {
   /** Called when user logs out (for blocking platform pages) */
@@ -77,7 +80,7 @@ export default function AcceptanceManager(_props: AcceptanceManagerProps) {
       console.error("Failed to load page for acceptance:", err);
       // Platform pages are blocking — show error instead of silently skipping
       if (!nextPageListItem.guild_id) {
-        setError("Failed to load a required page. Please try again later.");
+        setError(t("pages.accept.loadFailed"));
         return;
       }
       // Guild pages can be skipped
@@ -137,22 +140,26 @@ export default function AcceptanceManager(_props: AcceptanceManagerProps) {
   return (
     <>
       <Show when={error()}>
-        <div class="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div class="absolute inset-0 bg-black/70" />
-          <div class="relative bg-zinc-800 rounded-lg p-6 max-w-md shadow-xl text-center">
-            <p class="text-red-400 mb-4">{error()}</p>
-            <button
-              type="button"
-              onClick={async () => {
-                setError(null);
-                await showNextPage();
-              }}
-              class="px-4 py-2 bg-zinc-700 hover:bg-zinc-600 text-white rounded-md transition-colors"
-            >
-              Retry
-            </button>
-          </div>
-        </div>
+        {/* A required page could not load: nothing to close, only retry. */}
+        <Modal
+          onClose={() => {}}
+          label={t("pages.accept.loadFailedTitle")}
+          describedBy="page-acceptance-load-error"
+          closeOnBackdrop={false}
+          backdropClass="fixed inset-0 flex items-center justify-center p-4 bg-black/70"
+          class="relative bg-surface-layer1 rounded-lg p-6 max-w-md shadow-xl text-center"
+        >
+          <p id="page-acceptance-load-error" class="text-text-primary mb-4">{error()}</p>
+          <Button
+            variant="secondary"
+            onClick={async () => {
+              setError(null);
+              await showNextPage();
+            }}
+          >
+            {t("common.retry")}
+          </Button>
+        </Modal>
       </Show>
       <Show when={currentPage() && !isLoading() && !error()}>
         <PageAcceptanceModal

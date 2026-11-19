@@ -82,7 +82,8 @@ test.describe("Navigation", () => {
   test("should logout successfully", async ({ page }) => {
     await loginAsAdmin(page);
     // Click logout
-    await page.click('button[title="Logout"]');
+    await page.click('button[title="Sign out"]');
+    await page.getByTestId("logout-confirm").click();
     // Should redirect to login page
     await expect(page).toHaveURL(/\/login/, { timeout: 5000 });
   });

@@ -1,13 +1,17 @@
 /**
  * Block Confirm Modal
  *
- * Confirmation dialog before blocking a user.
+ * Asks before blocking a person. A modal dialog (A11Y-1): focus starts on
+ * "Cancel", Tab stays inside, Escape closes, focus returns to the opener.
  */
 
-import { Component, createSignal } from "solid-js";
-import { Portal } from "solid-js/web";
+import { Component, createSignal, createUniqueId, Show } from "solid-js";
 import { X, Ban } from "lucide-solid";
 import { blockUser } from "@/stores/friends";
+import { t } from "@/i18n";
+import { errorText } from "@/i18n/errors";
+import Modal from "@/components/ui/Modal";
+import Button from "@/components/ui/Button";
 
 interface BlockConfirmModalProps {
   userId: string;
@@ -17,6 +21,9 @@ interface BlockConfirmModalProps {
 }
 
 const BlockConfirmModal: Component<BlockConfirmModalProps> = (props) => {
+  const titleId = createUniqueId();
+  const bodyId = createUniqueId();
+  let cancelRef: HTMLButtonElement | undefined;
   const [isBlocking, setIsBlocking] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
 
@@ -30,87 +37,75 @@ const BlockConfirmModal: Component<BlockConfirmModalProps> = (props) => {
       await blockUser(props.userId);
       props.onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to block user");
+      setError(errorText(err, "moderation.block.failed"));
       setIsBlocking(false);
     }
   };
 
-  const handleKeyDown = (e: KeyboardEvent) => {
-    if (e.key === "Escape") props.onClose();
-  };
-
-  const handleBackdropClick = (e: MouseEvent) => {
-    if (e.target === e.currentTarget) props.onClose();
-  };
-
   return (
-    <Portal>
-      <div
-        class="fixed inset-0 z-50 flex items-center justify-center"
-        onKeyDown={handleKeyDown}
-        tabIndex={-1}
-      >
-        <div
-          class="absolute inset-0 bg-black/60 backdrop-blur-sm"
-          onClick={handleBackdropClick}
-        />
-
-        <div
-          class="relative rounded-xl border border-white/10 w-[400px] shadow-2xl animate-[fadeIn_0.15s_ease-out]"
-          style={{"background-color":"var(--color-surface-layer1)"}}
+    <Modal
+      onClose={() => props.onClose()}
+      labelledBy={titleId}
+      describedBy={bodyId}
+      initialFocus={() => cancelRef}
+      class="relative rounded-xl border border-white/10 w-[400px] max-w-[calc(100vw-2rem)] shadow-2xl animate-[fadeIn_0.15s_ease-out]"
+      style={{ "background-color": "var(--color-surface-layer1)" }}
+      backdropClass="fixed inset-0 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+      testId="block-dialog"
+    >
+      {/* Header */}
+      <div class="flex items-center justify-between px-5 py-4 border-b border-white/10">
+        <div class="flex items-center gap-3">
+          <div class="w-9 h-9 rounded-lg bg-status-error/20 flex items-center justify-center">
+            <Ban class="w-5 h-5 text-status-error" aria-hidden="true" />
+          </div>
+          <h2 id={titleId} class="text-lg font-bold text-text-primary">
+            {t("moderation.block.title")}
+          </h2>
+        </div>
+        <button
+          type="button"
+          onClick={() => props.onClose()}
+          aria-label={t("common.close")}
+          class="p-1.5 min-w-11 min-h-11 flex items-center justify-center text-text-secondary hover:text-text-primary hover:bg-white/10 rounded-lg transition-colors"
         >
-          {/* Header */}
-          <div class="flex items-center justify-between px-5 py-4 border-b border-white/10">
-            <div class="flex items-center gap-3">
-              <div class="w-9 h-9 rounded-lg bg-status-error/20 flex items-center justify-center">
-                <Ban class="w-5 h-5 text-status-error" />
-              </div>
-              <h2 class="text-lg font-bold text-text-primary">Block User</h2>
-            </div>
-            <button
-              onClick={props.onClose}
-              class="p-1.5 text-text-secondary hover:text-text-primary hover:bg-white/10 rounded-lg transition-colors"
-            >
-              <X class="w-5 h-5" />
-            </button>
+          <X class="w-5 h-5" aria-hidden="true" />
+        </button>
+      </div>
+
+      {/* Content */}
+      <div class="p-5 space-y-4">
+        <div id={bodyId} class="space-y-2">
+          <p class="text-text-primary text-sm font-medium">
+            {t("moderation.block.question", { name: name() })}
+          </p>
+          <p class="text-text-secondary text-sm">{t("moderation.block.effect")}</p>
+        </div>
+
+        <Show when={error()}>
+          <div
+            role="alert"
+            class="p-3 rounded-lg bg-status-error/10 border border-status-error/30 text-text-primary text-sm"
+          >
+            {error()}
           </div>
+        </Show>
 
-          {/* Content */}
-          <div class="p-5 space-y-4">
-            <p class="text-text-secondary text-sm">
-              Are you sure you want to block{" "}
-              <span class="text-text-primary font-medium">{name()}</span>?
-            </p>
-            <p class="text-text-secondary text-xs">
-              They won't be able to send you messages, friend requests, or call
-              you. You won't see their messages in shared channels.
-            </p>
-
-            {error() && (
-              <div class="p-3 rounded-lg bg-status-error/10 border border-status-error/30 text-text-primary text-sm">
-                {error()}
-              </div>
-            )}
-
-            <div class="flex gap-3 justify-end">
-              <button
-                onClick={props.onClose}
-                class="px-4 py-2 rounded-lg bg-white/10 text-text-primary font-medium transition-colors hover:bg-white/20"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleBlock}
-                disabled={isBlocking()}
-                class="px-4 py-2 rounded-lg bg-status-error text-white font-medium transition-colors hover:bg-status-error/90 state-disabled"
-              >
-                {isBlocking() ? "Blocking..." : "Block"}
-              </button>
-            </div>
-          </div>
+        <div class="flex gap-3 justify-end">
+          <Button ref={cancelRef} variant="secondary" onClick={() => props.onClose()}>
+            {t("common.cancel")}
+          </Button>
+          <Button
+            variant="danger"
+            onClick={handleBlock}
+            disabled={isBlocking()}
+            data-testid="block-confirm"
+          >
+            {isBlocking() ? t("moderation.block.blocking") : t("moderation.block.confirm")}
+          </Button>
         </div>
       </div>
-    </Portal>
+    </Modal>
   );
 };
 
