@@ -9,7 +9,6 @@ import { Component, onMount, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
 import { AlertTriangle, X, ShieldAlert } from "lucide-solid";
 import type { CopyContext } from "@/lib/clipboard";
-import { createModalLayer, MODAL_LAYER } from "@/lib/a11y/modalLayer";
 
 interface TamperWarningModalProps {
   /** The context of what was originally copied */
@@ -34,9 +33,6 @@ function getContextLabel(context: CopyContext | null): string {
 }
 
 const TamperWarningModal: Component<TamperWarningModalProps> = (props) => {
-  // In front of every window already open: a warning must never be hidden.
-  const layer = createModalLayer(MODAL_LAYER.prompt);
-
   onMount(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") props.onCancel();
@@ -54,8 +50,7 @@ const TamperWarningModal: Component<TamperWarningModalProps> = (props) => {
   return (
     <Portal>
       <div
-        class="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center"
-        style={{ "z-index": layer }}
+        class="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50"
         onClick={handleBackdropClick}
       >
         <div

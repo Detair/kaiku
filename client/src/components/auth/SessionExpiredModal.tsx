@@ -1,9 +1,10 @@
-import { Component, Show, onMount, onCleanup } from "solid-js";
+import { Component, Show } from "solid-js";
 import { Portal } from "solid-js/web";
 import { useNavigate } from "@solidjs/router";
 import { LogIn } from "lucide-solid";
 import { t } from "@/i18n";
 import { authState, setAuthState, logout } from "@/stores/auth";
+import { createDialog } from "@/lib/a11y/dialog";
 import { createModalLayer, MODAL_LAYER } from "@/lib/a11y/modalLayer";
 
 const REASON_TEXT = {
@@ -15,14 +16,6 @@ const REASON_TEXT = {
 
 const SessionExpiredModal: Component = () => {
   const navigate = useNavigate();
-
-  onMount(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && authState.sessionExpired) handleLogin();
-    };
-    document.addEventListener("keydown", handleKeyDown);
-    onCleanup(() => document.removeEventListener("keydown", handleKeyDown));
-  });
 
   const handleLogin = async () => {
     try {
@@ -37,7 +30,11 @@ const SessionExpiredModal: Component = () => {
   return (
     <Show when={authState.sessionExpired}>
       {(_shown) => {
-      // Taken when the session ends, so it is in front of every window open then.
+      // Taken when the session ends, so it is in front of every window open
+      // then and has the keyboard: focus on Log in, Tab stays here, Escape
+      // neither closes it nor reaches the window below.
+      let logIn: HTMLButtonElement | undefined;
+      const dialog = createDialog({ onClose: () => {}, initialFocus: () => logIn });
       const layer = createModalLayer(MODAL_LAYER.prompt);
       return (
       <Portal>
@@ -45,6 +42,8 @@ const SessionExpiredModal: Component = () => {
           <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" />
 
           <div
+            {...dialog.dialogProps}
+            ref={dialog.ref}
             class="relative rounded-xl border border-white/10 w-[400px] shadow-2xl animate-[fadeIn_0.15s_ease-out]"
             style={{"background-color":"var(--color-surface-layer1)"}}
           >
@@ -52,7 +51,7 @@ const SessionExpiredModal: Component = () => {
               <div class="w-9 h-9 rounded-lg bg-status-warning/20 flex items-center justify-center">
                 <LogIn class="w-5 h-5 text-status-warning" />
               </div>
-              <h2 class="text-lg font-bold text-text-primary">
+              <h2 id={dialog.titleId} class="text-lg font-bold text-text-primary">
                 {authState.sessionEndReason === "expired"
                   ? t("connection.session.expiredTitle")
                   : t("connection.session.endedTitle")}
@@ -66,6 +65,7 @@ const SessionExpiredModal: Component = () => {
 
               <div class="flex justify-end">
                 <button
+                  ref={logIn}
                   onClick={handleLogin}
                   class="px-4 py-2 rounded-lg bg-accent-primary text-on-accent font-medium transition-colors hover:bg-accent-primary/90"
                 >

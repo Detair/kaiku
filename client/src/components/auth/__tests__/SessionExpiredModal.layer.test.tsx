@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, it } from "vitest";
-import { cleanup, render, screen } from "@solidjs/testing-library";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@solidjs/testing-library";
 import { Router, Route } from "@solidjs/router";
 import SessionExpiredModal from "../SessionExpiredModal";
 import Modal from "@/components/ui/Modal";
@@ -36,5 +36,37 @@ describe("SessionExpiredModal layer", () => {
     setAuthState({ sessionExpired: true, sessionEndReason: "expired" });
     const logIn = screen.getByRole("button", { name: "Log in", hidden: true });
     expect(zOf(logIn)).toBeGreaterThan(zOf(earlier));
+  });
+
+  it("takes the keyboard from the window below: focus on Log in, Tab stays, Escape changes nothing", async () => {
+    render(() => (
+      <Router>
+        <Route path="/" component={SessionExpiredModal} />
+      </Router>
+    ));
+    const closeBelow = vi.fn();
+    render(() => (
+      <Modal onClose={closeBelow} label="Earlier window">
+        <button type="button">inside</button>
+      </Modal>
+    ));
+    await new Promise((r) => setTimeout(r, 0));
+    const below = screen.getByRole("dialog", { name: "Earlier window" });
+    expect(below.contains(document.activeElement)).toBe(true);
+
+    setAuthState({ sessionExpired: true, sessionEndReason: "expired" });
+    await new Promise((r) => setTimeout(r, 0));
+    const logIn = screen.getByRole("button", { name: "Log in", hidden: true });
+    expect(document.activeElement).toBe(logIn);
+
+    fireEvent.keyDown(logIn, { key: "Tab" });
+    expect(document.activeElement).toBe(logIn);
+    fireEvent.keyDown(logIn, { key: "Tab", shiftKey: true });
+    expect(document.activeElement).toBe(logIn);
+
+    fireEvent.keyDown(logIn, { key: "Escape" });
+    expect(closeBelow).not.toHaveBeenCalled();
+    expect(logIn.isConnected).toBe(true);
+    expect(below.isConnected).toBe(true);
   });
 });
