@@ -68,6 +68,15 @@ internal fun removalFailedText(out: StepUpOutcome): Int {
     }
 }
 
+/** The sign-in found no key on this phone any more (removed, invalidated, or forgotten meanwhile). */
+private fun DeviceSignInResult.keyIsGone(): Boolean =
+    this == DeviceSignInResult.Revoked || this == DeviceSignInResult.KeyInvalidated ||
+        (this is DeviceSignInResult.Failed && code == "NO_KEY_DEVICE")
+
+@StringRes
+private fun gonePhoneText(r: DeviceSignInResult): Int =
+    if (r == DeviceSignInResult.KeyInvalidated) R.string.security_key_invalidated else R.string.security_device_revoked
+
 /** L2-A11: the lapsed key device signs in again with its screen lock, never a password. */
 @HiltViewModel
 class ConfirmItsYouViewModel @Inject constructor(
@@ -87,7 +96,16 @@ class ConfirmItsYouViewModel @Inject constructor(
     val ui: StateFlow<ConfirmItsYouUi> = _ui.asStateFlow()
 
     init {
-        // F5: an admin may have removed this phone as a key while it was signed out. The key's own
+        // The key can be forgotten while this screen is open (a setup link on top found it removed,
+        // or another screen did): then only "OK" leads on, never a button that cannot work.
+        viewModelScope.launch {
+            keyDevices.record.collect { r ->
+                if (r == null && !_ui.value.working && !_ui.value.keyGone && _ui.value.done == null) {
+                    _ui.update { u -> u.copy(error = R.string.security_device_revoked, keyGone = true) }
+                }
+            }
+        }
+        // An admin may have removed this phone as a key while it was signed out. The key's own
         // server is asked once (the public device-login challenge, left unanswered); only a key it
         // does not know, or knows as removed, is forgotten. Offline or unclear keeps everything.
         val local = keyDevices.local()
@@ -104,15 +122,15 @@ class ConfirmItsYouViewModel @Inject constructor(
 
     /** [stayingSignedIn]: the renewal before the 90-day cap (its prompt says so). */
     fun confirm(activity: FragmentActivity, stayingSignedIn: Boolean = false) {
-        if (_ui.value.working) return
+        if (_ui.value.working || _ui.value.keyGone) return
         _ui.update { it.copy(working = true, error = null) }
         viewModelScope.launch {
             val r = deviceSignIn.signIn(activity, if (stayingSignedIn) SignInPurpose.STAY_SIGNED_IN else SignInPurpose.SIGN_IN)
             _ui.update {
                 it.copy(
                     working = false,
-                    error = signInResultText(r),
-                    keyGone = r == DeviceSignInResult.Revoked || r == DeviceSignInResult.KeyInvalidated,
+                    error = if (r.keyIsGone()) gonePhoneText(r) else signInResultText(r),
+                    keyGone = r.keyIsGone(),
                     readyAt = (r as? DeviceSignInResult.Pending)?.readyAt,
                     done = when (r) {
                         DeviceSignInResult.Success -> ConfirmDone.SIGNED_IN
@@ -129,18 +147,22 @@ class ConfirmItsYouViewModel @Inject constructor(
      * needs a session, so it signs in with the key, then steps up and removes.
      */
     fun removeThisPhone(activity: FragmentActivity) {
-        if (_ui.value.working) return
+        if (_ui.value.working || _ui.value.keyGone) return
         _ui.update { it.copy(working = true, error = null) }
         viewModelScope.launch {
             val signedInForRemoval = keyDevices.current() !is KeyDeviceState.Active
             if (signedInForRemoval) {
+                // Stored before the sign-in: if the app dies before the removal ends, the next start
+                // signs this session out again (UnfinishedRemoval).
+                keyDevices.markRemovalSignIn(true)
                 val r = deviceSignIn.signIn(activity, SignInPurpose.FOR_REMOVAL)
                 if (r != DeviceSignInResult.Success) {
+                    keyDevices.markRemovalSignIn(false)
                     _ui.update {
                         it.copy(
                             working = false,
-                            error = signInResultText(r),
-                            keyGone = r == DeviceSignInResult.Revoked || r == DeviceSignInResult.KeyInvalidated,
+                            error = if (r.keyIsGone()) gonePhoneText(r) else signInResultText(r),
+                            keyGone = r.keyIsGone(),
                             readyAt = (r as? DeviceSignInResult.Pending)?.readyAt,
                             done = if (r is DeviceSignInResult.Pending) ConfirmDone.PENDING else null,
                         )
@@ -152,6 +174,7 @@ class ConfirmItsYouViewModel @Inject constructor(
             // The session made only for the removal never outlives a removal that did not happen:
             // the phone goes back to "Confirm it's you" (or, without a key, to signed out).
             if (signedInForRemoval && out !is StepUpOutcome.Granted) signOut.signOut()
+            keyDevices.markRemovalSignIn(false)
             val keyGone = out is StepUpOutcome.Failed && out.code == "KEY_INVALIDATED"
             _ui.update {
                 when (out) {

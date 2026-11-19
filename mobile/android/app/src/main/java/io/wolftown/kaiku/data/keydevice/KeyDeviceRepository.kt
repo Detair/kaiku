@@ -9,6 +9,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import java.time.Instant
@@ -66,6 +67,9 @@ class KeyDeviceRepository @Inject constructor(
 ) : KeyDevicePolicy {
 
     private val stored = MutableStateFlow(store.load())
+
+    /** The stored record as it changes (null: no key device); unlike [state] it needs no session. */
+    val record: StateFlow<StoredKeyDevice?> = stored.asStateFlow()
 
     val state: StateFlow<KeyDeviceState> = combine(stored, authState.session) { s, session -> derive(s, session) }
         .stateIn(scope, SharingStarted.Eagerly, derive(stored.value, authState.session.value))
@@ -148,6 +152,17 @@ class KeyDeviceRepository @Inject constructor(
         val s = stored.value ?: return
         write(s.copy(lastRenewalPromptAt = at))
     }
+
+    /**
+     * Written (and committed) before a sign-in made only to remove this phone, cleared once that
+     * removal has ended either way; still set at an app start, it means the app died in between.
+     */
+    fun markRemovalSignIn(running: Boolean) {
+        val s = stored.value ?: return
+        if (s.removalSignIn != running) write(s.copy(removalSignIn = running))
+    }
+
+    fun removalSignInPending(): Boolean = stored.value?.removalSignIn == true
 
     override fun keepsPushOnSignOut(): Boolean = stored.value?.phase == KeyDevicePhase.ACTIVE
 

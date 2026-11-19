@@ -19,7 +19,9 @@ class KeyDeviceFixture(scope: CoroutineScope, uv: UvResult? = null, active: Bool
         generate(ByteArray(32), UvPolicy.choose(30, true, true) as UvDecision.Use)
     }
     val authState = AuthState(scope)
-    val repo = KeyDeviceRepository(InMemoryKeyDeviceStore(), keyStore, authState, scope)
+    /** The persisted record; a second repository on it is the next app start. */
+    val store = InMemoryKeyDeviceStore()
+    val repo = KeyDeviceRepository(store, keyStore, authState, scope)
     val verifier = FakeUserVerifier(keyStore, uv)
     val checks = ChallengeVerifier({ SigFixtures.ORIGIN }, { SigFixtures.EXPIRES_AT - 30 })
     val signer = DeviceSigner(keyStore, verifier, checks)

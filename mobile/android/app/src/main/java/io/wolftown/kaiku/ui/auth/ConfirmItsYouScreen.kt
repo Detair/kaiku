@@ -76,7 +76,8 @@ fun ConfirmItsYouScreen(
         }
     }
 
-    if (askRemove) {
+    // Not once the key is gone (also when that is found out while the question is open).
+    if (askRemove && !ui.keyGone) {
         AlertDialog(
             onDismissRequest = { askRemove = false },
             title = { Text(stringResource(R.string.security_confirm_other_account)) },

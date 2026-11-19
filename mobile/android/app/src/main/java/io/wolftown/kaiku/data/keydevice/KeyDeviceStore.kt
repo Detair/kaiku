@@ -20,6 +20,8 @@ data class StoredKeyDevice(
     /** C27 `absolute_expires_at` of the session the key last created. */
     val sessionCap: Instant? = null,
     val lastRenewalPromptAt: Instant? = null,
+    /** A sign-in made only to remove this phone is running (see `UnfinishedRemoval`). */
+    val removalSignIn: Boolean = false,
 )
 
 interface KeyDeviceStore {
@@ -47,6 +49,7 @@ class PrefsKeyDeviceStore(private val prefs: SharedPreferences) : KeyDeviceStore
         const val READY_AT = "ready_at"
         const val SESSION_CAP = "session_cap"
         const val RENEWAL_PROMPT = "renewal_prompt_at"
+        const val REMOVAL_SIGN_IN = "removal_sign_in"
     }
 
     @Synchronized
@@ -72,6 +75,7 @@ class PrefsKeyDeviceStore(private val prefs: SharedPreferences) : KeyDeviceStore
                 readyAt = prefs.getString(READY_AT, null)?.let(Instant::parse),
                 sessionCap = prefs.getString(SESSION_CAP, null)?.let(Instant::parse),
                 lastRenewalPromptAt = prefs.getString(RENEWAL_PROMPT, null)?.let(Instant::parse),
+                removalSignIn = prefs.getBoolean(REMOVAL_SIGN_IN, false),
             )
         }
     } catch (e: Exception) {
@@ -98,6 +102,7 @@ class PrefsKeyDeviceStore(private val prefs: SharedPreferences) : KeyDeviceStore
             .putString(READY_AT, s.readyAt?.toString())
             .putString(SESSION_CAP, s.sessionCap?.toString())
             .putString(RENEWAL_PROMPT, s.lastRenewalPromptAt?.toString())
+            .putBoolean(REMOVAL_SIGN_IN, s.removalSignIn)
             .commit()
     }
 

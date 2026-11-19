@@ -16,6 +16,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
@@ -102,16 +103,77 @@ class ConfirmItsYouViewModelTest {
     }
 
     @Test fun `the only key reason is also shown when the phone was already signed in`() = runTest {
-        val f = KeyDeviceFixture(backgroundScope)
-        f.authState.setLoggedOut()
+        val f = KeyDeviceFixture(backgroundScope) // signed in with the key: no extra sign-in for the removal
         val v = ConfirmItsYouViewModel(deviceSignIn, f.repo, signOut, SessionEndLog(), probe)
-        coEvery { deviceSignIn.signIn(activity, any()) } returns DeviceSignInResult.Success
         coEvery { signOut.signOutAndRemovePhone(activity) } returns StepUpOutcome.Failed("LAST_STRONG_AUTHENTICATOR")
         v.removeThisPhone(activity)
+        assertEquals(R.string.security_only_key, v.ui.value.error)
+        coVerify(exactly = 0) { deviceSignIn.signIn(any(), any()) }
+        coVerify(exactly = 0) { signOut.signOut() } // the person's own session stays
+        org.junit.Assert.assertNotNull(f.repo.local())
         coEvery { signOut.signOutAndRemovePhone(activity) } returns StepUpOutcome.Cancelled
         v.removeThisPhone(activity)
         // A later attempt clears the old reason.
         assertNull(v.ui.value.error)
+    }
+
+    @Test fun `a key forgotten while the screen is open leaves only OK`() = runTest {
+        val f = KeyDeviceFixture(backgroundScope)
+        f.authState.setLoggedOut()
+        val v = ConfirmItsYouViewModel(deviceSignIn, f.repo, signOut, SessionEndLog(), probe)
+        assertEquals(false, v.ui.value.keyGone)
+        f.repo.forget() // e.g. a setup link opened on top found the key removed
+        runCurrent()
+        assertTrue(v.ui.value.keyGone)
+        assertEquals(R.string.security_device_revoked, v.ui.value.error)
+        v.confirm(activity)
+        v.removeThisPhone(activity)
+        coVerify(exactly = 0) { deviceSignIn.signIn(any(), any()) }
+        coVerify(exactly = 0) { signOut.signOutAndRemovePhone(any()) }
+        v.acknowledgeKeyGone()
+        assertEquals(ConfirmDone.SIGNED_OUT, v.ui.value.done)
+    }
+
+    @Test fun `a sign-in that finds no key any more offers OK`() = runTest {
+        val v = lapsed()
+        coEvery { deviceSignIn.signIn(activity, any()) } returns DeviceSignInResult.Failed("NO_KEY_DEVICE")
+        v.confirm(activity)
+        assertTrue(v.ui.value.keyGone)
+        assertEquals(R.string.security_device_revoked, v.ui.value.error)
+    }
+
+    @Test fun `a sign-in made only for a removal does not outlive the app`() = runTest {
+        val f = KeyDeviceFixture(backgroundScope)
+        f.authState.setLoggedOut()
+        val v = ConfirmItsYouViewModel(deviceSignIn, f.repo, signOut, SessionEndLog(), probe)
+        coEvery { deviceSignIn.signIn(activity, any()) } answers {
+            f.authState.setLoggedIn(io.wolftown.kaiku.testutil.SigFixtures.USER_ID)
+            DeviceSignInResult.Success
+        }
+        // The removal prompt is up when the app is killed: nothing after it runs.
+        coEvery { signOut.signOutAndRemovePhone(activity) } coAnswers { kotlinx.coroutines.awaitCancellation() }
+        v.removeThisPhone(activity)
+
+        // The next start reads the stored record again and ends that session; the key stays.
+        val restarted = io.wolftown.kaiku.data.keydevice.KeyDeviceRepository(f.store, f.keyStore, f.authState, backgroundScope)
+        val unfinished = io.wolftown.kaiku.data.auth.UnfinishedRemoval(restarted, signOut)
+        assertTrue(unfinished.takeAtStart())
+        unfinished.end()
+        coVerify(exactly = 1) { signOut.signOut() }
+        org.junit.Assert.assertNotNull(restarted.local())
+        assertEquals(false, unfinished.takeAtStart()) // once per start
+        assertEquals(false, io.wolftown.kaiku.data.auth.UnfinishedRemoval(restarted, signOut).takeAtStart())
+    }
+
+    @Test fun `a removal that ended leaves nothing to clean up at the next start`() = runTest {
+        val f = KeyDeviceFixture(backgroundScope)
+        f.authState.setLoggedOut()
+        val v = ConfirmItsYouViewModel(deviceSignIn, f.repo, signOut, SessionEndLog(), probe)
+        coEvery { deviceSignIn.signIn(activity, any()) } returns DeviceSignInResult.Success
+        coEvery { signOut.signOutAndRemovePhone(activity) } returns StepUpOutcome.Cancelled
+        v.removeThisPhone(activity)
+        val restarted = io.wolftown.kaiku.data.keydevice.KeyDeviceRepository(f.store, f.keyStore, f.authState, backgroundScope)
+        assertEquals(false, io.wolftown.kaiku.data.auth.UnfinishedRemoval(restarted, signOut).takeAtStart())
     }
 
     @Test fun `a key the admin removed is noticed on open and the phone is no key any more`() = runTest {
