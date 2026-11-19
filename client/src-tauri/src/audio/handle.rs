@@ -1982,9 +1982,9 @@ impl CaptureProcessor {
         vad_config: VadConfig,
         app_handle: Option<tauri::AppHandle>,
     ) -> Result<Self, AudioError> {
-        // Mono Opus encoder — capture is mono, playback remains stereo
-        let encoder = Encoder::new(SAMPLE_RATE, OpusChannels::Mono, opus::Application::Voip)
-            .map_err(|e| AudioError::EncoderError(e.to_string()))?;
+        // Mono Opus encoder with in-band FEC — capture is mono, playback
+        // remains stereo.
+        let encoder = super::voice_encoder()?;
         Ok(Self {
             encoder,
             denoiser: nnnoiseless::DenoiseState::new(),

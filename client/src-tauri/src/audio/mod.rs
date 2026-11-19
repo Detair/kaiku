@@ -29,6 +29,30 @@ pub const FRAME_SIZE: usize = (SAMPLE_RATE as usize * FRAME_SIZE_MS) / 1000;
 /// `RNNoise` processes 480-sample frames (10ms at 48kHz mono)
 pub const RNNOISE_FRAME_SIZE: usize = 480;
 
+/// Packet loss the voice encoder plans for (percent).
+///
+/// With in-band FEC on, libopus spends this much redundancy (LBRR: a
+/// low-bitrate copy of the previous frame in each packet) only in SILK and
+/// hybrid modes. 10 % suits a family on Wi-Fi: high enough that the encoder
+/// actually emits LBRR at speech bitrates, low enough that the main frame
+/// keeps most of the bits. The native sender reads no RTCP, so the value is
+/// fixed rather than following the measured loss like a browser does.
+pub const VOICE_PACKET_LOSS_PERC: i32 = 10;
+
+/// The Opus encoder for the microphone: 48 kHz mono, VoIP, 20 ms frames
+/// (set by the caller's frame size), in-band FEC on.
+pub fn voice_encoder() -> Result<opus::Encoder, AudioError> {
+    let err = |e: opus::Error| AudioError::EncoderError(e.to_string());
+    let mut encoder =
+        opus::Encoder::new(SAMPLE_RATE, opus::Channels::Mono, opus::Application::Voip)
+            .map_err(err)?;
+    encoder.set_inband_fec(true).map_err(err)?;
+    encoder
+        .set_packet_loss_perc(VOICE_PACKET_LOSS_PERC)
+        .map_err(err)?;
+    Ok(encoder)
+}
+
 /// Shared VAD + noise suppression state, accessible from CPAL callback thread
 #[derive(Clone)]
 pub struct VadConfig {
@@ -138,6 +162,21 @@ pub struct AudioDeviceList {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn voice_encoder_plans_for_packet_loss_with_inband_fec() {
+        let mut encoder = voice_encoder().expect("encoder");
+        assert!(encoder.get_inband_fec().unwrap());
+        assert_eq!(
+            encoder.get_packet_loss_perc().unwrap(),
+            VOICE_PACKET_LOSS_PERC
+        );
+        // Sample rate and channels are unchanged.
+        assert_eq!(encoder.get_sample_rate().unwrap(), SAMPLE_RATE);
+        let mut out = [0u8; 4000];
+        let frame = [0i16; FRAME_SIZE];
+        assert!(encoder.encode(&frame, &mut out).unwrap() > 0);
+    }
 
     #[test]
     fn test_create_audio_handle() {
