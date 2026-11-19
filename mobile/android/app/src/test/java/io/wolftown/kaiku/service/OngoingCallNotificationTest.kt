@@ -52,6 +52,9 @@ class OngoingCallNotificationTest {
         var callIsOn = true
         val link = MutableStateFlow<VoiceLinkState>(VoiceLinkState.Stable)
         val gate = CallNotificationGate()
+
+        /** The order `VoiceCallService.start`/`stop` use, the production object. */
+        val control = ServiceStartStop(gate)
         val notification = OngoingCallNotification(
             scope = scope.backgroundScope,
             callIsOn = { callIsOn },
@@ -63,15 +66,15 @@ class OngoingCallNotificationTest {
 
         /** The service starts as Android does it: foreground first, then the updates. */
         fun start() {
-            gate.open()
-            notifications.foreground()
-            notification.follow()
+            control.start {
+                notifications.foreground()
+                notification.follow()
+            }
         }
 
         /** `VoiceCallService.stop`: the gate closes, then Android takes the notification away. */
         fun stop() {
-            gate.retire()
-            notifications.stopRequested()
+            control.stop { notifications.stopRequested() }
         }
     }
 
@@ -148,7 +151,7 @@ class OngoingCallNotificationTest {
         h.stop()
         h.link.value = VoiceLinkState.Stable
         runCurrent()
-        // NV7: nothing is posted once the stop was requested.
+        // Nothing is posted once the stop was requested.
         assertEquals(listOf("foreground", "post:reconnecting", "stop"), h.notifications.calls)
         assertFalse(h.notifications.shown)
 
@@ -156,6 +159,43 @@ class OngoingCallNotificationTest {
 
         assertEquals("cancel", h.notifications.calls.last())
         assertFalse(h.notifications.shown)
+    }
+
+    @Test
+    fun `a new call after a stop opens the gate again and is posted`() = runTest {
+        val h = Harness(this)
+        h.start()
+        runCurrent()
+        h.stop()
+        h.notification.destroy()
+
+        // The next call starts the service again (a new instance in production).
+        val next = OngoingCallNotification(
+            scope = backgroundScope,
+            callIsOn = { true },
+            gate = h.gate,
+            linkState = h.link,
+            post = h.notifications::post,
+            cancel = h.notifications::cancel,
+        )
+        h.control.start { next.follow() }
+        runCurrent()
+        h.link.value = VoiceLinkState.Interrupted
+        runCurrent()
+
+        assertEquals(listOf("post:in-call", "post:reconnecting"), h.notifications.calls.takeLast(2))
+    }
+
+    @Test
+    fun `the stop closes the gate before the service is told to stop, the start opens it first`() {
+        val gate = CallNotificationGate()
+        val control = ServiceStartStop(gate)
+        var openAtStart = false
+        control.start { gate.ifOpen { openAtStart = true } }
+        var postedAtStop = false
+        control.stop { gate.ifOpen { postedAtStop = true } }
+        assertTrue(openAtStart)
+        assertFalse(postedAtStop)
     }
 
     @Test

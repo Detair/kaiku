@@ -83,6 +83,9 @@ class VoiceCallService : Service() {
         /** Closed before every stop request, so no update is posted after it (see [OngoingCallNotification]). */
         internal val notificationGate = CallNotificationGate()
 
+        /** Opens the gate before every start and closes it before every stop. */
+        private val startStop = ServiceStartStop(notificationGate)
+
         private const val EXTRA_CHANNEL_ID = "channel_id"
         private const val EXTRA_CHANNEL_NAME = "channel_name"
         private const val EXTRA_ACTION = "extra_action"
@@ -103,16 +106,14 @@ class VoiceCallService : Service() {
                 putExtra(EXTRA_CHANNEL_NAME, channelName)
                 putExtra(EXTRA_FOR_CALL, forCall)
             }
-            notificationGate.open()
-            context.startForegroundService(intent)
+            startStop.start { context.startForegroundService(intent) }
         }
 
         /**
          * Stops the foreground voice call service.
          */
         fun stop(context: Context) {
-            notificationGate.retire()
-            context.stopService(Intent(context, VoiceCallService::class.java))
+            startStop.stop { context.stopService(Intent(context, VoiceCallService::class.java)) }
         }
     }
 

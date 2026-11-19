@@ -65,6 +65,23 @@ internal class OngoingCallNotification(
 }
 
 /**
+ * The order of a start and a stop of the call service, used by
+ * `VoiceCallService.start`/`stop`: the gate opens before the start is
+ * requested and closes before the stop is requested.
+ */
+internal class ServiceStartStop(private val gate: CallNotificationGate) {
+    fun start(requestStart: () -> Unit) {
+        gate.open()
+        requestStart()
+    }
+
+    fun stop(requestStop: () -> Unit) {
+        gate.retire()
+        requestStop()
+    }
+}
+
+/**
  * Orders "post the ongoing-call notification" against "stop the service".
  * [open] when a call starts the service; [retire] before the stop is
  * requested. [ifOpen] runs its block only while open, under the same lock,
