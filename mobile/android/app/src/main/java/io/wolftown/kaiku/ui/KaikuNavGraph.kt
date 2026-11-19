@@ -54,6 +54,7 @@ import io.wolftown.kaiku.ui.auth.RegisterScreen
 import io.wolftown.kaiku.ui.auth.ServerUrlScreen
 import io.wolftown.kaiku.ui.channel.TextChannelScreen
 import io.wolftown.kaiku.ui.dm.DmListScreen
+import io.wolftown.kaiku.ui.dm.NewMessageScreen
 import io.wolftown.kaiku.ui.home.HomeScreen
 import io.wolftown.kaiku.ui.settings.SettingsScreen
 import io.wolftown.kaiku.ui.voice.VoiceChannelScreen
@@ -280,6 +281,17 @@ fun KaikuNavGraph(
                         },
                         onNavigateBack = { navController.popBackStack() },
                         onScan = { navController.navigate(SCAN_ROUTE) },
+                        onNewMessage = { navController.navigate(NEW_MESSAGE_ROUTE) { launchSingleTop = true } },
+                    )
+                }
+
+                composable(NEW_MESSAGE_ROUTE) {
+                    NewMessageScreen(
+                        // Back from the conversation returns to the chat list, not to the picker.
+                        onOpenDm = { channelId ->
+                            navController.navigate("channel/$channelId") { popUpTo(NEW_MESSAGE_ROUTE) { inclusive = true } }
+                        },
+                        onNavigateBack = { navController.popBackStack() },
                     )
                 }
 
@@ -469,6 +481,9 @@ fun KaikuNavGraph(
 }
 
 /** L2-A11: the lapsed key device's sign-in screen. */
+/** "New message": pick a person to write to (N2a). */
+const val NEW_MESSAGE_ROUTE = "dms/new"
+
 const val CONFIRM_ROUTE = "confirm_its_you"
 
 /** The B.4 renewal prompt over a running session. */

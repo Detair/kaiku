@@ -7,6 +7,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -38,6 +39,7 @@ fun DmListScreen(
     onOpenDm: (channelId: String) -> Unit,
     onNavigateBack: () -> Unit,
     onScan: () -> Unit = {},
+    onNewMessage: () -> Unit = {},
     viewModel: DmListViewModel = hiltViewModel()
 ) {
     val conversations by viewModel.conversations.collectAsState()
@@ -62,6 +64,14 @@ fun DmListScreen(
                         Text(stringResource(R.string.scan_action), color = MaterialTheme.colorScheme.onSurface)
                     }
                 }
+            )
+        },
+        // Labelled, not an icon alone: "New message" must be found without guessing.
+        floatingActionButton = {
+            ExtendedFloatingActionButton(
+                onClick = onNewMessage,
+                icon = { Icon(Icons.Filled.Edit, contentDescription = null) },
+                text = { Text(stringResource(R.string.dm_new_title)) },
             )
         }
     ) { paddingValues ->
@@ -102,7 +112,8 @@ fun DmListScreen(
                 }
 
                 else -> {
-                    LazyColumn(modifier = Modifier.fillMaxSize()) {
+                    // Bottom space so the "New message" button never covers the last row.
+                    LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 88.dp)) {
                         items(conversations, key = { it.id }) { dm ->
                             DmConversationRow(
                                 dm = dm,

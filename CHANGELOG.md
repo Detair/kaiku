@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release note structure source: `docs/project/RELEASE_NOTES_TEMPLATE.md`
 
 ### Added
+- Android: start a new conversation with anyone on your servers. "New message" in the chat list shows everyone you share a server with, searchable by name or login name; tapping a person opens your chat with them, or starts one.
 - "I lost my phone / forgot my password" on the sign-in page: a recovery code plus your password, authenticator code or a fresh single sign-on starts a recovery that completes after the waiting period unless someone cancels it; it can name all your key phones as lost. At most three starts per waiting period.
 - "That wasn't me" on a security notice ends the sign-in or removes the device it names and blocks the password or code that was used. Without a key phone or passkey, it needs a session from before the event and an authenticator or recovery code.
 - Delayed account changes: securing an account ("Secure my account") or a recovery waits 24 hours (configurable up to 72), tells the account's phones, its recovery contact and the admins, and can be cancelled by any of them. The device that started it can only withdraw it.

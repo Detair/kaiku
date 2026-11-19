@@ -11,6 +11,8 @@ import io.wolftown.kaiku.domain.model.Message
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -124,6 +126,45 @@ class DmRepository @Inject constructor(
         fetchedIds.forEach { liveCreatedAt.remove(it) }
     }
 
+    /** "New message" requests in flight, by the other person's user id. Guarded by itself. */
+    private val opening = HashMap<String, Deferred<Result<String>>>()
+
+    /**
+     * Returns the id of the 1:1 DM with [userId], creating it if needed.
+     * A DM already in the list is returned without a request. Otherwise
+     * `POST /api/dm` (get-or-create on the server) runs once per person even
+     * when this is called again before it answered (double tap, slow
+     * network): later callers wait for the same answer. The request runs in
+     * the repository scope, so leaving the screen does not cancel it, and its
+     * answer is added to the list before this returns (unless the session
+     * ended meanwhile). Throws what [DmApi.createDm] throws.
+     */
+    suspend fun openDirectMessage(userId: String): String {
+        existingDirectMessage(_conversations.value, userId, authState.currentUserId.value)?.let { return it.id }
+        val request = synchronized(opening) {
+            opening.getOrPut(userId) {
+                val startEpoch = synchronized(epochLock) { epoch }
+                scope.async {
+                    // The failure travels in the Result: a failed create must not fail the scope.
+                    try {
+                        val dm = dmApi.createDm(userId)
+                        synchronized(epochLock) {
+                            if (epoch == startEpoch) _conversations.update { upsertKeepingState(it, dm) }
+                        }
+                        Result.success(dm.id)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Result.failure(e)
+                    } finally {
+                        synchronized(opening) { opening.remove(userId) }
+                    }
+                }
+            }
+        }
+        return request.await().getOrThrow()
+    }
+
     /**
      * Mark a DM read: clears its badge locally, then tells the server. The
      * local clear is optimistic so the UI updates even if the network is slow;
@@ -210,6 +251,25 @@ class DmRepository @Inject constructor(
         /** Put [dm] first, replacing any conversation with the same id (pure, testable). */
         fun upsertAtTop(conversations: List<DmConversation>, dm: DmConversation): List<DmConversation> =
             listOf(dm) + conversations.filter { it.id != dm.id }
+
+        /**
+         * The 1:1 DM between [me] and [userId] in [conversations], or null.
+         * Group DMs and the Kaiku DM never count.
+         */
+        fun existingDirectMessage(conversations: List<DmConversation>, userId: String, me: String?): DmConversation? =
+            conversations.firstOrNull { dm ->
+                !dm.isSystem && dm.participants.filter { it.userId != me }.map { it.userId } == listOf(userId)
+            }
+
+        /**
+         * Adds [dm] (an answer of `POST /api/dm`, without preview or unread
+         * count) at the top, or keeps the known entry's preview and unread
+         * count if it is already listed.
+         */
+        fun upsertKeepingState(conversations: List<DmConversation>, dm: DmConversation): List<DmConversation> {
+            val known = conversations.find { it.id == dm.id } ?: return upsertAtTop(conversations, dm)
+            return conversations.map { if (it.id == dm.id) known.copy(participants = dm.participants.ifEmpty { known.participants }) else it }
+        }
 
         /** Reset unread for one conversation in the list (pure, testable). */
         fun clearUnread(conversations: List<DmConversation>, channelId: String): List<DmConversation> =

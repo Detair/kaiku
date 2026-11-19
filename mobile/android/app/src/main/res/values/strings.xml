@@ -681,4 +681,17 @@
     <string name="admin_claimant_note">Note (how you checked it was them)</string>
     <string name="admin_issue_code">Show the setup code</string>
     <string name="admin_type_code_hint">Type the code the new phone shows. Remotely, let them read it to you.</string>
+    <!-- N2a: start a conversation -->
+    <string name="dm_new_title">New message</string>
+    <string name="dm_new_search_placeholder">Search by name</string>
+    <string name="dm_new_loading_people">Loading people…</string>
+    <string name="dm_new_no_people">No one to write to yet. Everyone on your servers shows up here.</string>
+    <string name="dm_new_no_people_found">No one found with that name.</string>
+    <string name="dm_new_some_not_loaded">Some people could not be loaded.</string>
+    <string name="dm_new_load_failed">Couldn\'t load the people you can write to.</string>
+    <string name="dm_new_create_failed">Couldn\'t open the conversation. Try again.</string>
+    <string name="dm_new_not_possible">You can\'t start a conversation with this person.</string>
+    <string name="dm_new_opening">Opening the conversation…</string>
+    <string name="dm_new_people_label">People you can write to</string>
+    <string name="dm_new_login_name">Login name: %1$s</string>
 </resources>

@@ -29,6 +29,8 @@ data class DmConversation(
     val isSystem: Boolean = false,
     /** C28 `read_only`: true only for the Kaiku DM. */
     val readOnly: Boolean = false,
+    /** When the conversation was created; orders conversations without messages. */
+    val createdAt: String = "",
 )
 
 @Serializable
