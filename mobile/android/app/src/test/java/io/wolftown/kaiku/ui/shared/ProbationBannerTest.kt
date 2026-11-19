@@ -2,6 +2,7 @@ package io.wolftown.kaiku.ui.shared
 
 import io.mockk.coEvery
 import io.mockk.mockk
+import io.wolftown.kaiku.R
 import io.wolftown.kaiku.data.api.AuthApi
 import io.wolftown.kaiku.domain.model.SessionInfo
 import io.wolftown.kaiku.domain.model.User
@@ -13,6 +14,7 @@ import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -27,7 +29,20 @@ class ProbationBannerTest {
     @Before fun setUp() = Dispatchers.setMain(StandardTestDispatcher())
     @After fun tearDown() = Dispatchers.resetMain()
 
-    private fun me(session: SessionInfo?) = User("u-1", "anna", "Anna", session = session)
+    private fun me(session: SessionInfo?, mayApprove: Boolean = false) =
+        User("u-1", "anna", "Anna", session = session, mayApprove = mayApprove)
+
+    @Test fun `the text names Add a phone only when the key phone can show it`() = runTest {
+        coEvery { authApi.getMe() } returns me(SessionInfo("s-1", assurance = "probation"), mayApprove = true)
+        val vm = ProbationBannerViewModel(authApi)
+        advanceUntilIdle()
+        assertEquals(R.string.auth_probation_banner, vm.text.value)
+        coEvery { authApi.getMe() } returns me(SessionInfo("s-1", assurance = "probation"), mayApprove = false)
+        vm.refresh()
+        advanceUntilIdle()
+        assertTrue(vm.visible.value)
+        assertEquals(R.string.auth_probation_banner_ask_admin, vm.text.value)
+    }
 
     @Test fun `probation session shows the banner`() = runTest {
         coEvery { authApi.getMe() } returns me(SessionInfo("s-1", assurance = "probation", authMethods = listOf("password", "phone_confirm")))

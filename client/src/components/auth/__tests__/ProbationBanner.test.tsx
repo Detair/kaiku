@@ -43,7 +43,7 @@ const probation = {
   key_device_id: null,
 };
 
-function security(passkeys: number) {
+function security(passkeys: number, canSetUp = false) {
   return {
     session: { assurance: "probation", auth_methods: ["qr"] },
     password: null,
@@ -52,7 +52,7 @@ function security(passkeys: number) {
     key_devices: 1,
     passkeys,
     may_approve: true,
-    can_set_up_this_pc: false,
+    can_set_up_this_pc: canSetUp,
     bootstrap_open: false,
     recovery_contact: null,
     open_request: null,
@@ -107,6 +107,26 @@ describe("ProbationBanner", () => {
     setAuthState({ user: user(probation) });
     render(() => <ProbationBanner />);
     await waitFor(() => expect(screen.getByText("Your phone can't confirm this yet. Ask your admin.")).toBeTruthy());
+    expect(screen.queryByRole("button", { name: "Sign in with a passkey" })).toBeNull();
+    // The banner text no longer sends the person to a button it does not show.
+    expect(
+      screen.getByText("Signed in for chat only. Changing sign-in settings and admin work need a passkey on this computer."),
+    ).toBeTruthy();
+    expect(screen.queryByText(/sign in with a passkey\./)).toBeNull();
+  });
+
+  it("without a passkey but with an eligible phone the text points to Set up this PC", async () => {
+    getMeSecurity.mockResolvedValue(security(0, true));
+    setAuthState({ user: user(probation) });
+    render(() => <ProbationBanner />);
+    await waitFor(() =>
+      expect(
+        screen.getByText(
+          "Signed in for chat only. To change sign-in settings or do admin work on this computer, choose Set up this PC to get a passkey here.",
+        ),
+      ).toBeTruthy(),
+    );
+    expect(screen.getByRole("button", { name: "Set up this PC" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Sign in with a passkey" })).toBeNull();
   });
 

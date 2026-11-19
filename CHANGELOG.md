@@ -222,6 +222,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Client: a chat-only sign-in without a passkey now says exactly how to add a passkey for the computer, in the banner and in the security settings.
+- The chat-only banner names only a way the account really has: "Set up this PC" on a computer when a key phone may confirm sign-ins, otherwise that a passkey is needed and to ask the admin. On Android it mentions "Add a phone" only when the key phone can show it.
 - Client: in the desktop app and in browsers other than Firefox, avatars are now round, icons have their intended size, selected options and primary buttons show their accent background, QR codes have a white background, and clickable items show a hand cursor. These styles were dropped from the app's CSS; Firefox already showed them.
 - The message for actions that need a full session now says that a computer needs a passkey sign-in and that a phone can do it in the Kaiku app.
 - Client: panels, menus, buttons and input areas that should have a solid background (for example the search panel, reaction chips, the server list and banners) no longer show through as transparent. The two surface colors behind them never reached the built stylesheet.

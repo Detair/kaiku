@@ -332,6 +332,8 @@
   "auth.probation.signIn": "",
   "auth.probation.signInFailed": "",
   "auth.probation.text": "",
+  "auth.probation.textNoPasskey": "",
+  "auth.probation.textSetUpThisPc": "",
   "auth.recover.alreadyOpen": "",
   "auth.recover.code": "",
   "auth.recover.factorInvalid.one": "",

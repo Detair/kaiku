@@ -30,11 +30,23 @@ import kotlinx.coroutines.launch
  */
 fun isProbation(me: User): Boolean = me.session?.assurance != "full"
 
+/** The chat-only banner's text for [me]: "Add a phone" exists only with `may_approve` on. */
+fun probationBannerText(me: User): Int =
+    if (me.mayApprove) R.string.auth_probation_banner else R.string.auth_probation_banner_ask_admin
+
 /** Whether the home screen shows the chat-only banner (from `GET /auth/me`). */
 @HiltViewModel
 class ProbationBannerViewModel @Inject constructor(private val authApi: AuthApi) : ViewModel() {
     private val _visible = MutableStateFlow(false)
     val visible: StateFlow<Boolean> = _visible.asStateFlow()
+
+    /**
+     * The banner text: it names "Add a phone" only when the account's key phone
+     * can show it (`may_approve` on); otherwise the way that works is the admin.
+     * "Set up this PC" is for computers, so it is never named on a phone.
+     */
+    private val _text = MutableStateFlow(R.string.auth_probation_banner)
+    val text: StateFlow<Int> = _text.asStateFlow()
 
     private var job: kotlinx.coroutines.Job? = null
 
@@ -47,7 +59,9 @@ class ProbationBannerViewModel @Inject constructor(private val authApi: AuthApi)
         job?.cancel()
         job = viewModelScope.launch {
             try {
-                _visible.value = isProbation(authApi.getMe())
+                val me = authApi.getMe()
+                _text.value = probationBannerText(me)
+                _visible.value = isProbation(me)
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
@@ -64,11 +78,12 @@ class ProbationBannerViewModel @Inject constructor(private val authApi: AuthApi)
 @Composable
 fun ProbationBanner(modifier: Modifier = Modifier, viewModel: ProbationBannerViewModel = hiltViewModel()) {
     val visible by viewModel.visible.collectAsState()
+    val text by viewModel.text.collectAsState()
     androidx.lifecycle.compose.LifecycleEventEffect(androidx.lifecycle.Lifecycle.Event.ON_RESUME) { viewModel.refresh() }
     if (!visible) return
     Surface(color = MaterialTheme.colorScheme.surfaceVariant, modifier = modifier.fillMaxWidth()) {
         KeyNotice(
-            text = stringResource(R.string.auth_probation_banner),
+            text = stringResource(text),
             warning = false,
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
         )

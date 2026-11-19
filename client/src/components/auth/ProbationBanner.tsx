@@ -8,7 +8,7 @@
 
 import { Component, Show, createEffect, createSignal, onCleanup } from "solid-js";
 import { ShieldAlert } from "lucide-solid";
-import { t } from "@/i18n";
+import { t, type MessageKey } from "@/i18n";
 import { isProbation, replaceSessionWithPasskey } from "@/stores/auth";
 import { meSecurity, refreshMeSecurity } from "@/stores/security";
 import { canUsePasskeys } from "@/lib/tauri/passkeys";
@@ -42,6 +42,12 @@ const ProbationBanner: Component = () => {
   });
   const hasPasskey = () => (meSecurity()?.passkeys ?? 0) > 0;
   const canSignIn = () => hasPasskey() && canUsePasskeys();
+  // The text names only a way this account has: signing in with a passkey,
+  // "Set up this PC", or neither (then the hint below says to ask the admin).
+  const text = (): MessageKey => {
+    if (!meSecurity() || canSignIn()) return "auth.probation.text";
+    return canSetUpThisPc() ? "auth.probation.textSetUpThisPc" : "auth.probation.textNoPasskey";
+  };
 
   const signIn = async () => {
     attempt?.abort();
@@ -84,7 +90,7 @@ const ProbationBanner: Component = () => {
         >
           <div class="flex items-start gap-3 flex-1 min-w-64">
             <ShieldAlert class="w-5 h-5 mt-0.5 text-status-warning shrink-0" aria-hidden="true" />
-            <p class="text-base text-text-primary">{t("auth.probation.text")}</p>
+            <p class="text-base text-text-primary">{t(text())}</p>
           </div>
           <Show when={error()}>
             <p role="alert" class="order-last w-full text-sm text-text-primary">{error()}</p>
