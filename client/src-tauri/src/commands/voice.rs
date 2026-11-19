@@ -402,7 +402,7 @@ pub async fn join_voice(
 
                     // Add track to mixer (it gets its own jitter buffer and
                     // decoder there), get the packet sender
-                    let packet_tx = mixer.add_track(track_id.clone()).await;
+                    let handle = mixer.add_track(track_id.clone()).await;
 
                     info!(
                         track_id = %track_id,
@@ -420,11 +420,14 @@ pub async fn join_voice(
                     );
 
                     // RTP → mixer loop (decoding happens in the mixer)
-                    forward_remote_audio_track(track, packet_tx, &track_id, &stats_registry).await;
+                    forward_remote_audio_track(track, handle.packets, &track_id, &stats_registry)
+                        .await;
 
                     // Track ended — remove from mixer and stats registry
                     stats_registry.remove_track(&track_id);
-                    mixer.remove_track(track_id.clone()).await;
+                    // Only this instance: a replacement with the same id
+                    // (participant rejoined) keeps playing.
+                    mixer.remove_track(handle.instance).await;
                     info!(track_id = %track_id, "Remote audio track ended");
 
                     let _ = app.emit(

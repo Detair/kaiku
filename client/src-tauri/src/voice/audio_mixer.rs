@@ -123,7 +123,22 @@ impl UserGains {
 }
 
 /// Per-track playout counters, readable outside the mixer task.
-pub type PlayoutStatsMap = Arc<Mutex<HashMap<String, PlayoutStats>>>;
+/// Keyed by track instance; holds the track id with the counters.
+pub type PlayoutStatsMap = Arc<Mutex<HashMap<TrackInstance, (String, PlayoutStats)>>>;
+
+/// Identifies one registered track instance. A participant who rejoins gets
+/// a new instance with the same track id; removing the old one by its
+/// instance never touches the new one.
+pub type TrackInstance = u64;
+
+/// Source of track instances, unique for the process lifetime.
+static NEXT_INSTANCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// A registered track as its RTP reader sees it.
+pub struct TrackHandle {
+    pub instance: TrackInstance,
+    pub packets: mpsc::Sender<RtpIn>,
+}
 
 /// How many 20 ms frames to produce now, given the samples already queued
 /// for the device and the largest block it asks for at once.
@@ -137,6 +152,8 @@ pub fn frames_needed(queued: usize, request: usize) -> usize {
 
 /// A registered remote track.
 struct Track {
+    /// `"{user_id}:{source}"`.
+    track_id: String,
     packets: mpsc::Receiver<RtpIn>,
     playout: TrackPlayout<Box<dyn FrameDecoder + Send>>,
     /// Parsed from the `"{user_id}:{source}"` track id; `None` → unity gain.
@@ -147,11 +164,12 @@ struct Track {
 /// Commands sent to the mixer run loop.
 enum MixerCommand {
     AddTrack {
+        instance: TrackInstance,
         track_id: String,
         packets: mpsc::Receiver<RtpIn>,
     },
     RemoveTrack {
-        track_id: String,
+        instance: TrackInstance,
     },
 }
 
@@ -209,21 +227,31 @@ impl AudioMixer {
         self.gains.set(user_id, gain);
     }
 
-    /// Register a new audio track. Returns the sender for its RTP packets.
-    pub async fn add_track(&self, track_id: String) -> mpsc::Sender<RtpIn> {
+    /// Register a new audio track instance. Returns its instance id and the
+    /// sender for its RTP packets.
+    pub async fn add_track(&self, track_id: String) -> TrackHandle {
+        let instance = NEXT_INSTANCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let (tx, packets) = mpsc::channel(PACKET_QUEUE);
         let _ = self
             .command_tx
-            .send(MixerCommand::AddTrack { track_id, packets })
+            .send(MixerCommand::AddTrack {
+                instance,
+                track_id,
+                packets,
+            })
             .await;
-        tx
+        TrackHandle {
+            instance,
+            packets: tx,
+        }
     }
 
-    /// Remove a track from the mixer (drops its buffer and decoder).
-    pub async fn remove_track(&self, track_id: String) {
+    /// Remove one track instance (drops its buffer and decoder). Another
+    /// instance with the same track id is not affected.
+    pub async fn remove_track(&self, instance: TrackInstance) {
         let _ = self
             .command_tx
-            .send(MixerCommand::RemoveTrack { track_id })
+            .send(MixerCommand::RemoveTrack { instance })
             .await;
     }
 
@@ -231,7 +259,7 @@ impl AudioMixer {
     pub fn playout_stats(&self) -> Vec<(String, PlayoutStats)> {
         self.stats
             .lock()
-            .map(|map| map.iter().map(|(k, v)| (k.clone(), *v)).collect())
+            .map(|map| map.values().map(|(id, v)| (id.clone(), *v)).collect())
             .unwrap_or_default()
     }
 
@@ -248,7 +276,7 @@ impl AudioMixer {
         stats: PlayoutStatsMap,
     ) {
         let epoch = Instant::now();
-        let mut tracks: HashMap<String, Track> = HashMap::new();
+        let mut tracks: HashMap<TrackInstance, Track> = HashMap::new();
         let mut ticker = tokio::time::interval(WAKE_INTERVAL);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut frame = vec![0.0f32; FRAME_SAMPLES];
@@ -295,15 +323,15 @@ impl AudioMixer {
                         }
                         Err(mpsc::error::TryRecvError::Empty) => break,
                         Err(mpsc::error::TryRecvError::Disconnected) => {
-                            closed.push(id.clone());
+                            closed.push(*id);
                             break;
                         }
                     }
                 }
             }
-            for id in closed {
-                debug!(track_id = %id, "Mixer: track producer disconnected, removing");
-                Self::remove(&mut tracks, &stats, &id);
+            for instance in closed {
+                debug!(instance, "Mixer: track producer disconnected, removing");
+                Self::remove(&mut tracks, &stats, instance);
             }
             if tracks.is_empty() {
                 continue;
@@ -345,13 +373,14 @@ impl AudioMixer {
         info!("Mixer: run loop exited");
     }
 
-    fn publish_stats(tracks: &mut HashMap<String, Track>, stats: &PlayoutStatsMap) {
+    fn publish_stats(tracks: &mut HashMap<TrackInstance, Track>, stats: &PlayoutStatsMap) {
         let Ok(mut map) = stats.lock() else {
             return;
         };
-        for (id, track) in tracks.iter_mut() {
+        for (instance, track) in tracks.iter_mut() {
             let snapshot = track.playout.stats();
-            map.insert(id.clone(), snapshot);
+            let id = &track.track_id;
+            map.insert(*instance, (id.clone(), snapshot));
             if track.last_log.elapsed() >= LOG_INTERVAL {
                 track.last_log = Instant::now();
                 let b = snapshot.buffer;
@@ -376,34 +405,43 @@ impl AudioMixer {
         }
     }
 
-    fn remove(tracks: &mut HashMap<String, Track>, stats: &PlayoutStatsMap, id: &str) {
-        tracks.remove(id);
+    fn remove(
+        tracks: &mut HashMap<TrackInstance, Track>,
+        stats: &PlayoutStatsMap,
+        instance: TrackInstance,
+    ) {
+        tracks.remove(&instance);
         if let Ok(mut map) = stats.lock() {
-            map.remove(id);
+            map.remove(&instance);
         }
     }
 
     /// Apply a single command to the track map.
     fn apply_command(
         cmd: MixerCommand,
-        tracks: &mut HashMap<String, Track>,
+        tracks: &mut HashMap<TrackInstance, Track>,
         factory: &DecoderFactory,
         stats: &PlayoutStatsMap,
     ) {
         match cmd {
-            MixerCommand::AddTrack { track_id, packets } => {
+            MixerCommand::AddTrack {
+                instance,
+                track_id,
+                packets,
+            } => {
                 let Some(decoder) = factory() else {
                     // Dropping `packets` closes the reader's queue: it stops.
                     return;
                 };
-                debug!(track_id = %track_id, "Mixer: added track");
+                debug!(track_id = %track_id, instance, "Mixer: added track");
                 let user_id = track_id
                     .split(':')
                     .next()
                     .and_then(|user| Uuid::parse_str(user).ok());
                 tracks.insert(
-                    track_id,
+                    instance,
                     Track {
+                        track_id,
                         packets,
                         playout: TrackPlayout::new(decoder),
                         user_id,
@@ -411,9 +449,9 @@ impl AudioMixer {
                     },
                 );
             }
-            MixerCommand::RemoveTrack { track_id } => {
-                debug!(track_id = %track_id, "Mixer: removed track");
-                Self::remove(tracks, stats, &track_id);
+            MixerCommand::RemoveTrack { instance } => {
+                debug!(instance, "Mixer: removed track");
+                Self::remove(tracks, stats, instance);
             }
         }
     }
@@ -505,7 +543,7 @@ mod tests {
             mixer.set_user_gain(user, gain);
         }
         let device = fake_device(out_rx, level);
-        let tx = mixer.add_track(format!("{user}:microphone")).await;
+        let tx = mixer.add_track(format!("{user}:microphone")).await.packets;
         for seq in 0..10u16 {
             tx.send(packet(seq, value)).await.unwrap();
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -547,8 +585,8 @@ mod tests {
         let level = OutputLevel::new();
         let mixer = AudioMixer::with_decoder(out_tx, gains.clone(), level.clone(), const_factory());
         let device = fake_device(out_rx, level);
-        let quiet_tx = mixer.add_track(format!("{quiet}:microphone")).await;
-        let loud_tx = mixer.add_track(format!("{loud}:microphone")).await;
+        let quiet_tx = mixer.add_track(format!("{quiet}:microphone")).await.packets;
+        let loud_tx = mixer.add_track(format!("{loud}:microphone")).await.packets;
         for seq in 0..10u16 {
             quiet_tx.send(packet(seq, 250)).await.unwrap();
             loud_tx.send(packet(seq, 100)).await.unwrap();
@@ -582,8 +620,8 @@ mod tests {
         // 40 packets per track, delivered in pairs every 40 ms.
         for pair in 0..20u16 {
             for seq in [pair * 2, pair * 2 + 1] {
-                a.send(packet(seq, seq as u8)).await.unwrap();
-                b.send(packet(seq, 100 + seq as u8)).await.unwrap();
+                a.packets.send(packet(seq, seq as u8)).await.unwrap();
+                b.packets.send(packet(seq, 100 + seq as u8)).await.unwrap();
             }
             tokio::time::sleep(Duration::from_millis(40)).await;
         }
@@ -608,7 +646,8 @@ mod tests {
             AudioMixer::with_decoder(out_tx, UserGains::default(), level.clone(), const_factory());
         let tx = mixer
             .add_track(format!("{}:microphone", Uuid::new_v4()))
-            .await;
+            .await
+            .packets;
         for seq in 0..5u16 {
             tx.send(packet(seq, 1)).await.unwrap();
         }
@@ -632,7 +671,7 @@ mod tests {
         let level = OutputLevel::new();
         let mixer =
             AudioMixer::with_decoder(out_tx, UserGains::default(), level.clone(), const_factory());
-        let tx = mixer.add_track("t:microphone".into()).await;
+        let tx = mixer.add_track("t:microphone".into()).await.packets;
         tx.send(packet(0, 1)).await.unwrap();
         tokio::time::sleep(Duration::from_millis(100)).await;
         drop(tx);
@@ -749,7 +788,7 @@ mod tests {
         level.produced(10 * FRAME_SAMPLES);
         let mixer =
             AudioMixer::with_decoder(out_tx, UserGains::default(), level.clone(), const_factory());
-        let tx = mixer.add_track("t:microphone".into()).await;
+        let tx = mixer.add_track("t:microphone".into()).await.packets;
         tokio::time::sleep(Duration::from_millis(50)).await;
         drop(out_rx); // playback stopped
         let stopped = tokio::time::timeout(Duration::from_secs(1), async {
@@ -760,6 +799,30 @@ mod tests {
         .await;
         assert!(stopped.is_ok(), "mixer kept running without playback");
         drop(mixer);
+    }
+
+    /// A participant rejoins: the new track arrives while the old one is
+    /// still unwinding, and the old one's late removal must not touch it.
+    #[tokio::test]
+    async fn late_removal_of_a_replaced_track_keeps_the_new_one() {
+        let (out_tx, out_rx) = mpsc::channel(8);
+        let level = OutputLevel::new();
+        let mixer =
+            AudioMixer::with_decoder(out_tx, UserGains::default(), level.clone(), const_factory());
+        let device = fake_device(out_rx, level);
+        let id = format!("{}:microphone", Uuid::new_v4());
+        let old = mixer.add_track(id.clone()).await;
+        let new = mixer.add_track(id.clone()).await.packets;
+        mixer.remove_track(old.instance).await; // the old instance unwinds
+        for seq in 0..20u16 {
+            new.send(packet(seq, 200))
+                .await
+                .expect("replacement still live");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let seen = device.await.unwrap();
+        assert!(seen.iter().any(|s| (s - 0.2).abs() < 1e-6), "{seen:?}");
+        drop(old);
     }
 
     #[test]
