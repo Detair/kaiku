@@ -22,7 +22,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicBoolean
@@ -110,9 +109,10 @@ class CallController @Inject constructor(
         scope.launch(start = CoroutineStart.UNDISPATCHED) {
             voice.callEnds.collect { send(CallEvent.VoiceEnded(it.channelId, it.why)) }
         }
-        // Another user or nobody signed in: the call is over (C32 "signed-in user").
+        // Every session that ends (sign-out, expiry, another user): the call is over
+        // (C32 "signed-in user"). A sign-in alone changes nothing.
         scope.launch(start = CoroutineStart.UNDISPATCHED) {
-            authState.currentUserId.drop(1).collect { send(CallEvent.SignedOut) }
+            authState.endedSessions.collect { send(CallEvent.SignedOut) }
         }
     }
 
@@ -169,7 +169,7 @@ class CallController @Inject constructor(
      * attempt fails and is retried).
      */
     suspend fun mayRejoin(channelId: String): RejoinVerdict {
-        val me = authState.currentUserId.value ?: return RejoinVerdict.Refused
+        val me = authState.signedInUserId() ?: return RejoinVerdict.Refused
         val answer = try {
             api.get(channelId)?.toSnapshot()
         } catch (e: CancellationException) {
@@ -233,7 +233,7 @@ class CallController @Inject constructor(
     // -- The actor ---------------------------------------------------------------
 
     private fun handle(event: CallEvent) {
-        val step = CallMachine.reduce(model, event, authState.currentUserId.value)
+        val step = CallMachine.reduce(model, event, authState.signedInUserId())
         model = step.model
         _state.value = step.model.state
         step.effects.forEach(::run)

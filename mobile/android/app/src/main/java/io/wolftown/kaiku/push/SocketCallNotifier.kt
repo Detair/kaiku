@@ -1,6 +1,7 @@
 package io.wolftown.kaiku.push
 
 import io.wolftown.kaiku.data.call.CallNotifier
+import io.wolftown.kaiku.data.call.signedInUserId
 import io.wolftown.kaiku.data.local.AuthState
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -22,7 +23,7 @@ class SocketCallNotifier internal constructor(
 
     @Inject
     constructor(sink: CallNotificationSink, store: CallNotificationStore, authState: AuthState) :
-        this(sink, store, { authState.currentUserId.value }, System::currentTimeMillis)
+        this(sink, store, authState::signedInUserId, System::currentTimeMillis)
 
     override fun ring(channelId: String, callId: String, callerId: String, callerName: String?) {
         val user = currentUser() ?: return

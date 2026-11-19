@@ -359,6 +359,18 @@ class CallControllerTest {
     }
 
     @Test
+    fun `a ring right after the session was restored rings`() = runTest {
+        val r = rig()
+        r.auth.setLoggedOut()
+        runCurrent()
+        // A screen opened from a notification restores the session and applies its ring at once.
+        r.auth.setLoggedIn("me")
+        r.controller.onRingNotification(dm, "c-1", "anna", "Anna")
+        runCurrent()
+        assertTrue(r.state is CallState.Incoming)
+    }
+
+    @Test
     fun `another signed-in user ends the call and does not ring for the old account`() = runTest {
         val r = rig()
         r.ring()

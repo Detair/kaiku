@@ -16,7 +16,7 @@ class DmCallDirectory @Inject constructor(
             ?.takeIf { it.isNotBlank() }
 
     override fun titleOf(channelId: String): String? {
-        val me = authState.currentUserId.value ?: return null
+        val me = authState.signedInUserId() ?: return null
         val dm = dms.conversations.value.firstOrNull { it.id == channelId } ?: return null
         return DmRepository.conversationTitle(dm, me).takeIf { it.isNotBlank() }
     }

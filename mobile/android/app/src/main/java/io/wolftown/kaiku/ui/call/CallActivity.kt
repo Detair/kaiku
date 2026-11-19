@@ -24,6 +24,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dagger.hilt.android.AndroidEntryPoint
 import io.wolftown.kaiku.data.call.CallController
 import io.wolftown.kaiku.data.call.CallState
+import io.wolftown.kaiku.data.call.signedInUserId
 import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.data.ws.RealtimeConnectionManager
@@ -114,7 +115,7 @@ class CallActivity : ComponentActivity() {
         intent ?: return
         val parsed = CallIntents.parse(intent::getStringExtra)
         // A notification of another (or no) signed-in account is never acted on (C32).
-        val ring = parsed.ring?.takeIf { it.userId == authState.currentUserId.value }
+        val ring = parsed.ring?.takeIf { it.userId == authState.signedInUserId() }
         ring?.let { callController.onRingNotification(it.channelId, it.callId, it.callerId, it.callerName) }
         if (parsed.action == CallIntents.ACTION_ACCEPT) {
             // Consumed: a recreation must not answer again.
