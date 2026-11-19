@@ -123,7 +123,8 @@ impl GuildPermissions {
         .union(Self::ADD_REACTIONS)
         .union(Self::VOICE_CONNECT)
         .union(Self::VOICE_SPEAK)
-        .union(Self::CREATE_INVITE);
+        .union(Self::CREATE_INVITE)
+        .union(Self::SCREEN_SHARE);
 
     /// Default permissions for moderators.
     ///
@@ -167,7 +168,6 @@ impl GuildPermissions {
         .union(Self::TRANSFER_OWNERSHIP)
         .union(Self::MANAGE_INVITES)
         .union(Self::MANAGE_PAGES)
-        .union(Self::SCREEN_SHARE)
         .union(Self::MENTION_EVERYONE)
         .union(Self::PIN_MESSAGES)
         .union(Self::MANAGE_POSTS)
@@ -187,7 +187,8 @@ impl GuildPermissions {
         .union(Self::VOICE_CONNECT)
         .union(Self::VOICE_SPEAK)
         .union(Self::CREATE_INVITE)
-        .union(Self::VIEW_CHANNEL);
+        .union(Self::VIEW_CHANNEL)
+        .union(Self::SCREEN_SHARE);
 
     // === Database Conversion ===
 
@@ -358,8 +359,10 @@ mod tests {
         assert!(!everyone.has(GuildPermissions::KICK_MEMBERS));
         assert!(!everyone.has(GuildPermissions::BAN_MEMBERS));
 
-        // Should NOT include screen sharing (privileged feature)
-        assert!(!everyone.has(GuildPermissions::SCREEN_SHARE));
+        // Every member may share their screen (admins can deny it per channel)
+        assert!(everyone.has(GuildPermissions::SCREEN_SHARE));
+        assert!(GuildPermissions::EVERYONE_ALLOWED.has(GuildPermissions::SCREEN_SHARE));
+        assert!(everyone.validate_for_everyone());
     }
 
     #[test]
@@ -554,7 +557,6 @@ mod tests {
             GuildPermissions::TRANSFER_OWNERSHIP,
             GuildPermissions::MANAGE_INVITES,
             GuildPermissions::MANAGE_PAGES,
-            GuildPermissions::SCREEN_SHARE,
             GuildPermissions::MENTION_EVERYONE,
             GuildPermissions::PIN_MESSAGES,
         ];

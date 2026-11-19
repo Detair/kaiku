@@ -426,7 +426,7 @@ All endpoints that access channel data now enforce VIEW_CHANNEL permission:
 | `POST /api/me/favorites/{channel_id}` | None | Favorite channel |
 | WebSocket: `Typing` | None | Send typing indicator |
 | WebSocket: `VoiceJoin` | VOICE_CONNECT | Join voice channel |
-| WebSocket: `ScreenShareStart` | SCREEN_SHARE | Start screen share |
+| WebSocket: `ScreenShareStart` | SCREEN_SHARE | Start screen share (refused with `voice_error` `SCREEN_SHARE_FORBIDDEN`) |
 
 ### Permission Context Structure
 
@@ -554,14 +554,14 @@ Members of that role now see the channel; the role allow takes precedence over t
 
 ### New Guild Defaults
 
-For new guilds, the default @everyone role should include VIEW_CHANNEL:
-
-```rust
-const DEFAULT_EVERYONE_PERMISSIONS: i64 =
-    VIEW_CHANNEL |
-    SEND_MESSAGES |
-    READ_MESSAGE_HISTORY;
-```
+New guilds get an @everyone role with `GuildPermissions::EVERYONE_DEFAULT`
+(`server/src/permissions/guild.rs`): view channels, send messages, embed links,
+attach files, use emoji, add reactions, connect and speak in voice, create
+invites and **share the screen** (`SCREEN_SHARE`). Screen sharing is part of the
+default since the 2026-11-24 migration, which also gave it to the @everyone role
+of every existing server. To stop members from sharing in a channel, add an
+@everyone override that denies `SCREEN_SHARE` there; to stop it server-wide,
+remove it from the @everyone role and grant it to a role instead.
 
 ---
 
