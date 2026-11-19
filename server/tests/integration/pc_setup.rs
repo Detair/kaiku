@@ -1369,9 +1369,10 @@ async fn can_set_up_this_pc_matches_what_start_accepts(pool: PgPool) {
 // Code entry, the `pc_setup` enrolment and the web registration (Task 3)
 // ============================================================================
 
+use vc_server::approvals::pc_setup::enrolment::{enter_code, CodeOutcome};
+
 use super::helpers::login::TEST_ORIGIN;
 use super::helpers::passkeys::SoftAuthenticator;
-use vc_server::approvals::pc_setup::enrolment::{enter_code, CodeOutcome};
 
 /// A 6-digit code that is not `code`.
 pub fn wrong(code: &str) -> String {
