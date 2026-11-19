@@ -35,9 +35,7 @@ import io.wolftown.kaiku.ui.auth.PendingOidcCallback
 import io.wolftown.kaiku.ui.auth.OidcHandler
 import io.wolftown.kaiku.ui.shared.KaikuTheme
 import io.wolftown.kaiku.ui.shared.LocalServerBaseUrl
-import androidx.lifecycle.lifecycleScope
 import io.wolftown.kaiku.data.auth.UnfinishedRemoval
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import java.time.Instant
@@ -79,16 +77,15 @@ class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        // Before the stored session is read: a sign-in made only to remove this phone ("Use another
+        // account") that did not finish is ended here, so it never opens the app (the key stays).
+        val removal = unfinishedRemoval.atActivityStart()
         authState.initialize(tokenStorage)
-        // The app died while "Use another account" had signed in only to remove this phone: that
-        // session is signed out again (the key stays) instead of opening the app with it.
-        val endRemovalSignIn = unfinishedRemoval.takeAtStart()
-        if (endRemovalSignIn) lifecycleScope.launch { unfinishedRemoval.end() }
         // On recreation (rotation, theme change, process restore) getIntent() is the
         // original launch intent; handling it again would replay a consumed link.
         if (savedInstanceState == null) handleIntent(intent)
 
-        val startDestination = if (endRemovalSignIn && keyDevices.local() != null) CONFIRM_ROUTE else resolveStartDestination()
+        val startDestination = if (unfinishedRemoval.startsAtConfirm(removal)) CONFIRM_ROUTE else resolveStartDestination()
         // After the start destination: reading the stored session may have found a damaged store.
         if (tokenStorage.consumeStorageResetNotice()) {
             Toast.makeText(this, R.string.auth_storage_reset, Toast.LENGTH_LONG).show()

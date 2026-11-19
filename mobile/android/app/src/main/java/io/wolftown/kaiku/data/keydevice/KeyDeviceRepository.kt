@@ -112,8 +112,17 @@ class KeyDeviceRepository @Inject constructor(
 
     fun markPending(d: LocalKeyDevice, readyAt: Instant) = write(StoredKeyDevice(d, KeyDevicePhase.PENDING, readyAt))
 
-    /** After a device-key sign-in of [userId]; the claim secret is no longer needed. */
-    fun markActive(userId: String, keyDeviceId: String?) {
+    /** The key device of [userId] is active with [keyDeviceId]; the claim secret is no longer needed. */
+    fun markActive(userId: String, keyDeviceId: String?) = activate(userId, keyDeviceId, removalSignIn = null)
+
+    /**
+     * After a device-key sign-in of [userId]. A sign-in made only to remove this phone
+     * ([onlyForRemoval]) keeps its mark; any other sign-in clears a mark left behind.
+     */
+    fun markSignedIn(userId: String, keyDeviceId: String?, onlyForRemoval: Boolean) =
+        activate(userId, keyDeviceId, removalSignIn = onlyForRemoval)
+
+    private fun activate(userId: String, keyDeviceId: String?, removalSignIn: Boolean?) {
         val s = stored.value ?: return
         if (s.device.userId != userId) return
         write(
@@ -121,6 +130,7 @@ class KeyDeviceRepository @Inject constructor(
                 device = s.device.copy(keyDeviceId = keyDeviceId ?: s.device.keyDeviceId, claimSecret = null),
                 phase = KeyDevicePhase.ACTIVE,
                 readyAt = null,
+                removalSignIn = removalSignIn ?: s.removalSignIn,
             ),
         )
     }

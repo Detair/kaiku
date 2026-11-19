@@ -105,7 +105,7 @@ class DeviceSignIn @Inject constructor(
                         logger.warning("Device session not installed: ${it.javaClass.simpleName}")
                         return DeviceSignInResult.Failed("SESSION_NOT_INSTALLED")
                     }
-                    keyDevices.markActive(local.userId, user.session?.keyDeviceId)
+                    keyDevices.markSignedIn(local.userId, user.session?.keyDeviceId, onlyForRemoval = purpose == SignInPurpose.FOR_REMOVAL)
                     keyDevices.recordSessionCap(auth.absoluteExpiresAt?.let { runCatching { Instant.parse(it) }.getOrNull() })
                     DeviceSignInResult.Success
                 }

@@ -218,4 +218,16 @@ class DeviceSignInTest {
             assertEquals(purpose.name, text.second, prompt.description)
         }
     }
+
+    @Test fun `an ordinary sign-in clears a removal mark, the sign-in for a removal keeps it`() = runTest {
+        val (signIn, repo) = setUp()
+        repo.markRemovalSignIn(true) // left over from a removal that ended without clearing it
+        assertEquals(DeviceSignInResult.Success, signIn.signIn(activity, SignInPurpose.SIGN_IN))
+        assertFalse(repo.removalSignInPending())
+
+        val (forRemoval, repo2) = setUp()
+        repo2.markRemovalSignIn(true) // set by "Use another account" before its sign-in
+        assertEquals(DeviceSignInResult.Success, forRemoval.signIn(activity, SignInPurpose.FOR_REMOVAL))
+        assertTrue(repo2.removalSignInPending())
+    }
 }
