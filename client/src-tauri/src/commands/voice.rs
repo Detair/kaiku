@@ -20,6 +20,7 @@ use crate::audio::{
 };
 use crate::network::{ClientEvent, WebSocketManager};
 use crate::voice::audio_mixer::{AudioMixer, RtpIn};
+use crate::voice::playout::PlayoutStats;
 use crate::webrtc::IceServerConfig;
 use crate::{voice, AppState, VoiceState};
 
@@ -1198,7 +1199,7 @@ pub async fn is_in_voice(state: State<'_, AppState>) -> Result<bool, String> {
 /// with the same thresholds. `null` fields mean "not measured yet" — the
 /// frontend maps a fully unmeasured payload to the "unknown" state instead
 /// of fabricating a confident 0 ms / good reading.
-#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct ConnectionStatsPayload {
     /// Round-trip time in milliseconds (RTCP receiver reports), if measured.
     pub rtt_ms: Option<f64>,
@@ -1207,6 +1208,57 @@ pub struct ConnectionStatsPayload {
     /// Cumulative receive-side counters summed across inbound audio tracks.
     pub packets_lost: u64,
     pub packets_received: u64,
+    /// Jitter buffer and loss concealment counters per remote audio track
+    /// (for listening tests; the UI does not show them).
+    pub playout: Vec<TrackPlayoutReport>,
+}
+
+/// Playout counters of one remote audio track since it was added.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct TrackPlayoutReport {
+    /// `"{user_id}:{source}"`.
+    pub track_id: String,
+    pub packets_received: u64,
+    pub reordered: u64,
+    pub duplicates: u64,
+    pub late_dropped: u64,
+    /// Frames whose packet did not arrive in time.
+    pub lost: u64,
+    pub concealed_plc: u64,
+    pub recovered_fec: u64,
+    pub underruns: u64,
+    pub drift_drops: u64,
+    pub drift_inserts: u64,
+    pub resets: u64,
+    pub decode_errors: u64,
+    pub target_delay_ms: f64,
+    pub level_ms: f64,
+}
+
+/// Reports for all tracks, sorted by track id.
+fn playout_reports(stats: Vec<(String, PlayoutStats)>) -> Vec<TrackPlayoutReport> {
+    let mut reports: Vec<_> = stats
+        .into_iter()
+        .map(|(track_id, s)| TrackPlayoutReport {
+            track_id,
+            packets_received: s.buffer.packets_received,
+            reordered: s.buffer.reordered,
+            duplicates: s.buffer.duplicates,
+            late_dropped: s.buffer.late_dropped,
+            lost: s.buffer.lost,
+            concealed_plc: s.concealed_plc,
+            recovered_fec: s.recovered_fec,
+            underruns: s.buffer.underruns,
+            drift_drops: s.buffer.drift_drops,
+            drift_inserts: s.buffer.drift_inserts,
+            resets: s.buffer.resets,
+            decode_errors: s.decode_errors,
+            target_delay_ms: s.target_delay_ms,
+            level_ms: s.level_ms,
+        })
+        .collect();
+    reports.sort_by(|a, b| a.track_id.cmp(&b.track_id));
+    reports
 }
 
 /// Fetch native WebRTC connection metrics (TD-16).
@@ -1221,7 +1273,7 @@ pub async fn voice_connection_stats(
     // get_stats(): it walks every transceiver and can be slow on a degraded
     // connection, and holding the read guard would queue join/leave/mute
     // (write-lock takers) behind every 3 s stats poll.
-    let (publisher_pc, registry) = {
+    let (publisher_pc, registry, mixer) = {
         let voice = state.voice.read().await;
         let Some(voice_state) = voice.as_ref() else {
             return Ok(None);
@@ -1232,6 +1284,7 @@ pub async fn voice_connection_stats(
         (
             voice_state.webrtc.publisher_pc().await,
             voice_state.connection_stats.clone(),
+            voice_state.audio_mixer.clone(),
         )
     };
 
@@ -1246,6 +1299,7 @@ pub async fn voice_connection_stats(
         jitter_ms: receive.map(|r| r.max_jitter_ms),
         packets_lost: receive.map_or(0, |r| r.packets_lost),
         packets_received: receive.map_or(0, |r| r.packets_received),
+        playout: mixer.map_or_else(Vec::new, |m| playout_reports(m.playout_stats())),
     }))
 }
 
@@ -1519,6 +1573,44 @@ mod tests {
         )
         .await;
         (audio, started, events.into_inner().unwrap(), sender_rx)
+    }
+
+    #[test]
+    fn playout_reports_carry_every_counter_sorted_by_track() {
+        let mut b = PlayoutStats::default();
+        b.buffer.packets_received = 500;
+        b.buffer.reordered = 3;
+        b.buffer.duplicates = 2;
+        b.buffer.late_dropped = 1;
+        b.buffer.lost = 7;
+        b.buffer.underruns = 1;
+        b.buffer.drift_drops = 4;
+        b.buffer.drift_inserts = 5;
+        b.buffer.resets = 1;
+        b.concealed_plc = 2;
+        b.recovered_fec = 5;
+        b.target_delay_ms = 60.0;
+        b.level_ms = 40.0;
+        let reports = playout_reports(vec![
+            ("u2:microphone".into(), b),
+            ("u1:microphone".into(), PlayoutStats::default()),
+        ]);
+        assert_eq!(reports[0].track_id, "u1:microphone");
+        let json = serde_json::to_value(&reports[1]).unwrap();
+        assert_eq!(json["track_id"], "u2:microphone");
+        assert_eq!(json["packets_received"], 500);
+        assert_eq!(json["reordered"], 3);
+        assert_eq!(json["duplicates"], 2);
+        assert_eq!(json["late_dropped"], 1);
+        assert_eq!(json["lost"], 7);
+        assert_eq!(json["concealed_plc"], 2);
+        assert_eq!(json["recovered_fec"], 5);
+        assert_eq!(json["underruns"], 1);
+        assert_eq!(json["drift_drops"], 4);
+        assert_eq!(json["drift_inserts"], 5);
+        assert_eq!(json["resets"], 1);
+        assert_eq!(json["target_delay_ms"], 60.0);
+        assert_eq!(json["level_ms"], 40.0);
     }
 
     #[tokio::test]
