@@ -5,9 +5,11 @@
  * and expiry time.
  */
 
-import { Component, createSignal, For, onMount, onCleanup } from "solid-js";
+import { Component, createSignal, createUniqueId, For } from "solid-js";
 import { t, type MessageKey } from "@/i18n";
 import type { CustomStatus } from "@/lib/types";
+import Modal from "./Modal";
+import Button from "./Button";
 
 // A pictograph, not text: nothing to translate, so it stays out of the catalog.
 const EMOJI_PLACEHOLDER = "😀";
@@ -27,13 +29,9 @@ const expiryOptions: { value: number | null; label: MessageKey }[] = [
 ];
 
 const CustomStatusModal: Component<CustomStatusModalProps> = (props) => {
-  onMount(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") props.onClose();
-    };
-    document.addEventListener("keydown", handleKeyDown);
-    onCleanup(() => document.removeEventListener("keydown", handleKeyDown));
-  });
+  const titleId = createUniqueId();
+  let textRef: HTMLInputElement | undefined;
+  const expiryId = createUniqueId();
 
   const [text, setText] = createSignal(props.currentStatus?.text ?? "");
   const [emoji, setEmoji] = createSignal(props.currentStatus?.emoji ?? "");
@@ -61,15 +59,15 @@ const CustomStatusModal: Component<CustomStatusModalProps> = (props) => {
   };
 
   return (
-    <div
-      class="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
-      onClick={props.onClose}
+    <Modal
+      onClose={() => props.onClose()}
+      labelledBy={titleId}
+      initialFocus={() => textRef}
+      backdropClass="fixed inset-0 bg-black/50 flex items-center justify-center p-4"
+      class="bg-surface-layer2 rounded-xl p-4 w-96 max-w-full shadow-xl border border-white/10"
+      testId="custom-status-dialog"
     >
-      <div
-        class="bg-surface-layer2 rounded-xl p-4 w-96 shadow-xl border border-white/10"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <h3 class="text-lg font-semibold text-text-primary mb-4">
+        <h3 id={titleId} class="text-lg font-semibold text-text-primary mb-4">
           {t("home.customStatus.title")}
         </h3>
 
@@ -77,6 +75,7 @@ const CustomStatusModal: Component<CustomStatusModalProps> = (props) => {
           <input
             type="text"
             placeholder={EMOJI_PLACEHOLDER}
+            aria-label={t("home.customStatus.emojiLabel")}
             value={emoji()}
             onInput={(e) => setEmoji(e.currentTarget.value)}
             class="w-12 px-2 py-2 bg-surface-base rounded-lg text-center text-xl border border-white/10 focus:border-accent-primary focus:outline-none transition-colors"
@@ -84,7 +83,9 @@ const CustomStatusModal: Component<CustomStatusModalProps> = (props) => {
           />
           <input
             type="text"
+            ref={textRef}
             placeholder={t("home.customStatus.placeholder")}
+            aria-label={t("home.customStatus.textLabel")}
             value={text()}
             onInput={(e) => setText(e.currentTarget.value)}
             class="flex-1 px-3 py-2 bg-surface-base rounded-lg text-text-primary border border-white/10 focus:border-accent-primary focus:outline-none transition-colors"
@@ -93,10 +94,11 @@ const CustomStatusModal: Component<CustomStatusModalProps> = (props) => {
         </div>
 
         <div class="mb-4">
-          <label class="text-sm text-text-secondary mb-1 block">
+          <label for={expiryId} class="text-sm text-text-secondary mb-1 block">
             {t("home.customStatus.clearAfter")}
           </label>
           <select
+            id={expiryId}
             value={expiryMinutes() ?? ""}
             onChange={(e) =>
               setExpiryMinutes(
@@ -114,29 +116,17 @@ const CustomStatusModal: Component<CustomStatusModalProps> = (props) => {
         </div>
 
         <div class="flex justify-between">
-          <button
-            onClick={handleClear}
-            class="px-4 py-2 text-text-secondary hover:text-text-primary transition-colors"
-          >
+          <Button variant="ghost" onClick={handleClear}>
             {t("home.customStatus.clear")}
-          </button>
+          </Button>
           <div class="flex gap-2">
-            <button
-              onClick={props.onClose}
-              class="px-4 py-2 bg-surface-base rounded-lg hover:bg-white/10 transition-colors text-text-primary"
-            >
+            <Button variant="secondary" onClick={() => props.onClose()}>
               {t("common.cancel")}
-            </button>
-            <button
-              onClick={handleSave}
-              class="px-4 py-2 bg-accent-primary rounded-lg text-on-accent hover:bg-accent-primary/90 transition-colors"
-            >
-              {t("common.save")}
-            </button>
+            </Button>
+            <Button onClick={handleSave}>{t("common.save")}</Button>
           </div>
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 };
 

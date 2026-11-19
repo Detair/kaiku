@@ -352,7 +352,7 @@ export default function MarkdownPreview(props: MarkdownPreviewProps) {
         // Leave the code block as-is if mermaid fails
         const errorDiv = document.createElement("div");
         errorDiv.className =
-          "mermaid-error text-red-400 text-sm p-2 bg-red-900/20 rounded";
+          "mermaid-error text-text-primary text-sm p-2 bg-status-error/15 rounded";
         errorDiv.textContent = "Failed to render diagram";
         pre.appendChild(errorDiv);
       }
@@ -372,7 +372,7 @@ export default function MarkdownPreview(props: MarkdownPreviewProps) {
   return (
     <div class={`markdown-preview ${props.class || ""}`}>
       <Show when={error()}>
-        <div class="text-red-400 text-sm p-2 bg-red-900/20 rounded mb-2">
+        <div class="text-text-primary text-sm p-2 bg-status-error/15 rounded mb-2">
           {error()}
         </div>
       </Show>

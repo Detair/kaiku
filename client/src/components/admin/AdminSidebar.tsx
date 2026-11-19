@@ -10,6 +10,7 @@
  */
 
 import { Component, For } from "solid-js";
+import { t, type MessageKey } from "@/i18n";
 import {
   LayoutDashboard,
   Users,
@@ -39,26 +40,27 @@ interface AdminSidebarProps {
 const AdminSidebar: Component<AdminSidebarProps> = (props) => {
   const items: {
     id: AdminPanel;
-    label: string;
+    label: MessageKey;
     icon: typeof LayoutDashboard;
   }[] = [
-    { id: "overview", label: "Overview", icon: LayoutDashboard },
-    { id: "users", label: "Users", icon: Users },
-    { id: "guilds", label: "Guilds", icon: Building2 },
-    { id: "platform-pages", label: "Platform Pages", icon: BookOpen },
-    { id: "reports", label: "Reports", icon: Flag },
-    { id: "audit-log", label: "Audit Log", icon: ScrollText },
-    { id: "command-center", label: "Command Center", icon: Activity },
-    { id: "settings", label: "Settings", icon: Settings },
+    { id: "overview", label: "admin.nav.overview", icon: LayoutDashboard },
+    { id: "users", label: "admin.nav.users", icon: Users },
+    { id: "guilds", label: "admin.nav.servers", icon: Building2 },
+    { id: "platform-pages", label: "admin.nav.platformPages", icon: BookOpen },
+    { id: "reports", label: "admin.nav.reports", icon: Flag },
+    { id: "audit-log", label: "admin.nav.auditLog", icon: ScrollText },
+    { id: "command-center", label: "admin.nav.commandCenter", icon: Activity },
+    { id: "settings", label: "admin.nav.settings", icon: Settings },
   ];
 
   return (
-    <div class="w-48 flex-shrink-0 border-r border-white/10 p-3 space-y-1">
+    <div class="min-w-48 flex-shrink-0 border-r border-white/10 p-3 space-y-1">
       <For each={items}>
         {(item) => (
           <button
             data-testid={`admin-tab-${item.id}`}
             onClick={() => props.onSelectPanel(item.id)}
+            aria-current={props.activePanel === item.id ? "page" : undefined}
             class="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors"
             classList={{
               "bg-accent-primary/20 text-text-primary":
@@ -67,13 +69,8 @@ const AdminSidebar: Component<AdminSidebarProps> = (props) => {
                 props.activePanel !== item.id,
             }}
           >
-            <item.icon
-              class="w-4 h-4"
-              style={{
-                color: props.activePanel === item.id ? "#FFFFFF" : undefined,
-              }}
-            />
-            {item.label}
+            <item.icon class="w-4 h-4 shrink-0" />
+            {t(item.label)}
           </button>
         )}
       </For>

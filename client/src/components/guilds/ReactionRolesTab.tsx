@@ -16,6 +16,7 @@ import { loadGuildRoles, getGuildRoles } from "@/stores/permissions";
 import { textChannels } from "@/stores/channels";
 import { messageHasCode } from "@/lib/errorCode";
 import type { GuildRole } from "@/lib/types";
+import { actionErrorText } from "@/components/admin/actionErrors";
 
 interface ReactionRolesTabProps {
   guildId: string;
@@ -78,7 +79,7 @@ const ReactionRolesTab: Component<ReactionRolesTabProps> = (props) => {
     for (const [code, friendly] of Object.entries(ERROR_MESSAGES)) {
       if (messageHasCode(msg, code)) return friendly;
     }
-    return msg || "Failed to create binding.";
+    return actionErrorText(err);
   };
 
   const canSubmit = () =>
@@ -122,7 +123,7 @@ const ReactionRolesTab: Component<ReactionRolesTabProps> = (props) => {
       await refresh();
     } catch (err) {
       console.error("Failed to delete binding:", err);
-      setError("Failed to delete binding.");
+      setError(actionErrorText(err));
     }
   };
 

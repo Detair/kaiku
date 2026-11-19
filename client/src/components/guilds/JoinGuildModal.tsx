@@ -5,8 +5,11 @@
  * (https://example.com/invite/aBcD1234).
  */
 
-import { Component, createSignal, Show, onMount, onCleanup } from "solid-js";
+import { Component, createSignal, Show } from "solid-js";
 import { X } from "lucide-solid";
+import { t } from "@/i18n";
+import { errorText } from "@/i18n/errors";
+import { createDialog } from "@/lib/a11y/dialog";
 import { joinViaInviteCode } from "@/stores/guilds";
 import { Portal } from "solid-js/web";
 import { extractInviteCode } from "@/lib/invites";
@@ -16,12 +19,10 @@ interface JoinGuildModalProps {
 }
 
 const JoinGuildModal: Component<JoinGuildModalProps> = (props) => {
-  onMount(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") props.onClose();
-    };
-    document.addEventListener("keydown", handleKeyDown);
-    onCleanup(() => document.removeEventListener("keydown", handleKeyDown));
+  let inputEl: HTMLInputElement | undefined;
+  const dialog = createDialog({
+    onClose: () => props.onClose(),
+    initialFocus: () => inputEl,
   });
 
   const [input, setInput] = createSignal("");
@@ -35,7 +36,7 @@ const JoinGuildModal: Component<JoinGuildModalProps> = (props) => {
 
     const code = inviteCode();
     if (!code) {
-      setError("Please enter a valid invite code or invite link");
+      setError(t("guilds.join.invalid"));
       return;
     }
 
@@ -47,7 +48,7 @@ const JoinGuildModal: Component<JoinGuildModalProps> = (props) => {
       props.onClose();
     } catch (err) {
       console.error("Failed to join guild via invite code:", code, err);
-      setError(err instanceof Error ? err.message : "Failed to join server");
+      setError(errorText(err, "guilds.join.failed"));
     } finally {
       setIsJoining(false);
     }
@@ -55,20 +56,27 @@ const JoinGuildModal: Component<JoinGuildModalProps> = (props) => {
 
   return (
     <Portal>
-      <div class="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+      {/* Backdrop click closes, like the other dialogs (NAV-11) */}
+      <div
+        class="fixed inset-0 bg-black/60 flex items-center justify-center z-50"
+        onClick={() => props.onClose()}
+      >
         <div
-          class="border border-white/10 rounded-2xl w-[480px] max-w-[calc(100vw-2rem)] max-h-[min(600px,calc(100dvh-2rem))] flex flex-col shadow-2xl"
+          ref={dialog.ref}
+          {...dialog.dialogProps}
+          onClick={(e) => e.stopPropagation()}
+          class="outline-none border border-white/10 rounded-2xl w-[480px] max-w-[calc(100vw-2rem)] max-h-[min(600px,calc(100dvh-2rem))] flex flex-col shadow-2xl"
           style={{"background-color":"var(--color-surface-base)"}}
         >
           {/* Header */}
           <div class="flex items-center justify-between p-6 border-b border-white/10">
-            <h2 class="text-xl font-bold text-text-primary">Join a Server</h2>
+            <h2 id={dialog.titleId} class="text-xl font-bold text-text-primary">{t("guilds.join.title")}</h2>
             <button
               onClick={props.onClose}
               class="text-text-secondary hover:text-text-primary transition-colors"
-              aria-label="Close"
+              aria-label={t("common.close")}
             >
-              <X size={24} />
+              <X size={24} aria-hidden="true" />
             </button>
           </div>
 
@@ -77,30 +85,33 @@ const JoinGuildModal: Component<JoinGuildModalProps> = (props) => {
             <div class="space-y-4">
               {/* Invite Input */}
               <div>
-                <label class="block text-sm font-semibold text-text-primary mb-2">
-                  Invite Link or Code <span class="text-accent-danger">*</span>
+                <label for="join-guild-invite" class="block text-sm font-semibold text-text-primary mb-2">
+                  {t("guilds.join.label")}
                 </label>
                 <input
+                  ref={inputEl}
+                  id="join-guild-invite"
+                  aria-describedby="join-guild-hint"
                   type="text"
                   value={input()}
                   onInput={(e) => {
                     setInput(e.currentTarget.value);
                     setError(null);
                   }}
-                  placeholder="https://example.com/invite/aBcD1234 or aBcD1234"
+                  placeholder={t("guilds.join.placeholder")}
                   class="w-full px-4 py-3 border border-white/10 rounded-lg text-text-input placeholder:text-text-placeholder focus:outline-none focus:ring-2 focus:ring-accent-primary focus:border-transparent"
                   style={{"background-color":"var(--color-surface-layer2)"}}
                   disabled={isJoining()}
-                  autofocus
                 />
-                <p class="text-xs text-text-secondary mt-1">
-                  Paste an invite link or enter an invite code
+                <p id="join-guild-hint" class="text-xs text-text-secondary mt-1">
+                  {t("guilds.join.hint")}
                 </p>
               </div>
 
               {/* Error Message */}
               <Show when={error()}>
                 <div
+                  role="alert"
                   class="p-3 rounded-lg"
                   style={{"background-color":"var(--color-error-bg)","border":"1px solid var(--color-error-border)"}}
                 >
@@ -120,7 +131,7 @@ const JoinGuildModal: Component<JoinGuildModalProps> = (props) => {
               class="px-4 py-2 text-text-primary hover:bg-surface-layer2 rounded-lg transition-colors state-disabled-quiet"
               disabled={isJoining()}
             >
-              Cancel
+              {t("common.cancel")}
             </button>
             <button
               type="button"
@@ -128,7 +139,7 @@ const JoinGuildModal: Component<JoinGuildModalProps> = (props) => {
               class="px-6 py-2 bg-accent-primary hover:bg-accent-primary/90 text-on-accent font-semibold rounded-lg transition-colors state-disabled"
               disabled={isJoining() || !inviteCode()}
             >
-              {isJoining() ? "Joining..." : "Join Server"}
+              {isJoining() ? t("guilds.join.joining") : t("guilds.join.submit")}
             </button>
           </div>
         </div>

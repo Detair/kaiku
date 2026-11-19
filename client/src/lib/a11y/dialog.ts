@@ -7,6 +7,9 @@
  *
  * Spread `dialogProps` on the dialog element, pass `ref` as its `ref`, and put
  * `id={titleId}` on its visible heading.
+ *
+ * A field inside that handles Escape itself (an inline rename) marks itself
+ * `data-escape-local`: Escape there reaches the field, not the dialog.
  */
 
 import { createUniqueId, onCleanup, onMount } from "solid-js";
@@ -80,15 +83,29 @@ function unregister(d: OpenDialog) {
 export function createDialog(opts: DialogOptions): DialogHandle {
   const titleId = `dialog-title-${createUniqueId()}`;
   // Component setup runs while the opener (button, menu item) still has focus.
+  // Focus on the page itself is no opener: a window whose code loads on
+  // demand mounts after its menu item is gone, and "back to the page" would
+  // leave the focus nowhere. Closing then uses the fallback below.
+  const focused = typeof document !== "undefined" ? document.activeElement : null;
   const opener =
-    typeof document !== "undefined" && document.activeElement instanceof HTMLElement
-      ? document.activeElement
-      : null;
+    focused instanceof HTMLElement && focused !== document.body ? focused : null;
   let el: HTMLElement | undefined;
 
   const handleKey = (e: KeyboardEvent) => {
     if (!el) return;
     if (e.key === "Escape") {
+      // Focus in a popup outside the dialog (portaled context menu, emoji
+      // picker): Escape belongs to that popup, the dialog stays open.
+      const active = document.activeElement;
+      const popup =
+        active && !el.contains(active) ? active.closest(`${OVERLAY}, [data-context-menu]`) : null;
+      if (popup && !openDialogs.some((d) => d.el() === popup)) return;
+      // An open context menu above the dialog closes first, even though it
+      // does not hold focus (W1).
+      if (document.querySelector("[data-context-menu]")) return;
+      // A field that handles Escape itself (inline rename: Escape cancels
+      // the rename) keeps it; the next Escape closes the dialog (K2).
+      if (active instanceof Element && active.closest("[data-escape-local]")) return;
       e.preventDefault();
       e.stopPropagation();
       opts.onClose();
@@ -140,7 +157,17 @@ export function createDialog(opts: DialogOptions): DialogHandle {
 
   onCleanup(() => {
     unregister(entry);
-    if (opener?.isConnected) opener.focus();
+    if (opener?.isConnected && !opener.closest("[inert]")) {
+      opener.focus();
+      return;
+    }
+    // The opener is gone or hidden (a drawer that closed, a menu item): keep
+    // focus out of nowhere (UX2 K11). Go to the dialog below, else the page.
+    const active = document.activeElement;
+    if (active && active !== document.body && !el?.contains(active)) return;
+    const below = openDialogs[openDialogs.length - 1]?.el();
+    const fallback = below ?? document.getElementById("main-content");
+    fallback?.focus();
   });
 
   return {

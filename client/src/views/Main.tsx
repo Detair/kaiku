@@ -40,9 +40,17 @@ const ScreeningGate = lazy(
 );
 import HomeView from "@/components/home/HomeView";
 import HomeSidebar from "@/components/home/HomeSidebar";
-import SearchPanel from "@/components/search/SearchPanel";
-import KeyboardShortcutsDialog from "@/components/ui/KeyboardShortcutsDialog";
+// Search, the shortcut list and the pin drawer open on demand: each loads
+// on first open and stays out of the startup payload.
+const GlobalSearchDialog = lazy(
+  () => import("@/components/search/GlobalSearchDialog"),
+);
+const KeyboardShortcutsDialog = lazy(
+  () => import("@/components/ui/KeyboardShortcutsDialog"),
+);
+const PinDrawer = lazy(() => import("@/components/channels/PinDrawer"));
 import { LazyErrorBoundary } from "@/components/ui/LazyFallback";
+import LazyDialog from "@/components/ui/LazyDialog";
 import { selectedChannel } from "@/stores/channels";
 import FeatureGate from "@/components/ui/FeatureGate";
 import { loadGuilds, landOnFirstServerIfIdle, guildsState, isDiscoveryActive, isGuildOwner } from "@/stores/guilds";
@@ -57,7 +65,6 @@ import {
   clearSearch,
 } from "@/stores/search";
 import { loadChannelPins, pinCount, clearChannelPins } from "@/stores/channelPins";
-import PinDrawer from "@/components/channels/PinDrawer";
 
 const DiscoveryView = lazy(
   () => import("@/components/discovery/DiscoveryView"),
@@ -106,6 +113,12 @@ const Main: Component = () => {
     }
     setShowPinDrawer(false);
   });
+
+  const closeGlobalSearch = () => {
+    setShowGlobalSearch(false);
+    setChannelSearchScope(false);
+    clearSearch();
+  };
 
   // Combined global keyboard shortcut handler
   const handleGlobalKeydown = (e: KeyboardEvent) => {
@@ -165,36 +178,21 @@ const Main: Component = () => {
 
       {/* Keyboard Shortcuts Dialog */}
       <Show when={showShortcuts()}>
-        <KeyboardShortcutsDialog onClose={() => setShowShortcuts(false)} />
+        <LazyDialog name="KeyboardShortcutsDialog">
+          <KeyboardShortcutsDialog onClose={() => setShowShortcuts(false)} />
+        </LazyDialog>
       </Show>
 
       {/* Global Search Overlay */}
+      {/* A modal dialog (A11Y-1): Escape closes it, focus returns. */}
       <Show when={showGlobalSearch()}>
-        <div class="fixed inset-0 z-[90] flex items-start justify-center pt-[10vh]">
-          <div
-            class="absolute inset-0 bg-black/50"
-            onClick={() => {
-              setShowGlobalSearch(false);
-              setChannelSearchScope(false);
-              clearSearch();
-            }}
+        <LazyDialog name="GlobalSearchDialog">
+          <GlobalSearchDialog
+            initialScope={channelSearchScope() ? "channel" : "all"}
+            channelId={channel()?.id}
+            onClose={closeGlobalSearch}
           />
-          <div
-            class="relative w-[640px] h-[70vh] rounded-xl border border-white/10 shadow-2xl overflow-hidden"
-            style={{"background-color":"var(--color-surface-layer2)"}}
-          >
-            <SearchPanel
-              mode="global"
-              initialScope={channelSearchScope() ? "channel" : "all"}
-              channelId={channel()?.id}
-              onClose={() => {
-                setShowGlobalSearch(false);
-                setChannelSearchScope(false);
-                clearSearch();
-              }}
-            />
-          </div>
-        </div>
+        </LazyDialog>
       </Show>
 
       {/* Main Application Shell */}
@@ -278,7 +276,7 @@ const Main: Component = () => {
                       >
                         <Pin class="w-4 h-4" />
                         <Show when={pinCount() > 0}>
-                          <span class="absolute -top-1 -right-1 bg-accent-primary text-on-accent text-[10px] rounded-full w-4 h-4 flex items-center justify-center font-bold">
+                          <span class="absolute -top-1 -right-1 bg-accent-primary text-on-accent text-xs rounded-full min-w-[1.125rem] h-[1.125rem] px-0.5 flex items-center justify-center font-bold">
                             {pinCount()}
                           </span>
                         </Show>
@@ -324,21 +322,23 @@ const Main: Component = () => {
 
                 {/* Pin Drawer */}
                 <Show when={showPinDrawer()}>
-                  <PinDrawer
-                    channelId={channel()!.id}
-                    canUnpin={(() => {
-                      const guildId = guildsState.activeGuildId;
-                      const userId = authState.user?.id;
-                      if (!guildId || !userId) return false;
-                      const isOwner = isGuildOwner(guildId, userId);
-                      return isOwner || memberHasPermission(guildId, userId, isOwner, PermissionBits.PIN_MESSAGES);
-                    })()}
-                    onClose={() => setShowPinDrawer(false)}
-                    onJumpToMessage={(_messageId) => {
-                      // Scroll-to-message works for search results; pin drawer dismisses on jump
-                      setShowPinDrawer(false);
-                    }}
-                  />
+                  <LazyDialog name="PinDrawer">
+                    <PinDrawer
+                      channelId={channel()!.id}
+                      canUnpin={(() => {
+                        const guildId = guildsState.activeGuildId;
+                        const userId = authState.user?.id;
+                        if (!guildId || !userId) return false;
+                        const isOwner = isGuildOwner(guildId, userId);
+                        return isOwner || memberHasPermission(guildId, userId, isOwner, PermissionBits.PIN_MESSAGES);
+                      })()}
+                      onClose={() => setShowPinDrawer(false)}
+                      onJumpToMessage={(_messageId) => {
+                        // Scroll-to-message works for search results; pin drawer dismisses on jump
+                        setShowPinDrawer(false);
+                      }}
+                    />
+                  </LazyDialog>
                 </Show>
               </div>
             </Match>

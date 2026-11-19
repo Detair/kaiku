@@ -6,6 +6,10 @@ import { Component, createSignal, For, Show, onMount } from "solid-js";
 import { Trash2, Bot } from "lucide-solid";
 import { listInstalledBots, removeInstalledBot } from "@/lib/api/bots";
 import type { InstalledBot } from "@/lib/api/bots";
+import { t } from "@/i18n";
+import ConfirmActionDialog from "@/components/admin/ConfirmActionDialog";
+import { formatDay } from "@/components/admin/formatDate";
+import { reportFailure } from "./settingsAction";
 
 interface BotsTabProps {
   guildId: string;
@@ -14,41 +18,22 @@ interface BotsTabProps {
 const BotsTab: Component<BotsTabProps> = (props) => {
   const [bots, setBots] = createSignal<InstalledBot[]>([]);
   const [loading, setLoading] = createSignal(true);
-  const [deleteConfirm, setDeleteConfirm] = createSignal<string | null>(null);
+  const [removing, setRemoving] = createSignal<InstalledBot | null>(null);
 
   onMount(async () => {
     try {
       const data = await listInstalledBots(props.guildId);
       setBots(data);
     } catch (err) {
-      console.error("Failed to load installed bots:", err);
+      reportFailure(t("guildSettings.bots.loadFailed"), err);
     } finally {
       setLoading(false);
     }
   });
 
-  const handleRemove = async (botUserId: string) => {
-    if (deleteConfirm() === botUserId) {
-      try {
-        await removeInstalledBot(props.guildId, botUserId);
-        setBots((prev) => prev.filter((b) => b.bot_user_id !== botUserId));
-      } catch (err) {
-        console.error("Failed to remove bot:", err);
-      }
-      setDeleteConfirm(null);
-    } else {
-      setDeleteConfirm(botUserId);
-      setTimeout(() => setDeleteConfirm(null), 3000);
-    }
-  };
-
-  const formatDate = (iso: string) => {
-    const d = new Date(iso);
-    return d.toLocaleDateString(undefined, {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-    });
+  const remove = async (botUserId: string) => {
+    await removeInstalledBot(props.guildId, botUserId);
+    setBots((prev) => prev.filter((b) => b.bot_user_id !== botUserId));
   };
 
   return (
@@ -56,9 +41,9 @@ const BotsTab: Component<BotsTabProps> = (props) => {
       {/* Header */}
       <div class="flex items-center justify-between mb-6">
         <div>
-          <h3 class="text-lg font-semibold text-text-primary">Bots</h3>
+          <h3 class="text-lg font-semibold text-text-primary">{t("guildSettings.bots.title")}</h3>
           <p class="text-sm text-text-secondary">
-            Manage bots installed in this server.
+            {t("guildSettings.bots.hint")}
           </p>
         </div>
       </div>
@@ -66,7 +51,7 @@ const BotsTab: Component<BotsTabProps> = (props) => {
       <Show
         when={!loading()}
         fallback={
-          <div class="py-8 text-center text-text-secondary">Loading...</div>
+          <div class="py-8 text-center text-text-secondary">{t("guildSettings.loading")}</div>
         }
       >
         <div class="space-y-2">
@@ -74,7 +59,7 @@ const BotsTab: Component<BotsTabProps> = (props) => {
             each={bots()}
             fallback={
               <div class="py-8 text-center text-text-secondary border border-dashed border-white/10 rounded-xl">
-                No bots installed
+                {t("guildSettings.bots.empty")}
               </div>
             }
           >
@@ -88,22 +73,18 @@ const BotsTab: Component<BotsTabProps> = (props) => {
                     {bot.name}
                   </div>
                   <div class="text-xs text-text-secondary">
-                    {bot.description || "No description"}
-                    {" \u00b7 "}
-                    Installed {formatDate(bot.installed_at)}
+                    {t("guildSettings.bots.line", {
+                      description: bot.description || t("guildSettings.bots.noDescription"),
+                      date: formatDay(bot.installed_at),
+                    })}
                   </div>
                 </div>
 
                 <button
-                  onClick={() => handleRemove(bot.bot_user_id)}
-                  class="p-1.5 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity"
-                  classList={{
-                    "bg-accent-danger text-white opacity-100":
-                      deleteConfirm() === bot.bot_user_id,
-                    "bg-black/50 text-white hover:bg-accent-danger":
-                      deleteConfirm() !== bot.bot_user_id,
-                  }}
-                  title="Remove Bot"
+                  onClick={() => setRemoving(bot)}
+                  class="p-1.5 rounded-lg opacity-0 group-hover:opacity-100 focus-visible:opacity-100 touch:opacity-100 transition-opacity bg-black/50 text-white hover:bg-accent-danger-fill"
+                  title={t("guildSettings.bots.removeNamed", { name: bot.name })}
+                  aria-label={t("guildSettings.bots.removeNamed", { name: bot.name })}
                 >
                   <Trash2 class="w-3.5 h-3.5" />
                 </button>
@@ -111,6 +92,20 @@ const BotsTab: Component<BotsTabProps> = (props) => {
             )}
           </For>
         </div>
+      </Show>
+
+      <Show when={removing()}>
+        {(bot) => (
+          <ConfirmActionDialog
+            title={t("guildSettings.bots.removeTitle", { name: bot().name })}
+            message={t("guildSettings.bots.removeBody", { name: bot().name })}
+            confirmLabel={t("guildSettings.bots.remove")}
+            danger
+            onConfirm={() => remove(bot().bot_user_id)}
+            onDone={() => setRemoving(null)}
+            onCancel={() => setRemoving(null)}
+          />
+        )}
       </Show>
     </div>
   );

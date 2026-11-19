@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { t } from "../index";
-import { errorText, CALL_START_ERRORS } from "../errors";
+import { errorText, CALL_START_ERRORS, CHAT_SEND_ERRORS, UPLOAD_ERRORS } from "../errors";
 import { HttpError } from "@/lib/tauri/common";
 
 describe("errorText", () => {
@@ -123,3 +123,23 @@ describe("errorText", () => {
     ).toBe(t("voice.call.error.conflict"));
   });
 });
+
+describe("chat send and upload errors", () => {
+  it("the read-only Kaiku conversation does not promise that someone can write", () => {
+    const err = new HttpError(403, "read only", "CHANNEL_READ_ONLY");
+    expect(errorText(err, "chat.send.failed.message", CHAT_SEND_ERRORS.byCode)).toBe(
+      "Nobody can write in this conversation.",
+    );
+  });
+
+  it("uploads hide the multipart parser text, text sends keep validation messages", () => {
+    const err = new HttpError(400, "Error parsing `multipart/form-data` request", "VALIDATION_ERROR");
+    expect(errorText(err, "chat.send.fileFailed", UPLOAD_ERRORS.byCode, UPLOAD_ERRORS.byStatus)).toBe(
+      "Please try again.",
+    );
+    expect(errorText(err, "chat.send.failed.message", CHAT_SEND_ERRORS.byCode)).toBe(
+      "Error parsing `multipart/form-data` request",
+    );
+  });
+});
+

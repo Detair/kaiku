@@ -4,8 +4,12 @@
  * Modal for sending friend requests by username.
  */
 
-import { Component, createSignal } from "solid-js";
+import { Component, createSignal, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
+import { X } from "lucide-solid";
+import { t } from "@/i18n";
+import { errorText } from "@/i18n/errors";
+import { createDialog } from "@/lib/a11y/dialog";
 import { sendFriendRequest } from "@/stores/friends";
 
 interface AddFriendProps {
@@ -18,6 +22,15 @@ const AddFriend: Component<AddFriendProps> = (props) => {
   const [success, setSuccess] = createSignal(false);
   const [isSubmitting, setIsSubmitting] = createSignal(false);
 
+  let input: HTMLInputElement | undefined;
+  const dialog = createDialog({
+    onClose: () => props.onClose(),
+    initialFocus: () => input,
+  });
+
+  let closeTimer: ReturnType<typeof setTimeout> | undefined;
+  onCleanup(() => clearTimeout(closeTimer));
+
   const handleSubmit = async (e: Event) => {
     e.preventDefault();
     setError(null);
@@ -25,7 +38,7 @@ const AddFriend: Component<AddFriendProps> = (props) => {
 
     const usernameValue = username().trim();
     if (!usernameValue) {
-      setError("Please enter a username");
+      setError(t("home.addFriend.usernameRequired"));
       return;
     }
 
@@ -36,13 +49,11 @@ const AddFriend: Component<AddFriendProps> = (props) => {
       setSuccess(true);
       setUsername("");
       // Close modal after 1.5 seconds
-      setTimeout(() => {
+      closeTimer = setTimeout(() => {
         props.onClose();
       }, 1500);
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Failed to send friend request",
-      );
+      setError(errorText(err, "home.addFriend.failed"));
     } finally {
       setIsSubmitting(false);
     }
@@ -55,35 +66,29 @@ const AddFriend: Component<AddFriendProps> = (props) => {
         onClick={props.onClose}
       >
         <div
-          class="bg-surface-base border border-white/10 rounded-2xl w-full max-w-md p-6"
+          ref={dialog.ref}
+          {...dialog.dialogProps}
+          class="bg-surface-base border border-white/10 rounded-2xl w-full max-w-md mx-4 p-6 outline-none"
           onClick={(e) => e.stopPropagation()}
         >
           {/* Header */}
           <div class="flex items-center justify-between mb-6">
-            <h2 class="text-xl font-bold text-text-primary">Add Friend</h2>
+            <h2 id={dialog.titleId} class="text-xl font-bold text-text-primary">
+              {t("home.sidebar.addFriend")}
+            </h2>
             <button
+              type="button"
               onClick={props.onClose}
-              class="text-text-secondary hover:text-text-primary transition-colors"
+              class="p-1 rounded text-text-secondary hover:text-text-primary hover:bg-white/10 transition-colors"
+              aria-label={t("common.close")}
             >
-              <svg
-                class="w-6 h-6"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M6 18L18 6M6 6l12 12"
-                />
-              </svg>
+              <X class="w-6 h-6" aria-hidden="true" />
             </button>
           </div>
 
           {/* Description */}
           <p class="text-text-secondary text-sm mb-4">
-            Enter the username of the person you want to add as a friend.
+            {t("home.addFriend.description")}
           </p>
 
           {/* Form */}
@@ -91,18 +96,19 @@ const AddFriend: Component<AddFriendProps> = (props) => {
             {/* Username Input */}
             <div>
               <label
-                for="username"
+                for="add-friend-username"
                 class="block text-sm font-medium text-text-primary mb-2"
               >
-                Username
+                {t("common.username")}
               </label>
               <input
-                id="username"
+                ref={input}
+                id="add-friend-username"
                 data-testid="add-friend-input"
                 type="text"
                 value={username()}
                 onInput={(e) => setUsername(e.currentTarget.value)}
-                placeholder="Enter username..."
+                placeholder={t("home.addFriend.placeholder")}
                 class="w-full px-4 py-2 border border-white/10 rounded-lg text-text-input placeholder-text-placeholder focus:outline-none focus:border-accent-primary transition-colors"
                 style={{"background-color":"var(--color-surface-layer1)"}}
                 disabled={isSubmitting()}
@@ -113,6 +119,7 @@ const AddFriend: Component<AddFriendProps> = (props) => {
             {/* Error Message */}
             {error() && (
               <div
+                role="alert"
                 class="p-3 rounded-lg text-sm"
                 style={{"background-color":"var(--color-error-bg)","border":"1px solid var(--color-error-border)","color":"var(--color-error-text)"}}
               >
@@ -122,8 +129,8 @@ const AddFriend: Component<AddFriendProps> = (props) => {
 
             {/* Success Message */}
             {success() && (
-              <div class="p-3 bg-green-500/10 border border-green-500/20 rounded-lg text-green-400 text-sm">
-                Friend request sent successfully!
+              <div role="status" class="p-3 bg-accent-success/10 border border-accent-success/30 rounded-lg text-text-primary text-sm">
+                {t("home.addFriend.sent")}
               </div>
             )}
 
@@ -135,7 +142,7 @@ const AddFriend: Component<AddFriendProps> = (props) => {
                 class="px-4 py-2 text-text-secondary hover:text-text-primary transition-colors state-disabled-quiet"
                 disabled={isSubmitting()}
               >
-                Cancel
+                {t("common.cancel")}
               </button>
               <button
                 type="submit"
@@ -143,7 +150,7 @@ const AddFriend: Component<AddFriendProps> = (props) => {
                 class="px-4 py-2 bg-accent-primary text-on-accent rounded-lg font-medium hover:opacity-90 transition-opacity state-disabled"
                 disabled={isSubmitting()}
               >
-                {isSubmitting() ? "Sending..." : "Send Request"}
+                {isSubmitting() ? t("home.addFriend.sending") : t("home.addFriend.send")}
               </button>
             </div>
           </form>

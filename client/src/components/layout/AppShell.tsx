@@ -24,7 +24,16 @@ import {
   lazy,
   Suspense,
   createSignal,
+  createEffect,
+  on,
+  onCleanup,
 } from "solid-js";
+import { dmsState, getSelectedDM, getTotalUnreadCount } from "@/stores/dms";
+import { selectedChannel } from "@/stores/channels";
+import { currentUser } from "@/stores/auth";
+import { t } from "@/i18n";
+import { getActiveGuild, guildsState } from "@/stores/guilds";
+import { APP_NAME } from "@/lib/brand";
 import { useIsMobile } from "@/lib/useBreakpoint";
 import ServerRail from "./ServerRail";
 import Sidebar from "./Sidebar";
@@ -52,6 +61,47 @@ const AppShell: Component<AppShellProps> = (props) => {
   const [drawerOpen, setDrawerOpen] = createSignal(false);
 
   const closeDrawer = () => setDrawerOpen(false);
+
+  // NAV-12: the Home sidebar comes in as finished JSX, so it cannot get an
+  // onNavigate callback. Opening a conversation or the friends page from the
+  // drawer is a navigation, so the drawer closes on it.
+  // navigationCount also moves when the open conversation is tapped again (K2).
+  createEffect(
+    on(
+      () => dmsState.navigationCount,
+      () => closeDrawer(),
+      { defer: true },
+    ),
+  );
+
+  // NAV-16: a background tab says how much is unread ("(3) Kaiku").
+  // Only servers of the signed-in account count; counts of a previous
+  // account in this tab may still sit in the map (W3).
+  const unreadTotal = () =>
+    getTotalUnreadCount() +
+    guildsState.guilds.reduce((sum, g) => sum + (guildsState.guildUnreadCounts[g.id] ?? 0), 0);
+  // A11Y-18: the title also says where you are ("#general – Family – Kaiku").
+  const place = (): string[] => {
+    const guild = guildsState.activeGuildId ? getActiveGuild() : null;
+    if (guild) {
+      const channel = selectedChannel();
+      return channel ? [`#${channel.name}`, guild.name] : [guild.name];
+    }
+    if (dmsState.isShowingFriends) return [t("home.sidebar.friends")];
+    const dm = getSelectedDM();
+    if (!dm) return [];
+    const me = currentUser()?.id;
+    const others = dm.participants.filter((p) => p.user_id !== me);
+    return [others.length === 1 ? others[0].display_name : dm.name];
+  };
+  createEffect(() => {
+    const n = unreadTotal();
+    const base = [...place().filter(Boolean), APP_NAME].join(" – ");
+    document.title = n > 0 ? `(${n > 99 ? "99+" : n}) ${base}` : base;
+  });
+  onCleanup(() => {
+    document.title = APP_NAME;
+  });
 
   // Swipe-right-to-open on the content area's left edge
   let edgeStartX: number | null = null;
@@ -107,7 +157,12 @@ const AppShell: Component<AppShellProps> = (props) => {
       </Show>
 
       {/* Main Stage */}
-      <main class="flex-1 flex flex-col min-w-0 min-h-0 bg-surface-layer1 relative border-l border-border-solid">
+      {/* Target of the "Skip to content" link (NAV-21, A11Y-19). */}
+      <main
+        id="main-content"
+        tabIndex={-1}
+        class="flex-1 flex flex-col min-w-0 min-h-0 bg-surface-layer1 relative border-l border-border-solid outline-none"
+      >
         {props.children}
       </main>
 

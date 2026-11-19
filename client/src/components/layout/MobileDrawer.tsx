@@ -6,7 +6,22 @@
  * Prevents body scroll while open.
  */
 
-import { Component, JSX, createEffect, onCleanup } from "solid-js";
+import { Component, JSX, Show, createEffect, onCleanup } from "solid-js";
+import { X } from "lucide-solid";
+import { t } from "@/i18n";
+import { createDialog } from "@/lib/a11y/dialog";
+
+/**
+ * While the drawer is open it is a modal dialog (A11Y-1, NAV-11): focus moves
+ * to it, Tab stays inside, Escape closes it, and focus returns to the menu
+ * button. Mounted only while open; the panel itself stays for the animation.
+ */
+const DrawerFocus: Component<{ panel: HTMLElement; onClose: () => void }> = (props) => {
+  const dialog = createDialog({ onClose: () => props.onClose() });
+  // eslint-disable-next-line solid/reactivity
+  dialog.ref(props.panel);
+  return null;
+};
 
 interface MobileDrawerProps {
   open: boolean;
@@ -39,6 +54,9 @@ const MobileDrawer: Component<MobileDrawerProps> = (props) => {
     }
   });
 
+  // Escape closes an open drawer (NAV-12): handled by DrawerFocus below.
+  let panelRef: HTMLDivElement | undefined;
+
   onCleanup(() => {
     // Component disposed mid-lock: restore so we don't leave the page locked
     if (savedOverflow !== null) {
@@ -49,6 +67,7 @@ const MobileDrawer: Component<MobileDrawerProps> = (props) => {
 
   return (
     <div
+      data-drawer-open={props.open ? "true" : "false"}
       class="fixed inset-0 z-50"
       classList={{ "pointer-events-none": !props.open }}
       inert={!props.open ? true : undefined}
@@ -63,9 +82,15 @@ const MobileDrawer: Component<MobileDrawerProps> = (props) => {
         onClick={() => props.onClose()}
       />
 
-      {/* Drawer panel */}
+      {/* Drawer panel: a slim top bar holds the close button, so it is on
+          screen at every width (320 px too) and covers nothing (N5) */}
       <div
-        class="absolute top-0 left-0 h-full w-[300px] flex transition-transform duration-200 bg-surface-base"
+        ref={panelRef}
+        role={props.open ? "dialog" : undefined}
+        aria-modal={props.open ? "true" : undefined}
+        aria-label={props.open ? t("home.drawer.label") : undefined}
+        tabIndex={-1}
+        class="absolute top-0 left-0 h-full w-[300px] max-w-[100vw] flex flex-col transition-transform duration-200 bg-surface-base"
         classList={{
           "translate-x-0": props.open,
           "-translate-x-full": !props.open,
@@ -73,8 +98,22 @@ const MobileDrawer: Component<MobileDrawerProps> = (props) => {
         onPointerDown={onPointerDown}
         onPointerUp={onPointerUp}
       >
-        {props.children}
+        <div class="flex justify-end flex-shrink-0 border-b border-border-subtle">
+            <button
+              type="button"
+              data-testid="mobile-drawer-close"
+              class="w-11 h-11 flex items-center justify-center text-text-primary hover:bg-white/10"
+              aria-label={t("common.close")}
+              onClick={() => props.onClose()}
+            >
+              <X class="w-5 h-5" aria-hidden="true" />
+            </button>
+        </div>
+        <div class="flex flex-1 min-h-0">{props.children}</div>
       </div>
+      <Show when={props.open && panelRef}>
+        {(panel) => <DrawerFocus panel={panel()} onClose={() => props.onClose()} />}
+      </Show>
     </div>
   );
 };

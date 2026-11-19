@@ -15,6 +15,10 @@ import { isGuildOwner } from "@/stores/guilds";
 import { memberHasPermission } from "@/stores/permissions";
 import { PermissionBits } from "@/lib/permissionConstants";
 import { validateFileSize, getUploadLimitText } from "@/lib/tauri";
+import { t } from "@/i18n";
+import { actionErrorText } from "@/components/admin/actionErrors";
+import ConfirmActionDialog from "@/components/admin/ConfirmActionDialog";
+import type { GuildEmoji } from "@/lib/types";
 
 interface EmojisTabProps {
   guildId: string;
@@ -23,7 +27,7 @@ interface EmojisTabProps {
 const EmojisTab: Component<EmojisTabProps> = (props) => {
   const [isUploading, setIsUploading] = createSignal(false);
   const [uploadError, setUploadError] = createSignal<string | null>(null);
-  const [deleteConfirm, setDeleteConfirm] = createSignal<string | null>(null);
+  const [deleting, setDeleting] = createSignal<GuildEmoji | null>(null);
 
   onMount(() => {
     loadGuildEmojis(props.guildId);
@@ -64,37 +68,21 @@ const EmojisTab: Component<EmojisTabProps> = (props) => {
       input.value = ""; // Reset input
     } catch (err) {
       console.error("Failed to upload emoji:", err);
-      setUploadError(
-        err instanceof Error ? err.message : "Failed to upload emoji",
-      );
+      setUploadError(`${t("guildSettings.emojis.uploadFailed")} ${actionErrorText(err)}`);
     } finally {
       setIsUploading(false);
     }
   };
 
-  const handleDelete = async (emojiId: string) => {
-    if (deleteConfirm() === emojiId) {
-      try {
-        await deleteEmoji(props.guildId, emojiId);
-      } catch (err) {
-        console.error("Failed to delete emoji:", err);
-      }
-      setDeleteConfirm(null);
-    } else {
-      setDeleteConfirm(emojiId);
-      setTimeout(() => setDeleteConfirm(null), 3000);
-    }
-  };
 
   return (
     <div class="p-6">
       {/* Header */}
       <div class="flex items-center justify-between mb-6">
         <div>
-          <h3 class="text-lg font-semibold text-text-primary">Emojis</h3>
+          <h3 class="text-lg font-semibold text-text-primary">{t("guildSettings.emojis.title")}</h3>
           <p class="text-sm text-text-secondary">
-            Upload custom emojis for your server. Maximum size:{" "}
-            {getUploadLimitText("emoji")}
+            {t("guildSettings.emojis.hint", { size: getUploadLimitText("emoji") })}
           </p>
         </div>
 
@@ -103,7 +91,7 @@ const EmojisTab: Component<EmojisTabProps> = (props) => {
             <Show when={isUploading()} fallback={<Upload class="w-4 h-4" />}>
               <div class="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
             </Show>
-            Upload Emoji
+            {t("guildSettings.emojis.upload")}
             <input
               type="file"
               accept="image/png,image/jpeg,image/gif,image/webp"
@@ -116,9 +104,9 @@ const EmojisTab: Component<EmojisTabProps> = (props) => {
       </div>
 
       <Show when={uploadError()}>
-        <div class="mb-4 p-3 bg-accent-danger/10 border border-accent-danger/20 rounded-lg text-sm text-accent-danger flex items-center justify-between">
+        <div role="alert" class="mb-4 p-3 bg-status-error/15 border border-status-error/50 rounded-lg text-sm text-text-primary flex items-center justify-between">
           <span>{uploadError()}</span>
-          <button onClick={() => setUploadError(null)}>
+          <button onClick={() => setUploadError(null)} aria-label={t("common.close")}>
             <X class="w-4 h-4" />
           </button>
         </div>
@@ -130,7 +118,7 @@ const EmojisTab: Component<EmojisTabProps> = (props) => {
           each={emojis()}
           fallback={
             <div class="col-span-full py-8 text-center text-text-secondary border border-dashed border-white/10 rounded-xl">
-              No custom emojis yet
+              {t("guildSettings.emojis.empty")}
             </div>
           }
         >
@@ -151,21 +139,16 @@ const EmojisTab: Component<EmojisTabProps> = (props) => {
                   :{emoji.name}:
                 </div>
                 <div class="text-xs text-text-secondary">
-                  {emoji.animated ? "Animated" : "Static"}
+                  {emoji.animated ? t("guildSettings.emojis.animated") : t("guildSettings.emojis.still")}
                 </div>
               </div>
 
               <Show when={canManageEmojis()}>
                 <button
-                  onClick={() => handleDelete(emoji.id)}
-                  class="absolute top-2 right-2 p-1.5 rounded-lg opacity-0 group-hover:opacity-100 touch:opacity-60 transition-opacity"
-                  classList={{
-                    "bg-accent-danger text-white opacity-100":
-                      deleteConfirm() === emoji.id,
-                    "bg-black/50 text-white hover:bg-accent-danger":
-                      deleteConfirm() !== emoji.id,
-                  }}
-                  title="Delete Emoji"
+                  onClick={() => setDeleting(emoji)}
+                  class="absolute top-2 right-2 p-1.5 rounded-lg opacity-0 group-hover:opacity-100 focus-visible:opacity-100 touch:opacity-100 transition-opacity bg-black/50 text-white hover:bg-accent-danger-fill"
+                  title={t("guildSettings.emojis.deleteNamed", { name: emoji.name })}
+                  aria-label={t("guildSettings.emojis.deleteNamed", { name: emoji.name })}
                 >
                   <Trash2 class="w-3.5 h-3.5" />
                 </button>
@@ -174,6 +157,20 @@ const EmojisTab: Component<EmojisTabProps> = (props) => {
           )}
         </For>
       </div>
+
+      <Show when={deleting()}>
+        {(emoji) => (
+          <ConfirmActionDialog
+            title={t("guildSettings.emojis.deleteTitle", { name: emoji().name })}
+            message={t("guildSettings.emojis.deleteBody", { name: emoji().name })}
+            confirmLabel={t("guildSettings.emojis.delete")}
+            danger
+            onConfirm={() => deleteEmoji(props.guildId, emoji().id)}
+            onDone={() => setDeleting(null)}
+            onCancel={() => setDeleting(null)}
+          />
+        )}
+      </Show>
     </div>
   );
 };

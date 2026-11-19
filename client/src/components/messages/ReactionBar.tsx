@@ -1,7 +1,19 @@
 import { Component, For, Show, createSignal } from "solid-js";
 import PositionedEmojiPicker from "@/components/emoji/PositionedEmojiPicker";
 import type { Reaction } from "@/lib/types";
-import { t } from "@/i18n";
+import { plural, t } from "@/i18n";
+
+/** "👍, 3 people: Oma, Tom" for a screen reader; names when the server sent them. */
+export function reactionLabel(reaction: Reaction): string {
+  const users = reaction.users ?? [];
+  if (users.length > 0) {
+    return t("chat.reaction.labelNames", { emoji: reaction.emoji, names: users.join(", ") });
+  }
+  return plural(reaction.count, {
+    one: "chat.reaction.label.one",
+    other: "chat.reaction.label.other",
+  }, { emoji: reaction.emoji });
+}
 
 interface ReactionBarProps {
   reactions: Reaction[];
@@ -38,6 +50,8 @@ const ReactionBar: Component<ReactionBarProps> = (props) => {
                 : "bg-surface-layer2 border border-transparent hover:bg-white/10"
             }`}
             onClick={() => handleReactionClick(reaction)}
+            aria-pressed={!!reaction.me}
+            aria-label={reactionLabel(reaction)}
             title={
               (reaction.users ?? []).length > 0
                 ? (reaction.users ?? []).join(", ")
@@ -57,6 +71,8 @@ const ReactionBar: Component<ReactionBarProps> = (props) => {
           class="w-6 h-6 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary hover:text-text-primary transition-colors"
           onClick={() => setShowPicker(!showPicker())}
           title={t("chat.message.addReaction")}
+          aria-label={t("chat.message.addReaction")}
+          aria-expanded={showPicker()}
         >
           <svg
             class="w-4 h-4"

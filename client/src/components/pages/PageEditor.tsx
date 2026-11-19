@@ -23,6 +23,9 @@ import type { Page, PageCategory } from "@/lib/types";
 import { MAX_CONTENT_SIZE } from "@/lib/pageConstants";
 import MarkdownPreview from "./MarkdownPreview";
 import MarkdownCheatSheet from "./MarkdownCheatSheet";
+import { createConfirm } from "@/components/admin/confirmHost";
+import { actionErrorText } from "@/components/admin/actionErrors";
+import { t } from "@/i18n";
 
 interface PageEditorProps {
   page?: Page | null;
@@ -189,19 +192,23 @@ export default function PageEditor(props: PageEditorProps) {
       });
       setHasUnsavedChanges(false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save page");
+      setError(`${t("guildSettings.pages.saveFailed")} ${actionErrorText(err)}`);
     } finally {
       setIsSaving(false);
     }
   };
 
+  const confirmDialog = createConfirm();
   const handleCancel = () => {
     if (hasUnsavedChanges()) {
-      if (
-        !confirm("You have unsaved changes. Are you sure you want to leave?")
-      ) {
-        return;
-      }
+      confirmDialog.ask({
+        title: t("guildSettings.unsaved.title"),
+        message: t("guildSettings.unsaved.body"),
+        confirmLabel: t("guildSettings.unsaved.discard"),
+        danger: true,
+        run: () => props.onCancel(),
+      });
+      return;
     }
     props.onCancel();
   };
@@ -226,20 +233,20 @@ export default function PageEditor(props: PageEditorProps) {
   ];
 
   return (
-    <div class="flex flex-col h-full bg-zinc-900">
+    <div class="flex flex-col h-full bg-surface-base">
       {/* Header */}
-      <div class="flex items-center justify-between px-4 py-3 border-b border-zinc-700">
-        <h2 class="text-lg font-semibold text-white">
+      <div class="flex items-center justify-between px-4 py-3 border-b border-white/10">
+        <h2 class="text-lg font-semibold text-text-primary">
           {props.page ? "Edit Page" : "New Page"}
         </h2>
         <div class="flex items-center gap-2">
           <Show when={hasUnsavedChanges()}>
-            <span class="text-xs text-amber-400">Unsaved changes</span>
+            <span class="text-xs text-text-primary">Unsaved changes</span>
           </Show>
           <button
             type="button"
             onClick={handleCancel}
-            class="px-3 py-1.5 text-sm text-zinc-400 hover:text-white transition-colors"
+            class="px-3 py-1.5 text-sm text-text-secondary hover:text-text-primary transition-colors"
           >
             Cancel
           </button>
@@ -248,7 +255,7 @@ export default function PageEditor(props: PageEditorProps) {
             onClick={handleSave}
             data-testid="page-editor-save"
             disabled={isSaving() || isContentTooLarge()}
-            class="px-4 py-1.5 text-sm font-medium text-white bg-emerald-600 hover:bg-emerald-500 rounded-md flex items-center gap-2 transition-colors state-disabled"
+            class="px-4 py-1.5 text-sm font-medium text-on-accent bg-accent-primary hover:bg-accent-primary/90 rounded-md flex items-center gap-2 transition-colors state-disabled"
           >
             <Save class="w-4 h-4" />
             {isSaving() ? "Saving..." : "Save"}
@@ -258,16 +265,16 @@ export default function PageEditor(props: PageEditorProps) {
 
       {/* Error message */}
       <Show when={error()}>
-        <div class="mx-4 mt-3 px-3 py-2 bg-red-900/30 border border-red-700 rounded-md text-sm text-red-300 flex items-center gap-2">
+        <div class="mx-4 mt-3 px-3 py-2 bg-status-error/15 border border-status-error/50 rounded-md text-sm text-text-primary flex items-center gap-2">
           <X class="w-4 h-4 flex-shrink-0" />
           {error()}
         </div>
       </Show>
 
       {/* Title and slug inputs */}
-      <div class="px-4 py-3 space-y-3 border-b border-zinc-700">
+      <div class="px-4 py-3 space-y-3 border-b border-white/10">
         <div>
-          <label class="block text-sm font-medium text-zinc-300 mb-1">
+          <label class="block text-sm font-medium text-text-primary mb-1">
             Title
           </label>
           <input
@@ -277,13 +284,13 @@ export default function PageEditor(props: PageEditorProps) {
             onInput={(e) => setTitle(e.currentTarget.value)}
             placeholder="Page title"
             maxLength={100}
-            class="w-full px-3 py-2 bg-zinc-800 border border-zinc-600 rounded-md text-white placeholder-text-placeholder focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
+            class="w-full px-3 py-2 bg-surface-layer1 border border-white/15 rounded-md text-text-primary placeholder-text-placeholder focus:outline-none focus:ring-2 focus:ring-accent-primary focus:border-transparent"
           />
         </div>
         <div>
-          <label class="block text-sm font-medium text-zinc-300 mb-1">
+          <label class="block text-sm font-medium text-text-primary mb-1">
             Slug
-            <span class="text-zinc-500 font-normal ml-2">
+            <span class="text-text-secondary font-normal ml-2">
               (URL: /
               {props.isPlatform ? "pages" : `guild/${props.guildId}/pages`}/
               {slug() || "..."})
@@ -301,18 +308,18 @@ export default function PageEditor(props: PageEditorProps) {
             }}
             placeholder="page-slug"
             maxLength={100}
-            class="w-full px-3 py-2 bg-zinc-800 border border-zinc-600 rounded-md text-white placeholder-text-placeholder focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent font-mono text-sm"
+            class="w-full px-3 py-2 bg-surface-layer1 border border-white/15 rounded-md text-text-primary placeholder-text-placeholder focus:outline-none focus:ring-2 focus:ring-accent-primary focus:border-transparent font-mono text-sm"
           />
         </div>
         <Show when={props.categories && props.categories.length > 0}>
           <div>
-            <label class="block text-sm font-medium text-zinc-300 mb-1">
+            <label class="block text-sm font-medium text-text-primary mb-1">
               Category
             </label>
             <select
               value={categoryId() ?? ""}
               onChange={(e) => setCategoryId(e.currentTarget.value || null)}
-              class="w-full px-3 py-2 bg-zinc-800 border border-zinc-600 rounded-md text-white focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
+              class="w-full px-3 py-2 bg-surface-layer1 border border-white/15 rounded-md text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-primary focus:border-transparent"
             >
               <option value="">Uncategorized</option>
               <For each={props.categories}>
@@ -328,12 +335,12 @@ export default function PageEditor(props: PageEditorProps) {
               data-testid="page-editor-requires-acceptance"
               checked={requiresAcceptance()}
               onChange={(e) => setRequiresAcceptance(e.currentTarget.checked)}
-              class="w-4 h-4 rounded border-zinc-600 bg-zinc-800 text-emerald-500 focus:ring-emerald-500 focus:ring-offset-zinc-900"
+              class="w-4 h-4 rounded border-white/15 bg-surface-layer1 text-accent-primary focus:ring-accent-primary focus:ring-offset-surface-base"
             />
-            <span class="text-sm text-zinc-300">Require user acceptance</span>
+            <span class="text-sm text-text-primary">Require user acceptance</span>
           </label>
           <Show when={requiresAcceptance()}>
-            <span class="text-xs text-zinc-500">
+            <span class="text-xs text-text-secondary">
               {props.isPlatform
                 ? "Users must accept before using the platform"
                 : "Users will be prompted to accept this page"}
@@ -343,23 +350,23 @@ export default function PageEditor(props: PageEditorProps) {
       </div>
 
       {/* Toolbar */}
-      <div class="px-4 py-2 flex items-center gap-1 border-b border-zinc-700">
+      <div class="px-4 py-2 flex items-center gap-1 border-b border-white/10">
         <For each={toolbarButtons}>{(btn) => (
           <button
             type="button"
             onClick={btn.action}
             title={btn.title}
-            class="p-2 text-zinc-400 hover:text-white hover:bg-zinc-700 rounded transition-colors"
+            class="p-2 text-text-secondary hover:text-text-primary hover:bg-white/10 rounded transition-colors"
           >
             <btn.icon class="w-4 h-4" />
           </button>
         )}</For>
         <div class="flex-1" />
-        <div class="text-xs text-zinc-500 mr-2">
+        <div class="text-xs text-text-secondary mr-2">
           {contentSize().toLocaleString()} / {MAX_CONTENT_SIZE.toLocaleString()}{" "}
           bytes
           <Show when={isContentTooLarge()}>
-            <span class="text-red-400 ml-1">(too large)</span>
+            <span class="text-text-primary ml-1">(too large)</span>
           </Show>
         </div>
         <button
@@ -368,8 +375,8 @@ export default function PageEditor(props: PageEditorProps) {
           title={showPreview() ? "Hide preview" : "Show preview"}
           class={`p-2 rounded transition-colors ${
             showPreview()
-              ? "text-emerald-400 bg-emerald-900/30"
-              : "text-zinc-400 hover:text-white hover:bg-zinc-700"
+              ? "text-text-primary bg-accent-primary/20"
+              : "text-text-secondary hover:text-text-primary hover:bg-white/10"
           }`}
         >
           <Show when={showPreview()} fallback={<EyeOff class="w-4 h-4" />}>
@@ -382,7 +389,7 @@ export default function PageEditor(props: PageEditorProps) {
       <div class="flex-1 flex overflow-hidden">
         {/* Editor */}
         <div
-          class={`flex flex-col ${showPreview() ? "w-1/2" : "w-full"} border-r border-zinc-700`}
+          class={`flex flex-col ${showPreview() ? "w-1/2" : "w-full"} border-r border-white/10`}
         >
           <textarea
             ref={textareaRef}
@@ -390,21 +397,21 @@ export default function PageEditor(props: PageEditorProps) {
             value={content()}
             onInput={(e) => setContent(e.currentTarget.value)}
             placeholder="Write your content in Markdown..."
-            class="flex-1 w-full p-4 bg-zinc-900 text-white placeholder-text-placeholder resize-none focus:outline-none font-mono text-sm leading-relaxed"
+            class="flex-1 w-full p-4 bg-surface-base text-text-primary placeholder-text-placeholder resize-none focus:outline-none font-mono text-sm leading-relaxed"
             spellcheck={false}
           />
-          <div class="p-2 border-t border-zinc-700">
+          <div class="p-2 border-t border-white/10">
             <MarkdownCheatSheet />
           </div>
         </div>
 
         {/* Preview */}
         <Show when={showPreview()}>
-          <div class="w-1/2 overflow-auto p-4 bg-zinc-800">
+          <div class="w-1/2 overflow-auto p-4 bg-surface-layer1">
             <Show
               when={content()}
               fallback={
-                <p class="text-zinc-500 italic">Preview will appear here...</p>
+                <p class="text-text-secondary italic">Preview will appear here...</p>
               }
             >
               <MarkdownPreview content={content()} />
@@ -412,6 +419,7 @@ export default function PageEditor(props: PageEditorProps) {
           </div>
         </Show>
       </div>
+      <confirmDialog.Host />
     </div>
   );
 }

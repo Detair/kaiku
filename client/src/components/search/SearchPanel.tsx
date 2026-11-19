@@ -13,6 +13,7 @@ import {
   createSignal,
   createEffect,
   onCleanup,
+  onMount,
   createMemo,
   untrack,
 } from "solid-js";
@@ -37,7 +38,9 @@ import {
   clearSearch,
   hasMore,
 } from "@/stores/search";
-import { getActiveGuild } from "@/stores/guilds";
+import { getActiveGuild, guildsState } from "@/stores/guilds";
+import { dmsState } from "@/stores/dms";
+import { plural, t } from "@/i18n";
 import type {
   SearchFilters,
   SearchResult,
@@ -192,28 +195,83 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
     }
   });
 
+  // Over the sidebar the panel is not a dialog, and the browser ignores
+  // `autofocus` while the button that opened it holds the focus: take the
+  // focus here and hand it back on close, unless it has moved elsewhere.
+  // In the global search the dialog does both.
+  let panelRef: HTMLDivElement | undefined;
+  let inputRef: HTMLInputElement | undefined;
+  onMount(() => {
+    if (props.mode === "global") return;
+    const opener =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    inputRef?.focus();
+    onCleanup(() => {
+      const active = document.activeElement;
+      const lost = !active || active === document.body || !!panelRef?.contains(active);
+      if (lost && opener?.isConnected) opener.focus();
+    });
+  });
+
   const placeholderText = () => {
-    if (mode() === "dm") return "Search DMs...";
+    if (mode() === "dm") return t("chat.search.placeholder.dm");
     switch (scope()) {
       case "channel":
-        return "Search this channel...";
+        return t("chat.search.placeholder.channel");
       case "all":
-        return "Search all servers...";
+        return t("chat.search.placeholder.all");
       default:
-        return "Search this server...";
+        return t("chat.search.placeholder.server");
     }
   };
 
+  /**
+   * People to filter by: members of the open server, or the people in your
+   * direct messages. Nobody has to know an internal user id.
+   */
+  const authorOptions = createMemo(() => {
+    const byId = new Map<string, string>();
+    const guild = mode() === "dm" ? undefined : getActiveGuild();
+    if (guild) {
+      for (const m of guildsState.members[guild.id] ?? []) {
+        byId.set(m.user_id, m.nickname || m.display_name || m.username);
+      }
+    }
+    if (mode() !== "guild" || !guild) {
+      for (const dm of dmsState.dms) {
+        for (const p of dm.participants) {
+          if (!p.is_system && !byId.has(p.user_id)) byId.set(p.user_id, p.display_name || p.username);
+        }
+      }
+    }
+    return [...byId.entries()]
+      .map(([id, name]) => ({ id, name }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  });
+
   return (
-    <div class="absolute inset-0 z-50 flex flex-col bg-surface-layer2">
+    <div
+      ref={panelRef}
+      class="absolute inset-0 z-50 flex flex-col bg-surface-layer2"
+      onKeyDown={(e) => {
+        // The panel over the sidebar closes with Escape too (A11Y-1); in the
+        // global search dialog the dialog handles Escape first.
+        if (e.key === "Escape" && !e.defaultPrevented) {
+          e.preventDefault();
+          props.onClose();
+        }
+      }}
+    >
       {/* Search Header */}
       <div class="flex items-center justify-between px-3 py-2 border-b border-white/10">
         <div class="relative flex-1 max-w-md">
           <Search class="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-secondary" />
           <input
+            ref={inputRef}
             data-testid="search-input"
             type="text"
             placeholder={placeholderText()}
+            aria-label={placeholderText()}
             value={inputValue()}
             onInput={handleInput}
             autofocus
@@ -227,14 +285,18 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
             "text-text-primary bg-accent-primary/20": showFilters(),
             "text-text-secondary hover:text-text-primary": !showFilters(),
           }}
-          title="Toggle filters"
+          title={t("chat.search.filters")}
+          aria-label={t("chat.search.filters")}
+          aria-pressed={showFilters()}
         >
           <Filter class="w-4 h-4" />
         </button>
         <SearchSyntaxHelp />
         <button
-          onClick={props.onClose}
+          onClick={() => props.onClose()}
           class="ml-1 p-1.5 text-text-secondary hover:text-text-primary rounded transition-colors"
+          title={t("chat.search.close")}
+          aria-label={t("chat.search.close")}
         >
           <X class="w-4 h-4" />
         </button>
@@ -255,7 +317,7 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
                 scope() !== "channel",
             }}
           >
-            This Channel
+            {t("chat.search.scope.channel")}
           </button>
           <button
             data-testid="scope-guild"
@@ -268,7 +330,7 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
                 scope() !== "guild",
             }}
           >
-            This Server
+            {t("chat.search.scope.server")}
           </button>
           <button
             data-testid="scope-all"
@@ -281,7 +343,7 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
                 scope() !== "all",
             }}
           >
-            All
+            {t("chat.search.scope.all")}
           </button>
         </div>
       </Show>
@@ -304,7 +366,7 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
                   sortOrder() !== "relevance",
               }}
             >
-              Relevance
+              {t("chat.search.sort.relevance")}
             </button>
             <button
               onClick={() => {
@@ -319,15 +381,16 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
                   sortOrder() !== "date",
               }}
             >
-              Date
+              {t("chat.search.sort.date")}
             </button>
           </div>
           <div class="flex gap-2">
             <div class="flex-1">
-              <label class="text-xs text-text-secondary block mb-1">
-                From date
+              <label class="text-xs text-text-secondary block mb-1" for="search-date-from">
+                {t("chat.search.dateFrom")}
               </label>
               <input
+                id="search-date-from"
                 type="date"
                 value={dateFrom()}
                 onInput={(e) => {
@@ -338,10 +401,11 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
               />
             </div>
             <div class="flex-1">
-              <label class="text-xs text-text-secondary block mb-1">
-                To date
+              <label class="text-xs text-text-secondary block mb-1" for="search-date-to">
+                {t("chat.search.dateTo")}
               </label>
               <input
+                id="search-date-to"
                 type="date"
                 value={dateTo()}
                 onInput={(e) => {
@@ -352,21 +416,28 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
               />
             </div>
           </div>
-          <div>
-            <label class="text-xs text-text-secondary block mb-1">
-              Author ID
-            </label>
-            <input
-              type="text"
-              placeholder="User ID"
-              value={authorFilter()}
-              onInput={(e) => {
-                setAuthorFilter(e.currentTarget.value);
-                triggerSearch();
-              }}
-              class="w-full px-2 py-1 rounded text-xs text-text-primary placeholder:text-text-placeholder bg-surface-layer1 border border-white/10 outline-none"
-            />
-          </div>
+          <Show when={authorOptions().length > 0}>
+            <div>
+              <label class="text-xs text-text-secondary block mb-1" for="search-author">
+                {t("chat.search.author")}
+              </label>
+              <select
+                id="search-author"
+                data-testid="search-author"
+                value={authorFilter()}
+                onChange={(e) => {
+                  setAuthorFilter(e.currentTarget.value);
+                  triggerSearch();
+                }}
+                class="w-full px-2 py-1 rounded text-xs text-text-primary bg-surface-layer1 border border-white/10 outline-none"
+              >
+                <option value="">{t("chat.search.authorAnyone")}</option>
+                <For each={authorOptions()}>
+                  {(option) => <option value={option.id}>{option.name}</option>}
+                </For>
+              </select>
+            </div>
+          </Show>
           <div class="flex gap-2">
             <button
               onClick={() => {
@@ -382,7 +453,7 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
               }}
             >
               <Link class="w-3 h-3" />
-              Has link
+              {t("chat.search.hasLink")}
             </button>
             <button
               onClick={() => {
@@ -398,7 +469,7 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
               }}
             >
               <Paperclip class="w-3 h-3" />
-              Has file
+              {t("chat.search.hasFile")}
             </button>
           </div>
         </div>
@@ -406,7 +477,10 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
 
       <Show when={searchState.total > 0}>
         <span class="ml-3 text-xs text-text-secondary">
-          {searchState.total} result{searchState.total !== 1 ? "s" : ""}
+          {plural(searchState.total, {
+            one: "chat.search.results.one",
+            other: "chat.search.results.other",
+          })}
         </span>
       </Show>
 
@@ -430,9 +504,9 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
           }
         >
           <div class="flex flex-col items-center justify-center py-8 text-text-secondary">
-            <img src={flokiThinking} alt="" class="w-14 h-14 object-contain mb-3" loading="lazy" />
-            <p class="text-sm">No results found</p>
-            <p class="text-xs mt-1">Try different keywords</p>
+            <img src={flokiThinking} alt={""} class="w-14 h-14 object-contain mb-3" loading="lazy" />
+            <p class="text-sm">{t("chat.search.noResults")}</p>
+            <p class="text-xs mt-1">{t("chat.search.noResultsHint")}</p>
           </div>
         </Show>
 
@@ -440,13 +514,13 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
         <Show when={searchState.query.length < 2}>
           <div class="flex flex-col items-center justify-center py-8 text-text-secondary">
             <Search class="w-12 h-12 mb-3 opacity-50" />
-            <p class="text-sm">Type at least 2 characters to search</p>
+            <p class="text-sm">{t("chat.search.minLength")}</p>
           </div>
         </Show>
 
         {/* Error State */}
         <Show when={searchState.error}>
-          <div class="p-4 text-center text-red-400 text-sm">
+          <div role="alert" class="p-4 text-center text-error-text text-sm">
             {searchState.error}
           </div>
         </Show>
@@ -492,7 +566,7 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
                                     fallback={
                                       <>
                                         <MessageSquare class="w-3 h-3" />
-                                        <span>Direct Messages</span>
+                                        <span>{t("chat.search.directMessages")}</span>
                                       </>
                                     }
                                   >
@@ -556,9 +630,9 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
                 disabled={searchState.isSearching}
                 class="px-4 py-2 text-sm text-accent-primary hover:bg-white/5 rounded-lg state-disabled-quiet"
               >
-                <Show when={searchState.isSearching} fallback="Load more">
+                <Show when={searchState.isSearching} fallback={t("chat.search.loadMore")}>
                   <Loader2 class="w-4 h-4 animate-spin inline mr-2" />
-                  Loading...
+                  {t("chat.search.loading")}
                 </Show>
               </button>
             </div>

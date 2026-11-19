@@ -88,6 +88,8 @@ export interface UserSecurityPanelProps {
 const UserSecurityPanel: Component<UserSecurityPanelProps> = (props) => {
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
+  /** Which row the error belongs to, so it shows next to its button (ADMIN-9). */
+  const [errorAt, setErrorAt] = createSignal<string | null>(null);
   const [done, setDone] = createSignal<Set<string>>(new Set());
   const [mayApprove, setMayApprove] = createSignal(props.user.may_approve === true);
   const [factors, setFactors] = createSignal<Record<Factor, string | null>>({
@@ -106,24 +108,31 @@ const UserSecurityPanel: Component<UserSecurityPanelProps> = (props) => {
   const run = async (job: () => Promise<unknown>, mark?: string) => {
     setBusy(true);
     setError(null);
+    setErrorAt(null);
     try {
       await job();
       if (mark) setDone((s) => new Set(s).add(mark));
     } catch (err) {
       setError(securityErrorText(err, "admin.userSecurity.failed"));
+      setErrorAt(mark ?? null);
     } finally {
       setBusy(false);
     }
   };
 
-  const removeNow = (id: string, label: string) =>
-    run(
+  const removeNow = async (id: string, label: string) => {
+    await run(
       () =>
         withStepUp({ action: "admin.authenticator.remove", target: id, targetLabel: label }, () =>
           adminRemoveAuthenticator(userId(), id),
         ),
       id,
     );
+    if (done().has(id)) {
+      showToast({ type: "success", title: t("admin.userSecurity.removed", { label }), duration: 4000 });
+      void loadUserDetails(userId());
+    }
+  };
 
   const toggleMayApprove = (next: boolean) =>
     run(async () => {
@@ -220,7 +229,10 @@ const UserSecurityPanel: Component<UserSecurityPanelProps> = (props) => {
                 <li class="flex flex-wrap items-center gap-2 p-2 rounded-lg bg-white/5">
                   <span class="flex-1 text-sm text-text-primary">
                     {a.label}
-                    <span class="text-text-secondary"> · {authenticatorState(a)}</span>
+                    <span class="text-text-secondary">
+                      {" · "}
+                      {done().has(a.id) ? t("admin.userSecurity.removedState") : authenticatorState(a)}
+                    </span>
                   </span>
                   <Show when={!isAdminTarget() && a.state !== "revoked" && !done().has(a.id)}>
                     <button
@@ -232,6 +244,9 @@ const UserSecurityPanel: Component<UserSecurityPanelProps> = (props) => {
                     >
                       {t("security.action.removeDeviceNow")}
                     </button>
+                  </Show>
+                  <Show when={error() && errorAt() === a.id}>
+                    <p role="alert" class="w-full text-sm text-text-primary">{error()}</p>
                   </Show>
                 </li>
               )}
@@ -320,7 +335,7 @@ const UserSecurityPanel: Component<UserSecurityPanelProps> = (props) => {
         )}
       </Show>
 
-      <Show when={error()}>
+      <Show when={error() && !authenticators().some((a) => a.id === errorAt())}>
         <p role="alert" class="text-sm text-text-primary">{error()}</p>
       </Show>
 

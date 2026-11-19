@@ -194,8 +194,12 @@ const ChannelItem: Component<ChannelItemProps> = (props) => {
         data-channel-id={props.channel.id}
         data-channel-name={props.channel.name}
         data-channel-type={props.channel.channel_type}
-        class="w-full flex items-center gap-2 px-2 py-1.5 rounded-xl text-sm transition-all duration-200 cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/50 border border-transparent bg-transparent text-left"
+        class="w-full flex items-center gap-2 px-2 py-1.5 touch:min-h-11 rounded-xl text-sm transition-all duration-200 cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/50 border border-transparent bg-transparent text-left"
         classList={{
+          // Touch: the 44 px action buttons sit on the row's right end; keep
+          // the name and the unread dot clear of them.
+          "touch:pr-24": !!(props.guildId && props.guildName) && !!props.onSettings,
+          "touch:pr-12": !!(props.guildId && props.guildName) !== !!props.onSettings,
           // Voice connected/connecting state (green glow)
           "bg-accent-primary/20 text-text-primary border-accent-primary/30":
             isActive(),
@@ -211,11 +215,14 @@ const ChannelItem: Component<ChannelItemProps> = (props) => {
         onClick={props.onClick}
         onMouseEnter={() => setShowTooltip(true)}
         onMouseLeave={() => setShowTooltip(false)}
+        aria-current={props.isSelected ? "page" : undefined}
         title={
+          // A click opens the channel; joining is a second, labelled step
+          // (NAV-14).
           isConnected()
-            ? t("channels.item.disconnectHint")
+            ? t("channels.item.inVoiceHint")
             : isVoice()
-              ? t("channels.item.joinVoiceHint")
+              ? t("channels.item.openVoiceHint")
               : undefined
         }
       >
@@ -249,7 +256,8 @@ const ChannelItem: Component<ChannelItemProps> = (props) => {
 
         {/* Unread indicator for text channels */}
         <Show when={isTextLikeChannelType(props.channel.channel_type) && isChannelUnread(props.channel.id)}>
-          <span class="ml-auto w-2 h-2 rounded-full bg-accent-primary flex-shrink-0" />
+          <span class="ml-auto w-2 h-2 rounded-full bg-accent-primary flex-shrink-0" aria-hidden="true" />
+          <span class="sr-only">{t("channels.item.unread")}</span>
         </Show>
 
         {/* Muted indicator */}
@@ -283,10 +291,11 @@ const ChannelItem: Component<ChannelItemProps> = (props) => {
         {/* Favorite star - shown on hover or when favorited */}
         <Show when={props.guildId && props.guildName}>
           <button
-            class="p-0.5 rounded transition-all duration-200 shrink-0"
+            class="tap-dense p-0.5 rounded transition-all duration-200 shrink-0"
             classList={{
               "text-yellow-400": isFavorited(props.channel.id),
-              "text-text-secondary hover:text-yellow-400 opacity-0 group-hover:opacity-100":
+              // Visible on hover, keyboard focus and touch screens (NAV-19)
+              "text-text-secondary hover:text-yellow-400 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 touch:opacity-100":
                 !isFavorited(props.channel.id),
             }}
             onClick={(e) => {
@@ -305,6 +314,11 @@ const ChannelItem: Component<ChannelItemProps> = (props) => {
                 ? t("channels.item.removeFavorite")
                 : t("channels.item.addFavorite")
             }
+            aria-label={
+              isFavorited(props.channel.id)
+                ? t("channels.item.removeFavorite")
+                : t("channels.item.addFavorite")
+            }
           >
             <Star
               class="w-3.5 h-3.5"
@@ -316,12 +330,13 @@ const ChannelItem: Component<ChannelItemProps> = (props) => {
         {/* Settings button - shown on hover when onSettings provided */}
         <Show when={props.onSettings}>
           <button
-            class="p-1 text-text-secondary hover:text-text-primary hover:bg-white/10 rounded opacity-0 group-hover:opacity-100 transition-all duration-200"
+            class="tap-dense p-1 text-text-secondary hover:text-text-primary hover:bg-white/10 rounded opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 touch:opacity-100 transition-all duration-200"
             onClick={(e) => {
               e.stopPropagation();
               props.onSettings?.();
             }}
             title={t("channels.item.settings")}
+            aria-label={t("channels.item.settings")}
           >
             <Settings class="w-3.5 h-3.5" />
           </button>

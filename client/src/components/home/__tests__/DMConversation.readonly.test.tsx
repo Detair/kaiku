@@ -5,6 +5,8 @@ const selected = vi.hoisted(() => ({ dm: null as unknown }));
 vi.mock("@/stores/dms", () => ({
   getSelectedDM: () => selected.dm,
   updateDMIconUrl: vi.fn(),
+  readVisibleDM: vi.fn(),
+  isWindowActive: () => true,
 }));
 vi.mock("@/stores/auth", () => ({ currentUser: () => ({ id: "me" }) }));
 vi.mock("@/stores/call", () => ({
@@ -21,7 +23,10 @@ vi.mock("@/lib/tauri", () => ({
   validateFileSize: vi.fn(),
   getUploadLimitText: () => "5 MB",
 }));
-const messages = vi.hoisted(() => ({ loadInitialMessages: vi.fn().mockResolvedValue(undefined) }));
+const messages = vi.hoisted(() => ({
+  loadInitialMessages: vi.fn().mockResolvedValue(undefined),
+  messagesState: { byChannel: {} },
+}));
 vi.mock("@/stores/messages", () => messages);
 vi.mock("@/components/messages/MessageList", () => ({ default: () => <div data-testid="list" /> }));
 vi.mock("@/components/messages/MessageInput", () => ({ default: () => <div data-testid="composer" /> }));
