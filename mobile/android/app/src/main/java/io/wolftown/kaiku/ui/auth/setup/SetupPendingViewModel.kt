@@ -11,6 +11,7 @@ import io.wolftown.kaiku.data.api.EnrollmentApi
 import io.wolftown.kaiku.data.api.LongPoll
 import io.wolftown.kaiku.data.auth.DeviceSignIn
 import io.wolftown.kaiku.data.auth.DeviceSignInResult
+import io.wolftown.kaiku.data.auth.SignInPurpose
 import io.wolftown.kaiku.data.keydevice.KeyDevicePhase
 import io.wolftown.kaiku.data.keydevice.KeyDeviceProbe
 import io.wolftown.kaiku.data.keydevice.KeyDeviceRepository
@@ -151,7 +152,8 @@ class SetupPendingViewModel @Inject constructor(
         signingIn = true
         _ui.value = SetupUi.SigningIn
         viewModelScope.launch {
-            val r = deviceSignIn.signIn(activity)
+            // The end of a setup, as on the setup screen: a second prompt, and it says why.
+            val r = deviceSignIn.signIn(activity, SignInPurpose.AFTER_SETUP)
             signingIn = false
             _ui.value = when (r) {
                 DeviceSignInResult.Success -> SetupUi.Done

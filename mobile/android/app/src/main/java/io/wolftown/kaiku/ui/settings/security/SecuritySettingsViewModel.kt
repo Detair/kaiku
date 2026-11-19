@@ -54,6 +54,9 @@ data class SecuritySettingsUi(
     val working: Boolean = false,
     val signedOut: Boolean = false,
 ) {
+    /** The "read only" notice needs the loaded session: before that (or after a failed load) nothing is known. */
+    val showsReadOnlyNotice: Boolean get() = readOnly && me != null
+
     override fun toString(): String =
         "SecuritySettingsUi(readOnly=$readOnly, keyDevices=${keyDevices.size}, sessions=${sessions.size}, " +
             "newRecoveryCodes=${newRecoveryCodes?.size}, message=$message)"
@@ -138,7 +141,7 @@ class SecuritySettingsViewModel internal constructor(
         }
         _ui.update { it.copy(working = true, message = null) }
         viewModelScope.launch {
-            when (stepUp.stepUp(activity, action, target)) {
+            when (val out = stepUp.stepUp(activity, action, target)) {
                 is StepUpOutcome.Granted -> try {
                     block()
                     _ui.update { it.copy(working = false, offerSignOutOthers = authenticatorChange || it.offerSignOutOthers) }
@@ -151,7 +154,7 @@ class SecuritySettingsViewModel internal constructor(
                 StepUpOutcome.Cancelled -> _ui.update { it.copy(working = false) }
                 StepUpOutcome.ProbationSession -> _ui.update { it.copy(working = false, message = R.string.security_probation_read_only) }
                 StepUpOutcome.NotKeyDevice -> _ui.update { it.copy(working = false, message = R.string.security_step_up_none) }
-                is StepUpOutcome.Failed -> _ui.update { it.copy(working = false, message = R.string.security_sign_in_failed) }
+                is StepUpOutcome.Failed -> _ui.update { it.copy(working = false, message = failedText(out.code)) }
             }
         }
     }
@@ -266,6 +269,8 @@ class SecuritySettingsViewModel internal constructor(
         "LAST_STRONG_AUTHENTICATOR" -> R.string.security_last_strong
         "NETWORK" -> R.string.security_network_error
         "KEY_INVALIDATED" -> R.string.security_key_invalidated
+        // The confirmation prompt stayed open past its challenge: nothing changed, a retry asks anew.
+        "APPROVAL_EXPIRED" -> R.string.security_took_too_long
         else -> R.string.security_sign_in_failed
     }
 

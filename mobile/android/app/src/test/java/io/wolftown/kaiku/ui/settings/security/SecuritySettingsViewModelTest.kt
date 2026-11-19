@@ -68,6 +68,7 @@ class SecuritySettingsViewModelTest {
         security.me = security.me.copy(session = SecuritySession("probation", listOf("qr")))
         val v = vm()
         assertTrue(v.ui.value.readOnly)
+        assertTrue(v.ui.value.showsReadOnlyNotice)
         v.removeKeyDevice(activity, other)
         coVerify(exactly = 0) { stepUp.stepUp(any(), any(), any()) }
         assertEquals(R.string.security_probation_read_only, v.ui.value.message)
@@ -209,11 +210,23 @@ class SecuritySettingsViewModelTest {
         assertEquals(false, v.ui.value.loading)
         assertEquals(null, v.ui.value.me)
         assertEquals(R.string.security_network_error, v.ui.value.message)
+        // Nothing is known about the session yet: no "read only" notice above the error.
+        assertFalse(v.ui.value.showsReadOnlyNotice)
         security.meFailure = null
         v.reload()
         assertEquals(false, v.ui.value.loading)
         assertEquals(null, v.ui.value.message)
         assertEquals(9, v.ui.value.me?.recoveryCodesLeft)
+    }
+
+    @Test fun `a confirmation that took too long says so`() = runTest {
+        coEvery { stepUp.stepUp(activity, StepUpAction.SESSIONS_END, "others") } returns StepUpOutcome.Failed("APPROVAL_EXPIRED")
+        val v = vm()
+        v.endOtherSessions(activity)
+        assertEquals(R.string.security_took_too_long, v.ui.value.message)
+        coEvery { signOut.signOutAndRemovePhone(activity) } returns StepUpOutcome.Failed("APPROVAL_EXPIRED")
+        v.signOutAndRemovePhone(activity)
+        assertEquals(R.string.security_took_too_long, v.ui.value.message)
     }
 
     @Test fun `a session without a device name names its kind of client`() {

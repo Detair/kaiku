@@ -62,7 +62,7 @@ class SetupPendingViewModelTest {
         // App restart: a new repository instance reads the pending setup.
         val repo = KeyDeviceRepository(store, f.keyStore, f.authState, backgroundScope)
         assertEquals(KeyDeviceState.Pending(readyAt, "55555555-5555-4555-8555-555555555555"), repo.current())
-        coEvery { deviceSignIn.signIn(any()) } returns DeviceSignInResult.Success
+        coEvery { deviceSignIn.signIn(any(), any()) } returns DeviceSignInResult.Success
         // A pending key device asks the key-device probe (the finished enrolment ages out, 30 days).
         approval.failWith = apiError(409, "KEY_DEVICE_PENDING", ApiErrorFields(readyAt = readyAt.toString()))
 
@@ -77,7 +77,7 @@ class SetupPendingViewModelTest {
         // Always the key's own server.
         assertEquals(SigFixtures.ORIGIN, approval.deviceLoginOrigin)
         v.signIn(activity)
-        coVerify { deviceSignIn.signIn(activity) }
+        coVerify { deviceSignIn.signIn(activity, io.wolftown.kaiku.data.auth.SignInPurpose.AFTER_SETUP) }
         assertEquals(SetupUi.Done, v.ui.value)
     }
 
@@ -104,10 +104,25 @@ class SetupPendingViewModelTest {
     @Test fun `an active setup that has not signed in yet signs in at app start`() = runTest {
         val (repo, _) = repo()
         repo.markEnrolled(pendingDevice().copy(claimSecret = null))
-        coEvery { deviceSignIn.signIn(any()) } returns DeviceSignInResult.Success
+        coEvery { deviceSignIn.signIn(any(), any()) } returns DeviceSignInResult.Success
 
         val v = SetupPendingViewModel(enroll.api, repo, deviceSignIn, probe)
         assertEquals(SetupUi.SigningIn, v.ui.value)
+        v.signIn(activity)
+        assertEquals(SetupUi.Done, v.ui.value)
+    }
+
+    @Test fun `a resumed setup explains its second prompt and a slow one offers a fresh try`() = runTest {
+        val (repo, _) = repo()
+        repo.markEnrolled(pendingDevice().copy(claimSecret = null))
+        coEvery { deviceSignIn.signIn(any(), any()) } returns DeviceSignInResult.Expired
+        val v = SetupPendingViewModel(enroll.api, repo, deviceSignIn, probe)
+        v.signIn(activity)
+        coVerify(exactly = 1) { deviceSignIn.signIn(activity, io.wolftown.kaiku.data.auth.SignInPurpose.AFTER_SETUP) }
+        assertEquals(SetupUi.SignInTimedOut, v.ui.value)
+        v.check() // a resume does not prompt by itself
+        assertEquals(SetupUi.SignInTimedOut, v.ui.value)
+        coEvery { deviceSignIn.signIn(any(), any()) } returns DeviceSignInResult.Success
         v.signIn(activity)
         assertEquals(SetupUi.Done, v.ui.value)
     }
@@ -220,7 +235,7 @@ class SetupPendingViewModelTest {
     @Test fun `a resume after a cancelled final prompt does not prompt again`() = runTest {
         val (repo, _) = repo()
         repo.markEnrolled(pendingDevice().copy(claimSecret = null))
-        coEvery { deviceSignIn.signIn(any()) } returns DeviceSignInResult.Cancelled
+        coEvery { deviceSignIn.signIn(any(), any()) } returns DeviceSignInResult.Cancelled
         approval.nextChallenge = SigFixtures.challengeFor(SigKind.DEVICE_LOGIN, 3, SigFixtures.V03_CONTEXT)
         val v = SetupPendingViewModel(enroll.api, repo, deviceSignIn, probe)
         v.signIn(activity)
@@ -228,7 +243,7 @@ class SetupPendingViewModelTest {
         v.check() // ON_RESUME after the prompt closed
         assertEquals(SetupUi.SignInPaused, v.ui.value)
         assertTrue(approval.calls.isEmpty())
-        coVerify(exactly = 1) { deviceSignIn.signIn(any()) }
+        coVerify(exactly = 1) { deviceSignIn.signIn(any(), any()) }
     }
 
     @Test fun `a claim waiting for its code long-polls within the read timeout`() = runTest {

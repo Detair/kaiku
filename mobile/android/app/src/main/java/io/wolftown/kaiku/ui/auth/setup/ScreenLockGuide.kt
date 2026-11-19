@@ -2,6 +2,7 @@ package io.wolftown.kaiku.ui.auth.setup
 
 import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import android.provider.Settings
 import androidx.compose.runtime.Composable
@@ -35,14 +36,15 @@ fun ScreenLockGuide(onCheck: () -> Unit, onCancel: () -> Unit) {
     KeyBody(stringResource(R.string.setup_screen_lock_body))
     KeyNotice(stringResource(R.string.setup_screen_lock_hint), warning = false)
     KeyPrimaryButton(stringResource(R.string.setup_screen_lock_open), onClick = { open(Intent(Settings.ACTION_SECURITY_SETTINGS)) })
-    // AND-A-12: no fingerprint button on a phone without the hardware.
+    // No biometric button on a phone without the hardware.
     val hasBiometricHardware = remember(context) {
         androidx.biometric.BiometricManager.from(context)
             .canAuthenticate(androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_STRONG) !=
             androidx.biometric.BiometricManager.BIOMETRIC_ERROR_NO_HARDWARE
     }
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && hasBiometricHardware) {
-        KeySecondaryButton(stringResource(R.string.setup_fingerprint_open), onClick = {
+        val hasFingerprint = remember(context) { context.packageManager.hasSystemFeature(PackageManager.FEATURE_FINGERPRINT) }
+        KeySecondaryButton(stringResource(biometricEnrollLabel(hasFingerprint)), onClick = {
             open(
                 Intent(Settings.ACTION_BIOMETRIC_ENROLL).putExtra(
                     Settings.EXTRA_BIOMETRIC_AUTHENTICATORS_ALLOWED,
@@ -55,3 +57,8 @@ fun ScreenLockGuide(onCheck: () -> Unit, onCancel: () -> Unit) {
     KeySecondaryButton(stringResource(R.string.setup_screen_lock_check), onClick = onCheck)
     KeySecondaryButton(stringResource(R.string.common_cancel), onClick = onCancel)
 }
+
+/** "Add a fingerprint" only with a fingerprint reader; a phone with face unlock only gets a neutral label. */
+@androidx.annotation.StringRes
+internal fun biometricEnrollLabel(hasFingerprint: Boolean): Int =
+    if (hasFingerprint) R.string.setup_fingerprint_open else R.string.setup_biometric_open
