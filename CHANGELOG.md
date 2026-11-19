@@ -97,6 +97,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Server and channel settings: rename and delete a channel, rename or delete your server (owner), leave a server (everyone else). Each asks first and names what it removes.
 
 ### Changed
+- Android: on a phone that is not set up yet, the sign-in screen starts with "Set up this phone with a setup code"; the other ways to sign in follow below.
+- Android: setup links (https://<server>/setup) from the official release open the app directly instead of a web page first.
+- Android: each screen-lock prompt says what it confirms (signing in, finishing the setup, removing this phone, staying signed in), including why the setup asks a second time.
+- Android: the screen-lock guide tells you to come back to Kaiku when the lock is on and shows "Add a fingerprint" only on phones with a reader.
 - The sign-in page puts passkey and phone first; the password field opens with "Sign in with a password".
 - **Breaking:** new accounts start by adding a passkey or a key phone (or an authenticator app) within 30 minutes; a password is optional, and registering no longer signs you in. Accounts that add nothing within 30 minutes are removed. The first admin of a new server adds a passkey or a key phone.
 - **Breaking for older apps:** after your password (or single sign-on), Kaiku asks you to confirm on your phone by scanning a code, or for your authenticator code if you have no key phone. Sessions created this way are limited to chat and calls. A wrong password, an unknown user name and an account without a second step all get the same answer. The desktop app receives single sign-on results through a page that hands a one-time code to the app.
@@ -157,6 +161,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Windows that open on demand (channel settings, new channel, new message, search, pinned messages, custom status, keyboard shortcuts, report and block, the first-run setup and tour) load when first opened, so the app has less to download at start. If one cannot load, the page says so and offers a reload.
 
 ### Security
+- Android: passkey sign-in, confirmation and adding a passkey only run for the server the app is set up for; a passkey request for any other website is stopped before your passkey is used.
+- Android: Kaiku data is no longer copied by cloud backup or when moving to a new phone. "Confirm it's you" is protected against screenshots and taps through other apps like the other key screens.
 - The end-to-end encryption library was updated to a release that clears key material from memory more thoroughly.
 - Dependency advisories for the web client and the server were cleared.
 - Repeated wrong passwords or codes for one account slow further tries (from the 5th: 30 seconds, doubling up to an hour) and are reported to the account and the admins; after 100 the password or code is blocked. Signing in with a passkey or your phone is never blocked by this.
@@ -220,6 +226,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Android: signing the phone in by scanning a QR code from the desktop without any confirmation. The phone's scanner now only reads Kaiku sign-in and setup codes of its own server.
 
 ### Fixed
+- Android: "Use another account" on a phone that is the account's only key no longer ends with a bare error. The phone stays your key and "Confirm it's you" explains that you first add another phone or a passkey, or ask your admin to remove it.
+- Android: when an admin removed your phone as a key, "Confirm it's you" now says so right away, and a new setup link works instead of saying "already your key".
+- Android: a screen-lock prompt left open for a few minutes now says it took too long, and the button tries again.
+- Android: on "Set up this phone" without a screen lock, the screen-lock guide no longer shows its text and buttons on top of each other.
+- Android: going back while the setup code is shown now asks "Stop setting up this phone?" instead of jumping to the password sign-in.
+- Android: the security settings no longer show "not your key" or "0 recovery codes" while they are still loading; a failed load offers "Try again". Sessions without a device name show the kind of device.
 - Client: a chat-only sign-in without a passkey now says exactly how to add a passkey for the computer, in the banner and in the security settings.
 - Client: in the desktop app and in browsers other than Firefox, avatars are now round, icons have their intended size, selected options and primary buttons show their accent background, QR codes have a white background, and clickable items show a hand cursor. These styles were dropped from the app's CSS; Firefox already showed them.
 - The message for actions that need a full session now says that a computer needs a passkey sign-in and that a phone can do it in the Kaiku app.
