@@ -4,15 +4,17 @@
  * window with `lazyWindow`, so a failed download is told apart reliably.
  *
  * - While the code downloads, nothing shows at first; after a moment a
- *   polite "Loading…" appears, so a slow connection does not look like a
- *   click that did nothing (and invite a second click that closes a toggle).
- * - If the code cannot be loaded, a small dialog says so with Reload.
+ *   polite "Loading…" appears (one for all windows loading at once), so a
+ *   slow connection does not look like a click that did nothing (and invite
+ *   a second click that closes a toggle).
+ * - If the code cannot be loaded, a small dialog says so with Try again
+ *   (loads it again) and Reload.
  * - If the window loaded but failed while rendering, it says that instead,
  *   with Try again.
  * Close (and Escape) call `onClose`, the window's own close, so opening the
  * window again tries again rather than a click that silently does nothing.
- * Without `onClose` (startup wizards the app cannot go on without) the
- * dialog offers only Reload and cannot be dismissed.
+ * Without `onClose` (startup wizards the app cannot go on without) there is
+ * no Close and Escape does nothing.
  */
 
 import { Component, ParentProps, Show, Suspense, createSignal, onCleanup } from "solid-js";
@@ -26,29 +28,45 @@ import { LazyErrorBoundary } from "./LazyFallback";
 /** How long a download may take before "Loading…" shows (no flicker below). */
 export const LOADING_DELAY_MS = 350;
 
+// Windows still downloading, oldest first, and how many of them have taken
+// longer than the delay. One status region serves them all.
+const [pending, setPending] = createSignal<symbol[]>([]);
+const [late, setLate] = createSignal(0);
+
 /**
  * The live region is there from the start, empty, so screen readers announce
  * the text when it appears. On `body`, so a transformed drawer cannot clip it.
  */
 const DelayedLoading: Component = () => {
-  const [visible, setVisible] = createSignal(false);
-  const timer = setTimeout(() => setVisible(true), LOADING_DELAY_MS);
-  onCleanup(() => clearTimeout(timer));
+  const id = Symbol();
+  let counted = false;
+  setPending((p) => [...p, id]);
+  const timer = setTimeout(() => {
+    counted = true;
+    setLate((n) => n + 1);
+  }, LOADING_DELAY_MS);
+  onCleanup(() => {
+    clearTimeout(timer);
+    setPending((p) => p.filter((x) => x !== id));
+    if (counted) setLate((n) => n - 1);
+  });
   return (
-    <Portal>
-      <div
-        role="status"
-        aria-live="polite"
-        class="fixed bottom-4 left-1/2 -translate-x-1/2 pointer-events-none"
-        style={{ "z-index": MODAL_LAYER.notice }}
-      >
-        <Show when={visible()}>
-          <span class="block rounded-full border border-border-subtle bg-surface-layer2 px-4 py-2 text-sm text-text-primary shadow-lg">
-            {t("common.loading")}
-          </span>
-        </Show>
-      </div>
-    </Portal>
+    <Show when={pending()[0] === id}>
+      <Portal>
+        <div
+          role="status"
+          aria-live="polite"
+          class="fixed bottom-4 left-1/2 -translate-x-1/2 pointer-events-none"
+          style={{ "z-index": MODAL_LAYER.notice }}
+        >
+          <Show when={late() > 0}>
+            <span class="block rounded-full border border-border-subtle bg-surface-layer2 px-4 py-2 text-sm text-text-primary shadow-lg">
+              {t("common.loading")}
+            </span>
+          </Show>
+        </div>
+      </Portal>
+    </Show>
   );
 };
 
@@ -56,12 +74,17 @@ const FailureDialog: Component<{
   loadFailed: boolean;
   onRetry: () => void;
   onClose?: () => void;
+  /** What had focus when the window was asked for: focus goes back there. */
+  opener: Element | null;
 }> = (props) => {
   // Without a close the dialog stays: Escape does nothing.
-  const dialog = createDialog({ onClose: () => props.onClose?.() });
+  const dialog = createDialog({
+    onClose: () => props.onClose?.(),
+    // eslint-disable-next-line solid/reactivity
+    opener: props.opener,
+  });
   const layer = createModalLayer(MODAL_LAYER.prompt);
-  // Startup wizards cannot be retried in place either: the app needs them.
-  const reload = () => props.loadFailed || !props.onClose;
+  const button = "min-h-11 rounded-lg px-4 text-base text-text-primary hover:bg-white/10";
   return (
     <Portal>
       <div
@@ -80,21 +103,18 @@ const FailureDialog: Component<{
           <div class="flex flex-wrap justify-end gap-2">
             <Show when={props.onClose}>
               {(close) => (
-                <button
-                  type="button"
-                  class="min-h-11 rounded-lg px-4 text-base text-text-primary hover:bg-white/10"
-                  onClick={() => close()()}
-                >
+                <button type="button" class={button} onClick={() => close()()}>
                   {t("common.close")}
                 </button>
               )}
             </Show>
-            <button
-              type="button"
-              class="btn-primary min-h-11 px-4 text-base"
-              onClick={() => (reload() ? window.location.reload() : props.onRetry())}
-            >
-              {t(reload() ? "common.reload" : "common.tryAgain")}
+            <Show when={props.loadFailed}>
+              <button type="button" class={button} onClick={() => window.location.reload()}>
+                {t("common.reload")}
+              </button>
+            </Show>
+            <button type="button" class="btn-primary min-h-11 px-4 text-base" onClick={() => props.onRetry()}>
+              {t("common.tryAgain")}
             </button>
           </div>
         </div>
@@ -103,15 +123,24 @@ const FailureDialog: Component<{
   );
 };
 
-const LazyDialog: Component<ParentProps<{ name: string; onClose?: () => void }>> = (props) => (
-  <LazyErrorBoundary
-    name={props.name}
-    fallback={(err, reset) => (
-      <FailureDialog loadFailed={isChunkLoadError(err)} onRetry={reset} onClose={props.onClose} />
-    )}
-  >
-    <Suspense fallback={<DelayedLoading />}>{props.children}</Suspense>
-  </LazyErrorBoundary>
-);
+const LazyDialog: Component<ParentProps<{ name: string; onClose?: () => void }>> = (props) => {
+  // The opener: by the time a slow download fails, focus may be elsewhere.
+  const opener = document.activeElement;
+  return (
+    <LazyErrorBoundary
+      name={props.name}
+      fallback={(err, reset) => (
+        <FailureDialog
+          loadFailed={isChunkLoadError(err)}
+          onRetry={reset}
+          onClose={props.onClose}
+          opener={opener}
+        />
+      )}
+    >
+      <Suspense fallback={<DelayedLoading />}>{props.children}</Suspense>
+    </LazyErrorBoundary>
+  );
+};
 
 export default LazyDialog;

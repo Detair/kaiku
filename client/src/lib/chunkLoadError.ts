@@ -2,9 +2,10 @@
  * Telling "the window's code could not be loaded" apart from "the window
  * failed while rendering".
  *
- * A failed load needs a reload: Solid's `lazy` keeps the rejected import and
- * browsers remember a failed dynamic import, so trying again in place cannot
- * help. A render error can be retried. The reliable signal is where it failed:
+ * The two need different words and actions: a failed load is about the
+ * connection (Try again runs the import again, since Solid's `lazy` drops a
+ * rejected import, and Reload is offered too); a render error is about the
+ * window. The reliable signal is where it failed:
  * `lazyWindow` tags every rejection of its import as a `ChunkLoadError`,
  * whatever the browser called it (a network error, a chunk answered with an
  * HTML page, a chunk that does not parse).
@@ -28,7 +29,7 @@ export function loadOrTag<T>(load: () => Promise<T>): () => Promise<T> {
     });
 }
 
-/** `lazy` for a window mounted in `LazyDialog`: a failed import is tagged. */
+/** `lazy` for a window mounted in `LazyDialog`: a failed import is tagged. Mounting it again loads it again. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function lazyWindow<T extends Component<any>>(load: () => Promise<{ default: T }>) {
   return lazy(loadOrTag(load));
