@@ -307,7 +307,7 @@ pub struct VoiceState {
     /// the join that created it): a leave for an older session leaves it.
     pub session_epoch: Option<u64>,
     /// Sender for encoded audio to WebRTC.
-    pub audio_tx: Option<mpsc::Sender<Vec<u8>>>,
+    pub audio_tx: Option<mpsc::Sender<audio::EncodedFrame>>,
     /// Active screen share pipelines, keyed by stream ID. Max 3 concurrent.
     pub screen_shares: HashMap<Uuid, ScreenSharePipeline>,
     /// Active webcam pipeline, if any.

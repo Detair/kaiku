@@ -15,8 +15,8 @@ use webrtc::track::track_local::TrackLocalWriter;
 use webrtc::track::track_remote::TrackRemote;
 
 use crate::audio::{
-    AudioDeviceList, AudioError, AudioErrorEvent, AudioErrorKind, AudioHandle, OutputLevel,
-    AUDIO_ERROR_EVENT, FRAME_SIZE_MS, SAMPLE_RATE,
+    AudioDeviceList, AudioError, AudioErrorEvent, AudioErrorKind, AudioHandle, EncodedFrame,
+    OutputLevel, AUDIO_ERROR_EVENT,
 };
 use crate::network::{ClientEvent, WebSocketManager};
 use crate::voice::audio_mixer::{AudioMixer, RtpIn};
@@ -607,7 +607,7 @@ pub async fn handle_voice_publisher_answer(
 trait CallAudio {
     fn start_capture(
         &mut self,
-        output_tx: mpsc::Sender<Vec<u8>>,
+        output_tx: mpsc::Sender<EncodedFrame>,
     ) -> impl std::future::Future<Output = Result<(), AudioError>> + Send;
     fn start_pcm_playback(
         &mut self,
@@ -619,7 +619,10 @@ trait CallAudio {
 }
 
 impl CallAudio for AudioHandle {
-    async fn start_capture(&mut self, output_tx: mpsc::Sender<Vec<u8>>) -> Result<(), AudioError> {
+    async fn start_capture(
+        &mut self,
+        output_tx: mpsc::Sender<EncodedFrame>,
+    ) -> Result<(), AudioError> {
         Self::start_capture(self, output_tx).await
     }
 
@@ -639,7 +642,7 @@ impl CallAudio for AudioHandle {
 /// Result of [`start_call_audio`].
 struct StartedCallAudio {
     /// Where captured Opus frames go (kept in the voice state).
-    audio_tx: mpsc::Sender<Vec<u8>>,
+    audio_tx: mpsc::Sender<EncodedFrame>,
     mixer: AudioMixer,
     /// Combined user-facing error when the microphone or speaker failed.
     result: Result<(), String>,
@@ -656,7 +659,7 @@ async fn start_call_audio<A: CallAudio + Send>(
     audio: &mut A,
     gains: crate::voice::audio_mixer::UserGains,
     emit: impl Fn(&AudioErrorEvent) + Send + Sync,
-    spawn_sender: impl FnOnce(mpsc::Receiver<Vec<u8>>) + Send,
+    spawn_sender: impl FnOnce(mpsc::Receiver<EncodedFrame>) + Send,
 ) -> StartedCallAudio {
     let mut problems = Vec::new();
     let mut fail = |kind: AudioErrorKind, what: &str, e: &AudioError, audio: &A| {
@@ -668,7 +671,7 @@ async fn start_call_audio<A: CallAudio + Send>(
         problems.push(format!("{what} could not be started: {e}"));
     };
 
-    let (audio_tx, audio_rx) = mpsc::channel::<Vec<u8>>(100);
+    let (audio_tx, audio_rx) = mpsc::channel::<EncodedFrame>(100);
     if let Err(e) = audio.start_capture(audio_tx.clone()).await {
         fail(AudioErrorKind::CaptureFailed, "Microphone", &e, audio);
     }
@@ -1357,23 +1360,21 @@ pub async fn subscribe_video_frames(
 ///
 /// This function runs in a background task and:
 /// 1. Receives Opus-encoded audio frames from the capture task
-/// 2. Creates RTP packets with proper headers (sequence number, timestamp, SSRC)
+/// 2. Creates RTP packets with proper headers (sequence number, timestamp, SSRC); the timestamp
+///    advances over frames the voice-activity gate skipped and the first packet after such a pause
+///    carries the marker bit
 /// 3. Writes the RTP packets to the WebRTC track for transmission
 async fn send_audio_to_track(
     track: Arc<TrackLocalStaticRTP>,
-    mut audio_rx: mpsc::Receiver<Vec<u8>>,
+    mut audio_rx: mpsc::Receiver<EncodedFrame>,
 ) {
-    // Calculate samples per frame (20ms at 48kHz)
-    const SAMPLES_PER_FRAME: u32 = SAMPLE_RATE / 1000 * FRAME_SIZE_MS as u32;
-
     // RTP payload type for Opus (as configured in webrtc/mod.rs)
     const OPUS_PAYLOAD_TYPE: u8 = 111;
 
     // Per RFC 3550 §5.1: start seq and timestamp at random values for each session.
     // SSRC is already per-session (derived from SystemTime at spawn), so combining
     // with a random seq start ensures receivers see a fresh stream after reconnect.
-    let mut seq: u16 = rand::random();
-    let mut timestamp: u32 = rand::random();
+    let mut clock = voice::rtp_clock::RtpClock::new(rand::random(), rand::random());
 
     // Generate SSRC (Synchronization Source identifier) from timestamp
     // This provides a unique value per stream session
@@ -1384,21 +1385,26 @@ async fn send_audio_to_track(
 
     info!("Starting RTP audio sender task (SSRC: {})", ssrc);
 
-    while let Some(opus_data) = audio_rx.recv().await {
+    while let Some(frame) = audio_rx.recv().await {
+        let stamp = clock.stamp(
+            frame.skipped_frames,
+            std::time::Instant::now(),
+            audio_rx.len(),
+        );
         // Create RTP packet
         let rtp_packet = RtpPacket {
             header: webrtc::rtp::header::Header {
                 version: 2,
                 padding: false,
                 extension: false,
-                marker: false,
+                marker: stamp.marker,
                 payload_type: OPUS_PAYLOAD_TYPE,
-                sequence_number: seq,
-                timestamp,
+                sequence_number: stamp.seq,
+                timestamp: stamp.ts,
                 ssrc,
                 ..Default::default()
             },
-            payload: opus_data.into(),
+            payload: frame.opus.into(),
         };
 
         // Write packet to track
@@ -1406,11 +1412,6 @@ async fn send_audio_to_track(
             warn!("Failed to write RTP packet: {}", e);
             // Don't break - connection might recover
         }
-
-        // Advance state for next packet. The first packet uses the random
-        // initial values per RFC 3550 §5.1.
-        seq = seq.wrapping_add(1);
-        timestamp = timestamp.wrapping_add(SAMPLES_PER_FRAME);
     }
 
     info!("RTP audio sender task ended");
@@ -1520,7 +1521,10 @@ mod tests {
     }
 
     impl CallAudio for FakeCallAudio {
-        async fn start_capture(&mut self, _tx: mpsc::Sender<Vec<u8>>) -> Result<(), AudioError> {
+        async fn start_capture(
+            &mut self,
+            _tx: mpsc::Sender<EncodedFrame>,
+        ) -> Result<(), AudioError> {
             self.log.push("capture");
             if self.capture_ok {
                 Ok(())
@@ -1557,7 +1561,7 @@ mod tests {
         FakeCallAudio,
         StartedCallAudio,
         Vec<AudioErrorEvent>,
-        Option<mpsc::Receiver<Vec<u8>>>,
+        Option<mpsc::Receiver<EncodedFrame>>,
     ) {
         let mut audio = FakeCallAudio {
             capture_ok,
@@ -1624,8 +1628,12 @@ mod tests {
         assert_eq!(audio.log, ["capture", "playback"]);
         let mut sender_rx = sender_rx.expect("uplink sender wired");
         // The microphone's frames still reach the WebRTC sender.
-        started.audio_tx.try_send(vec![7]).unwrap();
-        assert_eq!(sender_rx.try_recv().unwrap(), vec![7]);
+        let frame = EncodedFrame {
+            skipped_frames: 0,
+            opus: vec![7],
+        };
+        started.audio_tx.try_send(frame.clone()).unwrap();
+        assert_eq!(sender_rx.try_recv().unwrap(), frame);
 
         assert_eq!(
             events,

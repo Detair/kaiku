@@ -29,6 +29,15 @@ pub const FRAME_SIZE: usize = (SAMPLE_RATE as usize * FRAME_SIZE_MS) / 1000;
 /// `RNNoise` processes 480-sample frames (10ms at 48kHz mono)
 pub const RNNOISE_FRAME_SIZE: usize = 480;
 
+/// One encoded microphone frame on its way to the RTP sender.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EncodedFrame {
+    /// 20 ms frames captured but not sent right before this one (the
+    /// voice-activity gate was closed); the RTP timestamp advances over them.
+    pub skipped_frames: u32,
+    pub opus: Vec<u8>,
+}
+
 /// Packet loss the voice encoder plans for (percent).
 ///
 /// With in-band FEC on, libopus spends this much redundancy (LBRR: a

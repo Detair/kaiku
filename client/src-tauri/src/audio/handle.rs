@@ -19,8 +19,8 @@ use super::format::{
     negotiate_capture_format, push_chunk_len, CaptureFormat, CaptureFrontEnd, MAX_PUSH_SAMPLES,
 };
 use super::{
-    devices, AudioDevice, AudioDeviceList, AudioError, OutputLevel, VadConfig, CHANNELS,
-    FRAME_SIZE, RNNOISE_FRAME_SIZE, SAMPLE_RATE,
+    devices, AudioDevice, AudioDeviceList, AudioError, EncodedFrame, OutputLevel, VadConfig,
+    CHANNELS, FRAME_SIZE, RNNOISE_FRAME_SIZE, SAMPLE_RATE,
 };
 
 /// Tauri event emitted when an audio stream dies at runtime; payload is an
@@ -644,7 +644,7 @@ pub struct AudioHandle {
     capture: Option<CaptureTask>,
 
     /// Where captured Opus frames go; kept to rebuild capture on a new device
-    capture_output_tx: Option<mpsc::Sender<Vec<u8>>>,
+    capture_output_tx: Option<mpsc::Sender<EncodedFrame>>,
 
     /// Control channel for playback task
     playback_control: Option<mpsc::Sender<PlaybackControl>>,
@@ -1087,7 +1087,7 @@ struct CaptureSpawner {
     muted: Arc<AtomicBool>,
     vad_config: VadConfig,
     app_handle: Option<tauri::AppHandle>,
-    output_tx: mpsc::Sender<Vec<u8>>,
+    output_tx: mpsc::Sender<EncodedFrame>,
     /// Fall back to the default microphone when the named one is gone
     /// (call start), instead of failing (explicit switch).
     fallback_to_default: bool,
@@ -1461,7 +1461,7 @@ impl AudioHandle {
     /// What is needed to open capture streams feeding `output_tx`.
     fn capture_spawner(
         &self,
-        output_tx: mpsc::Sender<Vec<u8>>,
+        output_tx: mpsc::Sender<EncodedFrame>,
         fallback_to_default: bool,
     ) -> CaptureSpawner {
         CaptureSpawner {
@@ -1487,7 +1487,7 @@ impl AudioHandle {
     /// [`AUDIO_ERROR_EVENT`].
     pub async fn start_capture(
         &mut self,
-        output_tx: mpsc::Sender<Vec<u8>>,
+        output_tx: mpsc::Sender<EncodedFrame>,
     ) -> Result<(), AudioError> {
         // Stop existing capture if running
         self.stop_capture().await;
@@ -1850,7 +1850,7 @@ fn capture_config(device: &Device) -> (CaptureFormat, SampleFormat) {
 /// What the capture callback needs besides the device format.
 struct CaptureContext {
     muted: Arc<AtomicBool>,
-    output_tx: mpsc::Sender<Vec<u8>>,
+    output_tx: mpsc::Sender<EncodedFrame>,
     vad_config: VadConfig,
     app_handle: Option<tauri::AppHandle>,
     active: Arc<AtomicBool>,
@@ -1971,16 +1971,18 @@ struct CaptureProcessor {
     samples_i16: [i16; FRAME_SIZE],
     encode_buf: Vec<u8>,
     gate_open: bool,
+    /// Frames not sent since the last packet (gate closed or send failed).
+    skipped_frames: u32,
     indicator_speaking: bool,
     last_speech_time: Instant,
     vad_config: VadConfig,
-    output_tx: mpsc::Sender<Vec<u8>>,
+    output_tx: mpsc::Sender<EncodedFrame>,
     app_handle: Option<tauri::AppHandle>,
 }
 
 impl CaptureProcessor {
     fn new(
-        output_tx: mpsc::Sender<Vec<u8>>,
+        output_tx: mpsc::Sender<EncodedFrame>,
         vad_config: VadConfig,
         app_handle: Option<tauri::AppHandle>,
     ) -> Result<Self, AudioError> {
@@ -1997,6 +1999,7 @@ impl CaptureProcessor {
             samples_i16: [0; FRAME_SIZE],
             encode_buf: vec![0u8; 4000],
             gate_open: false,
+            skipped_frames: 0,
             indicator_speaking: false,
             last_speech_time: Instant::now(),
             vad_config,
@@ -2065,6 +2068,8 @@ impl CaptureProcessor {
         }
 
         if !self.gate_open {
+            // Not sent; the sender advances the RTP timestamp over it.
+            self.skipped_frames = self.skipped_frames.saturating_add(1);
             return;
         }
 
@@ -2080,12 +2085,20 @@ impl CaptureProcessor {
 
         match self.encoder.encode(&self.samples_i16, &mut self.encode_buf) {
             Ok(len) => {
-                let encoded = self.encode_buf[..len].to_vec();
+                let encoded = EncodedFrame {
+                    skipped_frames: self.skipped_frames,
+                    opus: self.encode_buf[..len].to_vec(),
+                };
                 if let Err(e) = self.output_tx.try_send(encoded) {
+                    // Lost here: the next packet's timestamp covers it.
+                    self.skipped_frames = self.skipped_frames.saturating_add(1);
                     warn!("Failed to send encoded audio: {}", e);
+                } else {
+                    self.skipped_frames = 0;
                 }
             }
             Err(e) => {
+                self.skipped_frames = self.skipped_frames.saturating_add(1);
                 error!("Opus encode error: {}", e);
             }
         }
@@ -2491,6 +2504,25 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+
+    #[test]
+    fn gated_frames_are_counted_for_the_next_packet() {
+        let (tx, mut rx) = mpsc::channel(16);
+        let vad = VadConfig::new();
+        vad.set_enabled(true);
+        vad.set_threshold(1.0); // nothing counts as speech: gate stays closed
+        let mut processor = CaptureProcessor::new(tx, vad.clone(), None).unwrap();
+        let frame = [0.1f32; FRAME_SIZE];
+        for _ in 0..7 {
+            processor.process_frame(&frame);
+        }
+        assert!(rx.try_recv().is_err(), "a gated frame was sent");
+        vad.set_enabled(false); // gate open
+        processor.process_frame(&frame);
+        assert_eq!(rx.try_recv().unwrap().skipped_frames, 7);
+        processor.process_frame(&frame);
+        assert_eq!(rx.try_recv().unwrap().skipped_frames, 0);
+    }
 
     /// What the fake audio streams did, in order.
     type StopLog = Arc<std::sync::Mutex<Vec<String>>>;
