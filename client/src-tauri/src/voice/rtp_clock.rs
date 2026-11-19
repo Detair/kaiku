@@ -124,7 +124,7 @@ mod tests {
         let mut clock = RtpClock::new(0, 0);
         let t0 = Instant::now();
         clock.stamp(0, t0, 0);
-        let s = clock.stamp(0, t0 + Duration::from_millis(2_000), 0);
+        let s = clock.stamp(0, t0 + Duration::from_secs(2), 0);
         assert_eq!(s.ts, 100 * FRAME_TS);
         assert!(s.marker);
     }

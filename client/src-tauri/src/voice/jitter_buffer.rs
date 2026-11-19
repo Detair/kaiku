@@ -1,16 +1,21 @@
 //! Per-track jitter buffer for received Opus RTP audio.
 //!
 //! Pure logic: no I/O, no clock, no decoder. The caller feeds packets with
-//! their arrival time ([`JitterBuffer::push`]) and asks for exactly one
-//! 20 ms frame per playout tick ([`JitterBuffer::pop`]). The answer says what
-//! the decoder has to do for that tick (decode a packet, recover a lost one,
-//! conceal, merge two frames, or stay silent). See `TrackPlayout` in
-//! `voice::playout` for the decoder side.
+//! their arrival time ([`JitterBuffer::push`]). Once per 20 ms playout tick
+//! it calls [`JitterBuffer::tick`] and then [`JitterBuffer::pop`] until it
+//! holds enough decoded audio for the tick; each answer says what the
+//! decoder has to do (decode a packet, rebuild or conceal a lost one, bridge
+//! a gap, or nothing). The timeline works in decoded audio, so packets of
+//! any Opus duration from 10 ms to 120 ms are handled alike. See
+//! `TrackPlayout` in `voice::playout` for the decoder side.
 //!
 //! Playout position is driven by the RTP timestamp, ordering by the RTP
 //! sequence number. Both are extended to `i64` relative to the highest value
 //! seen so far, so 16-bit sequence and 32-bit timestamp wrap-around are
-//! invisible to the rest of the logic.
+//! invisible to the rest of the logic. Packets come from remote peers and
+//! are untrusted: a packet whose sequence number and timestamp do not agree
+//! with the stream is discarded, and only a second packet that agrees with
+//! it restarts the stream.
 
 /// RTP timestamp units in one 20 ms Opus frame (48 kHz clock).
 pub const FRAME_TS: u32 = 960;
@@ -29,12 +34,22 @@ pub const MIN_TARGET_MS: f64 = 40.0;
 /// this, concealing a late packet is preferred over more delay.
 pub const MAX_TARGET_MS: f64 = 160.0;
 
-/// Fixed number of packet slots (500 ms of 20 ms packets). Memory per track
-/// is constant; a packet further ahead than this resynchronises the buffer.
-pub const CAPACITY: usize = 25;
+/// Fixed number of packet slots. Memory per track is constant.
+pub const CAPACITY: usize = 50;
+
+/// Audio held ahead of the play position at most (600 ms); a packet further
+/// ahead resynchronises the buffer.
+const MAX_SPAN_TS: i64 = 600 * TS_PER_MS;
+
+/// Shortest packet accepted (10 ms); shorter Opus packets are rejected by
+/// the caller.
+pub const MIN_PACKET_TS: u32 = 480;
+
+/// Longest Opus packet (120 ms) in timestamp units.
+pub const MAX_PACKET_TS: u32 = 5760;
 
 /// Packets in the window whose minimum relative transit time is the
-/// reference for the jitter estimate (2 s at 20 ms).
+/// reference for the jitter estimate (about 2 s).
 const JITTER_WINDOW: usize = 100;
 
 /// How fast the jitter peak (and with it the target) shrinks: 2 ms per
@@ -53,10 +68,10 @@ const DROP_ABOVE_MS: f64 = 15.0;
 /// Above this margin over the target, drop every [`FAST_COOLDOWN_TICKS`].
 const FAST_DROP_ABOVE_MS: f64 = 60.0;
 
-/// Ticks between two level adjustments (0.5 s).
+/// Ticks between two drops (0.5 s).
 const ADJUST_COOLDOWN_TICKS: u32 = 25;
 
-/// Ticks between two adjustments while far above the target.
+/// Ticks between two drops while far above the target.
 const FAST_COOLDOWN_TICKS: u32 = 2;
 
 /// Ticks after an inserted frame before the next one (100 ms): growing is
@@ -68,50 +83,60 @@ const INSERT_COOLDOWN_TICKS: u32 = 5;
 /// PLC has faded out by then).
 pub const PLC_MAX_FRAMES: u32 = 5;
 
-/// A starvation that ends within this time with the very packet that was
-/// due (same sequence number and timestamp) was an underrun (the network
-/// was late). Longer, or with a timestamp jump, it was a pause of the
-/// sender (VAD gate or DTX) and does not count.
-const SILENCE_GAP_MS: u64 = 200;
-
 /// An arrival gap this long starts a new talk spurt: the jitter reference
 /// is dropped, timing from before the pause says nothing about now.
 const LONG_GAP_MS: u64 = 500;
 
-/// A packet this far behind the highest sequence number restarts the stream.
+/// A gap in the timeline longer than this while playing is skipped rather
+/// than played out as silence.
+const LONG_GAP_TS: i64 = LONG_GAP_MS as i64 * TS_PER_MS;
+
+/// A packet that arrives at least this much later than its predecessor
+/// (beyond the packet spacing) with a contiguous timestamp may follow a
+/// pause of a sender that does not advance its timestamp over pauses.
+const STEP_GAP_MS: u64 = 40;
+
+/// Packets that must keep the new arrival/timestamp relation (within
+/// [`STEP_TOLERANCE_TS`]) before it counts as such a pause.
+const STEP_CONFIRM: usize = 4;
+
+/// A packet this much earlier than the first one after the gap shows the
+/// network catching up: the gap was jitter, not a pause.
+const STEP_TOLERANCE_TS: i64 = 15 * TS_PER_MS;
+
+/// A packet this far behind the highest sequence number does not belong to
+/// the stream.
 const MAX_SEQ_BACK: i64 = 500;
 
-/// A packet this far ahead of the highest sequence number restarts the stream.
+/// A packet this far ahead of the highest sequence number does not belong to
+/// the stream.
 const MAX_SEQ_AHEAD: i64 = 1000;
 
-/// Longest Opus packet (120 ms) in timestamp units.
-const MAX_PACKET_TS: i64 = 5760;
-
-/// A timestamp that advances this much more than the sequence numbers and
-/// the wall clock explain is a discontinuity of the sender (1 s).
+/// A timestamp may advance this much more than the sequence numbers and the
+/// wall clock explain (1 s); beyond that it does not belong to the stream.
 const TS_JUMP_SLACK: i64 = 48_000;
 
-/// What the caller has to do for one playout tick.
+/// Packets that agree with a discarded one restart the stream when they
+/// follow it within this many sequence numbers.
+const RESTART_CONFIRM_SEQ: i64 = 3;
+
+/// What the caller has to do to extend its decoded audio.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Playout<P> {
-    /// Nothing to play (not started, or silent for longer than the
-    /// concealment budget). Do not touch the decoder.
+    /// Nothing to play now. Do not touch the decoder; play what is held,
+    /// then silence.
     Silence,
     /// Decode this packet.
     Decode(P),
-    /// The packet for this tick never arrived in time. `next` is the
-    /// following packet when it is already buffered: if it carries in-band
-    /// FEC, decode the lost frame from it; otherwise conceal (PLC).
-    /// `next` itself is played on a later tick as usual.
-    Lost { next: Option<P> },
-    /// Play one concealment frame (PLC): the buffer ran dry, a DTX gap is
-    /// being bridged, or a frame is inserted to grow the buffer.
+    /// `dur_ts` of audio never arrived in time. `next` is the following
+    /// packet when it is already buffered and starts right after the gap:
+    /// if it carries in-band FEC, rebuild the gap from it; otherwise
+    /// conceal `dur_ts` (PLC). `next` itself is decoded later as usual.
+    Lost { next: Option<P>, dur_ts: u32 },
+    /// Play one 20 ms concealment frame (PLC): the buffer ran dry, a DTX
+    /// gap is being bridged, or a frame is inserted to grow the buffer.
     Conceal,
-    /// Drop one frame to shrink the buffer: decode both packets in order
-    /// and cross-fade them into one frame.
-    Merge(P, P),
-    /// The caller still holds at least one frame of decoded audio (from a
-    /// packet longer than 20 ms): play that, nothing to decode.
+    /// The caller holds enough decoded audio for this tick.
     Carry,
 }
 
@@ -120,10 +145,10 @@ pub enum Playout<P> {
 pub enum PushOutcome {
     /// The packet was buffered.
     Stored,
-    /// Duplicate, late or out of range: the packet was discarded.
+    /// Duplicate, late or not matching the stream: discarded.
     Dropped,
-    /// The stream restarted (new SSRC or a sequence/timestamp jump). The
-    /// buffer now holds only this packet; the decoder state must be reset.
+    /// The stream restarted or was resynchronised. The buffer now holds
+    /// only this packet; decoder state and held audio must be reset.
     Reset,
 }
 
@@ -134,9 +159,11 @@ pub struct BufferStats {
     /// Arrived after a packet with a higher sequence number (still played).
     pub reordered: u64,
     pub duplicates: u64,
-    /// Arrived after its frame was already concealed: discarded.
+    /// Arrived after its audio was already concealed or played: discarded.
     pub late_dropped: u64,
-    /// Frames whose packet did not arrive in time (concealed or skipped).
+    /// Sequence number and timestamp did not agree with the stream.
+    pub discarded: u64,
+    /// Packets whose audio did not arrive in time (concealed or skipped).
     pub lost: u64,
     /// The buffer ran dry while the network, not the sender, was late.
     pub underruns: u64,
@@ -157,21 +184,14 @@ struct Slot<P> {
     payload: P,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
     /// No packet yet.
     Idle,
     /// Waiting until enough audio is buffered. `fresh`: nothing was played
     /// since the stream (re)started, the decoder has no state to conceal
-    /// from. `since_ms`: when the buffering started. `concealed`: PLC
-    /// frames played so far. `resolved`: the first packet after a
-    /// starvation was classified (underrun vs. pause).
-    Buffering {
-        fresh: bool,
-        since_ms: u64,
-        concealed: u32,
-        resolved: bool,
-    },
+    /// from. `concealed`: PLC frames played so far.
+    Buffering { fresh: bool, concealed: u32 },
     /// Playing; `gap_frames` counts frames bridged in a DTX gap.
     Playing { gap_frames: u32 },
 }
@@ -186,6 +206,34 @@ struct Highest {
     raw_ts: u32,
 }
 
+/// A discarded packet that a following one may confirm as a restart.
+#[derive(Debug, Clone, Copy)]
+struct RestartCandidate {
+    ssrc: u32,
+    seq: u16,
+    ts: u32,
+    arrival_ms: u64,
+}
+
+/// A packet arrived late after a gap with a contiguous timestamp: either
+/// the network was late (it catches up) or the sender paused without
+/// advancing its timestamp (the new relation holds). Transit samples are
+/// held back until that is clear.
+#[derive(Debug, Clone, Copy)]
+struct StepCandidate {
+    first: i64,
+    samples: [i64; STEP_CONFIRM],
+    len: usize,
+}
+
+/// Drop decision for the current tick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DropState {
+    None,
+    Pending { fast: bool },
+    Done,
+}
+
 /// Jitter buffer of one remote audio track. `P` is the packet payload.
 #[derive(Debug)]
 pub struct JitterBuffer<P> {
@@ -193,19 +241,30 @@ pub struct JitterBuffer<P> {
     ssrc: Option<u32>,
     highest: Option<Highest>,
     last_arrival_ms: Option<u64>,
+    restart: Option<RestartCandidate>,
     phase: Phase,
-    /// Next sequence number / timestamp to play.
+    /// Next sequence number / timestamp to decode.
     cursor_seq: i64,
     cursor_ts: i64,
+    /// Duration of the last decoded packet (assumed for lost ones).
+    last_dur: i64,
     /// Bit `i` set: sequence `cursor_seq - 1 - i` was played from a packet.
     played_mask: u64,
     /// Relative transit times (arrival − timestamp, in timestamp units).
     transit: [i64; JITTER_WINDOW],
     transit_len: usize,
     transit_pos: usize,
+    step: Option<StepCandidate>,
+    /// The packet ending the current starvation began a talk spurt.
+    pause_seen: bool,
+    /// Resumed with the due packet while a step candidate was open: an
+    /// underrun unless the candidate turns out to be a pause.
+    pending_underrun: bool,
     peak_ms: f64,
     level_ema: f64,
     cooldown: u32,
+    insert_due: bool,
+    drop: DropState,
     stats: BufferStats,
 }
 
@@ -222,94 +281,107 @@ impl<P: Clone> JitterBuffer<P> {
             ssrc: None,
             highest: None,
             last_arrival_ms: None,
+            restart: None,
             phase: Phase::Idle,
             cursor_seq: 0,
             cursor_ts: 0,
+            last_dur: i64::from(FRAME_TS),
             played_mask: 0,
             transit: [0; JITTER_WINDOW],
             transit_len: 0,
             transit_pos: 0,
+            step: None,
+            pause_seen: false,
+            pending_underrun: false,
             peak_ms: 0.0,
             level_ema: 0.0,
             cooldown: 0,
+            insert_due: false,
+            drop: DropState::None,
             stats: BufferStats::default(),
         }
     }
 
     /// Buffer one received packet. `dur_ts` is its audio duration in RTP
-    /// timestamp units (960 for 20 ms), `arrival_ms` the local arrival time.
+    /// timestamp units (960 for 20 ms; the caller only passes
+    /// [`MIN_PACKET_TS`]..=[`MAX_PACKET_TS`]), `marker` the RTP marker bit
+    /// (start of a talk spurt), `arrival_ms` the local arrival time.
+    #[allow(clippy::too_many_arguments)]
     pub fn push(
         &mut self,
         ssrc: u32,
         seq: u16,
         ts: u32,
         dur_ts: u32,
+        marker: bool,
         arrival_ms: u64,
         payload: P,
     ) -> PushOutcome {
         self.stats.packets_received += 1;
-        let dur = i64::from(dur_ts).clamp(1, MAX_PACKET_TS);
+        let dur = i64::from(dur_ts.clamp(MIN_PACKET_TS, MAX_PACKET_TS));
         let packet = RawPacket {
             seq,
             ts,
             dur,
             arrival_ms,
         };
-
-        if self.ssrc.is_some_and(|known| known != ssrc) {
-            self.ssrc = Some(ssrc);
-            self.restart(packet, payload);
-            return PushOutcome::Reset;
-        }
-        self.ssrc = Some(ssrc);
         let Some(high) = self.highest else {
+            self.ssrc = Some(ssrc);
             self.anchor(packet, payload);
             return PushOutcome::Stored;
         };
 
-        // Extend to i64 relative to the highest packet: wrap-safe.
-        let eseq = high.seq + i64::from(seq.wrapping_sub(high.raw_seq) as i16);
-        let ets = high.ts + i64::from(ts.wrapping_sub(high.raw_ts) as i32);
         let since_last = arrival_ms.saturating_sub(self.last_arrival_ms.unwrap_or(arrival_ms));
-        let seq_gap = eseq - high.seq;
-
-        let discontinuity = if !(-MAX_SEQ_BACK..=MAX_SEQ_AHEAD).contains(&seq_gap) {
-            true
-        } else if seq_gap > 0 {
-            let ts_gap = ets - high.ts;
-            ts_gap < 0
-                || ts_gap > seq_gap * MAX_PACKET_TS + since_last as i64 * TS_PER_MS + TS_JUMP_SLACK
+        let fits = if self.ssrc == Some(ssrc) {
+            relation(&high, seq, ts, since_last)
         } else {
-            false
+            None
         };
-        if discontinuity {
-            self.restart(packet, payload);
-            return PushOutcome::Reset;
-        }
-
-        // After a pause of the sender the old timing reference says
-        // nothing about the network now.
-        if seq_gap > 0 && since_last >= LONG_GAP_MS {
-            self.clear_transit();
-        }
-        if let Phase::Buffering {
-            fresh: false,
-            resolved: false,
-            since_ms,
-            concealed,
-        } = self.phase
-        {
-            let paused = arrival_ms.saturating_sub(since_ms) >= SILENCE_GAP_MS
-                || (eseq == self.cursor_seq && ets > self.cursor_ts);
-            if paused {
-                self.clear_transit();
+        let Some((eseq, ets)) = fits else {
+            // Not part of this stream. A restart only counts when the next
+            // packet agrees with this one.
+            let confirmed = self
+                .restart
+                .is_some_and(|c| c.confirmed_by(ssrc, seq, ts, arrival_ms));
+            if confirmed {
+                self.restart = None;
+                self.ssrc = Some(ssrc);
+                self.stats.resets += 1;
+                self.peak_ms = 0.0;
+                self.anchor(packet, payload);
+                return PushOutcome::Reset;
             }
-            self.phase = Phase::Buffering {
-                fresh: false,
-                since_ms,
-                concealed,
-                resolved: true,
-            };
+            self.restart = Some(RestartCandidate {
+                ssrc,
+                seq,
+                ts,
+                arrival_ms,
+            });
+            self.stats.discarded += 1;
+            return PushOutcome::Dropped;
+        };
+        self.restart = None;
+
+        let seq_gap = eseq - high.seq;
+        let starving = matches!(self.phase, Phase::Buffering { fresh: false, .. });
+        let mut step_start = false;
+        if seq_gap > 0 {
+            // More timeline than the missing packets explain: the sender
+            // paused (DTX, or a voice-activity gate with honest timestamps).
+            let ts_jump = ets - high.ts - seq_gap * high.dur > i64::from(FRAME_TS);
+            if marker || ts_jump || since_last >= LONG_GAP_MS {
+                self.clear_transit();
+                self.step = None;
+                self.pending_underrun = false;
+                if starving {
+                    self.pause_seen = true;
+                }
+            } else if seq_gap == 1
+                && self.step.is_none()
+                && since_last >= high.dur as u64 / TS_PER_MS as u64 + STEP_GAP_MS
+            {
+                step_start = true;
+            }
         }
 
         if eseq < self.cursor_seq {
@@ -330,15 +402,24 @@ impl<P: Clone> JitterBuffer<P> {
             }
         }
 
-        if eseq - self.cursor_seq >= CAPACITY as i64 {
+        // While starving, the play position is stale (the sender may have
+        // paused); what is buffered from now on is measured from the oldest
+        // new packet.
+        let (base_seq, base_ts) = if starving {
+            self.first_buffered()
+                .map_or((eseq, ets), |(s, t)| (s.min(eseq), t.min(ets)))
+        } else {
+            (self.cursor_seq, self.cursor_ts)
+        };
+        if eseq - base_seq >= CAPACITY as i64 || ets + dur - base_ts > MAX_SPAN_TS {
             // Far ahead of the play position (output stalled, or packets
             // resumed after a long loss burst): resynchronise on this
             // packet. What never arrived in between counts as lost.
-            let skipped = (eseq - self.cursor_seq) as u64;
+            let skipped = (eseq - self.cursor_seq).max(0) as u64;
             self.stats.lost += skipped.saturating_sub(self.buffered() as u64);
             self.stats.resets += 1;
             self.anchor(packet, payload);
-            return PushOutcome::Stored;
+            return PushOutcome::Reset;
         }
 
         let index = slot_index(eseq);
@@ -369,30 +450,83 @@ impl<P: Clone> JitterBuffer<P> {
             self.last_arrival_ms
                 .map_or(arrival_ms, |l| l.max(arrival_ms)),
         );
-        self.add_transit(arrival_ms, ets);
+        self.observe_transit(arrival_ms, ets, seq_gap, step_start);
         PushOutcome::Stored
     }
 
-    /// One playout tick. `carry_ts` is decoded audio the caller still holds
-    /// (timestamp units); with at least one frame of it, nothing is consumed.
-    pub fn pop(&mut self, now_ms: u64, carry_ts: u32) -> Playout<P> {
+    /// Start a playout tick: per-tick bookkeeping (jitter decay, level
+    /// tracking, drift decision). `carry_ts` is decoded audio the caller
+    /// already holds. Returns `true` when the caller should drop one frame
+    /// this tick: gather two frames ([`JitterBuffer::pop`] with
+    /// `want_ts` = 2 frames), cross-fade them into one and call
+    /// [`JitterBuffer::dropped`].
+    pub fn tick(&mut self, carry_ts: u32) -> bool {
         self.peak_ms = (self.peak_ms - PEAK_DECAY_MS_PER_TICK).max(0.0);
         self.cooldown = self.cooldown.saturating_sub(1);
-        if carry_ts >= FRAME_TS {
-            let level = self.level_ms() + f64::from(carry_ts) / TS_PER_MS as f64;
-            self.level_ema = (level - self.level_ema).mul_add(LEVEL_EMA_ALPHA, self.level_ema);
+        let level = self.level_ms() + f64::from(carry_ts) / TS_PER_MS as f64;
+        self.level_ema = (level - self.level_ema).mul_add(LEVEL_EMA_ALPHA, self.level_ema);
+        self.insert_due = false;
+        self.drop = DropState::None;
+        if matches!(self.phase, Phase::Playing { .. }) && self.cooldown == 0 {
+            let target = self.control_target_ms();
+            if self.level_ema < target - INSERT_BELOW_MS {
+                self.insert_due = true;
+            } else if self.level_ema > target + DROP_ABOVE_MS {
+                self.drop = DropState::Pending {
+                    fast: self.level_ema > target + FAST_DROP_ABOVE_MS,
+                };
+            }
+        }
+        self.drop_pending()
+    }
+
+    /// Whether this tick's drop still has to be done by the caller.
+    pub const fn drop_pending(&self) -> bool {
+        matches!(self.drop, DropState::Pending { .. })
+    }
+
+    /// The caller dropped a frame (cross-faded two into one).
+    pub fn dropped(&mut self) {
+        if let DropState::Pending { fast } = self.drop {
+            self.stats.drift_drops += 1;
+            self.adjusted(-1.0, fast);
+            self.drop = DropState::Done;
+        }
+    }
+
+    /// Next step towards `want_ts` of decoded audio; `carry_ts` is what the
+    /// caller holds now. Call [`JitterBuffer::tick`] once per tick first.
+    pub fn pop(&mut self, now_ms: u64, carry_ts: u32, want_ts: u32) -> Playout<P> {
+        if carry_ts >= want_ts {
             return Playout::Carry;
         }
+        // Gathering a second frame for a drop: only from real packets.
+        let gathering = carry_ts >= FRAME_TS;
         match self.phase {
             Phase::Idle => Playout::Silence,
+            Phase::Buffering { .. } if gathering => Playout::Carry,
             Phase::Buffering { .. } => self.pop_buffering(now_ms),
-            Phase::Playing { .. } => self.pop_playing(now_ms),
+            Phase::Playing { .. } => self.pop_playing(gathering),
         }
     }
 
     /// Current target buffer level in milliseconds.
     pub fn target_ms(&self) -> f64 {
         (self.peak_ms + FRAME_MS).clamp(MIN_TARGET_MS, MAX_TARGET_MS)
+    }
+
+    /// Long packets need more in reserve: a lost packet is only recognised
+    /// (and rebuilt from FEC) when the next one is already here, so the low
+    /// point of the level keeps one packet beyond the first frame above the
+    /// target. The level then swings by one more packet, so its average sits
+    /// another half packet higher. Drift control aims at that average.
+    fn control_target_ms(&self) -> f64 {
+        1.5f64.mul_add(self.packet_excess_ms(), self.target_ms())
+    }
+
+    /// How much longer than one frame the stream's packets are.
+    fn packet_excess_ms(&self) -> f64 {
+        ((self.last_dur - i64::from(FRAME_TS)).max(0) / TS_PER_MS) as f64
     }
 
     /// Audio currently buffered from the play position on, in milliseconds.
@@ -415,16 +549,26 @@ impl<P: Clone> JitterBuffer<P> {
     }
 
     fn pop_buffering(&mut self, now_ms: u64) -> Playout<P> {
-        let Phase::Buffering {
-            fresh,
-            since_ms,
-            concealed,
-            resolved,
-        } = self.phase
-        else {
+        let Phase::Buffering { fresh, concealed } = self.phase else {
             return Playout::Silence;
         };
-        let target = self.target_ms();
+        // Resume from what actually arrived: after a pause or a lost first
+        // packet the old play position says nothing about the new audio.
+        if !fresh {
+            if let Some((seq, ts)) = self.first_buffered() {
+                let gap = seq - self.cursor_seq;
+                if gap > 2 || ts - self.cursor_ts > gap * i64::from(MAX_PACKET_TS) {
+                    self.stats.lost += gap as u64;
+                    self.cursor_seq = seq;
+                    self.cursor_ts = ts;
+                    self.played_mask = 0;
+                    self.purge_before_cursor();
+                }
+            }
+        }
+        // Start at the high point of the level's swing (see
+        // `control_target_ms`); for 20 ms packets that is the target.
+        let target = 2.0f64.mul_add(self.packet_excess_ms(), self.target_ms());
         let oldest_arrival = self.slots.iter().flatten().map(|s| s.arrival_ms).min();
         let ready = oldest_arrival.is_some_and(|arrival| {
             self.level_ms() >= target || now_ms.saturating_sub(arrival) as f64 >= target
@@ -433,9 +577,7 @@ impl<P: Clone> JitterBuffer<P> {
             if !fresh && concealed < PLC_MAX_FRAMES {
                 self.phase = Phase::Buffering {
                     fresh,
-                    since_ms,
                     concealed: concealed + 1,
-                    resolved,
                 };
                 return Playout::Conceal;
             }
@@ -443,145 +585,134 @@ impl<P: Clone> JitterBuffer<P> {
         }
 
         if !fresh {
-            // The very packet that was due came back soon: the network was
-            // late, not the sender quiet. Grow the target by a frame.
-            let underrun = self.slot(self.cursor_seq).is_some_and(|s| {
-                s.ts == self.cursor_ts && s.arrival_ms.saturating_sub(since_ms) < SILENCE_GAP_MS
-            });
-            if underrun {
-                self.stats.underruns += 1;
-                self.peak_ms = self.target_ms().min(MAX_TARGET_MS - FRAME_MS);
+            // The very packet that was due came back: the network was late,
+            // unless the sender paused (talk spurt start, or a step that a
+            // few more packets will confirm).
+            let due = self
+                .slot(self.cursor_seq)
+                .is_some_and(|s| s.ts == self.cursor_ts);
+            if due && !self.pause_seen {
+                if self.step.is_some() {
+                    self.pending_underrun = true;
+                } else {
+                    self.count_underrun();
+                }
             }
         }
-        if let Some((seq, ts)) = self
-            .slots
-            .iter()
-            .flatten()
-            .min_by_key(|s| s.seq)
-            .map(|s| (s.seq, s.ts))
-        {
-            let gap = seq - self.cursor_seq;
-            if gap > 2 {
-                // More missing than a short loss: skip to what arrived.
-                self.stats.lost += gap as u64;
-                self.cursor_seq = seq;
-                self.cursor_ts = ts;
-                self.played_mask = 0;
-            } else if gap == 0 && ts > self.cursor_ts {
-                // The sender paused (DTX or VAD gate): we were silent anyway.
-                self.cursor_ts = ts;
-            }
-        }
+        self.pause_seen = false;
         self.phase = Phase::Playing { gap_frames: 0 };
         self.level_ema = self.level_ms();
         self.cooldown = ADJUST_COOLDOWN_TICKS;
-        self.pop_playing(now_ms)
+        self.insert_due = false;
+        self.pop_playing(false)
     }
 
-    fn pop_playing(&mut self, now_ms: u64) -> Playout<P> {
+    fn pop_playing(&mut self, gathering: bool) -> Playout<P> {
         let Phase::Playing { gap_frames } = self.phase else {
             return Playout::Silence;
         };
-        let target = self.target_ms();
-        self.level_ema =
-            (self.level_ms() - self.level_ema).mul_add(LEVEL_EMA_ALPHA, self.level_ema);
-        let can_adjust = self.cooldown == 0;
-        let fast = self.level_ema > target + FAST_DROP_ABOVE_MS;
-        let wants_insert = can_adjust && self.level_ema < target - INSERT_BELOW_MS;
-        let wants_drop = can_adjust && self.level_ema > target + DROP_ABOVE_MS;
-
-        match self.slot(self.cursor_seq).map(|s| s.ts) {
-            Some(ts) if ts > self.cursor_ts => {
-                // A DTX gap before the next packet: bridge it. Drift is
-                // corrected here for free by shortening or stretching it.
-                if wants_drop && ts - self.cursor_ts >= 2 * i64::from(FRAME_TS) {
-                    self.cursor_ts += i64::from(FRAME_TS);
-                    self.stats.drift_drops += 1;
-                    self.adjusted(-1.0, fast);
-                } else if wants_insert {
-                    self.stats.drift_inserts += 1;
-                    self.adjusted(1.0, fast);
+        let frame = i64::from(FRAME_TS);
+        loop {
+            match self.slot(self.cursor_seq).map(|s| (s.ts, s.dur)) {
+                Some((ts, _)) if ts - self.cursor_ts > LONG_GAP_TS => {
+                    // A long pause ahead: skip it instead of playing silence.
+                    self.cursor_ts = ts;
                 }
-                if !wants_insert {
-                    self.cursor_ts = (self.cursor_ts + i64::from(FRAME_TS)).min(ts);
+                Some((ts, _)) if ts > self.cursor_ts => {
+                    if gathering {
+                        return Playout::Carry;
+                    }
+                    // A DTX gap before the next packet: bridge it. Drift is
+                    // corrected here for free by shortening or stretching it.
+                    if let DropState::Pending { fast } = self.drop {
+                        if ts - self.cursor_ts >= 2 * frame {
+                            self.cursor_ts += frame;
+                            self.stats.drift_drops += 1;
+                            self.adjusted(-1.0, fast);
+                            self.drop = DropState::Done;
+                        }
+                    }
+                    if self.insert_due {
+                        self.insert_due = false;
+                        self.stats.drift_inserts += 1;
+                        self.adjusted(1.0, false);
+                    } else {
+                        self.cursor_ts = (self.cursor_ts + frame).min(ts);
+                    }
+                    let gap_frames = gap_frames + 1;
+                    self.phase = Phase::Playing { gap_frames };
+                    return if gap_frames <= PLC_MAX_FRAMES {
+                        Playout::Conceal
+                    } else {
+                        Playout::Silence
+                    };
                 }
-                let gap_frames = gap_frames + 1;
-                self.phase = Phase::Playing { gap_frames };
-                if gap_frames <= PLC_MAX_FRAMES {
-                    Playout::Conceal
-                } else {
-                    Playout::Silence
+                Some((ts, dur)) if ts + dur <= self.cursor_ts => {
+                    // Entirely before the play position: nothing to add.
+                    let _ = self.take(self.cursor_seq);
+                    self.stats.late_dropped += 1;
+                    self.cursor_seq += 1;
+                    self.played_mask <<= 1;
                 }
-            }
-            Some(_) => {
-                self.phase = Phase::Playing { gap_frames: 0 };
-                if wants_insert {
-                    self.stats.drift_inserts += 1;
-                    self.adjusted(1.0, fast);
+                Some(_) => {
+                    self.phase = Phase::Playing { gap_frames: 0 };
+                    if self.insert_due && !gathering {
+                        self.insert_due = false;
+                        self.stats.drift_inserts += 1;
+                        self.adjusted(1.0, false);
+                        return Playout::Conceal;
+                    }
+                    return match self.take(self.cursor_seq) {
+                        Some(slot) => {
+                            self.cursor_seq += 1;
+                            self.cursor_ts = slot.ts + slot.dur;
+                            self.last_dur = slot.dur;
+                            self.played_mask = (self.played_mask << 1) | 1;
+                            Playout::Decode(slot.payload)
+                        }
+                        None => Playout::Silence,
+                    };
+                }
+                None if gathering => return Playout::Carry,
+                None if self.highest.is_some_and(|h| h.seq > self.cursor_seq) => {
+                    // Later packets are here, this one is not: lost (or so
+                    // late that it is useless now).
+                    self.stats.lost += 1;
+                    let next = self
+                        .slot(self.cursor_seq + 1)
+                        .map(|n| (n.ts - self.cursor_ts, n.payload.clone()));
+                    let fits = |d: i64| {
+                        (i64::from(MIN_PACKET_TS)..=i64::from(MAX_PACKET_TS)).contains(&d)
+                            && d % 120 == 0
+                    };
+                    let (dur, next) = match next {
+                        Some((d, payload)) if fits(d) => (d, Some(payload)),
+                        _ => (self.last_dur, None),
+                    };
+                    self.cursor_seq += 1;
+                    self.cursor_ts += dur;
+                    self.played_mask <<= 1;
+                    self.phase = Phase::Playing { gap_frames: 0 };
+                    return Playout::Lost {
+                        next,
+                        dur_ts: dur as u32,
+                    };
+                }
+                None => {
+                    // Ran dry: conceal and wait for packets without moving on.
+                    self.phase = Phase::Buffering {
+                        fresh: false,
+                        concealed: 1,
+                    };
                     return Playout::Conceal;
                 }
-                if wants_drop {
-                    if let Some(merged) = self.try_merge() {
-                        self.stats.drift_drops += 1;
-                        self.adjusted(-1.0, fast);
-                        return merged;
-                    }
-                }
-                match self.take(self.cursor_seq) {
-                    Some(slot) => {
-                        self.advance_played(slot.ts + slot.dur);
-                        Playout::Decode(slot.payload)
-                    }
-                    None => Playout::Silence,
-                }
-            }
-            None if self.highest.is_some_and(|h| h.seq > self.cursor_seq) => {
-                // Later packets are here, this one is not: lost (or so late
-                // that it is useless now).
-                self.stats.lost += 1;
-                let next = self
-                    .slot(self.cursor_seq + 1)
-                    .map(|n| (n.ts, n.payload.clone()));
-                let dur = next
-                    .as_ref()
-                    .map(|(ts, _)| ts - self.cursor_ts)
-                    .filter(|d| (1..=MAX_PACKET_TS).contains(d))
-                    .unwrap_or_else(|| i64::from(FRAME_TS));
-                self.cursor_seq += 1;
-                self.cursor_ts += dur;
-                self.played_mask <<= 1;
-                self.phase = Phase::Playing { gap_frames: 0 };
-                Playout::Lost {
-                    next: next.map(|(_, payload)| payload),
-                }
-            }
-            None => {
-                // Ran dry: conceal and wait for packets without moving on.
-                self.phase = Phase::Buffering {
-                    fresh: false,
-                    since_ms: now_ms,
-                    concealed: 1,
-                    resolved: false,
-                };
-                Playout::Conceal
             }
         }
     }
 
-    /// Drop one frame: take the packet at the cursor and the next one when
-    /// both are plain consecutive 20 ms frames.
-    fn try_merge(&mut self) -> Option<Playout<P>> {
-        let first = self.slot(self.cursor_seq)?;
-        let second = self.slot(self.cursor_seq + 1)?;
-        let frame = i64::from(FRAME_TS);
-        if first.dur != frame || second.dur != frame || second.ts != first.ts + frame {
-            return None;
-        }
-        let first = self.take(self.cursor_seq)?;
-        self.advance_played(first.ts + first.dur);
-        let second = self.take(self.cursor_seq)?;
-        self.advance_played(second.ts + second.dur);
-        Some(Playout::Merge(first.payload, second.payload))
+    fn count_underrun(&mut self) {
+        self.stats.underruns += 1;
+        self.peak_ms = self.target_ms().min(MAX_TARGET_MS - FRAME_MS);
     }
 
     /// Bookkeeping after inserting (+1) or dropping (−1) a frame.
@@ -596,10 +727,21 @@ impl<P: Clone> JitterBuffer<P> {
         };
     }
 
-    const fn advance_played(&mut self, next_ts: i64) {
-        self.cursor_seq += 1;
-        self.cursor_ts = next_ts;
-        self.played_mask = (self.played_mask << 1) | 1;
+    fn first_buffered(&self) -> Option<(i64, i64)> {
+        self.slots
+            .iter()
+            .flatten()
+            .min_by_key(|s| s.seq)
+            .map(|s| (s.seq, s.ts))
+    }
+
+    fn purge_before_cursor(&mut self) {
+        let cursor = self.cursor_seq;
+        for slot in &mut self.slots {
+            if slot.as_ref().is_some_and(|s| s.seq < cursor) {
+                *slot = None;
+            }
+        }
     }
 
     fn slot(&self, seq: i64) -> Option<&Slot<P>> {
@@ -617,19 +759,15 @@ impl<P: Clone> JitterBuffer<P> {
         }
     }
 
-    /// Stream restart: count it and begin again from `packet`.
-    fn restart(&mut self, packet: RawPacket, payload: P) {
-        self.stats.resets += 1;
-        self.peak_ms = 0.0;
-        self.anchor(packet, payload);
-    }
-
     /// Drop everything and wait for enough audio from `packet` on.
     fn anchor(&mut self, packet: RawPacket, payload: P) {
         for slot in &mut self.slots {
             *slot = None;
         }
         self.clear_transit();
+        self.step = None;
+        self.pending_underrun = false;
+        self.pause_seen = false;
         self.played_mask = 0;
         let seq = i64::from(packet.seq);
         let ts = i64::from(packet.ts);
@@ -642,11 +780,10 @@ impl<P: Clone> JitterBuffer<P> {
         });
         self.cursor_seq = seq;
         self.cursor_ts = ts;
+        self.last_dur = packet.dur;
         self.phase = Phase::Buffering {
             fresh: true,
-            since_ms: packet.arrival_ms,
             concealed: 0,
-            resolved: true,
         };
         self.slots[slot_index(seq)] = Some(Slot {
             seq,
@@ -656,7 +793,7 @@ impl<P: Clone> JitterBuffer<P> {
             payload,
         });
         self.last_arrival_ms = Some(packet.arrival_ms);
-        self.add_transit(packet.arrival_ms, ts);
+        self.add_transit(packet.arrival_ms as i64 * TS_PER_MS - ts);
     }
 
     const fn clear_transit(&mut self) {
@@ -664,10 +801,56 @@ impl<P: Clone> JitterBuffer<P> {
         self.transit_pos = 0;
     }
 
+    /// Feed one transit sample, holding samples back while a step after a
+    /// gap is unresolved (network late vs. sender paused).
+    fn observe_transit(&mut self, arrival_ms: u64, ts: i64, seq_gap: i64, step_start: bool) {
+        let relative = arrival_ms as i64 * TS_PER_MS - ts;
+        let Some(mut step) = self.step else {
+            if step_start {
+                let mut samples = [0; STEP_CONFIRM];
+                samples[0] = relative;
+                self.step = Some(StepCandidate {
+                    first: relative,
+                    samples,
+                    len: 1,
+                });
+            } else {
+                self.add_transit(relative);
+            }
+            return;
+        };
+        if seq_gap <= 0 || relative < step.first - STEP_TOLERANCE_TS {
+            // Reordering or catching up: it was network jitter.
+            self.step = None;
+            for &sample in &step.samples[..step.len] {
+                self.add_transit(sample);
+            }
+            self.add_transit(relative);
+            if self.pending_underrun {
+                self.pending_underrun = false;
+                self.count_underrun();
+            }
+            return;
+        }
+        step.samples[step.len] = relative;
+        step.len += 1;
+        if step.len < STEP_CONFIRM {
+            self.step = Some(step);
+            return;
+        }
+        // The new relation holds: the sender paused. Start the jitter
+        // reference afresh from here.
+        self.step = None;
+        self.pending_underrun = false;
+        self.clear_transit();
+        for &sample in &step.samples {
+            self.add_transit(sample);
+        }
+    }
+
     /// Track the relative transit time and raise the jitter peak at once
     /// when a packet arrives later than the best of the window.
-    fn add_transit(&mut self, arrival_ms: u64, ts: i64) {
-        let relative = arrival_ms as i64 * TS_PER_MS - ts;
+    fn add_transit(&mut self, relative: i64) {
         self.transit[self.transit_pos] = relative;
         self.transit_pos = (self.transit_pos + 1) % JITTER_WINDOW;
         self.transit_len = (self.transit_len + 1).min(JITTER_WINDOW);
@@ -688,6 +871,43 @@ struct RawPacket {
     ts: u32,
     dur: i64,
     arrival_ms: u64,
+}
+
+impl RestartCandidate {
+    /// `(ssrc, seq, ts)` continues this candidate: same source, a few
+    /// sequence numbers on, a timestamp step those packets and the elapsed
+    /// time explain.
+    fn confirmed_by(&self, ssrc: u32, seq: u16, ts: u32, arrival_ms: u64) -> bool {
+        let seq_gap = i64::from(seq.wrapping_sub(self.seq) as i16);
+        let ts_gap = i64::from(ts.wrapping_sub(self.ts) as i32);
+        let elapsed = arrival_ms.saturating_sub(self.arrival_ms) as i64;
+        ssrc == self.ssrc
+            && (1..=RESTART_CONFIRM_SEQ).contains(&seq_gap)
+            && ts_gap >= 0
+            && ts_gap <= seq_gap * i64::from(MAX_PACKET_TS) + elapsed * TS_PER_MS + TS_JUMP_SLACK
+    }
+}
+
+/// Extended sequence number and timestamp of a packet, if its sequence
+/// number and timestamp agree with the stream's highest packet: forward
+/// packets may not step back in time nor jump further ahead than the
+/// missing packets and the wall clock explain; older packets must be older
+/// by a plausible amount; equal sequence numbers need equal timestamps.
+fn relation(high: &Highest, seq: u16, ts: u32, since_last_ms: u64) -> Option<(i64, i64)> {
+    let seq_gap = i64::from(seq.wrapping_sub(high.raw_seq) as i16);
+    let ts_gap = i64::from(ts.wrapping_sub(high.raw_ts) as i32);
+    let max_packet = i64::from(MAX_PACKET_TS);
+    let agrees = if (1..=MAX_SEQ_AHEAD).contains(&seq_gap) {
+        ts_gap >= 0
+            && ts_gap <= seq_gap * max_packet + since_last_ms as i64 * TS_PER_MS + TS_JUMP_SLACK
+    } else if seq_gap == 0 {
+        ts_gap == 0
+    } else if (-MAX_SEQ_BACK..0).contains(&seq_gap) {
+        ts_gap < 0 && -ts_gap <= -seq_gap * max_packet + TS_JUMP_SLACK
+    } else {
+        false
+    };
+    agrees.then_some((high.seq + seq_gap, high.ts + ts_gap))
 }
 
 const fn slot_index(seq: i64) -> usize {
@@ -726,10 +946,41 @@ mod tests {
                 self.seq0.wrapping_add(i as u16),
                 self.ts0.wrapping_add(i.wrapping_mul(FRAME_TS)),
                 FRAME_TS,
+                false,
                 arrival_ms,
                 (self.tag, i),
             )
         }
+    }
+
+    /// One playout tick as `TrackPlayout` does it, without audio: `carry`
+    /// is the decoded audio held, in timestamp units (all test packets are
+    /// 20 ms). Returns what the decoder was asked to do.
+    fn play(jb: &mut JitterBuffer<Pkt>, carry: &mut u32, now: u64) -> Vec<Playout<Pkt>> {
+        let drop = jb.tick(*carry);
+        let want = if drop { 2 * FRAME_TS } else { FRAME_TS };
+        let mut acts = Vec::new();
+        for _ in 0..8 {
+            let p = jb.pop(now, *carry, want);
+            match &p {
+                Playout::Carry | Playout::Silence => {
+                    if acts.is_empty() {
+                        acts.push(p);
+                    }
+                    break;
+                }
+                Playout::Decode(_) | Playout::Conceal => *carry += FRAME_TS,
+                Playout::Lost { dur_ts, .. } => *carry += dur_ts,
+            }
+            acts.push(p);
+        }
+        if jb.drop_pending() && *carry >= 2 * FRAME_TS {
+            *carry -= 2 * FRAME_TS;
+            jb.dropped();
+        } else {
+            *carry = carry.saturating_sub(FRAME_TS);
+        }
+        acts
     }
 
     /// Run ticks every 20 ms from `start_ms` until `end_ms`, pushing every
@@ -744,13 +995,14 @@ mod tests {
     ) -> Vec<Playout<Pkt>> {
         let mut next = 0;
         let mut out = Vec::new();
+        let mut carry = 0;
         for tick in ticks {
             let now = tick * 20;
             while next < arrivals.len() && arrivals[next].0 <= now {
                 stream.push(jb, arrivals[next].1, arrivals[next].0);
                 next += 1;
             }
-            out.push(jb.pop(now, 0));
+            out.extend(play(jb, &mut carry, now));
             each_tick(jb);
         }
         out
@@ -764,13 +1016,8 @@ mod tests {
     fn decoded(out: &[Playout<Pkt>]) -> Vec<u32> {
         let mut v = Vec::new();
         for p in out {
-            match p {
-                Playout::Decode((_, i)) => v.push(*i),
-                Playout::Merge((_, a), (_, b)) => {
-                    v.push(*a);
-                    v.push(*b);
-                }
-                _ => {}
+            if let Playout::Decode((_, i)) = p {
+                v.push(*i);
             }
         }
         v
@@ -908,7 +1155,8 @@ mod tests {
         assert_eq!(
             lost,
             vec![&Playout::Lost {
-                next: Some((1, 51))
+                next: Some((1, 51)),
+                dur_ts: FRAME_TS
             }]
         );
         let d = decoded(&out);
@@ -978,32 +1226,39 @@ mod tests {
             ts0: 4_000_000,
             tag: 2,
         };
+        let mut carry = 0;
         for tick in 0..100u64 {
             a.push(&mut jb, tick as u32, tick * 20);
-            jb.pop(tick * 20, 0);
+            play(&mut jb, &mut carry, tick * 20);
         }
-        assert_eq!(
-            b.push(&mut jb, 0, 2000),
-            PushOutcome::Reset,
-            "new SSRC must reset"
-        );
+        // A single packet of a new source is not trusted yet; the next one
+        // confirms the new stream.
+        assert_eq!(b.push(&mut jb, 0, 2000), PushOutcome::Dropped);
         let mut after = Vec::new();
         for tick in 100..200u64 {
             if tick > 100 {
-                b.push(&mut jb, (tick - 100) as u32, tick * 20);
+                let outcome = b.push(&mut jb, (tick - 100) as u32, tick * 20);
+                if tick == 101 {
+                    assert_eq!(outcome, PushOutcome::Reset, "new SSRC must reset");
+                }
             }
-            after.push(jb.pop(tick * 20, 0));
+            let acts = play(&mut jb, &mut carry, tick * 20);
+            // Until the reset, stream A may finish its current frame.
+            if tick > 100 {
+                after.extend(acts);
+            }
         }
-        // Nothing from stream A is played after the switch.
+        // Nothing from stream A is played after the reset.
         assert!(after.iter().all(|p| match p {
-            Playout::Decode((tag, _)) | Playout::Merge((tag, _), _) => *tag == 2,
+            Playout::Decode((tag, _)) => *tag == 2,
             Playout::Lost {
                 next: Some((tag, _)),
+                ..
             } => *tag == 2,
             _ => true,
         }));
         let d = decoded(&after);
-        assert_eq!(d[0], 0);
+        assert_eq!(d[0], 1);
         assert!(d.windows(2).all(|w| w[1] == w[0] + 1));
         assert_eq!(jb.stats().resets, 1);
     }
@@ -1029,30 +1284,37 @@ mod tests {
     }
 
     #[test]
-    fn timestamp_jump_resets() {
+    fn confirmed_timestamp_jump_resets() {
         let mut jb = JitterBuffer::new();
         let s = Stream::new(0, 0);
+        let mut carry = 0;
         for i in 0..50u32 {
             s.push(&mut jb, i, u64::from(i) * 20);
-            jb.pop(u64::from(i) * 20, 0);
+            play(&mut jb, &mut carry, u64::from(i) * 20);
         }
         // Next sequence number, but the timestamp is 10 s ahead with no
-        // matching wall-clock gap.
-        let outcome = jb.push(0xA1, 50, 50 * FRAME_TS + 480_000, FRAME_TS, 1000, (1, 50));
+        // matching wall-clock gap: discarded until the next packet agrees.
+        let jump = 50 * FRAME_TS + 480_000;
+        let outcome = jb.push(0xA1, 50, jump, FRAME_TS, false, 1000, (1, 50));
+        assert_eq!(outcome, PushOutcome::Dropped);
+        assert_eq!(jb.stats().discarded, 1);
+        let outcome = jb.push(0xA1, 51, jump + FRAME_TS, FRAME_TS, false, 1020, (1, 51));
         assert_eq!(outcome, PushOutcome::Reset);
         assert_eq!(jb.stats().resets, 1);
         assert_eq!(jb.buffered(), 1);
     }
 
     #[test]
-    fn sequence_jump_resets() {
+    fn confirmed_sequence_jump_resets() {
         let mut jb = JitterBuffer::new();
         let s = Stream::new(0, 0);
+        let mut carry = 0;
         for i in 0..50u32 {
             s.push(&mut jb, i, u64::from(i) * 20);
-            jb.pop(u64::from(i) * 20, 0);
+            play(&mut jb, &mut carry, u64::from(i) * 20);
         }
-        assert_eq!(s.push(&mut jb, 5000, 1000), PushOutcome::Reset);
+        assert_eq!(s.push(&mut jb, 5000, 1000), PushOutcome::Dropped);
+        assert_eq!(s.push(&mut jb, 5001, 1020), PushOutcome::Reset);
         assert_eq!(jb.stats().resets, 1);
     }
 
@@ -1062,6 +1324,7 @@ mod tests {
         // the silent stretch and the packet arrives at its time.
         let mut jb = JitterBuffer::new();
         let mut out = Vec::new();
+        let mut carry = 0;
         let gap_frames = 15u32; // 300 ms of silence
         for tick in 0..300u32 {
             let now = u64::from(tick) * 20;
@@ -1074,9 +1337,9 @@ mod tests {
             };
             if let Some(i) = i {
                 let frame = if i < 100 { i } else { i + gap_frames };
-                jb.push(7, i as u16, frame * FRAME_TS, FRAME_TS, now, (1, i));
+                jb.push(7, i as u16, frame * FRAME_TS, FRAME_TS, false, now, (1, i));
             }
-            out.push(jb.pop(now, 0));
+            out.extend(play(&mut jb, &mut carry, now));
         }
         let d = decoded(&out);
         assert!(d.windows(2).all(|w| w[1] == w[0] + 1));
@@ -1174,6 +1437,7 @@ mod tests {
         let s = Stream::new(0, 0);
         let ticks = 180_000u64; // one hour of 20 ms ticks
         let mut i = 0u32;
+        let mut carry = 0;
         let mut min_level = f64::MAX;
         let mut max_level = 0.0f64;
         for tick in 0..ticks {
@@ -1184,11 +1448,11 @@ mod tests {
             }
             // Level when the tick needs a frame (before taking it).
             if tick > 100 {
-                let level = jb.level_ms();
+                let level = jb.level_ms() + f64::from(carry) / 48.0;
                 min_level = min_level.min(level);
                 max_level = max_level.max(level);
             }
-            jb.pop(now_us / 1000, 0);
+            play(&mut jb, &mut carry, now_us / 1000);
             assert_target_in_bounds(&jb);
         }
         (jb.stats(), min_level, max_level)
@@ -1227,5 +1491,239 @@ mod tests {
             assert!(jb.buffered() <= CAPACITY);
         }
         assert!(jb.level_ms() <= CAPACITY as f64 * FRAME_MS);
+    }
+
+    // ---- pauses, resumption, hostile sequences ----
+
+    /// Ticks every 20 ms over `arrivals` (sorted `(arrival_ms, seq, frame)`),
+    /// where `frame` is the packet's timestamp in 20 ms frames.
+    fn simulate_frames(
+        jb: &mut JitterBuffer<Pkt>,
+        arrivals: &[(u64, u32, u32)],
+        ticks: std::ops::Range<u64>,
+        mut each_tick: impl FnMut(u64, &JitterBuffer<Pkt>),
+    ) -> Vec<Vec<Playout<Pkt>>> {
+        let mut next = 0;
+        let mut out = Vec::new();
+        let mut carry = 0;
+        for tick in ticks {
+            let now = tick * 20;
+            while next < arrivals.len() && arrivals[next].0 <= now {
+                let (arrival, seq, frame) = arrivals[next];
+                jb.push(
+                    0x77,
+                    seq as u16,
+                    frame.wrapping_mul(FRAME_TS),
+                    FRAME_TS,
+                    false,
+                    arrival,
+                    (1, seq),
+                );
+                next += 1;
+            }
+            out.push(play(jb, &mut carry, now));
+            each_tick(tick, jb);
+        }
+        out
+    }
+
+    /// An older desktop sender: stops sending in pauses and continues with
+    /// contiguous sequence numbers *and* timestamps.
+    #[test]
+    fn old_sender_pauses_do_not_count_as_jitter_or_underruns() {
+        let mut jb = JitterBuffer::new();
+        let mut arrivals = Vec::new();
+        let (mut t, mut seq) = (0u64, 0u32);
+        for round in 0..10 {
+            for _ in 0..50 {
+                arrivals.push((t, seq, seq));
+                t += 20;
+                seq += 1;
+            }
+            t += if round % 2 == 0 { 150 } else { 350 };
+        }
+        let end = t / 20;
+        let mut max_target = 0.0f64;
+        let out = simulate_frames(&mut jb, &arrivals, 0..end, |tick, jb| {
+            if tick > 60 {
+                max_target = max_target.max(jb.target_ms());
+            }
+        });
+        let st = jb.stats();
+        assert_eq!(st.underruns, 0, "{st:?}");
+        assert_eq!(st.lost, 0, "{st:?}");
+        assert!(max_target <= 60.0, "target rose to {max_target}");
+        let d = decoded(&out.concat());
+        assert!(d.windows(2).all(|w| w[1] == w[0] + 1));
+    }
+
+    /// The current desktop sender: the timestamp runs on over pauses and
+    /// the first packet after a pause carries the marker bit.
+    #[test]
+    fn honest_sender_pauses_keep_the_target_at_its_floor() {
+        let mut jb = JitterBuffer::new();
+        let mut carry = 0;
+        let (mut t, mut seq, mut frame) = (0u64, 0u32, 0u32);
+        let mut marker = true;
+        let mut max_target = 0.0f64;
+        for round in 0..10 {
+            for _ in 0..50 {
+                jb.push(
+                    9,
+                    seq as u16,
+                    frame * FRAME_TS,
+                    FRAME_TS,
+                    marker,
+                    t,
+                    (1, seq),
+                );
+                marker = false;
+                play(&mut jb, &mut carry, t);
+                max_target = max_target.max(jb.target_ms());
+                t += 20;
+                seq += 1;
+                frame += 1;
+            }
+            let pause = if round % 2 == 0 { 8 } else { 18 }; // 160 / 360 ms
+            for _ in 0..pause {
+                play(&mut jb, &mut carry, t);
+                t += 20;
+                frame += 1;
+            }
+            marker = true;
+        }
+        let st = jb.stats();
+        assert_eq!(st.underruns + st.lost + st.resets, 0, "{st:?}");
+        assert!(
+            max_target <= MIN_TARGET_MS + 1e-9,
+            "target rose to {max_target}"
+        );
+    }
+
+    /// A DTX pause with the timestamp running on: after it, playback waits
+    /// for the target delay of *new* audio instead of starting with one
+    /// frame because the stale play position makes the buffer look full.
+    #[test]
+    fn resumption_after_a_dtx_pause_rebuffers_from_what_arrived() {
+        let mut jb = JitterBuffer::new();
+        let mut arrivals: Vec<_> = (0..100u32).map(|i| (u64::from(i) * 20, i, i)).collect();
+        // 2 s silence: timestamps (and arrival) jump by 100 frames.
+        arrivals.extend((100..200u32).map(|i| (u64::from(i + 100) * 20, i, i + 100)));
+        let out = simulate_frames(&mut jb, &arrivals, 0..320, |_, _| {});
+        let first = out
+            .iter()
+            .position(|acts| acts.contains(&Playout::Decode((1, 100))))
+            .expect("resumed");
+        // Packet 100 arrives at tick 200, 101 at tick 201: 40 ms buffered.
+        assert_eq!(first, 201);
+        assert_eq!(jb.stats().underruns, 0);
+    }
+
+    #[test]
+    fn lost_first_packet_after_a_dtx_pause_does_not_delay_speech() {
+        let mut jb = JitterBuffer::new();
+        let mut arrivals: Vec<_> = (0..100u32).map(|i| (u64::from(i) * 20, i, i)).collect();
+        arrivals.extend((101..200u32).map(|i| (u64::from(i + 100) * 20, i, i + 100)));
+        let out = simulate_frames(&mut jb, &arrivals, 0..320, |_, _| {});
+        let first = out
+            .iter()
+            .position(|acts| acts.contains(&Playout::Decode((1, 101))))
+            .expect("resumed");
+        // 101 arrives at tick 201; with 102 at tick 202 it plays at once.
+        assert!(first <= 203, "speech started at tick {first}");
+        let d = decoded(&out.concat());
+        assert!(d.windows(2).all(|w| w[1] == w[0] + 1 || w[0] == 99));
+        assert_eq!(jb.stats().resets, 0);
+    }
+
+    /// A packet with an older sequence number but a timestamp that does not
+    /// fit must not poison the jitter estimate or stall playout.
+    #[test]
+    fn forged_timestamp_on_an_older_sequence_number_is_ignored() {
+        let mut jb = JitterBuffer::new();
+        let mut arrivals: Vec<_> = (0..300u32)
+            .filter(|i| *i != 99 && *i != 100)
+            .map(|i| (u64::from(i) * 20, i, i))
+            .collect();
+        // 99 is really lost; 100 comes a little early; then a packet
+        // claiming to be 99 arrives, with a timestamp 2^31 ahead, before
+        // 99's slot is played.
+        arrivals.push((1990, 100, 100));
+        arrivals.push((1995, 99, 99 + (1u32 << 31) / FRAME_TS));
+        arrivals.sort_unstable();
+        let mut max_target = 0.0f64;
+        let out = simulate_frames(&mut jb, &arrivals, 0..300, |_, jb| {
+            max_target = max_target.max(jb.target_ms());
+        });
+        assert!(max_target <= MIN_TARGET_MS + 1e-9, "target {max_target}");
+        let d = decoded(&out.concat());
+        assert!(d.contains(&100) && d.contains(&290), "playout stalled");
+        assert!(!d.contains(&99));
+        assert_eq!(jb.stats().resets, 0);
+    }
+
+    #[test]
+    fn a_single_outlier_packet_does_not_restart_the_stream() {
+        let mut jb = JitterBuffer::new();
+        let mut arrivals: Vec<_> = (0..300u32).map(|i| (u64::from(i) * 20, i, i)).collect();
+        arrivals.push((100 * 20 + 1, 5_000, 5_000));
+        arrivals.sort_unstable();
+        let out = simulate_frames(&mut jb, &arrivals, 0..300, |_, _| {});
+        assert_eq!(jb.stats().resets, 0);
+        let d = decoded(&out.concat());
+        assert!(d.windows(2).all(|w| w[1] == w[0] + 1), "{d:?}");
+        assert!(d.len() >= 295);
+    }
+
+    #[test]
+    fn a_confirmed_restart_just_behind_the_old_sequence_plays_at_once() {
+        // Same SSRC, new random start that lands 10 behind the old numbers,
+        // with an unrelated timestamp.
+        let mut jb = JitterBuffer::new();
+        let mut arrivals: Vec<_> = (0..100u32).map(|i| (u64::from(i) * 20, i, i)).collect();
+        arrivals.extend((0..100u32).map(|k| (u64::from(100 + k) * 20, 90 + k, 70_000 + k)));
+        let out = simulate_frames(&mut jb, &arrivals, 0..200, |_, _| {});
+        let st = jb.stats();
+        assert_eq!(st.resets, 1, "{st:?}");
+        // At most the first packet of the new stream is lost to the check.
+        let new_seqs: Vec<u32> = decoded(&out[100..].concat())
+            .into_iter()
+            .filter(|s| *s >= 90)
+            .collect();
+        assert!(
+            new_seqs.len() >= 94,
+            "{} new packets played",
+            new_seqs.len()
+        );
+        assert!(st.late_dropped <= 2, "{st:?}");
+    }
+
+    #[test]
+    fn device_stall_and_resume_play_no_stale_audio() {
+        let mut jb = JitterBuffer::new();
+        let s = Stream::new(0, 0);
+        let mut out = Vec::new();
+        let mut carry = 0;
+        for tick in 0..1000u64 {
+            s.push(&mut jb, tick as u32, tick * 20);
+            assert!(jb.buffered() <= CAPACITY);
+            // The output device stalls from 4 s to 9 s.
+            if !(200..450).contains(&tick) {
+                for p in play(&mut jb, &mut carry, tick * 20) {
+                    out.push((tick, p));
+                }
+            }
+        }
+        let resumed = out
+            .iter()
+            .find_map(|(tick, p)| match p {
+                Playout::Decode((_, i)) if *tick >= 450 => Some(*i),
+                _ => None,
+            })
+            .expect("resumed");
+        assert!(
+            resumed >= 449 - CAPACITY as u32,
+            "stale packet {resumed} after resume"
+        );
     }
 }

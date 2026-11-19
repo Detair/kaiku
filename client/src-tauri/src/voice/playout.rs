@@ -2,10 +2,18 @@
 //! audio track, delivering exactly one 20 ms stereo frame per tick.
 //!
 //! The decoder is reached through [`FrameDecoder`] so the concealment logic
-//! (FEC vs. PLC, merge, carry-over of long packets) is testable without
-//! libopus. [`OpusFrameDecoder`] is the production implementation.
+//! (FEC vs. PLC, drift drops on decoded audio, carry-over of long packets)
+//! is testable without libopus. [`OpusFrameDecoder`] is the production
+//! implementation.
+//!
+//! Every decoder call adds exactly the audio its timeline step stands for
+//! (a packet's duration, a lost packet's duration, or one 20 ms concealment
+//! frame); a failed call is replaced by concealment or silence of the same
+//! length, so the one-frame-per-tick timeline never shifts.
 
-use super::jitter_buffer::{BufferStats, JitterBuffer, Playout, PushOutcome, FRAME_TS};
+use super::jitter_buffer::{
+    BufferStats, JitterBuffer, Playout, PushOutcome, MAX_PACKET_TS, MIN_PACKET_TS,
+};
 use crate::audio::{CHANNELS, FRAME_SIZE, SAMPLE_RATE};
 
 /// One 20 ms interleaved stereo frame (960 samples × 2 channels).
@@ -14,11 +22,15 @@ pub const FRAME_SAMPLES: usize = FRAME_SIZE * CHANNELS as usize;
 /// Longest Opus packet: 120 ms per channel.
 const MAX_PACKET_SAMPLES_PER_CHANNEL: usize = 5760;
 
-/// Decoded audio not yet played: at most one long packet plus a frame.
-const CARRY_CAPACITY: usize = MAX_PACKET_SAMPLES_PER_CHANNEL * CHANNELS as usize + FRAME_SAMPLES;
+/// Decoded audio held: below two frames (gathering for a drift drop) plus
+/// one longest packet.
+const CARRY_CAPACITY: usize =
+    MAX_PACKET_SAMPLES_PER_CHANNEL * CHANNELS as usize + 2 * FRAME_SAMPLES;
 
-/// Pops per tick at most (packets shorter than 20 ms need several).
-const MAX_POPS_PER_TICK: usize = 4;
+/// Decoder steps per tick at most: 10 ms packets need two per frame, four
+/// when gathering two frames for a drift drop; each step adds at least
+/// 10 ms, so this bound is never the limit for valid streams.
+const MAX_POPS_PER_TICK: usize = 6;
 
 /// The decoder of one track. All calls happen in play order, once per
 /// frame, so the decoder state stays consistent across PLC and FEC.
@@ -141,6 +153,9 @@ pub struct PlayoutStats {
     /// Lost frames rebuilt from the next packet's in-band FEC.
     pub recovered_fec: u64,
     pub decode_errors: u64,
+    /// Packets rejected before buffering: not decodable as Opus, or
+    /// shorter than 10 ms (not supported).
+    pub rejected: u64,
     pub target_delay_ms: f64,
     pub level_ms: f64,
 }
@@ -152,10 +167,10 @@ pub struct TrackPlayout<D> {
     carry: Box<[f32]>,
     carry_len: usize,
     scratch: Box<[f32]>,
-    scratch_b: Box<[f32]>,
     concealed_plc: u64,
     recovered_fec: u64,
     decode_errors: u64,
+    rejected: u64,
 }
 
 impl<D: FrameDecoder> TrackPlayout<D> {
@@ -167,29 +182,39 @@ impl<D: FrameDecoder> TrackPlayout<D> {
             carry_len: 0,
             scratch: vec![0.0; MAX_PACKET_SAMPLES_PER_CHANNEL * CHANNELS as usize]
                 .into_boxed_slice(),
-            scratch_b: vec![0.0; MAX_PACKET_SAMPLES_PER_CHANNEL * CHANNELS as usize]
-                .into_boxed_slice(),
             concealed_plc: 0,
             recovered_fec: 0,
             decode_errors: 0,
+            rejected: 0,
         }
     }
 
-    /// Buffer one received RTP packet.
-    pub fn push(&mut self, ssrc: u32, seq: u16, ts: u32, arrival_ms: u64, payload: Vec<u8>) {
+    /// Buffer one received RTP packet (`marker`: RTP marker bit).
+    pub fn push(
+        &mut self,
+        ssrc: u32,
+        seq: u16,
+        ts: u32,
+        marker: bool,
+        arrival_ms: u64,
+        payload: Vec<u8>,
+    ) {
         if payload.is_empty() {
             return;
         }
+        // Remote input: only durations the timeline handles are buffered.
         let duration = self
             .decoder
             .duration(&payload)
-            .filter(|d| (120..=MAX_PACKET_SAMPLES_PER_CHANNEL as u32).contains(d))
-            .unwrap_or(FRAME_TS);
-        if self
+            .filter(|d| (MIN_PACKET_TS..=MAX_PACKET_TS).contains(d));
+        let Some(duration) = duration else {
+            self.rejected += 1;
+            return;
+        };
+        let outcome = self
             .buffer
-            .push(ssrc, seq, ts, duration, arrival_ms, payload)
-            == PushOutcome::Reset
-        {
+            .push(ssrc, seq, ts, duration, marker, arrival_ms, payload);
+        if outcome == PushOutcome::Reset {
             self.decoder.reset();
             self.carry_len = 0;
         }
@@ -198,30 +223,37 @@ impl<D: FrameDecoder> TrackPlayout<D> {
     /// Fill `out` (one interleaved stereo frame) with this tick's audio.
     /// Returns `false` when the track is silent (`out` is zeroed).
     pub fn next_frame(&mut self, now_ms: u64, out: &mut [f32]) -> bool {
+        let drop = self.buffer.tick(self.carry_ts());
+        let want = if drop {
+            2 * FRAME_SAMPLES
+        } else {
+            FRAME_SAMPLES
+        };
         for _ in 0..MAX_POPS_PER_TICK {
-            if self.carry_len >= FRAME_SAMPLES {
+            if self.carry_len >= want {
                 break;
             }
-            let carry_ts = (self.carry_len / CHANNELS as usize) as u32;
-            match self.buffer.pop(now_ms, carry_ts) {
+            let want_ts = (want / CHANNELS as usize) as u32;
+            match self.buffer.pop(now_ms, self.carry_ts(), want_ts) {
                 Playout::Carry | Playout::Silence => break,
                 Playout::Decode(packet) => self.decode(&packet),
-                Playout::Lost { next } => match next {
-                    Some(next) if self.decoder.has_fec(&next) => {
-                        self.recovered_fec += 1;
-                        let result = self
-                            .decoder
-                            .decode_fec(&next, &mut self.scratch[..FRAME_SAMPLES]);
-                        self.append_decoded(result);
-                    }
-                    _ => {
-                        self.concealed_plc += 1;
-                        self.conceal();
-                    }
-                },
-                Playout::Conceal => self.conceal(),
-                Playout::Merge(first, second) => self.merge(&first, &second),
+                Playout::Lost { next, dur_ts } => self.recover(next.as_deref(), dur_ts as usize),
+                Playout::Conceal => self.conceal(FRAME_SIZE),
             }
+        }
+
+        if self.buffer.drop_pending() && self.carry_len >= 2 * FRAME_SAMPLES {
+            // Drift: two frames of decoded audio become one, cross-faded.
+            let n = FRAME_SAMPLES.min(out.len());
+            crossfade(
+                &self.carry[..n],
+                &self.carry[FRAME_SAMPLES..FRAME_SAMPLES + n],
+                &mut out[..n],
+            );
+            out[n..].fill(0.0);
+            self.consume(2 * FRAME_SAMPLES);
+            self.buffer.dropped();
+            return true;
         }
 
         if self.carry_len == 0 {
@@ -231,8 +263,7 @@ impl<D: FrameDecoder> TrackPlayout<D> {
         let n = self.carry_len.min(FRAME_SAMPLES).min(out.len());
         out[..n].copy_from_slice(&self.carry[..n]);
         out[n..].fill(0.0);
-        self.carry.copy_within(n..self.carry_len, 0);
-        self.carry_len -= n;
+        self.consume(n);
         true
     }
 
@@ -242,123 +273,136 @@ impl<D: FrameDecoder> TrackPlayout<D> {
             concealed_plc: self.concealed_plc,
             recovered_fec: self.recovered_fec,
             decode_errors: self.decode_errors,
+            rejected: self.rejected,
             target_delay_ms: self.buffer.target_ms(),
             level_ms: self.buffer.level_ms(),
         }
     }
 
+    const fn carry_ts(&self) -> u32 {
+        (self.carry_len / CHANNELS as usize) as u32
+    }
+
+    fn consume(&mut self, samples: usize) {
+        let samples = samples.min(self.carry_len);
+        self.carry.copy_within(samples..self.carry_len, 0);
+        self.carry_len -= samples;
+    }
+
     fn decode(&mut self, packet: &[u8]) {
-        let result = self.decoder.decode(packet, &mut self.scratch);
-        if result.is_err() {
-            // Keep the decoder moving in step: conceal this frame instead.
-            self.decode_errors += 1;
-            self.conceal();
-            return;
-        }
-        self.append_decoded(result);
-    }
-
-    fn conceal(&mut self) {
-        let result = self.decoder.conceal(&mut self.scratch[..FRAME_SAMPLES]);
-        self.append_decoded(result);
-    }
-
-    /// Decode two consecutive frames and cross-fade them into one.
-    fn merge(&mut self, first: &[u8], second: &[u8]) {
-        let a = self.decoder.decode(first, &mut self.scratch);
-        let b = self.decoder.decode(second, &mut self.scratch_b);
-        match (a, b) {
-            (Ok(FRAME_SIZE), Ok(FRAME_SIZE)) => {
-                let start = self.carry_len;
-                let end = (start + FRAME_SAMPLES).min(CARRY_CAPACITY);
-                crossfade(
-                    &self.scratch[..FRAME_SAMPLES],
-                    &self.scratch_b[..FRAME_SAMPLES],
-                    &mut self.carry[start..end],
-                );
-                self.carry_len = end;
+        let expected = self
+            .decoder
+            .duration(packet)
+            .map_or(FRAME_SIZE, |d| d as usize);
+        match self.decoder.decode(packet, &mut self.scratch) {
+            Ok(per_channel) if per_channel == expected => self.append(per_channel),
+            Ok(_) | Err(_) => {
+                // Keep the timeline: conceal what the packet stood for.
+                self.decode_errors += 1;
+                self.conceal(expected);
             }
-            (a, b) => {
-                // Unexpected sizes or an error: play both instead.
-                self.append_decoded(a);
-                if let Ok(n) = b {
-                    let samples = (n * CHANNELS as usize).min(self.scratch_b.len());
-                    let end = (self.carry_len + samples).min(CARRY_CAPACITY);
-                    let take = end - self.carry_len;
-                    self.carry[self.carry_len..end].copy_from_slice(&self.scratch_b[..take]);
-                    self.carry_len = end;
-                } else {
-                    self.decode_errors += 1;
+        }
+    }
+
+    /// A lost packet of `per_channel` samples: FEC from `next` if it has
+    /// it, otherwise PLC.
+    fn recover(&mut self, next: Option<&[u8]>, per_channel: usize) {
+        let per_channel = per_channel.min(MAX_PACKET_SAMPLES_PER_CHANNEL);
+        if let Some(next) = next.filter(|n| self.decoder.has_fec(n)) {
+            let samples = per_channel * CHANNELS as usize;
+            match self.decoder.decode_fec(next, &mut self.scratch[..samples]) {
+                Ok(n) if n == per_channel => {
+                    self.recovered_fec += 1;
+                    self.append(per_channel);
+                    return;
                 }
+                Ok(_) | Err(_) => self.decode_errors += 1,
             }
         }
+        self.concealed_plc += 1;
+        self.conceal(per_channel);
     }
 
-    /// Append `per_channel` decoded samples from `scratch` to the carry.
-    fn append_decoded(&mut self, result: Result<usize, String>) {
-        match result {
-            Ok(per_channel) => {
-                let samples = (per_channel * CHANNELS as usize).min(self.scratch.len());
-                let end = (self.carry_len + samples).min(CARRY_CAPACITY);
-                let take = end - self.carry_len;
-                self.carry[self.carry_len..end].copy_from_slice(&self.scratch[..take]);
-                self.carry_len = end;
+    /// `per_channel` samples of PLC; silence if the decoder fails.
+    fn conceal(&mut self, per_channel: usize) {
+        let samples = per_channel.min(MAX_PACKET_SAMPLES_PER_CHANNEL) * CHANNELS as usize;
+        match self.decoder.conceal(&mut self.scratch[..samples]) {
+            Ok(n) if n * CHANNELS as usize == samples => {}
+            Ok(_) | Err(_) => {
+                self.decode_errors += 1;
+                self.scratch[..samples].fill(0.0);
             }
-            Err(_) => self.decode_errors += 1,
         }
+        self.append(samples / CHANNELS as usize);
+    }
+
+    /// Append `per_channel` samples from `scratch` to the carry.
+    fn append(&mut self, per_channel: usize) {
+        let samples = (per_channel * CHANNELS as usize).min(self.scratch.len());
+        let end = (self.carry_len + samples).min(CARRY_CAPACITY);
+        let take = end - self.carry_len;
+        self.carry[self.carry_len..end].copy_from_slice(&self.scratch[..take]);
+        self.carry_len = end;
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::voice::jitter_buffer::FRAME_TS;
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum Call {
         Decode(u8),
-        Fec(u8),
-        Plc,
+        /// FEC from packet `id`, samples per channel requested.
+        Fec(u8, usize),
+        /// PLC, samples per channel requested.
+        Plc(usize),
         Reset,
     }
 
-    /// Mock packet: `[id, has_fec, duration in 10 ms units]`. Decoding
-    /// writes `id / 100` into every sample; FEC writes `-(id / 100)`
-    /// (recovered from packet `id`); PLC writes 0.01.
+    /// Mock packet: `[id, flags, duration in 2.5 ms units]`; flag 1 = has
+    /// FEC, flag 2 = FEC data is corrupt. Decoding writes `id / 100` into
+    /// every sample; FEC writes `-(id / 100)` (recovered from packet `id`);
+    /// PLC writes 0.01.
     #[derive(Default)]
     struct MockDecoder {
         calls: Vec<Call>,
     }
 
     fn mock_packet(id: u8, fec: bool) -> Vec<u8> {
-        vec![id, u8::from(fec), 2]
+        vec![id, u8::from(fec), 8]
     }
 
     impl FrameDecoder for MockDecoder {
         fn decode(&mut self, packet: &[u8], out: &mut [f32]) -> Result<usize, String> {
             self.calls.push(Call::Decode(packet[0]));
-            let per_channel = usize::from(packet[2]) * 480;
+            let per_channel = usize::from(packet[2]) * 120;
             out[..per_channel * 2].fill(f32::from(packet[0]) / 100.0);
             Ok(per_channel)
         }
 
         fn decode_fec(&mut self, next: &[u8], out: &mut [f32]) -> Result<usize, String> {
-            self.calls.push(Call::Fec(next[0]));
+            self.calls.push(Call::Fec(next[0], out.len() / 2));
+            if next[1] & 2 != 0 {
+                return Err("corrupt".into());
+            }
             out.fill(-f32::from(next[0]) / 100.0);
             Ok(out.len() / 2)
         }
 
         fn conceal(&mut self, out: &mut [f32]) -> Result<usize, String> {
-            self.calls.push(Call::Plc);
+            self.calls.push(Call::Plc(out.len() / 2));
             out.fill(0.01);
             Ok(out.len() / 2)
         }
 
         fn has_fec(&self, packet: &[u8]) -> bool {
-            packet[1] == 1
+            packet[1] & 1 == 1
         }
 
         fn duration(&self, packet: &[u8]) -> Option<u32> {
-            Some(u32::from(packet[2]) * 480)
+            Some(u32::from(packet[2]) * 120)
         }
 
         fn reset(&mut self) {
@@ -381,6 +425,7 @@ mod tests {
                     9,
                     u16::from(i),
                     u32::from(i) * FRAME_TS,
+                    false,
                     now,
                     mock_packet(i, fec),
                 );
@@ -397,10 +442,13 @@ mod tests {
         let mut playout = TrackPlayout::new(MockDecoder::default());
         let frames = run(&mut playout, 30, &[10], true);
         let calls = &playout.decoder.calls;
-        let at = calls.iter().position(|c| *c == Call::Fec(11)).expect("FEC");
+        let at = calls
+            .iter()
+            .position(|c| *c == Call::Fec(11, FRAME_SIZE))
+            .expect("FEC");
         assert_eq!(calls[at - 1], Call::Decode(9));
         assert_eq!(calls[at + 1], Call::Decode(11));
-        assert!(!calls.contains(&Call::Plc));
+        assert!(!calls.iter().any(|c| matches!(c, Call::Plc(_))));
         let stats = playout.stats();
         assert_eq!(stats.recovered_fec, 1);
         assert_eq!(stats.concealed_plc, 0);
@@ -416,10 +464,13 @@ mod tests {
         let mut playout = TrackPlayout::new(MockDecoder::default());
         run(&mut playout, 30, &[10], false);
         let calls = &playout.decoder.calls;
-        let at = calls.iter().position(|c| *c == Call::Plc).expect("PLC");
+        let at = calls
+            .iter()
+            .position(|c| matches!(c, Call::Plc(_)))
+            .expect("PLC");
         assert_eq!(calls[at - 1], Call::Decode(9));
         assert_eq!(calls[at + 1], Call::Decode(11));
-        assert!(!calls.iter().any(|c| matches!(c, Call::Fec(_))));
+        assert!(!calls.iter().any(|c| matches!(c, Call::Fec(..))));
         let stats = playout.stats();
         assert_eq!(stats.concealed_plc, 1);
         assert_eq!(stats.recovered_fec, 0);
@@ -453,7 +504,14 @@ mod tests {
             let now = u64::from(tick) * 20;
             if tick % 2 == 0 {
                 let id = (tick / 2) as u8;
-                playout.push(3, u16::from(id), u32::from(id) * 1920, now, vec![id, 0, 4]);
+                playout.push(
+                    3,
+                    u16::from(id),
+                    u32::from(id) * 1920,
+                    false,
+                    now,
+                    vec![id, 0, 16],
+                );
             }
             let mut out = vec![0.0; FRAME_SAMPLES];
             if playout.next_frame(now, &mut out) {
@@ -476,7 +534,10 @@ mod tests {
     fn new_ssrc_resets_the_decoder() {
         let mut playout = TrackPlayout::new(MockDecoder::default());
         run(&mut playout, 10, &[], false);
-        playout.push(77, 5000, 1, 220, mock_packet(50, false));
+        // A new source is trusted once a second packet confirms it.
+        playout.push(77, 5000, 1, false, 220, mock_packet(50, false));
+        assert!(!playout.decoder.calls.contains(&Call::Reset));
+        playout.push(77, 5001, 961, false, 240, mock_packet(51, false));
         assert!(playout.decoder.calls.contains(&Call::Reset));
     }
 
@@ -499,6 +560,214 @@ mod tests {
         // Monotonic, and both channels of a sample pair move together.
         assert!(out.chunks(2).all(|p| (p[0] - p[1]).abs() < 1e-6));
         assert!(out.windows(2).all(|w| w[1] <= w[0] + 1e-6));
+    }
+
+    /// Feed `n` packets of `units` × 2.5 ms each at real time, ticking every
+    /// 20 ms, skipping `drop`. `rate` scales the sender's clock (1.0 =
+    /// exact). Returns the output frames.
+    fn run_stream(
+        playout: &mut TrackPlayout<MockDecoder>,
+        units: u8,
+        ticks: u64,
+        drop: &[u32],
+        rate: f64,
+    ) -> Vec<Vec<f32>> {
+        let dur_us = f64::from(units) * 2_500.0 / rate;
+        let mut frames = Vec::new();
+        let mut i = 0u32;
+        for tick in 0..ticks {
+            let now_us = tick * 20_000;
+            while (f64::from(i) * dur_us) as u64 <= now_us {
+                if !drop.contains(&i) {
+                    playout.push(
+                        5,
+                        i as u16,
+                        i.wrapping_mul(u32::from(units) * 120),
+                        false,
+                        (f64::from(i) * dur_us / 1000.0) as u64,
+                        vec![(i % 200) as u8 + 1, 0, units],
+                    );
+                }
+                i += 1;
+            }
+            let mut out = vec![0.0; FRAME_SAMPLES];
+            playout.next_frame(now_us / 1000, &mut out);
+            frames.push(out);
+        }
+        frames
+    }
+
+    #[test]
+    fn lost_frame_is_concealed_for_the_packet_duration() {
+        for (units, per_channel) in [(4u8, 480usize), (8, 960), (16, 1920), (24, 2880)] {
+            let mut playout = TrackPlayout::new(MockDecoder::default());
+            run_stream(&mut playout, units, 100, &[30], 1.0);
+            let plc: Vec<_> = playout
+                .decoder
+                .calls
+                .iter()
+                .filter_map(|c| match c {
+                    Call::Plc(n) => Some(*n),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(plc, vec![per_channel], "{units} units");
+            let stats = playout.stats();
+            assert_eq!(stats.concealed_plc, 1, "{units} units");
+            assert_eq!(stats.buffer.resets, 0, "{units} units");
+        }
+    }
+
+    #[test]
+    fn every_supported_duration_plays_one_full_frame_per_tick() {
+        for units in [4u8, 8, 16, 24, 48] {
+            let mut playout = TrackPlayout::new(MockDecoder::default());
+            let frames = run_stream(&mut playout, units, 500, &[], 1.0);
+            let start = frames.iter().position(|f| f[0] != 0.0).expect("started");
+            assert!(start <= 8, "{units} units started at {start}");
+            for (tick, f) in frames.iter().enumerate().skip(start) {
+                assert!(
+                    f.iter().all(|s| *s > 0.0),
+                    "{units} units: gap at tick {tick}"
+                );
+            }
+            let st = playout.stats().buffer;
+            assert_eq!(
+                st.lost + st.resets + st.underruns,
+                0,
+                "{units} units: {st:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn packets_shorter_than_10_ms_are_dropped_and_counted() {
+        let mut playout = TrackPlayout::new(MockDecoder::default());
+        run_stream(&mut playout, 1, 50, &[], 1.0);
+        assert!(
+            playout.decoder.calls.is_empty(),
+            "2.5 ms packets were decoded"
+        );
+    }
+
+    #[test]
+    fn long_packet_streams_shrink_for_a_fast_sender() {
+        // 60 ms packets, sender clock 0.5 % fast, five minutes.
+        let mut playout = TrackPlayout::new(MockDecoder::default());
+        run_stream(&mut playout, 24, 15_000, &[], 1.005);
+        let st = playout.stats();
+        assert_eq!(st.buffer.resets, 0, "{st:?}");
+        assert!(st.buffer.drift_drops >= 60, "{st:?}");
+        assert!(st.level_ms <= 160.0, "{st:?}");
+    }
+
+    #[test]
+    fn target_shrinks_at_the_same_pace_for_long_packets() {
+        // A stall raises the target; afterwards it must decay by 2 ms per
+        // second of playout whatever the packet duration.
+        let mut decay = Vec::new();
+        for units in [8u8, 24] {
+            let mut playout = TrackPlayout::new(MockDecoder::default());
+            let per_tick = 8.0 / f64::from(units);
+            let mut i = 0u32;
+            let mut at_200 = 0.0;
+            for tick in 0..1500u64 {
+                let now = tick * 20;
+                loop {
+                    let due = (f64::from(i) / per_tick * 20.0) as u64;
+                    // A Wi-Fi stall: everything due from 1.0 to 1.1 s
+                    // arrives in one burst at 1.1 s.
+                    let arrival = if (1000..1100).contains(&due) {
+                        1100
+                    } else {
+                        due
+                    };
+                    if arrival > now {
+                        break;
+                    }
+                    playout.push(
+                        5,
+                        i as u16,
+                        i * u32::from(units) * 120,
+                        false,
+                        arrival,
+                        vec![1, 0, units],
+                    );
+                    i += 1;
+                }
+                let mut out = vec![0.0; FRAME_SAMPLES];
+                playout.next_frame(now, &mut out);
+                if tick == 200 {
+                    at_200 = playout.stats().target_delay_ms;
+                }
+            }
+            let end = playout.stats().target_delay_ms;
+            assert!(
+                at_200 > end,
+                "{units} units: no stall effect ({at_200} → {end})"
+            );
+            decay.push(at_200 - end);
+        }
+        // 1300 ticks at 0.04 ms each (unless the floor was reached).
+        assert!(
+            (decay[0] - decay[1]).abs() <= 3.0,
+            "20 ms stream decayed {} ms, 60 ms stream {} ms",
+            decay[0],
+            decay[1]
+        );
+    }
+
+    #[test]
+    fn failed_fec_decode_is_concealed_without_skipping_ahead() {
+        let mut playout = TrackPlayout::new(MockDecoder::default());
+        let mut frames = Vec::new();
+        for i in 0..30u8 {
+            let now = u64::from(i) * 20;
+            if i != 10 {
+                let flags = if i == 11 { 3 } else { 1 }; // 11: FEC flagged but corrupt
+                playout.push(
+                    9,
+                    u16::from(i),
+                    u32::from(i) * FRAME_TS,
+                    false,
+                    now,
+                    vec![i, flags, 8],
+                );
+            }
+            let mut out = vec![0.0; FRAME_SAMPLES];
+            playout.next_frame(now, &mut out);
+            frames.push(out[0]);
+        }
+        let stats = playout.stats();
+        assert_eq!(stats.recovered_fec, 0, "{stats:?}");
+        assert_eq!(stats.concealed_plc, 1, "{stats:?}");
+        assert_eq!(stats.decode_errors, 1, "{stats:?}");
+        // The lost slot plays concealment, packet 11 the tick after.
+        let at = frames
+            .iter()
+            .position(|v| (*v - 0.09).abs() < 1e-6)
+            .unwrap()
+            + 1;
+        assert!((frames[at] - 0.01).abs() < 1e-6, "{frames:?}");
+        assert!((frames[at + 1] - 0.11).abs() < 1e-6, "{frames:?}");
+    }
+
+    #[test]
+    fn resynchronisation_resets_decoder_and_carry() {
+        let mut playout = TrackPlayout::new(MockDecoder::default());
+        run_stream(&mut playout, 24, 20, &[], 1.0);
+        // The output stalls: 2 s of packets arrive without playout.
+        for i in 20u32..120 {
+            playout.push(
+                5,
+                i as u16,
+                i * 2880,
+                false,
+                u64::from(i) * 60,
+                vec![1, 0, 24],
+            );
+        }
+        assert!(playout.decoder.calls.contains(&Call::Reset));
     }
 
     // ---- real libopus ----
@@ -571,6 +840,7 @@ mod tests {
                     0x51,
                     k as u16,
                     (k as u32).wrapping_mul(FRAME_TS),
+                    false,
                     now,
                     buf[..n].to_vec(),
                 );
@@ -606,33 +876,131 @@ mod tests {
         assert_eq!(stats.decode_errors, 0);
     }
 
-    /// Measures what FEC costs in bitrate (printed with `--nocapture`).
     #[test]
-    fn encoder_fec_bitrate_overhead() {
+    fn hostile_payloads_never_claim_fec_or_panic() {
+        let silk = 1 << 3; // SILK NB 20 ms, mono, code 0
+        let cases: Vec<Vec<u8>> = vec![
+            vec![],
+            vec![silk],
+            vec![silk | 1],                       // code 1 with no frames
+            vec![silk | 1, 0xFF],                 // code 1, odd length
+            vec![silk | 2, 0xFC],                 // code 2, length runs past the end
+            vec![silk | 2, 0xFF, 0xFF, 0xFF],     // code 2, length overflow
+            vec![silk | 3],                       // code 3 without count byte
+            vec![silk | 3, 0],                    // code 3, zero frames
+            vec![silk | 3, 49, 0xFF],             // code 3, 49 frames (over 120 ms)
+            vec![silk | 3, 0x40 | 2, 0xFF],       // code 3, padding past the end
+            vec![silk | 3, 0x80 | 3, 0xFF, 0xFF], // code 3 VBR, lengths missing
+        ];
+        for packet in &cases {
+            assert!(!opus_packet_has_fec(packet), "{packet:?}");
+        }
+        // Largest legal frame count: 48 CELT frames of 2.5 ms (CBR).
+        let mut max = vec![(16 << 3) | 3, 48];
+        max.extend(std::iter::repeat_n(0x55, 48));
+        assert!(!opus_packet_has_fec(&max));
+        // A real CELT-only packet from an encoder with FEC on: never FEC.
+        let mut celt = opus::Encoder::new(
+            SAMPLE_RATE,
+            opus::Channels::Mono,
+            opus::Application::LowDelay,
+        )
+        .unwrap();
+        celt.set_inband_fec(true).unwrap();
+        celt.set_packet_loss_perc(10).unwrap();
         let mut pcm = [0i16; FRAME_SIZE];
         let mut buf = [0u8; 4000];
-        let mut kbps = Vec::new();
-        for loss in [None, Some(5), Some(10), Some(15)] {
-            let mut enc =
-                opus::Encoder::new(SAMPLE_RATE, opus::Channels::Mono, opus::Application::Voip)
-                    .unwrap();
-            if let Some(loss) = loss {
-                enc.set_inband_fec(true).unwrap();
-                enc.set_packet_loss_perc(loss).unwrap();
-            }
-            let mut bytes = 0usize;
-            for k in 0..500 {
-                speech_frame(k, &mut pcm);
-                bytes += enc.encode(&pcm, &mut buf).unwrap();
-            }
-            // 500 frames = 10 s.
-            kbps.push(bytes as f64 * 8.0 / 10.0 / 1000.0);
+        for k in 0..20 {
+            speech_frame(k, &mut pcm);
+            let n = celt.encode(&pcm, &mut buf).unwrap();
+            assert!(buf[0] >> 3 >= 16, "not CELT");
+            assert!(!opus_packet_has_fec(&buf[..n]));
         }
-        eprintln!(
-            "Opus VoIP mono payload kbit/s: no FEC {:.1}, FEC@5% {:.1}, FEC@10% {:.1}, FEC@15% {:.1}",
-            kbps[0], kbps[1], kbps[2], kbps[3]
-        );
-        // Total bitrate is set by the encoder; FEC takes a share of it.
-        assert!(kbps.iter().all(|k| *k > 8.0 && *k < 80.0), "{kbps:?}");
+    }
+
+    /// Real Opus packets of every duration a peer may send, through the
+    /// real decoder at real time with one loss: one full frame per tick,
+    /// nothing rejected, the loss concealed or rebuilt.
+    #[test]
+    fn real_opus_every_packet_duration_end_to_end() {
+        for per_packet in [480usize, 960, 1920, 2880, 5760] {
+            let mut encoder = crate::audio::voice_encoder().unwrap();
+            let frame_len = per_packet.min(2880);
+            if per_packet > frame_len {
+                // 120 ms = two 60 ms frames in one packet; both must share
+                // one mode for the repacketizer, so fix the bandwidth.
+                encoder.set_bandwidth(opus::Bandwidth::Wideband).unwrap();
+            }
+            let mut repack = opus::Repacketizer::new().unwrap();
+            let mut playout = TrackPlayout::new(OpusFrameDecoder::new().unwrap());
+            let mut pcm = vec![0i16; frame_len];
+            let mut buf = [0u8; 4000];
+            let mut packets = Vec::new();
+            let mut k = 0usize;
+            // 3 s of speech.
+            while packets.len() * per_packet < 3 * SAMPLE_RATE as usize {
+                let mut parts = Vec::new();
+                for _ in 0..per_packet / frame_len {
+                    for (n, s) in pcm.iter_mut().enumerate() {
+                        let t = (k * frame_len + n) as f32 / SAMPLE_RATE as f32;
+                        *s = ((2.0 * std::f32::consts::PI * 180.0 * t).sin() * 8000.0) as i16;
+                    }
+                    k += 1;
+                    let n = encoder.encode(&pcm, &mut buf).unwrap();
+                    parts.push(buf[..n].to_vec());
+                }
+                if parts.len() == 1 {
+                    packets.push(parts.remove(0));
+                } else {
+                    let refs: Vec<&[u8]> = parts.iter().map(Vec::as_slice).collect();
+                    let n = repack.combine(&refs, &mut buf).unwrap();
+                    packets.push(buf[..n].to_vec());
+                }
+            }
+            let lost = packets.len() / 2;
+            let dur_ms = per_packet / 48;
+            let mut out = vec![0.0f32; FRAME_SAMPLES];
+            let mut started = None;
+            let mut next = 0usize;
+            let ticks = packets.len() * dur_ms / 20;
+            for tick in 0..ticks {
+                let now = tick as u64 * 20;
+                while next < packets.len() && (next * dur_ms) as u64 <= now {
+                    if next != lost {
+                        playout.push(
+                            0x99,
+                            next as u16,
+                            (next * per_packet) as u32,
+                            false,
+                            (next * dur_ms) as u64,
+                            packets[next].clone(),
+                        );
+                    }
+                    next += 1;
+                }
+                let audible = playout.next_frame(now, &mut out);
+                if started.is_none() && audible {
+                    started = Some(tick);
+                }
+                if started.is_some() && tick + 8 < ticks {
+                    assert!(audible, "{dur_ms} ms: silent tick {tick}");
+                    assert!(rms(&out) > 0.01, "{dur_ms} ms: quiet tick {tick}");
+                }
+            }
+            let st = playout.stats();
+            assert_eq!(st.rejected, 0, "{dur_ms} ms: {st:?}");
+            assert_eq!(st.decode_errors, 0, "{dur_ms} ms: {st:?}");
+            assert_eq!(st.buffer.lost, 1, "{dur_ms} ms: {st:?}");
+            assert_eq!(
+                st.recovered_fec + st.concealed_plc,
+                1,
+                "{dur_ms} ms: {st:?}"
+            );
+            assert_eq!(
+                st.buffer.resets + st.buffer.underruns,
+                0,
+                "{dur_ms} ms: {st:?}"
+            );
+        }
     }
 }

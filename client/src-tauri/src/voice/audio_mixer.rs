@@ -58,6 +58,8 @@ pub struct RtpIn {
     pub ssrc: u32,
     pub seq: u16,
     pub ts: u32,
+    /// RTP marker bit: first packet of a talk spurt.
+    pub marker: bool,
     pub arrival: Instant,
     pub payload: Vec<u8>,
 }
@@ -319,7 +321,7 @@ impl AudioMixer {
                             let arrival_ms = ms_since(epoch, p.arrival);
                             track
                                 .playout
-                                .push(p.ssrc, p.seq, p.ts, arrival_ms, p.payload);
+                                .push(p.ssrc, p.seq, p.ts, p.marker, arrival_ms, p.payload);
                         }
                         Err(mpsc::error::TryRecvError::Empty) => break,
                         Err(mpsc::error::TryRecvError::Disconnected) => {
@@ -390,6 +392,8 @@ impl AudioMixer {
                     reordered = b.reordered,
                     duplicates = b.duplicates,
                     late_dropped = b.late_dropped,
+                    discarded = b.discarded,
+                    rejected = snapshot.rejected,
                     lost = b.lost,
                     concealed_plc = snapshot.concealed_plc,
                     recovered_fec = snapshot.recovered_fec,
@@ -470,12 +474,18 @@ mod tests {
 
     use super::*;
 
-    /// Mock decoder: packet `[v]` decodes to a frame of `v / 1000`.
-    struct ConstDecoder;
+    /// Mock decoder: packet `[v]` decodes to a frame of `v / scale` and
+    /// counts its decodes.
+    struct ConstDecoder {
+        scale: f32,
+        decodes: Arc<std::sync::atomic::AtomicUsize>,
+    }
 
     impl FrameDecoder for ConstDecoder {
         fn decode(&mut self, packet: &[u8], out: &mut [f32]) -> Result<usize, String> {
-            out[..FRAME_SAMPLES].fill(f32::from(packet[0]) / 1000.0);
+            self.decodes
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            out[..FRAME_SAMPLES].fill(f32::from(packet[0]) / self.scale);
             Ok(FRAME_SAMPLES / 2)
         }
         fn decode_fec(&mut self, _next: &[u8], out: &mut [f32]) -> Result<usize, String> {
@@ -496,7 +506,16 @@ mod tests {
     }
 
     fn const_factory() -> DecoderFactory {
-        Arc::new(|| Some(Box::new(ConstDecoder) as Box<dyn FrameDecoder + Send>))
+        scaled_factory(1000.0, Arc::default())
+    }
+
+    fn scaled_factory(scale: f32, decodes: Arc<std::sync::atomic::AtomicUsize>) -> DecoderFactory {
+        Arc::new(move || {
+            Some(Box::new(ConstDecoder {
+                scale,
+                decodes: decodes.clone(),
+            }) as Box<dyn FrameDecoder + Send>)
+        })
     }
 
     fn packet(seq: u16, value: u8) -> RtpIn {
@@ -504,6 +523,7 @@ mod tests {
             ssrc: 1,
             seq,
             ts: u32::from(seq) * 960,
+            marker: false,
             arrival: Instant::now(),
             payload: vec![value],
         }
@@ -532,12 +552,18 @@ mod tests {
         })
     }
 
-    /// Mix a short burst-free stream of `value` from one user at `gain`.
-    async fn mix_user(gain: Option<f32>, value: u8) -> Vec<f32> {
+    /// Mix a short stream of `value / 250` from one user at `gain`.
+    /// Returns the mixed samples seen and how often the track decoded.
+    async fn mix_user(gain: Option<f32>, value: u8) -> (Vec<f32>, usize) {
         let (out_tx, out_rx) = mpsc::channel(8);
         let level = OutputLevel::new();
-        let mixer =
-            AudioMixer::with_decoder(out_tx, UserGains::default(), level.clone(), const_factory());
+        let decodes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mixer = AudioMixer::with_decoder(
+            out_tx,
+            UserGains::default(),
+            level.clone(),
+            scaled_factory(250.0, decodes.clone()),
+        );
         let user = Uuid::new_v4();
         if let Some(gain) = gain {
             mixer.set_user_gain(user, gain);
@@ -548,30 +574,34 @@ mod tests {
             tx.send(packet(seq, value)).await.unwrap();
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        device.await.unwrap()
+        let seen = device.await.unwrap();
+        (seen, decodes.load(std::sync::atomic::Ordering::Relaxed))
     }
 
     #[tokio::test]
     async fn mixer_applies_user_gain() {
-        let unity = mix_user(None, 200).await;
-        assert!(unity.iter().any(|s| (s - 0.2).abs() < 1e-6), "{unity:?}");
+        let (unity, _) = mix_user(None, 200).await;
+        assert!(unity.iter().any(|s| (s - 0.8).abs() < 1e-6), "{unity:?}");
 
-        let half = mix_user(Some(0.5), 200).await;
-        assert!(half.iter().any(|s| (s - 0.1).abs() < 1e-6), "{half:?}");
-        assert!(half.iter().all(|s| *s < 0.1 + 1e-6));
+        let (half, _) = mix_user(Some(0.5), 200).await;
+        assert!(half.iter().any(|s| (s - 0.4).abs() < 1e-6), "{half:?}");
+        assert!(half.iter().all(|s| *s < 0.4 + 1e-6));
 
-        // Boost is allowed but the mix stays clipped to [-1, 1].
-        let boosted = mix_user(Some(2.0), 250).await;
+        // Boost is allowed but the mix is clipped to [-1, 1]: 1.0 × 2.
+        let (boosted, _) = mix_user(Some(2.0), 250).await;
         assert!(
-            boosted.iter().any(|s| (s - 0.5).abs() < 1e-6),
+            boosted.iter().any(|s| (s - 1.0).abs() < 1e-6),
             "{boosted:?}"
         );
+        assert!(boosted.iter().all(|s| *s <= 1.0), "{boosted:?}");
     }
 
     #[tokio::test]
     async fn zero_gain_is_silent() {
-        let muted = mix_user(Some(0.0), 250).await;
+        let (muted, decodes) = mix_user(Some(0.0), 250).await;
         assert!(!muted.is_empty());
+        // The track did play (decoded), it was only silenced.
+        assert!(decodes >= 5, "{decodes} decodes");
         assert!(muted.iter().all(|s| *s == 0.0));
     }
 
