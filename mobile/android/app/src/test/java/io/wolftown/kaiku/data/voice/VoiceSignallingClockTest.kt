@@ -250,4 +250,20 @@ class VoiceSignallingClockTest {
         assertEquals(0, rig.attempts)
         assertTrue(rig.gaveUp.isCompleted)
     }
+
+    @Test
+    fun `a socket that looked fine and is replaced right after a 90 s sleep gives up`() = runTest {
+        val rig = Rig(this)
+        runCurrent()
+        advanceTimeBy(VoiceSignalling.DEADLINE_CHECK_MS); runCurrent() // up, looked at
+        rig.realMs += VoiceSignalling.DEADLINE_CHECK_MS
+        rig.realMs += 90_000 // asleep with a socket that looked authenticated
+        // The connection manager replaces it before the first look after waking.
+        rig.socket.value = 2L
+        runCurrent()
+        advanceTimeBy(1_000); runCurrent()
+
+        assertEquals(0, rig.attempts)
+        assertTrue(rig.gaveUp.isCompleted)
+    }
 }
