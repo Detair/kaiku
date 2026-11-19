@@ -483,6 +483,20 @@ The browser login page also runs conditional mediation (autofill) in the user-na
 requests carry `X-Kaiku-Client: android` and need `assetlinks.json`; there is no Custom Tab
 fallback in v1.0.
 
+**Android: the site is checked before Credential Manager.** Every passkey call of the Android app
+(sign-in, step-up, adding a passkey, and the removal signals) goes through one check: the request's
+RP ID must be **exactly** the host of the server the app is set up for. No parent domain counts
+(a Kaiku server never uses one), so public suffixes such as `co.uk` or `github.io` never match.
+The RP ID must already be canonical: lower-case ASCII letters, digits, `-` and `.`, no empty label,
+no trailing dot, no port, or an IP address equal to the host. Nothing is converted, so upper case,
+Unicode spellings and invisible characters are refused; a server with an internationalised name
+sends its RP ID in punycode (the server takes it from its parsed `PUBLIC_URL`). Sign-in and step-up
+read the RP ID only from a string `rpId`, creation only from a string `rp.id`, and the request is
+passed on as it was parsed, so the checked value is the only one in it. A refused request never
+reaches Credential Manager; the app says the request is for a different website and sends nothing.
+Side effect: an app set up with another address for the server than the `PUBLIC_URL` host (for
+example a second DNS name) gets that message for passkeys and must use the public address.
+
 **Desktop: system-browser hand-off** (C29, F1 rev 4). The desktop app never runs WebAuthn itself
 (no Tauri webview can assert for the server's RP ID) and never registers passkeys.
 
@@ -913,6 +927,13 @@ Residual risks (spec B.6, as implemented):
 13. **Hostile use of owner-rule part 2** by someone with a session and the TOTP secret or a recovery
     code while the account has no strong authenticator.
 14. **Request-notice fatigue:** at most 3 self-service starts per account per delay period.
+15. **Setup links through the custom scheme on Android.** A setup link for a server whose host is
+    not built into the app as a verified App Link (every self-hosted server, and the official one
+    while Android has not verified it yet) opens the `/setup` page, whose "Open in Kaiku" button
+    hands the code over as `kaiku://setup`. The button names the Kaiku app's package, so the browser
+    gives the code only to Kaiku. Another installed app can still register `kaiku://` and receive
+    links opened some other way. Limited by the person's confirmation of the server and the account
+    on the phone, the six-digit code the issuer must type in, and the setup code's short lifetime.
 
 Coordinator and maintainer decisions recorded in the implementation notes:
 

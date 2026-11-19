@@ -495,6 +495,10 @@ device**.
 | *Signed in for chat only ...* | A chat-only sign-in. | Sign in with a passkey, or use your key phone. |
 | *A session was ended because its key was used twice* | Kaiku saw a sign-in token used twice and ended it for safety. | Sign in again. If it happens often, tell your admin. |
 | *This phone is no longer your Kaiku key ...* | The phone was removed, or its screen lock was turned off or changed so that Android deleted the key. | Ask your admin to set it up again. |
+| *This passkey request is for a different website than your Kaiku server ...* | The Android app was asked for a passkey of another site than the server it is set up for. Kaiku stopped before anything was sent. This also happens when the app uses another address for your server than the server's own public address. | Sign in another way and tell your admin. |
+| *This phone is the only key of this account, so it was not removed ...* | "Use another account" on your only key phone. The phone stays your key and is signed out. | Add another phone or a passkey first (Confirm it's you, then Settings, Security), or ask your admin to remove the phone. |
+| *That took too long, so Kaiku stopped waiting ...* | The screen-lock prompt stayed open too long. Nothing was changed. | Try again. |
+| *Another setup link was opened. It was not used ...* | A second setup link arrived while a setup was running on the phone. | Finish or stop the running setup, then open the other link again. |
 | *This passkey was removed from Kaiku.* | The passkey no longer exists on the server. | Remove it from your device and sign in another way. |
 | *This passkey is ready at <time>.* | It waits for a request to complete. | Wait until then. |
 | *This is your only phone or passkey. Add another one first.* | You tried to remove your last key. | Add another phone or passkey first. |
