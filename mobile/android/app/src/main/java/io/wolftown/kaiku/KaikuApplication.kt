@@ -89,11 +89,11 @@ class KaikuApplication : Application(), SingletonImageLoader.Factory, Configurat
         resyncCoordinator.start()
         sessionTeardownRunner.start()
         // Voice and the microphone end before the account state is cleared.
-        SessionEndHook.install {
-            // The microphone first: a failure of the call part must not keep it open.
-            voiceRepository.endForSignOut()
-            callController.endForSignOut()
-        }
+        // The microphone first; each part runs even if the other fails.
+        SessionEndHook.install(
+            { voiceRepository.endForSignOut() },
+            { callController.endForSignOut() },
+        )
         callController.start()
         readSyncObserver.start()
         pushSessionObserver.start()

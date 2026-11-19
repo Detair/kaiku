@@ -129,6 +129,8 @@ class TokenStorage internal constructor(
         }
         // Type only: the message could describe stored data.
         logger.warning("Secure storage unreadable (${cause::class.simpleName}), resetting session data")
+        // The session is removed: what belongs to it ends first.
+        SessionEndHook.beforeSessionEnds()
         sessionGeneration++
         val cleared = try {
             val editor = prefs.edit()
@@ -169,6 +171,8 @@ class TokenStorage internal constructor(
         expiresIn: Int,
         userId: String
     ) {
+        // A stored session is replaced: what belongs to it ends first, like at a removal.
+        if (prefs.contains(KEY_ACCESS_TOKEN) || prefs.contains(KEY_REFRESH_TOKEN)) SessionEndHook.beforeSessionEnds()
         // Bump before writing, so a reader that sees the new tokens also sees the new generation.
         sessionGeneration++
         writeTokens(accessToken, refreshToken, expiresIn, userId)

@@ -19,13 +19,13 @@ class TokenStorageTest {
 
     @After
     fun removeHook() {
-        io.wolftown.kaiku.data.session.SessionEndHook.install(null)
+        io.wolftown.kaiku.data.session.SessionEndHook.install()
     }
 
     @Test
     fun `the session end hook runs before the stored session is removed`() {
         val seen = mutableListOf<String?>()
-        io.wolftown.kaiku.data.session.SessionEndHook.install { seen += storage.getRefreshToken() }
+        io.wolftown.kaiku.data.session.SessionEndHook.install({ seen += storage.getRefreshToken() })
 
         storage.clearIfRefreshTokenIs("refresh-1")
 
@@ -36,7 +36,7 @@ class TokenStorageTest {
 
     @Test
     fun `a failing session end hook does not stop the sign-out`() {
-        io.wolftown.kaiku.data.session.SessionEndHook.install { throw IllegalStateException("boom") }
+        io.wolftown.kaiku.data.session.SessionEndHook.install({ throw IllegalStateException("boom") })
 
         storage.clear()
 
@@ -45,10 +45,42 @@ class TokenStorageTest {
     }
 
     @Test
+    fun `a failing part of the session end hook does not skip the next part`() {
+        var callPartRan = false
+        io.wolftown.kaiku.data.session.SessionEndHook.install(
+            { throw IllegalStateException("voice teardown failed") },
+            { callPartRan = true },
+        )
+        storage.clear()
+        assertTrue(callPartRan)
+    }
+
+    @Test
+    fun `storing a new session over a stored one runs the session end hook first`() {
+        val seen = mutableListOf<String?>()
+        io.wolftown.kaiku.data.session.SessionEndHook.install({ seen += storage.getRefreshToken() })
+        storage.saveTokens("access-2", "refresh-2", 900, "user-1")
+        assertEquals(listOf<String?>("refresh-1"), seen)
+    }
+
+    @Test
+    fun `the reset of an unreadable store runs the session end hook`() {
+        val prefs = ThrowingReadPreferences(InMemorySharedPreferences())
+        val damaged = TokenStorage(prefs)
+        damaged.saveTokens("access-1", "refresh-1", 900, "user-1")
+        var runs = 0
+        io.wolftown.kaiku.data.session.SessionEndHook.install({ runs++ })
+        prefs.failure = ThrowingReadPreferences.decryptFailure()
+        damaged.getAccessToken()
+        prefs.failure = null
+        assertEquals(1, runs)
+    }
+
+    @Test
     fun `the session end hook does not run without a stored session`() {
         storage.clear()
         var runs = 0
-        io.wolftown.kaiku.data.session.SessionEndHook.install { runs++ }
+        io.wolftown.kaiku.data.session.SessionEndHook.install({ runs++ })
 
         storage.clear()
         storage.clearIfGeneration(storage.getSessionGeneration())

@@ -20,20 +20,21 @@ object SessionEndHook {
     private val logger = Logger.getLogger("SessionEndHook")
 
     @Volatile
-    private var block: (() -> Unit)? = null
+    private var blocks: List<() -> Unit> = emptyList()
 
-    /** Sets the block (the app does this once, at start); null removes it. */
-    fun install(block: (() -> Unit)?) {
-        this.block = block
+    /** Sets the blocks, run in this order (the app does this once, at start); none removes them. */
+    fun install(vararg blocks: () -> Unit) {
+        this.blocks = blocks.toList()
     }
 
-    /** Runs the block, if any; never throws. */
+    /** Runs every block, each on its own (a failing one does not skip the next); never throws. */
     fun beforeSessionEnds() {
-        val run = block ?: return
-        try {
-            run()
-        } catch (e: Exception) {
-            logger.log(Level.WARNING, "session end hook failed: ${e::class.simpleName}")
+        for (block in blocks) {
+            try {
+                block()
+            } catch (e: Exception) {
+                logger.log(Level.WARNING, "session end hook failed: ${e::class.simpleName}")
+            }
         }
     }
 }
