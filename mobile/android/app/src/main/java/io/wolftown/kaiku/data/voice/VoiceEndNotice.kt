@@ -19,13 +19,17 @@ sealed interface VoiceEndNotice {
     /**
      * C32: the rejoin gave up (three failed attempts, or 60 s without a socket
      * that carried the session's `voice_join`). [wasMuted] is the user's last
-     * mute choice; "Rejoin" restores it.
+     * mute choice; "Rejoin" restores it. [neverConnected]: the session was
+     * never connected (its first join did not connect within 15 s), so it
+     * says "Couldn't connect" rather than "Couldn't reconnect".
      */
     data class RejoinFailed(
         override val channelId: String,
         val wasMuted: Boolean = false,
+        val neverConnected: Boolean = false,
     ) : VoiceEndNotice {
-        override val message: Int get() = R.string.voice_call_rejoin_failed
+        override val message: Int
+            get() = if (neverConnected) R.string.voice_call_connect_failed else R.string.voice_call_rejoin_failed
         override val canRejoin: Boolean get() = true
     }
 

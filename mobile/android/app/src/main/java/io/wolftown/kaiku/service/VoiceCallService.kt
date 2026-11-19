@@ -139,7 +139,7 @@ class VoiceCallService : Service() {
         }
 
         // Channel is created at app start (NotificationChannels.ensureCreated).
-        val notification = buildNotification(channelName, reconnecting = false)
+        val notification = buildNotification(channelName, status = null)
 
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -176,10 +176,10 @@ class VoiceCallService : Service() {
         stopSelf()
     }
 
-    private fun postNotification(reconnecting: Boolean) {
+    private fun postNotification(status: Int?) {
         try {
             NotificationManagerCompat.from(this)
-                .notify(NOTIFICATION_ID, buildNotification(channelName, reconnecting))
+                .notify(NOTIFICATION_ID, buildNotification(channelName, status))
         } catch (e: SecurityException) {
             // POST_NOTIFICATIONS revoked: the call itself is unaffected.
             logger.warning("Could not update the call notification")
@@ -196,7 +196,7 @@ class VoiceCallService : Service() {
         logger.info("VoiceCallService destroyed")
     }
 
-    private fun buildNotification(channelName: String, reconnecting: Boolean): Notification {
+    private fun buildNotification(channelName: String, status: Int?): Notification {
         // Tap notification to open the app
         val launchIntent = packageManager.getLaunchIntentForPackage(packageName)?.apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -231,7 +231,7 @@ class VoiceCallService : Service() {
         )
 
         return NotificationCompat.Builder(this, NotificationChannels.VOICE)
-            .setContentTitle(getString(if (reconnecting) R.string.voice_call_reconnecting else R.string.voice_in_channel))
+            .setContentTitle(getString(status ?: R.string.voice_in_channel))
             .setContentText(channelName)
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .setContentIntent(contentPendingIntent)

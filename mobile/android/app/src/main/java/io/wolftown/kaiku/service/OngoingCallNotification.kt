@@ -1,6 +1,7 @@
 package io.wolftown.kaiku.service
 
 import io.wolftown.kaiku.data.voice.VoiceLinkState
+import io.wolftown.kaiku.data.voice.statusText
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
@@ -14,7 +15,7 @@ import kotlinx.coroutines.launch
  * [cancel]; everything here runs on the service's (main) thread.
  *
  * While the call is on, the notification follows the voice link
- * ("Reconnecting…") by being posted again under the same id.
+ * ("Connecting…", "Reconnecting…") by being posted again under the same id.
  *
  * A call ends in steps that reach the main thread at different times: the
  * repository clears the call, then asks Android to stop the service (Android
@@ -34,7 +35,8 @@ internal class OngoingCallNotification(
     private val callIsOn: () -> Boolean,
     private val gate: CallNotificationGate,
     private val linkState: Flow<VoiceLinkState>,
-    private val post: (reconnecting: Boolean) -> Unit,
+    /** Posts the notification with the link's status line ([statusText]; null: connected). */
+    private val post: (status: Int?) -> Unit,
     private val cancel: () -> Unit,
 ) {
     private var updates: Job? = null
@@ -48,9 +50,9 @@ internal class OngoingCallNotification(
         if (updates?.isActive == true) return
         updates = scope.launch {
             linkState
-                .map { it != VoiceLinkState.Stable }
+                .map { it.statusText() }
                 .distinctUntilChanged()
-                .collect { reconnecting -> gate.ifOpen { if (callIsOn()) post(reconnecting) } }
+                .collect { status -> gate.ifOpen { if (callIsOn()) post(status) } }
         }
     }
 

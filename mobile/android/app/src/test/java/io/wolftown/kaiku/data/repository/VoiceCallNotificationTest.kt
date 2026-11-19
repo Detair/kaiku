@@ -20,10 +20,10 @@ import org.junit.Test
 class VoiceCallNotificationTest {
 
     @Test
-    fun `the notification says reconnecting while a join is held and during a rejoin`() = rigTest { rig ->
+    fun `the notification says connecting while a join is held and reconnecting during a rejoin`() = rigTest { rig ->
         rig.repository.startJoin(rig.channel)
         runCurrent() // held: no socket yet, but the service is up
-        assertEquals(listOf("foreground", "post:reconnecting"), rig.service.notifications)
+        assertEquals(listOf("foreground", "post:connecting"), rig.service.notifications)
 
         rig.socket.ready(); runCurrent()
         rig.assertCallUp(joins = listOf(1L))
@@ -37,7 +37,7 @@ class VoiceCallNotificationTest {
 
         // One service, one notification, updated in place.
         assertEquals(
-            listOf("foreground", "post:reconnecting", "post:in-call", "post:reconnecting", "post:in-call"),
+            listOf("foreground", "post:connecting", "post:in-call", "post:reconnecting", "post:in-call"),
             rig.service.notifications,
         )
     }
@@ -117,7 +117,7 @@ class VoiceCallNotificationTest {
 
         rig.assertNoCallNotification()
         assertEquals(
-            listOf("foreground", "post:reconnecting", "stop", "cancel", "destroyed"),
+            listOf("foreground", "post:connecting", "stop", "cancel", "destroyed"),
             rig.service.notifications,
         )
         assertTrue("service:start" in rig.log && "service:stop" in rig.log)

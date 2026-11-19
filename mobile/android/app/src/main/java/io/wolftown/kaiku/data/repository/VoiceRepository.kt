@@ -258,7 +258,7 @@ class VoiceRepository @Inject constructor(
             // Already closed after a give-up. A call that was up offers "Rejoin";
             // a first join that failed reports its error through joinChannel.
             if (closeSession(session)) {
-                tearDown(session, sendLeave = true, notice = if (joined) ::rejoinFailedNotice else null)
+                tearDown(session, sendLeave = true, notice = if (joined) { s -> rejoinFailedNotice(s) } else null)
             }
         }
         session.firstJoin.completeExceptionally(failure ?: SessionEnded())
@@ -732,6 +732,12 @@ class VoiceRepository @Inject constructor(
             }
         }
 
+        /** The publisher of the session's current connections is connected (first join, M-10). */
+        override suspend fun awaitConnected() {
+            val generation = webRtcManager.currentGeneration
+            webRtcManager.publisherLink.first { it.connected && it.generation == generation }
+        }
+
         /** The connections of the session as they are now reported ICE `FAILED`. */
         override suspend fun awaitConnectionFailed() {
             val generation = webRtcManager.currentGeneration
@@ -806,19 +812,23 @@ class VoiceRepository @Inject constructor(
          * "Rejoin" through [endNotice]. The owner keeps the "reconnecting"
          * state until this returns.
          */
-        override suspend fun giveUp() {
+        override suspend fun giveUp(why: VoiceSignalling.GiveUp) {
             if (!closeSession(session)) return
+            val neverConnected = why == VoiceSignalling.GiveUp.NeverConnected
             // The session is ended now: finish its teardown whatever happens to us.
             withContext(NonCancellable) {
-                tearDown(session, sendLeave = true, notice = ::rejoinFailedNotice)
+                tearDown(session, sendLeave = true) { rejoinFailedNotice(it, neverConnected) }
             }
             logger.warning("Voice session gave up: $channelId")
         }
     }
 
-    /** "Couldn't reconnect" with "Rejoin", which restores the user's last mute choice (C32). */
-    private fun rejoinFailedNotice(session: Session): VoiceEndNotice =
-        VoiceEndNotice.RejoinFailed(session.channelId, _isMuted.value)
+    /**
+     * "Couldn't reconnect" (or "Couldn't connect" for a session that never
+     * connected) with "Rejoin", which restores the user's last mute choice (C32).
+     */
+    private fun rejoinFailedNotice(session: Session, neverConnected: Boolean = false): VoiceEndNotice =
+        VoiceEndNotice.RejoinFailed(session.channelId, _isMuted.value, neverConnected)
 
     /** Signaling callbacks of both peer connections for [session]: every frame goes to the session's peer. */
     private fun wirePeerCallbacks(session: Session) {

@@ -48,6 +48,10 @@ class VoiceSignallingTest {
         val attemptTimes = mutableListOf<Long>()
         val attemptSockets = mutableListOf<Long>()
         val statesAtGiveUp = mutableListOf<VoiceLinkState>()
+        val giveUps = mutableListOf<VoiceSignalling.GiveUp>()
+
+        /** Whether the first join's publisher connects (M-10); a test sets false to hold it. */
+        val firstConnected = MutableStateFlow(true)
 
         /** Result of each attempt in order ([Attempt], HANG, or a Throwable to throw); missing = Failed. */
         val results = ArrayDeque<Any>()
@@ -81,6 +85,10 @@ class VoiceSignallingTest {
                 return true
             }
 
+            override suspend fun awaitConnected() {
+                firstConnected.first { it }
+            }
+
             override suspend fun awaitConnectionFailed() {
                 connectionFailed.first { it }
             }
@@ -103,8 +111,9 @@ class VoiceSignallingTest {
                 }
             }
 
-            override suspend fun giveUp() {
+            override suspend fun giveUp(why: VoiceSignalling.GiveUp) {
                 statesAtGiveUp += signalling.state.value
+                giveUps += why
             }
         }
 
@@ -145,7 +154,7 @@ class VoiceSignallingTest {
         h.start()
         advanceTimeBy(30_000); runCurrent()
         assertTrue(h.joinSockets.isEmpty())
-        assertEquals(VoiceLinkState.Interrupted, h.state)
+        assertEquals(VoiceLinkState.Connecting, h.state)
 
         h.socket.value = 1L
         runCurrent()
@@ -156,6 +165,69 @@ class VoiceSignallingTest {
         assertEquals(listOf(1L), h.joinSockets)
         assertTrue(h.attemptTimes.isEmpty())
         assertTrue(h.statesAtGiveUp.isEmpty())
+    }
+
+    // -- First join: the publisher must connect (M-4, M-10) ------------------------
+
+    @Test
+    fun `a first join says connecting until its publisher connects`() = runTest {
+        val h = Harness(this, socket = 1L)
+        h.firstConnected.value = false
+        h.start()
+        assertEquals(listOf(1L), h.joinSockets)
+        assertEquals(VoiceLinkState.Connecting, h.state)
+
+        advanceTimeBy(14_000); runCurrent()
+        assertEquals(VoiceLinkState.Connecting, h.state)
+        h.firstConnected.value = true
+        runCurrent()
+
+        assertEquals(VoiceLinkState.Stable, h.state)
+        advanceTimeBy(600_000); runCurrent()
+        assertTrue(h.statesAtGiveUp.isEmpty())
+    }
+
+    @Test
+    fun `a first join whose publisher does not connect within 15 s gives up as never connected`() = runTest {
+        val h = Harness(this, socket = 1L)
+        h.firstConnected.value = false
+        h.start()
+
+        advanceTimeBy(14_999); runCurrent()
+        assertTrue(h.statesAtGiveUp.isEmpty())
+        advanceTimeBy(1); runCurrent()
+
+        assertEquals(listOf<VoiceLinkState>(VoiceLinkState.Connecting), h.statesAtGiveUp)
+        assertEquals(listOf(VoiceSignalling.GiveUp.NeverConnected), h.giveUps)
+        // No rejoin attempt for a session that never connected on a socket that is still there.
+        assertTrue(h.attemptTimes.isEmpty())
+        assertEquals(VoiceLinkState.Stable, h.state)
+    }
+
+    @Test
+    fun `a first join whose socket is lost before it connected recovers and still says connecting`() = runTest {
+        val h = Harness(this, socket = 1L)
+        h.firstConnected.value = false
+        h.results += Attempt.Connected
+        h.start()
+
+        h.reconnect(2L)
+        assertEquals(VoiceLinkState.Connecting, h.state)
+        advanceTimeBy(1_000); runCurrent()
+
+        assertEquals(listOf(2L), h.attemptSockets)
+        assertEquals(VoiceLinkState.Stable, h.state)
+        assertTrue(h.statesAtGiveUp.isEmpty())
+    }
+
+    @Test
+    fun `a session that was connected gives up as lost`() = runTest {
+        val h = joined()
+        h.connectionFailed.value = true
+        runCurrent()
+        advanceTimeBy(60_000); runCurrent()
+
+        assertEquals(listOf(VoiceSignalling.GiveUp.Lost), h.giveUps)
     }
 
     @Test
@@ -317,6 +389,8 @@ class VoiceSignallingTest {
             override val joinSocket = MutableStateFlow<Long?>(null)
             override suspend fun prepare() {}
             override suspend fun join(socket: Long) = true.also { joinSocket.value = socket }
+            override suspend fun awaitConnected() {}
+
             override suspend fun awaitConnectionFailed() = awaitCancellation()
             override suspend fun rejoin(socket: Long): Attempt {
                 joinSocket.value = socket
@@ -326,7 +400,7 @@ class VoiceSignallingTest {
                 }
                 return Attempt.Connected
             }
-            override suspend fun giveUp() {}
+            override suspend fun giveUp(why: VoiceSignalling.GiveUp) {}
         }
         backgroundScope.launch { signalling.run(steps) }
         runCurrent()
@@ -709,7 +783,7 @@ class VoiceSignallingTest {
         // Socket 1 is closing; its close is never reported.
         h.refusing += 1L
         h.start()
-        assertEquals(VoiceLinkState.Interrupted, h.state)
+        assertEquals(VoiceLinkState.Connecting, h.state)
 
         advanceTimeBy(59_999); runCurrent()
         assertTrue(h.statesAtGiveUp.isEmpty())
@@ -726,7 +800,7 @@ class VoiceSignallingTest {
         advanceTimeBy(59_999); runCurrent()
         assertTrue(gaveUp.statesAtGiveUp.isEmpty())
         advanceTimeBy(1); runCurrent()
-        assertEquals(listOf<VoiceLinkState>(VoiceLinkState.Interrupted), gaveUp.statesAtGiveUp)
+        assertEquals(listOf<VoiceLinkState>(VoiceLinkState.Connecting), gaveUp.statesAtGiveUp)
         assertTrue(gaveUp.joinSockets.isEmpty())
         assertEquals(VoiceLinkState.Stable, gaveUp.state)
 
@@ -828,6 +902,8 @@ class VoiceSignallingTest {
             override val joinSocket = MutableStateFlow<Long?>(null)
             override suspend fun prepare() {}
             override suspend fun join(socket: Long) = true.also { joinSocket.value = socket }
+            override suspend fun awaitConnected() {}
+
             override suspend fun awaitConnectionFailed() = awaitCancellation()
             override suspend fun rejoin(socket: Long): Attempt {
                 joinSocket.value = socket
@@ -839,7 +915,7 @@ class VoiceSignallingTest {
                     cleanedAt = currentTime
                 }
             }
-            override suspend fun giveUp() {}
+            override suspend fun giveUp(why: VoiceSignalling.GiveUp) {}
         }
         val owner = backgroundScope.launch { signalling.run(steps) }
         runCurrent()

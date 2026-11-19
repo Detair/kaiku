@@ -27,6 +27,13 @@ sealed interface VoiceLinkState {
     data object Stable : VoiceLinkState
 
     /**
+     * The session has not been connected yet: its first `voice_join` is held
+     * until a socket is authenticated, or its publisher is not connected yet
+     * (at most [VoiceSignalling.ATTEMPT_TIMEOUT_MS] after the join went out).
+     */
+    data object Connecting : VoiceLinkState
+
+    /**
      * The connection is degraded and nothing was torn down: ICE reported
      * DISCONNECTED (it may recover by itself), or no authenticated socket
      * carries the session's `voice_join` and the session waits for one.
@@ -69,7 +76,9 @@ sealed interface VoiceLinkState {
  *
  * | Mode | Leaves it when | Next |
  * |---|---|---|
- * | first join (held while no socket is authenticated) | the `voice_join` went out on the authenticated socket | up |
+ * | first join (held while no socket is authenticated) | the `voice_join` went out on the authenticated socket and its publisher connected | up |
+ * | | the publisher did not connect within 15 s | give up ("couldn't connect") |
+ * | | the socket that carried the join is lost before the publisher connected | recovering, 0 attempts used |
  * | up on socket S | the authenticated socket is not S, or the connections failed | recovering, 0 attempts used |
  * | recovering, n used: delay (1 s, 3 s, 9 s), then one attempt of at most 15 s | attempt connected | up on that socket |
  * | | attempt failed or timed out | n + 1 used; the third failure gives up |
@@ -87,6 +96,10 @@ sealed interface VoiceLinkState {
  * start from that loss.
  *
  * ICE `DISCONNECTED` is an indication only ([VoiceLinkState.Interrupted]).
+ *
+ * Until the session was connected once, its state reads
+ * [VoiceLinkState.Connecting] (also while it is held for a socket or
+ * recovering), and a give-up says [GiveUp.NeverConnected].
  */
 class VoiceSignalling(
     private val socket: StateFlow<Long?>,
@@ -125,6 +138,15 @@ class VoiceSignalling(
         SocketGone,
     }
 
+    /** Why the machine gave the session up ([Steps.giveUp]). */
+    enum class GiveUp {
+        /** The session was never connected: its first join did not connect, or all attempts after it failed. */
+        NeverConnected,
+
+        /** The session was connected and could not be recovered (attempts or the 60 s deadline). */
+        Lost,
+    }
+
     /** The steps of one session. Each is called by the owner only, one at a time. */
     interface Steps {
         /**
@@ -146,6 +168,9 @@ class VoiceSignalling(
          */
         suspend fun join(socket: Long): Boolean
 
+        /** Returns once the publisher of the session's current connections is connected. */
+        suspend fun awaitConnected()
+
         /** Returns once the session's current connections have failed for good (ICE `FAILED`). */
         suspend fun awaitConnectionFailed()
 
@@ -156,8 +181,8 @@ class VoiceSignalling(
          */
         suspend fun rejoin(socket: Long): Attempt
 
-        /** Ends the call locally. Called once, when the machine is over, while [state] still says "reconnecting". */
-        suspend fun giveUp()
+        /** Ends the call locally. Called once, when the machine is over, while [state] still says "reconnecting" or "connecting". */
+        suspend fun giveUp(why: GiveUp)
     }
 
     private sealed interface Mode {
@@ -178,6 +203,10 @@ class VoiceSignalling(
          * owner treats it as no socket from then on and waits for another.
          */
         val unusable = MutableStateFlow<Long?>(null)
+
+        /** Whether the session's publisher was connected at least once. */
+        @Volatile
+        var connectedOnce = false
     }
 
     private val lock = Any()
@@ -203,15 +232,16 @@ class VoiceSignalling(
         }
         refresh()
         try {
-            val attemptsUsedUp = withinJoinDeadline(session, steps) { signal(session, steps) }
+            val ended = withinJoinDeadline(session, steps) { signal(session, steps) }
             logger.info(
-                if (attemptsUsedUp) {
-                    "voice session gave up: ${delaysMs.size} rejoin attempts failed"
-                } else {
-                    "voice session gave up: no socket carried its voice_join for ${joinDeadlineMs / 1000} s"
+                when (ended) {
+                    End.AttemptsUsedUp -> "voice session gave up: ${delaysMs.size} rejoin attempts failed"
+                    End.FirstJoinTimedOut ->
+                        "voice session gave up: the first join did not connect within ${attemptTimeoutMs / 1000} s"
+                    null -> "voice session gave up: no socket carried its voice_join for ${joinDeadlineMs / 1000} s"
                 }
             )
-            steps.giveUp()
+            steps.giveUp(if (session.connectedOnce) GiveUp.Lost else GiveUp.NeverConnected)
         } finally {
             synchronized(lock) {
                 if (current === session) {
@@ -237,8 +267,11 @@ class VoiceSignalling(
 
     // -- The machine ------------------------------------------------------------
 
-    /** Returns when the attempt budget is used up; otherwise runs until cancelled. */
-    private suspend fun signal(session: Session, steps: Steps) {
+    /** How [signal] ended by itself. */
+    private enum class End { AttemptsUsedUp, FirstJoinTimedOut }
+
+    /** Returns when the session is given up; otherwise runs until cancelled. */
+    private suspend fun signal(session: Session, steps: Steps): End {
         steps.prepare()
 
         // First join: held until a socket is authenticated, then sent on
@@ -253,12 +286,29 @@ class VoiceSignalling(
             session.unusable.value = id
         }
 
+        // The first join counts once its publisher is connected (C32 amendment:
+        // the same criterion and the same 15 s as a rejoin attempt). If the
+        // socket that carried it is lost first, the session recovers.
+        val first = whileSocketIs(joined) {
+            withTimeoutOrNull(attemptTimeoutMs) { steps.awaitConnected() } != null
+        }
+        when (first) {
+            true -> session.connectedOnce = true
+            false -> return End.FirstJoinTimedOut
+            null -> Unit
+        }
+
+        // A first join whose socket was lost before it connected goes straight to recovering.
+        var up = first == true
         while (true) {
-            // Up: nothing to do while the socket that carried the join is the
-            // authenticated one and the connections hold.
-            enter(session, Mode.Up(joined))
-            whileSocketIs(joined) { steps.awaitConnectionFailed() }
-            refresh()
+            if (up) {
+                // Up: nothing to do while the socket that carried the join is the
+                // authenticated one and the connections hold.
+                enter(session, Mode.Up(joined))
+                whileSocketIs(joined) { steps.awaitConnectionFailed() }
+                refresh()
+            }
+            up = true
 
             // Recovering, with a fresh budget. Until a socket is there, the
             // state stays "interrupted". If the socket is another one, the
@@ -275,7 +325,7 @@ class VoiceSignalling(
                     Attempt.Connected -> break@recovering
                     Attempt.Failed -> {
                         logger.info("voice rejoin attempt ${failures + 1}/${delaysMs.size} failed")
-                        if (++failures == delaysMs.size) return
+                        if (++failures == delaysMs.size) return End.AttemptsUsedUp
                     }
                     Attempt.SocketGone -> {
                         logger.info("voice rejoin attempt ${failures + 1} interrupted by socket loss")
@@ -285,6 +335,7 @@ class VoiceSignalling(
                 }
             }
             joined = id
+            session.connectedOnce = true
             synchronized(lock) { iceDisconnected = false }
         }
     }
@@ -345,8 +396,8 @@ class VoiceSignalling(
      * carried the session's `voice_join` for [joinDeadlineMs] in one stretch,
      * [block] is cancelled, wherever it is (a first join that is held or
      * still setting up, the delay before an attempt, an attempt that has not
-     * sent its join yet). Returns true if [block] returned by itself and
-     * false if the deadline cut it short; it has finished cancelling by then.
+     * sent its join yet). Returns what [block] returned, or null if the
+     * deadline cut it short; it has finished cancelling by then.
      *
      * The clock is a function of two states, the authenticated socket and
      * [Steps.joinSocket]: it runs while they differ (or there is no join
@@ -355,11 +406,11 @@ class VoiceSignalling(
      * went out and whose socket was lost again before anyone looked still
      * shows as another join socket, so its new 60 s start.
      */
-    private suspend fun withinJoinDeadline(
+    private suspend fun <T : Any> withinJoinDeadline(
         session: Session,
         steps: Steps,
-        block: suspend () -> Unit,
-    ): Boolean = coroutineScope {
+        block: suspend () -> T,
+    ): T? = coroutineScope {
         val expired = AtomicBoolean(false)
         val work = async { block() }
         val watchdog = launch {
@@ -377,11 +428,10 @@ class VoiceSignalling(
         }
         try {
             work.await()
-            true
         } catch (e: CancellationException) {
             currentCoroutineContext().ensureActive()
             if (!expired.get()) throw e
-            false
+            null
         } finally {
             watchdog.cancel()
         }
@@ -416,9 +466,10 @@ class VoiceSignalling(
             val id = socket.value.takeIf { it != session?.unusable?.value }
             _state.value = when (val mode = session?.mode) {
                 null -> VoiceLinkState.Stable
-                Mode.FirstJoin -> if (id == null) VoiceLinkState.Interrupted else VoiceLinkState.Stable
+                Mode.FirstJoin -> VoiceLinkState.Connecting
                 is Mode.Up -> if (id != mode.socket || iceDisconnected) VoiceLinkState.Interrupted else VoiceLinkState.Stable
-                is Mode.Recovering -> VoiceLinkState.Rejoining(mode.failures + 1)
+                is Mode.Recovering ->
+                    if (session.connectedOnce) VoiceLinkState.Rejoining(mode.failures + 1) else VoiceLinkState.Connecting
             }
         }
     }

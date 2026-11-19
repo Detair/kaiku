@@ -306,8 +306,8 @@ internal class VoiceRig(private val test: TestScope) {
                 callIsOn = { repository.currentChannelId.value != null },
                 gate = gate,
                 linkState = repository.linkState,
-                post = { reconnecting ->
-                    notifications += if (reconnecting) "post:reconnecting" else "post:in-call"
+                post = { status ->
+                    notifications += postLabel(status)
                     notificationShown = true
                 },
                 cancel = {
@@ -433,9 +433,9 @@ internal class VoiceRig(private val test: TestScope) {
      * is released and the call service (the microphone foreground service)
      * is stopped.
      */
-    fun assertGaveUp(wasMuted: Boolean = false) {
+    fun assertGaveUp(wasMuted: Boolean = false, neverConnected: Boolean = false) {
         assertEquals(null, repository.currentChannelId.value)
-        assertEquals(VoiceEndNotice.RejoinFailed(channel, wasMuted), repository.endNotice.value)
+        assertEquals(VoiceEndNotice.RejoinFailed(channel, wasMuted, neverConnected), repository.endNotice.value)
         assertEquals(VoiceLinkState.Stable, repository.linkState.value)
         assertFalse(repository.isConnected.value)
         val lastInstall = maxOf(log.lastIndexOf("sub"), log.lastIndexOf("pub"))
@@ -491,4 +491,11 @@ internal class VoiceRig(private val test: TestScope) {
         assertFalse("a voice frame went out without naming its socket: $log", log.any { it.endsWith("@any") })
         assertNoCallNotification()
     }
+}
+
+/** How a test records a post of the ongoing-call notification with the link's status line. */
+internal fun postLabel(status: Int?): String = when (status) {
+    null -> "post:in-call"
+    io.wolftown.kaiku.R.string.voice_call_connecting -> "post:connecting"
+    else -> "post:reconnecting"
 }

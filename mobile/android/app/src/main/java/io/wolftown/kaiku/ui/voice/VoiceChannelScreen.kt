@@ -45,7 +45,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import io.wolftown.kaiku.R
-import io.wolftown.kaiku.data.voice.VoiceLinkState
+import io.wolftown.kaiku.data.voice.statusText
 import io.wolftown.kaiku.data.voice.AudioRoute
 import io.wolftown.kaiku.data.ws.ScreenShareInfo
 import io.wolftown.kaiku.data.ws.VoiceParticipant
@@ -223,9 +223,10 @@ fun VoiceChannelScreen(
                     modifier = Modifier.fillMaxWidth()
                 )
             }
-            if (isInChannel && linkState != VoiceLinkState.Stable) {
+            val linkStatus = linkState.statusText()
+            if (isInChannel && linkStatus != null) {
                 Text(
-                    text = stringResource(R.string.voice_call_reconnecting),
+                    text = stringResource(linkStatus),
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier

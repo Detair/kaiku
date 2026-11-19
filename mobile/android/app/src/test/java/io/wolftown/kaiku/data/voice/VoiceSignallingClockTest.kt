@@ -37,9 +37,11 @@ class VoiceSignallingClockTest {
                 this@Rig.joinSocket.value = socket
                 return true
             }
+            override suspend fun awaitConnected() {}
+
             override suspend fun awaitConnectionFailed() = awaitCancellation()
             override suspend fun rejoin(socket: Long): VoiceSignalling.Attempt = awaitCancellation()
-            override suspend fun giveUp() {
+            override suspend fun giveUp(why: VoiceSignalling.GiveUp) {
                 gaveUp.complete(Unit)
             }
         }

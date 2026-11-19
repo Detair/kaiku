@@ -58,7 +58,7 @@ import io.wolftown.kaiku.ui.dm.NewMessageScreen
 import io.wolftown.kaiku.ui.home.HomeScreen
 import io.wolftown.kaiku.ui.settings.SettingsScreen
 import io.wolftown.kaiku.ui.voice.VoiceChannelScreen
-import io.wolftown.kaiku.data.voice.VoiceLinkState
+import io.wolftown.kaiku.data.voice.statusText
 import io.wolftown.kaiku.ui.voice.VoiceEndNoticeBar
 import io.wolftown.kaiku.ui.voice.VoiceOverlay
 import io.wolftown.kaiku.ui.voice.VoiceOverlayViewModel
@@ -467,7 +467,7 @@ fun KaikuNavGraph(
             VoiceOverlay(
                 channelName = voiceChannelName,
                 isMuted = voiceIsMuted,
-                reconnecting = voiceLinkState != VoiceLinkState.Stable,
+                status = voiceLinkState.statusText(),
                 onMuteToggle = { voiceOverlayViewModel.onToggleMute() },
                 onTap = {
                     voiceChannelId?.let { channelId ->

@@ -30,7 +30,8 @@ class VoiceSocketGatingTest {
     private fun VoiceRig.assertGaveUpWithoutAnyFrame() {
         assertEquals("voice frames: $log", emptyList<String?>(), voiceFrames())
         assertEquals(null, repository.currentChannelId.value)
-        assertEquals(VoiceEndNotice.RejoinFailed(channel, wasMuted = false), repository.endNotice.value)
+        // Never connected: "Couldn't connect" (M-4).
+        assertEquals(VoiceEndNotice.RejoinFailed(channel, wasMuted = false, neverConnected = true), repository.endNotice.value)
         assertEquals(VoiceLinkState.Stable, repository.linkState.value)
         assertTrue("call service not stopped: $log", "service:stop" in log)
         assertNoCallNotification()
@@ -154,7 +155,7 @@ class VoiceSocketGatingTest {
         runCurrent()
         advanceTimeBy(59_999); runCurrent()
         assertEquals(rig.channel, rig.repository.currentChannelId.value)
-        assertEquals(VoiceLinkState.Interrupted, rig.repository.linkState.value)
+        assertEquals(VoiceLinkState.Connecting, rig.repository.linkState.value)
         assertEquals(emptyList<String?>(), rig.voiceFrames())
 
         advanceTimeBy(1); runCurrent()
@@ -364,7 +365,7 @@ class VoiceSocketGatingTest {
 
         advanceTimeBy(59_999); runCurrent()
         assertEquals(rig.channel, rig.repository.currentChannelId.value)
-        assertEquals(VoiceLinkState.Interrupted, rig.repository.linkState.value)
+        assertEquals(VoiceLinkState.Connecting, rig.repository.linkState.value)
         advanceTimeBy(1); runCurrent()
         rig.assertGaveUpWithoutAnyFrame()
 

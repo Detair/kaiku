@@ -24,8 +24,8 @@ class OngoingCallNotificationTest {
         val calls = mutableListOf<String>()
         var shown = false
 
-        fun post(reconnecting: Boolean) {
-            calls += if (reconnecting) "post:reconnecting" else "post:in-call"
+        fun post(status: Int?) {
+            calls += io.wolftown.kaiku.data.repository.postLabel(status)
             shown = true
         }
 

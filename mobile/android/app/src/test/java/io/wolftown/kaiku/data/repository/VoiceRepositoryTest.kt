@@ -107,6 +107,14 @@ class VoiceRepositoryTest {
         authSocket.value = ++sockets
     }
 
+    /** Whether a first join's publisher connects by itself after its offer (off: it never does). */
+    private var firstJoinConnects = true
+
+    /** A first join's new publisher connects (M-10), unless the test turned that off. */
+    private fun connectFirstJoin() {
+        if (firstJoinConnects && repository.linkState.value == VoiceLinkState.Connecting) setPublisher(true)
+    }
+
     /** The publisher of the current connections reports (dis)connected. */
     private fun setPublisher(connected: Boolean) {
         publisherLink.value = PublisherLink(rtcGen, connected)
@@ -151,7 +159,14 @@ class VoiceRepositoryTest {
         }
         // Peer connections are installed unless the session ended (the guard says no).
         coEvery { webRtcManager.createSubscriberPeerConnection(any()) } answers { firstArg<SessionGuard>().runIfCurrent {} }
-        coEvery { webRtcManager.createPublisherOffer(any()) } answers { firstArg<SessionGuard>().runIfCurrent {} }
+        // The publisher of a first join connects once its offer is made (M-10: the
+        // first join waits for it); a rejoin attempt's publisher connects only
+        // when a test says so (setPublisher).
+        coEvery { webRtcManager.createPublisherOffer(any()) } answers {
+            val installed = firstArg<SessionGuard>().runIfCurrent {}
+            if (installed) connectFirstJoin()
+            installed
+        }
         // Voice frames go out only on the socket they name, and only while it is
         // the authenticated one (like KaikuWebSocket.sendOn); they are recorded
         // through the same mock send.
@@ -284,16 +299,16 @@ class VoiceRepositoryTest {
         advanceUntilIdle()
 
         repository.isConnected.test {
-            // Initial: the publisher PC is not yet connected.
-            assertFalse(awaitItem())
-
-            setPublisher(true)
-            advanceUntilIdle()
+            // The first join waits for its publisher (M-10): it is connected once the join is up.
             assertTrue(awaitItem())
 
             setPublisher(false)
             advanceUntilIdle()
             assertFalse(awaitItem())
+
+            setPublisher(true)
+            advanceUntilIdle()
+            assertTrue(awaitItem())
 
             cancelAndIgnoreRemainingEvents()
         }
@@ -514,6 +529,8 @@ class VoiceRepositoryTest {
         verifyJoins(1)
         verify(exactly = 0) { webRtcManager.closePeerConnections() }
 
+        // The publisher reports connected again.
+        setPublisher(false); runCurrent()
         setPublisher(true)
         runCurrent()
         assertEquals(VoiceLinkState.Stable, repository.linkState.value)
@@ -681,6 +698,7 @@ class VoiceRepositoryTest {
             step("createPub")
             val installed = firstArg<SessionGuard>().runIfCurrent {}
             log += if (installed) "createPub" else "createPub-discarded"
+            if (installed) connectFirstJoin()
             installed
         }
         every { webSocket.send(any()) } answers {
@@ -1212,7 +1230,7 @@ class VoiceRepositoryTest {
                 first = false
                 awaitCancellation()
             }
-            firstArg<SessionGuard>().runIfCurrent {}
+            firstArg<SessionGuard>().runIfCurrent {}.also { if (it) connectFirstJoin() }
         }
         // voice_join for channel 1 is out, its publisher is still being created.
         repository.startJoin("ch-1")
@@ -1258,6 +1276,26 @@ class VoiceRepositoryTest {
     }
 
     @Test
+    fun `a first join whose publisher never connects ends after 15 s with couldn't connect`() = runTest {
+        firstJoinConnects = false
+        repository.startJoin("ch-1")
+        runCurrent()
+        verifyJoins(1)
+        assertEquals(VoiceLinkState.Connecting, repository.linkState.value)
+
+        advanceTimeBy(14_999); runCurrent()
+        assertEquals("ch-1", repository.currentChannelId.value)
+        advanceTimeBy(1); runCurrent()
+
+        // Over: no rejoin attempt, voice_leave for the peer it created, service stopped.
+        verifyJoins(1)
+        assertEquals(null, repository.currentChannelId.value)
+        assertEquals(VoiceEndNotice.RejoinFailed("ch-1", neverConnected = true), repository.endNotice.value)
+        verify { webSocket.send(ClientEvent.VoiceLeave("ch-1")) }
+        verify(atLeast = 1) { VoiceCallService.stop(any()) }
+    }
+
+    @Test
     fun `a give-up of a held join offers Rejoin`() = runTest {
         socketDown()
         repository.startJoin("ch-1")
@@ -1267,9 +1305,10 @@ class VoiceRepositoryTest {
         advanceTimeBy(60_000); runCurrent()
 
         // Nothing ever went out; the call is over, with the Rejoin action and the user's mute choice.
+        // It never connected, so it says "Couldn't connect" (M-4).
         verifyNoVoiceFrames()
         assertEquals(null, repository.currentChannelId.value)
-        assertEquals(VoiceEndNotice.RejoinFailed("ch-1", wasMuted = true), repository.endNotice.value)
+        assertEquals(VoiceEndNotice.RejoinFailed("ch-1", wasMuted = true, neverConnected = true), repository.endNotice.value)
         assertEquals(null, repository.error.value)
     }
 

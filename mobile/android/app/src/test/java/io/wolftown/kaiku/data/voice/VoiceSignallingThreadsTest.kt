@@ -78,13 +78,15 @@ class VoiceSignallingThreadsTest {
             }
 
             // The connections never fail by themselves: every rejoin is a socket change.
+            override suspend fun awaitConnected() {}
+
             override suspend fun awaitConnectionFailed() = awaitCancellation()
 
             override suspend fun rejoin(socket: Long): Attempt = step {
                 if (sendJoin(socket)) Attempt.Connected else Attempt.SocketGone
             }
 
-            override suspend fun giveUp() {
+            override suspend fun giveUp(why: VoiceSignalling.GiveUp) {
                 gaveUp.incrementAndGet()
             }
         }

@@ -30,7 +30,8 @@ import io.wolftown.kaiku.data.voice.VoiceEndNotice
 fun VoiceOverlay(
     channelName: String?,
     isMuted: Boolean,
-    reconnecting: Boolean = false,
+    /** The link's status line ([io.wolftown.kaiku.data.voice.statusText]); null while connected. */
+    @androidx.annotation.StringRes status: Int? = null,
     onMuteToggle: () -> Unit,
     onTap: () -> Unit,
     onDisconnect: () -> Unit
@@ -54,8 +55,8 @@ fun VoiceOverlay(
                 modifier = Modifier.weight(1f)
             ) {
                 Text(
-                    text = if (reconnecting) {
-                        stringResource(R.string.voice_call_reconnecting)
+                    text = if (status != null) {
+                        stringResource(status)
                     } else if (channelName != null) {
                         stringResource(R.string.voice_overlay_connected, channelName)
                     } else {
