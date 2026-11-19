@@ -1875,15 +1875,17 @@ pub async fn handle_client_message(
             // Whether this socket's session is elevated (an elevation
             // belongs to one session, C24), read from the committed rows at
             // the current user epoch and recorded only if the epoch is
-            // unchanged — the same steps as `subscribe`. A check that could
-            // not be made is recorded undecided and revalidated.
+            // unchanged and nothing was invalidated meanwhile (an admin
+            // frame taken during the check needs a read of its own) — the
+            // same steps as `subscribe`. A check that could not be made is
+            // recorded undecided and revalidated.
             let mut decision = None;
             for _ in 0..SUBSCRIBE_ATTEMPTS {
-                let epoch = access.user_epoch_now();
+                let snap = access.admin_snapshot();
                 let Ok(allowed) = access.check_admin().await else {
                     break;
                 };
-                if access.commit_admin(epoch, allowed) {
+                if access.commit_admin(snap, allowed) {
                     decision = Some(allowed);
                     break;
                 }
