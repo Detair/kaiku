@@ -220,8 +220,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Android: signing the phone in by scanning a QR code from the desktop without any confirmation. The phone's scanner now only reads Kaiku sign-in and setup codes of its own server.
 
 ### Fixed
-- Client: a window that opens on demand shows "Loading..." on a slow connection instead of nothing, says whether it could not be downloaded (reload) or ran into a problem (try again), and its notice can be closed; opening the window again tries again.
-- Client: Add friend, Join a server, New message, Create account, the sign-out confirmation and the phone's navigation drawer open in front of a window that is already open, instead of behind it while taking the keyboard.
+- Client: a window that opens on demand shows "Loading..." on a slow connection instead of nothing. If it fails, a small dialog says whether its code could not be loaded (Reload) or the window ran into a problem (Try again); closing it closes the window, and opening the window again tries again.
+- Client: Add friend, Join a server, New message, Create account and the sign-out confirmation open in front of a window that is already open, instead of behind it while taking the keyboard. The "session ended" notice and the clipboard warning stay in front of any open window, so "Log in" is always reachable.
 - Client: a chat-only sign-in without a passkey now says exactly how to add a passkey for the computer, in the banner and in the security settings.
 - Client: in the desktop app and in browsers other than Firefox, avatars are now round, icons have their intended size, selected options and primary buttons show their accent background, QR codes have a white background, and clickable items show a hand cursor. These styles were dropped from the app's CSS; Firefox already showed them.
 - The message for actions that need a full session now says that a computer needs a passkey sign-in and that a phone can do it in the Kaiku app.
