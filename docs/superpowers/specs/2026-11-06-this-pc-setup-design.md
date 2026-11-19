@@ -9,6 +9,10 @@ mean what they mean there.
 gone, on the desktop the code is typed in the browser, and "I didn't start this" no longer touches
 credentials.
 
+**Implemented 2026-11-08** (plan `docs/superpowers/plans/2026-11-06-this-pc-setup.md`). The amendments
+below are applied to the login spec as revision 6 and to C26, C27 and C29; the user guide, admin guide
+and technical reference under `docs/admin-guide/features/login/` describe the built flow.
+
 **Decided 2026-11-06 by the maintainer:** D1 option A (code from phone to PC), D2 as recommended
 (`may_approve` default unchanged). Calls the author made after the builder check are marked
 **(call)**; reviewers should challenge them first.
