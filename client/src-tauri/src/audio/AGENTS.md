@@ -57,14 +57,20 @@ Audio tasks run in blocking threads, state is shared via `Arc<AtomicBool>`.
 
 ### Playback Pipeline (calls: `voice/audio_mixer.rs`, `voice/playout.rs`, `voice/jitter_buffer.rs`)
 1. Per remote track, `commands/voice.rs::forward_remote_audio_track` stamps each RTP packet's arrival and `try_send`s it (bounded, 64) to the mixer task
-2. The mixer owns one `TrackPlayout` per track: a `JitterBuffer` (pure, clock-injected: seq ordering, duplicates/late dropped, 40–160 ms adaptive target, drift drop/insert, resets) plus one Opus decoder (PLC, or FEC from the next packet)
-3. Every 5 ms the mixer drains the packet queues and produces frames only while `OutputLevel` (atomic samples queued for the device) is below one device block + 20 ms: **the device clock drives playout**; each track gives exactly one frame per output frame, nothing is dropped in the mixer
-4. A pusher thread appends mixed frames to the `VecDeque<f32>` (200 ms safety cap)
-5. **cpal callback** drains it and counts consumed samples into `OutputLevel` (also while deafened, then it plays zeros)
+2. The mixer owns one `TrackPlayout` per track **instance** (`add_track` returns a unique instance id; `remove_track(instance)` never touches a replacement with the same track id): a `JitterBuffer` (pure, clock-injected: seq ordering, duplicates/late dropped, packets whose seq and ts disagree discarded until a second one confirms a restart, 40–160 ms adaptive target, pause detection incl. senders that do not advance ts, drift drop/insert, resets) plus one Opus decoder (PLC, or FEC from the next packet)
+3. Timeline in decoded audio: packets of 10–120 ms all give one full 20 ms frame per tick; shorter or undecodable packets are rejected and counted; a failed decoder call is replaced by concealment or silence of the same length
+4. Every 5 ms the mixer takes at most 16 packets per track and produces frames only while `OutputLevel` (atomic samples queued for the device) is below one device block + 20 ms: **the device clock drives playout**; each track gives exactly one frame per output frame, nothing is dropped in the mixer
+5. A pusher thread appends mixed frames to the pre-allocated `VecDeque<f32>`; its safety cap (`MAX_QUEUE_SAMPLES`, 460 ms) sits above the most the mixer queues, so it never discards in steady state
+6. **cpal callback** drains it and counts consumed samples into `OutputLevel` (also while deafened, then it plays zeros) and notes its block size (`fetch_max`)
+
+**Output latency:** the queue holds between one device block + 20 ms and one block + 40 ms (whole frames), plus up to one 5 ms mixer wake (tokio timer; Windows timer granularity unverified). The block size is the largest request of the last one to two seconds, capped at 400 ms (`MAX_REQUEST_SAMPLES`) and reset on a device switch; larger blocks get short gaps, the mixer never runs ahead.
 
 Counters per track reach `voice_connection_stats` (`playout[]`) and a debug log every 5 s.
 
-**Real-time note:** the callback still takes a `std::sync::Mutex` for the hand-over (pre-existing); keep everything else there to atomics, no allocation, no logging.
+**Real-time note:** the callback still takes a `std::sync::Mutex` for the hand-over (pre-existing; replacing it with a lock-free ring is a follow-up); keep everything else there to atomics, no allocation, no logging.
+
+### Capture → RTP
+The capture counts frames the voice-activity gate skipped (`EncodedFrame::skipped_frames`); `voice::rtp_clock::RtpClock` advances the RTP timestamp over them and sets the marker bit on the first packet after a pause; uncounted gaps (mute, restarted microphone) use the wall clock unless packets are queued behind.
 
 ### Mute/Deafen State
 - **Muted**: Capture stream runs but doesn't send encoded packets
