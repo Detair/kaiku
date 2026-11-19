@@ -596,7 +596,8 @@ jobs:
             echo "::error::Expected exactly one release APK, found ${#apks[@]}"
             exit 1
           fi
-          expect=()
+          # The official server's setup links must stay verified App Links (same host as the build flag).
+          expect=(--app-link-host kaiku.pmind.de)
           if [ "$SIGNING" != true ]; then
             expect+=(--expect-unsigned)
           fi
