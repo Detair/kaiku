@@ -25,10 +25,8 @@ import MessageInput from "@/components/messages/MessageInput";
 import TypingIndicator from "@/components/messages/TypingIndicator";
 import { showToast } from "@/components/ui/Toast";
 import { CallBanner } from "@/components/call";
-import { callState, startCall, setChannelCallId, abortOutgoingCall, isInCallForChannel } from "@/stores/call";
+import { callState, startOutgoingCall, abortOutgoingCall, isInCallForChannel } from "@/stores/call";
 import {
-  startDMCall,
-  joinVoice,
   uploadDMAvatar,
   updateDMName,
   validateFileSize,
@@ -109,14 +107,11 @@ const DMConversation: Component = () => {
     if (!currentDM) return;
 
     setIsStartingCall(true);
-    // Set outgoing state BEFORE the HTTP call so the WebSocket
-    // incoming_call echo (which arrives before the response) is
-    // correctly ignored by the call store.
-    startCall(currentDM.id);
     try {
-      const res = await startDMCall(currentDM.id);
-      setChannelCallId(currentDM.id, res.call_id);
-      await joinVoice(currentDM.id);
+      // Sets the outgoing state synchronously BEFORE the HTTP call (so the
+      // WebSocket incoming_call echo is ignored), then starts the call and
+      // joins its voice under this call's own session token.
+      await startOutgoingCall(currentDM.id);
     } catch (err) {
       console.error("Failed to start call:", err);
       showToast({

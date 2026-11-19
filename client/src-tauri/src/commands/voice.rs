@@ -2,11 +2,11 @@
 //!
 //! Tauri commands for voice chat functionality.
 
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tauri::{command, AppHandle, Emitter, State};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info, warn};
 use vc_common::protocol::PcType;
 use webrtc::rtp::packet::Packet as RtpPacket;
@@ -18,10 +18,10 @@ use crate::audio::{
     AudioDeviceList, AudioError, AudioErrorEvent, AudioErrorKind, AudioHandle, AUDIO_ERROR_EVENT,
     CHANNELS, FRAME_SIZE, FRAME_SIZE_MS, SAMPLE_RATE,
 };
-use crate::network::ClientEvent;
+use crate::network::{ClientEvent, WebSocketManager};
 use crate::voice::audio_mixer::AudioMixer;
 use crate::webrtc::IceServerConfig;
-use crate::{voice, AppState};
+use crate::{voice, AppState, VoiceState};
 
 #[derive(serde::Deserialize)]
 struct IceServersResponse {
@@ -88,21 +88,181 @@ pub async fn fetch_ice_servers(
     }
 }
 
+/// Error text of a join whose voice session the frontend already ended.
+/// The frontend matches it (`NATIVE_JOIN_CANCELLED` in `lib/webrtc/tauri.ts`).
+pub const JOIN_CANCELLED: &str = "VOICE_JOIN_CANCELLED";
+
+/// Voice session epochs (C32 amendment "leave and `voice_removed` win").
+///
+/// The native process allocates the epochs ([`begin_voice_session`]), so
+/// every window and every reload of a window share one order. Allocating
+/// an epoch cancels nothing. A leave names the session it ends: it raises
+/// the floor just above that session's epoch before it waits for the voice
+/// lock, so that session's join (and any older one) stops, and it tears
+/// the native session down only if that is not a newer one
+/// ([`leave_applies`]). A join whose epoch is below the floor is
+/// cancelled: it checks after each await and right before each message it
+/// sends. Joins and leaves without an epoch (older frontends) keep the old
+/// behaviour: such a join is never cancelled, such a leave ends everything.
+#[derive(Debug, Default)]
+pub struct VoiceEpochGate {
+    /// Last epoch handed out.
+    last: AtomicU64,
+    /// Joins below this epoch must stop.
+    floor: AtomicU64,
+}
+
+impl VoiceEpochGate {
+    /// A new voice session: the next epoch. Older sessions are not touched;
+    /// only the leave that names a session ends it.
+    pub fn begin_session(&self) -> u64 {
+        self.last.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    /// A leave of the session with `epoch`: its join, and every older one,
+    /// is cancelled. Sessions allocated later go on.
+    pub fn cancel_through(&self, epoch: u64) {
+        self.floor
+            .fetch_max(epoch.saturating_add(1), Ordering::SeqCst);
+    }
+
+    /// A leave without an epoch: every session allocated so far is cancelled.
+    pub fn cancel_all(&self) {
+        let next = self.last.load(Ordering::SeqCst) + 1;
+        self.floor.fetch_max(next, Ordering::SeqCst);
+    }
+
+    /// Whether a join running under `epoch` may go on.
+    pub fn is_current(&self, epoch: Option<u64>) -> bool {
+        epoch.is_none_or(|epoch| epoch >= self.floor.load(Ordering::SeqCst))
+    }
+
+    /// `Err(JOIN_CANCELLED)` when a join under `epoch` must stop.
+    pub fn check(&self, epoch: Option<u64>) -> Result<(), String> {
+        if self.is_current(epoch) {
+            Ok(())
+        } else {
+            info!(epoch = ?epoch, "Voice join cancelled: its session ended");
+            Err(JOIN_CANCELLED.to_string())
+        }
+    }
+}
+
+/// Whether a leave for the session `leave_epoch` may tear down the native
+/// session established under `held_epoch`. A leave never ends a session
+/// that is newer than the one it names; without an epoch on either side
+/// (older frontends) it ends whatever is there.
+pub const fn leave_applies(leave_epoch: Option<u64>, held_epoch: Option<u64>) -> bool {
+    match (leave_epoch, held_epoch) {
+        (Some(leave), Some(held)) => held <= leave,
+        _ => true,
+    }
+}
+
+/// Payload of `voice:session_state`: the publisher state of the native
+/// session established under `epoch` (wire format, hence `snake_case`).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SessionStateEvent {
+    /// Epoch of the session the state belongs to (`None`: joined without one).
+    pub epoch: Option<u64>,
+    /// `ConnectionState` name (`Connected`, `Reconnecting`, `Failed`, ...).
+    pub state: String,
+}
+
+/// Start a voice session: returns its epoch for `join_voice` and for the
+/// `leave_voice` that ends it. Allocated by the native process so reloads
+/// and several windows share one order.
+#[command]
+pub fn begin_voice_session(state: State<'_, AppState>) -> u64 {
+    state.voice_gate.begin_session()
+}
+
+/// Where a join's messages go (a seam for tests; the app uses the manager).
+trait VoiceSignal {
+    fn send_event(
+        &self,
+        event: ClientEvent,
+    ) -> impl std::future::Future<Output = Result<(), String>> + Send;
+}
+
+impl VoiceSignal for WebSocketManager {
+    async fn send_event(&self, event: ClientEvent) -> Result<(), String> {
+        self.send(event).await
+    }
+}
+
+/// Why sending the join did not complete.
+#[derive(Debug, PartialEq, Eq)]
+enum JoinSendError {
+    /// The session ended before `VoiceJoin` went out: nothing was sent.
+    CancelledBeforeJoin,
+    /// The session ended after `VoiceJoin` went out; a `VoiceLeave` was
+    /// sent in its place (best effort) instead of the offer.
+    CancelledAfterJoin,
+    /// No socket, or a send failed.
+    Failed(String),
+}
+
+/// Send `VoiceJoin` and the publisher offer, checking the session epoch
+/// after the socket lock is acquired and right before each send: a leave or
+/// removal that arrives while the lock is pending sends nothing.
+async fn send_join_and_offer<W: VoiceSignal + Sync>(
+    ws: &RwLock<Option<W>>,
+    gate: &VoiceEpochGate,
+    epoch: Option<u64>,
+    channel_id: &str,
+    offer_sdp: String,
+) -> Result<(), JoinSendError> {
+    let guard = ws.read().await;
+    let Some(sender) = guard.as_ref() else {
+        return Err(JoinSendError::Failed("WebSocket not connected".into()));
+    };
+    if gate.check(epoch).is_err() {
+        return Err(JoinSendError::CancelledBeforeJoin);
+    }
+    sender
+        .send_event(ClientEvent::VoiceJoin {
+            channel_id: channel_id.to_string(),
+        })
+        .await
+        .map_err(|e| JoinSendError::Failed(format!("Failed to send VoiceJoin: {e}")))?;
+    if gate.check(epoch).is_err() {
+        // Already in the room on the server: take it back.
+        let _ = sender
+            .send_event(ClientEvent::VoiceLeave {
+                channel_id: channel_id.to_string(),
+            })
+            .await;
+        return Err(JoinSendError::CancelledAfterJoin);
+    }
+    sender
+        .send_event(ClientEvent::VoicePublisherOffer {
+            channel_id: channel_id.to_string(),
+            sdp: offer_sdp,
+        })
+        .await
+        .map_err(|e| JoinSendError::Failed(format!("Failed to send VoicePublisherOffer: {e}")))
+}
+
 /// Join a voice channel.
 ///
 /// Initializes audio pipeline and WebRTC, sends `VoiceJoin` to server.
 /// After joining, the client creates a publisher offer and sends it via
 /// `VoicePublisherOffer`. The server responds with `VoicePublisherAnswer`.
+/// `epoch` is the frontend's voice session epoch ([`VoiceEpochGate`]).
 #[command]
 pub async fn join_voice(
     channel_id: String,
+    epoch: Option<u64>,
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<(), String> {
     info!("Joining voice channel: {}", channel_id);
+    let gate = state.voice_gate.clone();
 
     // Initialize voice state if needed
     state.ensure_voice().await?;
+    gate.check(epoch)?;
 
     // Server-provided STUN/TURN config (falls back to a public STUN server).
     // Fetched before taking the voice lock so a slow server cannot block it.
@@ -112,8 +272,11 @@ pub async fn join_voice(
         warn!("No active session; using default STUN only, TURN unavailable");
         vec![IceServerConfig::default()]
     };
+    gate.check(epoch)?;
 
     let mut voice = state.voice.write().await;
+    // A leave that raced us took the lock first: nothing was created yet.
+    gate.check(epoch)?;
     let voice_state = voice.as_mut().ok_or("Voice not initialized")?;
 
     // Set app handle for speaking indicator events
@@ -123,6 +286,9 @@ pub async fn join_voice(
     if voice_state.channel_id.is_some() {
         return Err("Already in a voice channel. Leave first.".into());
     }
+    // From here on the native session belongs to this join: the leave that
+    // names this epoch (or a later one) tears it down, also after an error.
+    voice_state.session_epoch = epoch;
 
     // Connect WebRTC (creates peer connection)
     voice_state
@@ -187,7 +353,15 @@ pub async fn join_voice(
         .webrtc
         .set_on_state_change(move |new_state| {
             debug!("Voice connection state changed: {:?}", new_state);
-            let _ = app_clone.emit("voice:state_change", format!("{new_state:?}"));
+            // With the session's epoch, so the frontend can tell a late
+            // state of an ended session from the one it holds now.
+            let _ = app_clone.emit(
+                "voice:session_state",
+                SessionStateEvent {
+                    epoch,
+                    state: format!("{new_state:?}"),
+                },
+            );
         })
         .await;
 
@@ -346,26 +520,20 @@ pub async fn join_voice(
         .await
         .map_err(|e| e.to_string())?;
 
-    // Send VoiceJoin to server via WebSocket
-    let ws = state.websocket.read().await;
-    if let Some(ws_manager) = ws.as_ref() {
-        ws_manager
-            .send(ClientEvent::VoiceJoin {
-                channel_id: channel_id.clone(),
-            })
-            .await
-            .map_err(|e| format!("Failed to send VoiceJoin: {e}"))?;
-
-        // Send publisher offer
-        ws_manager
-            .send(ClientEvent::VoicePublisherOffer {
-                channel_id,
-                sdp: offer_sdp,
-            })
-            .await
-            .map_err(|e| format!("Failed to send VoicePublisherOffer: {e}"))?;
-    } else {
-        return Err("WebSocket not connected".into());
+    // Send VoiceJoin + offer; the epoch is checked again after the socket
+    // lock and before each send. The voice lock is still held, so a leave
+    // cannot have torn this connection down: a cancelled join undoes it.
+    match send_join_and_offer(&state.websocket, &gate, epoch, &channel_id, offer_sdp).await {
+        Ok(()) => {}
+        Err(JoinSendError::Failed(e)) => return Err(e),
+        Err(JoinSendError::CancelledBeforeJoin | JoinSendError::CancelledAfterJoin) => {
+            voice_state.channel_id = None;
+            voice_state.session_epoch = None;
+            if let Err(e) = voice_state.webrtc.disconnect().await {
+                warn!("Disconnect of a cancelled voice join failed: {e}");
+            }
+            return Err(JOIN_CANCELLED.to_string());
+        }
     }
 
     info!("VoiceJoin + VoicePublisherOffer sent, waiting for server answer");
@@ -589,83 +757,214 @@ pub async fn handle_voice_ice_candidate(
     Ok(())
 }
 
-/// Leave the current voice channel.
-#[command]
-pub async fn leave_voice(state: State<'_, AppState>) -> Result<(), String> {
-    info!("Leaving voice channel");
+/// Whether leaving sends `VoiceLeave`. A silent leave (C31 `voice_removed`,
+/// C32 rejoin after a new socket) only drops the local call: the server
+/// already removed this peer, and a `VoiceLeave` from this socket could
+/// remove the user's peer on another device (peers are keyed by user).
+fn sends_voice_leave(silent: Option<bool>) -> bool {
+    !silent.unwrap_or(false)
+}
 
-    let mut voice = state.voice.write().await;
-    let voice_state = voice.as_mut().ok_or("Voice not initialized")?;
+/// Longest one step of a voice teardown may take. A step that does not
+/// finish in time is given up (logged) and the teardown goes on with the
+/// next one, so a teardown always runs to its end and never keeps the voice
+/// lock for good.
+const TEARDOWN_STEP_LIMIT: std::time::Duration = std::time::Duration::from_secs(3);
 
-    let channel_id = voice_state.channel_id.take();
-
-    // Stop all screen shares if active
-    if !voice_state.screen_shares.is_empty() {
-        info!(
-            count = voice_state.screen_shares.len(),
-            "Auto-stopping screen shares on voice leave"
+/// Run one teardown step, waiting at most [`TEARDOWN_STEP_LIMIT`] for it.
+async fn bounded_step<T>(
+    what: &'static str,
+    step: impl std::future::Future<Output = T>,
+) -> Option<T> {
+    if let Ok(done) = tokio::time::timeout(TEARDOWN_STEP_LIMIT, step).await {
+        Some(done)
+    } else {
+        warn!(
+            step = what,
+            "Voice teardown step did not finish in time; going on"
         );
-        let pipelines: Vec<_> = voice_state.screen_shares.drain().collect();
-        for (stream_id, pipeline) in pipelines {
-            info!(stream_id = %stream_id, "Shutting down screen share pipeline");
-            pipeline.shutdown().await;
-        }
+        None
+    }
+}
+
+/// The native voice session as a teardown sees it (a seam for tests; the
+/// app uses [`VoiceState`]).
+trait NativeSession: Send {
+    /// Epoch of the session that holds the connection, if any.
+    fn session_epoch(&self) -> Option<u64>;
+    /// Release everything of the held session (microphone and speaker
+    /// streams, shares, webcam, peer connections), each step bounded.
+    /// Returns the channel the session was in.
+    fn release(&mut self) -> impl std::future::Future<Output = Option<String>> + Send;
+}
+
+impl NativeSession for VoiceState {
+    fn session_epoch(&self) -> Option<u64> {
+        self.session_epoch
     }
 
-    // Stop webcam if active
-    if let Some(pipeline) = voice_state.webcam.take() {
-        info!("Auto-stopping webcam on voice leave");
-        pipeline.shutdown().await;
-    }
+    async fn release(&mut self) -> Option<String> {
+        self.session_epoch = None;
+        let channel_id = self.channel_id.take();
 
-    // Stop all video decode tasks
-    {
-        let mut tasks = voice_state.video_tasks.lock().await;
-        if !tasks.is_empty() {
+        // Stop all screen shares if active
+        if !self.screen_shares.is_empty() {
             info!(
-                count = tasks.len(),
-                "Aborting video decode tasks on voice leave"
+                count = self.screen_shares.len(),
+                "Auto-stopping screen shares on voice leave"
             );
-            for handle in tasks.drain(..) {
-                handle.abort();
+            let pipelines: Vec<_> = self.screen_shares.drain().collect();
+            for (stream_id, pipeline) in pipelines {
+                info!(stream_id = %stream_id, "Shutting down screen share pipeline");
+                bounded_step("screen share", pipeline.shutdown()).await;
             }
         }
-        voice_state.active_video_count.store(0, Ordering::Relaxed);
+
+        // Stop webcam if active
+        if let Some(pipeline) = self.webcam.take() {
+            info!("Auto-stopping webcam on voice leave");
+            bounded_step("webcam", pipeline.shutdown()).await;
+        }
+
+        // Stop all video decode tasks
+        {
+            let mut tasks = self.video_tasks.lock().await;
+            if !tasks.is_empty() {
+                info!(
+                    count = tasks.len(),
+                    "Aborting video decode tasks on voice leave"
+                );
+                for handle in tasks.drain(..) {
+                    handle.abort();
+                }
+            }
+            self.active_video_count.store(0, Ordering::Relaxed);
+        }
+
+        // Drop any pending frame sinks (subscriptions whose track never arrived).
+        // Dropping the FrameBuffer closes its watch channel, which causes the
+        // emitter task in spawn_frame_emitter to exit cleanly.
+        self.video_frame_sinks.lock().await.clear();
+
+        // Stop audio and drop mixer
+        bounded_step("audio", self.audio.stop_all()).await;
+        self.audio_tx = None;
+        self.audio_mixer = None;
+        // Disconnect WebRTC. A failed or slow disconnect must not keep the
+        // rest of the session alive.
+        if let Some(Err(e)) = bounded_step("peer connections", self.webrtc.disconnect()).await {
+            warn!("WebRTC disconnect on leave failed: {e}");
+        }
+
+        // Clear receive stats AFTER disconnect: decode tasks publish until their
+        // tracks close, so clearing first would let a final publish resurrect
+        // stale entries into the next session.
+        self.connection_stats.clear();
+
+        channel_id
+    }
+}
+
+/// Tear down the native session `epoch` names. Everything happens under the
+/// voice lock, which joins take too: a join of a newer session waits until
+/// this teardown is through and then finds a clean state, and a teardown
+/// that names an older session than the held one changes nothing
+/// ([`leave_applies`]). Because every step is bounded, the lock is always
+/// released again.
+async fn teardown_session<S: NativeSession + Sync, W: VoiceSignal + Send + Sync>(
+    voice: &RwLock<Option<S>>,
+    ws: &RwLock<Option<W>>,
+    silent: Option<bool>,
+    epoch: Option<u64>,
+) -> Result<(), String> {
+    let mut voice = voice.write().await;
+    let session = voice.as_mut().ok_or("Voice not initialized")?;
+
+    if !leave_applies(epoch, session.session_epoch()) {
+        info!(
+            epoch = ?epoch,
+            held = ?session.session_epoch(),
+            "Leave names an older voice session; the newer one stays"
+        );
+        return Ok(());
     }
 
-    // Drop any pending frame sinks (subscriptions whose track never arrived).
-    // Dropping the FrameBuffer closes its watch channel, which causes the
-    // emitter task in spawn_frame_emitter to exit cleanly.
-    voice_state.video_frame_sinks.lock().await.clear();
+    let channel_id = session.release().await;
 
-    // Stop audio and drop mixer
-    voice_state.audio.stop_all().await;
-    voice_state.audio_tx = None;
-    voice_state.audio_mixer = None;
-    // Disconnect WebRTC
-    voice_state
-        .webrtc
-        .disconnect()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    // Clear receive stats AFTER disconnect: decode tasks publish until their
-    // tracks close, so clearing first would let a final publish resurrect
-    // stale entries into the next session.
-    voice_state.connection_stats.clear();
-
-    // Send VoiceLeave to server
-    if let Some(channel_id) = channel_id {
-        let ws = state.websocket.read().await;
-        if let Some(ws_manager) = ws.as_ref() {
-            let _ = ws_manager
-                .send(ClientEvent::VoiceLeave { channel_id })
+    // Tell the server while the lock is still held, so the leave goes out
+    // before the `VoiceJoin` of a join that waits for the lock.
+    if let Some(channel_id) = channel_id.filter(|_| sends_voice_leave(silent)) {
+        let ws = ws.read().await;
+        if let Some(sender) = ws.as_ref() {
+            let _ = sender
+                .send_event(ClientEvent::VoiceLeave { channel_id })
                 .await;
         }
     }
 
     info!("Left voice channel");
     Ok(())
+}
+
+/// Leave a voice session. `silent: true` skips `VoiceLeave`. `epoch` names
+/// the session to end (from [`begin_voice_session`]): its join is cancelled
+/// at once, and the native session is torn down unless a newer one holds
+/// the connection by now ([`leave_applies`]). Without `epoch` whatever is
+/// there ends.
+///
+/// The teardown runs as a task of its own: it runs to its end whether or
+/// not the window that asked for it still waits (or still exists), and it
+/// is ordered with later joins by the voice lock ([`teardown_session`]).
+#[command]
+pub async fn leave_voice(
+    silent: Option<bool>,
+    epoch: Option<u64>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    info!(silent = ?silent, epoch = ?epoch, "Leaving voice channel");
+    // Before waiting for the lock: a join of the ended session stops at its
+    // next check instead of connecting after this leave.
+    match epoch {
+        Some(epoch) => state.voice_gate.cancel_through(epoch),
+        None => state.voice_gate.cancel_all(),
+    }
+
+    let voice = state.voice.clone();
+    let websocket = state.websocket.clone();
+    tauri::async_runtime::spawn(
+        async move { teardown_session(&voice, &websocket, silent, epoch).await },
+    )
+    .await
+    .map_err(|e| format!("Voice teardown did not complete: {e}"))?
+}
+
+/// Whether a publisher connection in this state carries media.
+const fn publisher_alive(
+    state: webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState,
+) -> bool {
+    matches!(
+        state,
+        webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Connected
+    )
+}
+
+/// Whether the publisher connection of the voice session `epoch` is alive
+/// right now. Read from the peer connection itself, not from the last
+/// state event: after the computer slept, events may not have arrived yet.
+/// False when another session (or none) holds the connection.
+#[command]
+pub async fn voice_probe(epoch: Option<u64>, state: State<'_, AppState>) -> Result<bool, String> {
+    let publisher = {
+        let voice = state.voice.read().await;
+        let Some(voice_state) = voice.as_ref() else {
+            return Ok(false);
+        };
+        if voice_state.channel_id.is_none() || voice_state.session_epoch != epoch {
+            return Ok(false);
+        }
+        voice_state.webrtc.publisher_pc().await
+    };
+    Ok(publisher.is_some_and(|pc| publisher_alive(pc.connection_state())))
 }
 
 /// Set mute state.
@@ -1263,6 +1562,367 @@ mod tests {
         assert!(sender_rx.is_some());
         assert!(events.is_empty());
         assert!(started.result.is_ok());
+    }
+
+    #[test]
+    fn join_is_cancelled_by_a_leave() {
+        let gate = VoiceEpochGate::default();
+        let epoch = gate.begin_session();
+        assert!(gate.check(Some(epoch)).is_ok());
+        gate.cancel_all();
+        assert_eq!(gate.check(Some(epoch)), Err(JOIN_CANCELLED.to_string()));
+        // The next session's join goes on.
+        let next = gate.begin_session();
+        assert!(gate.check(Some(next)).is_ok());
+    }
+
+    #[test]
+    fn a_new_session_alone_cancels_nothing() {
+        let gate = VoiceEpochGate::default();
+        let a = gate.begin_session();
+        let b = gate.begin_session();
+        assert!(b > a);
+        // Allocation is not a leave: a join that got its epoch earlier goes
+        // on, whatever order the allocations were answered in.
+        assert!(gate.is_current(Some(a)));
+        assert!(gate.is_current(Some(b)));
+    }
+
+    #[test]
+    fn a_leave_ends_its_session_and_older_ones_only() {
+        let gate = VoiceEpochGate::default();
+        let old = gate.begin_session();
+        let left = gate.begin_session();
+        let newer = gate.begin_session();
+        gate.cancel_through(left);
+        assert!(!gate.is_current(Some(old)));
+        assert!(!gate.is_current(Some(left)));
+        assert!(gate.is_current(Some(newer)));
+        // A late leave of an older session changes nothing any more.
+        gate.cancel_through(old);
+        assert!(gate.is_current(Some(newer)));
+    }
+
+    #[test]
+    fn a_leave_never_tears_down_a_newer_native_session() {
+        // The leave of session 3 arrives after session 5 was established.
+        assert!(!leave_applies(Some(3), Some(5)));
+        // Its own session, or an older one that was left behind, ends.
+        assert!(leave_applies(Some(3), Some(3)));
+        assert!(leave_applies(Some(3), Some(2)));
+        // Callers or sessions without an epoch keep the old behaviour.
+        assert!(leave_applies(None, Some(5)));
+        assert!(leave_applies(Some(3), None));
+        assert!(leave_applies(None, None));
+    }
+
+    #[test]
+    fn reloaded_window_continues_the_native_order() {
+        // Window before reload: many sessions, the last one left.
+        let gate = VoiceEpochGate::default();
+        let mut last = 0;
+        for _ in 0..50 {
+            last = gate.begin_session();
+        }
+        gate.cancel_through(last);
+        // The reloaded window knows nothing of the old epochs; it asks the
+        // same process and gets one above the floor.
+        let after_reload = gate.begin_session();
+        assert!(gate.is_current(Some(after_reload)));
+    }
+
+    #[test]
+    fn two_windows_share_one_order() {
+        let gate = VoiceEpochGate::default();
+        let window_a = gate.begin_session();
+        let window_b = gate.begin_session();
+        // A's leave ends A's session; B, started later, goes on.
+        gate.cancel_through(window_a);
+        assert!(!gate.is_current(Some(window_a)));
+        assert!(gate.is_current(Some(window_b)));
+        // A leave without an epoch (older caller) ends both.
+        gate.cancel_all();
+        assert!(!gate.is_current(Some(window_b)));
+    }
+
+    #[test]
+    fn joins_without_epoch_are_never_cancelled() {
+        let gate = VoiceEpochGate::default();
+        gate.begin_session();
+        gate.cancel_all();
+        assert!(gate.check(None).is_ok());
+    }
+
+    /// Records what a join sends.
+    #[derive(Default)]
+    struct FakeSignal {
+        sent: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl VoiceSignal for FakeSignal {
+        async fn send_event(&self, event: ClientEvent) -> Result<(), String> {
+            let name = match event {
+                ClientEvent::VoiceJoin { .. } => "join",
+                ClientEvent::VoicePublisherOffer { .. } => "offer",
+                ClientEvent::VoiceLeave { .. } => "leave",
+                _ => "other",
+            };
+            self.sent.lock().unwrap().push(name.to_string());
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn removal_while_join_waits_for_the_socket_lock_sends_nothing() {
+        let ws = Arc::new(RwLock::new(Some(FakeSignal::default())));
+        let gate = Arc::new(VoiceEpochGate::default());
+        let epoch = gate.begin_session();
+
+        // Park the join on the socket lock.
+        let held = ws.write().await;
+        let join = tokio::spawn({
+            let ws = ws.clone();
+            let gate = gate.clone();
+            async move { send_join_and_offer(&ws, &gate, Some(epoch), "ch", "sdp".into()).await }
+        });
+        tokio::task::yield_now().await;
+        // voice_removed / leave arrives meanwhile.
+        gate.cancel_all();
+        drop(held);
+
+        assert_eq!(join.await.unwrap(), Err(JoinSendError::CancelledBeforeJoin));
+        let sent = ws
+            .read()
+            .await
+            .as_ref()
+            .unwrap()
+            .sent
+            .lock()
+            .unwrap()
+            .clone();
+        assert!(sent.is_empty(), "sent {sent:?}");
+    }
+
+    #[tokio::test]
+    async fn current_join_sends_join_then_offer() {
+        let ws = RwLock::new(Some(FakeSignal::default()));
+        let gate = VoiceEpochGate::default();
+        let epoch = gate.begin_session();
+        assert_eq!(
+            send_join_and_offer(&ws, &gate, Some(epoch), "ch", "sdp".into()).await,
+            Ok(())
+        );
+        let sent = ws
+            .read()
+            .await
+            .as_ref()
+            .unwrap()
+            .sent
+            .lock()
+            .unwrap()
+            .clone();
+        assert_eq!(sent, vec!["join", "offer"]);
+    }
+
+    /// Cancels the session while `VoiceJoin` is being sent.
+    struct CancelOnJoin {
+        gate: Arc<VoiceEpochGate>,
+        inner: FakeSignal,
+    }
+
+    impl VoiceSignal for CancelOnJoin {
+        async fn send_event(&self, event: ClientEvent) -> Result<(), String> {
+            if matches!(event, ClientEvent::VoiceJoin { .. }) {
+                self.gate.cancel_all();
+            }
+            self.inner.send_event(event).await
+        }
+    }
+
+    #[tokio::test]
+    async fn cancel_during_voice_join_sends_leave_instead_of_offer() {
+        let gate = Arc::new(VoiceEpochGate::default());
+        let epoch = gate.begin_session();
+        let ws = RwLock::new(Some(CancelOnJoin {
+            gate: gate.clone(),
+            inner: FakeSignal::default(),
+        }));
+        assert_eq!(
+            send_join_and_offer(&ws, &gate, Some(epoch), "ch", "sdp".into()).await,
+            Err(JoinSendError::CancelledAfterJoin)
+        );
+        let sent = ws
+            .read()
+            .await
+            .as_ref()
+            .unwrap()
+            .inner
+            .sent
+            .lock()
+            .unwrap()
+            .clone();
+        assert_eq!(sent, vec!["join", "leave"]);
+    }
+
+    /// A native session for the teardown tests.
+    struct FakeSession {
+        epoch: Option<u64>,
+        channel: Option<String>,
+        /// How long releasing takes.
+        release_takes: std::time::Duration,
+        log: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl NativeSession for FakeSession {
+        fn session_epoch(&self) -> Option<u64> {
+            self.epoch
+        }
+
+        async fn release(&mut self) -> Option<String> {
+            let epoch = self.epoch.take();
+            self.log
+                .lock()
+                .unwrap()
+                .push(format!("release {epoch:?} starts"));
+            bounded_step("fake", tokio::time::sleep(self.release_takes)).await;
+            self.log
+                .lock()
+                .unwrap()
+                .push(format!("release {epoch:?} done"));
+            self.channel.take()
+        }
+    }
+
+    fn fake_session(
+        epoch: u64,
+        release_takes_secs: u64,
+        log: &Arc<std::sync::Mutex<Vec<String>>>,
+    ) -> FakeSession {
+        FakeSession {
+            epoch: Some(epoch),
+            channel: Some(format!("ch-{epoch}")),
+            release_takes: std::time::Duration::from_secs(release_takes_secs),
+            log: log.clone(),
+        }
+    }
+
+    fn sent_by(ws: &RwLock<Option<FakeSignal>>) -> Vec<String> {
+        ws.try_read()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .sent
+            .lock()
+            .unwrap()
+            .clone()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_teardown_step_that_hangs_is_given_up_after_the_limit() {
+        let started = tokio::time::Instant::now();
+        assert_eq!(
+            bounded_step("hangs", std::future::pending::<u8>()).await,
+            None
+        );
+        assert_eq!(started.elapsed(), TEARDOWN_STEP_LIMIT);
+        assert_eq!(bounded_step("quick", async { 7 }).await, Some(7));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_teardown_with_a_hanging_step_still_completes_and_frees_the_lock() {
+        let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+        // Releasing would take an hour: far beyond the limit of one step.
+        let voice = Arc::new(RwLock::new(Some(fake_session(3, 3600, &log))));
+        let ws = RwLock::new(Some(FakeSignal::default()));
+
+        assert_eq!(
+            teardown_session(&voice, &ws, Some(false), Some(3)).await,
+            Ok(())
+        );
+        // The session is gone, the server was told, the lock is free again.
+        assert!(voice.try_write().is_ok());
+        assert_eq!(voice.read().await.as_ref().unwrap().epoch, None);
+        assert_eq!(sent_by(&ws), vec!["leave"]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_newer_join_waits_for_the_background_teardown_and_is_not_touched() {
+        let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let voice = Arc::new(RwLock::new(Some(fake_session(3, 2, &log))));
+        let ws = Arc::new(RwLock::new(Some(FakeSignal::default())));
+
+        // The teardown of session 3 runs on its own; nobody waits for it.
+        let teardown = tokio::spawn({
+            let voice = voice.clone();
+            let ws = ws.clone();
+            async move { teardown_session(&voice, &ws, Some(false), Some(3)).await }
+        });
+        tokio::task::yield_now().await;
+
+        // Meanwhile session 5 joins: it takes the same lock.
+        let join = tokio::spawn({
+            let voice = voice.clone();
+            let log = log.clone();
+            async move {
+                let mut held = voice.write().await;
+                log.lock().unwrap().push("join 5".into());
+                *held = Some(fake_session(5, 0, &log));
+            }
+        });
+        join.await.unwrap();
+        assert_eq!(teardown.await.unwrap(), Ok(()));
+
+        // Session 3 was released completely before session 5 was created.
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec!["release Some(3) starts", "release Some(3) done", "join 5"]
+        );
+        // A late repeat of the old leave does not touch session 5.
+        assert_eq!(
+            teardown_session(&voice, &ws, Some(false), Some(3)).await,
+            Ok(())
+        );
+        let held = voice.read().await;
+        assert_eq!(held.as_ref().unwrap().epoch, Some(5));
+        assert_eq!(held.as_ref().unwrap().channel.as_deref(), Some("ch-5"));
+        assert_eq!(log.lock().unwrap().len(), 3);
+        assert_eq!(sent_by(&ws), vec!["leave"]);
+    }
+
+    #[tokio::test]
+    async fn a_silent_teardown_tells_the_server_nothing() {
+        let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let voice = RwLock::new(Some(fake_session(4, 0, &log)));
+        let ws = RwLock::new(Some(FakeSignal::default()));
+        assert_eq!(
+            teardown_session(&voice, &ws, Some(true), Some(4)).await,
+            Ok(())
+        );
+        assert_eq!(voice.read().await.as_ref().unwrap().epoch, None);
+        assert!(sent_by(&ws).is_empty());
+    }
+
+    #[test]
+    fn only_a_connected_publisher_counts_as_alive() {
+        use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState as S;
+        assert!(publisher_alive(S::Connected));
+        for state in [
+            S::New,
+            S::Connecting,
+            S::Disconnected,
+            S::Failed,
+            S::Closed,
+            S::Unspecified,
+        ] {
+            assert!(!publisher_alive(state), "{state:?}");
+        }
+    }
+
+    #[test]
+    fn leave_sends_voice_leave_unless_silent() {
+        assert!(sends_voice_leave(None));
+        assert!(sends_voice_leave(Some(false)));
+        assert!(!sends_voice_leave(Some(true)));
     }
 
     #[tokio::test]

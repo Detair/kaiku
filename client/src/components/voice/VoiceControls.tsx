@@ -17,6 +17,10 @@ const DEAFEN_SHORTCUT = "Ctrl+Shift+D";
  * Voice controls for mute/deafen/settings.
  */
 const VoiceControls: Component = () => {
+  // Mute/deafen stay usable while reconnecting; the store keeps the
+  // choice and the next successful attempt applies it.
+  const inSession = () =>
+    voiceState.state === "connected" || voiceState.state === "reconnecting";
   const [showMicTest, setShowMicTest] = createSignal(false);
   const [showQualityPicker, setShowQualityPicker] = createSignal(false);
   const [showSourcePicker, setShowSourcePicker] = createSignal(false);
@@ -26,7 +30,7 @@ const VoiceControls: Component = () => {
 
   // Keyboard shortcuts
   const handleKeyDown = (e: KeyboardEvent) => {
-    if (voiceState.state !== "connected") return;
+    if (!inSession()) return;
     if (e.ctrlKey && e.shiftKey && e.key === "M") {
       e.preventDefault();
       if (!isPttActive()) toggleMute();
@@ -70,7 +74,7 @@ const VoiceControls: Component = () => {
                 ? t("voice.controls.unmute", { shortcut: MUTE_SHORTCUT })
                 : t("voice.controls.mute", { shortcut: MUTE_SHORTCUT })
           }
-          disabled={voiceState.state !== "connected" || isPttActive()}
+          disabled={!inSession() || isPttActive()}
         >
           {voiceState.muted ? (
             <div style={{ "background-image": "var(--icon-mute)" }} class="w-6 h-6 bg-contain bg-center bg-no-repeat" />
@@ -96,7 +100,7 @@ const VoiceControls: Component = () => {
               ? t("voice.controls.undeafen", { shortcut: DEAFEN_SHORTCUT })
               : t("voice.controls.deafen", { shortcut: DEAFEN_SHORTCUT })
           }
-          disabled={voiceState.state !== "connected"}
+          disabled={!inSession()}
         >
           {voiceState.deafened ? (
             <div style={{ "background-image": "var(--icon-deafen)" }} class="w-6 h-6 bg-contain bg-center bg-no-repeat" />

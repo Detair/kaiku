@@ -2,7 +2,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockAdapter = {
   join: vi.fn(),
-  leave: vi.fn(),
+  leave: vi.fn().mockResolvedValue({ ok: true }),
+  teardown: vi.fn().mockResolvedValue({ ok: true }),
   setMute: vi.fn(),
   setDeafen: vi.fn(),
   setEventHandlers: vi.fn(),
@@ -96,12 +97,32 @@ import {
   applyStoredNoiseSuppression,
   trayVoiceReport,
   handleTrayVoiceAction,
+  remoteAudioElementCount,
+  handleVoiceRemoved,
+  wasRemovedFrom,
 } from "../voice";
 import { appSettings } from "@/stores/settings";
 import type { VoiceAdapter } from "@/lib/webrtc/types";
 
+/** Every handler installed on the adapter so far (owner and store). */
+function adapterHandlers(): Record<string, (...args: never[]) => void> {
+  return Object.assign(
+    {},
+    ...mockAdapter.setEventHandlers.mock.calls.map(([handlers]) => handlers),
+  );
+}
+
+/** The adapter reports a media state for the session joined last. */
+function mediaState(state: string): void {
+  const calls = mockAdapter.join.mock.calls;
+  const session = calls[calls.length - 1]?.[0];
+  (adapterHandlers().onStateChange as (s: string, session: unknown) => void)(state, session);
+}
+
 describe("voice store", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    // End whatever the previous test left with the voice owner.
+    await leaveVoice();
     vi.clearAllMocks();
     setVoiceState({
       state: "disconnected",
@@ -163,6 +184,12 @@ describe("voice store", () => {
       setVoiceState({ state: "connected", channelId: "ch-1" });
 
       expect(isInChannel("ch-2")).toBe(false);
+    });
+
+    it("counts reconnecting as still in the channel", () => {
+      setVoiceState({ state: "reconnecting", channelId: "ch-1" });
+
+      expect(isInChannel("ch-1")).toBe(true);
     });
 
     it("returns false when disconnected", () => {
@@ -283,6 +310,99 @@ describe("voice store", () => {
     });
   });
 
+  describe("short media outage (A8)", () => {
+    function handlers() {
+      return adapterHandlers() as unknown as {
+        onRemoteTrack: (t: { userId: string; trackId: string; stream: MediaStream; muted: boolean }) => void;
+      };
+    }
+
+    it("keeps remote audio through disconnected → connected", async () => {
+      mockAdapter.join.mockResolvedValue({ ok: true });
+      await joinVoice("ch-1");
+      const h = handlers();
+      mediaState("connected");
+      const stream = { id: "u2:microphone" } as unknown as MediaStream;
+      vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+      h.onRemoteTrack({ userId: "u2", trackId: "t1", stream, muted: false });
+      expect(remoteAudioElementCount()).toBe(1);
+
+      mediaState("reconnecting");
+      expect(voiceState.state).toBe("reconnecting");
+      expect(remoteAudioElementCount()).toBe(1);
+      expect(document.querySelectorAll('audio[data-stream-id="u2:microphone"]').length).toBe(1);
+
+      mediaState("connected");
+      expect(voiceState.state).toBe("connected");
+      expect(remoteAudioElementCount()).toBe(1);
+
+      mediaState("disconnected");
+      expect(remoteAudioElementCount()).toBe(0);
+      expect(document.querySelectorAll('audio[data-stream-id="u2:microphone"]').length).toBe(0);
+    });
+
+    it("a state of a session the store is not in changes nothing", async () => {
+      mockAdapter.join.mockResolvedValue({ ok: true });
+      await joinVoice("ch-1");
+      mediaState("connected");
+      const report = adapterHandlers().onStateChange as (s: string, session: unknown) => void;
+      // The end of an older session, reported late.
+      report("disconnected", { token: -1, channelId: "ch-0" });
+      report("disconnected", null);
+      expect(voiceState.state).toBe("connected");
+      expect(voiceState.channelId).toBe("ch-1");
+    });
+  });
+
+  describe("voice_removed (C31)", () => {
+    it("tears down without voice_leave, clears state and says why", async () => {
+      const { showToast } = await import("@/components/ui/Toast");
+      const { wsSend } = await import("@/lib/tauri");
+      mockAdapter.join.mockResolvedValue({ ok: true });
+      await joinVoice("ch-1");
+      setVoiceState({ state: "connected", participants: { u2: { user_id: "u2", muted: false, speaking: false, screen_sharing: false } } });
+
+      await handleVoiceRemoved("ch-1", "channel_deleted");
+
+      expect(mockAdapter.teardown).toHaveBeenCalledTimes(1);
+      expect(mockAdapter.leave).not.toHaveBeenCalled();
+      expect(wsSend).not.toHaveBeenCalledWith(expect.objectContaining({ type: "voice_leave" }));
+      expect(voiceState.state).toBe("disconnected");
+      expect(voiceState.channelId).toBeNull();
+      expect(voiceState.participants).toEqual({});
+      expect(wasRemovedFrom("ch-1")).toBe(true);
+      expect(showToast).toHaveBeenCalledWith(
+        expect.objectContaining({ title: "The voice channel was deleted." }),
+      );
+    });
+
+    it("treats an unknown reason like kicked", async () => {
+      const { showToast } = await import("@/components/ui/Toast");
+      mockAdapter.join.mockResolvedValue({ ok: true });
+      await joinVoice("ch-1");
+      await handleVoiceRemoved("ch-1", "something_new");
+      expect(showToast).toHaveBeenCalledWith(
+        expect.objectContaining({ title: "You were removed from the voice channel." }),
+      );
+    });
+
+    it("ignores a removal for another channel", async () => {
+      mockAdapter.join.mockResolvedValue({ ok: true });
+      await joinVoice("ch-1");
+      await handleVoiceRemoved("ch-2", "kicked");
+      expect(mockAdapter.teardown).not.toHaveBeenCalled();
+      expect(voiceState.channelId).toBe("ch-1");
+    });
+
+    it("an own join clears the removal mark", async () => {
+      mockAdapter.join.mockResolvedValue({ ok: true });
+      await joinVoice("ch-1");
+      await handleVoiceRemoved("ch-1", "kicked");
+      await joinVoice("ch-1");
+      expect(wasRemovedFrom("ch-1")).toBe(false);
+    });
+  });
+
   describe("joinVoice", () => {
     it("joins voice channel on success", async () => {
       mockAdapter.join.mockResolvedValue({ ok: true });
@@ -290,7 +410,7 @@ describe("voice store", () => {
       await joinVoice("ch-1");
 
       expect(mockAdapter.setEventHandlers).toHaveBeenCalled();
-      expect(mockAdapter.join).toHaveBeenCalledWith("ch-1");
+      expect(mockAdapter.join).toHaveBeenCalledWith({ token: expect.any(Number), channelId: "ch-1" });
       expect(voiceState.sessionId).not.toBeNull();
       expect(voiceState.connectedAt).not.toBeNull();
     });
@@ -300,8 +420,10 @@ describe("voice store", () => {
       mockAdapter.join.mockResolvedValue({ ok: true });
       await joinVoice("ch-1");
 
-      const calls = mockAdapter.setEventHandlers.mock.calls;
-      const handlers = calls[calls.length - 1][0];
+      const handlers = adapterHandlers() as unknown as {
+        onAudioError: (e: { kind: string; device: string }) => void;
+        onAudioRecovered: (e: { kind: string; device: string }) => void;
+      };
       handlers.onAudioError({ kind: "capture_failed", device: "USB Mic" });
       expect(showToast).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -327,8 +449,10 @@ describe("voice store", () => {
       mockAdapter.join.mockResolvedValue({ ok: true });
       mockAdapter.leave.mockResolvedValue({ ok: true });
       await joinVoice("ch-1");
-      const calls = mockAdapter.setEventHandlers.mock.calls;
-      const handlers = calls[calls.length - 1][0];
+      const handlers = adapterHandlers() as unknown as {
+        onAudioError: (e: { kind: string; device: string }) => void;
+        onAudioRecovered: (e: { kind: string; device: string }) => void;
+      };
 
       handlers.onAudioError({ kind: "capture_failed", device: "USB Mic" });
       const toastCalls = vi.mocked(showToast).mock.calls;
@@ -672,12 +796,14 @@ describe("voice store", () => {
     });
 
     it("tray Leave voice leaves the call", async () => {
-      setVoiceState({ state: "connected", channelId: "ch-1" });
-      mockAdapter.leave.mockResolvedValue({ ok: true });
+      mockAdapter.join.mockResolvedValue({ ok: true });
+      await joinVoice("ch-1");
+      mediaState("connected");
 
       await handleTrayVoiceAction("leave");
 
-      expect(mockAdapter.leave).toHaveBeenCalled();
+      // The session that was joined is the one that is left.
+      expect(mockAdapter.leave).toHaveBeenCalledWith(mockAdapter.join.mock.calls[0]?.[0]);
       expect(voiceState.state).toBe("disconnected");
     });
 

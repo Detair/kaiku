@@ -188,6 +188,8 @@ const OnboardingDialog: Component = () => {
     // The instance has the server browser off: show the same "discovery is
     // turned off" note as the server's DISCOVERY_DISABLED error, no request.
     if (isGuildDiscoveryOff()) {
+      // Nothing to browse: open on the invite code instead (C41).
+      setJoinTab("invite");
       setDiscoveryGuilds([]);
       setDiscoveryLoading(false);
       setDiscoveryPermanent(true);
@@ -210,6 +212,7 @@ const OnboardingDialog: Component = () => {
         err instanceof Error && messageHasCode(err.message, "DISCOVERY_DISABLED");
       setDiscoveryPermanent(isDisabled);
       setDiscoveryError(true);
+      if (isDisabled) setJoinTab("invite");
     } finally {
       setDiscoveryLoading(false);
     }
