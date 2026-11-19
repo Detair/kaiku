@@ -3,8 +3,7 @@ package io.wolftown.kaiku.data.ws
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.JsonPrimitive
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 import java.util.logging.Level
@@ -32,18 +31,22 @@ class ServerEventDecoder(private val json: Json) {
     fun skippedCounts(): Map<String, Long> = skipped.mapValues { it.value.get() }
 
     fun decode(text: String): Result {
-        val type = try {
-            (json.parseToJsonElement(text) as? JsonObject)?.get("type")?.jsonPrimitive?.contentOrNull
+        val element = try {
+            json.parseToJsonElement(text) as? JsonObject
         } catch (e: Exception) {
             return Result.Broken("unparseable", e)
-        } ?: return Result.Broken("unknown", IllegalArgumentException("frame without a type"))
+        } ?: return Result.Broken("unknown", IllegalArgumentException("frame is not an object"))
+        // Only a JSON string is a type; a number or a boolean is a broken frame.
+        val type = (element["type"] as? JsonPrimitive)?.takeIf { it.isString }?.content
+            ?: return Result.Broken("unknown", IllegalArgumentException("frame without a string type"))
         if (type !in KNOWN_TYPES) {
             val count = skipped.computeIfAbsent(type) { AtomicLong() }.incrementAndGet()
             if (count == 1L) logger.log(Level.FINE, "skipping unmodelled server event type=$type")
             return Result.Skipped(type)
         }
         return try {
-            Result.Event(json.decodeFromString<ServerEvent>(text))
+            // From the element already parsed: each frame is parsed once.
+            Result.Event(json.decodeFromJsonElement(ServerEvent.serializer(), element))
         } catch (e: Exception) {
             Result.Broken(type, e)
         }

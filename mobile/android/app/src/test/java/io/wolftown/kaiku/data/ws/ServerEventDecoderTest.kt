@@ -31,4 +31,11 @@ class ServerEventDecoderTest {
         assertTrue(decoder.decode("""{"no_type":1}""") is ServerEventDecoder.Result.Broken)
         assertTrue(decoder.skippedCounts().isEmpty())
     }
+
+    @Test
+    fun `a type that is not a string is broken, not a quiet skip`() {
+        assertTrue(decoder.decode("""{"type":123}""") is ServerEventDecoder.Result.Broken)
+        assertTrue(decoder.decode("""{"type":true}""") is ServerEventDecoder.Result.Broken)
+        assertTrue(decoder.skippedCounts().isEmpty())
+    }
 }
