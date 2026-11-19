@@ -6,7 +6,7 @@ set -euo pipefail
 
 expert="${1:?expert name required}"
 question="${2:?question required}"
-model="${3:-gpt-6-astra}"
+model="${3:-gpt-6.2-astra}"
 effort="${4:-max}"
 
 repo_root="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"

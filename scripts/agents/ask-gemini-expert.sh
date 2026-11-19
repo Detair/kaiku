@@ -6,7 +6,7 @@ set -euo pipefail
 
 expert="${1:?expert name required}"
 question="${2:?question required}"
-model="${3:-gemini-4-argon-high}"
+model="${3:-gemini-4-neon-xhigh}"
 
 repo_root="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
 brief="$repo_root/docs/developer-guide/agents/experts/$expert.md"
