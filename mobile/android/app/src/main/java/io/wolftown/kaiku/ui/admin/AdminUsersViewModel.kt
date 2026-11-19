@@ -39,6 +39,8 @@ data class AdminUsersUi(
     val selectedServers: Set<String> = emptySet(),
     val serversLoading: Boolean = false,
     val serversFailed: Boolean = false,
+    /** A notice for the server rows (the limit of 10), shown next to them. */
+    @StringRes val serversNotice: Int? = null,
 )
 
 /** C23: a new account joins at most this many servers at once. */
@@ -136,15 +138,16 @@ class AdminUsersViewModel @Inject constructor(
     /** Ticks or unticks a server; an eleventh is refused with a hint. */
     fun toggleServer(guildId: String) = _ui.update {
         when {
-            guildId in it.selectedServers -> it.copy(selectedServers = it.selectedServers - guildId, message = null)
-            it.selectedServers.size >= MAX_NEW_ACCOUNT_SERVERS -> it.copy(message = R.string.admin_new_account_servers_max)
-            else -> it.copy(selectedServers = it.selectedServers + guildId, message = null)
+            guildId in it.selectedServers -> it.copy(selectedServers = it.selectedServers - guildId, serversNotice = null)
+            it.selectedServers.size >= MAX_NEW_ACCOUNT_SERVERS -> it.copy(serversNotice = R.string.admin_new_account_servers_max)
+            else -> it.copy(selectedServers = it.selectedServers + guildId, serversNotice = null)
         }
     }
 
     /** A new, passwordless account on the ticked servers; its phone is set up next ("Set up a phone"). */
     fun createUser(username: String, displayName: String, recoveryContactId: String?) {
-        if (_ui.value.working) return
+        // While the servers load, the ticks are not known yet: an account would silently get none.
+        if (_ui.value.working || _ui.value.serversLoading) return
         _ui.update { it.copy(working = true, message = null) }
         val state = _ui.value
         // In the order of the server list; only servers that are still offered.
@@ -163,10 +166,15 @@ class AdminUsersViewModel @Inject constructor(
             } catch (c: CancellationException) {
                 throw c
             } catch (e: Exception) {
-                _ui.update { it.copy(working = false, message = adminErrorFor(e)) }
+                _ui.update { it.copy(working = false, message = createErrorFor(e)) }
             }
         }
     }
+
+    /** The server's `VALIDATION_ERROR` on create is a bad username or a ticked server that is gone or full. */
+    @StringRes
+    private fun createErrorFor(e: Exception): Int =
+        if (e is ApiException && e.normalizedCode == "VALIDATION_ERROR") R.string.admin_create_invalid else adminErrorFor(e)
 
     fun clearCreated() = _ui.update { it.copy(created = null) }
 }

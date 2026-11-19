@@ -113,7 +113,7 @@ fun AdminUsersScreen(onBack: () -> Unit, onOpenUser: (String) -> Unit, viewModel
             OutlinedTextField(newDisplayName, { newDisplayName = it }, label = { Text(stringResource(R.string.admin_display_name)) },
                 singleLine = true, modifier = Modifier.fillMaxWidth())
             NewAccountServers(ui, onToggle = viewModel::toggleServer, onRetry = viewModel::loadServers)
-            KeyPrimaryButton(stringResource(R.string.admin_create), enabled = newUsername.isNotBlank(), working = ui.working,
+            KeyPrimaryButton(stringResource(R.string.admin_create), enabled = newUsername.isNotBlank() && !ui.serversLoading, working = ui.working,
                 onClick = { viewModel.createUser(newUsername, newDisplayName, null) })
         }
     }
@@ -146,6 +146,7 @@ private fun NewAccountServers(ui: AdminUsersUi, onToggle: (String) -> Unit, onRe
                 modifier = Modifier.padding(start = 12.dp).weight(1f))
         }
     }
+    ui.serversNotice?.let { KeyNotice(stringResource(it), warning = true) }
     if (!ui.serversLoading && ui.selectedServers.isEmpty()) {
         KeyNotice(stringResource(R.string.admin_new_account_no_servers), warning = true)
     }

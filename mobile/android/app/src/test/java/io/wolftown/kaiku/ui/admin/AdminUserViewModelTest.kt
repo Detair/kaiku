@@ -92,10 +92,34 @@ class AdminUserViewModelTest {
         assertEquals(10, v.ui.value.selectedServers.size)
         v.toggleServer("g12")
         assertEquals(10, v.ui.value.selectedServers.size)
-        assertEquals(R.string.admin_new_account_servers_max, v.ui.value.message)
+        // Next to the server rows, not at the top of the screen.
+        assertEquals(R.string.admin_new_account_servers_max, v.ui.value.serversNotice)
+        assertEquals(null, v.ui.value.message)
         v.toggleServer("g1")
         v.toggleServer("g12")
         assertTrue("g12" in v.ui.value.selectedServers)
+    }
+
+    @Test fun `create is ignored while the servers are still loading`() = runTest {
+        val pending = kotlinx.coroutines.CompletableDeferred<List<Guild>>()
+        coEvery { guilds.getGuilds() } coAnswers { pending.await() }
+        val v = AdminUsersViewModel(admin, stepUp, guilds)
+        v.startNewAccount()
+        assertTrue(v.ui.value.serversLoading)
+
+        v.createUser("oma", "Oma", null)
+
+        coVerify(exactly = 0) { admin.createUser(any(), any(), any(), any()) }
+        pending.complete(emptyList())
+    }
+
+    @Test fun `a refused create names the username and the servers`() = runTest {
+        coEvery { guilds.getGuilds() } returns listOf(Guild("g1", "Family"))
+        coEvery { admin.createUser(any(), any(), any(), any()) } throws apiError(400, "VALIDATION_ERROR")
+        val v = AdminUsersViewModel(admin, stepUp, guilds)
+        v.startNewAccount()
+        v.createUser("oma", "Oma", null)
+        assertEquals(R.string.admin_create_invalid, v.ui.value.message)
     }
 
     @Test fun `servers that fail to load still allow an account without one`() = runTest {
