@@ -49,6 +49,8 @@ vi.mock("@/stores/dms", () => ({
     ],
   }),
   updateDMIconUrl: vi.fn(),
+  isWindowActive: () => true,
+  readVisibleDM: vi.fn(),
 }));
 vi.mock("@/stores/auth", () => ({ currentUser: () => ({ id: "me" }) }));
 vi.mock("@/components/messages/MessageList", () => ({ default: () => null }));
