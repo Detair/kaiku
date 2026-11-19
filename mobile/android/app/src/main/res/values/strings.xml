@@ -694,4 +694,9 @@
     <string name="dm_new_opening">Opening the conversation…</string>
     <string name="dm_new_people_label">People you can write to</string>
     <string name="dm_new_login_name">Login name: %1$s</string>
+    <string name="admin_new_account_servers">Servers</string>
+    <string name="admin_new_account_servers_explain">The new account joins the servers you tick.</string>
+    <string name="admin_new_account_no_servers">Without a server, they won\'t see anyone to write to.</string>
+    <string name="admin_new_account_servers_failed">Couldn\'t load your servers.</string>
+    <string name="admin_new_account_servers_max">At most 10 servers at once.</string>
 </resources>

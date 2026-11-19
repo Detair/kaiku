@@ -8,6 +8,8 @@ import io.wolftown.kaiku.R
 import io.wolftown.kaiku.data.auth.AccountStepUp
 import io.wolftown.kaiku.approval.StepUpOutcome
 import io.wolftown.kaiku.data.api.AdminApi
+import io.wolftown.kaiku.data.api.GuildApi
+import io.wolftown.kaiku.domain.model.Guild
 import io.wolftown.kaiku.domain.model.AdminUserDetail
 import io.wolftown.kaiku.domain.model.AdminUserSummary
 import io.wolftown.kaiku.domain.model.AuthenticatorRef
@@ -33,6 +35,7 @@ class AdminUserViewModelTest {
     private val activity: FragmentActivity = mockk(relaxed = true)
     private val admin: AdminApi = mockk(relaxed = true)
     private val stepUp: AccountStepUp = mockk()
+    private val guilds: GuildApi = mockk()
     private val detail = AdminUserDetail("u2", "oma", "Oma", mayApprove = false,
         keyDevices = listOf(AuthenticatorRef("kd1", "key_device", "Pixel 6")))
 
@@ -47,7 +50,7 @@ class AdminUserViewModelTest {
         grant(StepUpAction.ADMIN_ELEVATE, "")
         coEvery { admin.status() } returns true
         coEvery { admin.users(null) } returns listOf(AdminUserSummary("u2", "oma", "Oma"))
-        val v = AdminUsersViewModel(admin, stepUp)
+        val v = AdminUsersViewModel(admin, stepUp, guilds)
         v.enter(activity)
         coVerify(ordering = io.mockk.Ordering.ORDERED) {
             stepUp.stepUp(activity, StepUpAction.ADMIN_ELEVATE, "")
@@ -60,11 +63,49 @@ class AdminUserViewModelTest {
 
     @Test fun `new account sends no password`() = runTest {
         grant(StepUpAction.ADMIN_ELEVATE, "")
-        coEvery { admin.createUser("oma", "Oma", null) } returns AdminUserSummary("u2", "oma", "Oma")
-        val v = AdminUsersViewModel(admin, stepUp)
+        coEvery { admin.createUser("oma", "Oma", null, emptyList()) } returns AdminUserSummary("u2", "oma", "Oma")
+        val v = AdminUsersViewModel(admin, stepUp, guilds)
         v.createUser("oma", "Oma", null)
-        coVerify { admin.createUser("oma", "Oma", null) }
+        coVerify { admin.createUser("oma", "Oma", null, emptyList()) }
         assertEquals("u2", v.ui.value.created?.id)
+    }
+
+    @Test fun `new account preselects all of the admin's servers and sends the ticked ones`() = runTest {
+        coEvery { guilds.getGuilds() } returns listOf(Guild("g1", "Family"), Guild("g2", "Games"), Guild("g3", "Work"))
+        coEvery { admin.createUser(any(), any(), any(), any()) } returns AdminUserSummary("u2", "oma", "Oma")
+        val v = AdminUsersViewModel(admin, stepUp, guilds)
+
+        v.startNewAccount()
+        assertTrue(v.ui.value.newAccount)
+        assertEquals(setOf("g1", "g2", "g3"), v.ui.value.selectedServers)
+        v.toggleServer("g2")
+        v.createUser("oma", "Oma", null)
+
+        coVerify { admin.createUser("oma", "Oma", null, listOf("g1", "g3")) }
+        assertFalse(v.ui.value.newAccount)
+    }
+
+    @Test fun `more than ten servers, ten preselected and an eleventh refused`() = runTest {
+        coEvery { guilds.getGuilds() } returns (1..12).map { Guild("g$it", "S$it") }
+        val v = AdminUsersViewModel(admin, stepUp, guilds)
+        v.startNewAccount()
+        assertEquals(10, v.ui.value.selectedServers.size)
+        v.toggleServer("g12")
+        assertEquals(10, v.ui.value.selectedServers.size)
+        assertEquals(R.string.admin_new_account_servers_max, v.ui.value.message)
+        v.toggleServer("g1")
+        v.toggleServer("g12")
+        assertTrue("g12" in v.ui.value.selectedServers)
+    }
+
+    @Test fun `servers that fail to load still allow an account without one`() = runTest {
+        coEvery { guilds.getGuilds() } throws java.io.IOException("offline")
+        coEvery { admin.createUser(any(), any(), any(), any()) } returns AdminUserSummary("u2", "oma", "Oma")
+        val v = AdminUsersViewModel(admin, stepUp, guilds)
+        v.startNewAccount()
+        assertTrue(v.ui.value.serversFailed)
+        v.createUser("oma", "", null)
+        coVerify { admin.createUser("oma", "oma", null, emptyList()) }
     }
 
     @Test fun `remove device now steps up for that authenticator and is hidden for admins`() = runTest {

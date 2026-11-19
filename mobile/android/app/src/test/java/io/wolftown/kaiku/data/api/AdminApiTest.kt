@@ -32,11 +32,19 @@ class AdminApiTest {
     @Test fun `new account sends no password`() = runTest {
         rec.status = HttpStatusCode.Created
         rec.body = """{"id":"u2","username":"oma","display_name":"Oma","created_at":"2026-11-03T12:00:00Z","is_banned":false}"""
-        val u = api.createUser("oma", "Oma", recoveryContactId = "u1")
+        val u = api.createUser("oma", "Oma", recoveryContactId = "u1", guildIds = listOf("g1", "g2"))
         assertEquals("/api/admin/users", rec.last.path)
-        assertEquals(setOf("username", "display_name", "recovery_contact_id"), body().keys)
+        assertEquals(setOf("username", "display_name", "recovery_contact_id", "guild_ids"), body().keys)
+        assertEquals(listOf("g1", "g2"), body()["guild_ids"]!!.jsonArray.map { it.jsonPrimitive.content })
         assertTrue("password" !in rec.last.body)
         assertEquals("u2", u.id)
+    }
+
+    @Test fun `new account without servers sends an empty list`() = runTest {
+        rec.status = HttpStatusCode.Created
+        rec.body = """{"id":"u2","username":"oma","display_name":"Oma","created_at":"2026-11-03T12:00:00Z","is_banned":false}"""
+        api.createUser("oma", "Oma", recoveryContactId = null, guildIds = emptyList())
+        assertEquals(0, body()["guild_ids"]!!.jsonArray.size)
     }
 
     @Test fun `users user and admin actions`() = runTest {
