@@ -765,6 +765,8 @@ class VoiceRepository @Inject constructor(
                     }
                 }
                 connected = own.result.await() == AttemptResult.Connected
+                // The server's new peer knows none of the old one's choices (M-8).
+                if (connected) resendLayerPreferences()
                 return if (connected) VoiceSignalling.Attempt.Connected else VoiceSignalling.Attempt.Failed
             } catch (e: CancellationException) {
                 throw e
@@ -774,6 +776,23 @@ class VoiceRepository @Inject constructor(
             } finally {
                 if (attempt === own) attempt = null
                 if (!connected) webRtcManager.closePeerConnections()
+            }
+        }
+
+        /** Sends the stored layer choice of every screen share that is still on to the (new) peer. */
+        private fun resendLayerPreferences() {
+            val shares = _screenShares.value
+            for ((streamId, layer) in _layerPreferences.value) {
+                val share = shares.find { it.streamId == streamId } ?: continue
+                sendToPeer(
+                    session,
+                    ClientEvent.VoiceSetLayerPreference(
+                        channelId = channelId,
+                        targetUserId = share.userId,
+                        trackSource = "screen_video:$streamId",
+                        preferredLayer = layer,
+                    )
+                )
             }
         }
 

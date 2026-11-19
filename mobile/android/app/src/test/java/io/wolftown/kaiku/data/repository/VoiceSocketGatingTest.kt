@@ -432,4 +432,26 @@ class VoiceSocketGatingTest {
         )
         assertTrue(rig.socket.frames.all { it.first == 1L && it.second !is ClientEvent.VoiceLeave })
     }
+
+    @Test
+    fun `layer choices are sent again to the new peer after a rejoin`() = rigTest { rig ->
+        rig.joinAndConnect() // socket 1
+        rig.events.tryEmit(
+            ServerEvent.ScreenShareStarted(rig.channel, "anna", "s1", "anna", "Screen", false, "high", "2026-11-19T10:00:00Z")
+        )
+        runCurrent()
+        rig.repository.setLayerPreference("s1", "low")
+        val layerFrames = { rig.socket.frames.map { it.second }.filterIsInstance<ClientEvent.VoiceSetLayerPreference>() }
+        assertEquals(2, layerFrames().size) // the automatic one and the user's choice
+
+        rig.socket.drop(); runCurrent()
+        rig.socket.ready(); runCurrent() // socket 2
+        advanceTimeBy(1_000); runCurrent()
+        rig.assertCallUp(joins = listOf(1L, 2L))
+
+        val resent = layerFrames().drop(2)
+        assertEquals(listOf("low"), resent.map { it.preferredLayer })
+        assertEquals("screen_video:s1", resent.single().trackSource)
+        assertEquals(2L, rig.socket.frames.last { it.second is ClientEvent.VoiceSetLayerPreference }.first)
+    }
 }
