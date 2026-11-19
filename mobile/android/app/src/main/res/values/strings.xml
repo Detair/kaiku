@@ -707,4 +707,10 @@
     <string name="dm_preview_attachment">Attachment</string>
     <string name="dm_preview_encrypted">Encrypted message</string>
     <string name="dm_preview_no_messages">No messages yet</string>
+    <string name="home_chats">Chats</string>
+    <string name="home_chats_empty">No chats yet. Tap to write to someone.</string>
+    <plurals name="home_chats_unread">
+        <item quantity="one">%1$d unread message</item>
+        <item quantity="other">%1$d unread messages</item>
+    </plurals>
 </resources>

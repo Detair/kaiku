@@ -37,6 +37,8 @@ fun HomeScreen(
     val isLoading by viewModel.isLoading.collectAsState()
     val error by viewModel.error.collectAsState()
     val connectionStatus by viewModel.connectionStatus.collectAsState()
+    val chats by viewModel.chats.collectAsState()
+    val currentUserId by viewModel.currentUserId.collectAsState()
 
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -87,7 +89,9 @@ fun HomeScreen(
                             Text(stringResource(R.string.scan_action), color = MaterialTheme.colorScheme.onSurface)
                         }
                         IconButton(onClick = onNavigateToDms) {
-                            Icon(Icons.Default.Email, contentDescription = stringResource(R.string.home_direct_messages))
+                            BadgedBox(badge = { if (chats.unread > 0) UnreadBadge(chats.unread) }) {
+                                Icon(Icons.Default.Email, contentDescription = stringResource(R.string.home_direct_messages))
+                            }
                         }
                         IconButton(onClick = { viewModel.refresh() }) {
                             Icon(Icons.Default.Refresh, contentDescription = stringResource(R.string.home_refresh))
@@ -106,6 +110,8 @@ fun HomeScreen(
             ) {
             ConnectionBanner(status = connectionStatus)
             ProbationBanner()
+            // AND-B-6: chats first, above the servers' channels (and above the no-server hint).
+            ChatsEntry(summary = chats, currentUserId = currentUserId, onOpen = onNavigateToDms)
             // A failed load is shown inline while there is still something to
             // display; the full-screen error below is only for the empty case.
             val errorRes = error

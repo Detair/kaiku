@@ -3,7 +3,11 @@ package io.wolftown.kaiku.ui.home
 import app.cash.turbine.test
 import io.mockk.*
 import io.wolftown.kaiku.R
+import io.wolftown.kaiku.data.local.AuthState
+import io.wolftown.kaiku.data.repository.DmRepository
 import io.wolftown.kaiku.data.repository.GuildRepository
+import io.wolftown.kaiku.domain.model.DmConversation
+import io.wolftown.kaiku.domain.model.LastMessagePreview
 import io.wolftown.kaiku.data.ws.RealtimeConnectionManager
 import io.wolftown.kaiku.data.ws.RealtimeStatus
 import io.wolftown.kaiku.domain.model.Category
@@ -28,6 +32,9 @@ class HomeViewModelTest {
     private lateinit var realtimeManager: RealtimeConnectionManager
     private val pushRegistrar: PushRegistrar = mockk(relaxed = true)
     private val statusFlow = MutableStateFlow(RealtimeStatus.Connected)
+    private val dmsFlow = MutableStateFlow<List<DmConversation>>(emptyList())
+    private val dmRepository: DmRepository = mockk(relaxed = true) { every { conversations } returns dmsFlow }
+    private val authState: AuthState = mockk(relaxed = true) { every { currentUserId } returns MutableStateFlow<String?>("me") }
 
     private val testDispatcher = StandardTestDispatcher()
 
@@ -74,7 +81,7 @@ class HomeViewModelTest {
             guildsFlow.value = sampleGuilds
         }
 
-        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar)
+        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar, dmRepository, authState)
         advanceUntilIdle()
 
         coVerify { guildRepository.loadGuilds() }
@@ -97,7 +104,7 @@ class HomeViewModelTest {
             selectedGuildIdFlow.value = "guild-1"
         }
 
-        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar)
+        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar, dmRepository, authState)
         advanceUntilIdle()
 
         viewModel.onGuildSelected("guild-1")
@@ -129,7 +136,7 @@ class HomeViewModelTest {
             selectedGuildIdFlow.value = "guild-1"
         }
 
-        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar)
+        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar, dmRepository, authState)
         advanceUntilIdle()
 
         viewModel.onGuildSelected("guild-1")
@@ -152,7 +159,7 @@ class HomeViewModelTest {
             guildsFlow.value = sampleGuilds
         }
 
-        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar)
+        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar, dmRepository, authState)
 
         viewModel.isLoading.test {
             // Initial loading state should be true (loading started in init)
@@ -177,7 +184,7 @@ class HomeViewModelTest {
     fun `error state on API failure`() = runTest {
         coEvery { guildRepository.loadGuilds() } throws RuntimeException("Network error")
 
-        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar)
+        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar, dmRepository, authState)
         advanceUntilIdle()
 
         assertNotNull(viewModel.error.value)
@@ -199,7 +206,7 @@ class HomeViewModelTest {
             selectedGuildIdFlow.value = "guild-2"
         }
 
-        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar)
+        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar, dmRepository, authState)
         advanceUntilIdle()
 
         assertNull(viewModel.selectedGuild.value)
@@ -220,7 +227,7 @@ class HomeViewModelTest {
             guildsFlow.value = sampleGuilds
         }
 
-        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar)
+        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar, dmRepository, authState)
         advanceUntilIdle()
 
         viewModel.refresh()
@@ -246,7 +253,7 @@ class HomeViewModelTest {
             }
         }
 
-        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar)
+        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar, dmRepository, authState)
         advanceUntilIdle()
 
         assertNotNull(viewModel.error.value)
@@ -265,7 +272,7 @@ class HomeViewModelTest {
     @Test
     fun `unknown channel types are hidden from channel list`() = runTest {
         coEvery { guildRepository.loadGuilds() } just Runs
-        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar)
+        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar, dmRepository, authState)
         advanceUntilIdle()
 
         channelsFlow.value = listOf(
@@ -289,7 +296,7 @@ class HomeViewModelTest {
         coEvery { guildRepository.loadGuilds() } just Runs
         coEvery { guildRepository.loadChannels("guild-1") } throws RuntimeException("boom")
 
-        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar)
+        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar, dmRepository, authState)
         advanceUntilIdle()
         viewModel.onGuildSelected("guild-1")
         advanceUntilIdle()
@@ -305,7 +312,7 @@ class HomeViewModelTest {
             id = "ch-dm", name = "dm", channelType = ChannelType.DM, position = 9
         )
 
-        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar)
+        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar, dmRepository, authState)
         advanceUntilIdle()
 
         val sections = viewModel.sections.value
@@ -316,7 +323,7 @@ class HomeViewModelTest {
 
     @Test
     fun `connection status mirrors realtime manager`() = runTest {
-        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar)
+        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar, dmRepository, authState)
         advanceUntilIdle()
         assertEquals(RealtimeStatus.Connected, viewModel.connectionStatus.value)
 
@@ -334,7 +341,7 @@ class HomeViewModelTest {
             guildsFlow.value = listOf(sampleGuilds.first())
         }
 
-        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar)
+        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar, dmRepository, authState)
         advanceUntilIdle()
 
         verify { guildRepository.selectGuild("guild-1") }
@@ -345,7 +352,7 @@ class HomeViewModelTest {
     fun `auto-select opens the first server when nothing is selected`() = runTest {
         coEvery { guildRepository.loadGuilds() } coAnswers { guildsFlow.value = sampleGuilds }
 
-        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar)
+        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar, dmRepository, authState)
         advanceUntilIdle()
 
         verify { guildRepository.selectGuild("guild-1") }
@@ -357,7 +364,7 @@ class HomeViewModelTest {
         selectedGuildIdFlow.value = "guild-2"
         coEvery { guildRepository.loadGuilds() } coAnswers { guildsFlow.value = sampleGuilds }
 
-        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar)
+        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar, dmRepository, authState)
         advanceUntilIdle()
 
         verify(exactly = 0) { guildRepository.selectGuild(any()) }
@@ -367,10 +374,28 @@ class HomeViewModelTest {
     fun `no servers selects nothing`() = runTest {
         coEvery { guildRepository.loadGuilds() } coAnswers { guildsFlow.value = emptyList() }
 
-        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar)
+        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar, dmRepository, authState)
         advanceUntilIdle()
 
         verify(exactly = 0) { guildRepository.selectGuild(any()) }
         assertTrue(viewModel.guilds.value.isEmpty())
+    }
+
+    @Test
+    fun `chats entry follows the DM list - unread total and newest conversation`() = runTest {
+        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar, dmRepository, authState)
+        advanceUntilIdle()
+        assertEquals(0, viewModel.chats.value.unread)
+
+        dmsFlow.value = listOf(
+            DmConversation(id = "empty-new"),
+            DmConversation(id = "anna", unreadCount = 2, lastMessage = LastMessagePreview("m", "hi")),
+            DmConversation(id = "bert", unreadCount = 1, lastMessage = LastMessagePreview("n", "yo")),
+        )
+        advanceUntilIdle()
+
+        assertEquals(3, viewModel.chats.value.unread)
+        assertEquals("anna", viewModel.chats.value.newest?.id)
+        assertEquals("me", viewModel.currentUserId.value)
     }
 }
