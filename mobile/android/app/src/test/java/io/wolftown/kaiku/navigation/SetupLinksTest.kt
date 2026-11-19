@@ -61,4 +61,29 @@ class SetupLinksTest {
         io.wolftown.kaiku.navigation.ScanHandoff.clear()
         org.junit.Assert.assertNull(io.wolftown.kaiku.navigation.ScanHandoff.takeLogin())
     }
+
+    @Test fun `both link forms give the same setup and are checked the same way`() {
+        // C20: the verified https App Link and the kaiku:// fallback reach the same SetupEntry, so the
+        // setup flow applies the same origin pin and the same "Set up on {server}?" question to both.
+        val cases = listOf(
+            "https://chat.example.com" to "https://chat.example.com",
+            "https://Chat.Example.COM:443" to "https://chat.example.com",
+            "https://chat.example.com:8443" to "https://chat.example.com:8443",
+        )
+        for ((given, canonical) in cases) {
+            val enc = java.net.URLEncoder.encode(given, "UTF-8")
+            val expected = SetupEntry(canonical, token, SetupEntry.Source.LINK)
+            assertEquals(given, expected, SetupLinks.parse("kaiku://setup/v1?o=$enc&t=$token"))
+            assertEquals(given, expected, SetupLinks.parse("$given/setup#v=1&t=$token"))
+        }
+        // A user part in the origin is refused in both forms.
+        assertNull(SetupLinks.parse("kaiku://setup/v1?o=https%3A%2F%2Fme%40chat.example.com&t=$token"))
+        assertNull(SetupLinks.parse("https://me@chat.example.com/setup#v=1&t=$token"))
+        // Plain http only for local test servers, in both forms.
+        assertNull(SetupLinks.parse("kaiku://setup/v1?o=http%3A%2F%2Fchat.example.com&t=$token"))
+        assertNull(SetupLinks.parse("http://chat.example.com/setup#v=1&t=$token"))
+        // Only the /setup path is a setup link (the App Link filter's path).
+        assertNull(SetupLinks.parse("https://chat.example.com/setup/x#v=1&t=$token"))
+        assertNull(SetupLinks.parse("https://chat.example.com/auth/callback#v=1&t=$token"))
+    }
 }

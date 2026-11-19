@@ -572,7 +572,9 @@ jobs:
           KAIKU_ANDROID_KEY_PASSWORD: ${{ needs.prepare-release.outputs.publish == 'true' && steps.signing.outputs.signing == 'true' && secrets.ANDROID_KEY_PASSWORD || '' }}
         run: |
           chmod +x gradlew
-          flags=()
+          # Setup links https://<server>/setup open the app directly (verified App Link) for the
+          # official server, the build's default server.
+          flags=(-PkaikuAppLinkHosts=kaiku.pmind.de)
           # Publish must never fall back to an unsigned APK.
           if [ "$PUBLISH" = true ]; then
             flags+=(-Pkaiku.requireReleaseSigning=true)
