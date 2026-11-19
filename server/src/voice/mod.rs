@@ -54,9 +54,8 @@ pub fn router() -> Router<AppState> {
 /// (`use-auth-secret`): username is `"{expiry_unix}:{subject}"`, credential is
 /// `base64(HMAC-SHA1(secret, username))`.
 ///
-/// Used for client-facing ICE config (subject = user id) and for the SFU's
-/// own peer connections (subject = "sfu") — coturn accepts any subject as
-/// long as the HMAC matches.
+/// Used for the client-facing ICE config (subject = user id); coturn accepts
+/// any subject as long as the HMAC matches.
 pub(crate) fn turn_rest_credentials(
     secret: &str,
     ttl_secs: u64,

@@ -113,6 +113,7 @@ mod upgrade_migration;
 mod upload_limits;
 mod uploads_http;
 mod valkey_outage;
+mod voice_config_http;
 mod voice_media_flow;
 mod voice_mute_enforcement;
 mod voice_rate_limit;

@@ -33,7 +33,6 @@ use webrtc::api::setting_engine::SettingEngine;
 use webrtc::api::{APIBuilder, API};
 use webrtc::ice::network_type::NetworkType;
 use webrtc::ice::udp_network::{EphemeralUDP, UDPNetwork};
-use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::interceptor::registry::Registry;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
@@ -456,8 +455,6 @@ pub struct SfuServer {
     rooms: Arc<RwLock<HashMap<Uuid, Arc<Room>>>>,
     /// WebRTC API instance.
     api: Arc<API>,
-    /// Server configuration.
-    config: Arc<Config>,
     /// Rate limiter for voice operations (global/redis).
     rate_limiter: Option<Arc<RateLimiter>>,
     /// Rate limiter for voice stats (local/memory).
@@ -659,7 +656,6 @@ impl SfuServer {
         Ok(Self {
             rooms: Arc::new(RwLock::new(HashMap::new())),
             api: Arc::new(api),
-            config,
             rate_limiter: rate_limiter.map(Arc::new),
             stats_limiter: Arc::new(VoiceStatsLimiter::default()),
             voice_rate_limiter: Arc::new(VoiceRateLimiter::new()),
@@ -781,48 +777,16 @@ impl SfuServer {
         self.stats_limiter.start_cleanup_task()
     }
 
-    /// Get `RTCConfiguration` with ICE servers from config.
+    /// `RTCConfiguration` of the server's own peer connections: no ICE
+    /// servers. The SFU gathers host candidates only (its address is
+    /// reachable, or `PUBLIC_IP` maps it); without STUN/TURN gathering each
+    /// connection binds one UDP socket per local address instead of two
+    /// (plus a relay allocation). Clients still get STUN/TURN from
+    /// `GET /api/voice/ice-servers` and reach the SFU through a relay of
+    /// their own when they need one.
     #[must_use]
     pub fn rtc_config(&self) -> RTCConfiguration {
-        let mut ice_servers = vec![RTCIceServer {
-            urls: vec![self.config.stun_server.clone()],
-            ..Default::default()
-        }];
-
-        // Add TURN server if credentials are actually derivable — webrtc-rs
-        // rejects a turn: URL with empty username/credential ("turn server
-        // credentials required"), which broke every voice join on servers
-        // configured with TURN_SHARED_SECRET only (the beta setup).
-        // webrtc-rs 0.17 removed `credential_type` from RTCIceServer; password is
-        // the only credential type now per the W3C RTCIceServer dictionary.
-        if let Some(turn) = &self.config.turn_server {
-            if let Some(secret) = &self.config.turn_shared_secret {
-                let (username, credential) =
-                    super::turn_rest_credentials(secret, self.config.turn_credential_ttl, "sfu");
-                ice_servers.push(RTCIceServer {
-                    urls: vec![turn.clone()],
-                    username,
-                    credential,
-                });
-            } else if let (Some(username), Some(credential)) = (
-                self.config.turn_username.clone(),
-                self.config.turn_credential.clone(),
-            ) {
-                ice_servers.push(RTCIceServer {
-                    urls: vec![turn.clone()],
-                    username,
-                    credential,
-                });
-            }
-            // No usable credentials: skip TURN rather than hand webrtc-rs an
-            // invalid server. The SFU runs on a public address and does not
-            // depend on a relay itself.
-        }
-
-        RTCConfiguration {
-            ice_servers,
-            ..Default::default()
-        }
+        RTCConfiguration::default()
     }
 
     /// Get or create a room for a channel.
@@ -1664,6 +1628,42 @@ mod negotiation_tests {
 
         let _ = client.close().await;
         peer.close().await;
+    }
+}
+
+#[cfg(test)]
+mod host_candidate_tests {
+    use super::*;
+
+    /// With STUN and TURN configured (for clients), the server's own peer
+    /// connections still use no ICE server and gather host candidates only.
+    #[tokio::test]
+    async fn server_peer_connections_gather_host_candidates_only() {
+        let mut config = Config::default_for_test();
+        config.stun_server = "stun:127.0.0.1:3478".into();
+        config.turn_servers = vec!["turn:127.0.0.1:3478".into()];
+        config.turn_shared_secret = Some("secret".into());
+        config.voice_udp_port_min = Some(50100);
+        config.voice_udp_port_max = Some(50120);
+        let sfu = SfuServer::new(Arc::new(config), None).expect("sfu");
+        assert!(sfu.rtc_config().ice_servers.is_empty());
+
+        let (tx, _rx) = mpsc::channel(16);
+        let peer = sfu
+            .create_peer(Uuid::from_u128(1), "a".into(), "A".into(), Uuid::from_u128(2), tx)
+            .await
+            .expect("peer");
+        let pc = &peer.subscriber_pc;
+        pc.create_data_channel("probe", None).await.expect("dc");
+        let offer = pc.create_offer(None).await.expect("offer");
+        let mut gathered = pc.gathering_complete_promise().await;
+        pc.set_local_description(offer).await.expect("local desc");
+        let _ = tokio::time::timeout(Duration::from_secs(10), gathered.recv()).await;
+        let sdp = pc.local_description().await.expect("desc").sdp;
+        peer.close().await;
+        for line in sdp.lines().filter(|l| l.starts_with("a=candidate:")) {
+            assert!(line.contains(" typ host"), "non-host candidate: {line}");
+        }
     }
 }
 

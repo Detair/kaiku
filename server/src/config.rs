@@ -137,8 +137,10 @@ pub struct Config {
     /// WebRTC STUN server
     pub stun_server: String,
 
-    /// WebRTC TURN server (optional)
-    pub turn_server: Option<String>,
+    /// WebRTC TURN server URLs given to clients (`TURN_SERVER`, comma
+    /// separated, e.g. a UDP and a TCP URL of the same coturn). Empty: no
+    /// TURN. The SFU itself does not use TURN or STUN (host candidates only).
+    pub turn_servers: Vec<String>,
 
     /// WebRTC TURN username (optional)
     pub turn_username: Option<String>,
@@ -258,6 +260,11 @@ pub struct Config {
     ///
     /// Defaults to `true`. Override via `ENABLE_GUILD_DISCOVERY` env var.
     pub enable_guild_discovery: bool,
+
+    /// Oldest client version per platform the server still supports
+    /// (`MIN_CLIENT_VERSION_WEB` / `_DESKTOP` / `_ANDROID`), published in
+    /// `GET /api/settings`. Unset: no minimum for that platform.
+    pub min_client_version: MinClientVersions,
 
     // ========================================================================
     // Resource Limits
@@ -409,6 +416,21 @@ impl Config {
         )?;
         let voice_ice_interfaces =
             parse_voice_ice_interfaces(env_opt("VOICE_ICE_INTERFACES").as_deref());
+        let turn_servers = parse_turn_servers(env_opt("TURN_SERVER").as_deref())?;
+        let min_client_version = MinClientVersions {
+            web: parse_min_client_version(
+                "MIN_CLIENT_VERSION_WEB",
+                env_opt("MIN_CLIENT_VERSION_WEB").as_deref(),
+            )?,
+            desktop: parse_min_client_version(
+                "MIN_CLIENT_VERSION_DESKTOP",
+                env_opt("MIN_CLIENT_VERSION_DESKTOP").as_deref(),
+            )?,
+            android: parse_min_client_version(
+                "MIN_CLIENT_VERSION_ANDROID",
+                env_opt("MIN_CLIENT_VERSION_ANDROID").as_deref(),
+            )?,
+        };
         let voice_ice_ip_family =
             parse_voice_ice_ip_family(env_opt("VOICE_ICE_IP_FAMILY").as_deref())?;
         let fcm_service_account = crate::push::fcm::load_service_account(
@@ -486,7 +508,7 @@ impl Config {
                 .unwrap_or(256 * 1024), // 256KB
             stun_server: env::var("STUN_SERVER")
                 .unwrap_or_else(|_| "stun:stun.l.google.com:19302".into()),
-            turn_server: env::var("TURN_SERVER").ok().filter(|s| !s.is_empty()),
+            turn_servers,
             turn_username: env::var("TURN_USERNAME").ok().filter(|s| !s.is_empty()),
             turn_credential: env::var("TURN_CREDENTIAL").ok().filter(|s| !s.is_empty()),
             turn_shared_secret: env::var("TURN_SHARED_SECRET")
@@ -558,6 +580,7 @@ impl Config {
                 .ok()
                 .map(|v| v.to_lowercase() == "true" || v == "1")
                 .unwrap_or(true),
+            min_client_version,
             max_guilds_per_user: env::var("MAX_GUILDS_PER_USER")
                 .ok()
                 .and_then(|v| v.parse().ok())
@@ -654,7 +677,10 @@ impl Config {
         // coturn serves STUN on the same host/port as TURN, so the operator
         // can almost always point STUN at it. Warn loudly rather than fail,
         // since some operators deliberately use a public STUN.
-        if stun_leaks_with_self_hosted_turn(&config.stun_server, config.turn_server.as_deref()) {
+        if stun_leaks_with_self_hosted_turn(
+            &config.stun_server,
+            config.turn_servers.first().map(String::as_str),
+        ) {
             tracing::warn!(
                 stun_server = %config.stun_server,
                 "TURN is self-hosted but STUN still points at Google's public \
@@ -685,8 +711,8 @@ impl Config {
 
     /// Check if TURN is configured.
     #[must_use]
-    pub const fn has_turn(&self) -> bool {
-        self.turn_server.is_some()
+    pub fn has_turn(&self) -> bool {
+        !self.turn_servers.is_empty()
     }
 
     /// Create a default configuration for testing.
@@ -725,7 +751,7 @@ impl Config {
             oidc_client_id: None,
             oidc_client_secret: None,
             stun_server: "stun:stun.l.google.com:19302".into(),
-            turn_server: None,
+            turn_servers: Vec::new(),
             turn_username: None,
             turn_credential: None,
             turn_shared_secret: None,
@@ -761,6 +787,7 @@ impl Config {
             smtp_tls: "starttls".into(),
             enable_api_docs: true,
             enable_guild_discovery: true,
+            min_client_version: MinClientVersions::default(),
             max_guilds_per_user: 100,
             max_members_per_guild: 1000,
             max_channels_per_guild: 200,
@@ -1138,6 +1165,118 @@ mod env_opt_tests {
 /// points at Google's public server — a sovereignty leak (client IP
 /// discovery goes to a third party). Pure helper so the condition is unit
 /// tested without a tracing subscriber.
+/// Minimum supported client version per platform (see
+/// [`Config::min_client_version`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, utoipa::ToSchema)]
+pub struct MinClientVersions {
+    /// Web client.
+    pub web: Option<String>,
+    /// Desktop app.
+    pub desktop: Option<String>,
+    /// Android app.
+    pub android: Option<String>,
+}
+
+/// `TURN_SERVER`: one URL or several separated by commas. Each must be a
+/// `turn:` or `turns:` URL; anything else stops the start with an error.
+fn parse_turn_servers(raw: Option<&str>) -> Result<Vec<String>> {
+    let Some(raw) = raw else {
+        return Ok(Vec::new());
+    };
+    raw.split(',')
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+        .map(|url| {
+            let lower = url.to_ascii_lowercase();
+            let rest = lower
+                .strip_prefix("turn:")
+                .or_else(|| lower.strip_prefix("turns:"));
+            anyhow::ensure!(
+                rest.is_some_and(|r| !r.is_empty()),
+                "TURN_SERVER entry {url:?} is not a turn: or turns: URL \
+                 (list several URLs separated by commas)"
+            );
+            Ok(url.to_owned())
+        })
+        .collect()
+}
+
+/// A minimum client version: `MAJOR.MINOR.PATCH` with an optional
+/// pre-release (`1.0.0`, `1.0.0-rc.6`). Unset or empty: `None`.
+fn parse_min_client_version(name: &str, raw: Option<&str>) -> Result<Option<String>> {
+    let Some(raw) = raw.map(str::trim).filter(|v| !v.is_empty()) else {
+        return Ok(None);
+    };
+    let (core, pre) = match raw.split_once('-') {
+        Some((core, pre)) => (core, Some(pre)),
+        None => (raw, None),
+    };
+    let numbers: Vec<&str> = core.split('.').collect();
+    let core_ok = numbers.len() == 3
+        && numbers
+            .iter()
+            .all(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+    let pre_ok = pre.is_none_or(|p| {
+        !p.is_empty()
+            && p
+                .split('.')
+                .all(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric()))
+    });
+    anyhow::ensure!(
+        core_ok && pre_ok,
+        "{name} must be a version like 1.0.0 or 1.0.0-rc.6, got {raw:?}"
+    );
+    Ok(Some(raw.to_owned()))
+}
+
+#[cfg(test)]
+mod client_facing_voice_config_tests {
+    use super::{parse_min_client_version, parse_turn_servers};
+
+    #[test]
+    fn turn_server_accepts_one_url_or_a_list() {
+        assert!(parse_turn_servers(None).unwrap().is_empty());
+        assert!(parse_turn_servers(Some(" ")).unwrap().is_empty());
+        assert_eq!(
+            parse_turn_servers(Some("turn:turn.example.test:3478")).unwrap(),
+            ["turn:turn.example.test:3478"]
+        );
+        assert_eq!(
+            parse_turn_servers(Some(
+                "turn:t.example.test:3478, turn:t.example.test:3478?transport=tcp,,turns:t.example.test:443"
+            ))
+            .unwrap(),
+            [
+                "turn:t.example.test:3478",
+                "turn:t.example.test:3478?transport=tcp",
+                "turns:t.example.test:443"
+            ]
+        );
+    }
+
+    #[test]
+    fn turn_server_rejects_other_urls() {
+        for bad in ["stun:t.example.test:3478", "t.example.test:3478", "turn:", "https://t.example.test"] {
+            let err = parse_turn_servers(Some(bad)).unwrap_err().to_string();
+            assert!(err.contains("TURN_SERVER"), "{bad}: {err}");
+        }
+        assert!(parse_turn_servers(Some("turn:ok.example.test,stun:x")).is_err());
+    }
+
+    #[test]
+    fn min_client_version_is_a_plain_version() {
+        let p = |v| parse_min_client_version("MIN_CLIENT_VERSION_WEB", v);
+        assert_eq!(p(None).unwrap(), None);
+        assert_eq!(p(Some("")).unwrap(), None);
+        assert_eq!(p(Some("1.0.0")).unwrap().as_deref(), Some("1.0.0"));
+        assert_eq!(p(Some("1.0.0-rc.6")).unwrap().as_deref(), Some("1.0.0-rc.6"));
+        for bad in ["1.0", "v1.0.0", "1.0.0-", "1.0.0-rc..1", "1.0.x", "latest"] {
+            let err = p(Some(bad)).unwrap_err().to_string();
+            assert!(err.contains("MIN_CLIENT_VERSION_WEB"), "{bad}: {err}");
+        }
+    }
+}
+
 fn stun_leaks_with_self_hosted_turn(stun_server: &str, turn_server: Option<&str>) -> bool {
     turn_server.is_some() && stun_server.contains("stun.l.google.com")
 }
