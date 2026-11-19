@@ -6,5 +6,6 @@ pub mod audio_mixer;
 pub mod connection_stats;
 pub mod frame_buffer;
 pub mod jitter_buffer;
+pub mod playout;
 pub mod subscriber;
 pub mod video_decoder;
