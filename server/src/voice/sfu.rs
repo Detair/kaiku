@@ -1,6 +1,21 @@
 //! Selective Forwarding Unit Implementation
 //!
 //! Manages voice rooms and WebRTC peer connections for real-time audio and video.
+//!
+//! # Locks
+//!
+//! Order: `SfuServer::rooms` → `Room::peers` → `Room::screen_shares` →
+//! `Room::webcams` (as in [`Room::get_participant_info`]). Per-peer locks
+//! (`Peer::incoming_tracks`, the outgoing track map, the pending sources) are
+//! taken with no room lock held and are never held across a socket send.
+//!
+//! `Peer::negotiation` (the subscriber offer/answer state) is a leaf lock: it
+//! is taken with no room lock held, nothing else of ours is locked while it is
+//! held, and it covers only local WebRTC work (create offer, set local or
+//! remote description), never a network or socket wait. webrtc-rs callbacks
+//! (`on_track`, ICE, connection state) run on their own tasks and reach it only
+//! through [`SfuServer::renegotiate`], which never waits for a callback, so the
+//! two cannot wait on each other.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
@@ -104,6 +119,11 @@ async fn reject_unannounced_track(peer: &Peer, track: &webrtc::track::track_remo
     }
 }
 
+/// How long a subscriber offer may wait for its answer before a new change
+/// offers again regardless (a client that lost the offer would otherwise
+/// never receive tracks again).
+const SUBSCRIBER_ANSWER_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Default maximum participants per room.
 const DEFAULT_MAX_PARTICIPANTS: usize = 25;
 
@@ -128,9 +148,12 @@ pub struct ParticipantInfo {
     pub webcam_active: bool,
 }
 
-/// Screen shares and webcam of a peer that [`Room::add_peer`] replaced.
-#[derive(Debug, Default)]
+/// A peer that [`Room::add_peer`] replaced (same user, new join), with the
+/// screen shares and webcam it had. The caller tears it down outside the
+/// room lock.
 pub struct ReplacedMedia {
+    /// The replaced peer (no longer in the room, not closed yet).
+    pub peer: Arc<Peer>,
     /// The replaced peer's screen shares (their slots are still counted).
     pub screen_shares: Vec<ScreenShareInfo>,
     /// The replaced peer's webcam, if it was on.
@@ -167,26 +190,37 @@ impl Room {
         }
     }
 
-    /// Add a peer to the room.
+    /// Add a peer to the room (room capacity only, no channel limit).
+    pub async fn add_peer(&self, peer: Arc<Peer>) -> Result<Option<ReplacedMedia>, VoiceError> {
+        self.add_peer_with_limit(peer, None).await
+    }
+
+    /// Add a peer to the room, refusing it when the room holds
+    /// `min(user_limit, max_participants)` other users already.
     ///
     /// If the user already has a peer here (a stale session or a join from
-    /// another socket), that peer is closed and replaced, and its screen
-    /// shares and webcam are removed from the room. They are returned so the
-    /// caller can release their slots and tell the others.
-    pub async fn add_peer(&self, peer: Arc<Peer>) -> Result<Option<ReplacedMedia>, VoiceError> {
+    /// another socket), that peer is replaced: it leaves the map in the same
+    /// step (one entry per user at all times, and a replacement does not
+    /// count against the limit) and is returned with its screen shares and
+    /// webcam, which are removed from the room. The caller closes it; nothing
+    /// slow happens under the room lock.
+    pub async fn add_peer_with_limit(
+        &self,
+        peer: Arc<Peer>,
+        user_limit: Option<usize>,
+    ) -> Result<Option<ReplacedMedia>, VoiceError> {
         let mut peers = self.peers.write().await;
 
+        let limit = user_limit.map_or(self.max_participants, |l| l.min(self.max_participants));
         let replacing = peers.contains_key(&peer.user_id);
-        if !replacing && peers.len() >= self.max_participants {
+        if !replacing && peers.len() >= limit {
             return Err(VoiceError::ChannelFull {
-                max_participants: self.max_participants,
+                max_participants: limit,
             });
         }
 
-        // If the user already has a peer (stale session from a previous connection),
-        // remove it and replace with the new one instead of rejecting
         let replaced = if let Some(old_peer) = peers.remove(&peer.user_id) {
-            tracing::info!(user_id = %peer.user_id, "Replacing stale voice peer");
+            tracing::info!(user_id = %peer.user_id, "Replacing voice peer of the same user");
             // Lock order as in `get_participant_info`: peers, shares, webcams.
             let screen_shares = {
                 let mut shares = self.screen_shares.write().await;
@@ -198,9 +232,8 @@ impl Room {
                 ids.iter().filter_map(|id| shares.remove(id)).collect()
             };
             let webcam = self.webcams.write().await.remove(&peer.user_id);
-            // Close old peer connections
-            old_peer.close().await;
             Some(ReplacedMedia {
+                peer: old_peer,
                 screen_shares,
                 webcam,
             })
@@ -210,6 +243,33 @@ impl Room {
 
         peers.insert(peer.user_id, peer);
         Ok(replaced)
+    }
+
+    /// Remove what a peer that left the room (or was replaced) still has in
+    /// the room's media: its tracks at every remaining peer, with one
+    /// renegotiation each, the router entries of its sources and the
+    /// subscriptions that wrote into its own tracks.
+    ///
+    /// Must run before a replacing peer of the same user publishes (the
+    /// router keys sources by user).
+    pub async fn detach_media(&self, departed: &Peer) {
+        let user_id = departed.user_id;
+        self.track_router.remove_source(user_id).await;
+        self.track_router
+            .remove_subscriptions_into(&departed.outgoing_track_list().await);
+        let others = self.get_other_peers(user_id).await;
+        let updates = others.into_iter().map(|other| async move {
+            if other.remove_outgoing_tracks_from(user_id).await > 0 {
+                if let Err(e) = SfuServer::renegotiate(&other).await {
+                    warn!(
+                        subscriber = %other.user_id,
+                        error = %e,
+                        "Renegotiation failed after removing a departed peer's tracks"
+                    );
+                }
+            }
+        });
+        futures::future::join_all(updates).await;
     }
 
     /// Remove a peer from the room.
@@ -1012,7 +1072,7 @@ impl SfuServer {
                             .create_subscriber_track(uid, source_type, &other_peer, &track)
                         {
                             match other_peer
-                                .add_outgoing_track(uid, source_type, local_track)
+                                .add_outgoing_track(uid, source_type, local_track.clone())
                                 .await
                             {
                                 Ok(sender) => {
@@ -1037,6 +1097,7 @@ impl SfuServer {
                                     }
                                 }
                                 Err(e) => {
+                                    room.track_router.remove_subscriptions_into(&[local_track]);
                                     warn!(
                                         source = %uid,
                                         subscriber = %other_peer.user_id,
@@ -1179,22 +1240,40 @@ impl SfuServer {
         Ok(answer.sdp)
     }
 
-    /// Handle a subscriber answer from the client.
+    /// Handle a subscriber answer from the client. If tracks changed while
+    /// the answered offer was outstanding, the next offer goes out now.
     pub async fn handle_subscriber_answer(peer: &Arc<Peer>, sdp: String) -> Result<(), VoiceError> {
         let answer =
             RTCSessionDescription::answer(sdp).map_err(|e| VoiceError::Signaling(e.to_string()))?;
-        peer.subscriber_pc.set_remote_description(answer).await?;
-        Ok(())
+        let next = {
+            let mut state = peer.negotiation.lock().await;
+            peer.subscriber_pc.set_remote_description(answer).await?;
+            state.awaiting_answer_since = None;
+            if state.again {
+                state.again = false;
+                let event = Self::create_subscriber_offer(peer).await?;
+                state.awaiting_answer_since = Some(std::time::Instant::now());
+                Some(event)
+            } else {
+                None
+            }
+        };
+        match next {
+            // This runs in the peer's own socket loop.
+            Some(event) => Self::send_offer(peer, event, None).await,
+            None => Ok(()),
+        }
     }
 
-    /// Trigger renegotiation on the subscriber PC of *another* peer by creating
-    /// a new offer and sending it to that peer. Used after dynamically
-    /// adding/removing tracks. Runs from the sender's socket loop, so the wait
-    /// is bounded by the short per-peer [`PEER_SIGNAL_SEND_TIMEOUT`].
+    /// Renegotiate the subscriber connection of *another* peer after its
+    /// tracks changed. Runs from the sender's socket loop, so the send is
+    /// bounded by the short per-peer [`PEER_SIGNAL_SEND_TIMEOUT`].
+    ///
+    /// Serialized per peer (see [`super::peer::SubscriberNegotiation`]): while
+    /// an offer waits for its answer, this only records that another offer
+    /// is due; the answer sends it.
     pub async fn renegotiate(peer: &Arc<Peer>) -> Result<(), VoiceError> {
-        let event = Self::create_subscriber_offer(peer).await?;
-        let sent = send_outbound_within(&peer.signal_tx, event, PEER_SIGNAL_SEND_TIMEOUT).await;
-        Self::check_offer_sent(peer, sent)
+        Self::negotiate(peer, Some(PEER_SIGNAL_SEND_TIMEOUT)).await
     }
 
     /// [`Self::renegotiate`] for the peer of the socket that is handling the
@@ -1202,8 +1281,69 @@ impl SfuServer {
     /// socket's own full slow-client bound, so a briefly busy queue does not
     /// drop the offer.
     pub async fn renegotiate_own(peer: &Arc<Peer>) -> Result<(), VoiceError> {
-        let event = Self::create_subscriber_offer(peer).await?;
-        let sent = send_outbound(&peer.signal_tx, event).await;
+        Self::negotiate(peer, None).await
+    }
+
+    async fn negotiate(peer: &Arc<Peer>, bound: Option<Duration>) -> Result<(), VoiceError> {
+        let event = {
+            let mut state = peer.negotiation.lock().await;
+            if let Some(since) = state.awaiting_answer_since {
+                if since.elapsed() < SUBSCRIBER_ANSWER_TIMEOUT {
+                    if !state.again {
+                        state.again = true;
+                        Self::watch_stalled_offer(peer, SUBSCRIBER_ANSWER_TIMEOUT - since.elapsed());
+                    }
+                    return Ok(());
+                }
+                // The answer is overdue: offer again instead of waiting forever.
+                warn!(user_id = %peer.user_id, "Subscriber answer overdue, offering again");
+            }
+            let event = Self::create_subscriber_offer(peer).await?;
+            state.awaiting_answer_since = Some(std::time::Instant::now());
+            state.again = false;
+            event
+        };
+        Self::send_offer(peer, event, bound).await
+    }
+
+    /// A change waits for the answer to an earlier offer. If that answer has
+    /// not come when the offer times out, offer again, so the change is not
+    /// lost when an answer is.
+    fn watch_stalled_offer(peer: &Arc<Peer>, after: Duration) {
+        let peer = Arc::downgrade(peer);
+        tokio::spawn(async move {
+            tokio::time::sleep(after + Duration::from_millis(100)).await;
+            let Some(peer) = peer.upgrade() else { return };
+            let stalled = {
+                let state = peer.negotiation.lock().await;
+                state.again
+                    && state
+                        .awaiting_answer_since
+                        .is_some_and(|since| since.elapsed() >= SUBSCRIBER_ANSWER_TIMEOUT)
+            };
+            if stalled {
+                if let Err(e) = Self::negotiate(&peer, Some(PEER_SIGNAL_SEND_TIMEOUT)).await {
+                    debug!(user_id = %peer.user_id, error = %e, "Re-offer after a lost answer failed");
+                }
+            }
+        });
+    }
+
+    /// Send an offer created under the negotiation lock. If it cannot be
+    /// queued, the client never answers it: forget that it is outstanding,
+    /// so the next change offers again.
+    async fn send_offer(
+        peer: &Arc<Peer>,
+        event: OutboundMsg,
+        bound: Option<Duration>,
+    ) -> Result<(), VoiceError> {
+        let sent = match bound {
+            Some(bound) => send_outbound_within(&peer.signal_tx, event, bound).await,
+            None => send_outbound(&peer.signal_tx, event).await,
+        };
+        if sent.is_err() {
+            peer.negotiation.lock().await.awaiting_answer_since = None;
+        }
         Self::check_offer_sent(peer, sent)
     }
 
@@ -1436,6 +1576,93 @@ mod renegotiate_tests {
                 ..
             })
         ));
+        peer.close().await;
+    }
+}
+
+#[cfg(test)]
+mod negotiation_tests {
+    use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
+
+    use super::*;
+
+    fn audio_track(id: &str) -> Arc<TrackLocalStaticRTP> {
+        Arc::new(TrackLocalStaticRTP::new(
+            RTCRtpCodecCapability {
+                mime_type: "audio/opus".into(),
+                clock_rate: 48000,
+                channels: 2,
+                ..Default::default()
+            },
+            id.into(),
+            id.into(),
+        ))
+    }
+
+    fn offer_sdp(msg: OutboundMsg) -> String {
+        match msg {
+            OutboundMsg::Voice {
+                event: ServerEvent::VoiceSubscriberOffer { sdp, .. },
+                ..
+            } => sdp,
+            other => panic!("expected a subscriber offer, got {other:?}"),
+        }
+    }
+
+    /// While an offer waits for its answer, further changes send nothing;
+    /// the answer triggers exactly one new offer that contains them all.
+    #[tokio::test]
+    async fn changes_during_an_open_offer_coalesce_into_one_offer() {
+        let mut config = Config::default_for_test();
+        config.stun_server = "stun:127.0.0.1:3478".into();
+        let sfu = SfuServer::new(Arc::new(config), None).expect("sfu");
+        let (tx, mut rx) = mpsc::channel(16);
+        let peer = sfu
+            .create_peer(Uuid::from_u128(1), "a".into(), "A".into(), Uuid::from_u128(2), tx)
+            .await
+            .expect("peer");
+        let client = sfu
+            .api
+            .new_peer_connection(RTCConfiguration::default())
+            .await
+            .expect("client pc");
+
+        peer.add_outgoing_track(Uuid::from_u128(3), TrackSource::Microphone, audio_track("u3"))
+            .await
+            .expect("track 1");
+        SfuServer::renegotiate(&peer).await.expect("offer 1");
+        let first = offer_sdp(rx.try_recv().expect("first offer sent"));
+
+        for n in 4..6 {
+            peer.add_outgoing_track(
+                Uuid::from_u128(n),
+                TrackSource::Microphone,
+                audio_track(&format!("u{n}")),
+            )
+            .await
+            .expect("more tracks");
+            SfuServer::renegotiate(&peer).await.expect("coalesced");
+        }
+        assert!(rx.try_recv().is_err(), "a second offer went out before the answer");
+
+        client
+            .set_remote_description(RTCSessionDescription::offer(first).unwrap())
+            .await
+            .expect("client applies offer 1");
+        let answer = client.create_answer(None).await.expect("answer");
+        client
+            .set_local_description(answer.clone())
+            .await
+            .expect("client local answer");
+        SfuServer::handle_subscriber_answer(&peer, answer.sdp)
+            .await
+            .expect("server applies answer 1");
+
+        let second = offer_sdp(rx.try_recv().expect("the pending change was offered"));
+        assert_eq!(second.matches("m=audio").count(), 3, "{second}");
+        assert!(rx.try_recv().is_err(), "more than one follow-up offer");
+
+        let _ = client.close().await;
         peer.close().await;
     }
 }

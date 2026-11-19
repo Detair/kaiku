@@ -12,9 +12,11 @@ use vc_server::db;
 use vc_server::voice::ScreenShareLimiter;
 
 use super::helpers::{
-    create_guild, create_test_user, create_voice_channel, generate_access_token, next_ws_event,
-    spawn_test_server, ws_connect, TestApp, WsClient,
+    add_guild_member, create_dm_channel, create_guild, create_guild_with_default_role,
+    create_test_user, create_voice_channel, expect_no_ws_event, generate_access_token,
+    next_ws_event, spawn_test_server, ws_connect, TestApp, WsClient,
 };
+use vc_server::permissions::GuildPermissions;
 
 const EVENT_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -66,6 +68,14 @@ async fn send(ws: &mut WsClient, value: serde_json::Value) {
     ws.send(Message::Text(value.to_string().into()))
         .await
         .expect("send ws frame");
+}
+
+async fn join_voice(ws: &mut WsClient, channel: Uuid) {
+    send(
+        ws,
+        serde_json::json!({ "type": "voice_join", "channel_id": channel }),
+    )
+    .await;
 }
 
 /// A user who joins the same room again (second socket or reconnect)
@@ -177,4 +187,130 @@ async fn rejoin_into_a_full_room_replaces_the_seat() {
         room.add_peer(peer(c).await).await,
         Err(VoiceError::ChannelFull { .. })
     ));
+}
+
+/// A second `voice_join` on the same socket replaces the peer without
+/// telling that socket it was removed.
+#[sqlx::test]
+async fn same_socket_rejoin_is_not_told_it_was_replaced(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let server = spawn_test_server(app.router.clone()).await;
+    let (owner, _) = create_test_user(&pool).await;
+    let guild = create_guild(&pool, owner).await;
+    let voice = create_voice_channel(&pool, guild, "voice").await;
+    let token = generate_access_token(&app.config, owner);
+
+    let mut ws = ws_connect(&server, &token).await;
+    next_ws_event(&mut ws, "ready", EVENT_TIMEOUT).await;
+    for _ in 0..2 {
+        send(
+            &mut ws,
+            serde_json::json!({ "type": "voice_join", "channel_id": voice }),
+        )
+        .await;
+        next_ws_event(&mut ws, "voice_room_state", EVENT_TIMEOUT).await;
+    }
+    expect_no_ws_event(&mut ws, "voice_removed", Duration::from_millis(500)).await;
+    let room = app.state.sfu.get_room(voice).await.expect("room");
+    assert_eq!(room.participant_count().await, 1);
+}
+
+/// C8: a channel's `user_limit` refuses one more member with `CHANNEL_FULL`;
+/// a member who is already in the room may still join again (replacement).
+#[sqlx::test]
+async fn user_limit_refuses_extra_member_but_not_a_rejoin(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let server = spawn_test_server(app.router.clone()).await;
+    let (owner, _) = create_test_user(&pool).await;
+    let (a, _) = create_test_user(&pool).await;
+    let (b, _) = create_test_user(&pool).await;
+    let guild = create_guild_with_default_role(&pool, owner, GuildPermissions::EVERYONE_DEFAULT)
+        .await;
+    add_guild_member(&pool, guild, a).await;
+    add_guild_member(&pool, guild, b).await;
+    let voice = create_voice_channel(&pool, guild, "voice").await;
+    sqlx::query("UPDATE channels SET user_limit = 2 WHERE id = $1")
+        .bind(voice)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let mut owner_ws = ws_connect(&server, &generate_access_token(&app.config, owner)).await;
+    next_ws_event(&mut owner_ws, "ready", EVENT_TIMEOUT).await;
+    join_voice(&mut owner_ws, voice).await;
+    next_ws_event(&mut owner_ws, "voice_room_state", EVENT_TIMEOUT).await;
+    let mut a_ws = ws_connect(&server, &generate_access_token(&app.config, a)).await;
+    next_ws_event(&mut a_ws, "ready", EVENT_TIMEOUT).await;
+    join_voice(&mut a_ws, voice).await;
+    next_ws_event(&mut a_ws, "voice_room_state", EVENT_TIMEOUT).await;
+
+    // Third member, the server owner neither: the room is full.
+    let mut b_ws = ws_connect(&server, &generate_access_token(&app.config, b)).await;
+    next_ws_event(&mut b_ws, "ready", EVENT_TIMEOUT).await;
+    join_voice(&mut b_ws, voice).await;
+    let err = next_ws_event(&mut b_ws, "voice_error", EVENT_TIMEOUT).await;
+    assert_eq!(err["code"], "CHANNEL_FULL", "{err}");
+
+    // A member already in the room joins again from another socket.
+    let mut a2_ws = ws_connect(&server, &generate_access_token(&app.config, a)).await;
+    next_ws_event(&mut a2_ws, "ready", EVENT_TIMEOUT).await;
+    join_voice(&mut a2_ws, voice).await;
+    next_ws_event(&mut a2_ws, "voice_room_state", EVENT_TIMEOUT).await;
+    let room = app.state.sfu.get_room(voice).await.expect("room");
+    assert_eq!(room.participant_count().await, 2);
+}
+
+/// C8: in a group DM, a participant who blocked (or was blocked by) another
+/// participant cannot join the call; the refusal does not say who blocked
+/// whom. A third participant without blocks joins.
+#[sqlx::test]
+async fn blocked_user_cannot_join_group_dm_call(pool: PgPool) {
+    use axum::body::Body;
+    use axum::http::Method;
+
+    let app = TestApp::with_pool(pool.clone()).await;
+    let server = spawn_test_server(app.router.clone()).await;
+    let (x, _) = create_test_user(&pool).await;
+    let (y, _) = create_test_user(&pool).await;
+    let (z, _) = create_test_user(&pool).await;
+    let dm = create_dm_channel(&pool, x, y).await;
+    sqlx::query("INSERT INTO dm_participants (channel_id, user_id) VALUES ($1, $2)")
+        .bind(dm)
+        .bind(z)
+        .execute(&pool)
+        .await
+        .unwrap();
+    // X blocks Y.
+    let response = app
+        .oneshot(
+            TestApp::request(Method::POST, &format!("/api/friends/{y}/block"))
+                .header(
+                    "Authorization",
+                    format!("Bearer {}", generate_access_token(&app.config, x)),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert!(response.status().is_success(), "{}", response.status());
+
+    for (user, refused) in [(y, true), (x, true), (z, false)] {
+        let mut ws = ws_connect(&server, &generate_access_token(&app.config, user)).await;
+        next_ws_event(&mut ws, "ready", EVENT_TIMEOUT).await;
+        send(
+            &mut ws,
+            serde_json::json!({ "type": "voice_join", "channel_id": dm }),
+        )
+        .await;
+        if refused {
+            let err = next_ws_event(&mut ws, "voice_error", EVENT_TIMEOUT).await;
+            assert_eq!(err["code"], "JOIN_REFUSED", "{err}");
+            let text = err["message"].as_str().unwrap_or_default();
+            assert!(!text.to_lowercase().contains("block"), "{text}");
+        } else {
+            next_ws_event(&mut ws, "voice_room_state", EVENT_TIMEOUT).await;
+        }
+    }
+    let room = app.state.sfu.get_room(dm).await.expect("room");
+    assert_eq!(room.participant_count().await, 1);
 }

@@ -302,6 +302,19 @@ impl TrackRouter {
         debug!(subscriber = %subscriber_id, "Removed subscriber from all sources");
     }
 
+    /// Remove the subscriptions that write into `tracks` (the local tracks
+    /// of one subscriber peer). Matched by track identity, so a newer peer
+    /// of the same user keeps its own subscriptions.
+    pub fn remove_subscriptions_into(&self, tracks: &[Arc<TrackLocalStaticRTP>]) {
+        if tracks.is_empty() {
+            return;
+        }
+        for mut entry in self.subscriptions.iter_mut() {
+            entry.retain(|s| !tracks.iter().any(|t| Arc::ptr_eq(t, &s.local_track)));
+        }
+        self.subscriptions.retain(|_, v| !v.is_empty());
+    }
+
     /// Look up the `TrackSource` for a user from a specific simulcast layer.
     ///
     /// Used by the SFU `on_track` callback: when a secondary simulcast layer

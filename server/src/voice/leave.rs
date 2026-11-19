@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 use super::error::VoiceError;
 use super::metrics::{finalize_session, get_guild_id};
+use super::peer::Peer;
 use super::screen_share::ScreenShareLimiter;
 use super::sfu::SfuServer;
 use crate::ws::{OutboundMsg, ServerEvent};
@@ -100,71 +101,11 @@ pub async fn leave_voice_internal(
     let removed = removed_peer.is_some();
     let removed_connected_at = removed_peer.as_ref().map(|p| p.connected_at);
     if let Some(peer) = removed_peer {
-        // Record voice session end metric
-        let duration_s = (chrono::Utc::now() - peer.connected_at)
-            .num_milliseconds()
-            .max(0) as f64
-            / 1000.0;
-        crate::observability::metrics::record_voice_session_end(duration_s);
-
-        // Finalize session in background
         let guild_id = get_guild_id(pool, channel_id).await;
-        let pool_clone = pool.clone();
-        let session_id = peer.session_id;
-        let connected_at = peer.connected_at;
+        end_session_records(pool, &peer, guild_id);
 
-        tokio::spawn(async move {
-            // Retry with exponential backoff (3 attempts: 100ms, 200ms, 400ms)
-            const MAX_RETRIES: u32 = 3;
-            let mut delay = std::time::Duration::from_millis(100);
-
-            for attempt in 1..=MAX_RETRIES {
-                match finalize_session(
-                    &pool_clone,
-                    user_id,
-                    session_id,
-                    channel_id,
-                    guild_id,
-                    connected_at,
-                )
-                .await
-                {
-                    Ok(()) => {
-                        if attempt > 1 {
-                            info!(
-                                user_id = %user_id,
-                                session_id = %session_id,
-                                attempt = attempt,
-                                "Session finalized after retry"
-                            );
-                        }
-                        return;
-                    }
-                    Err(e) if attempt < MAX_RETRIES => {
-                        warn!(
-                            user_id = %user_id,
-                            session_id = %session_id,
-                            attempt = attempt,
-                            error = %e,
-                            "Failed to finalize session, retrying in {:?}",
-                            delay
-                        );
-                        tokio::time::sleep(delay).await;
-                        delay *= 2; // Exponential backoff
-                    }
-                    Err(e) => {
-                        error!(
-                            user_id = %user_id,
-                            session_id = %session_id,
-                            "Failed to finalize session after {} attempts: {}",
-                            MAX_RETRIES,
-                            e
-                        );
-                        // Session data is lost - this should trigger an alert in production
-                    }
-                }
-            }
-        });
+        // Its tracks leave every other participant's connection (C7).
+        room.detach_media(&peer).await;
 
         // Close the peer connection
         peer.close().await;
@@ -209,6 +150,67 @@ pub async fn leave_voice_internal(
     );
 
     Ok(removed)
+}
+
+/// Record the end of `peer`'s voice session: the duration metric now, the
+/// session row in the background (with retries).
+pub(super) fn end_session_records(pool: &PgPool, peer: &Peer, guild_id: Option<Uuid>) {
+    let duration_s = (chrono::Utc::now() - peer.connected_at)
+        .num_milliseconds()
+        .max(0) as f64
+        / 1000.0;
+    crate::observability::metrics::record_voice_session_end(duration_s);
+
+    let pool = pool.clone();
+    let user_id = peer.user_id;
+    let channel_id = peer.channel_id;
+    let session_id = peer.session_id;
+    let connected_at = peer.connected_at;
+    tokio::spawn(async move {
+        // Retry with exponential backoff (3 attempts: 100ms, 200ms, 400ms)
+        const MAX_RETRIES: u32 = 3;
+        let mut delay = std::time::Duration::from_millis(100);
+
+        for attempt in 1..=MAX_RETRIES {
+            match finalize_session(&pool, user_id, session_id, channel_id, guild_id, connected_at)
+                .await
+            {
+                Ok(()) => {
+                    if attempt > 1 {
+                        info!(
+                            user_id = %user_id,
+                            session_id = %session_id,
+                            attempt = attempt,
+                            "Session finalized after retry"
+                        );
+                    }
+                    return;
+                }
+                Err(e) if attempt < MAX_RETRIES => {
+                    warn!(
+                        user_id = %user_id,
+                        session_id = %session_id,
+                        attempt = attempt,
+                        error = %e,
+                        "Failed to finalize session, retrying in {:?}",
+                        delay
+                    );
+                    tokio::time::sleep(delay).await;
+                    delay *= 2; // Exponential backoff
+                }
+                Err(e) => {
+                    error!(
+                        user_id = %user_id,
+                        session_id = %session_id,
+                        "Failed to finalize session after {} attempts: {}",
+                        MAX_RETRIES,
+                        e
+                    );
+                    // Session data is lost - this should trigger an alert in production
+                }
+            }
+        }
+    });
 }
 
 /// Remove every peer from every room (server shutdown).

@@ -230,3 +230,168 @@ async fn webcam_start_then_track_is_forwarded(pool: PgPool) {
         b.seen_tracks()
     );
 }
+
+/// C6: two members join within 200 ms while a third is in the room; the
+/// listeners answer offers slowly, so offers would overlap. Everyone hears
+/// everyone.
+#[sqlx::test]
+async fn two_joins_within_200ms_hear_each_other(pool: PgPool) {
+    let f = fixture(pool).await;
+    let slow = SimOptions {
+        answer_delay: Duration::from_millis(300),
+    };
+    let mut c = f.participant(slow).await;
+    c.join_and_publish_mic().await;
+
+    let mut a = f.participant(slow).await;
+    let mut b = f.participant(slow).await;
+    a.send_join();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    b.send_join();
+    a.next_event("voice_room_state", WAIT).await;
+    b.next_event("voice_room_state", WAIT).await;
+    a.add_track(false, "mic").await;
+    b.add_track(false, "mic").await;
+    tokio::join!(a.publish(), b.publish());
+
+    for (listener, speaker) in [
+        (&a, &b),
+        (&b, &a),
+        (&c, &a),
+        (&c, &b),
+        (&a, &c),
+        (&b, &c),
+    ] {
+        assert!(
+            listener
+                .wait_for_packets(&mic_track(speaker.user_id), 5, Duration::from_secs(20))
+                .await,
+            "{} does not hear {}: {:?}",
+            listener.user_id,
+            speaker.user_id,
+            listener.seen_tracks()
+        );
+    }
+    // Every subscriber answer fit the offer it answered: no signaling error.
+    for p in [&mut a, &mut b, &mut c] {
+        let mut offers = 0;
+        while let Ok(ev) = p.events.try_recv() {
+            assert_ne!(ev["type"], "voice_error", "{ev}");
+            assert_ne!(ev["type"], "sim_offer_rejected", "{ev}");
+            if ev["type"] == "voice_subscriber_offer" {
+                offers += 1;
+            }
+        }
+        eprintln!("{}: {offers} subscriber offers", p.user_id);
+    }
+}
+
+/// Senders at `user`'s subscriber connection that carry a track, and all
+/// transceivers there.
+async fn subscriber_counts(app: &TestApp, channel: Uuid, user: Uuid) -> (usize, usize) {
+    let room = app.state.sfu.get_room(channel).await.expect("room");
+    let peer = room.get_peer(user).await.expect("peer");
+    let mut with_track = 0;
+    for sender in peer.subscriber_pc.get_senders().await {
+        if sender.track().await.is_some() {
+            with_track += 1;
+        }
+    }
+    (with_track, peer.subscriber_pc.get_transceivers().await.len())
+}
+
+/// C7: ten joins and leaves of a second member leave the permanent
+/// member's subscriber connection as it was: after each leave no sender
+/// carries a track of the departed member. A removed track's transceiver
+/// stays (inactive) in the session: at most one more per rejoin.
+#[sqlx::test]
+async fn ten_joins_and_leaves_keep_senders_constant(pool: PgPool) {
+    let f = fixture(pool).await;
+    let mut stay = f.participant(SimOptions::default()).await;
+    stay.join_and_publish_mic().await;
+    let (visitor, _) = f.member().await;
+
+    let mut transceivers_after_first = None;
+    for round in 0..10 {
+        let mut v = f.participant_for(visitor, SimOptions::default()).await;
+        let before = stay.packets(&mic_track(visitor));
+        v.join_and_publish_mic().await;
+        assert!(
+            stay.wait_for_packets(&mic_track(visitor), before + 5, WAIT).await,
+            "round {round}: visitor not heard"
+        );
+        let (active, _) = subscriber_counts(&f.app, f.voice, stay.user_id).await;
+        assert_eq!(active, 1, "round {round}: visitor's track not added");
+
+        v.send(serde_json::json!({ "type": "voice_leave", "channel_id": f.voice }));
+        stay.next_event("voice_user_left", WAIT).await;
+        // The removal is announced by a new subscriber offer.
+        let deadline = tokio::time::Instant::now() + WAIT;
+        let (active, transceivers) = loop {
+            let counts = subscriber_counts(&f.app, f.voice, stay.user_id).await;
+            if counts.0 == 0 || tokio::time::Instant::now() > deadline {
+                break counts;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        };
+        assert_eq!(active, 0, "round {round}: departed track still sent");
+        let first = *transceivers_after_first.get_or_insert(transceivers);
+        assert!(
+            transceivers <= first + round,
+            "round {round}: transceivers grew from {first} to {transceivers}"
+        );
+        v.close().await;
+    }
+}
+
+/// C2 / C31: the same user joins from a second socket. Only the old socket
+/// gets `voice_removed { session_replaced }`; the room holds one entry for
+/// the user; the third participant keeps exactly one track of that user
+/// and hears the new session.
+#[sqlx::test]
+async fn second_socket_join_replaces_the_session(pool: PgPool) {
+    let f = fixture(pool).await;
+    let mut stay = f.participant(SimOptions::default()).await;
+    stay.join_and_publish_mic().await;
+    let (user, _) = f.member().await;
+
+    let mut first = f.participant_for(user, SimOptions::default()).await;
+    first.join_and_publish_mic().await;
+    assert!(stay.wait_for_packets(&mic_track(user), 5, WAIT).await);
+
+    let mut second = f.participant_for(user, SimOptions::default()).await;
+    second.join_and_publish_mic().await;
+
+    let removed = first.next_event("voice_removed", WAIT).await;
+    assert_eq!(removed["reason"], "session_replaced", "{removed}");
+    assert_eq!(removed["channel_id"], f.voice.to_string());
+
+    let room = f.app.state.sfu.get_room(f.voice).await.expect("room");
+    assert_eq!(room.participant_count().await, 2);
+    let info = room.get_participant_info().await;
+    assert_eq!(info.iter().filter(|p| p.user_id == user).count(), 1);
+
+    // The new session is heard, and only one track of the user is sent.
+    let before = stay.packets(&mic_track(user));
+    assert!(
+        stay.wait_for_packets(&mic_track(user), before + 5, WAIT)
+            .await,
+        "new session not heard"
+    );
+    let deadline = tokio::time::Instant::now() + WAIT;
+    let active = loop {
+        let (active, _) = subscriber_counts(&f.app, f.voice, stay.user_id).await;
+        if active == 1 || tokio::time::Instant::now() > deadline {
+            break active;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert_eq!(active, 1, "old session's track still sent to the others");
+    assert!(
+        second
+            .try_next_event("voice_removed", Duration::from_millis(500))
+            .await
+            .is_none(),
+        "the new session was told it was removed"
+    );
+}

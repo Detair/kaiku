@@ -16,6 +16,8 @@ use uuid::Uuid;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::rtp_transceiver::rtp_sender::RTCRtpSender;
+use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
+use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_local::TrackLocal;
 use webrtc::track::track_remote::TrackRemote;
@@ -75,6 +77,24 @@ pub struct Peer {
     /// room content only while they hold or after a new check
     /// (`ws::access`); a peer without it gets none.
     admission: std::sync::OnceLock<crate::ws::access::VoiceAdmission>,
+    /// Offer/answer state of `subscriber_pc` (the server offers). See
+    /// [`SubscriberNegotiation`]; only `SfuServer` touches it.
+    pub(crate) negotiation: tokio::sync::Mutex<SubscriberNegotiation>,
+}
+
+/// Offer/answer state of a peer's subscriber connection.
+///
+/// At most one server offer is outstanding: a renegotiation requested while
+/// an offer waits for its answer only sets `again`, and the answer then
+/// triggers exactly one new offer (coalescing). Held only over local
+/// WebRTC work (create offer, set descriptions), never over a socket send.
+#[derive(Debug, Default)]
+pub(crate) struct SubscriberNegotiation {
+    /// When the outstanding offer was sent; `None` when stable.
+    pub(crate) awaiting_answer_since: Option<std::time::Instant>,
+    /// Something changed while an offer was outstanding: offer again once
+    /// the answer is in.
+    pub(crate) again: bool,
 }
 
 impl Peer {
@@ -106,6 +126,7 @@ impl Peer {
             announced: tokio::sync::Notify::new(),
             has_subscribed: AtomicBool::new(false),
             admission: std::sync::OnceLock::new(),
+            negotiation: tokio::sync::Mutex::new(SubscriberNegotiation::default()),
         }
     }
 
@@ -134,11 +155,22 @@ impl Peer {
         source_type: TrackSource,
         track: Arc<TrackLocalStaticRTP>,
     ) -> Result<Arc<RTCRtpSender>, super::error::VoiceError> {
-        // Add track to subscriber peer connection
-        let sender = self
+        // Always a new transceiver: `add_track` would reuse the transceiver
+        // of a removed track with the same id (the same user rejoining), and
+        // in webrtc-rs a removed (stopped) sender cannot take a track again,
+        // so the re-add would fail. A removed track's transceiver stays
+        // inactive in the session description.
+        let transceiver = self
             .subscriber_pc
-            .add_track(track.clone() as Arc<dyn TrackLocal + Send + Sync>)
+            .add_transceiver_from_track(
+                track.clone() as Arc<dyn TrackLocal + Send + Sync>,
+                Some(RTCRtpTransceiverInit {
+                    direction: RTCRtpTransceiverDirection::Sendrecv,
+                    send_encodings: Vec::new(),
+                }),
+            )
             .await?;
+        let sender = transceiver.sender().await;
 
         // Store reference
         let mut tracks = self.outgoing_tracks.write().await;
@@ -175,6 +207,31 @@ impl Peer {
         } else {
             false
         }
+    }
+
+    /// Remove every outgoing track that forwards media of `source_user_id`
+    /// from the subscriber connection. Returns how many were removed.
+    pub async fn remove_outgoing_tracks_from(&self, source_user_id: Uuid) -> usize {
+        let sources: Vec<TrackSource> = self
+            .outgoing_tracks
+            .read()
+            .await
+            .keys()
+            .filter(|(user, _)| *user == source_user_id)
+            .map(|(_, source)| *source)
+            .collect();
+        let mut removed = 0;
+        for source in sources {
+            if self.remove_outgoing_track(source_user_id, source).await {
+                removed += 1;
+            }
+        }
+        removed
+    }
+
+    /// The local tracks currently forwarded to this peer.
+    pub async fn outgoing_track_list(&self) -> Vec<Arc<TrackLocalStaticRTP>> {
+        self.outgoing_tracks.read().await.values().cloned().collect()
     }
 
     /// Returns the number of outgoing tracks on the subscriber `PeerConnection`.

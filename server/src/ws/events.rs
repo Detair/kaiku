@@ -325,6 +325,9 @@ pub enum VoiceRemovedReason {
     PermissionLost,
     /// The channel (or its server) was deleted.
     ChannelDeleted,
+    /// The same user joined the same room from another connection; that
+    /// connection now holds the seat.
+    SessionReplaced,
 }
 
 impl VoiceRemovedReason {
@@ -336,6 +339,7 @@ impl VoiceRemovedReason {
             Self::Banned => "banned",
             Self::PermissionLost => "permission_lost",
             Self::ChannelDeleted => "channel_deleted",
+            Self::SessionReplaced => "session_replaced",
         }
     }
 }
