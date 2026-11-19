@@ -203,6 +203,7 @@ This document tracks all direct third-party dependencies and their licenses for 
 | @unocss/preset-icons | ^0.58.0 | MIT | Icon preset for UnoCSS |
 | @unocss/reset | ^0.58.0 | MIT | CSS reset |
 | lucide-solid | ^0.300.0 | ISC | Icon library |
+| @iconify-json/lucide | ^1.2.157 | ISC | Lucide icon data for UnoCSS `presetIcons` (dev dependency, build time only) |
 | @rollup/plugin-commonjs | ^29.0.0 | MIT | CommonJS module support |
 | @types/dompurify | ^3.2.0 | MIT | DOMPurify type definitions |
 | @types/node | ^20.0.0 | MIT | Node.js type definitions |
