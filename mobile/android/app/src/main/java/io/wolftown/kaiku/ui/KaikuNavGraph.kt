@@ -486,10 +486,10 @@ fun KaikuNavGraph(
     }
 }
 
-/** L2-A11: the lapsed key device's sign-in screen. */
-/** "New message": pick a person to write to (N2a). */
+/** "New message": pick a person to write to. */
 const val NEW_MESSAGE_ROUTE = "dms/new"
 
+/** L2-A11: the lapsed key device's sign-in screen. */
 const val CONFIRM_ROUTE = "confirm_its_you"
 
 /** The B.4 renewal prompt over a running session. */

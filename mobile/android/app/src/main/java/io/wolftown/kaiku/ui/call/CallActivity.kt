@@ -114,7 +114,7 @@ class CallActivity : ComponentActivity() {
     private fun handle(intent: Intent?) {
         intent ?: return
         val parsed = CallIntents.parse(intent::getStringExtra)
-        // A notification of another (or no) signed-in account is never acted on (C32).
+        // A notification of another (or no) signed-in account is never acted on.
         val ring = parsed.ring?.takeIf { it.userId == authState.signedInUserId() }
         ring?.let { callController.onRingNotification(it.channelId, it.callId, it.callerId, it.callerName) }
         if (parsed.action == CallIntents.ACTION_ACCEPT) {

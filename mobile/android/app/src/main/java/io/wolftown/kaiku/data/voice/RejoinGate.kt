@@ -1,6 +1,6 @@
 package io.wolftown.kaiku.data.voice
 
-/** What the call layer says about rejoining a DM call's voice session (C32 "DM calls"). */
+/** What the call layer says about rejoining a DM call's voice session. */
 enum class RejoinVerdict {
     /** The call is still active and this user is in it: rejoin. */
     Allowed,

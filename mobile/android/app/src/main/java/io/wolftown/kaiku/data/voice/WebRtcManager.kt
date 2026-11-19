@@ -203,8 +203,8 @@ class WebRtcManager @Inject constructor(
     val currentGeneration: Long get() = generation
 
     /**
-     * The publisher's ICE state read from the connection itself (C32 "proof
-     * of carried"), not from the last callback. Waits for WebRTC's thread:
+     * The publisher's ICE state read from the connection itself (proof of
+     * carried), not from the last callback. Waits for WebRTC's thread:
      * call it holding none of the locks a callback takes.
      */
     fun publisherConnectedNow(): Boolean {

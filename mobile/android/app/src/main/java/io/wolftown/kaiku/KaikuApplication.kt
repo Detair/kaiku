@@ -52,7 +52,7 @@ class KaikuApplication : Application(), SingletonImageLoader.Factory, Configurat
     @Inject
     lateinit var sessionTeardownRunner: SessionTeardownRunner
 
-    /** Ended synchronously before a stored session is removed (C32, [SessionEndHook]). */
+    /** Ended synchronously before a stored session is removed ([SessionEndHook]). */
     @Inject
     lateinit var voiceRepository: VoiceRepository
 
@@ -88,7 +88,7 @@ class KaikuApplication : Application(), SingletonImageLoader.Factory, Configurat
         // Observe Ready before the first connect can produce one.
         resyncCoordinator.start()
         sessionTeardownRunner.start()
-        // C32: voice and the microphone end before the account state is cleared.
+        // Voice and the microphone end before the account state is cleared.
         SessionEndHook.install {
             // The microphone first: a failure of the call part must not keep it open.
             voiceRepository.endForSignOut()

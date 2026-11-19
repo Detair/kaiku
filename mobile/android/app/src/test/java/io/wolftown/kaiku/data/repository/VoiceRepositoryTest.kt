@@ -93,7 +93,7 @@ class VoiceRepositoryTest {
     /** Generation of the fake WebRtcManager's connections; closePeerConnections bumps it. */
     private var rtcGen = 0L
 
-    /** Inbound frames per socket (C32 proof of carried). */
+    /** Inbound frames per socket (proof of carried). */
     private val inbound = MutableStateFlow(KaikuWebSocket.Inbound(1L, 0L))
 
     /** The id of the authenticated socket (null: none). Ids never repeat. */
@@ -113,7 +113,7 @@ class VoiceRepositoryTest {
     /** Whether a first join's publisher connects by itself after its offer (off: it never does). */
     private var firstJoinConnects = true
 
-    /** A first join's new publisher connects (M-10), unless the test turned that off. */
+    /** A first join's new publisher connects, unless the test turned that off. */
     private fun connectFirstJoin() {
         if (firstJoinConnects && repository.linkState.value == VoiceLinkState.Connecting) setPublisher(true)
     }
@@ -162,7 +162,7 @@ class VoiceRepositoryTest {
         }
         // Peer connections are installed unless the session ended (the guard says no).
         coEvery { webRtcManager.createSubscriberPeerConnection(any()) } answers { firstArg<SessionGuard>().runIfCurrent {} }
-        // The publisher of a first join connects once its offer is made (M-10: the
+        // The publisher of a first join connects once its offer is made (the
         // first join waits for it); a rejoin attempt's publisher connects only
         // when a test says so (setPublisher).
         coEvery { webRtcManager.createPublisherOffer(any()) } answers {
@@ -303,7 +303,7 @@ class VoiceRepositoryTest {
         advanceUntilIdle()
 
         repository.isConnected.test {
-            // The first join waits for its publisher (M-10): it is connected once the join is up.
+            // The first join waits for its publisher: it is connected once the join is up.
             assertTrue(awaitItem())
 
             setPublisher(false)
@@ -1325,7 +1325,7 @@ class VoiceRepositoryTest {
         assertEquals(VoiceLinkState.Stable, repository.linkState.value)
     }
 
-    // -- C32 proof of carried ------------------------------------------------------
+    // -- Proof of carried ------------------------------------------------------
 
     private var deadSocketReports = 0
 
@@ -1386,7 +1386,7 @@ class VoiceRepositoryTest {
         repository.leaveChannel()
     }
 
-    // -- DM call sessions (C32 "DM calls") ---------------------------------------
+    // -- DM call sessions ---------------------------------------
 
     private fun kotlinx.coroutines.test.TestScope.collectCallEnds(): MutableList<io.wolftown.kaiku.data.call.CallVoiceEnd> {
         val ends = mutableListOf<io.wolftown.kaiku.data.call.CallVoiceEnd>()
@@ -1489,7 +1489,7 @@ class VoiceRepositoryTest {
         advanceTimeBy(60_000); runCurrent()
 
         // Nothing ever went out; the call is over, with the Rejoin action and the user's mute choice.
-        // It never connected, so it says "Couldn't connect" (M-4).
+        // It never connected, so it says "Couldn't connect".
         verifyNoVoiceFrames()
         assertEquals(null, repository.currentChannelId.value)
         assertEquals(VoiceEndNotice.RejoinFailed("ch-1", wasMuted = true, neverConnected = true), repository.endNotice.value)

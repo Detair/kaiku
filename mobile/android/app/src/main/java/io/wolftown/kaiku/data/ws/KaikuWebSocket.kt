@@ -81,7 +81,7 @@ class KaikuWebSocket @Inject constructor(
 
     /**
      * Inbound frames of the authenticated socket, counted as they arrive:
-     * a fresh frame is the proof that the socket still carries (C32).
+     * a fresh frame is the proof that the socket still carries.
      */
     val inbound: StateFlow<Inbound> = _inbound.asStateFlow()
 

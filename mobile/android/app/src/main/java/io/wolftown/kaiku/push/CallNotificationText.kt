@@ -67,7 +67,7 @@ data class CallPostPlan(
 object CallNotificationText {
     /**
      * A ringing notification goes away after this if its `ended` never comes:
-     * the C33 ring cap (100 s, above the server's 90 s ring timeout).
+     * the ring cap (100 s, above the server's 90 s ring timeout).
      */
     const val RINGING_TIMEOUT_MS = 100_000L
 

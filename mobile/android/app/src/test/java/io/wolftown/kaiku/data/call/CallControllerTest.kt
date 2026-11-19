@@ -29,7 +29,7 @@ import org.junit.Test
 
 /**
  * The call owner on virtual time: socket events in, REST and voice out, the
- * 100 s ring cap, the C33 resync, the rejoin gate and the signed-in user.
+ * 100 s ring cap, the call resync, the rejoin gate and the signed-in user.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class CallControllerTest {

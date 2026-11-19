@@ -34,7 +34,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** Every transition of the plan's table (N2b §2), on the pure machine. */
+/** Every transition of the plan's table, on the pure machine. */
 class CallMachineTest {
 
     private val me = "me"
@@ -371,7 +371,7 @@ class CallMachineTest {
         assertTrue(effects.isEmpty())
     }
 
-    // -- Resync (C33) ------------------------------------------------------------------
+    // -- Resync ------------------------------------------------------------------
 
     private fun snapshot(
         callId: String = "c-1",
@@ -430,7 +430,7 @@ class CallMachineTest {
         assertEquals(listOf(LeaveVoice(dm)), effects)
     }
 
-    // -- Rejoin gate (C32 "DM calls") --------------------------------------------------
+    // -- Rejoin gate (DM calls) --------------------------------------------------
 
     @Test
     fun `a call may rejoin only while the server still has this user in it`() {

@@ -709,7 +709,7 @@
     <string name="admin_claimant_note">Note (how you checked it was them)</string>
     <string name="admin_issue_code">Show the setup code</string>
     <string name="admin_type_code_hint">Type the code the new phone shows. Remotely, let them read it to you.</string>
-    <!-- N2a: start a conversation -->
+    <!-- Start a conversation -->
     <string name="dm_new_open_conversation">Open conversation</string>
     <string name="dm_new_title">New message</string>
     <string name="dm_new_search_placeholder">Search by name</string>

@@ -16,7 +16,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * C32 "real elapsed time": the 60 s without a socket that carries the join
+ * Real elapsed time: the 60 s without a socket that carries the join
  * count time the device was suspended, which coroutine delays do not see.
  * The fake clock jumps like `elapsedRealtime` after a sleep.
  */
@@ -93,7 +93,7 @@ class VoiceSignallingClockTest {
         runCurrent()
         rig.socket.value = null
         runCurrent()
-        // The elapsed clock barely moves, the wall clock moves 70 s (C32: the larger difference).
+        // The elapsed clock barely moves, the wall clock moves 70 s (the larger difference counts).
         rig.realMs += 1_000
         rig.wallOffsetMs = 69_000
         advanceTimeBy(VoiceSignalling.DEADLINE_CHECK_MS); runCurrent()
@@ -113,7 +113,7 @@ class VoiceSignallingClockTest {
         rig.owner.cancel()
     }
 
-    // -- C32 "proof of carried" ------------------------------------------------------
+    // -- Proof of carried ------------------------------------------------------
 
     @Test
     fun `after a gap a carried session proves it and stays up`() = runTest {

@@ -287,7 +287,7 @@ class TokenStorage internal constructor(
         // Only ending a stored session voids a pending move; clearing an empty store
         // (cleanup after a failed sign-in) keeps the move for the next start (Codex r4).
         if (prefs.contains(KEY_ACCESS_TOKEN) || prefs.contains(KEY_REFRESH_TOKEN)) sessionChanged()
-        // C32: voice, a call and the microphone end before a stored session is removed.
+        // Voice, a call and the microphone end before a stored session is removed.
         if (prefs.contains(KEY_ACCESS_TOKEN) || prefs.contains(KEY_REFRESH_TOKEN)) SessionEndHook.beforeSessionEnds()
         val success = prefs.edit()
             .remove(KEY_ACCESS_TOKEN)

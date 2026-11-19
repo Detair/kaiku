@@ -208,7 +208,7 @@ class RealtimeConnectionManager internal constructor(
 
     /**
      * The voice call found the socket dead (no answer to its ping after the
-     * phone slept, C32): drop it and reconnect now instead of waiting for the
+     * phone slept): drop it and reconnect now instead of waiting for the
      * pong watchdog. Ignored unless the connection is up.
      */
     fun reportDeadSocket() {

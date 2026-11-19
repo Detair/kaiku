@@ -50,7 +50,7 @@ class VoiceSignallingTest {
         val statesAtGiveUp = mutableListOf<VoiceLinkState>()
         val giveUps = mutableListOf<VoiceSignalling.GiveUp>()
 
-        /** Whether the first join's publisher connects (M-10); a test sets false to hold it. */
+        /** Whether the first join's publisher connects; a test sets false to hold it. */
         val firstConnected = MutableStateFlow(true)
 
         /** Result of each attempt in order ([Attempt], HANG, or a Throwable to throw); missing = Failed. */
@@ -183,7 +183,7 @@ class VoiceSignallingTest {
         assertEquals(VoiceLinkState.Stable, h.state)
     }
 
-    // -- First join: the publisher must connect (M-4, M-10) ------------------------
+    // -- First join: the publisher must connect ------------------------
 
     @Test
     fun `a first join says connecting until its publisher connects`() = runTest {

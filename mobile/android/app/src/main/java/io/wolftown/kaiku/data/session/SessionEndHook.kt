@@ -4,7 +4,7 @@ import java.util.logging.Level
 import java.util.logging.Logger
 
 /**
- * C32 "signed-in user": what has to stop *before* a stored session is
+ * Signed-in user: what has to stop *before* a stored session is
  * removed (sign-out, session expiry, a rejected refresh, a change of the
  * signed-in user): voice, a DM call and the microphone. The token store runs
  * it synchronously right before it removes a stored session, so nothing of

@@ -5,13 +5,13 @@ import javax.inject.Inject
 
 /**
  * Milliseconds of real elapsed time, including time the device was suspended
- * (C32 "real elapsed time"). Only differences are meaningful.
+ * (real elapsed time). Only differences are meaningful.
  */
 fun interface ElapsedClock {
     fun nowMs(): Long
 
     /**
-     * Wall-clock milliseconds. C32 counts the larger of the two differences;
+     * Wall-clock milliseconds. The larger of the two differences counts;
      * by default it is the same clock.
      */
     fun wallMs(): Long = nowMs()

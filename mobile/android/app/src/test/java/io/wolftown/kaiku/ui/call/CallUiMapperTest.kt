@@ -30,7 +30,7 @@ class CallUiMapperTest {
         assertEquals(CallPhase.Calling, map(CallState.Outgoing("dm", null, 0L)).phase)
         assertEquals(R.string.voice_call_calling, map(CallState.Outgoing("dm", null, 0L)).status)
         assertEquals(R.string.voice_call_connecting, map(CallState.Connecting("dm", "c")).status)
-        // In the call, but voice is still connecting (M-4): no running time yet.
+        // In the call, but voice is still connecting: no running time yet.
         val connecting = map(CallState.Connected("dm", "c", 0L), link = VoiceLinkState.Connecting, now = 5_000L)
         assertEquals(CallUi(CallPhase.Connecting, "Anna", R.string.voice_call_connecting, null, false, true), connecting)
     }

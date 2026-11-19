@@ -108,7 +108,7 @@ class VoiceSignalling(
     private val delaysMs: List<Long> = DEFAULT_DELAYS_MS,
     private val attemptTimeoutMs: Long = ATTEMPT_TIMEOUT_MS,
     private val joinDeadlineMs: Long = JOIN_DEADLINE_MS,
-    /** Real elapsed time incl. suspension (C32); the deadline counts the larger of it and the delays waited. */
+    /** Real elapsed time incl. suspension; the deadline counts the larger of it and the delays waited. */
     private val clock: ElapsedClock = ElapsedClock.STOPPED,
 ) {
     companion object {
@@ -131,11 +131,11 @@ class VoiceSignalling(
          * A carried session looks at the clock every [DEADLINE_CHECK_MS]; a
          * look that comes this much later than due is a gap in the client's
          * own activity (the device slept), after which "carried" must be
-         * proven again (C32 "proof of carried").
+         * proven again (proof of carried).
          */
         const val GAP_MS = 10_000L
 
-        /** How long a proof may take: a fresh inbound frame within 5 s (C32). */
+        /** How long a proof may take: a fresh inbound frame within 5 s. */
         const val PROOF_TIMEOUT_MS = 5_000L
     }
 
@@ -152,7 +152,7 @@ class VoiceSignalling(
 
         /**
          * The session may not rejoin at all (a DM call that is over on the
-         * server, C32 "DM calls"); nothing was sent. The session is given up
+         * server); nothing was sent. The session is given up
          * at once with [GiveUp.Refused].
          */
         Refused,
@@ -198,7 +198,7 @@ class VoiceSignalling(
         suspend fun awaitConnectionFailed()
 
         /**
-         * C32 "proof of carried", after a gap: the publisher read from the
+         * Proof of carried, after a gap: the publisher read from the
          * connection is live and a fresh inbound frame arrives on [socket]
          * (a ping is sent for it). Returns false if not, within
          * [PROOF_TIMEOUT_MS] at most (the machine also bounds it).
@@ -259,7 +259,7 @@ class VoiceSignalling(
         val deadlinePassed = AtomicBoolean(false)
     }
 
-    /** A moment on both clocks (C32 counts the larger of the two differences). */
+    /** A moment on both clocks (the larger of the two differences counts). */
     private data class Moment(val elapsedMs: Long, val wallMs: Long)
 
     private fun now() = Moment(clock.nowMs(), clock.wallMs())
@@ -290,7 +290,7 @@ class VoiceSignalling(
         return since(start) >= joinDeadlineMs
     }
 
-    /** Right before a `voice_join` goes out: over the 60 s, give up instead (C32). */
+    /** Right before a `voice_join` goes out: over the 60 s, give up instead. */
     private fun checkDeadline(session: Session, steps: Steps) {
         if (deadlineOver(session, steps)) {
             session.deadlinePassed.set(true)
@@ -386,8 +386,8 @@ class VoiceSignalling(
             session.unusable.value = id
         }
 
-        // The first join counts once its publisher is connected (C32 amendment:
-        // the same criterion and the same 15 s as a rejoin attempt). If the
+        // The first join counts once its publisher is connected (the same
+        // criterion and the same 15 s as a rejoin attempt). If the
         // socket that carried it is lost first, the session recovers.
         val first = whileSocketIs(joined) {
             withTimeoutOrNull(attemptTimeoutMs) { steps.awaitConnected() } != null
@@ -600,7 +600,7 @@ class VoiceSignalling(
     }
 
     /**
-     * Waits until [ms] of real time have passed (C32): the larger of the
+     * Waits until [ms] of real time have passed: the larger of the
      * delays waited and the [clock]'s difference, which also counts time the
      * device was suspended. Wakes at least every [DEADLINE_CHECK_MS] to
      * compare, so a long sleep is noticed at the first wake-up.

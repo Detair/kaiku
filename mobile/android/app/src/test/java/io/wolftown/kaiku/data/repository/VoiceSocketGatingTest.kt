@@ -30,7 +30,7 @@ class VoiceSocketGatingTest {
     private fun VoiceRig.assertGaveUpWithoutAnyFrame() {
         assertEquals("voice frames: $log", emptyList<String?>(), voiceFrames())
         assertEquals(null, repository.currentChannelId.value)
-        // Never connected: "Couldn't connect" (M-4).
+        // Never connected: "Couldn't connect".
         assertEquals(VoiceEndNotice.RejoinFailed(channel, wasMuted = false, neverConnected = true), repository.endNotice.value)
         assertEquals(VoiceLinkState.Stable, repository.linkState.value)
         assertTrue("call service not stopped: $log", "service:stop" in log)

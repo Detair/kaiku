@@ -93,7 +93,7 @@ class VoiceRepository @Inject constructor(
     private val micPermissionChecker: MicPermissionChecker,
     @ApplicationContext private val context: Context,
     @VoiceCoroutineScope voiceScope: CoroutineScope,
-    /** C32: the 60 s are real elapsed time, including device suspension. */
+    /** The 60 s are real elapsed time, including device suspension. */
     elapsedClock: ElapsedClock = ElapsedClock.STOPPED,
     /** A failed proof of carried makes the connection reconnect at once. */
     private val deadSocket: DeadSocketReporter = DeadSocketReporter.NONE,
@@ -388,7 +388,7 @@ class VoiceRepository @Inject constructor(
     /**
      * Joins the voice room of DM call [channelId] (the DM's id), like
      * [joinChannel]. Before every rejoin attempt the session asks [gate]
-     * (C32 "DM calls"). Its end, once set up, is published on [callEnds].
+     * (rejoin of a DM call). Its end, once set up, is published on [callEnds].
      */
     suspend fun joinCall(channelId: String, title: String?, gate: RejoinGate) =
         join(channelId, muted = false, call = CallSession(gate, title))
@@ -511,7 +511,7 @@ class VoiceRepository @Inject constructor(
     }
 
     /**
-     * C32 "signed-in user": ends the call at once, synchronously, before the
+     * Signed-in user: ends the call at once, synchronously, before the
      * account state is cleared ([io.wolftown.kaiku.data.session.SessionEndHook]).
      * From here on no `voice_join` and no new connection; `voice_leave` goes
      * to the peer on its socket; the connections are closed (the microphone
@@ -816,14 +816,14 @@ class VoiceRepository @Inject constructor(
             }
         }
 
-        /** The publisher of the session's current connections is connected (first join, M-10). */
+        /** The publisher of the session's current connections is connected (first join). */
         override suspend fun awaitConnected() {
             val generation = webRtcManager.currentGeneration
             webRtcManager.publisherLink.first { it.connected && it.generation == generation }
         }
 
         /**
-         * C32 "proof of carried" after a gap: the publisher, read from the
+         * Proof of carried after a gap: the publisher, read from the
          * connection, is connected and has not failed, and a fresh inbound
          * frame arrives on [socket] after a ping, within 5 s.
          */
@@ -863,7 +863,7 @@ class VoiceRepository @Inject constructor(
             val job = currentCoroutineContext()[Job]
             val guard = guardFor(session, job)
             if (!isLive(session)) throw SessionEnded()
-            // C32 "DM calls": rejoin only while the call is still on with this user in it.
+            // A DM call rejoins only while the call is still on with this user in it.
             session.call?.let { call ->
                 when (call.gate.mayRejoin(channelId)) {
                     RejoinVerdict.Allowed -> Unit
@@ -886,7 +886,7 @@ class VoiceRepository @Inject constructor(
                     }
                 }
                 connected = own.result.await() == AttemptResult.Connected
-                // The server's new peer knows none of the old one's choices (M-8).
+                // The server's new peer knows none of the old one's choices.
                 if (connected) resendLayerPreferences()
                 return if (connected) VoiceSignalling.Attempt.Connected else VoiceSignalling.Attempt.Failed
             } catch (e: CancellationException) {
@@ -941,7 +941,7 @@ class VoiceRepository @Inject constructor(
 
     /**
      * "Couldn't reconnect" (or "Couldn't connect" for a session that never
-     * connected) with "Rejoin", which restores the user's last mute choice (C32).
+     * connected) with "Rejoin", which restores the user's last mute choice.
      */
     private fun rejoinFailedNotice(session: Session, neverConnected: Boolean = false): VoiceEndNotice =
         VoiceEndNotice.RejoinFailed(session.channelId, _isMuted.value, neverConnected)

@@ -54,15 +54,15 @@ interface CallDirectory {
 }
 
 /**
- * The one owner of DM call state on this device (plan N2b §1): it feeds
- * [CallMachine] from the socket (call events, every `Ready` for the C33
+ * The one owner of DM call state on this device: it feeds
+ * [CallMachine] from the socket (call events, every `Ready` for the call
  * resync), the voice layer (how a call's voice session ended), the signed-in
  * user, the screens and the notification actions, one event at a time
  * through a single actor, and runs the machine's effects. REST calls and the
  * voice join run as their own coroutines and come back as events.
  *
  * It never touches WebRTC: voice goes through [VoiceRepository.joinCall] and
- * [VoiceRepository.leaveChannel], whose owner decides the rest (C32), asking
+ * [VoiceRepository.leaveChannel], whose owner decides the rest, asking
  * [mayRejoin] before each rejoin.
  */
 @Singleton
@@ -79,7 +79,7 @@ class CallController @Inject constructor(
     companion object {
         private val logger = Logger.getLogger("CallController")
 
-        /** The ring cap wakes at least this often to compare the real clock (device sleep, C33). */
+        /** The ring cap wakes at least this often to compare the real clock (device sleep). */
         const val CAP_CHECK_MS = 5_000L
     }
 
@@ -110,7 +110,7 @@ class CallController @Inject constructor(
             voice.callEnds.collect { send(CallEvent.VoiceEnded(it.channelId, it.why)) }
         }
         // Every session that ends (sign-out, expiry, another user): the call is over
-        // (C32 "signed-in user"). A sign-in alone changes nothing.
+        // (signed-in user). A sign-in alone changes nothing.
         scope.launch(start = CoroutineStart.UNDISPATCHED) {
             authState.endedSessions.collect { send(CallEvent.SignedOut) }
         }
@@ -153,7 +153,7 @@ class CallController @Inject constructor(
     }
 
     /**
-     * C32 "signed-in user": runs synchronously before the account state is
+     * Signed-in user: runs synchronously before the account state is
      * cleared. Every ring goes at once; the state follows through the actor.
      * (Voice and the microphone are ended by the voice layer's own hook.)
      */
@@ -163,8 +163,8 @@ class CallController @Inject constructor(
     }
 
     /**
-     * Asked by the voice owner before a rejoin of a call session (C32 "DM
-     * calls"): allowed only if the server still has this user in the call
+     * Asked by the voice owner before a rejoin of a call session: allowed
+     * only if the server still has this user in the call
      * shown here. A request that fails is [RejoinVerdict.Unknown] (the
      * attempt fails and is retried).
      */
@@ -211,7 +211,7 @@ class CallController @Inject constructor(
         }
     }
 
-    /** C33: after every new authenticated socket, ask the server about the call shown here. */
+    /** After every new authenticated socket, ask the server about the call shown here. */
     private fun resync() {
         val channelId = when (val s = _state.value) {
             is CallState.Incoming, is CallState.Outgoing, is CallState.Connecting, is CallState.Connected -> s.channelId
@@ -325,7 +325,7 @@ class CallController @Inject constructor(
         }
     }
 
-    /** C33: the ring ends locally 100 s of real time after it started (device sleep included). */
+    /** The ring ends locally 100 s of real time after it started (device sleep included). */
     private fun armRingCap(channelId: String, startedAtMs: Long) {
         ringCapJob?.cancel()
         ringCapJob = scope.launch {

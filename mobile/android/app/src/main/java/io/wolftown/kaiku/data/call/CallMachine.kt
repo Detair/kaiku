@@ -31,10 +31,10 @@ enum class CallEndReason {
     /** The call was already over when this user answered. */
     Gone,
 
-    /** The connection was lost and could not be recovered (C32 give-up). */
+    /** The connection was lost and could not be recovered (voice gave up). */
     ConnectionLost,
 
-    /** The server removed this user's voice peer (C31); see [CallState.Ended.removed]. */
+    /** The server removed this user's voice peer; see [CallState.Ended.removed]. */
     Removed,
 }
 
@@ -91,13 +91,13 @@ sealed interface VoiceEnd {
     /** The user left voice another way (the voice screen, joining another channel, the notification). */
     data object Left : VoiceEnd
 
-    /** C31: the server removed the peer. */
+    /** The server removed the peer. */
     data class Removed(val reason: VoiceRemovedReason) : VoiceEnd
 
-    /** C32: the session was given up (attempts, 60 s, or it never connected). */
+    /** The session was given up (attempts, 60 s, or it never connected). */
     data object Lost : VoiceEnd
 
-    /** The rejoin gate said the call is over (C32 "DM calls"); its answer is applied as a resync. */
+    /** The rejoin gate said the call is over (rejoin of a DM call); its answer is applied as a resync. */
     data object Refused : VoiceEnd
 }
 
@@ -146,12 +146,12 @@ sealed interface CallEvent {
     /** `call_ended`; [reason] is the wire name. */
     data class ServerEnded(val channelId: String, val callId: String, val reason: String) : CallEvent
 
-    /** The 100 s ring cap of the ring that started at [startedAtMs] (C33). */
+    /** The 100 s ring cap of the ring that started at [startedAtMs]. */
     data class RingCap(val channelId: String, val startedAtMs: Long) : CallEvent
 
     data class VoiceEnded(val channelId: String, val why: VoiceEnd) : CallEvent
 
-    /** C33 resync (or the rejoin gate's look): [answer] null = no call. */
+    /** The call resync (or the rejoin gate's look): [answer] null = no call. */
     data class Resynced(val channelId: String, val answer: CallSnapshot?, val nowMs: Long) : CallEvent
 
     /** Sign-out, session expiry or another signed-in user. */
@@ -212,7 +212,7 @@ data class CallModel(
 data class CallStep(val model: CallModel, val effects: List<CallEffect> = emptyList())
 
 /**
- * The DM call state machine (plan N2b §2), pure: no Android, no coroutines,
+ * The DM call state machine, pure: no Android, no coroutines,
  * no clock of its own. [CallController] owns the one instance of the model and
  * runs the effects.
  */
@@ -220,7 +220,7 @@ object CallMachine {
     /** Ended call ids remembered per DM. */
     const val MAX_ENDED = 5
 
-    /** C33: a ring ends locally this long after it started, whatever the server said. */
+    /** A ring ends locally this long after it started, whatever the server said. */
     const val RING_CAP_MS = 100_000L
 
     /** How long the ended line is shown. */
@@ -235,7 +235,7 @@ object CallMachine {
     }
 
     /**
-     * Whether a call session may rejoin (C32 "DM calls"): the server's call
+     * Whether a call session may rejoin: the server's call
      * is the one shown and still active with this user in it, or still ringing
      * and started by this user.
      */
@@ -437,7 +437,7 @@ object CallMachine {
             when (state) {
                 is CallState.Incoming -> if (matches(e.channelId, state.channelId, state.callId, e.callId)) {
                     if (e.userId == me) {
-                        // Answered on another device of this user (C33).
+                        // Answered on another device of this user.
                         effects += CallEffect.StopRing(state.channelId, state.callId)
                         rememberEnded(state.channelId, state.callId)
                         return to(CallState.Idle)
@@ -532,7 +532,7 @@ object CallMachine {
 
         fun ringCap(e: CallEvent.RingCap): CallStep = when (state) {
             is CallState.Incoming -> if (state.channelId == e.channelId && state.startedAtMs == e.startedAtMs) {
-                // C33: an incoming ring that ends locally counts as missed; nothing is sent.
+                // An incoming ring that ends locally counts as missed; nothing is sent.
                 effects += CallEffect.StopRing(state.channelId, state.callId)
                 effects += CallEffect.Missed(state.channelId, state.callId, state.callerId, state.callerName)
                 rememberEnded(state.channelId, state.callId)
@@ -568,7 +568,7 @@ object CallMachine {
                     endedState(channelId, CallEndReason.ConnectionLost)
                 }
                 is VoiceEnd.Removed -> {
-                    // C31: no rejoin; the call is left on the server too.
+                    // No rejoin; the call is left on the server too.
                     effects += CallEffect.RestLeave(channelId)
                     endedState(channelId, CallEndReason.Removed, why.reason)
                 }
@@ -582,7 +582,7 @@ object CallMachine {
                     if (state.channelId != e.channelId) return same()
                     val sameCall = answer != null && answer.callId == state.callId
                     return when {
-                        // The ring vanished while offline: a missed call (C33).
+                        // The ring vanished while offline: a missed call.
                         !sameCall -> {
                             effects += CallEffect.StopRing(state.channelId, state.callId)
                             effects += CallEffect.Missed(state.channelId, state.callId, state.callerId, state.callerName)
@@ -619,7 +619,7 @@ object CallMachine {
             }
         }
 
-        /** C33: "no call" clears the local state silently. */
+        /** "No call" clears the local state silently. */
         fun silentEnd(channelId: String, callId: String?): CallStep {
             effects += CallEffect.LeaveVoice(channelId)
             rememberEnded(channelId, callId)
