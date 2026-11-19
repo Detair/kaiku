@@ -1412,8 +1412,10 @@ async fn demotion_by_another_process_stops_admin_events(pool: PgPool) {
     admin_events_stopped(&app, &mut ws, admin).await;
 }
 
-/// Each admin event costs an elevated socket one access read; a socket
-/// that was refused costs none.
+/// Each admin event costs an elevated socket an access read; a socket that
+/// was refused costs none. Other tests publish on the same admin channel,
+/// so the elevated socket's count is a lower bound here (the exact one read
+/// per frame is `a_positive_admin_decision_is_never_reused`).
 #[sqlx::test]
 async fn admin_events_cost_one_read_per_elevated_socket(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
@@ -1423,7 +1425,9 @@ async fn admin_events_cost_one_read_per_elevated_socket(pool: PgPool) {
     let token = create_elevated_session(&pool, &app.config, admin).await;
     let mut ws = connect_ready(&server, &token).await;
     send(&mut ws, json!({ "type": "admin_subscribe" })).await;
-    admin_events_arrive(&app, &mut ws, "no admin event").await;
+    // Client frames are handled in order: after the pong the subscription
+    // is recorded, and no publish of this test is still in flight.
+    until_pong(&mut ws).await;
 
     let (other, _) = create_test_user(&pool).await;
     let other_token = generate_access_token(&app.config, other);
@@ -1438,7 +1442,8 @@ async fn admin_events_cost_one_read_per_elevated_socket(pool: PgPool) {
         admin_events_before_control(&app, &mut ws, admin, 3).await,
         3
     );
-    assert_eq!(vc_server::ws::test_hooks::access_reads(admin).0, 3);
+    let reads = vc_server::ws::test_hooks::access_reads(admin).0;
+    assert!(reads >= 3, "{reads} reads for 3 admin events");
     assert_eq!(
         admin_events_before_control(&app, &mut other_ws, other, 3).await,
         0
