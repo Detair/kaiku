@@ -542,6 +542,21 @@ export function abandonRestore(): void {
   setAuthState({ restorePending: false, isInitialized: true, isLoading: false });
 }
 
+/**
+ * A restored session learns whether the server setup is still open (only
+ * sign-in answers carry `setup_required`), so the first admin's setup wizard
+ * comes back after a reload. The answer counts only for the account it was
+ * asked for; without one the wizard stays closed, as before.
+ */
+async function restoreSetupRequired(userId: string): Promise<void> {
+  try {
+    const complete = await tauri.isServerSetupComplete();
+    if (authState.user?.id === userId) setAuthState("setupRequired", !complete);
+  } catch {
+    // Unknown: nothing changes.
+  }
+}
+
 /** One restore attempt; reschedules itself while the server is unreachable. */
 async function attemptRestore(): Promise<void> {
   if (restoreInFlight) return;
@@ -563,6 +578,7 @@ async function attemptRestore(): Promise<void> {
         passwordChangeRequired,
       });
 
+      void restoreSetupRequired(result.user.id);
       if (!passwordChangeRequired) await startSessionServices();
       return;
     }
