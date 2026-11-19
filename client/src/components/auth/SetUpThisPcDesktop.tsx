@@ -93,7 +93,7 @@ export const DesktopCodeStep: Component<PcSetupStepProps> = (props) => {
     <div class="space-y-3">
       <p class="font-semibold">{t("auth.pcSetup.desktop.title")}</p>
       <p>{t("auth.pcSetup.desktop.intro")}</p>
-      <p class="text-sm text-text-secondary">{t("auth.pcSetup.codeWarning")}</p>
+      <p class="text-sm text-text-primary">{t("auth.pcSetup.codeWarning")}</p>
       <Show
         when={running(attemptId)}
         fallback={

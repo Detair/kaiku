@@ -100,7 +100,7 @@ export const WebCodeStep: Component<PcSetupStepProps> = (props) => {
   return (
     <div class="space-y-3">
       <p>{t("auth.pcSetup.codeIntro")}</p>
-      <p class="text-sm text-text-secondary">{t("auth.pcSetup.codeWarning")}</p>
+      <p class="text-sm text-text-primary">{t("auth.pcSetup.codeWarning")}</p>
       <CodeEntry
         length={6}
         value={code()}

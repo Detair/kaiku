@@ -3,8 +3,9 @@
  *
  * Browser: the JSON routes with `navigator.credentials`. Desktop (Tauri):
  * sign-in and step-up run in the system browser through the Rust commands
- * `passkey_sign_in` / `passkey_step_up` (tokens stay in Rust); the desktop
- * app never registers a passkey (B.1).
+ * `passkey_sign_in` / `passkey_step_up` (tokens stay in Rust). The desktop
+ * app registers a passkey only for "Set up this PC" (`passkey_pc_setup`), and
+ * then in the system browser, never in its own window.
  */
 
 import { invoke } from "@tauri-apps/api/core";

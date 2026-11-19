@@ -39,6 +39,7 @@ import { refreshMeSecurity, resetMeSecurity } from "@/stores/security";
 import { HttpError } from "@/lib/tauri/common";
 import { PasskeyError } from "@/lib/tauri/passkeys";
 import type { User } from "@/lib/types";
+import { t } from "@/i18n";
 
 const ID = "00000000-0000-4000-8000-000000000001";
 const status = (state: string, reason: string | null = null, extra: object = {}) => ({
@@ -225,6 +226,8 @@ describe("the PC error table", () => {
     ["expired", "enrollment_expired", "This took too long. Start again?"],
     ["expired", "code_expired", "This took too long. Start again?"],
     ["expired", "session_ended", "This session has ended. Sign in again."],
+    ["expired", "no_key_device", "Your phone can no longer confirm this. Ask your admin."],
+    ["expired", "account_banned", "This account has been suspended. Ask the server admin."],
     ["reported", "reported", "Your phone reported this. Nothing was set up on this computer."],
     ["failed", "too_many_codes", "Too many wrong codes. Start again?"],
     ["cancelled", "restarted", "This was cancelled. Start again?"],
@@ -271,6 +274,13 @@ describe("code and passkey on the web", () => {
     expect(await screen.findByText("That code is wrong. 2 tries left.")).toBeTruthy();
     expect(pc.enterPcSetupCode).toHaveBeenCalledWith(ID, "123456");
     expect(screen.getByLabelText("Code from your phone")).toBeTruthy();
+  });
+
+  it("the last try left is worded in the singular", async () => {
+    await openAt("code");
+    pc.enterPcSetupCode.mockResolvedValue({ state: "code", tries_left: 1 });
+    await typeCode("123456");
+    expect(await screen.findByText("That code is wrong. 1 try left.")).toBeTruthy();
   });
 
   it("the third wrong code ends the attempt", async () => {
@@ -331,7 +341,7 @@ describe("code and passkey on the web", () => {
     pc.startPcSetupPasskey.mockResolvedValue({ ceremony_id: "c1", options: {} });
     createPasskeyCredential.mockRejectedValue(new PasskeyError("PASSKEY_NOT_SUPPORTED"));
     fireEvent.click(await screen.findByRole("button", { name: "Create a passkey" }));
-    expect(await screen.findByRole("alert")).toBeTruthy();
+    expect((await screen.findByRole("alert")).textContent).toBe(t("passkeys.error.notSupported"));
     expect(pc.finishPcSetupPasskey).not.toHaveBeenCalled();
   });
 });
@@ -415,6 +425,13 @@ describe("on the desktop", () => {
     cleanup();
     await Promise.resolve();
     expect(signal?.aborted).toBe(true);
+  });
+
+  it("a refused redeem shows the existing passkey error text", async () => {
+    await openAt("code");
+    setUpThisPcInBrowser.mockRejectedValueOnce(new PasskeyError("PASSKEY_LIMIT"));
+    fireEvent.click(await screen.findByRole("button", { name: "Open the browser" }));
+    expect(await screen.findByText("You already have 10 passkeys. Remove one first.")).toBeTruthy();
   });
 
   it("a flow that failed in state code can be opened again", async () => {

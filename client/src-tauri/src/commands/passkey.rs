@@ -738,6 +738,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pc_setup_redeem_refusals_reach_the_ui_as_their_codes() {
+        for code in ["PASSKEY_LIMIT", "PASSKEY_ALREADY_REGISTERED"] {
+            let f = fixture_with_url(Some(("code", "c-1")), None, pc_setup_url()).await;
+            Mock::given(method("POST"))
+                .and(path("/auth/passkeys/desktop/redeem"))
+                .respond_with(
+                    ResponseTemplate::new(409)
+                        .set_body_json(json!({"error": code, "message": "refused"})),
+                )
+                .mount(&f.server)
+                .await;
+            let m = signed_in_at(&f).await;
+            assert_eq!(pc_setup(&f, &m).await.unwrap_err(), code);
+        }
+    }
+
+    #[tokio::test]
     async fn pc_setup_cancelled_in_the_browser_is_a_bare_code() {
         let f = fixture_with_url(Some(("error", "PASSKEY_CANCELLED")), None, pc_setup_url()).await;
         let m = signed_in_at(&f).await;

@@ -216,6 +216,10 @@ class PcSetupApprovalViewModelTest {
             PcSetupPhoneStatus("expired", "session_ended") to PcSetupUi.Finished(R.string.pc_setup_session_ended, ok = false),
             PcSetupPhoneStatus("expired", "code_expired") to PcSetupUi.Finished(R.string.pc_setup_code_expired, ok = false),
             PcSetupPhoneStatus("cancelled", "cancelled") to PcSetupUi.Finished(R.string.pc_setup_cancelled, ok = false),
+            PcSetupPhoneStatus("expired", "device_revoked") to PcSetupUi.Finished(R.string.pc_setup_failed, ok = false),
+            PcSetupPhoneStatus("expired", "no_key_device") to PcSetupUi.Finished(R.string.pc_setup_failed, ok = false),
+            PcSetupPhoneStatus("expired", "account_banned") to PcSetupUi.Finished(R.string.pc_setup_failed, ok = false),
+            PcSetupPhoneStatus("expired", "may_approve_off") to PcSetupUi.Finished(R.string.scan_may_approve_off, ok = false),
             PcSetupPhoneStatus("enrolled") to PcSetupUi.Entered,
         )
         cases.forEach { (status, expected) ->
