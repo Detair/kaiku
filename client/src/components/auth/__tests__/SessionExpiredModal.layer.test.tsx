@@ -4,7 +4,12 @@ import { Router, Route } from "@solidjs/router";
 import SessionExpiredModal from "../SessionExpiredModal";
 import Modal from "@/components/ui/Modal";
 import { MODAL_LAYER } from "@/lib/a11y/modalLayer";
-import { setAuthState } from "@/stores/auth";
+import { setAuthState, logout } from "@/stores/auth";
+
+vi.mock("@/stores/auth", async (original) => ({
+  ...(await original<typeof import("@/stores/auth")>()),
+  logout: vi.fn(async () => {}),
+}));
 
 afterEach(() => {
   cleanup();
@@ -38,7 +43,7 @@ describe("SessionExpiredModal layer", () => {
     expect(zOf(logIn)).toBeGreaterThan(zOf(earlier));
   });
 
-  it("takes the keyboard from the window below: focus on Log in, Tab stays, Escape changes nothing", async () => {
+  it("takes the keyboard from the window below: focus on Log in, Tab stays, Escape logs in and leaves the window below alone", async () => {
     render(() => (
       <Router>
         <Route path="/" component={SessionExpiredModal} />
@@ -64,9 +69,12 @@ describe("SessionExpiredModal layer", () => {
     fireEvent.keyDown(logIn, { key: "Tab", shiftKey: true });
     expect(document.activeElement).toBe(logIn);
 
+    expect(logout).not.toHaveBeenCalled();
     fireEvent.keyDown(logIn, { key: "Escape" });
+    await new Promise((r) => setTimeout(r, 0));
+    // Escape is Log in here, as before this change; the window below is not asked to close.
+    expect(logout).toHaveBeenCalledTimes(1);
     expect(closeBelow).not.toHaveBeenCalled();
-    expect(logIn.isConnected).toBe(true);
     expect(below.isConnected).toBe(true);
   });
 });

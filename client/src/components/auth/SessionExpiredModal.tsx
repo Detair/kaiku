@@ -31,10 +31,10 @@ const SessionExpiredModal: Component = () => {
     <Show when={authState.sessionExpired}>
       {(_shown) => {
       // Taken when the session ends, so it is in front of every window open
-      // then and has the keyboard: focus on Log in, Tab stays here, Escape
-      // neither closes it nor reaches the window below.
+      // then and has the keyboard: focus on Log in, Tab stays here. Escape
+      // means Log in, as it always did here, and never reaches the window below.
       let logIn: HTMLButtonElement | undefined;
-      const dialog = createDialog({ onClose: () => {}, initialFocus: () => logIn });
+      const dialog = createDialog({ onClose: () => void handleLogin(), initialFocus: () => logIn });
       const layer = createModalLayer(MODAL_LAYER.prompt);
       return (
       <Portal>
