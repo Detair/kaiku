@@ -9,6 +9,7 @@ import {
   Suspense,
 } from "solid-js";
 import { Route } from "@solidjs/router";
+import { lazyWindow } from "@/lib/chunkLoadError";
 
 // Views (eager: first views users see)
 import Login from "./views/Login";
@@ -52,12 +53,12 @@ import type { ReportTarget } from "./components/modals/ReportModal";
 
 // Windows that open on demand or only on a first run: each loads when it
 // first shows, so none of them weighs on the startup payload.
-const SetupWizard = lazy(() => import("./components/SetupWizard"));
-const OnboardingWizard = lazy(() => import("./components/OnboardingWizard"));
-const BlockConfirmModal = lazy(
+const SetupWizard = lazyWindow(() => import("./components/SetupWizard"));
+const OnboardingWizard = lazyWindow(() => import("./components/OnboardingWizard"));
+const BlockConfirmModal = lazyWindow(
   () => import("./components/modals/BlockConfirmModal"),
 );
-const ReportModal = lazy(() => import("./components/modals/ReportModal"));
+const ReportModal = lazyWindow(() => import("./components/modals/ReportModal"));
 
 // Context menu callbacks
 import { onShowBlockConfirm, onShowReport } from "./lib/contextMenuBuilders";

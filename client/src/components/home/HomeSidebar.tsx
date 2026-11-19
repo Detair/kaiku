@@ -4,7 +4,6 @@ import {
   Show,
   createMemo,
   createSignal,
-  lazy,
   onMount,
 } from "solid-js";
 import { t, plural } from "@/i18n";
@@ -19,10 +18,11 @@ import AddFriend from "@/components/social/AddFriend";
 import LazyDialog from "@/components/ui/LazyDialog";
 import { createVirtualizer } from "@/lib/virtualizer";
 import flokiThinking from "@/assets/emotes/floki_emote_2.webp";
+import { lazyWindow } from "@/lib/chunkLoadError";
 
 // Open on demand: each loads with its first use, off the startup payload.
-const NewMessageModal = lazy(() => import("./NewMessageModal"));
-const SearchPanel = lazy(() => import("@/components/search/SearchPanel"));
+const NewMessageModal = lazyWindow(() => import("./NewMessageModal"));
+const SearchPanel = lazyWindow(() => import("@/components/search/SearchPanel"));
 
 const HomeSidebar: Component = () => {
   const [showNewMessage, setShowNewMessage] = createSignal(false);

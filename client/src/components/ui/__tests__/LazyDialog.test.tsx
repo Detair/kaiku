@@ -1,17 +1,43 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@solidjs/testing-library";
 import { Show, Suspense, createSignal, lazy, type Component } from "solid-js";
-import LazyDialog from "../LazyDialog";
+import LazyDialog, { LOADING_DELAY_MS } from "../LazyDialog";
+import Modal from "../Modal";
+import { lazyWindow } from "@/lib/chunkLoadError";
+import { MODAL_LAYER } from "@/lib/a11y/modalLayer";
 
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
   vi.restoreAllMocks();
+  document.body.innerHTML = "";
 });
 
-/** How browsers word a chunk that could not be downloaded (Chromium). */
-const importFailed = () =>
-  new TypeError("Failed to fetch dynamically imported module: /assets/Broken.js");
+const quiet = () => vi.spyOn(console, "error").mockImplementation(() => {});
+
+/** A window whose code cannot be loaded; WebKit's wording matches no pattern. */
+const brokenWindow = () =>
+  lazyWindow<Component>(() =>
+    Promise.reject(new TypeError("'text/html' is not a valid JavaScript MIME type.")),
+  );
+
+const zOf = (el: HTMLElement): number => {
+  for (let n: HTMLElement | null = el; n; n = n.parentElement) {
+    if (n.style.zIndex) return Number(n.style.zIndex);
+  }
+  return 0;
+};
+
+/** A button that opens the window; it has focus when the window is asked for. */
+function opener(): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.textContent = "Open";
+  document.body.appendChild(button);
+  button.focus();
+  return button;
+}
+
+const tick = () => new Promise((r) => setTimeout(r, 0));
 
 describe("LazyDialog", () => {
   it("shows the window once its chunk has loaded", async () => {
@@ -23,7 +49,7 @@ describe("LazyDialog", () => {
         <Loaded />
       </LazyDialog>
     ));
-    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByRole("alertdialog")).toBeNull();
     expect((await screen.findByTestId("window")).textContent).toBe("open");
   });
 
@@ -46,120 +72,179 @@ describe("LazyDialog", () => {
     expect(screen.queryByTestId("page-gone")).toBeNull();
   });
 
-  it("says so with a reload when the chunk cannot load", async () => {
-    vi.spyOn(console, "error").mockImplementation(() => {});
-    const Broken = lazy<Component>(() => Promise.reject(importFailed()));
-    render(() => (
-      <LazyDialog name="Broken">
-        <Broken />
-      </LazyDialog>
-    ));
-    const notice = await screen.findByRole("alert");
-    expect(notice.textContent).toContain("Reload");
-    expect(screen.queryByTestId("window")).toBeNull();
-  });
-
-  it("lets the load-failure notice be closed, and shows it again on the next open", async () => {
-    vi.spyOn(console, "error").mockImplementation(() => {});
-    const Broken = lazy<Component>(() => Promise.reject(importFailed()));
-    const [open, setOpen] = createSignal(true);
-    const onClose = vi.fn(() => setOpen(false));
-    render(() => (
-      <Show when={open()}>
-        <LazyDialog name="Broken" onClose={onClose}>
+  describe("when the window's code cannot be loaded", () => {
+    it("says so in a small dialog with Reload and Close, whatever the browser called the error", async () => {
+      quiet();
+      const Broken = brokenWindow();
+      const { container } = render(() => (
+        <LazyDialog name="Broken" onClose={() => {}}>
           <Broken />
         </LazyDialog>
-      </Show>
-    ));
-    const notice = await screen.findByRole("alert");
-    expect(notice.textContent).toContain("could not be loaded");
-    fireEvent.click(screen.getByRole("button", { name: "Close" }));
-    expect(onClose).toHaveBeenCalledOnce();
-    expect(screen.queryByRole("alert")).toBeNull();
+      ));
+      const dialog = await screen.findByRole("alertdialog");
+      expect(dialog.getAttribute("aria-modal")).toBe("true");
+      expect(dialog.textContent).toContain("could not be loaded");
+      expect(screen.getByRole("button", { name: "Reload" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Close" })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+      // On the page, not inside whatever holds the window (a drawer panel).
+      expect(container.contains(dialog)).toBe(false);
+      await tick();
+      expect(dialog.contains(document.activeElement)).toBe(true);
+    });
 
-    // The same click that opened the window before must not do nothing now.
-    setOpen(true);
-    expect((await screen.findByRole("alert")).textContent).toContain("could not be loaded");
+    it("closes the window on Close, gives focus back, and shows again on the next open", async () => {
+      quiet();
+      const Broken = brokenWindow();
+      const button = opener();
+      const [open, setOpen] = createSignal(true);
+      render(() => (
+        <Show when={open()}>
+          <LazyDialog name="Broken" onClose={() => setOpen(false)}>
+            <Broken />
+          </LazyDialog>
+        </Show>
+      ));
+      await screen.findByRole("alertdialog");
+      await tick();
+      fireEvent.click(screen.getByRole("button", { name: "Close" }));
+      expect(screen.queryByRole("alertdialog")).toBeNull();
+      expect(document.activeElement).toBe(button);
+
+      // The same click that opened the window before must not do nothing now.
+      setOpen(true);
+      expect((await screen.findByRole("alertdialog")).textContent).toContain("could not be loaded");
+    });
+
+    it("closes on Escape like on Close", async () => {
+      quiet();
+      const Broken = brokenWindow();
+      const [open, setOpen] = createSignal(true);
+      render(() => (
+        <Show when={open()}>
+          <LazyDialog name="Broken" onClose={() => setOpen(false)}>
+            <Broken />
+          </LazyDialog>
+        </Show>
+      ));
+      await screen.findByRole("alertdialog");
+      fireEvent.keyDown(document.body, { key: "Escape" });
+      expect(screen.queryByRole("alertdialog")).toBeNull();
+    });
+
+    it("cannot be dismissed into nothing when the window has no close (startup wizards)", async () => {
+      quiet();
+      const Broken = brokenWindow();
+      render(() => (
+        <LazyDialog name="SetupWizard">
+          <Broken />
+        </LazyDialog>
+      ));
+      const dialog = await screen.findByRole("alertdialog");
+      expect(screen.getByRole("button", { name: "Reload" })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Close" })).toBeNull();
+      fireEvent.keyDown(document.body, { key: "Escape" });
+      expect(dialog.isConnected).toBe(true);
+    });
+
+    it("opens in front of a window that is open and holds the keyboard", async () => {
+      quiet();
+      // For example quick actions (Ctrl+K), above the dialog layer.
+      render(() => (
+        <Modal onClose={() => {}} label="Quick actions" layer={MODAL_LAYER.dialog + 30}>
+          <button type="button">inside</button>
+        </Modal>
+      ));
+      const earlier = screen.getByRole("dialog", { name: "Quick actions" });
+      const Broken = brokenWindow();
+      render(() => (
+        <LazyDialog name="Broken" onClose={() => {}}>
+          <Broken />
+        </LazyDialog>
+      ));
+      const dialog = await screen.findByRole("alertdialog");
+      expect(zOf(dialog)).toBeGreaterThan(zOf(earlier));
+      await tick();
+      expect(dialog.contains(document.activeElement)).toBe(true);
+    });
   });
 
-  it("says the window itself failed, not the connection, when it throws while rendering", async () => {
-    vi.spyOn(console, "error").mockImplementation(() => {});
-    let fail = true;
-    const Flaky: Component = () => {
-      if (fail) throw new TypeError("Cannot read properties of undefined (reading 'id')");
-      return <div data-testid="window">open</div>;
-    };
-    const onClose = vi.fn();
-    render(() => (
-      <LazyDialog name="Flaky" onClose={onClose}>
-        <Flaky />
-      </LazyDialog>
-    ));
-    const notice = await screen.findByRole("alert");
-    expect(notice.textContent).toContain("This window ran into a problem");
-    expect(notice.textContent).not.toContain("could not be loaded");
-    expect(screen.queryByRole("button", { name: "Reload" })).toBeNull();
+  describe("when the window fails while rendering", () => {
+    it("says the window had a problem, not the connection, and Try again renders it again", async () => {
+      quiet();
+      let fail = true;
+      const Flaky: Component = () => {
+        if (fail) throw new TypeError("Cannot read properties of undefined (reading 'id')");
+        return <div data-testid="window">open</div>;
+      };
+      render(() => (
+        <LazyDialog name="Flaky" onClose={() => {}}>
+          <Flaky />
+        </LazyDialog>
+      ));
+      const dialog = await screen.findByRole("alertdialog");
+      expect(dialog.textContent).toContain("This window ran into a problem");
+      expect(dialog.textContent).not.toContain("could not be loaded");
+      expect(screen.queryByRole("button", { name: "Reload" })).toBeNull();
 
-    fail = false;
-    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
-    expect((await screen.findByTestId("window")).textContent).toBe("open");
-    expect(screen.queryByRole("alert")).toBeNull();
-    expect(onClose).not.toHaveBeenCalled();
-  });
+      fail = false;
+      fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+      expect((await screen.findByTestId("window")).textContent).toBe("open");
+      expect(screen.queryByRole("alertdialog")).toBeNull();
+    });
 
-  it("closes the window when its error notice is closed", async () => {
-    vi.spyOn(console, "error").mockImplementation(() => {});
-    const Throws: Component = () => {
-      throw new Error("boom");
-    };
-    const onClose = vi.fn();
-    render(() => (
-      <LazyDialog name="Throws" onClose={onClose}>
-        <Throws />
-      </LazyDialog>
-    ));
-    await screen.findByRole("alert");
-    fireEvent.click(screen.getByRole("button", { name: "Close" }));
-    expect(onClose).toHaveBeenCalledOnce();
-  });
-
-  it("hides a closed notice even when the caller has no close handler", async () => {
-    vi.spyOn(console, "error").mockImplementation(() => {});
-    const Broken = lazy<Component>(() => Promise.reject(importFailed()));
-    render(() => (
-      <LazyDialog name="Broken">
-        <Broken />
-      </LazyDialog>
-    ));
-    await screen.findByRole("alert");
-    fireEvent.click(screen.getByRole("button", { name: "Close" }));
-    expect(screen.queryByRole("alert")).toBeNull();
+    it("closes the window and its notice on Close", async () => {
+      quiet();
+      const Throws: Component = () => {
+        throw new Error("boom");
+      };
+      const [open, setOpen] = createSignal(true);
+      render(() => (
+        <Show when={open()}>
+          <LazyDialog name="Throws" onClose={() => setOpen(false)}>
+            <Throws />
+          </LazyDialog>
+        </Show>
+      ));
+      await screen.findByRole("alertdialog");
+      fireEvent.click(screen.getByRole("button", { name: "Close" }));
+      expect(screen.queryByRole("alertdialog")).toBeNull();
+      setOpen(true);
+      expect(await screen.findByRole("alertdialog")).toBeTruthy();
+    });
   });
 
   describe("while the window's code downloads", () => {
     const loadingText = () => screen.queryByRole("status")?.textContent ?? "";
 
-    it("shows a polite loading sign once it takes a moment, and removes it when the window appears", async () => {
+    it("shows a polite loading sign from the delay on, and removes it when the window appears", async () => {
       vi.useFakeTimers();
       let arrive: (m: { default: Component }) => void = () => {};
       const Slow = lazy(() => new Promise<{ default: Component }>((r) => (arrive = r)));
-      render(() => (
+      const { container } = render(() => (
         <LazyDialog name="Slow">
           <Slow />
         </LazyDialog>
       ));
-      await vi.advanceTimersByTimeAsync(200);
+      await vi.advanceTimersByTimeAsync(LOADING_DELAY_MS - 1);
       expect(loadingText()).toBe("");
 
-      await vi.advanceTimersByTimeAsync(300);
+      await vi.advanceTimersByTimeAsync(1);
       const status = screen.getByRole("status");
       expect(status.getAttribute("aria-live")).toBe("polite");
       expect(status.textContent).toMatch(/Loading/);
+      expect(status.className).toContain("pointer-events-none");
+      expect(container.contains(status)).toBe(false);
+      expect(status.querySelector("button, [tabindex]")).toBeNull();
 
       arrive({ default: () => <div data-testid="window">open</div> });
       await vi.advanceTimersByTimeAsync(0);
       expect(screen.getByTestId("window").textContent).toBe("open");
       expect(loadingText()).toBe("");
+    });
+
+    it("waits 350 ms", () => {
+      expect(LOADING_DELAY_MS).toBe(350);
     });
 
     it("shows nothing at all when the code arrives quickly", async () => {
@@ -171,7 +256,9 @@ describe("LazyDialog", () => {
           <Quick />
         </LazyDialog>
       ));
-      await vi.advanceTimersByTimeAsync(100);
+      await vi.advanceTimersByTimeAsync(LOADING_DELAY_MS - 1);
+      expect(screen.queryByTestId("window")).toBeNull();
+      expect(loadingText()).toBe("");
       arrive({ default: () => <div data-testid="window">open</div> });
       await vi.advanceTimersByTimeAsync(1000);
       expect(screen.getByTestId("window")).toBeTruthy();
@@ -180,20 +267,20 @@ describe("LazyDialog", () => {
 
     it("replaces the loading sign with the notice when the download fails", async () => {
       vi.useFakeTimers();
-      vi.spyOn(console, "error").mockImplementation(() => {});
+      quiet();
       let fail: (e: unknown) => void = () => {};
-      const Broken = lazy(() => new Promise<{ default: Component }>((_, r) => (fail = r)));
+      const Broken = lazyWindow(() => new Promise<{ default: Component }>((_, r) => (fail = r)));
       render(() => (
-        <LazyDialog name="Broken">
+        <LazyDialog name="Broken" onClose={() => {}}>
           <Broken />
         </LazyDialog>
       ));
-      await vi.advanceTimersByTimeAsync(500);
+      await vi.advanceTimersByTimeAsync(LOADING_DELAY_MS);
       expect(loadingText()).toMatch(/Loading/);
-      fail(importFailed());
+      fail(new TypeError("Load failed"));
       await vi.advanceTimersByTimeAsync(0);
-      expect(screen.getByRole("alert").textContent).toContain("could not be loaded");
-      expect(loadingText()).toBe("");
+      expect(screen.getByRole("alertdialog").textContent).toContain("could not be loaded");
+      expect(screen.queryByRole("status")).toBeNull();
     });
   });
 });

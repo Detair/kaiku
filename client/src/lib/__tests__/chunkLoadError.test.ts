@@ -1,5 +1,26 @@
 import { describe, expect, it } from "vitest";
-import { isChunkLoadError } from "../chunkLoadError";
+import { ChunkLoadError, isChunkLoadError, loadOrTag } from "../chunkLoadError";
+
+describe("loadOrTag (the loader behind lazyWindow)", () => {
+  it("passes a loaded module through unchanged", async () => {
+    const mod = { default: () => null };
+    await expect(loadOrTag(() => Promise.resolve(mod))()).resolves.toBe(mod);
+  });
+
+  it.each([
+    // WebKit, when the server answers a missing chunk with an HTML page
+    ["'text/html' is not a valid JavaScript MIME type."],
+    // A chunk that downloaded but does not parse
+    ["Unexpected token '<'"],
+    ["anything at all"],
+  ])("tags every failed import as a load failure, whatever its wording: %s", async (message) => {
+    const cause = new TypeError(message);
+    const err = await loadOrTag(() => Promise.reject(cause))().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ChunkLoadError);
+    expect((err as Error).cause).toBe(cause);
+    expect(isChunkLoadError(err)).toBe(true);
+  });
+});
 
 describe("isChunkLoadError", () => {
   it.each([
@@ -11,7 +32,7 @@ describe("isChunkLoadError", () => {
     ["Importing a module script failed."],
     // Vite's preload helper, when a chunk's stylesheet cannot load
     ["Unable to preload CSS for /assets/PinDrawer-abc.css"],
-  ])("recognises a failed download: %s", (message) => {
+  ])("recognises a failed download that did not come through lazyWindow: %s", (message) => {
     expect(isChunkLoadError(new TypeError(message))).toBe(true);
   });
 

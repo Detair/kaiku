@@ -34,9 +34,10 @@ import { ModalFallback, LazyErrorBoundary } from "@/components/ui/LazyFallback";
 import type { CustomStatus } from "@/lib/types";
 import { truncate } from "@/lib/utils";
 import LogoutConfirmDialog from "./LogoutConfirmDialog";
+import { lazyWindow } from "@/lib/chunkLoadError";
 
 const SettingsModal = lazy(() => import("@/components/settings/SettingsModal"));
-const CustomStatusModal = lazy(
+const CustomStatusModal = lazyWindow(
   () => import("@/components/ui/CustomStatusModal"),
 );
 const AdminQuickModal = lazy(

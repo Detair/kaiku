@@ -22,8 +22,7 @@ import {
   createSignal,
   createEffect,
   createMemo,
-  lazy,
-} from "solid-js";
+  } from "solid-js";
 import { Plus, Mic, GripVertical } from "lucide-solid";
 import {
   channelsState,
@@ -66,10 +65,11 @@ import {
   type DraggableType,
 } from "./ChannelDragContext";
 import { t } from "@/i18n";
+import { lazyWindow } from "@/lib/chunkLoadError";
 
 // Open on demand: each loads with its first use, off the startup payload.
-const CreateChannelModal = lazy(() => import("./CreateChannelModal"));
-const ChannelSettingsModal = lazy(() => import("./ChannelSettingsModal"));
+const CreateChannelModal = lazyWindow(() => import("./CreateChannelModal"));
+const ChannelSettingsModal = lazyWindow(() => import("./ChannelSettingsModal"));
 
 interface ChannelListProps {
   /** Called after a navigation action (e.g. channel selected). Used to close the mobile drawer. */

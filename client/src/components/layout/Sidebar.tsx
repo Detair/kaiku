@@ -43,13 +43,14 @@ import VoicePanel from "@/components/voice/VoicePanel";
 import { ModalFallback, LazyErrorBoundary } from "@/components/ui/LazyFallback";
 import type { PageListItem } from "@/lib/types";
 import { APP_NAME } from "@/lib/brand";
+import { lazyWindow } from "@/lib/chunkLoadError";
 
 const GuildSettingsModal = lazy(
   () => import("@/components/guilds/GuildSettingsModal"),
 );
 const EventsModal = lazy(() => import("@/components/guilds/EventsModal"));
 // Opens on demand: loads with the first search.
-const SearchPanel = lazy(() => import("@/components/search/SearchPanel"));
+const SearchPanel = lazyWindow(() => import("@/components/search/SearchPanel"));
 
 interface SidebarProps {
   /** Called after a navigation action (e.g. channel selected). Used by AppShell to close the mobile drawer. */
