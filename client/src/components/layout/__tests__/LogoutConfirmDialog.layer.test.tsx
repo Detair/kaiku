@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render, screen } from "@solidjs/testing-library";
 import LogoutConfirmDialog from "../LogoutConfirmDialog";
-import { createModalLayer, MODAL_LAYER } from "@/lib/a11y/modalLayer";
+import Modal from "@/components/ui/Modal";
+import { MODAL_LAYER } from "@/lib/a11y/modalLayer";
 
 afterEach(cleanup);
 
@@ -15,13 +16,16 @@ const zOf = (el: HTMLElement): number => {
 describe("LogoutConfirmDialog layer", () => {
   it("opens in front of a prompt that is already open (a confirmation is a prompt)", async () => {
     // For example the full-screen open-request prompt, on the prompt layer.
-    render(() => {
-      const layer = createModalLayer(MODAL_LAYER.prompt);
-      return <div data-testid="earlier" style={{ "z-index": layer }} />;
-    });
+    render(() => (
+      <Modal onClose={() => {}} label="Earlier window" layer={MODAL_LAYER.prompt}>
+        <button type="button">inside</button>
+      </Modal>
+    ));
+    const earlier = screen.getByRole("dialog", { name: "Earlier window" });
     render(() => <LogoutConfirmDialog onConfirm={() => {}} onCancel={() => {}} />);
     await Promise.resolve();
-    const earlier = Number(screen.getByTestId("earlier").style.zIndex);
-    expect(zOf(screen.getByRole("dialog"))).toBeGreaterThan(earlier);
+    const later = screen.getAllByRole("dialog").find((d) => d !== earlier)!;
+    expect(zOf(earlier)).toBeGreaterThanOrEqual(MODAL_LAYER.prompt);
+    expect(zOf(later)).toBeGreaterThan(zOf(earlier));
   });
 });

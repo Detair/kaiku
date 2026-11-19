@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@solidjs/testing-library";
+
 vi.mock("@/stores/dms", () => ({ openDirectMessage: vi.fn() }));
 vi.mock("@/stores/friends", () => ({
   friendsState: { friends: [], blocked: [] },
@@ -13,7 +14,8 @@ vi.mock("@/stores/guilds", () => ({
 vi.mock("@/stores/auth", () => ({ currentUser: () => ({ id: "me" }) }));
 
 import NewMessageModal from "../NewMessageModal";
-import { createModalLayer, MODAL_LAYER } from "@/lib/a11y/modalLayer";
+import Modal from "@/components/ui/Modal";
+import { MODAL_LAYER } from "@/lib/a11y/modalLayer";
 
 afterEach(cleanup);
 
@@ -27,13 +29,16 @@ const zOf = (el: HTMLElement): number => {
 describe("NewMessageModal layer", () => {
   it("opens in front of a window that is already open (it takes the keyboard)", async () => {
     // For example the first-run tour, which sits on the dialog layer.
-    render(() => {
-      const layer = createModalLayer(MODAL_LAYER.dialog);
-      return <div data-testid="earlier" style={{ "z-index": layer }} />;
-    });
+    render(() => (
+      <Modal onClose={() => {}} label="Earlier window" layer={MODAL_LAYER.dialog}>
+        <button type="button">inside</button>
+      </Modal>
+    ));
+    const earlier = screen.getByRole("dialog", { name: "Earlier window" });
     render(() => <NewMessageModal onClose={() => {}} />);
     await Promise.resolve();
-    const earlier = Number(screen.getByTestId("earlier").style.zIndex);
-    expect(zOf(screen.getByRole("dialog"))).toBeGreaterThan(earlier);
+    const later = screen.getAllByRole("dialog").find((d) => d !== earlier)!;
+    expect(zOf(earlier)).toBeGreaterThanOrEqual(MODAL_LAYER.dialog);
+    expect(zOf(later)).toBeGreaterThan(zOf(earlier));
   });
 });
