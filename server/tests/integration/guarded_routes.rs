@@ -649,7 +649,8 @@ async fn probation_admin_cannot_subscribe_to_admin_events(pool: PgPool) {
     )
     .await
     .unwrap();
-    assert!(!subscribed.admin_subscribed());
+    // Refused: requested (like a refused channel), but nothing allowed.
+    assert!(!subscribed.admin_allowed());
     match tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
         .await
         .unwrap()

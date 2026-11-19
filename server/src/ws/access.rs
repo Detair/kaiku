@@ -41,7 +41,7 @@
 //! | `ChannelBound` (a bot's answer to the user's command, from the user's own feed) | as `Channel`; for a channel that was never requested: one read at epochs that must still hold afterwards | [`SocketAccess::admit_bound`] |
 //! | `Guild` (a server's own feed, an event reminder) | user scope + that server's scope | [`SocketAccess::admit_guild`]: member |
 //! | `Voice` (everything of a voice room) | the voice scope: user epoch + the room's server epoch as of the join check | [`SocketAccess::admit_voice`]: the socket owns the peer and voice access holds |
-//! | `Admin` | the admin scope: user epoch | [`SocketAccess::admit_admin`]: subscribed, and the session is an elevated admin's |
+//! | `Admin` | the admin scope: user epoch | [`SocketAccess::admit_admin`]: requested (until `admin_unsubscribe`), and the session is an elevated admin's |
 //!
 //! There are four kinds of scope — the **user**, each **server**, the
 //! **voice room**, the **admin stream** — and one state machine for all of
@@ -746,9 +746,11 @@ impl VoiceScope {
     }
 }
 
-/// The socket's subscription to the admin event stream (present while the
-/// client is subscribed): whether its session is an elevated system admin's,
-/// as read at user epoch `seen`.
+/// The socket's request for the admin event stream (present from
+/// `admin_subscribe` until `admin_unsubscribe` or the socket's end, like a
+/// requested channel): whether its session is an elevated system admin's,
+/// as read at user epoch `seen`. A "not elevated" answer only clears
+/// `allowed`; the next elevation bumps the epoch and restores delivery.
 struct AdminScope {
     seen: u64,
     state: ScopeState,
@@ -1556,23 +1558,24 @@ impl SocketAccess {
 
     /// Record an `admin_subscribe` decision taken at user epoch `epoch`.
     /// Returns `false` (and changes nothing) if the epoch moved since: the
-    /// caller checks again. Allowed: subscribed; refused: not subscribed.
+    /// caller checks again. Either way the stream stays requested (like a
+    /// refused `subscribe`): a later elevation restores it.
     pub fn commit_admin(&self, epoch: u64, allowed: bool) -> bool {
         let mut inner = self.lock();
         if self.user_epoch.load(Ordering::SeqCst) != epoch {
             return false;
         }
-        inner.admin = allowed.then_some(AdminScope {
+        inner.admin = Some(AdminScope {
             seen: epoch,
             state: ScopeState::Checked,
-            allowed: true,
+            allowed,
         });
         true
     }
 
     /// Record an `admin_subscribe` without a decision (the check failed, or
-    /// the epoch kept moving): subscribed, nothing allowed yet, and the
-    /// scope is revalidated; a read that says "not elevated" ends it.
+    /// the epoch kept moving): requested, nothing allowed yet, and the
+    /// scope is revalidated.
     pub fn record_admin_unchecked(&self) {
         let mut inner = self.lock();
         inner.invalidations += 1;
@@ -1590,10 +1593,16 @@ impl SocketAccess {
         self.lock().admin = None;
     }
 
-    /// Whether the socket is subscribed to admin events (allowed or still
-    /// to be decided).
+    /// Whether the socket has requested admin events (allowed, refused or
+    /// still to be decided): until the client unsubscribes.
     pub fn admin_subscribed(&self) -> bool {
         self.lock().admin.is_some()
+    }
+
+    /// Whether the requested admin stream is allowed as last computed. Not
+    /// the delivery decision: that is [`Self::admit_admin`].
+    pub fn admin_allowed(&self) -> bool {
+        self.lock().admin.as_ref().is_some_and(|a| a.allowed)
     }
 
     /// Revalidate every scope that is not current — all of them after a user
@@ -1821,8 +1830,8 @@ impl SocketAccess {
     /// epochs that were read before the read are still that scope's epochs.
     /// Whatever a moved epoch touches is left exactly as it was (stale or
     /// failing) and read again: nothing is decided, and nothing that cannot
-    /// be undone (forgetting a deleted channel, ending the admin
-    /// subscription, asking for a voice peer's removal) is done, on an
+    /// be undone (forgetting a deleted channel, asking for a voice peer's
+    /// removal) is done, on an
     /// answer that is no longer the current one.
     fn apply(&self, plan: &Plan, found: ReadResult) {
         let mut guard = self.lock();
@@ -1918,19 +1927,18 @@ impl SocketAccess {
             }
         }
         if let Some(ok) = found.admin_ok {
+            // Like a channel: "not elevated" makes the requested stream not
+            // allowed, it does not forget the request, so the next
+            // elevation (an epoch bump) restores delivery.
             if let Some(admin) = inner.admin.as_mut() {
                 resync |= admin.state.settle(fresh);
                 if fresh {
                     admin.seen = plan.user_now;
                 }
+                if admin.allowed != ok {
+                    debug!(user_id = %self.user_id, elevated = ok, "Admin events revalidated");
+                }
                 admin.allowed = ok;
-            }
-            // Only a read that answered "not elevated" at the epoch that
-            // still holds ends the subscription; a failed read never does,
-            // and neither does an answer an epoch has moved past (above).
-            if !ok {
-                inner.admin = None;
-                debug!(user_id = %self.user_id, "Admin events ended (no longer elevated)");
             }
         }
         // Servers without requested channels or feed events need no scope.
@@ -2541,7 +2549,10 @@ mod tests {
 
     /// One frame through the decision loop with scripted reads. Returns the
     /// way it left as text, or panics if it left in a way that must not
-    /// exist.
+    /// exist. Then access comes back (invariant C): the epoch moves again
+    /// (re-elevation, role restored) and a read at it says yes — whatever
+    /// the first frame's fate, the next one must be delivered, without a
+    /// client action.
     async fn one_decision(
         kind: Kind,
         bump_guild: bool,
@@ -2648,35 +2659,55 @@ mod tests {
             .and_then(|s| s.last_served);
         let standing = |answer: bool| matches!(last, Some(ScriptStep { bump: false, outcome: Some(a) }) if a == answer);
         let case = format!("{kind:?} bump_guild={bump_guild:?} {start:?} {steps:?} then={then}");
-        if admitted {
+        let exit = 'exit: {
+            if admitted {
+                assert!(
+                    current && allowed,
+                    "admitted without current authorization: {case}"
+                );
+                assert!(
+                    last.is_none() || standing(true),
+                    "admitted on an answer that does not stand: {case}"
+                );
+                break 'exit "admitted";
+            }
             assert!(
-                current && allowed,
-                "admitted without current authorization: {case}"
+                !(current && allowed),
+                "refused although allowed at the current epoch: {case}"
+            );
+            if recorded {
+                break 'exit "undecided, recorded";
+            }
+            // Refused without a record: only a "no" that still stands may do
+            // that — not a subscription that an outdated "no" took away.
+            assert!(
+                standing(false),
+                "dropped, not denied by a standing answer, not recorded: {case}"
             );
             assert!(
-                last.is_none() || standing(true),
-                "admitted on an answer that does not stand: {case}"
+                !subscribed || (current && !allowed),
+                "denied, but the state does not say so: {case}"
             );
-            return "admitted";
+            "denied"
+        };
+
+        // Access comes back: past any backoff, the epoch moves and the read
+        // at the new epoch says yes. Nothing the client asked for may have
+        // been forgotten on the way (a "no" is not an unsubscribe).
+        tokio::time::advance(RETRY_MAX + Duration::from_millis(1)).await;
+        match bump_guild {
+            Some(g) => registry().bump_guild(g),
+            None => registry().bump_user(u),
         }
-        assert!(
-            !(current && allowed),
-            "refused although allowed at the current epoch: {case}"
-        );
-        if recorded {
-            return "undecided, recorded";
-        }
-        // Refused without a record: only a "no" that still stands may do
-        // that — not a subscription that an outdated "no" took away.
-        assert!(
-            standing(false),
-            "dropped, not denied by a standing answer, not recorded: {case}"
-        );
-        assert!(
-            !subscribed || (current && !allowed),
-            "denied, but the state does not say so: {case}"
-        );
-        "denied"
+        install(&access, &[], true, bump_guild);
+        let restored = match kind {
+            Kind::GuildChannel | Kind::Direct => access.admit(c).await,
+            Kind::Feed => access.admit_guild(g).await,
+            Kind::Voice => access.admit_voice(Some(&peer)).await,
+            Kind::Admin => access.admit_admin().await,
+        };
+        assert!(restored, "access came back, delivery did not: {case}");
+        exit
     }
 
     /// Every way through the decision loop: all sequences of read outcomes
@@ -2816,8 +2847,8 @@ mod tests {
     /// "elevated" while a de-elevation commits and bumps does not admit the
     /// frame (the epoch is compared after the read); a read that fails is
     /// not a "no": the subscription stays, the drop is recorded and the
-    /// recovery asks for a resync; only a read that says "not elevated" ends
-    /// the subscription.
+    /// recovery asks for a resync; a read that says "not elevated" makes the
+    /// stream not allowed but keeps the request.
     #[tokio::test(start_paused = true)]
     async fn the_admin_stream_is_a_scope() {
         let u = Uuid::new_v4();
@@ -2850,8 +2881,12 @@ mod tests {
         install(&access, &[yes_while_bumped], false, None);
         assert!(access.may_forward_admin(), "stale: the writer decides");
         assert!(!access.admit_admin().await, "admitted on an obsolete epoch");
-        assert!(!access.admin_subscribed(), "a read said: not elevated");
+        assert!(access.admin_subscribed(), "a \"no\" is not an unsubscribe");
+        assert!(!access.admin_allowed(), "a read said: not elevated");
+        assert!(!access.may_forward_admin(), "current and not allowed");
         assert!(!dropped(&access));
+        access.unsubscribe_admin();
+        assert!(!access.admin_subscribed());
 
         // A failed read is not a denial.
         let access = SocketAccess::new(u, lazy_pool());
@@ -2878,6 +2913,45 @@ mod tests {
         let access = SocketAccess::new(u, lazy_pool());
         access.record_admin_unchecked();
         assert!(access.admin_subscribed() && access.is_stale());
+        install(&access, &[], true, None);
+        assert!(access.admit_admin().await);
+    }
+
+    /// Subscribe, de-elevate, a revalidation completes ("not elevated" at
+    /// the epoch that still holds), re-elevate, revalidate: the feed is
+    /// delivered again without a new `admin_subscribe` (invariant C). A
+    /// refused `admin_subscribe` stays requested the same way.
+    #[tokio::test(start_paused = true)]
+    async fn the_admin_feed_comes_back_after_a_completed_de_elevation() {
+        let u = Uuid::new_v4();
+        let access = SocketAccess::new(u, lazy_pool());
+        assert!(access.commit_admin(access.user_epoch_now(), true));
+        assert!(access.admit_admin().await);
+
+        // De-elevation commits and bumps; the revalidation completes.
+        registry().bump_user(u);
+        install(&access, &[], false, None);
+        assert!(access.refresh().await.is_ok());
+        assert!(!access.is_stale(), "the \"no\" is current");
+        assert!(!access.may_forward_admin());
+        assert!(!access.admit_admin().await);
+        assert!(access.admin_subscribed());
+
+        // Re-elevation commits and bumps; the revalidation says "elevated".
+        registry().bump_user(u);
+        assert!(access.is_stale(), "the request is revalidated");
+        install(&access, &[], true, None);
+        assert!(access.refresh().await.is_ok());
+        assert!(access.may_forward_admin());
+        assert!(access.admit_admin().await, "the feed did not come back");
+        assert!(!access.take_resync(), "nothing was dropped undecided");
+
+        // Refused at subscribe time, elevated afterwards.
+        let access = SocketAccess::new(u, lazy_pool());
+        assert!(access.commit_admin(access.user_epoch_now(), false));
+        assert!(access.admin_subscribed() && !access.admin_allowed());
+        assert!(!access.admit_admin().await);
+        registry().bump_user(u);
         install(&access, &[], true, None);
         assert!(access.admit_admin().await);
     }

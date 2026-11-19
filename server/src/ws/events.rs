@@ -1180,8 +1180,8 @@ pub enum OutboundMsg {
         channel_id: Uuid,
         event: ServerEvent,
     },
-    /// An admin event: written only while the socket's admin subscription
-    /// holds at the current access epoch.
+    /// An admin event: written only while the socket requests admin events
+    /// and its session is elevated at the current access epoch.
     Admin(ServerEvent),
     Ping,
     /// Send a Close frame with this code and reason, then stop the sender task.

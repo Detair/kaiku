@@ -260,8 +260,9 @@ pub async fn elevate_session(
     )
     .await?;
     // Gaining the elevation moves the admin's access epoch like losing it
-    // does: a re-check that read "not elevated" just before is discarded
-    // instead of ending the admin event subscription of this session.
+    // does: a re-check that read "not elevated" just before is discarded,
+    // and a socket that still requests admin events reads again and gets
+    // them back.
     let ((), bumped) = crate::ws::access::bump_after(
         crate::ws::access::AccessChange::AdminAccessChanged {
             user_id: admin.user_id,
