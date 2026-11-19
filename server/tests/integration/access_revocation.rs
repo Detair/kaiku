@@ -1225,18 +1225,69 @@ async fn admin_events_arrive(app: &TestApp, ws: &mut WsClient, why: &str) {
     }
 }
 
-/// Publishes one admin event after the change, then a ping: its pong comes
-/// after that event if it was going to be written, so it must not come
-/// before. (Events published before the change may still arrive.)
-async fn admin_events_stopped(app: &TestApp, ws: &mut WsClient) {
-    let (event, name) = admin_event();
-    vc_server::ws::broadcast_admin_event(&app.state.redis, &event)
+/// Publishes `n` marked admin events, then a marked control frame on the
+/// user's own feed (`channel_read`, always written). Both go through the
+/// same Valkey connection, forwarder and writer in publish order, so an
+/// admin event that is going to be written arrives before the control
+/// frame. Returns how many of the `n` arrived before it; fails if the
+/// control frame does not arrive.
+async fn admin_events_before_control(
+    app: &TestApp,
+    ws: &mut WsClient,
+    user: Uuid,
+    n: usize,
+) -> usize {
+    use futures::StreamExt;
+    let mut names = Vec::new();
+    for _ in 0..n {
+        let (event, name) = admin_event();
+        names.push(name);
+        vc_server::ws::broadcast_admin_event(&app.state.redis, &event)
+            .await
+            .expect("publish");
+    }
+    let control = Uuid::new_v4();
+    vc_server::ws::broadcast_to_user(
+        &app.state.redis,
+        user,
+        &ServerEvent::ChannelRead {
+            channel_id: control,
+            last_read_message_id: None,
+        },
+    )
+    .await
+    .expect("publish control");
+    let read = async {
+        let mut arrived = 0;
+        loop {
+            match ws.next().await {
+                Some(Ok(Message::Text(text))) => {
+                    let v: Value = serde_json::from_str(&text).unwrap();
+                    if v["type"] == "admin_user_unbanned"
+                        && names.iter().any(|n| v["username"] == n.as_str())
+                    {
+                        arrived += 1;
+                    }
+                    if v["type"] == "channel_read" && v["channel_id"] == control.to_string() {
+                        return arrived;
+                    }
+                }
+                Some(Ok(_)) => {}
+                other => panic!("socket ended: {other:?}"),
+            }
+        }
+    };
+    tokio::time::timeout(EVENT_TIMEOUT, read)
         .await
-        .expect("publish");
-    send(ws, json!({ "type": "ping" })).await;
-    assert!(
-        !admin_event_among(ws, &[name], Some("pong"), EVENT_TIMEOUT).await,
-        "admin event after de-elevation"
+        .expect("the control frame did not arrive")
+}
+
+/// An admin event published after the change is not written.
+async fn admin_events_stopped(app: &TestApp, ws: &mut WsClient, user: Uuid) {
+    assert_eq!(
+        admin_events_before_control(app, ws, user, 1).await,
+        0,
+        "admin event after the elevation ended"
     );
 }
 
@@ -1264,7 +1315,7 @@ async fn trigger_de_elevation_stops_admin_events(pool: PgPool) {
     admin_events_arrive(&app, &mut ws, "no admin event").await;
 
     de_elevate(&server, &token).await;
-    admin_events_stopped(&app, &mut ws).await;
+    admin_events_stopped(&app, &mut ws, admin).await;
 }
 
 /// The socket keeps its admin subscription through a de-elevation whose
@@ -1295,15 +1346,104 @@ async fn re_elevation_restores_admin_events(pool: PgPool) {
     admin_events_arrive(&app, &mut ws, "no admin event").await;
 
     de_elevate(&server, &token).await;
-    admin_events_stopped(&app, &mut ws).await;
+    admin_events_stopped(&app, &mut ws, admin).await;
     // Let the re-check that the de-elevation woke complete ("not
     // elevated" at the epoch that holds): an idle socket revalidates
     // within 250 ms of a bump.
     tokio::time::sleep(Duration::from_secs(1)).await;
-    admin_events_stopped(&app, &mut ws).await;
+    admin_events_stopped(&app, &mut ws, admin).await;
 
     elevate().await;
     admin_events_arrive(&app, &mut ws, "admin events did not come back").await;
+}
+
+/// An elevation that expires (no request, no epoch moving) stops admin
+/// events with the next event, not with the next periodic check.
+#[sqlx::test]
+async fn expired_elevation_stops_admin_events(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let server = spawn_test_server(app.router.clone()).await;
+    let (admin, _) = create_test_user(&pool).await;
+    make_admin(&pool, admin).await;
+    let token = create_elevated_session(&pool, &app.config, admin).await;
+    let mut ws = connect_ready(&server, &token).await;
+    send(&mut ws, json!({ "type": "admin_subscribe" })).await;
+    admin_events_arrive(&app, &mut ws, "no admin event").await;
+
+    sqlx::query(
+        "UPDATE elevated_sessions
+            SET elevated_at = NOW() - INTERVAL '20 minutes',
+                expires_at = NOW() - INTERVAL '5 minutes'
+          WHERE user_id = $1",
+    )
+    .bind(admin)
+    .execute(&pool)
+    .await
+    .unwrap();
+    admin_events_stopped(&app, &mut ws, admin).await;
+}
+
+/// A demotion committed by another process (the admin CLI deletes the
+/// role and the elevations; this process's epochs do not move) stops admin
+/// events with the next event.
+#[sqlx::test]
+async fn demotion_by_another_process_stops_admin_events(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let server = spawn_test_server(app.router.clone()).await;
+    let (admin, _) = create_test_user(&pool).await;
+    make_admin(&pool, admin).await;
+    let token = create_elevated_session(&pool, &app.config, admin).await;
+    let mut ws = connect_ready(&server, &token).await;
+    send(&mut ws, json!({ "type": "admin_subscribe" })).await;
+    admin_events_arrive(&app, &mut ws, "no admin event").await;
+
+    let mut tx = pool.begin().await.unwrap();
+    for statement in [
+        "DELETE FROM system_admins WHERE user_id = $1",
+        "DELETE FROM elevated_sessions WHERE user_id = $1",
+    ] {
+        sqlx::query(statement)
+            .bind(admin)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+    }
+    tx.commit().await.unwrap();
+    admin_events_stopped(&app, &mut ws, admin).await;
+}
+
+/// Each admin event costs an elevated socket one access read; a socket
+/// that was refused costs none.
+#[sqlx::test]
+async fn admin_events_cost_one_read_per_elevated_socket(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let server = spawn_test_server(app.router.clone()).await;
+    let (admin, _) = create_test_user(&pool).await;
+    make_admin(&pool, admin).await;
+    let token = create_elevated_session(&pool, &app.config, admin).await;
+    let mut ws = connect_ready(&server, &token).await;
+    send(&mut ws, json!({ "type": "admin_subscribe" })).await;
+    admin_events_arrive(&app, &mut ws, "no admin event").await;
+
+    let (other, _) = create_test_user(&pool).await;
+    let other_token = generate_access_token(&app.config, other);
+    let mut other_ws = connect_ready(&server, &other_token).await;
+    send(&mut other_ws, json!({ "type": "admin_subscribe" })).await;
+    let refused = next_ws_event(&mut other_ws, "error", EVENT_TIMEOUT).await;
+    assert_eq!(refused["code"], "ADMIN_NOT_ELEVATED");
+
+    vc_server::ws::test_hooks::count_access_reads(admin);
+    vc_server::ws::test_hooks::count_access_reads(other);
+    assert_eq!(
+        admin_events_before_control(&app, &mut ws, admin, 3).await,
+        3
+    );
+    assert_eq!(vc_server::ws::test_hooks::access_reads(admin).0, 3);
+    assert_eq!(
+        admin_events_before_control(&app, &mut other_ws, other, 3).await,
+        0
+    );
+    assert_eq!(vc_server::ws::test_hooks::access_reads(other), (0, 0));
 }
 
 /// A voice join whose permission check passed, then the role that
