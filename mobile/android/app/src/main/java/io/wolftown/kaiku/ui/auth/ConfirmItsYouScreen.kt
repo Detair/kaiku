@@ -23,6 +23,7 @@ import io.wolftown.kaiku.ui.shared.KeyPrimaryButton
 import io.wolftown.kaiku.ui.shared.KeyScreen
 import io.wolftown.kaiku.ui.shared.KeySecondaryButton
 import io.wolftown.kaiku.ui.shared.KeyTitle
+import io.wolftown.kaiku.ui.shared.SecureScreen
 import io.wolftown.kaiku.ui.shared.currentFragmentActivity
 
 /**
@@ -38,6 +39,8 @@ fun ConfirmItsYouScreen(
     onLater: (() -> Unit)? = null,
     viewModel: ConfirmItsYouViewModel = hiltViewModel(),
 ) {
+    // Like every key screen: no screenshots, no recents thumbnail, no overlay taps.
+    SecureScreen()
     val ui by viewModel.ui.collectAsState()
     val activity = currentFragmentActivity()
     var askRemove by remember { mutableStateOf(false) }
