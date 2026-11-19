@@ -679,4 +679,6 @@
     <string name="setup_leave_body">The code on this screen goes away. If it is not typed in yet, the person setting up Kaiku has to start again.</string>
     <string name="setup_leave_stay">Keep waiting</string>
     <string name="setup_leave_stop">Stop setup</string>
+    <string name="auth_login_set_up_phone_hint">New here? Use the setup code or link you got from your admin.</string>
+    <string name="auth_login_already_set_up">Already set up? Sign in</string>
 </resources>

@@ -117,7 +117,33 @@ fun LoginScreen(
 
         Spacer(modifier = Modifier.height(32.dp))
 
-        // Passkeys first (F1).
+        // C37: a phone that is not a key yet (key phones never reach this screen: they confirm with
+        // their screen lock or wait for their setup) starts with the setup code a new member gets.
+        Button(
+            onClick = onSetUpPhone,
+            modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
+            enabled = !busy
+        ) {
+            Text(stringResource(R.string.auth_login_set_up_phone))
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = stringResource(R.string.auth_login_set_up_phone_hint),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        Spacer(modifier = Modifier.height(24.dp))
+        HorizontalDivider()
+        Spacer(modifier = Modifier.height(16.dp))
+        Text(
+            text = stringResource(R.string.auth_login_already_set_up),
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onBackground
+        )
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Passkeys first among the sign-ins (F1).
         // Off while a password, QR or SSO sign-in runs, and those are off while it runs (`busy`).
         PasskeySignInButton(viewModel = viewModel, busy = uiState.passkeyLoading, enabled = !uiState.isLoading && !attempt.busy)
         uiState.passkeyErrorRes?.let { res ->
@@ -237,9 +263,6 @@ fun LoginScreen(
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        TextButton(onClick = onSetUpPhone, enabled = !busy) {
-            Text(stringResource(R.string.auth_login_set_up_phone))
-        }
         TextButton(onClick = { viewModel.serverPageUrl("/recover")?.let { openPage(context, it) } }) {
             Text(stringResource(R.string.auth_login_lost_phone))
         }
