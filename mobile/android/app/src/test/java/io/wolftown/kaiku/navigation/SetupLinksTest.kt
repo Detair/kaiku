@@ -63,7 +63,7 @@ class SetupLinksTest {
     }
 
     @Test fun `both link forms give the same setup and are checked the same way`() {
-        // C20: the verified https App Link and the kaiku:// fallback reach the same SetupEntry, so the
+        // The verified https App Link and the kaiku:// fallback reach the same SetupEntry, so the
         // setup flow applies the same origin pin and the same "Set up on {server}?" question to both.
         val cases = listOf(
             "https://chat.example.com" to "https://chat.example.com",

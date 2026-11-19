@@ -38,7 +38,7 @@ sealed interface DeviceSignInResult {
     data class Failed(val code: String) : DeviceSignInResult
 }
 
-/** Why the phone signs in with its key; the screen-lock prompt says it (F1, F4). */
+/** Why the phone signs in with its key; the screen-lock prompt says it. */
 enum class SignInPurpose {
     /** "Confirm it's you" after a lapse. */
     SIGN_IN,
@@ -129,7 +129,7 @@ class DeviceSignIn @Inject constructor(
                     }
                 }
                 "ACCOUNT_BANNED" -> DeviceSignInResult.Banned
-                // A prompt left open past the challenge's 120 s (F2): nothing changed, a retry asks anew.
+                // A prompt left open past the challenge's 120 s: nothing changed, a retry asks anew.
                 "APPROVAL_EXPIRED" -> DeviceSignInResult.Expired
                 else -> DeviceSignInResult.Failed(e.normalizedCode ?: "HTTP_${e.status.value}")
             }

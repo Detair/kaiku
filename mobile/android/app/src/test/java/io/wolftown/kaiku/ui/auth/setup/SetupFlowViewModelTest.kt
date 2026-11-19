@@ -576,7 +576,7 @@ class SetupFlowViewModelTest {
     }
 
     @Test fun `stopping while the code is shown keeps the claim and says what happens`() = runTest {
-        // AND-A-2: leaving at the code is explicit; a code typed in anyway still finishes at the next start.
+        // Leaving at the code is explicit; a code typed in anyway still finishes at the next start.
         env.pinned = SigFixtures.ORIGIN
         val (v, f) = vm()
         v.start(entry)
@@ -626,7 +626,7 @@ class SetupFlowViewModelTest {
     }
 
     @Test fun `a setup link on a phone whose key the admin removed forgets the key and goes on`() = runTest {
-        // F5: the server no longer knows the key, so "already your key" would be wrong.
+        // The server no longer knows the key, so "already your key" would be wrong.
         approval.failWith = apiError(403, "KEY_DEVICE_REVOKED")
         val (v, f) = lapsedKeyVm()
         v.start(entry)
@@ -790,7 +790,7 @@ class SetupFlowViewModelTest {
     }
 
     @Test fun `the final sign-in after a slow prompt offers a fresh try`() = runTest {
-        // F2: the challenge ran out while the prompt was open.
+        // The challenge ran out while the prompt was open.
         env.pinned = SigFixtures.ORIGIN
         enroll.statuses += ClaimStatus(EnrollmentState.DONE, "active")
         val (v, _) = vm()

@@ -120,7 +120,7 @@ class SecuritySettingsViewModel internal constructor(
         }
     }
 
-    /** "Try again" after a failed load (AND-A-10): the screen shows only the spinner until it is known. */
+    /** "Try again" after a failed load: the screen shows only the spinner until it is known. */
     fun reload() {
         _ui.update { it.copy(loading = true, message = null) }
         load()

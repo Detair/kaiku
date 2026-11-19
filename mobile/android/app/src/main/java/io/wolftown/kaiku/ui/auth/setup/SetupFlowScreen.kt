@@ -169,7 +169,7 @@ internal fun SetupStatus(ui: SetupUi, onSignIn: () -> Unit, onRetry: (() -> Unit
         }
         SetupUi.SigningIn, SetupUi.Done -> Progress(stringResource(R.string.setup_signing_in))
         SetupUi.SignInPaused -> {
-            // AND-A-11: the button alone did not say what is left to do.
+            // The button alone did not say what is left to do.
             KeyBody(stringResource(R.string.setup_sign_in_paused))
             KeyPrimaryButton(stringResource(R.string.setup_sign_in_again), onClick = onSignIn)
         }

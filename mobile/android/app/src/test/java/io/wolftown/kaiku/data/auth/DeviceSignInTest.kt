@@ -184,7 +184,7 @@ class DeviceSignInTest {
     }
 
     @Test fun `a challenge that ran out during a slow prompt says so and keeps the key`() = runTest {
-        // F2: the device_login challenge lives 120 s; a prompt left open longer is answered 410.
+        // The device_login challenge lives 120 s; a prompt left open longer is answered 410.
         val (signIn, repo) = setUp()
         api.deviceLoginFailure = apiError(410, "APPROVAL_EXPIRED")
         assertEquals(DeviceSignInResult.Expired, signIn.signIn(activity))
@@ -196,7 +196,7 @@ class DeviceSignInTest {
     }
 
     @Test fun `the prompt says what the sign-in is for`() = runTest {
-        // F1, F4: the screen-lock prompt names its purpose.
+        // The screen-lock prompt names its purpose.
         io.mockk.every { activity.getString(io.wolftown.kaiku.R.string.security_uv_sign_in) } returns "sign in"
         io.mockk.every { activity.getString(io.wolftown.kaiku.R.string.security_uv_after_setup) } returns "after setup"
         io.mockk.every { activity.getString(io.wolftown.kaiku.R.string.security_uv_after_setup_detail) } returns "after setup detail"

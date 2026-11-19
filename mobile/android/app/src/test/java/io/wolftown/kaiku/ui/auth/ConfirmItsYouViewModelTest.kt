@@ -86,7 +86,7 @@ class ConfirmItsYouViewModelTest {
     }
 
     @Test fun `the only key of the account is kept and the reason is shown`() = runTest {
-        // F3: the server refuses to remove the last strong authenticator (409 LAST_STRONG_AUTHENTICATOR).
+        // The server refuses to remove the last strong authenticator (409 LAST_STRONG_AUTHENTICATOR).
         val f = KeyDeviceFixture(backgroundScope)
         f.authState.setLoggedOut()
         val v = ConfirmItsYouViewModel(deviceSignIn, f.repo, signOut, SessionEndLog(), probe)
@@ -177,7 +177,7 @@ class ConfirmItsYouViewModelTest {
     }
 
     @Test fun `a key the admin removed is noticed on open and the phone is no key any more`() = runTest {
-        // F5: no tap needed; the text says what happened and OK leads to the sign-in for a new setup.
+        // No tap needed; the text says what happened and OK leads to the sign-in for a new setup.
         coEvery { probe.probe(any(), any()) } returns io.wolftown.kaiku.data.keydevice.ServerKeyState.Gone
         val v = lapsed()
         assertTrue(v.ui.value.keyGone)

@@ -117,7 +117,7 @@ fun LoginScreen(
 
         Spacer(modifier = Modifier.height(32.dp))
 
-        // C37: a phone that is not a key yet (key phones never reach this screen: they confirm with
+        // A phone that is not a key yet (key phones never reach this screen: they confirm with
         // their screen lock or wait for their setup) starts with the setup code a new member gets.
         Button(
             onClick = onSetUpPhone,
@@ -143,7 +143,7 @@ fun LoginScreen(
         )
         Spacer(modifier = Modifier.height(16.dp))
 
-        // Passkeys first among the sign-ins (F1).
+        // Passkeys first among the sign-ins.
         // Off while a password, QR or SSO sign-in runs, and those are off while it runs (`busy`).
         PasskeySignInButton(viewModel = viewModel, busy = uiState.passkeyLoading, enabled = !uiState.isLoading && !attempt.busy)
         uiState.passkeyErrorRes?.let { res ->

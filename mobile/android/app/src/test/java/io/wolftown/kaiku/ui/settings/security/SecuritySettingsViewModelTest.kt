@@ -203,7 +203,7 @@ class SecuritySettingsViewModelTest {
     }
 
     @Test fun `a failed load shows only the error, and trying again loads`() = runTest {
-        // AND-A-10: no false "not your key" / "0 codes" while nothing is known.
+        // No false "not your key" / "0 codes" while nothing is known.
         security.meFailure = java.io.IOException("offline")
         val v = vm()
         v.load()

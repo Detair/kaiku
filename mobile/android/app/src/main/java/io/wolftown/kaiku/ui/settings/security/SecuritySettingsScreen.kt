@@ -97,7 +97,7 @@ fun SecuritySettingsScreen(
             if (ui.showsReadOnlyNotice) KeyNotice(stringResource(R.string.security_probation_read_only), warning = false)
             ui.message?.let { KeyNotice(stringResource(it), warning = true) }
 
-            // AND-A-10: nothing is shown as fact before it is loaded (no "not your key", no "0 codes").
+            // Nothing is shown as fact before it is loaded (no "not your key", no "0 codes").
             if (ui.me == null) {
                 if (ui.loading) {
                     CircularProgressIndicator(Modifier.padding(vertical = 24.dp).align(Alignment.CenterHorizontally))

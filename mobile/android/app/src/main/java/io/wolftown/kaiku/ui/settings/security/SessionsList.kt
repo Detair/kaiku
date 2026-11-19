@@ -23,7 +23,7 @@ import io.wolftown.kaiku.ui.auth.setup.parseInstant
 import io.wolftown.kaiku.ui.auth.setup.readyText
 import io.wolftown.kaiku.ui.shared.KeyScreenSizes
 
-/** A session without a device name is named by its kind of client (AND-A-14), never by the raw server value. */
+/** A session without a device name is named by its kind of client, never by the raw server value. */
 @androidx.annotation.StringRes
 internal fun clientClassText(clientClass: String): Int = when (clientClass) {
     "desktop" -> R.string.approval_client_desktop
