@@ -18,8 +18,11 @@ import java.util.UUID
 import java.util.logging.Logger
 import kotlin.coroutines.resume
 
-/** The UV prompt: title "Confirm it's you" (or a screen's own), subtitle = what is being confirmed. */
-data class UvPrompt(@StringRes val title: Int, val subtitle: String)
+/**
+ * The UV prompt: title "Confirm it's you" (or a screen's own), subtitle = what is being confirmed,
+ * [description] = an optional sentence more (for example why a second prompt follows).
+ */
+data class UvPrompt(@StringRes val title: Int, val subtitle: String, val description: String? = null)
 
 sealed interface UvResult {
     class Signed(val der: ByteArray) : UvResult
@@ -102,6 +105,7 @@ class BiometricUserVerifier(private val keyStore: ApprovalKeyStore) : UserVerifi
         val info = BiometricPrompt.PromptInfo.Builder()
             .setTitle(activity.getString(prompt.title))
             .setSubtitle(prompt.subtitle)
+            .apply { prompt.description?.let(::setDescription) }
             .setConfirmationRequired(true)
             .apply {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -164,7 +168,8 @@ class BiometricUserVerifier(private val keyStore: ApprovalKeyStore) : UserVerifi
         val keyguard = activity.getSystemService(KeyguardManager::class.java)
         @Suppress("DEPRECATION")
         // No intent means no secure screen lock any more: Android has invalidated the key (B.1).
-        val intent = keyguard?.createConfirmDeviceCredentialIntent(activity.getString(prompt.title), prompt.subtitle)
+        val text = listOfNotNull(prompt.subtitle, prompt.description).joinToString("\n")
+        val intent = keyguard?.createConfirmDeviceCredentialIntent(activity.getString(prompt.title), text)
             ?: return UvResult.KeyInvalidated
         return suspendCancellableCoroutine { cont ->
             val key = "kaiku_uv_" + UUID.randomUUID()

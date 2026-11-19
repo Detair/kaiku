@@ -28,6 +28,7 @@ import io.wolftown.kaiku.data.api.LongPoll
 import io.wolftown.kaiku.data.auth.DeviceSignIn
 import io.wolftown.kaiku.data.auth.DeviceSignInResult
 import io.wolftown.kaiku.data.auth.OriginPin
+import io.wolftown.kaiku.data.auth.SignInPurpose
 import io.wolftown.kaiku.data.keydevice.KeyDevicePhase
 import io.wolftown.kaiku.data.keydevice.KeyDeviceProbe
 import io.wolftown.kaiku.data.keydevice.KeyDeviceRepository
@@ -76,6 +77,8 @@ sealed interface SetupUi {
     data object SigningIn : SetupUi
     /** The UV prompt of the final sign-in was cancelled: one button to try again. */
     data object SignInPaused : SetupUi
+    /** The final sign-in's prompt stayed open past its challenge (F2): say so, one button for a fresh one. */
+    data object SignInTimedOut : SetupUi
     data object Done : SetupUi
     /**
      * The setup screen came back without its setup code (process death; the code is
@@ -244,7 +247,8 @@ class SetupFlowViewModel internal constructor(
         val pinned = env.pinnedOrigin()
         if (pinned != null && pinned != o) return end(R.string.setup_other_server)
         when (keyDevices.current()) {
-            is KeyDeviceState.Active, is KeyDeviceState.Lapsed -> return end(R.string.setup_already_key)
+            is KeyDeviceState.Active -> return end(R.string.setup_already_key)
+            is KeyDeviceState.Lapsed -> return startOnLapsedKey(e)
             is KeyDeviceState.Pending -> return end(R.string.setup_already_pending)
             KeyDeviceState.None -> Unit
         }
@@ -253,21 +257,41 @@ class SetupFlowViewModel internal constructor(
             return
         }
         _ui.value = SetupUi.Opening
+        step { open(e, pinned) }
+    }
+
+    /**
+     * F5: a signed-out key phone may have lost its key on the server (an admin removed it). The key's
+     * own server decides (the public device-login probe): only a key it does not know, or knows as
+     * removed, is forgotten and the setup goes on; anything else keeps the key ("already your key").
+     */
+    private fun startOnLapsedKey(e: SetupEntry) {
+        val local = keyDevices.local() ?: return end(R.string.setup_already_key)
+        _ui.value = SetupUi.Opening
         step {
-            try {
-                val open = enrollmentApi.open(e.tokenB64u, origin)
-                serverName = open.serverName
-                nonce = Base64.getUrlDecoder().decode(open.enrollmentNonce)
-                if (pinned == null && e.source != SetupEntry.Source.TICKET) {
-                    _ui.value = SetupUi.ConfirmServer(open.serverName, hostOf(o))
-                } else {
-                    checkSuitability()
-                }
-            } catch (c: CancellationException) {
-                throw c
-            } catch (x: Exception) {
-                fail(x)
+            if (probe.probe(local.userId, local.origin) != ServerKeyState.Gone) return@step end(R.string.setup_already_key)
+            keyDevices.forget()
+            // The pin came from the key; without it an unconfigured app confirms the server first.
+            val pinned = env.pinnedOrigin()
+            if (pinned != null && pinned != origin) return@step end(R.string.setup_other_server)
+            open(e, pinned)
+        }
+    }
+
+    private suspend fun open(e: SetupEntry, pinned: String?) {
+        try {
+            val open = enrollmentApi.open(e.tokenB64u, origin)
+            serverName = open.serverName
+            nonce = Base64.getUrlDecoder().decode(open.enrollmentNonce)
+            if (pinned == null && e.source != SetupEntry.Source.TICKET) {
+                _ui.value = SetupUi.ConfirmServer(open.serverName, hostOf(origin))
+            } else {
+                checkSuitability()
             }
+        } catch (c: CancellationException) {
+            throw c
+        } catch (x: Exception) {
+            fail(x)
         }
     }
 
@@ -575,15 +599,17 @@ class SetupFlowViewModel internal constructor(
     /** The final device-key sign-in (full session, B.4). */
     fun signIn(activity: FragmentActivity) {
         val now = _ui.value
-        if ((now != SetupUi.SigningIn && now != SetupUi.SignInPaused) || signingIn) return
+        if ((now != SetupUi.SigningIn && now != SetupUi.SignInPaused && now != SetupUi.SignInTimedOut) || signingIn) return
         signingIn = true
         _ui.value = SetupUi.SigningIn
         viewModelScope.launch {
-            val r = deviceSignIn.signIn(activity)
+            // Its own fresh challenge, so a second screen-lock prompt; its text says why (F1).
+            val r = deviceSignIn.signIn(activity, SignInPurpose.AFTER_SETUP)
             signingIn = false
             _ui.value = when (r) {
                 DeviceSignInResult.Success -> SetupUi.Done
                 DeviceSignInResult.Cancelled -> SetupUi.SignInPaused
+                DeviceSignInResult.Expired -> SetupUi.SignInTimedOut
                 is DeviceSignInResult.Pending -> SetupUi.Pending(r.readyAt)
                 else -> SetupUi.Ended(signInResultText(r) ?: R.string.setup_failed_generic, canRetry = false)
             }

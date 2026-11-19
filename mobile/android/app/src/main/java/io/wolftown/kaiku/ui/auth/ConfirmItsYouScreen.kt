@@ -65,7 +65,7 @@ fun ConfirmItsYouScreen(
         } else {
             KeyPrimaryButton(
                 text = stringResource(R.string.security_confirm_button),
-                onClick = { activity?.let(viewModel::confirm) },
+                onClick = { activity?.let { viewModel.confirm(it, stayingSignedIn = renewal) } },
                 working = ui.working,
             )
             if (renewal && onLater != null) {

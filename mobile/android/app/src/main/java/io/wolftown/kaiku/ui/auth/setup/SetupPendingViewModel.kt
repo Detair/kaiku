@@ -65,7 +65,7 @@ class SetupPendingViewModel @Inject constructor(
         val local = keyDevices.local() ?: return
         val now = _ui.value
         // A paused sign-in waits for its button: a resume after the cancelled prompt never re-prompts.
-        if (now == SetupUi.SigningIn || now == SetupUi.SignInPaused || now == SetupUi.Done ||
+        if (now == SetupUi.SigningIn || now == SetupUi.SignInPaused || now == SetupUi.SignInTimedOut || now == SetupUi.Done ||
             (now is SetupUi.Ended && !now.canRetry)
         ) return
         if (checking) return
@@ -147,7 +147,7 @@ class SetupPendingViewModel @Inject constructor(
 
     fun signIn(activity: FragmentActivity) {
         val now = _ui.value
-        if ((now != SetupUi.SigningIn && now != SetupUi.SignInPaused) || signingIn) return
+        if ((now != SetupUi.SigningIn && now != SetupUi.SignInPaused && now != SetupUi.SignInTimedOut) || signingIn) return
         signingIn = true
         _ui.value = SetupUi.SigningIn
         viewModelScope.launch {
@@ -156,6 +156,7 @@ class SetupPendingViewModel @Inject constructor(
             _ui.value = when (r) {
                 DeviceSignInResult.Success -> SetupUi.Done
                 DeviceSignInResult.Cancelled -> SetupUi.SignInPaused
+                DeviceSignInResult.Expired -> SetupUi.SignInTimedOut
                 is DeviceSignInResult.Pending -> SetupUi.Pending(r.readyAt)
                 else -> SetupUi.Ended(signInResultText(r) ?: R.string.setup_failed_generic, canRetry = false)
             }

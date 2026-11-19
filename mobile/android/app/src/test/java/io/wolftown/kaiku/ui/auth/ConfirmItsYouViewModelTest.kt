@@ -32,6 +32,9 @@ class ConfirmItsYouViewModelTest {
     private val activity: FragmentActivity = mockk(relaxed = true)
     private val deviceSignIn: DeviceSignIn = mockk()
     private val signOut: KeyDeviceSignOut = mockk(relaxed = true)
+    private val probe: io.wolftown.kaiku.data.keydevice.KeyDeviceProbe = mockk {
+        coEvery { probe(any(), any()) } returns io.wolftown.kaiku.data.keydevice.ServerKeyState.Active
+    }
 
     @Before fun setUp() = Dispatchers.setMain(UnconfinedTestDispatcher())
     @After fun tearDown() = Dispatchers.resetMain()
@@ -39,12 +42,12 @@ class ConfirmItsYouViewModelTest {
     private fun TestScope.lapsed(): ConfirmItsYouViewModel {
         val f = KeyDeviceFixture(backgroundScope)
         f.authState.setLoggedOut() // an active key without its session: lapsed
-        return ConfirmItsYouViewModel(deviceSignIn, f.repo, signOut, SessionEndLog())
+        return ConfirmItsYouViewModel(deviceSignIn, f.repo, signOut, SessionEndLog(), probe)
     }
 
     @Test fun `a removal that did not happen signs the temporary session out again`() = runTest {
         val v = lapsed()
-        coEvery { deviceSignIn.signIn(activity) } returns DeviceSignInResult.Success
+        coEvery { deviceSignIn.signIn(activity, any()) } returns DeviceSignInResult.Success
         coEvery { signOut.signOutAndRemovePhone(activity) } returns StepUpOutcome.Cancelled
         v.removeThisPhone(activity)
         coVerify(exactly = 1) { signOut.signOut() }
@@ -53,7 +56,7 @@ class ConfirmItsYouViewModelTest {
 
     @Test fun `an invalidated key during the removal says so and offers OK`() = runTest {
         val v = lapsed()
-        coEvery { deviceSignIn.signIn(activity) } returns DeviceSignInResult.Success
+        coEvery { deviceSignIn.signIn(activity, any()) } returns DeviceSignInResult.Success
         coEvery { signOut.signOutAndRemovePhone(activity) } returns StepUpOutcome.Failed("KEY_INVALIDATED")
         v.removeThisPhone(activity)
         assertTrue(v.ui.value.keyGone)
@@ -64,7 +67,7 @@ class ConfirmItsYouViewModelTest {
     @Test fun `a pending key during the removal shows when it is ready`() = runTest {
         val v = lapsed()
         val at = Instant.parse("2026-11-05T08:00:00Z")
-        coEvery { deviceSignIn.signIn(activity) } returns DeviceSignInResult.Pending(at)
+        coEvery { deviceSignIn.signIn(activity, any()) } returns DeviceSignInResult.Pending(at)
         v.removeThisPhone(activity)
         assertEquals(ConfirmDone.PENDING, v.ui.value.done)
         assertEquals(at, v.ui.value.readyAt)
@@ -73,7 +76,7 @@ class ConfirmItsYouViewModelTest {
 
     @Test fun `a completed removal signs out for good`() = runTest {
         val v = lapsed()
-        coEvery { deviceSignIn.signIn(activity) } returns DeviceSignInResult.Success
+        coEvery { deviceSignIn.signIn(activity, any()) } returns DeviceSignInResult.Success
         coEvery { signOut.signOutAndRemovePhone(activity) } returns
             StepUpOutcome.Granted(io.wolftown.kaiku.domain.model.StepUpGrant("key_device.remove", "kd1", "device", "t"))
         v.removeThisPhone(activity)
@@ -85,8 +88,8 @@ class ConfirmItsYouViewModelTest {
         // F3: the server refuses to remove the last strong authenticator (409 LAST_STRONG_AUTHENTICATOR).
         val f = KeyDeviceFixture(backgroundScope)
         f.authState.setLoggedOut()
-        val v = ConfirmItsYouViewModel(deviceSignIn, f.repo, signOut, SessionEndLog())
-        coEvery { deviceSignIn.signIn(activity) } returns DeviceSignInResult.Success
+        val v = ConfirmItsYouViewModel(deviceSignIn, f.repo, signOut, SessionEndLog(), probe)
+        coEvery { deviceSignIn.signIn(activity, any()) } returns DeviceSignInResult.Success
         coEvery { signOut.signOutAndRemovePhone(activity) } returns StepUpOutcome.Failed("LAST_STRONG_AUTHENTICATOR")
         v.removeThisPhone(activity)
         // The session made only for the removal ends; the phone stays the key ("Sign out" state).
@@ -101,13 +104,61 @@ class ConfirmItsYouViewModelTest {
     @Test fun `the only key reason is also shown when the phone was already signed in`() = runTest {
         val f = KeyDeviceFixture(backgroundScope)
         f.authState.setLoggedOut()
-        val v = ConfirmItsYouViewModel(deviceSignIn, f.repo, signOut, SessionEndLog())
-        coEvery { deviceSignIn.signIn(activity) } returns DeviceSignInResult.Success
+        val v = ConfirmItsYouViewModel(deviceSignIn, f.repo, signOut, SessionEndLog(), probe)
+        coEvery { deviceSignIn.signIn(activity, any()) } returns DeviceSignInResult.Success
         coEvery { signOut.signOutAndRemovePhone(activity) } returns StepUpOutcome.Failed("LAST_STRONG_AUTHENTICATOR")
         v.removeThisPhone(activity)
         coEvery { signOut.signOutAndRemovePhone(activity) } returns StepUpOutcome.Cancelled
         v.removeThisPhone(activity)
         // A later attempt clears the old reason.
         assertNull(v.ui.value.error)
+    }
+
+    @Test fun `a key the admin removed is noticed on open and the phone is no key any more`() = runTest {
+        // F5: no tap needed; the text says what happened and OK leads to the sign-in for a new setup.
+        coEvery { probe.probe(any(), any()) } returns io.wolftown.kaiku.data.keydevice.ServerKeyState.Gone
+        val v = lapsed()
+        assertTrue(v.ui.value.keyGone)
+        assertEquals(R.string.security_device_revoked, v.ui.value.error)
+        assertNull(v.ui.value.done)
+        v.acknowledgeKeyGone()
+        assertEquals(ConfirmDone.SIGNED_OUT, v.ui.value.done)
+    }
+
+    @Test fun `the probe forgets the key only when the server says it is gone`() = runTest {
+        for (st in listOf(
+            io.wolftown.kaiku.data.keydevice.ServerKeyState.Active,
+            io.wolftown.kaiku.data.keydevice.ServerKeyState.Unknown,
+            io.wolftown.kaiku.data.keydevice.ServerKeyState.Pending(Instant.parse("2026-11-20T08:00:00Z")),
+        )) {
+            coEvery { probe.probe(any(), any()) } returns st
+            val f = KeyDeviceFixture(backgroundScope)
+            f.authState.setLoggedOut()
+            val v = ConfirmItsYouViewModel(deviceSignIn, f.repo, signOut, SessionEndLog(), probe)
+            assertEquals(false, v.ui.value.keyGone)
+            org.junit.Assert.assertNotNull(st.toString(), f.repo.local())
+        }
+        coVerify { probe.probe(io.wolftown.kaiku.testutil.SigFixtures.USER_ID, io.wolftown.kaiku.testutil.SigFixtures.ORIGIN) }
+    }
+
+    @Test fun `a signed-in phone is not probed`() = runTest {
+        val f = KeyDeviceFixture(backgroundScope) // signed in: the renewal screen
+        ConfirmItsYouViewModel(deviceSignIn, f.repo, signOut, SessionEndLog(), probe)
+        coVerify(exactly = 0) { probe.probe(any(), any()) }
+    }
+
+    @Test fun `prompts name their purpose and a slow prompt says so`() = runTest {
+        val v = lapsed()
+        coEvery { deviceSignIn.signIn(activity, any()) } returns DeviceSignInResult.Expired
+        v.confirm(activity)
+        coVerify { deviceSignIn.signIn(activity, io.wolftown.kaiku.data.auth.SignInPurpose.SIGN_IN) }
+        assertEquals(R.string.security_took_too_long, v.ui.value.error)
+        v.confirm(activity, stayingSignedIn = true)
+        coVerify { deviceSignIn.signIn(activity, io.wolftown.kaiku.data.auth.SignInPurpose.STAY_SIGNED_IN) }
+        coEvery { signOut.signOutAndRemovePhone(activity) } returns StepUpOutcome.Failed("APPROVAL_EXPIRED")
+        coEvery { deviceSignIn.signIn(activity, any()) } returns DeviceSignInResult.Success
+        v.removeThisPhone(activity)
+        coVerify { deviceSignIn.signIn(activity, io.wolftown.kaiku.data.auth.SignInPurpose.FOR_REMOVAL) }
+        assertEquals(R.string.security_took_too_long, v.ui.value.error)
     }
 }

@@ -681,4 +681,11 @@
     <string name="setup_leave_stop">Stop setup</string>
     <string name="auth_login_set_up_phone_hint">New here? Use the setup code or link you got from your admin.</string>
     <string name="auth_login_already_set_up">Already set up? Sign in</string>
+    <string name="security_uv_after_setup">Sign in with your new key</string>
+    <string name="security_uv_after_setup_detail">This phone is now your Kaiku key. Confirm once more to sign in with it.</string>
+    <string name="security_uv_for_removal">Unlock your key to remove this phone</string>
+    <string name="security_uv_for_removal_detail">Next you confirm once more to remove this phone as your key.</string>
+    <string name="security_uv_stay_signed_in">Stay signed in to Kaiku</string>
+    <string name="security_took_too_long">That took too long, so Kaiku stopped waiting. Nothing was changed. Try again.</string>
+    <string name="setup_sign_in_paused">Almost done. Confirm with your screen lock to sign in with your new key.</string>
 </resources>

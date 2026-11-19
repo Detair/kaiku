@@ -31,8 +31,30 @@ sealed interface DeviceSignInResult {
     /** Android invalidated the key (screen lock removed): reported if possible, forgotten. */
     data object KeyInvalidated : DeviceSignInResult
     data object Banned : DeviceSignInResult
+    /** The server's challenge ran out while the prompt was open (`APPROVAL_EXPIRED`); trying again starts a new one. */
+    data object Expired : DeviceSignInResult
     data object Network : DeviceSignInResult
     data class Failed(val code: String) : DeviceSignInResult
+}
+
+/** Why the phone signs in with its key; the screen-lock prompt says it (F1, F4). */
+enum class SignInPurpose {
+    /** "Confirm it's you" after a lapse. */
+    SIGN_IN,
+    /** The last step of a setup: its own fresh challenge, so a second prompt (C26 `device_login`). */
+    AFTER_SETUP,
+    /** "Use another account": a session first, then the removal's own confirmation. */
+    FOR_REMOVAL,
+    /** The renewal before the 90-day cap. */
+    STAY_SIGNED_IN,
+}
+
+/** The prompt's subtitle and optional description for [purpose]. */
+internal fun signInPromptText(purpose: SignInPurpose): Pair<Int, Int?> = when (purpose) {
+    SignInPurpose.SIGN_IN -> R.string.security_uv_sign_in to null
+    SignInPurpose.AFTER_SETUP -> R.string.security_uv_after_setup to R.string.security_uv_after_setup_detail
+    SignInPurpose.FOR_REMOVAL -> R.string.security_uv_for_removal to R.string.security_uv_for_removal_detail
+    SignInPurpose.STAY_SIGNED_IN -> R.string.security_uv_stay_signed_in to null
 }
 
 /**
@@ -51,7 +73,7 @@ class DeviceSignIn @Inject constructor(
         val logger: Logger = Logger.getLogger("DeviceSignIn")
     }
 
-    suspend fun signIn(activity: FragmentActivity): DeviceSignInResult {
+    suspend fun signIn(activity: FragmentActivity, purpose: SignInPurpose = SignInPurpose.SIGN_IN): DeviceSignInResult {
         val local = keyDevices.local() ?: return DeviceSignInResult.Failed("NO_KEY_DEVICE")
         // Captured before anything is sent: a logout, a server change or another session meanwhile
         // means the answer is not installed (and is ended on the server).
@@ -68,9 +90,10 @@ class DeviceSignIn @Inject constructor(
             if ((verified.context as? DeviceLoginContext)?.clientClass != ClientClass.ANDROID) {
                 return DeviceSignInResult.Failed("CHALLENGE_CONTEXT_MISMATCH")
             }
+            val (subtitle, detail) = signInPromptText(purpose)
             val out = signer.sign(
                 activity, ch, SigKind.DEVICE_LOGIN, local.userId, deviceId, Decision.APPROVE, ByteArray(0),
-                UvPrompt(R.string.security_uv_title, activity.getString(R.string.security_uv_sign_in)),
+                UvPrompt(R.string.security_uv_title, activity.getString(subtitle), detail?.let(activity::getString)),
             )
             when (out) {
                 is SignOutcome.Rejected -> DeviceSignInResult.Failed("CHALLENGE_${out.reason}")
@@ -104,6 +127,8 @@ class DeviceSignIn @Inject constructor(
                     }
                 }
                 "ACCOUNT_BANNED" -> DeviceSignInResult.Banned
+                // A prompt left open past the challenge's 120 s (F2): nothing changed, a retry asks anew.
+                "APPROVAL_EXPIRED" -> DeviceSignInResult.Expired
                 else -> DeviceSignInResult.Failed(e.normalizedCode ?: "HTTP_${e.status.value}")
             }
         } catch (_: IOException) {

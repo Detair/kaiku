@@ -171,4 +171,40 @@ class DeviceSignInTest {
 
         assertEquals(KeyDeviceState.Lapsed(SigFixtures.USER_ID), repo.current())
     }
+
+    @Test fun `a challenge that ran out during a slow prompt says so and keeps the key`() = runTest {
+        // F2: the device_login challenge lives 120 s; a prompt left open longer is answered 410.
+        val (signIn, repo) = setUp()
+        api.deviceLoginFailure = apiError(410, "APPROVAL_EXPIRED")
+        assertEquals(DeviceSignInResult.Expired, signIn.signIn(activity))
+        assertTrue(repo.local() != null)
+        // Trying again asks the server for a fresh challenge.
+        api.deviceLoginFailure = null
+        assertEquals(DeviceSignInResult.Success, signIn.signIn(activity))
+        assertEquals(2, api.calls.count { it.startsWith("deviceLoginChallenge:") })
+    }
+
+    @Test fun `the prompt says what the sign-in is for`() = runTest {
+        // F1, F4: the screen-lock prompt names its purpose.
+        io.mockk.every { activity.getString(io.wolftown.kaiku.R.string.security_uv_sign_in) } returns "sign in"
+        io.mockk.every { activity.getString(io.wolftown.kaiku.R.string.security_uv_after_setup) } returns "after setup"
+        io.mockk.every { activity.getString(io.wolftown.kaiku.R.string.security_uv_after_setup_detail) } returns "after setup detail"
+        io.mockk.every { activity.getString(io.wolftown.kaiku.R.string.security_uv_for_removal) } returns "for removal"
+        io.mockk.every { activity.getString(io.wolftown.kaiku.R.string.security_uv_for_removal_detail) } returns "for removal detail"
+        io.mockk.every { activity.getString(io.wolftown.kaiku.R.string.security_uv_stay_signed_in) } returns "stay"
+        val expected = mapOf(
+            SignInPurpose.SIGN_IN to ("sign in" to null),
+            SignInPurpose.AFTER_SETUP to ("after setup" to "after setup detail"),
+            SignInPurpose.FOR_REMOVAL to ("for removal" to "for removal detail"),
+            SignInPurpose.STAY_SIGNED_IN to ("stay" to null),
+        )
+        for ((purpose, text) in expected) {
+            val (signIn, _) = setUp()
+            assertEquals(DeviceSignInResult.Success, signIn.signIn(activity, purpose))
+            val prompt = verifier!!.prompts.single()
+            assertEquals(io.wolftown.kaiku.R.string.security_uv_title, prompt.title)
+            assertEquals(purpose.name, text.first, prompt.subtitle)
+            assertEquals(purpose.name, text.second, prompt.description)
+        }
+    }
 }

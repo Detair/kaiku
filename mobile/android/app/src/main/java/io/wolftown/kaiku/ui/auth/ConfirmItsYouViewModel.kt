@@ -11,7 +11,10 @@ import io.wolftown.kaiku.data.auth.DeviceSignIn
 import io.wolftown.kaiku.data.auth.DeviceSignInResult
 import io.wolftown.kaiku.data.auth.KeyDeviceSignOut
 import io.wolftown.kaiku.data.auth.SessionEndLog
+import io.wolftown.kaiku.data.auth.SignInPurpose
+import io.wolftown.kaiku.data.keydevice.KeyDeviceProbe
 import io.wolftown.kaiku.data.keydevice.KeyDeviceRepository
+import io.wolftown.kaiku.data.keydevice.ServerKeyState
 import io.wolftown.kaiku.data.keydevice.KeyDeviceState
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -42,6 +45,7 @@ internal fun signInResultText(r: DeviceSignInResult): Int? = when (r) {
     DeviceSignInResult.KeyInvalidated -> R.string.security_key_invalidated
     DeviceSignInResult.Banned -> R.string.auth_login_banned
     DeviceSignInResult.Network -> R.string.security_network_error
+    DeviceSignInResult.Expired -> R.string.security_took_too_long
     is DeviceSignInResult.Failed ->
         if (r.code == "UV_LOCKED_OUT") R.string.security_locked_out else R.string.security_sign_in_failed
 }
@@ -59,6 +63,7 @@ internal fun removalFailedText(out: StepUpOutcome): Int {
         "LAST_STRONG_AUTHENTICATOR" -> R.string.security_only_key
         "UV_LOCKED_OUT" -> R.string.security_locked_out
         "NETWORK" -> R.string.security_network_error
+        "APPROVAL_EXPIRED" -> R.string.security_took_too_long
         else -> R.string.security_sign_in_failed
     }
 }
@@ -70,6 +75,7 @@ class ConfirmItsYouViewModel @Inject constructor(
     private val keyDevices: KeyDeviceRepository,
     private val signOut: KeyDeviceSignOut,
     sessionEndLog: SessionEndLog,
+    probe: KeyDeviceProbe,
 ) : ViewModel() {
 
     private val _ui = MutableStateFlow(
@@ -80,11 +86,28 @@ class ConfirmItsYouViewModel @Inject constructor(
     )
     val ui: StateFlow<ConfirmItsYouUi> = _ui.asStateFlow()
 
-    fun confirm(activity: FragmentActivity) {
+    init {
+        // F5: an admin may have removed this phone as a key while it was signed out. The key's own
+        // server is asked once (the public device-login challenge, left unanswered); only a key it
+        // does not know, or knows as removed, is forgotten. Offline or unclear keeps everything.
+        val local = keyDevices.local()
+        if (local != null && keyDevices.current() is KeyDeviceState.Lapsed) {
+            viewModelScope.launch {
+                val gone = probe.probe(local.userId, local.origin) == ServerKeyState.Gone
+                if (gone && !_ui.value.working && keyDevices.local() == local && keyDevices.current() is KeyDeviceState.Lapsed) {
+                    keyDevices.forget()
+                    _ui.update { it.copy(error = R.string.security_device_revoked, keyGone = true) }
+                }
+            }
+        }
+    }
+
+    /** [stayingSignedIn]: the renewal before the 90-day cap (its prompt says so). */
+    fun confirm(activity: FragmentActivity, stayingSignedIn: Boolean = false) {
         if (_ui.value.working) return
         _ui.update { it.copy(working = true, error = null) }
         viewModelScope.launch {
-            val r = deviceSignIn.signIn(activity)
+            val r = deviceSignIn.signIn(activity, if (stayingSignedIn) SignInPurpose.STAY_SIGNED_IN else SignInPurpose.SIGN_IN)
             _ui.update {
                 it.copy(
                     working = false,
@@ -111,7 +134,7 @@ class ConfirmItsYouViewModel @Inject constructor(
         viewModelScope.launch {
             val signedInForRemoval = keyDevices.current() !is KeyDeviceState.Active
             if (signedInForRemoval) {
-                val r = deviceSignIn.signIn(activity)
+                val r = deviceSignIn.signIn(activity, SignInPurpose.FOR_REMOVAL)
                 if (r != DeviceSignInResult.Success) {
                     _ui.update {
                         it.copy(

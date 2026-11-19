@@ -171,7 +171,15 @@ internal fun SetupStatus(ui: SetupUi, onSignIn: () -> Unit, onRetry: (() -> Unit
             KeyNotice(stringResource(R.string.setup_pending_hint), warning = false)
         }
         SetupUi.SigningIn, SetupUi.Done -> Progress(stringResource(R.string.setup_signing_in))
-        SetupUi.SignInPaused -> KeyPrimaryButton(stringResource(R.string.setup_sign_in_again), onClick = onSignIn)
+        SetupUi.SignInPaused -> {
+            // AND-A-11: the button alone did not say what is left to do.
+            KeyBody(stringResource(R.string.setup_sign_in_paused))
+            KeyPrimaryButton(stringResource(R.string.setup_sign_in_again), onClick = onSignIn)
+        }
+        SetupUi.SignInTimedOut -> {
+            KeyNotice(stringResource(R.string.security_took_too_long), warning = true)
+            KeyPrimaryButton(stringResource(R.string.setup_sign_in_again), onClick = onSignIn)
+        }
         is SetupUi.Ended -> {
             KeyNotice(if (ui.arg != null) stringResource(ui.msg, ui.arg) else stringResource(ui.msg), warning = true)
             // An unclear answer or no connection is tried again; anything else starts the setup over.

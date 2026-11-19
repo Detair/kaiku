@@ -89,7 +89,7 @@ class SetupFlowViewModelTest {
         val f = KeyDeviceFixture(backgroundScope, active = false)
         f.keyStore.delete()
         f.authState.setLoggedOut()
-        coEvery { deviceSignIn.signIn(any()) } returns DeviceSignInResult.Success
+        coEvery { deviceSignIn.signIn(any(), any()) } returns DeviceSignInResult.Success
         val v = SetupFlowViewModel(enroll.api, suitability, f.keyStore, f.signer, f.repo, { SigFixtures.DEVICE_ID }, deviceSignIn, env,
             probe, keyDispatcher = keyDispatcher)
         return v to f
@@ -194,7 +194,7 @@ class SetupFlowViewModelTest {
         runCurrent()
         assertEquals(SetupUi.SigningIn, v.ui.value)
         v.signIn(activity)
-        coVerify { deviceSignIn.signIn(activity) }
+        coVerify { deviceSignIn.signIn(activity, io.wolftown.kaiku.data.auth.SignInPurpose.AFTER_SETUP) }
         assertEquals(SetupUi.Done, v.ui.value)
     }
 
@@ -537,7 +537,7 @@ class SetupFlowViewModelTest {
         val f = KeyDeviceFixture(backgroundScope, active = false)
         f.keyStore.delete()
         f.authState.setLoggedOut()
-        coEvery { deviceSignIn.signIn(any()) } returns DeviceSignInResult.Success
+        coEvery { deviceSignIn.signIn(any(), any()) } returns DeviceSignInResult.Success
         fun flow() = SetupFlowViewModel(enroll.api, suitability, f.keyStore, f.signer, f.repo, { SigFixtures.DEVICE_ID }, deviceSignIn, env,
             probe, keyDispatcher = keyDispatcher)
         val idle = flow()
@@ -608,5 +608,58 @@ class SetupFlowViewModelTest {
         assertEquals(SetupBack.LEAVE, setupBackAction(SetupUi.SignInPaused))
         assertEquals(SetupBack.LEAVE, setupBackAction(SetupUi.Ended(R.string.setup_stopped, canRetry = false)))
         assertEquals(SetupBack.LEAVE, setupBackAction(SetupUi.Interrupted))
+    }
+
+    private fun TestScope.lapsedKeyVm(): Pair<SetupFlowViewModel, KeyDeviceFixture> {
+        env.pinned = SigFixtures.ORIGIN
+        val f = KeyDeviceFixture(backgroundScope)
+        f.authState.setLoggedOut() // a key without its session: "Confirm it's you"
+        coEvery { deviceSignIn.signIn(any(), any()) } returns DeviceSignInResult.Success
+        val v = SetupFlowViewModel(enroll.api, suitability, f.keyStore, f.signer, f.repo, { SigFixtures.DEVICE_ID }, deviceSignIn, env,
+            probe, keyDispatcher = keyDispatcher)
+        return v to f
+    }
+
+    @Test fun `a setup link on a phone whose key the admin removed forgets the key and goes on`() = runTest {
+        // F5: the server no longer knows the key, so "already your key" would be wrong.
+        approval.failWith = apiError(403, "KEY_DEVICE_REVOKED")
+        val (v, f) = lapsedKeyVm()
+        v.start(entry)
+        assertTrue(v.ui.value.toString(), v.ui.value is SetupUi.ConfirmSubject)
+        assertEquals(SigFixtures.ORIGIN, approval.deviceLoginOrigin)
+        assertNull(f.repo.local())
+    }
+
+    @Test fun `a setup link on a lapsed key the server still knows is refused`() = runTest {
+        approval.nextChallenge = SigFixtures.challengeFor(io.wolftown.kaiku.approval.SigKind.DEVICE_LOGIN, 3, SigFixtures.V03_CONTEXT)
+        val (v, f) = lapsedKeyVm()
+        v.start(entry)
+        assertEquals(SetupUi.Ended(R.string.setup_already_key, canRetry = false), v.ui.value)
+        assertTrue(f.repo.local() != null)
+        assertTrue(enroll.calls.isEmpty())
+    }
+
+    @Test fun `a setup link on a lapsed key while offline is refused and keeps the key`() = runTest {
+        approval.failWith = java.io.IOException("offline")
+        val (v, f) = lapsedKeyVm()
+        v.start(entry)
+        assertEquals(SetupUi.Ended(R.string.setup_already_key, canRetry = false), v.ui.value)
+        assertTrue(f.repo.local() != null)
+    }
+
+    @Test fun `the final sign-in after a slow prompt offers a fresh try`() = runTest {
+        // F2: the challenge ran out while the prompt was open.
+        env.pinned = SigFixtures.ORIGIN
+        enroll.statuses += ClaimStatus(EnrollmentState.DONE, "active")
+        val (v, _) = vm()
+        coEvery { deviceSignIn.signIn(any(), any()) } returns DeviceSignInResult.Expired
+        v.start(entry)
+        v.confirmSubject(activity)
+        runCurrent()
+        v.signIn(activity)
+        assertEquals(SetupUi.SignInTimedOut, v.ui.value)
+        coEvery { deviceSignIn.signIn(any(), any()) } returns DeviceSignInResult.Success
+        v.signIn(activity)
+        assertEquals(SetupUi.Done, v.ui.value)
     }
 }
