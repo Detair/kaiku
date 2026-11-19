@@ -18,6 +18,12 @@ export interface DialogOptions {
   onClose: () => void;
   /** Element to focus on open. Defaults to the first focusable, else the dialog. */
   initialFocus?: () => HTMLElement | undefined;
+  /**
+   * Where focus goes back on close, when the dialog opens later than it was
+   * asked for (a window whose code had to load first). Defaults to the
+   * element that has focus when the dialog is set up.
+   */
+  opener?: Element | null;
 }
 
 export interface DialogHandle {
@@ -86,7 +92,12 @@ export function createDialog(opts: DialogOptions): DialogHandle {
   // Focus on the page itself is no opener: a window whose code loads on
   // demand mounts after its menu item is gone, and "back to the page" would
   // leave the focus nowhere. Closing then uses the fallback below.
-  const focused = typeof document !== "undefined" ? document.activeElement : null;
+  const focused =
+    opts.opener !== undefined
+      ? opts.opener
+      : typeof document !== "undefined"
+        ? document.activeElement
+        : null;
   const opener =
     focused instanceof HTMLElement && focused !== document.body ? focused : null;
   let el: HTMLElement | undefined;
@@ -156,7 +167,14 @@ export function createDialog(opts: DialogOptions): DialogHandle {
   });
 
   onCleanup(() => {
+    // Only the dialog that has the keyboard hands focus back. One removed
+    // from under another leaves focus in the dialog still open above it.
+    const top = openDialogs[openDialogs.length - 1] === entry;
     unregister(entry);
+    if (!top) {
+      if (el?.contains(document.activeElement)) openDialogs[openDialogs.length - 1]?.el()?.focus();
+      return;
+    }
     if (opener?.isConnected && !opener.closest("[inert]")) {
       opener.focus();
       return;

@@ -136,8 +136,11 @@ const CommandPalette: Component = () => {
       return;
     }
 
-    // Handle navigation when palette is open
+    // Handle navigation when palette is open and has the keyboard: a window
+    // opened above it (focus there) gets its own Enter and arrows.
     if (!isOpen()) return;
+    const palette = inputRef?.closest("[role=dialog]");
+    if (!palette?.contains(document.activeElement)) return;
 
     switch (e.key) {
       case "Escape":
