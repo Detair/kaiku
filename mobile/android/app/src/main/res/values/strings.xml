@@ -400,7 +400,7 @@
     <string name="setup_sign_in_again">Confirm it\'s you</string>
     <string name="setup_screen_lock_title">Turn on a screen lock</string>
     <string name="setup_screen_lock_body">This phone needs a screen lock (PIN, pattern or password) before it can be your Kaiku key.</string>
-    <string name="setup_screen_lock_hint">Choose the PIN together and write it down. Add a fingerprint if the phone has a reader.</string>
+    <string name="setup_screen_lock_hint">Choose a PIN you can remember and keep a note of it in a safe place. When it is on, come back to Kaiku and tap \'I\'ve turned it on\'.</string>
     <string name="setup_screen_lock_open">Open screen lock settings</string>
     <string name="setup_fingerprint_open">Add a fingerprint</string>
     <string name="setup_screen_lock_check">I\'ve turned it on</string>
@@ -688,4 +688,5 @@
     <string name="security_uv_stay_signed_in">Stay signed in to Kaiku</string>
     <string name="security_took_too_long">That took too long, so Kaiku stopped waiting. Nothing was changed. Try again.</string>
     <string name="setup_sign_in_paused">Almost done. Confirm with your screen lock to sign in with your new key.</string>
+    <string name="security_session_unknown_client">Another device</string>
 </resources>

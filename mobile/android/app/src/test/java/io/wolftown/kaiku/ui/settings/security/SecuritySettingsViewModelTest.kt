@@ -200,4 +200,27 @@ class SecuritySettingsViewModelTest {
         assertEquals(R.string.security_last_strong, v.ui.value.message)
         assertFalse(v.ui.value.signedOut)
     }
+
+    @Test fun `a failed load shows only the error, and trying again loads`() = runTest {
+        // AND-A-10: no false "not your key" / "0 codes" while nothing is known.
+        security.meFailure = java.io.IOException("offline")
+        val v = vm()
+        v.load()
+        assertEquals(false, v.ui.value.loading)
+        assertEquals(null, v.ui.value.me)
+        assertEquals(R.string.security_network_error, v.ui.value.message)
+        security.meFailure = null
+        v.reload()
+        assertEquals(false, v.ui.value.loading)
+        assertEquals(null, v.ui.value.message)
+        assertEquals(9, v.ui.value.me?.recoveryCodesLeft)
+    }
+
+    @Test fun `a session without a device name names its kind of client`() {
+        assertEquals(R.string.approval_client_desktop, clientClassText("desktop"))
+        assertEquals(R.string.approval_client_web, clientClassText("web"))
+        assertEquals(R.string.approval_client_android, clientClassText("android"))
+        assertEquals(R.string.security_session_unknown_client, clientClassText("toaster"))
+        assertEquals(R.string.security_session_unknown_client, clientClassText(""))
+    }
 }

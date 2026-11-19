@@ -5,6 +5,7 @@ import android.content.Intent
 import android.os.Build
 import android.provider.Settings
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import io.wolftown.kaiku.R
@@ -16,8 +17,9 @@ import io.wolftown.kaiku.ui.shared.KeyTitle
 
 /**
  * B.1: without a screen lock setup stops with a guided step: one button to the
- * security settings (and on API 30+ the fingerprint enrolment), the hint to
- * choose the PIN together, and a re-check (also on resume, by the caller).
+ * security settings (and on API 30+, on phones with a fingerprint reader or
+ * other strong biometric hardware, the enrolment), the hint to come back to
+ * Kaiku afterwards, and a re-check (also on resume, by the caller).
  */
 @Composable
 fun ScreenLockGuide(onCheck: () -> Unit, onCancel: () -> Unit) {
@@ -33,7 +35,13 @@ fun ScreenLockGuide(onCheck: () -> Unit, onCancel: () -> Unit) {
     KeyBody(stringResource(R.string.setup_screen_lock_body))
     KeyNotice(stringResource(R.string.setup_screen_lock_hint), warning = false)
     KeyPrimaryButton(stringResource(R.string.setup_screen_lock_open), onClick = { open(Intent(Settings.ACTION_SECURITY_SETTINGS)) })
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+    // AND-A-12: no fingerprint button on a phone without the hardware.
+    val hasBiometricHardware = remember(context) {
+        androidx.biometric.BiometricManager.from(context)
+            .canAuthenticate(androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_STRONG) !=
+            androidx.biometric.BiometricManager.BIOMETRIC_ERROR_NO_HARDWARE
+    }
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && hasBiometricHardware) {
         KeySecondaryButton(stringResource(R.string.setup_fingerprint_open), onClick = {
             open(
                 Intent(Settings.ACTION_BIOMETRIC_ENROLL).putExtra(
