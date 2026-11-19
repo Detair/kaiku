@@ -142,7 +142,7 @@ sealed interface CallEvent {
     data class VoiceJoined(val channelId: String, val nowMs: Long, val callId: String?) : CallEvent
     data class VoiceJoinFailed(val channelId: String, val callId: String?) : CallEvent
 
-    /** A new authenticated socket: the shown call is checked with the server (C33-style resync). */
+    /** A new authenticated socket: the shown call is checked with the server (resync). */
     data object SocketReady : CallEvent
 
     /** The 100 s cap of a ring that was not rung because a call was on. */
