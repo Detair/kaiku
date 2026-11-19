@@ -29,7 +29,7 @@ class HomeViewModel @Inject constructor(
     private val guildRepository: GuildRepository,
     realtimeConnectionManager: RealtimeConnectionManager,
     private val pushRegistrar: PushRegistrar,
-    dmRepository: DmRepository,
+    private val dmRepository: DmRepository,
     authState: AuthState,
 ) : ViewModel() {
 
@@ -40,8 +40,8 @@ class HomeViewModel @Inject constructor(
     val guilds: StateFlow<List<Guild>> = guildRepository.guilds
 
     /**
-     * The start page's "Chats" entry (AND-B-6). The list itself is loaded on
-     * every (re)connect by the resync and kept live by the DM repository.
+     * The start page's "Chats" entry. The list itself is loaded on every
+     * (re)connect by the resync, on Refresh, and kept live by the DM repository.
      */
     val chats: StateFlow<ChatsSummary> = dmRepository.conversations
         .map(::chatsSummary)
@@ -151,6 +151,16 @@ class HomeViewModel @Inject constructor(
 
     fun refresh() {
         loadGuilds()
+        // The chats too: their load on connect may have failed and is otherwise retried only on the next connect.
+        viewModelScope.launch {
+            try {
+                dmRepository.loadDms()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                logger.warning("Failed to reload chats (${e::class.simpleName})")
+            }
+        }
     }
 
     private fun loadGuilds() {

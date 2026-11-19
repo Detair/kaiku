@@ -51,6 +51,15 @@ class DmPreviewTest {
     }
 
     @Test
+    fun `list time follows the phone's 24-hour setting`() {
+        val zone = ZoneId.of("Europe/Berlin")
+        val now = Instant.parse("2026-11-19T15:00:00Z")
+        assertEquals("14:05", formatListTime("2026-11-19T13:05:00Z", zone, now, Locale.US, use24Hour = true))
+        val twelve = formatListTime("2026-11-19T13:05:00Z", zone, now, Locale.GERMANY, use24Hour = false)
+        assertEquals(true, twelve.startsWith("2:05"))
+    }
+
+    @Test
     fun `list time - today the time, earlier the date, in the user's locale and zone`() {
         val zone = ZoneId.of("Europe/Berlin")
         val now = Instant.parse("2026-11-19T15:00:00Z")

@@ -110,7 +110,7 @@ fun HomeScreen(
             ) {
             ConnectionBanner(status = connectionStatus)
             ProbationBanner()
-            // AND-B-6: chats first, above the servers' channels (and above the no-server hint).
+            // Chats first, above the servers' channels (and above the no-server hint).
             ChatsEntry(summary = chats, currentUserId = currentUserId, onOpen = onNavigateToDms)
             // A failed load is shown inline while there is still something to
             // display; the full-screen error below is only for the empty case.

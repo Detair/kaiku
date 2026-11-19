@@ -76,6 +76,17 @@ class HomeViewModelTest {
     // ========================================================================
 
     @Test
+    fun `refresh also reloads the chats`() = runTest {
+        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar, dmRepository, authState)
+        advanceUntilIdle()
+
+        viewModel.refresh()
+        advanceUntilIdle()
+
+        io.mockk.coVerify(exactly = 1) { dmRepository.loadDms() }
+    }
+
+    @Test
     fun `loads guilds on init`() = runTest {
         coEvery { guildRepository.loadGuilds() } coAnswers {
             guildsFlow.value = sampleGuilds

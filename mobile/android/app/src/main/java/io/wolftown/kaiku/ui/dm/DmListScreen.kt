@@ -15,6 +15,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -122,11 +123,13 @@ fun DmListScreen(
 
                 else -> {
                     // Bottom space so the "New message" button never covers the last row.
+                    val now = rememberMinuteClock()
                     LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 88.dp)) {
                         items(conversations, key = { it.id }) { dm ->
                             DmConversationRow(
                                 dm = dm,
                                 currentUserId = currentUserId,
+                                now = now,
                                 onClick = {
                                     viewModel.onOpenConversation(dm.id)
                                     onOpenDm(dm.id)
@@ -145,6 +148,7 @@ fun DmListScreen(
 private fun DmConversationRow(
     dm: DmConversation,
     currentUserId: String,
+    now: Instant,
     onClick: () -> Unit
 ) {
     // C28: the Kaiku DM, recognised by its flags only, has a built-in icon and a fixed name.
@@ -203,8 +207,9 @@ private fun DmConversationRow(
             val time = formatListTime(
                 dm.lastMessage?.createdAt ?: dm.createdAt,
                 ZoneId.systemDefault(),
-                Instant.now(),
+                now,
                 LocalConfiguration.current.locales[0],
+                use24Hour = android.text.format.DateFormat.is24HourFormat(LocalContext.current),
             )
             if (time.isNotEmpty()) {
                 Text(
@@ -253,4 +258,20 @@ internal fun conversationPreview(dm: DmConversation, currentUserId: String): Str
         is PreviewSender.Named -> stringResource(R.string.dm_last_message_preview, sender.name, body)
         PreviewSender.Hidden -> body
     }
+}
+
+/**
+ * The current time, renewed at every full minute while the list is shown,
+ * so "today" (time) turns into a date after midnight without a reload.
+ */
+@Composable
+private fun rememberMinuteClock(): Instant {
+    val now by produceState(Instant.now()) {
+        while (true) {
+            val next = (System.currentTimeMillis() / 60_000L + 1) * 60_000L
+            kotlinx.coroutines.delay(next - System.currentTimeMillis())
+            value = Instant.now()
+        }
+    }
+    return now
 }

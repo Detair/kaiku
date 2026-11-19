@@ -33,9 +33,9 @@ import io.wolftown.kaiku.domain.ChatsSummary
 import io.wolftown.kaiku.ui.dm.conversationPreview
 
 /**
- * AND-B-6: the first thing on the start page. "Chats" with the newest
- * conversation and the number of unread direct messages; one tap opens the
- * chat list. Shown whether or not the user is on a server.
+ * The first thing on the start page: "Chats" with a conversation (the newest
+ * unread one, else the newest) and the number of unread direct messages; one
+ * tap opens the chat list. Shown whether or not the user is on a server.
  */
 @Composable
 fun ChatsEntry(summary: ChatsSummary, currentUserId: String, onOpen: () -> Unit) {
@@ -43,12 +43,12 @@ fun ChatsEntry(summary: ChatsSummary, currentUserId: String, onOpen: () -> Unit)
     val subtitle = if (newest == null) {
         stringResource(R.string.home_chats_empty)
     } else {
-        val title = if (newest.isSystem && newest.readOnly) {
-            stringResource(R.string.security_kaiku_dm_name)
-        } else {
-            DmRepository.conversationTitle(newest, currentUserId)
-        }
-        stringResource(R.string.dm_last_message_preview, title, conversationPreview(newest, currentUserId))
+        val kaiku = newest.isSystem && newest.readOnly
+        val title = if (kaiku) stringResource(R.string.security_kaiku_dm_name) else DmRepository.conversationTitle(newest, currentUserId)
+        // Like the chat list: the Kaiku chat says "Security", never its raw text.
+        val preview = if (kaiku) stringResource(R.string.security_kaiku_dm_subtitle) else conversationPreview(newest, currentUserId)
+        // "Anna · You: ok": a separator, so the preview's own "Name:" is not doubled.
+        stringResource(R.string.home_chats_preview, title, preview)
     }
     Row(
         Modifier

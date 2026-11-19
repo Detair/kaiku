@@ -86,10 +86,21 @@ fun sortByActivity(conversations: List<DmConversation>): List<DmConversation> =
  * The chat list's time: the short time for today (in [zone]), the short date
  * otherwise, both in [locale]'s format. Empty for a missing time.
  */
-fun formatListTime(iso: String?, zone: ZoneId, now: Instant, locale: Locale = Locale.getDefault()): String {
+fun formatListTime(
+    iso: String?,
+    zone: ZoneId,
+    now: Instant,
+    locale: Locale = Locale.getDefault(),
+    /** The phone's 24-hour setting; null: the locale's own short time. */
+    use24Hour: Boolean? = null,
+): String {
     val moment = parseServerTime(iso)?.atZone(zone) ?: return ""
     val formatter = if (moment.toLocalDate() == now.atZone(zone).toLocalDate()) {
-        DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT)
+        when (use24Hour) {
+            true -> DateTimeFormatter.ofPattern("HH:mm")
+            false -> DateTimeFormatter.ofPattern("h:mm a")
+            null -> DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT)
+        }
     } else {
         DateTimeFormatter.ofLocalizedDate(FormatStyle.SHORT)
     }
