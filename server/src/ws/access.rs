@@ -41,7 +41,7 @@
 //! | `ChannelBound` (a bot's answer to the user's command, from the user's own feed) | as `Channel`; for a channel that was never requested: one read at epochs that must still hold afterwards | [`SocketAccess::admit_bound`] |
 //! | `Guild` (a server's own feed, an event reminder) | user scope + that server's scope | [`SocketAccess::admit_guild`]: member |
 //! | `Voice` (everything of a voice room) | the voice scope: user epoch + the room's server epoch as of the join check | [`SocketAccess::admit_voice`]: the socket owns the peer and voice access holds |
-//! | `Admin` | the admin scope: user epoch | [`SocketAccess::admit_admin`]: requested (until `admin_unsubscribe`), and the session is an elevated admin's |
+//! | `Admin` | the admin scope: user epoch; a "yes" is never reused | [`SocketAccess::admit_admin`]: requested (until `admin_unsubscribe`), and the session is an elevated admin's — read again for every frame of an allowed socket (an elevation also ends without an epoch moving: expiry, the admin CLI), a "no" cached per epoch; admin events are rare and elevated sockets few |
 //!
 //! There are four kinds of scope — the **user**, each **server**, the
 //! **voice room**, the **admin stream** — and one state machine for all of
@@ -1249,7 +1249,28 @@ impl SocketAccess {
     /// Delivery decision for an admin event: the socket is subscribed to the
     /// admin stream and its session is an elevated system admin's, as read
     /// at the current user epoch (the same loop as every other frame).
+    ///
+    /// A "yes" is never reused: an elevation also ends without any epoch
+    /// moving (it expires; the admin CLI demotes in another process). So
+    /// unless the scope is current and says "no" (cached per epoch, no
+    /// read), the scope is invalidated here, after the frame was taken: the
+    /// loop reads again, and a read that was already under way when the
+    /// frame was taken no longer counts (`invalidations`). One elevation
+    /// read per admin frame for an allowed socket; admin events are rare.
     pub async fn admit_admin(&self) -> bool {
+        {
+            let mut inner = self.lock();
+            let denied = inner
+                .admin
+                .as_ref()
+                .is_none_or(|a| !a.allowed && self.admin_phase(a) == Phase::Current);
+            if !denied {
+                inner.invalidations += 1;
+                if let Some(admin) = inner.admin.as_mut() {
+                    admin.state.invalidate();
+                }
+            }
+        }
         self.decide(true, |inner| {
             let admin = inner.admin.as_ref()?;
             Some((Target::Admin, admin.allowed.then_some(true)))
@@ -2871,9 +2892,10 @@ mod tests {
         assert!(!access.commit_admin(epoch, true));
         assert!(!access.admin_subscribed());
 
-        // Subscribed and current: from memory.
+        // Subscribed and current: the "yes" is read again for the frame.
         assert!(access.commit_admin(access.user_epoch_now(), true));
         assert!(access.may_forward_admin());
+        install(&access, &[], true, None);
         assert!(access.admit_admin().await);
 
         // The elevation ends while the re-check's read is in flight.
@@ -2926,6 +2948,7 @@ mod tests {
         let u = Uuid::new_v4();
         let access = SocketAccess::new(u, lazy_pool());
         assert!(access.commit_admin(access.user_epoch_now(), true));
+        install(&access, &[], true, None);
         assert!(access.admit_admin().await);
 
         // De-elevation commits and bumps; the revalidation completes.
@@ -2956,6 +2979,85 @@ mod tests {
         assert!(access.admit_admin().await);
     }
 
+    /// A "yes" for the admin stream is never reused: an elevation can end
+    /// without an epoch moving (it expires, or another process removes it),
+    /// so every admin frame of an allowed socket is decided by a read made
+    /// after the frame was taken. A "no" stays cached per epoch: a socket
+    /// that was refused costs no read per admin event.
+    #[tokio::test(start_paused = true)]
+    async fn a_positive_admin_decision_is_never_reused() {
+        let u = Uuid::new_v4();
+        let access = SocketAccess::new(u, lazy_pool());
+        assert!(access.commit_admin(access.user_epoch_now(), true));
+        crate::ws::test_hooks::count_access_reads(u);
+
+        // Elevated and unchanged: delivered, one read per frame.
+        install(&access, &[], true, None);
+        for n in 1..=3 {
+            assert!(access.may_forward_admin());
+            assert!(access.admit_admin().await);
+            assert_eq!(crate::ws::test_hooks::access_reads(u).0, n);
+        }
+
+        // The elevation ended without any epoch moving: the next frame's
+        // read says so, and the frame is not written.
+        install(&access, &[], false, None);
+        assert!(!access.admit_admin().await, "written on a cached yes");
+        assert!(access.admin_subscribed() && !access.admin_allowed());
+        assert_eq!(crate::ws::test_hooks::access_reads(u).0, 4);
+
+        // From now on the "no" is current: no read per event.
+        for _ in 0..3 {
+            assert!(!access.may_forward_admin());
+            assert!(!access.admit_admin().await);
+        }
+        assert_eq!(crate::ws::test_hooks::access_reads(u).0, 4);
+        assert!(!dropped(&access) && !access.take_resync());
+
+        // A subscriber that was never elevated: no read per event either.
+        let u = Uuid::new_v4();
+        let access = SocketAccess::new(u, lazy_pool());
+        assert!(access.commit_admin(access.user_epoch_now(), false));
+        crate::ws::test_hooks::count_access_reads(u);
+        for _ in 0..3 {
+            assert!(!access.may_forward_admin());
+            assert!(!access.admit_admin().await);
+        }
+        assert_eq!(crate::ws::test_hooks::access_reads(u), (0, 0));
+    }
+
+    /// A read that began before the admin frame was taken does not decide
+    /// it: the frame waits for a read of its own.
+    #[tokio::test(start_paused = true)]
+    async fn an_admin_frame_is_decided_by_a_read_after_it_was_taken() {
+        let u = Uuid::new_v4();
+        let access = SocketAccess::new(u, lazy_pool());
+        assert!(access.commit_admin(access.user_epoch_now(), true));
+        // A revalidation planned (and read: "elevated") before the frame...
+        access.force_full();
+        let Planned::Run(early) = access.plan() else {
+            panic!("nothing planned");
+        };
+        // ...the frame is taken and waits for a revalidation (held up
+        // here), then the early answer ("elevated") arrives.
+        let gate = access.refresh_gate.lock().await;
+        install(&access, &[], false, None);
+        let frame = access.admit_admin();
+        tokio::pin!(frame);
+        tokio::select! {
+            biased;
+            _ = &mut frame => panic!("decided without waiting for a read"),
+            () = std::future::ready(()) => {}
+        }
+        let early_found = ReadResult {
+            admin_ok: Some(true),
+            ..all_found(&[])
+        };
+        access.apply(&early, early_found);
+        drop(gate);
+        assert!(!frame.await, "decided by a read that began before it");
+    }
+
     /// Every SQL statement that writes a table feeding channel access, per
     /// source file, with what keeps open connections in line. A new writer
     /// changes a count and fails [`every_access_writer_is_audited`]: make sure
@@ -2968,7 +3070,7 @@ mod tests {
         ("auth/revocation.rs", 1, "elevation ends with the session: the socket closes (1008)"),
         ("chat/messages.rs", 7, "test fixtures"),
         ("chat/queries.rs", 9, "channel create, DM rename/icon: no access change; DM and group-DM create (after the block check): a grant into a channel that did not exist, so no socket can hold it as requested, and every participant's sockets record it undecided on dm_created and confirm by a read (participants are only ever added at creation); DM leave: access_changed; overrides: access_changed"),
-        ("cli/recovery.rs", 2, "CLI admin demote runs in another process: socket backstop (<= 60 s)"),
+        ("cli/recovery.rs", 2, "CLI admin demote runs in another process: every admin frame re-reads the elevation"),
         ("db/queries.rs", 3, "channel create/update: no access change; channel delete: access_changed"),
         ("db/tests.rs", 13, "test fixtures"),
         ("discovery/queries.rs", 1, "discovery join: access_changed (grant)"),
