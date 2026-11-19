@@ -212,6 +212,7 @@ class LoginViewModel @Inject constructor(
 fun passkeyErrorRes(e: Throwable): Int = when (e) {
     PasskeyFailure.NoCredential -> R.string.passkeys_android_none_on_device
     PasskeyFailure.NotAssociated -> R.string.passkeys_android_not_set_up_for_app
+    PasskeyFailure.WrongServer -> R.string.passkeys_error_wrong_server
     PasskeyFailure.Removed -> R.string.passkeys_error_removed
     is PasskeyFailure.Pending -> R.string.passkeys_error_ready_at
     is PasskeyFailure.Server -> when (e.code) {

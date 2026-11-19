@@ -39,6 +39,8 @@ sealed interface PasskeyOutcome {
     data object NoCredential : PasskeyOutcome
     /** The RP domain is not verified for this app (`assetlinks.json`). */
     data object NotAssociated : PasskeyOutcome
+    /** The request names another site than the configured server; Credential Manager was not asked. */
+    data object WrongServer : PasskeyOutcome
     data class Failed(val code: String) : PasskeyOutcome
 }
 

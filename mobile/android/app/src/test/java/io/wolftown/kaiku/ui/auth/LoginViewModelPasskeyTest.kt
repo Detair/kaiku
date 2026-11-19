@@ -177,4 +177,23 @@ class LoginViewModelPasskeyTest {
         coVerify(exactly = 0) { api.loginStart() }
         coVerify(exactly = 0) { api.loginFinish(any(), any(), any()) }
     }
+
+    @Test
+    fun `a passkey request for another server is stopped before Credential Manager and finish`() = runTest(dispatcher) {
+        // A3: the options name another site than the configured server.
+        coEvery { api.loginStart() } returns CeremonyStart(
+            "c-2",
+            Json.parseToJsonElement("""{"publicKey":{"challenge":"AQ","rpId":"evil.example"}}""").jsonObject,
+        )
+        val bound = io.wolftown.kaiku.data.auth.ServerBoundPasskeys(credentials) { tokenStorage.getServerUrl() }
+        val probe: ServerProbe = mockk()
+        coEvery { probe.probe(any()) } returns ProbeResult.Ok(registrationOpen = false)
+        val v = LoginViewModel(repo, mockk(relaxed = true), tokenStorage, probe, PasskeyAuth(api, bound, repo, tokenStorage))
+        v.onPasskeySignIn(activity)
+        advanceUntilIdle()
+        assertEquals(R.string.passkeys_error_wrong_server, v.uiState.value.passkeyErrorRes)
+        coVerify(exactly = 0) { credentials.get(any(), any()) }
+        coVerify(exactly = 0) { api.loginFinish(any(), any(), any()) }
+        coVerify(exactly = 0) { repo.installNativeSignIn(any(), any()) }
+    }
 }
