@@ -128,6 +128,16 @@ class KeyDeviceSignOutTest {
         assertEquals(io.wolftown.kaiku.data.local.AuthSession.LoggedOut, h.authState.session.value)
     }
 
+    @Test fun `a removal code with another status than the server's own keeps the key and the session`() = runTest {
+        val h = Harness(backgroundScope)
+        h.api.failWith = io.wolftown.kaiku.testutil.apiError(500, "KEY_DEVICE_REVOKED")
+
+        assertEquals(StepUpOutcome.Failed("KEY_DEVICE_REVOKED"), h.signOut.signOutAndRemovePhone(activity))
+
+        assertEquals(KeyDeviceState.Active("u1"), h.repo.current())
+        assertTrue(h.keyStore.hasKey())
+    }
+
     @Test fun `a removal that did not go through keeps the key and the session`() = runTest {
         val h = Harness(backgroundScope)
         h.api.failWith = java.io.IOException("offline")

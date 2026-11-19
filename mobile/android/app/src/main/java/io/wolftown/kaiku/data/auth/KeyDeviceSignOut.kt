@@ -6,6 +6,7 @@ import io.wolftown.kaiku.approval.StepUpOutcome
 import io.wolftown.kaiku.data.api.ApiException
 import io.wolftown.kaiku.data.api.ApprovalApi
 import io.wolftown.kaiku.data.keydevice.KeyDeviceRepository
+import io.wolftown.kaiku.data.keydevice.saysKeyDeviceGone
 import io.wolftown.kaiku.data.repository.AuthRepository
 import io.wolftown.kaiku.domain.model.StepUpAction
 import java.io.IOException
@@ -37,8 +38,9 @@ class KeyDeviceSignOut @Inject constructor(
             throw e
         } catch (e: ApiException) {
             // Already gone on the server (revoked between the step-up and the DELETE): the person's
-            // wish is done; the phone forgets the key and signs out like after a removal.
-            if (e.normalizedCode != "KEY_DEVICE_UNKNOWN" && e.normalizedCode != "KEY_DEVICE_REVOKED") {
+            // wish is done; the phone forgets the key and signs out like after a removal. Only the
+            // server's own two answers for that count; the same code with another status keeps the key.
+            if (!e.saysKeyDeviceGone()) {
                 return StepUpOutcome.Failed(e.normalizedCode ?: "HTTP_${e.status.value}")
             }
         } catch (_: IOException) {

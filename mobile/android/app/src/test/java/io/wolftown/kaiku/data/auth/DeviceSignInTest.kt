@@ -98,6 +98,17 @@ class DeviceSignInTest {
         assertTrue(signIn.signIn(activity) is DeviceSignInResult.Failed)
     }
 
+    @Test fun `a removal code with another status than the server's own keeps the key`() = runTest {
+        val (signIn, repo) = setUp()
+        for (x in listOf(apiError(500, "KEY_DEVICE_REVOKED"), apiError(503, "KEY_DEVICE_UNKNOWN"), apiError(404, "KEY_DEVICE_REVOKED"))) {
+            api.failWith = x
+            val r = signIn.signIn(activity)
+            assertTrue(r.toString(), r is DeviceSignInResult.Failed)
+            assertTrue(keyStore.hasKey())
+            assertEquals(KeyDeviceState.Lapsed(SigFixtures.USER_ID), repo.current())
+        }
+    }
+
     @Test fun `pending device returns ready at`() = runTest {
         val (signIn, repo) = setUp()
         api.failWith = apiError(409, "KEY_DEVICE_PENDING", ApiErrorFields(readyAt = "2026-11-04T12:00:00Z"))

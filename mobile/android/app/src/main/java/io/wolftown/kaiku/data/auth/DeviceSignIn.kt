@@ -15,6 +15,7 @@ import io.wolftown.kaiku.approval.UvResult
 import io.wolftown.kaiku.data.api.ApiException
 import io.wolftown.kaiku.data.api.ApprovalApi
 import io.wolftown.kaiku.data.keydevice.KeyDeviceRepository
+import io.wolftown.kaiku.data.keydevice.saysKeyDeviceGone
 import io.wolftown.kaiku.data.repository.AuthRepository
 import java.io.IOException
 import java.time.Duration
@@ -112,11 +113,12 @@ class DeviceSignIn @Inject constructor(
         } catch (e: CancellationException) {
             throw e
         } catch (e: ApiException) {
+            // Only the server's own two answers for a removed key forget it (any other status keeps it).
+            if (e.saysKeyDeviceGone()) {
+                keyDevices.forget()
+                return DeviceSignInResult.Revoked
+            }
             when (e.normalizedCode) {
-                "KEY_DEVICE_REVOKED", "KEY_DEVICE_UNKNOWN" -> {
-                    keyDevices.forget()
-                    DeviceSignInResult.Revoked
-                }
                 "KEY_DEVICE_PENDING" -> {
                     val readyAt = e.fields.readyAt?.let { runCatching { Instant.parse(it) }.getOrNull() }
                     if (readyAt == null) {

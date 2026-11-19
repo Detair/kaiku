@@ -26,7 +26,8 @@ sealed interface ServerKeyState {
  * an active key device, 409 `KEY_DEVICE_PENDING {ready_at}` for a pending one,
  * and 404 `KEY_DEVICE_UNKNOWN` / 403 `KEY_DEVICE_REVOKED` otherwise. The
  * challenge is not answered; it expires unused. It always asks the key's own
- * server ([origin]): another server's "unknown" must never cost a key (Fable m1).
+ * server ([origin]): another server's "unknown" must never cost a key. Only those
+ * two exact answers mean [ServerKeyState.Gone] ([saysKeyDeviceGone]).
  */
 class KeyDeviceProbe @Inject constructor(
     private val approvalApi: ApprovalApi,
@@ -38,10 +39,10 @@ class KeyDeviceProbe @Inject constructor(
     } catch (e: CancellationException) {
         throw e
     } catch (e: ApiException) {
-        when (e.normalizedCode) {
-            "KEY_DEVICE_PENDING" -> e.fields.readyAt?.let { runCatching { Instant.parse(it) }.getOrNull() }
+        when {
+            e.saysKeyDeviceGone() -> ServerKeyState.Gone
+            e.normalizedCode == "KEY_DEVICE_PENDING" -> e.fields.readyAt?.let { runCatching { Instant.parse(it) }.getOrNull() }
                 ?.let { ServerKeyState.Pending(it) } ?: ServerKeyState.Unknown
-            "KEY_DEVICE_UNKNOWN", "KEY_DEVICE_REVOKED" -> ServerKeyState.Gone
             else -> ServerKeyState.Unknown
         }
     } catch (_: IOException) {
