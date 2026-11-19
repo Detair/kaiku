@@ -229,6 +229,13 @@ class SecuritySettingsViewModelTest {
         assertEquals(R.string.security_took_too_long, v.ui.value.message)
     }
 
+    @Test fun `a passkey confirmation for another website says so`() = runTest {
+        coEvery { stepUp.stepUp(activity, StepUpAction.SESSIONS_END, "others") } returns StepUpOutcome.Failed("PASSKEY_WRONG_SERVER")
+        val v = vm()
+        v.endOtherSessions(activity)
+        assertEquals(R.string.passkeys_error_wrong_server, v.ui.value.message)
+    }
+
     @Test fun `a session without a device name names its kind of client`() {
         assertEquals(R.string.approval_client_desktop, clientClassText("desktop"))
         assertEquals(R.string.approval_client_web, clientClassText("web"))

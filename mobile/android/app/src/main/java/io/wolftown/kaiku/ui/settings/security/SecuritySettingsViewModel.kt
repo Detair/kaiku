@@ -271,6 +271,8 @@ class SecuritySettingsViewModel internal constructor(
         "KEY_INVALIDATED" -> R.string.security_key_invalidated
         // The confirmation prompt stayed open past its challenge: nothing changed, a retry asks anew.
         "APPROVAL_EXPIRED" -> R.string.security_took_too_long
+        // A passkey request for another website than this server was stopped (as on sign-in).
+        "PASSKEY_WRONG_SERVER" -> R.string.passkeys_error_wrong_server
         else -> R.string.security_sign_in_failed
     }
 
