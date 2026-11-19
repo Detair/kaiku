@@ -1952,7 +1952,11 @@ impl SocketAccess {
             // allowed, it does not forget the request, so the next
             // elevation (an epoch bump) restores delivery.
             if let Some(admin) = inner.admin.as_mut() {
-                resync |= admin.state.settle(fresh);
+                // A recovery that confirms "not allowed" owes nothing: the
+                // admin events dropped meanwhile were not this socket's, and
+                // a resync would tell a refused subscriber that they flow.
+                let dropped = admin.state.settle(fresh);
+                resync |= dropped && ok;
                 if fresh {
                     admin.seen = plan.user_now;
                 }
@@ -3056,6 +3060,38 @@ mod tests {
         access.apply(&early, early_found);
         drop(gate);
         assert!(!frame.await, "decided by a read that began before it");
+    }
+
+    /// A socket that is refused admin events cannot tell when they flow: an
+    /// admin event dropped while its revalidation was failing causes no
+    /// resync when the recovery confirms "not allowed".
+    #[tokio::test(start_paused = true)]
+    async fn a_refused_admin_subscriber_is_not_resynced_by_admin_events() {
+        let u = Uuid::new_v4();
+        let access = SocketAccess::new(u, lazy_pool());
+        assert!(access.commit_admin(access.user_epoch_now(), false));
+        crate::ws::test_hooks::fail_access_reads(u, 1);
+        registry().bump_user(u);
+        assert!(access.may_forward_admin(), "stale: the writer decides");
+        assert!(!access.admit_admin().await);
+        assert!(dropped(&access), "the undecided drop is recorded");
+
+        tokio::time::advance(RETRY_MAX + Duration::from_millis(1)).await;
+        install(&access, &[], false, None);
+        assert!(access.refresh().await.is_ok());
+        assert!(!access.admin_allowed());
+        assert!(!access.take_resync(), "nothing owed was missed");
+
+        // An allowed stream that recovers as allowed still resynchronises.
+        let access = SocketAccess::new(u, lazy_pool());
+        assert!(access.commit_admin(access.user_epoch_now(), true));
+        crate::ws::test_hooks::fail_access_reads(u, 1);
+        registry().bump_user(u);
+        assert!(!access.admit_admin().await);
+        tokio::time::advance(RETRY_MAX + Duration::from_millis(1)).await;
+        install(&access, &[], true, None);
+        assert!(access.admit_admin().await);
+        assert!(access.take_resync());
     }
 
     /// Every SQL statement that writes a table feeding channel access, per
