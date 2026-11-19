@@ -18,7 +18,8 @@ let creating: Promise<VoiceAdapter> | null = null;
  */
 export function createVoiceAdapter(): Promise<VoiceAdapter> {
   if (adapterInstance) return Promise.resolve(adapterInstance);
-  creating ??= (async () => {
+  if (creating) return creating;
+  const attempt = (async () => {
     console.log(
       `[VoiceAdapter] Creating ${isTauri() ? "Tauri" : "Browser"} adapter`,
     );
@@ -26,10 +27,16 @@ export function createVoiceAdapter(): Promise<VoiceAdapter> {
       ? new (await import("./tauri")).TauriVoiceAdapter()
       : new (await import("./browser")).BrowserVoiceAdapter();
     adapterInstance = adapter;
-    creating = null;
     return adapter;
   })();
-  return creating;
+  creating = attempt;
+  // Settled either way: the next call starts over. A failed load (for
+  // example a chunk that did not download) must not stick until reload.
+  const settle = () => {
+    if (creating === attempt) creating = null;
+  };
+  attempt.then(settle, settle);
+  return attempt;
 }
 
 /**
