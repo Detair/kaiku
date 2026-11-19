@@ -909,6 +909,59 @@ not sign in someone else by mistake. Additive; absent means no check.
 - A TOTP step on a QR login attempt answers 403 `TOTP_UNAVAILABLE`, as listed for the TOTP step; it no longer answers 409 `LOGIN_ATTEMPT_NOT_READY`.
 - The bootstrap request start answers the neutral 401 while its per-account TOTP counter is delayed, so a correct password is not revealed. The recovery start still answers 429 with `Retry-After` before consumption. Only a holder of a valid recovery code can reach that answer, so it reveals nothing.
 
+## C30 — Screen share start is a request with an answer (server → web, desktop, Android; added 2026-11-20)
+
+Media of a participant reaches others only under a source the server accepted.
+
+- Client: send `voice_screen_share_start` (`channel_id`, `stream_id`, `quality`, `has_audio`, `source_label`)
+  and add **no** video track yet. Wait for the answer:
+  - **Accepted:** the `screen_share_started` broadcast (it goes to everyone in the room, the sender included)
+    whose `stream_id` is the client's own. Only then add the video (and screen-audio) track and renegotiate the
+    publisher connection.
+  - **Refused:** `voice_error` with `code` `SCREEN_SHARE_FORBIDDEN` (no `SCREEN_SHARE` permission in this
+    channel), `SCREEN_SHARE_LIMIT` (3 own shares, or the channel's `max_screen_shares`), `RATE_LIMITED` (more
+    than 5 starts/stops in a burst, refilled 1 per second) or another voice code (`PARTICIPANT_NOT_FOUND`,
+    `DUPLICATE_STREAM_ID`, `SIGNALING_ERROR`). `message` stays human-readable. Stop the capture and show the
+    error. Others are told nothing.
+  - **No answer within 5 s:** stop the capture and show an error.
+- Webcam: `voice_webcam_start` announces the webcam the same way; `webcam_started` (to everyone, the sender
+  included) is the acknowledgement. Add the camera track only after it.
+- Server: a video track is matched to the oldest accepted, not yet used announcement (screen share or webcam)
+  by arrival order. A video track that arrives before its announcement waits up to 3 s for it (so a start sent
+  right after the track still works); without an announcement by then it is dropped: never forwarded, no
+  `incoming_tracks` entry. The sender gets `voice_error` `VIDEO_SOURCE_UNANNOUNCED`.
+- Audio: the first audio track of a connection is the microphone (announced by `voice_join`). A further audio
+  track is screen audio only when a start with `has_audio: true` announced it; otherwise it is taken as the
+  microphone (unchanged behaviour).
+- Permission: `SCREEN_SHARE` is part of the @everyone default (since 2026-11-20, existing servers migrated).
+  Admins can deny it per channel with an override.
+- Compatibility: rc.5 clients add the track right before they send the start and do not wait. An accepted
+  start still binds that track (it waits for the announcement); a refused start leaves the track dropped and
+  the client gets two `voice_error`s (the refusal, then `VIDEO_SOURCE_UNANNOUNCED`).
+
+### `voice_error` codes (all voice requests)
+
+`voice_error` is `{ "type": "voice_error", "code": "<UPPER_SNAKE>", "message": "<text>" }`. Before 2026-11-20
+every code was `VOICE_ERROR`; clients that only log it keep working. The message text "Already in voice channel"
+is unchanged (C32 retry).
+
+| code | when |
+|---|---|
+| `SCREEN_SHARE_FORBIDDEN`, `SCREEN_SHARE_LIMIT`, `VIDEO_SOURCE_UNANNOUNCED` | screen share and video (above) |
+| `CHANNEL_FULL` | `voice_join` into a channel whose `user_limit` (or the server cap of 25) is reached. A user who is already in the room (another device, a stale session) may always join again: the new session replaces the old one (C31 `session_replaced`). No role bypasses the limit |
+| `JOIN_REFUSED` | `voice_join` into a DM call when the user and another participant of the DM blocked each other (either direction). The message does not say who |
+| `UNAUTHORIZED` | no `VIEW_CHANNEL` / `VOICE_CONNECT` |
+| `RATE_LIMITED` | join or share start over its limit |
+| `ROOM_NOT_FOUND`, `PARTICIPANT_NOT_FOUND`, `SIGNALING_ERROR`, `WEBRTC_ERROR`, `DUPLICATE_STREAM_ID`, `INTERNAL_ERROR`, `DATABASE_ERROR` | as named; no internal detail in `message` |
+
+### Subscriber renegotiation (server behaviour clients can rely on)
+
+- At most one `voice_subscriber_offer` per participant is outstanding. Changes made while it waits for its
+  `voice_subscriber_answer` are sent as one new offer right after the answer. If no answer comes within 10 s, the
+  next change (or a check 10 s later) offers again; answer the newest offer.
+- When a participant leaves (or is replaced, C31), their tracks are removed from everyone else's subscriber
+  connection with a new offer (the m-line becomes inactive). A participant who comes back gets a new m-line.
+
 ## C31 — Forced voice leave `voice_removed` (server → web, desktop, Android; added 2026-11-12)
 
 Server → client event, sent only to the socket that owned the removed voice peer:
@@ -923,9 +976,15 @@ Server → client event, sent only to the socket that owned the removed voice pe
   socket closing (kick → `kicked`; ban → `banned`; leaving the server, a role or permission change that takes
   `VIEW_CHANNEL` or `VOICE_CONNECT` away → `permission_lost`; channel or server deleted → `channel_deleted`).
   The other participants get the normal `voice_user_left`. `session_replaced` goes to the old socket when the
-  same user joins the same room from another socket (not sent yet; planned).
+  same user joins the same room from another socket (sent since 2026-11-20): only that socket gets it, the old
+  peer's connections are closed and its tracks, screen shares and webcam leave the room (others get
+  `screen_share_stopped` / `webcam_stopped` with reason `replaced`, then a subscriber offer without the old
+  tracks). The others see one participant throughout: no `voice_user_left`, a fresh `voice_user_joined` for
+  the same `user_id` (upsert). A second `voice_join` on the **same** socket also replaces the peer but sends no
+  `voice_removed`.
 - Client: tear down both peer connections, stop capture, clear voice state, show one line of text for the
-  reason. The client must not rejoin on its own (C32) after `voice_removed`.
+  reason. The client must not rejoin on its own (C32) after `voice_removed`. For `session_replaced` the text
+  says that the call continues on another device; a ringing UI for that call stops too.
 - Unknown `reason` values are treated like `kicked`. Clients that do not know the event ignore it.
 
 ## C32 — Voice rejoin after a WebSocket reconnect (clients; no new wire messages)
@@ -962,3 +1021,22 @@ Binding for all clients (amended 2026-11-11).
 - Local ring cap: an incoming or outgoing ring ends locally 100 s after it started, whatever the server said
   (server ring timeout is 90 s). An incoming ring that ends this way counts as missed.
 - A client stops ringing as soon as `call_participant_joined` names its own user (answered on another device).
+- Server restart (since 2026-11-20): at start the server ends every call that was still ringing
+  (`call_ended`, `reason: "no_answer"`), so the resync above finds no call. An answered call is kept for 60 s so
+  its participants can rejoin the room (C32); if its room is still empty then, it ends as `last_left`. Live
+  `call_ended` events from the start-up reach only sockets that are already connected, so the resync is what
+  clients rely on.
+
+## Minimum client version in `GET /api/settings` (package U; added 2026-11-20)
+
+```json
+{ "min_client_version": { "web": "1.0.0", "desktop": null, "android": "1.0.0-rc.6" } }
+```
+
+- The object is always present on servers since 2026-11-20 and always has the three keys. A value is a version
+  `MAJOR.MINOR.PATCH` with an optional pre-release (`-rc.6`), compared by semantic-versioning precedence
+  (`1.0.0-rc.6` < `1.0.0`); `null` means no minimum for that platform. A response without the field (older
+  server) means no minimum.
+- Configured by `MIN_CLIENT_VERSION_WEB`, `MIN_CLIENT_VERSION_DESKTOP`, `MIN_CLIENT_VERSION_ANDROID`.
+- Client: compare its own version for its platform; when lower, show "please update" with a link. The server
+  does not refuse old clients.

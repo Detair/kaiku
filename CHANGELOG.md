@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release note structure source: `docs/project/RELEASE_NOTES_TEMPLATE.md`
 
 ### Added
+- Admins can publish the oldest supported app version per platform (`MIN_CLIENT_VERSION_WEB`, `MIN_CLIENT_VERSION_DESKTOP`, `MIN_CLIENT_VERSION_ANDROID`); `GET /api/settings` returns them as `min_client_version` so apps can ask for an update.
+- `TURN_SERVER` accepts several URLs separated by commas (for example UDP and TCP of the same TURN server), so voice also works in networks without UDP. A malformed entry stops the server start with a clear error.
 - "I lost my phone / forgot my password" on the sign-in page: a recovery code plus your password, authenticator code or a fresh single sign-on starts a recovery that completes after the waiting period unless someone cancels it; it can name all your key phones as lost. At most three starts per waiting period.
 - "That wasn't me" on a security notice ends the sign-in or removes the device it names and blocks the password or code that was used. Without a key phone or passkey, it needs a session from before the event and an authenticator or recovery code.
 - Delayed account changes: securing an account ("Secure my account") or a recovery waits 24 hours (configurable up to 72), tells the account's phones, its recovery contact and the admins, and can be cancelled by any of them. The device that started it can only withdraw it.
@@ -97,6 +99,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Server and channel settings: rename and delete a channel, rename or delete your server (owner), leave a server (everyone else). Each asks first and names what it removes.
 
 ### Changed
+- Every member may share their screen by default: screen sharing is part of the @everyone role on new servers, and existing servers get it with this update. Admins can still turn it off per channel.
+- Screen sharing starts only after the server agreed: a refused start answers with a reason (no permission, limit reached, too many attempts), and a video that was never announced is not shown to anyone. Voice errors now carry a specific code.
+- Joining your own voice seat from a second device moves the call there; the first device is told the call moved (`voice_removed`, reason `session_replaced`) instead of staying in a silent call.
+- A voice channel's member limit is enforced; the channel answers "full" for one more member, while someone already in it can still rejoin.
+- The voice server needs half as many UDP ports per participant (it no longer uses STUN or TURN itself).
 - An account can hold at most 10 open WebSocket connections and a client address at most 30 (IPv6 per /64; an IPv4 client on a dual-stack listener counts as its IPv4 address); further connections are refused. Both caps are configurable with `WS_MAX_CONNECTIONS_PER_USER` and `WS_MAX_CONNECTIONS_PER_IP`. Behind a reverse proxy, set `RATE_LIMIT_TRUSTED_PROXIES` so clients are counted by their own address; the server warns at startup when it is not set. New WebSocket connection attempts are also rate limited per address (60 per minute, enough for every device of a household to reconnect after a restart). One connection can follow at most 2,000 server channels and 2,000 direct conversations at a time; a further `subscribe` is answered with the error `TOO_MANY_SUBSCRIPTIONS`.
 - For app developers: the realtime connection can now be closed by the server with 1011 `RESYNC` (reconnect and catch up) or 1012 (server restart, reconnect); someone removed from a voice channel gets the event `voice_removed` with a reason; a `subscribe` beyond the limit is answered with `TOO_MANY_SUBSCRIPTIONS`; `admin_subscribe` can answer `SERVICE_UNAVAILABLE` when the check cannot be made at that moment (the subscription then starts as soon as it can). Requests without a file are limited to 1 MB.
 - For operators: refused realtime connections are logged (at most one line a minute per reason) and counted (`kaiku_ws_refused_total`), as are connections the server closed for a resync and failed access checks. A file that cannot be removed from storage is reported in the error log after 8 failed attempts or 6 hours instead of after days; the admin guide says how to find such files.
@@ -241,6 +248,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Android: signing the phone in by scanning a QR code from the desktop without any confirmation. The phone's scanner now only reads Kaiku sign-in and setup codes of its own server.
 
 ### Fixed
+- Two people joining a voice channel at almost the same moment could end up not hearing each other.
+- Participants who left a voice channel stayed as silent tracks at everyone else; a member who left and came back could stay silent for the others.
+- A DM call that was ringing while the server restarted kept ringing; it now ends at the restart, and answered calls end shortly after if nobody comes back.
+- Someone blocked by a participant could still join a DM call directly.
 - Stopping the server (for example `docker stop` or a Kubernetes rollout, which send SIGTERM) now shuts it down cleanly within a few seconds instead of waiting to be killed. Voice participants leave their rooms normally, every open connection is closed with code 1012 (service restart) so apps reconnect right away, and buffered telemetry is written before the process exits. Open connections are told first, within moments of the stop signal, and neither a slow request nor a voice room that is slow to empty delays that. The whole shutdown takes at most 5 seconds from the signal; a request still running at that point is answered with 503. Bot connections are closed the same way.
 - An upload that is interrupted (the app closes, the connection drops, the server restarts) no longer leaves its file behind in storage.
 - Screen share slots no longer stay taken after a server restart, and joining a voice channel again from another device ends the screen share and camera of the previous connection instead of leaving them behind.
