@@ -4,114 +4,93 @@ import android.app.Activity
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
+import io.mockk.slot
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** A passkey request is handed to Credential Manager only for the configured server. */
+/** A passkey request is handed to Credential Manager only for the configured server's exact host. */
 class RpIdBindingTest {
 
-    private fun ok(server: String?, rpId: String?) = assertTrue("$rpId for $server", RpIdBinding.allowed(rpId, server))
-    private fun no(server: String?, rpId: String?) = assertFalse("$rpId for $server", RpIdBinding.allowed(rpId, server))
+    /**
+     * The whole rule as one table: server URL, RP ID from the request, allowed. The RP ID must
+     * equal the server's host, already in canonical form (lower-case ASCII, punycode); nothing is
+     * converted and no parent domain counts.
+     */
+    private val table: List<Triple<String?, String?, Boolean>> = listOf(
+        Triple("https://kaiku.example", "kaiku.example", true),
+        Triple("https://chat.kaiku.example", "chat.kaiku.example", true),
+        // Parent domains, including public suffixes, never count.
+        Triple("https://chat.kaiku.example", "kaiku.example", false),
+        Triple("https://a.co.uk", "co.uk", false),
+        Triple("https://x.github.io", "github.io", false),
+        Triple("https://mallory.duckdns.org", "duckdns.org", false),
+        // Children, siblings, look-alikes.
+        Triple("https://kaiku.example", "chat.kaiku.example", false),
+        Triple("https://kaiku.example", "evil-kaiku.example", false),
+        Triple("https://kaiku.example", "evilkaiku.example", false),
+        Triple("https://kaiku.example", "other.example", false),
+        // Not canonical: refused, never converted (what is checked is what is forwarded).
+        Triple("https://kaiku.example", "KAIKU.example", false),
+        Triple("https://kaiku.example", "Kaiku.Example", false),
+        Triple("https://strasse.example", "straße.example", false),
+        Triple("https://xn--strae-oqa.example", "straße.example", false),
+        Triple("https://xn--bcher-kva.example", "bücher.example", false),
+        Triple("https://kaiku.example", "ｋａｉｋｕ.example", false), // full-width letters
+        Triple("https://kaiku.example", "kaiku。example", false), // ideographic full stop
+        Triple("https://kaiku.example", "kai​ku.example", false), // zero-width space
+        Triple("https://kaiku.example", "kai‍ku.example", false), // zero-width joiner
+        Triple("https://kaiku.example", "kai­ku.example", false), // soft hyphen
+        Triple("https://kaiku.example", "﻿kaiku.example", false),
+        Triple("https://kaiku.example", "kaiku.example.", false), // trailing dot
+        Triple("https://kaiku.example", ".kaiku.example", false),
+        Triple("https://kaiku.example", "kaiku..example", false),
+        Triple("https://kaiku.example", " kaiku.example", false),
+        Triple("https://kaiku.example", "kaiku.example ", false),
+        Triple("https://kaiku.example", "kaiku.example\n", false),
+        Triple("https://kaiku.example:8443", "kaiku.example:8443", false), // port in the RP ID
+        Triple("https://kaiku.example", "kaiku.example/x", false),
+        Triple("https://kaiku.example", "user@kaiku.example", false),
+        Triple("https://kaiku.example", "https://kaiku.example", false),
+        Triple("https://kaiku.example", "*.kaiku.example", false),
+        Triple("https://kaiku.example", "", false),
+        Triple("https://kaiku.example", null, false),
+        // Internationalised hosts: the server sends punycode, and so must the request.
+        Triple("https://xn--bcher-kva.example", "xn--bcher-kva.example", true),
+        // The server URL: its port and path are ignored; user info, cleartext, junk refuse.
+        Triple("https://kaiku.example:8443", "kaiku.example", true),
+        Triple("https://kaiku.example:8443/some/path?q#f", "kaiku.example", true),
+        Triple("https://KAIKU.Example", "kaiku.example", true),
+        Triple("https://kaiku.example.", "kaiku.example", true),
+        Triple("https://user@kaiku.example", "kaiku.example", false),
+        Triple("https://user:pw@kaiku.example", "kaiku.example", false),
+        Triple("http://kaiku.example", "kaiku.example", false), // the app never talks cleartext
+        Triple("ftp://kaiku.example", "kaiku.example", false),
+        Triple("//kaiku.example", "kaiku.example", false),
+        Triple("not a url", "kaiku.example", false),
+        Triple("", "kaiku.example", false),
+        Triple(null, "kaiku.example", false),
+        // IP addresses: exactly equal only.
+        Triple("https://192.168.1.5:8443", "192.168.1.5", true),
+        Triple("https://192.168.1.5", "168.1.5", false),
+        Triple("https://192.168.1.5", "192.168.1.6", false),
+        Triple("https://[::1]:8443", "::1", true),
+        Triple("https://[::1]:8443", "[::1]", false),
+        Triple("https://[::1]:8443", "::2", false),
+        Triple("https://kaiku.example", "127.0.0.1", false),
+        // Single-label test hosts: exactly equal only.
+        Triple("https://localhost:8443", "localhost", true),
+        Triple("https://kaiku.example", "example", false),
+    )
 
-    @Test fun `the exact host is allowed`() {
-        ok("https://kaiku.example", "kaiku.example")
-        ok("https://chat.kaiku.example", "chat.kaiku.example")
-    }
-
-    @Test fun `a registrable parent domain is allowed`() {
-        ok("https://chat.kaiku.example", "kaiku.example")
-        ok("https://a.b.kaiku.example", "kaiku.example")
-        ok("https://a.b.kaiku.example", "b.kaiku.example")
-    }
-
-    @Test fun `a child, a sibling or an unrelated host is refused`() {
-        no("https://kaiku.example", "chat.kaiku.example")
-        no("https://chat.kaiku.example", "other.kaiku.example")
-        no("https://kaiku.example", "other.example")
-    }
-
-    @Test fun `a suffix without a label boundary is refused`() {
-        no("https://kaiku.example", "evilkaiku.example")
-        no("https://evilkaiku.example", "kaiku.example")
-        no("https://chat.evilkaiku.example", "kaiku.example")
-    }
-
-    @Test fun `a single label is never a parent`() {
-        no("https://chat.kaiku.example", "example")
-        no("https://kaiku.example", "example")
-        no("https://kaiku.example", "")
-    }
-
-    @Test fun `case does not matter`() {
-        ok("https://KAIKU.Example", "kaiku.EXAMPLE")
-        ok("https://Chat.Kaiku.Example", "KAIKU.example")
-    }
-
-    @Test fun `the host's trailing dot is dropped, an rpId with one is refused`() {
-        ok("https://kaiku.example.", "kaiku.example")
-        no("https://kaiku.example", "kaiku.example.")
-        no("https://chat.kaiku.example", "kaiku.example.")
-    }
-
-    @Test fun `internationalised names compare in punycode`() {
-        ok("https://xn--bcher-kva.example", "bücher.example")
-        ok("https://xn--bcher-kva.example", "xn--bcher-kva.example")
-        ok("https://chat.xn--bcher-kva.example", "bücher.example")
-        no("https://xn--bcher-kva.example", "bucher.example")
-    }
-
-    @Test fun `the port of the server URL is ignored`() {
-        ok("https://kaiku.example:8443", "kaiku.example")
-        ok("https://chat.kaiku.example:8443/some/path", "kaiku.example")
-        no("https://kaiku.example:8443", "kaiku.example:8443")
-    }
-
-    @Test fun `IP literals match only exactly`() {
-        ok("http://192.168.1.5:8080", "192.168.1.5")
-        no("http://192.168.1.5", "168.1.5")
-        no("http://192.168.1.5", "1.5")
-        no("http://192.168.1.5", "192.168.1.6")
-        ok("http://[::1]:8080", "::1")
-        ok("http://[::1]:8080", "[::1]")
-        no("http://[::1]:8080", "::2")
-        no("https://kaiku.example", "127.0.0.1")
-    }
-
-    @Test fun `single-label hosts match only exactly`() {
-        ok("http://localhost:8080", "localhost")
-        ok("http://kaiku:8080", "kaiku")
-        no("http://kaiku:8080", "localhost")
-    }
-
-    @Test fun `a missing rpId or server refuses`() {
-        no("https://kaiku.example", null)
-        no(null, "kaiku.example")
-        no("", "kaiku.example")
-        no("not a url", "kaiku.example")
-    }
-
-    @Test fun `malformed rpIds are refused`() {
-        no("https://kaiku.example", ".kaiku.example")
-        no("https://chat.kaiku.example", ".kaiku.example")
-        no("https://a.kaiku.example", "a..example")
-        no("https://kaiku.example", "kaiku.example/x")
-        no("https://kaiku.example", "user@kaiku.example")
-        no("https://kaiku.example", "https://kaiku.example")
-        no("https://kaiku.example", " kaiku.example")
-        no("https://chat.kaiku.example", "*.kaiku.example")
-    }
-
-    @Test fun `the request's rpId is read from get and create options`() {
-        assertEquals("kaiku.example", RpIdBinding.rpIdOf("""{"challenge":"AQ","rpId":"kaiku.example"}"""))
-        assertEquals("kaiku.example", RpIdBinding.rpIdOf("""{"challenge":"AQ","rp":{"id":"kaiku.example","name":"K"}}"""))
-        assertEquals(null, RpIdBinding.rpIdOf("""{"challenge":"AQ"}"""))
-        assertEquals(null, RpIdBinding.rpIdOf("""{"rp":{"name":"K"}}"""))
-        assertEquals(null, RpIdBinding.rpIdOf("""{"rpId":{"x":1}}"""))
-        assertEquals(null, RpIdBinding.rpIdOf("not json"))
-        assertEquals(null, RpIdBinding.rpIdOf("[]"))
+    @Test fun `the rp id must equal the configured server's host`() {
+        val wrong = table.filter { (server, rp, expected) -> RpIdBinding.allowed(rp, server) != expected }
+        assertTrue("decided wrongly: $wrong", wrong.isEmpty())
     }
 
     private val activity: Activity = mockk(relaxed = true)
@@ -124,9 +103,54 @@ class RpIdBindingTest {
         assertEquals(PasskeyOutcome.WrongServer, p.get(activity, """{"challenge":"AQ","rpId":"evil.example"}"""))
         assertEquals(PasskeyOutcome.WrongServer, p.create(activity, """{"challenge":"AQ","rp":{"id":"evil.example"}}"""))
         assertEquals(PasskeyOutcome.WrongServer, p.get(activity, """{"challenge":"AQ"}"""))
-        assertEquals(PasskeyOutcome.WrongServer, p.create(activity, """{"challenge":"AQ","rpId":"kaiku.example"}"""))
+        assertEquals(PasskeyOutcome.WrongServer, p.get(activity, "not json"))
+        assertEquals(PasskeyOutcome.WrongServer, p.get(activity, "[]"))
         coVerify(exactly = 0) { inner.get(any(), any()) }
         coVerify(exactly = 0) { inner.create(any(), any()) }
+    }
+
+    @Test fun `sign-in reads only a string rpId, never rp id`() = runTest {
+        val p = bound("https://kaiku.example")
+        for (rpId in listOf("""["kaiku.example"]""", "1", "true", "null", """{"id":"kaiku.example"}""")) {
+            val json = """{"challenge":"AQ","rpId":$rpId,"rp":{"id":"kaiku.example"}}"""
+            assertEquals(json, PasskeyOutcome.WrongServer, p.get(activity, json))
+        }
+        assertEquals(PasskeyOutcome.WrongServer, p.get(activity, """{"challenge":"AQ","rp":{"id":"kaiku.example"}}"""))
+        coVerify(exactly = 0) { inner.get(any(), any()) }
+    }
+
+    @Test fun `creation reads only a string rp id, never rpId`() = runTest {
+        val p = bound("https://kaiku.example")
+        assertEquals(PasskeyOutcome.WrongServer, p.create(activity, """{"challenge":"AQ","rpId":"kaiku.example"}"""))
+        assertEquals(PasskeyOutcome.WrongServer, p.create(activity, """{"challenge":"AQ","rpId":"kaiku.example","rp":{"id":["kaiku.example"]}}"""))
+        assertEquals(PasskeyOutcome.WrongServer, p.create(activity, """{"challenge":"AQ","rp":{"id":null}}"""))
+        assertEquals(PasskeyOutcome.WrongServer, p.create(activity, """{"challenge":"AQ","rp":"kaiku.example"}"""))
+        coVerify(exactly = 0) { inner.create(any(), any()) }
+    }
+
+    @Test fun `a request for the configured server is passed on`() = runTest {
+        coEvery { inner.get(any(), any()) } returns PasskeyOutcome.Success("{}")
+        coEvery { inner.create(any(), any()) } returns PasskeyOutcome.Success("{}")
+        val p = bound("https://kaiku.example:8443")
+        assertEquals(PasskeyOutcome.Success("{}"), p.get(activity, """{"challenge":"AQ","rpId":"kaiku.example"}"""))
+        assertEquals(PasskeyOutcome.Success("{}"), p.create(activity, """{"challenge":"AQ","rp":{"id":"kaiku.example","name":"K"}}"""))
+    }
+
+    @Test fun `what was checked is what is forwarded, also with a repeated key`() = runTest {
+        val sent = slot<String>()
+        coEvery { inner.get(any(), capture(sent)) } returns PasskeyOutcome.Success("{}")
+        val p = bound("https://kaiku.example")
+        // Whichever copy a reader would take, Credential Manager gets only the one that was checked.
+        p.get(activity, """{"challenge":"AQ","rpId":"evil.example","rpId":"kaiku.example","timeout":300000}""")
+        assertFalse(sent.captured, sent.captured.contains("evil.example"))
+        val obj = Json.parseToJsonElement(sent.captured).jsonObject
+        assertEquals("kaiku.example", obj["rpId"]!!.jsonPrimitive.content)
+        assertEquals("300000", obj["timeout"]!!.jsonPrimitive.content)
+
+        val created = slot<String>()
+        coEvery { inner.create(any(), capture(created)) } returns PasskeyOutcome.Success("{}")
+        p.create(activity, """{"challenge":"AQ","rp":{"id":"evil.example","id":"kaiku.example"}}""")
+        assertFalse(created.captured, created.captured.contains("evil.example"))
     }
 
     @Test fun `without a configured server nothing is asked`() = runTest {
@@ -134,19 +158,11 @@ class RpIdBindingTest {
         coVerify(exactly = 0) { inner.get(any(), any()) }
     }
 
-    @Test fun `a request for the configured server is passed on unchanged`() = runTest {
-        val json = """{"challenge":"AQ","rpId":"kaiku.example"}"""
-        val createJson = """{"challenge":"AQ","rp":{"id":"kaiku.example"}}"""
-        coEvery { inner.get(activity, json) } returns PasskeyOutcome.Success("{}")
-        coEvery { inner.create(activity, createJson) } returns PasskeyOutcome.Success("{}")
-        val p = bound("https://chat.kaiku.example")
-        assertEquals(PasskeyOutcome.Success("{}"), p.get(activity, json))
-        assertEquals(PasskeyOutcome.Success("{}"), p.create(activity, createJson))
-    }
-
-    @Test fun `a removal signal for another server is dropped`() = runTest {
+    @Test fun `a removal signal is passed on only for the configured server`() = runTest {
         val p = bound("https://kaiku.example")
         p.signalRemoved("evil.example", null, "aWQ", null)
+        p.signalRemoved("KAIKU.example", null, "aWQ", null)
+        p.signalRemoved("kaiku.example.", null, "aWQ", null)
         coVerify(exactly = 0) { inner.signalRemoved(any(), any(), any(), any()) }
         p.signalRemoved("kaiku.example", null, "aWQ", null)
         coVerify(exactly = 1) { inner.signalRemoved("kaiku.example", null, "aWQ", null) }
@@ -157,5 +173,15 @@ class RpIdBindingTest {
         val p = ServerBoundPasskeys(inner) { server }
         server = "https://other.example"
         assertEquals(PasskeyOutcome.WrongServer, p.get(activity, """{"rpId":"kaiku.example"}"""))
+    }
+
+    @Test fun `only the checked wrapper can reach Credential Manager`() {
+        // The app binds the wrapper, and the unwrapped implementation cannot be injected anywhere.
+        val binding = io.wolftown.kaiku.di.PasskeyModule::class.java.declaredMethods
+            .single { it.returnType == PasskeyCredentials::class.java }
+        assertEquals(ServerBoundPasskeys::class.java, binding.parameterTypes.single())
+        val injectable = CredentialManagerPasskeys::class.java.declaredConstructors
+            .any { c -> c.isAnnotationPresent(javax.inject.Inject::class.java) }
+        assertFalse("CredentialManagerPasskeys must not be injectable", injectable)
     }
 }

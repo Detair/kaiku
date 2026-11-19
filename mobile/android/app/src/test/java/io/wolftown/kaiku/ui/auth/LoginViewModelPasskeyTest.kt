@@ -180,7 +180,7 @@ class LoginViewModelPasskeyTest {
 
     @Test
     fun `a passkey request for another server is stopped before Credential Manager and finish`() = runTest(dispatcher) {
-        // A3: the options name another site than the configured server.
+        // The options name another site than the configured server.
         coEvery { api.loginStart() } returns CeremonyStart(
             "c-2",
             Json.parseToJsonElement("""{"publicKey":{"challenge":"AQ","rpId":"evil.example"}}""").jsonObject,
