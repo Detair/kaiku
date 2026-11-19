@@ -14,7 +14,7 @@ import { currentPrompt, snoozePrompt } from "@/stores/security";
 import { requestSettings } from "@/stores/settingsNav";
 import { canUsePasskeys } from "@/lib/tauri/passkeys";
 import { passkeyFailureText } from "@/lib/authErrors";
-import { SetUpThisPcButton, canSetUpThisPc } from "@/components/auth/SetUpThisPc";
+import { SetUpThisPcButton, canSetUpThisPc } from "@/components/auth/SetUpThisPcButton";
 import SetupPhoneModal from "@/components/settings/security/SetupPhoneModal";
 
 const TEXT: Record<SecurityPrompt, MessageKey> = {

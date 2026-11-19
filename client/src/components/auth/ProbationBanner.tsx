@@ -15,7 +15,7 @@ import { canUsePasskeys } from "@/lib/tauri/passkeys";
 import { passkeyFailureText } from "@/lib/authErrors";
 import { isTauri } from "@/lib/tauri/common";
 import LinuxPasskeyHint from "./LinuxPasskeyHint";
-import { SetUpThisPcButton, canSetUpThisPc } from "./SetUpThisPc";
+import { SetUpThisPcButton, canSetUpThisPc } from "./SetUpThisPcButton";
 
 // Per chat-only session, not stored: the banner comes back after a restart
 // and for every new chat-only session.

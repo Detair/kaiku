@@ -31,8 +31,7 @@ import {
   startPcSetupPasskey,
   type PcSetupStatus,
 } from "@/lib/tauri/pcSetup";
-import { isProbation, replaceSessionWithPasskey } from "@/stores/auth";
-import { meSecurity } from "@/stores/security";
+import { replaceSessionWithPasskey } from "@/stores/auth";
 import DialogShell from "./DialogShell";
 import QrCodeImage from "./QrCodeImage";
 import CodeEntry from "./CodeEntry";
@@ -411,33 +410,3 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
 };
 
 export default SetUpThisPc;
-
-// ---------------------------------------------------------------------------
-// The entry point of the banners
-// ---------------------------------------------------------------------------
-
-/** Whether "Set up this PC" is on offer: a chat-only session whose account has a phone that can confirm. */
-export const canSetUpThisPc = (): boolean => isProbation() && meSecurity()?.can_set_up_this_pc === true;
-
-/** The button and its dialog. `primary`: the first action of its row. */
-export const SetUpThisPcButton: Component<{ primary?: boolean }> = (props) => {
-  const [open, setOpen] = createSignal(false);
-  return (
-    <>
-      <button
-        type="button"
-        class={
-          props.primary
-            ? "btn-primary min-h-11 text-base"
-            : "min-h-11 px-3 rounded-lg text-base text-text-primary bg-surface-layer2 hover:bg-white/10"
-        }
-        onClick={() => setOpen(true)}
-      >
-        {t("auth.pcSetup.button")}
-      </button>
-      <Show when={open()}>
-        <SetUpThisPc onClose={() => setOpen(false)} />
-      </Show>
-    </>
-  );
-};

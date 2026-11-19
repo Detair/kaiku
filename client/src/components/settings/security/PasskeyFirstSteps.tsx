@@ -10,7 +10,7 @@ import { Component, Show } from "solid-js";
 import { useNavigate } from "@solidjs/router";
 import { t } from "@/i18n";
 import { isProbation } from "@/stores/auth";
-import { SetUpThisPcButton, canSetUpThisPc } from "@/components/auth/SetUpThisPc";
+import { SetUpThisPcButton, canSetUpThisPc } from "@/components/auth/SetUpThisPcButton";
 import { secondaryButton } from "./SectionCard";
 
 const PasskeyFirstSteps: Component<{ onSetUpPhone: () => void }> = (props) => {
