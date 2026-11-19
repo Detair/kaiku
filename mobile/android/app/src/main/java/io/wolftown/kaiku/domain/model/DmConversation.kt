@@ -1,6 +1,8 @@
 package io.wolftown.kaiku.domain.model
 
+import io.wolftown.kaiku.domain.AttachmentKind
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.Transient
 
 /**
  * A direct-message conversation as returned by `GET /api/dm`.
@@ -51,4 +53,11 @@ data class LastMessagePreview(
     val userId: String? = null,
     val username: String? = null,
     val createdAt: String = "",
+    /**
+     * Local only, from a live `message_new`: the first attachment's kind.
+     * The server's list does not carry attachments, so it is null there.
+     */
+    @Transient val attachmentKind: AttachmentKind? = null,
+    /** Local only, from a live `message_new`: the content is ciphertext and is never shown. */
+    @Transient val encrypted: Boolean = false,
 )

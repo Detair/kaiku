@@ -14,6 +14,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -22,7 +23,15 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import coil3.compose.AsyncImage
 import io.wolftown.kaiku.R
 import io.wolftown.kaiku.data.repository.DmRepository
+import io.wolftown.kaiku.domain.AttachmentKind
+import io.wolftown.kaiku.domain.PreviewBody
+import io.wolftown.kaiku.domain.PreviewSender
+import io.wolftown.kaiku.domain.formatListTime
 import io.wolftown.kaiku.domain.model.DmConversation
+import io.wolftown.kaiku.domain.previewBody
+import io.wolftown.kaiku.domain.previewSender
+import java.time.Instant
+import java.time.ZoneId
 import io.wolftown.kaiku.ui.shared.resolveServerUrl
 
 /**
@@ -147,6 +156,7 @@ private fun DmConversationRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .heightIn(min = 72.dp)
             .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -177,33 +187,70 @@ private fun DmConversationRow(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
-            val preview = if (isKaiku) stringResource(R.string.security_kaiku_dm_subtitle) else dm.lastMessage?.let { last ->
-                last.username?.let { sender ->
-                    stringResource(R.string.dm_last_message_preview, sender, last.content)
-                } ?: last.content
-            }
-            if (preview != null) {
-                Text(
-                    text = preview,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
+            val preview = if (isKaiku) stringResource(R.string.security_kaiku_dm_subtitle) else conversationPreview(dm, currentUserId)
+            Text(
+                text = preview,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
         }
 
-        if (hasUnread) {
-            Spacer(modifier = Modifier.width(8.dp))
-            Badge {
+        // Time above the unread badge; no fixed sizes, so a large font grows the row.
+        Spacer(modifier = Modifier.width(8.dp))
+        Column(horizontalAlignment = Alignment.End) {
+            val time = formatListTime(
+                dm.lastMessage?.createdAt ?: dm.createdAt,
+                ZoneId.systemDefault(),
+                Instant.now(),
+                LocalConfiguration.current.locales[0],
+            )
+            if (time.isNotEmpty()) {
                 Text(
-                    text = if (dm.unreadCount > 99) {
-                        stringResource(R.string.dm_unread_overflow)
-                    } else {
-                        dm.unreadCount.toString()
-                    }
+                    text = time,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (hasUnread) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    softWrap = false,
                 )
             }
+            if (hasUnread) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Badge {
+                    Text(
+                        text = if (dm.unreadCount > 99) {
+                            stringResource(R.string.dm_unread_overflow)
+                        } else {
+                            dm.unreadCount.toString()
+                        }
+                    )
+                }
+            }
         }
+    }
+}
+
+/** "You: ok", "Anna: ok" (groups), "ok" (1:1), or the attachment's kind for a message without text. */
+@Composable
+internal fun conversationPreview(dm: DmConversation, currentUserId: String): String {
+    val last = dm.lastMessage ?: return stringResource(R.string.dm_preview_no_messages)
+    val body = when (val b = previewBody(last)) {
+        is PreviewBody.Text -> b.text
+        is PreviewBody.Attached -> stringResource(
+            when (b.kind) {
+                AttachmentKind.PHOTO -> R.string.dm_preview_photo
+                AttachmentKind.VIDEO -> R.string.dm_preview_video
+                AttachmentKind.AUDIO -> R.string.dm_preview_audio
+                AttachmentKind.FILE -> R.string.dm_preview_file
+            }
+        )
+        PreviewBody.SomeAttachment -> stringResource(R.string.dm_preview_attachment)
+        PreviewBody.Encrypted -> stringResource(R.string.dm_preview_encrypted)
+    }
+    return when (val sender = previewSender(dm, last, currentUserId)) {
+        PreviewSender.Own -> stringResource(R.string.dm_preview_own, body)
+        is PreviewSender.Named -> stringResource(R.string.dm_last_message_preview, sender.name, body)
+        PreviewSender.Hidden -> body
     }
 }

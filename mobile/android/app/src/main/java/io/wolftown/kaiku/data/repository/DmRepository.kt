@@ -5,7 +5,9 @@ import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.ws.KaikuWebSocket
 import io.wolftown.kaiku.data.ws.ServerEvent
 import io.wolftown.kaiku.di.ChatCoroutineScope
+import io.wolftown.kaiku.domain.attachmentKindOf
 import io.wolftown.kaiku.domain.model.DmConversation
+import io.wolftown.kaiku.domain.sortByActivity
 import io.wolftown.kaiku.domain.model.LastMessagePreview
 import io.wolftown.kaiku.domain.model.Message
 import kotlinx.coroutines.CancellationException
@@ -31,8 +33,9 @@ import javax.inject.Singleton
  *
  * The list is fetched from the REST API on demand; opening a DM marks it read
  * locally (and on the server) so its unread badge clears immediately.
- * A `dm_created` WebSocket event (C3) adds a new conversation at the top
- * without a reload.
+ * A `dm_created` WebSocket event (C3) adds a new conversation without a
+ * reload. The list is always ordered by last activity (last message, else
+ * creation), newest first, and re-sorted when a message arrives or is sent.
  */
 @Singleton
 class DmRepository @Inject constructor(
@@ -118,7 +121,7 @@ class DmRepository @Inject constructor(
             val liveOnly = current.filter {
                 it.id !in fetchedIds && (liveCreatedAt[it.id] ?: 0L) > startedAt
             }
-            val merged = liveOnly + fetched
+            val merged = sortByActivity(liveOnly + fetched)
             // The open DM is being read: the server's count does not apply.
             activeChannelId.value?.let { clearUnread(merged, it) } ?: merged
         }
@@ -149,7 +152,7 @@ class DmRepository @Inject constructor(
                     try {
                         val dm = dmApi.createDm(userId)
                         synchronized(epochLock) {
-                            if (epoch == startEpoch) _conversations.update { upsertKeepingState(it, dm) }
+                            if (epoch == startEpoch) _conversations.update { sortByActivity(upsertKeepingState(it, dm)) }
                         }
                         Result.success(dm.id)
                     } catch (e: CancellationException) {
@@ -196,12 +199,14 @@ class DmRepository @Inject constructor(
             userId = message.author.id,
             username = message.author.username,
             createdAt = message.createdAt,
+            attachmentKind = attachmentKindOf(message.attachments),
+            encrypted = message.encrypted,
         )
         val active = event.channelId == activeChannelId.value
         val own = message.author.id == authState.currentUserId.value
         var duplicate = false
         _conversations.update { current ->
-            current.map {
+            sortByActivity(current.map {
                 when {
                     it.id != event.channelId -> it
                     it.lastMessage?.id == message.id -> {
@@ -217,7 +222,7 @@ class DmRepository @Inject constructor(
                         },
                     )
                 }
-            }
+            })
         }
         if (active && !duplicate) markReadQuietly(event.channelId)
     }
@@ -242,7 +247,7 @@ class DmRepository @Inject constructor(
             return
         }
         liveCreatedAt[dm.id] = liveSeq.incrementAndGet()
-        _conversations.update { upsertAtTop(it, dm) }
+        _conversations.update { sortByActivity(upsertAtTop(it, dm)) }
     }
 
     companion object {
