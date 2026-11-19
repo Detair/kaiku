@@ -294,14 +294,17 @@ internal class VoiceRig(private val test: TestScope) {
         val notifications = mutableListOf<String>()
 
         private var running: OngoingCallNotification? = null
+        private val gate = io.wolftown.kaiku.service.CallNotificationGate()
 
         fun start() {
             if (running != null) return
+            gate.open()
             notifications += "foreground"
             notificationShown = true
             running = OngoingCallNotification(
                 scope = side,
                 callIsOn = { repository.currentChannelId.value != null },
+                gate = gate,
                 linkState = repository.linkState,
                 post = { reconnecting ->
                     notifications += if (reconnecting) "post:reconnecting" else "post:in-call"
@@ -317,6 +320,7 @@ internal class VoiceRig(private val test: TestScope) {
         fun stop() {
             val stopped = running ?: return
             running = null
+            gate.retire()
             notifications += "stop"
             notificationShown = false
             side.launch {

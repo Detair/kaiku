@@ -23,13 +23,16 @@ import kotlinx.coroutines.launch
  * behind: an ongoing "In voice channel" without a call. Therefore:
  * - an update is posted only while there is a call ([callIsOn], read at the
  *   moment of posting; the repository clears the call before it stops the
- *   service), and
+ *   service) and only through the [gate], which the stop request closes
+ *   first: check and post are one step under the gate's lock, so once the
+ *   stop was requested nothing is posted any more, and
  * - [destroy] ends the updates and removes whatever an update that was
  *   already on its way posted after the stop.
  */
 internal class OngoingCallNotification(
     private val scope: CoroutineScope,
     private val callIsOn: () -> Boolean,
+    private val gate: CallNotificationGate,
     private val linkState: Flow<VoiceLinkState>,
     private val post: (reconnecting: Boolean) -> Unit,
     private val cancel: () -> Unit,
@@ -47,7 +50,7 @@ internal class OngoingCallNotification(
             linkState
                 .map { it != VoiceLinkState.Stable }
                 .distinctUntilChanged()
-                .collect { reconnecting -> if (callIsOn()) post(reconnecting) }
+                .collect { reconnecting -> gate.ifOpen { if (callIsOn()) post(reconnecting) } }
         }
     }
 
@@ -57,4 +60,21 @@ internal class OngoingCallNotification(
         updates = null
         cancel()
     }
+}
+
+/**
+ * Orders "post the ongoing-call notification" against "stop the service".
+ * [open] when a call starts the service; [retire] before the stop is
+ * requested. [ifOpen] runs its block only while open, under the same lock,
+ * so no post can slip in between the retire and the stop.
+ */
+internal class CallNotificationGate {
+    private val lock = Any()
+    private var open = false
+
+    fun open() = synchronized(lock) { open = true }
+
+    fun retire() = synchronized(lock) { open = false }
+
+    fun ifOpen(block: () -> Unit) = synchronized(lock) { if (open) block() }
 }

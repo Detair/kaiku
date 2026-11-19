@@ -61,6 +61,7 @@ class VoiceCallService : Service() {
         OngoingCallNotification(
             scope = serviceScope,
             callIsOn = { voiceRepository.currentChannelId.value != null },
+            gate = notificationGate,
             linkState = voiceRepository.linkState,
             post = ::postNotification,
             cancel = { NotificationManagerCompat.from(this).cancel(NOTIFICATION_ID) },
@@ -74,6 +75,9 @@ class VoiceCallService : Service() {
     companion object {
         private val logger = Logger.getLogger("VoiceCallService")
         private const val NOTIFICATION_ID = 1001
+
+        /** Closed before every stop request, so no update is posted after it (see [OngoingCallNotification]). */
+        internal val notificationGate = CallNotificationGate()
 
         private const val EXTRA_CHANNEL_ID = "channel_id"
         private const val EXTRA_CHANNEL_NAME = "channel_name"
@@ -93,6 +97,7 @@ class VoiceCallService : Service() {
                 putExtra(EXTRA_CHANNEL_ID, channelId)
                 putExtra(EXTRA_CHANNEL_NAME, channelName)
             }
+            notificationGate.open()
             context.startForegroundService(intent)
         }
 
@@ -100,6 +105,7 @@ class VoiceCallService : Service() {
          * Stops the foreground voice call service.
          */
         fun stop(context: Context) {
+            notificationGate.retire()
             context.stopService(Intent(context, VoiceCallService::class.java))
         }
     }

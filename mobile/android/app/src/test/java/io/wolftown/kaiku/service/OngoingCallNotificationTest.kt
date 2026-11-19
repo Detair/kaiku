@@ -51,9 +51,11 @@ class OngoingCallNotificationTest {
         val notifications = Notifications()
         var callIsOn = true
         val link = MutableStateFlow<VoiceLinkState>(VoiceLinkState.Stable)
+        val gate = CallNotificationGate()
         val notification = OngoingCallNotification(
             scope = scope.backgroundScope,
             callIsOn = { callIsOn },
+            gate = gate,
             linkState = link,
             post = notifications::post,
             cancel = notifications::cancel,
@@ -61,8 +63,15 @@ class OngoingCallNotificationTest {
 
         /** The service starts as Android does it: foreground first, then the updates. */
         fun start() {
+            gate.open()
             notifications.foreground()
             notification.follow()
+        }
+
+        /** `VoiceCallService.stop`: the gate closes, then Android takes the notification away. */
+        fun stop() {
+            gate.retire()
+            notifications.stopRequested()
         }
     }
 
@@ -119,7 +128,7 @@ class OngoingCallNotificationTest {
         // A give-up: the call is cleared, the service is told to stop, and
         // only then does the link go back to stable.
         h.callIsOn = false
-        h.notifications.stopRequested()
+        h.stop()
         h.link.value = VoiceLinkState.Stable
         runCurrent()
 
@@ -136,10 +145,12 @@ class OngoingCallNotificationTest {
 
         // The link changes while the call still counts as on; by the time the
         // update is posted, Android has already taken the notification away.
-        h.notifications.stopRequested()
+        h.stop()
         h.link.value = VoiceLinkState.Stable
         runCurrent()
-        assertTrue(h.notifications.shown)
+        // NV7: nothing is posted once the stop was requested.
+        assertEquals(listOf("foreground", "post:reconnecting", "stop"), h.notifications.calls)
+        assertFalse(h.notifications.shown)
 
         h.notification.destroy()
 
@@ -153,7 +164,7 @@ class OngoingCallNotificationTest {
         h.start()
         runCurrent()
 
-        h.notifications.stopRequested()
+        h.stop()
         h.notification.destroy()
         h.link.value = VoiceLinkState.Interrupted
         runCurrent()
