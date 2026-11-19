@@ -26,7 +26,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** AND-B-7: the chat list follows the last activity and previews attachments. */
+/** The chat list follows the last activity and previews attachments. */
 @OptIn(ExperimentalCoroutinesApi::class)
 class DmRepositoryOrderTest {
     private val events = MutableSharedFlow<ServerEvent>(extraBufferCapacity = 16)
@@ -63,6 +63,7 @@ class DmRepositoryOrderTest {
     }
 
     @Test
+    // The order is what this test proves; "no unread for an own message" is older behaviour it keeps.
     fun `a message I sent moves the conversation up without adding unread`() = runTest {
         val repo = loaded()
         events.emit(message("bert", "b2", "me", "2026-11-19T11:00:00Z"))
@@ -71,6 +72,14 @@ class DmRepositoryOrderTest {
         assertEquals("bert", top.id)
         assertEquals(1, top.unreadCount)
         assertEquals("me", top.lastMessage?.userId)
+    }
+
+    @Test
+    fun `a message with the same time as the top conversation still moves its conversation to the top`() = runTest {
+        val repo = loaded()
+        events.emit(message("bert", "b2", "bert", "2026-11-19T10:00:00Z"))
+        runCurrent()
+        assertEquals(listOf("bert", "anna"), repo.conversations.value.map { it.id })
     }
 
     @Test

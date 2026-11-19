@@ -81,17 +81,24 @@ class DmRepository @Inject constructor(
     private val epochLock = Any()
     private var epoch = 0L
 
+    /** Loads started, and the newest one that published. Guarded by [epochLock]. */
+    private var loadsStarted = 0L
+    private var newestPublished = 0L
+
     /**
      * Session teardown: drops the conversation list, the open DM and live-DM
-     * bookkeeping. A load still in flight publishes nothing.
+     * bookkeeping, and cancels every "New message" request of the session.
+     * A load still in flight publishes nothing.
      */
     fun clearSession() {
-        synchronized(epochLock) {
+        val cancelled = synchronized(epochLock) {
             epoch++
             activeChannelId.value = null
             liveCreatedAt.clear()
             _conversations.value = emptyList()
+            opening.values.toList().also { opening.clear() }
         }
+        cancelled.forEach { it.cancel() }
     }
 
     /** Sequence of dm_created events, and the position each live DM arrived at. */
@@ -105,12 +112,15 @@ class DmRepository @Inject constructor(
      * is missing from the server's list is dropped.
      */
     suspend fun loadDms() {
-        val startEpoch = synchronized(epochLock) { epoch }
+        val (startEpoch, load) = synchronized(epochLock) { epoch to ++loadsStarted }
         val startedAt = liveSeq.get()
         val fetched = dmApi.getDms()
         val fetchedIds = fetched.mapTo(HashSet()) { it.id }
         synchronized(epochLock) {
             if (epoch != startEpoch) return
+            // An older load answering after a newer one has nothing newer to say.
+            if (load < newestPublished) return
+            newestPublished = load
             publishFetched(fetched, fetchedIds, startedAt)
         }
         activeChannelId.value?.let { markReadQuietly(it) }
@@ -129,8 +139,14 @@ class DmRepository @Inject constructor(
         fetchedIds.forEach { liveCreatedAt.remove(it) }
     }
 
-    /** "New message" requests in flight, by the other person's user id. Guarded by itself. */
-    private val opening = HashMap<String, Deferred<Result<String>>>()
+    /** One "New message" request: of the session [epoch], to the person [userId]. */
+    private data class OpenKey(val epoch: Long, val userId: String)
+
+    /** "New message" requests in flight. Guarded by [epochLock], so they never outlive their session. */
+    private val opening = HashMap<OpenKey, Deferred<Result<String>>>()
+
+    /** The session ended while a request of it was waiting or running. */
+    private class SessionEnded : CancellationException("session ended")
 
     /**
      * Returns the id of the 1:1 DM with [userId], creating it if needed.
@@ -144,28 +160,60 @@ class DmRepository @Inject constructor(
      */
     suspend fun openDirectMessage(userId: String): String {
         existingDirectMessage(_conversations.value, userId, authState.currentUserId.value)?.let { return it.id }
-        val request = synchronized(opening) {
-            opening.getOrPut(userId) {
-                val startEpoch = synchronized(epochLock) { epoch }
-                scope.async {
-                    // The failure travels in the Result: a failed create must not fail the scope.
-                    try {
-                        val dm = dmApi.createDm(userId)
-                        synchronized(epochLock) {
-                            if (epoch == startEpoch) _conversations.update { sortByActivity(upsertKeepingState(it, dm)) }
-                        }
-                        Result.success(dm.id)
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        Result.failure(e)
-                    } finally {
-                        synchronized(opening) { opening.remove(userId) }
-                    }
-                }
+        var created: Deferred<Result<String>>? = null
+        val (key, request) = synchronized(epochLock) {
+            val key = OpenKey(epoch, userId)
+            key to opening.getOrPut(key) {
+                // Lazy: it cannot start before it is in the map, and sign-out can cancel it before it sends.
+                scope.async(start = CoroutineStart.LAZY) { create(key) }.also { created = it }
             }
         }
-        return request.await().getOrThrow()
+        created?.let { mine ->
+            mine.invokeOnCompletion {
+                synchronized(epochLock) { if (opening[key] === mine) opening.remove(key) }
+            }
+            mine.start()
+        }
+        val result = request.await()
+        // An answer of an ended session never reaches the next one (or anyone).
+        if (synchronized(epochLock) { epoch } != key.epoch) throw SessionEnded()
+        return result.getOrThrow()
+    }
+
+    /** The request of [key]: nothing goes out once its session ended. */
+    private suspend fun create(key: OpenKey): Result<String> {
+        if (synchronized(epochLock) { epoch } != key.epoch) throw SessionEnded()
+        // The failure travels in the Result: a failed create must not fail the scope.
+        return try {
+            val dm = dmApi.createDm(key.userId)
+            var unknown = false
+            synchronized(epochLock) {
+                if (epoch != key.epoch) throw SessionEnded()
+                unknown = _conversations.value.none { it.id == dm.id }
+                // Kept by a list load that started before and answers without it.
+                liveCreatedAt[dm.id] = liveSeq.incrementAndGet()
+                _conversations.update { sortByActivity(upsertKeepingState(it, dm)) }
+            }
+            // A conversation the cached list did not have: its preview and unread count come from the server.
+            if (unknown) reloadQuietly()
+            Result.success(dm.id)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    private fun reloadQuietly() {
+        scope.launch {
+            try {
+                loadDms()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                logger.warning("Failed to reload direct messages (${e::class.simpleName})")
+            }
+        }
     }
 
     /**
@@ -206,7 +254,7 @@ class DmRepository @Inject constructor(
         val own = message.author.id == authState.currentUserId.value
         var duplicate = false
         _conversations.update { current ->
-            sortByActivity(current.map {
+            val updated = current.map {
                 when {
                     it.id != event.channelId -> it
                     it.lastMessage?.id == message.id -> {
@@ -222,7 +270,10 @@ class DmRepository @Inject constructor(
                         },
                     )
                 }
-            })
+            }
+            // The updated conversation goes first before the (stable) sort, so it wins a tie.
+            val (moved, rest) = if (duplicate) emptyList<DmConversation>() to updated else updated.partition { it.id == event.channelId }
+            sortByActivity(moved + rest)
         }
         if (active && !duplicate) markReadQuietly(event.channelId)
     }
