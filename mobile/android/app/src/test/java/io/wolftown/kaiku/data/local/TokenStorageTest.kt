@@ -124,6 +124,53 @@ class TokenStorageTest {
         assertEquals(generation, store.getSessionGeneration())
     }
 
+    /**
+     * Preferences whose next editors fail as scripted: [failures] holds, per editor opened from now
+     * on, what its first write throws (null: it works); [commitFails] makes those editors' commit
+     * report false instead.
+     */
+    private class ScriptedPreferences(private val backing: InMemorySharedPreferences = InMemorySharedPreferences()) :
+        android.content.SharedPreferences by backing {
+        val failures = ArrayDeque<Throwable?>()
+        override fun edit(): android.content.SharedPreferences.Editor {
+            val e = backing.edit()
+            val fail = failures.removeFirstOrNull()
+            return object : android.content.SharedPreferences.Editor by e {
+                private fun check() { fail?.let { throw it } }
+                override fun putString(key: String?, value: String?) = apply { check(); e.putString(key, value) }
+                override fun putLong(key: String?, value: Long) = apply { check(); e.putLong(key, value) }
+                override fun remove(key: String?) = apply { e.remove(key) }
+                override fun commit(): Boolean = e.commit()
+            }
+        }
+    }
+
+    /** A key store failure of the I/O kind at the first write makes the write fail, not the app. */
+    @Test
+    fun `a session write failing with an io error is not stored and nothing escapes`() {
+        val prefs = ScriptedPreferences()
+        val store = TokenStorage(prefs)
+        store.saveTokens("access-1", "refresh-1", 900, "user-1")
+        prefs.failures += java.io.IOException("key store")
+
+        assertFalse(store.saveSession("https://chat.example.com", "access-2", "refresh-2", 900, "user-2"))
+        assertEquals("access-1", store.getAccessToken())
+    }
+
+    /** The write fails, and so does putting the old values back (either kind of key store failure): still only false. */
+    @Test
+    fun `a failing write-back after a failed session write lets nothing escape`() {
+        for (backFailure in listOf<Throwable>(java.io.IOException("key store"), java.security.GeneralSecurityException("key store"))) {
+            val prefs = ScriptedPreferences()
+            val store = TokenStorage(prefs)
+            store.saveTokens("access-1", "refresh-1", 900, "user-1")
+            prefs.failures += java.security.GeneralSecurityException("key store") // the write
+            prefs.failures += backFailure // the write-back
+
+            assertFalse(store.saveSession("https://chat.example.com", "access-2", "refresh-2", 900, "user-2"))
+        }
+    }
+
     @Test
     fun `conditional save writes nothing after clear`() {
         storage.clear()
