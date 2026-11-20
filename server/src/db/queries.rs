@@ -379,8 +379,9 @@ pub async fn create_session(
 ) -> sqlx::Result<Session> {
     sqlx::query_as::<_, Session>(
         r"
-        INSERT INTO sessions (id, user_id, token_hash, expires_at, ip_address, user_agent, city, country)
-        VALUES ($1, $2, $3, $4, $5::inet, $6, $7, $8)
+        INSERT INTO sessions (id, user_id, token_hash, expires_at, ip_address, user_agent,
+                              created_user_agent, city, country)
+        VALUES ($1, $2, $3, $4, $5::inet, $6, $6, $7, $8)
         RETURNING id, user_id, token_hash, expires_at, host(ip_address) as ip_address, user_agent, city, country, created_at
         ",
     )

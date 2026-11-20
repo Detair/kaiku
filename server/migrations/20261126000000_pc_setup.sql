@@ -61,6 +61,12 @@ CREATE UNIQUE INDEX pc_setup_attempts_qr_token ON pc_setup_attempts (qr_token_ha
 CREATE INDEX idx_pc_setup_attempts_due ON pc_setup_attempts (expires_at)
     WHERE state IN ('waiting', 'claimed', 'code', 'enrolled');
 CREATE INDEX idx_pc_setup_attempts_user ON pc_setup_attempts (user_id);
+-- The client's User-Agent when the session was created. Refresh rotation
+-- updates `user_agent` with every refresh; the description the key phone shows
+-- and signs for an attempt comes from this value, which never changes.
+ALTER TABLE sessions ADD COLUMN created_user_agent TEXT
+    CHECK (created_user_agent IS NULL OR char_length(created_user_agent) <= 512);
+UPDATE sessions SET created_user_agent = left(user_agent, 512) WHERE user_agent IS NOT NULL;
 
 -- The challenge kind and its requester.
 ALTER TABLE approvals

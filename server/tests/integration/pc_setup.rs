@@ -1153,6 +1153,26 @@ async fn context_comes_from_the_session_row_not_the_request(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn a_refresh_cannot_change_the_description_the_phone_signs(pool: PgPool) {
+    let p = pc(&pool).await;
+    // Created by Firefox on Linux; a later refresh sent another User-Agent.
+    sqlx::query(
+        "UPDATE sessions
+            SET created_user_agent = 'Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0',
+                user_agent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15'
+          WHERE id = $1",
+    )
+    .bind(p.sid)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let (_, c, _) = claimed(&p).await;
+    let desc = c["context"]["client_description"].as_str().unwrap();
+    assert!(desc.contains("Firefox") && desc.contains("Linux"), "{desc}");
+    assert!(!desc.contains("Safari") && !desc.contains("macOS"), "{desc}");
+}
+
+#[sqlx::test]
 async fn no_route_returns_a_setup_token_for_pc_setup(pool: PgPool) {
     let p = pc(&pool).await;
     let mut bodies = Vec::new();

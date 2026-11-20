@@ -595,7 +595,9 @@ sequenceDiagram
   device must be active with `may_approve` on (`may_approve` off: 403 `APPROVAL_NOT_ALLOWED`, and the
   attempt expires with `may_approve_off`). The challenge is the `pc_setup` kind (0x06, C26) with
   `requester_kind = pc_setup_attempt`; the context shows the client description, the session's creation
-  time and the place from the stored session row, and a `sid_hash`.
+  time and the place from the stored session row, and a `sid_hash`. The description is built from the
+  User-Agent stored when the session was created (`sessions.created_user_agent`); a refresh updates
+  `user_agent` but not this value.
 - **Answer:** `approve` returns the code to the phone only (never to the PC, never again); `report` ends
   the attempt and the requesting session, marks no credential and records `pc_setup_reported`.
   **No** is `POST /api/pc-setups/{cid}/refuse` (unsigned). The phone polls

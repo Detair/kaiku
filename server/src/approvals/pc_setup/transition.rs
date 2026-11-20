@@ -184,7 +184,10 @@ async fn lock_session(
     sqlx::query_as(
         "SELECT id,
                 ended_at IS NULL AND expires_at > NOW() AND absolute_expires_at > NOW() AS live,
-                assurance, client_class, user_agent, city, country, created_at
+                assurance, client_class,
+                -- The User-Agent of the session's creation: a refresh cannot change it.
+                COALESCE(created_user_agent, user_agent) AS user_agent,
+                city, country, created_at
            FROM sessions WHERE id = $1 AND user_id = $2
             FOR UPDATE",
     )
