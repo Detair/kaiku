@@ -84,8 +84,16 @@ class SetupOwnerTest {
     private val use = UvPolicy.choose(30, true, true) as UvDecision.Use
     private val activeChallenge = SigFixtures.challengeFor(SigKind.DEVICE_LOGIN, 3, SigFixtures.V03_CONTEXT)
 
-    @Before fun setUp() = Dispatchers.setMain(UnconfinedTestDispatcher())
-    @After fun tearDown() = Dispatchers.resetMain()
+    /** The app-wide link holder is cleared around every test: a test that fails half way leaves nothing to the next. */
+    @Before fun setUp() {
+        io.wolftown.kaiku.navigation.PendingSetupLinks.clear()
+        Dispatchers.setMain(UnconfinedTestDispatcher())
+    }
+
+    @After fun tearDown() {
+        Dispatchers.resetMain()
+        io.wolftown.kaiku.navigation.PendingSetupLinks.clear()
+    }
 
     /** A fresh phone (no key device, no key, signed out) and its one setup. */
     private fun TestScope.phone(): Pair<SetupOwner, KeyDeviceFixture> {
