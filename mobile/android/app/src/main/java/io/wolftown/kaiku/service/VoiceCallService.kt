@@ -177,7 +177,7 @@ class VoiceCallService : Service() {
         }
 
         ongoingNotification.follow(intent?.getLongExtra(EXTRA_GENERATION, 0L) ?: 0L)
-        logger.info("VoiceCallService started for channel: $channelName")
+        logger.info("VoiceCallService started")
         return START_NOT_STICKY
     }
 

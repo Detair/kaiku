@@ -455,4 +455,30 @@ class VoiceSocketGatingTest {
         assertEquals("screen_video:s1", resent.single().trackSource)
         assertEquals(2L, rig.socket.frames.last { it.second is ClientEvent.VoiceSetLayerPreference }.first)
     }
+
+    @Test
+    fun `a quality change while the rejoin resends the old one is the last frame`() = rigTest { rig ->
+        rig.joinAndConnect() // socket 1
+        rig.events.tryEmit(
+            ServerEvent.ScreenShareStarted(rig.channel, "anna", "s1", "anna", "Screen", false, "high", "2026-11-19T10:00:00Z")
+        )
+        runCurrent()
+        rig.repository.setLayerPreference("s1", "high")
+        var other: Thread? = null
+        rig.socket.beforeSend = { id, event ->
+            // The rejoin resends "high"; at this moment the user picks "low" on another thread.
+            if (id == 2L && event is ClientEvent.VoiceSetLayerPreference && event.preferredLayer == "high" && other == null) {
+                other = kotlin.concurrent.thread { rig.repository.setLayerPreference("s1", "low") }
+                other!!.join(300)
+            }
+        }
+
+        rig.socket.drop(); runCurrent()
+        rig.socket.ready(); runCurrent() // socket 2
+        advanceTimeBy(1_000); runCurrent()
+        other?.join()
+
+        val last = rig.socket.frames.map { it.second }.filterIsInstance<ClientEvent.VoiceSetLayerPreference>().last()
+        assertEquals("low", last.preferredLayer)
+    }
 }

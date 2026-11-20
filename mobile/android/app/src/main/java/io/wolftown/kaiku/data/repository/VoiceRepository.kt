@@ -266,7 +266,7 @@ class VoiceRepository @Inject constructor(
         }
         val joined = session.firstJoin.isCompleted
         if (failure != null) {
-            logger.log(Level.SEVERE, "Voice signalling failed: ${session.channelId} (joined=$joined)", failure)
+            logger.log(Level.SEVERE, "Voice signalling failed (joined=$joined)", failure)
         }
         withContext(NonCancellable) {
             // Already closed after a give-up. A call that was up offers "Rejoin";
@@ -413,7 +413,7 @@ class VoiceRepository @Inject constructor(
         val session = openSession(channelId, call)
         try {
             session.firstJoin.await()
-            logger.info("Joined voice channel: $channelId")
+            logger.info("Joined a voice channel")
         } catch (e: CancellationException) {
             // The caller dropped the join: its session ends here. (If the
             // session ended by itself, that side tears it down.)
@@ -544,7 +544,7 @@ class VoiceRepository @Inject constructor(
         webRtcManager.closePeerConnections()
         audioRouteManager.abandonAudioFocus()
         VoiceCallService.stop(context)
-        logger.info("Voice session ended at sign-out: ${session.channelId}")
+        logger.info("Voice session ended at sign-out")
     }
 
     /**
@@ -596,7 +596,7 @@ class VoiceRepository @Inject constructor(
                 }
                 _callEnds.tryEmit(CallVoiceEnd(session.channelId, why))
             }
-            logger.info("Voice session ended: ${session.channelId}")
+            logger.info("Voice session ended")
         }
     }
 
@@ -673,22 +673,31 @@ class VoiceRepository @Inject constructor(
         // Find the screen share to get the userId for the target
         val share = _screenShares.value.find { it.streamId == streamId } ?: return
 
-        _layerPreferences.value = _layerPreferences.value.toMutableMap().apply {
-            put(streamId, layer)
-        }
-
-        val session = synchronized(sessionLock) { live } ?: return
-        sendToPeer(
-            session,
-            ClientEvent.VoiceSetLayerPreference(
-                channelId = channelId,
-                targetUserId = share.userId,
-                trackSource = "screen_video:$streamId",
-                preferredLayer = layer
+        // One step with its frame (and with a rejoin's resend): the last frame is the latest choice.
+        synchronized(layerLock) {
+            _layerPreferences.value = _layerPreferences.value.toMutableMap().apply {
+                put(streamId, layer)
+            }
+            val session = synchronized(sessionLock) { live } ?: return
+            sendToPeer(
+                session,
+                ClientEvent.VoiceSetLayerPreference(
+                    channelId = channelId,
+                    targetUserId = share.userId,
+                    trackSource = "screen_video:$streamId",
+                    preferredLayer = layer
+                )
             )
-        )
-        logger.info("Set layer preference for stream $streamId: $layer")
+        }
+        logger.info("Set a screen share layer preference: $layer")
     }
+
+    /**
+     * Orders a layer choice (map update and its frame) against a rejoin's
+     * resend. Taken before [sessionLock], never inside it; nothing in it
+     * calls into WebRTC.
+     */
+    private val layerLock = Any()
 
     /**
      * Returns the default layer based on the current network type.
@@ -871,7 +880,7 @@ class VoiceRepository @Inject constructor(
                     RejoinVerdict.Unknown -> return VoiceSignalling.Attempt.Failed
                 }
             }
-            logger.info("Rejoining voice channel: $channelId")
+            logger.info("Rejoining the voice channel")
             val own = RunningAttempt(webRtcManager.closePeerConnections())
             attempt = own
             var connected = false
@@ -901,7 +910,8 @@ class VoiceRepository @Inject constructor(
         }
 
         /** Sends the stored layer choice of every screen share that is still on to the (new) peer. */
-        private fun resendLayerPreferences() {
+        private fun resendLayerPreferences() = synchronized(layerLock) {
+            // Read under the same lock as a change: a choice made meanwhile is never overwritten.
             val shares = _screenShares.value
             for ((streamId, layer) in _layerPreferences.value) {
                 val share = shares.find { it.streamId == streamId } ?: continue
@@ -935,7 +945,7 @@ class VoiceRepository @Inject constructor(
                     tearDown(session, sendLeave = true, notice = { rejoinFailedNotice(it, neverConnected) })
                 }
             }
-            logger.warning("Voice session gave up: $channelId")
+            logger.warning("Voice session gave up")
         }
     }
 
@@ -993,7 +1003,7 @@ class VoiceRepository @Inject constructor(
             // Wait until the owner (a running join or rejoin attempt) is gone.
             session.owner.join()
             tearDown(session, sendLeave = false, notice = { VoiceEndNotice.Removed(it.channelId, reason) })
-            logger.info("Removed from voice channel ${session.channelId} by the server: $reason")
+            logger.info("Removed from the voice channel by the server: $reason")
         }
     }
 
@@ -1182,7 +1192,7 @@ class VoiceRepository @Inject constructor(
                                 preferredLayer = defaultLayer
                             )
                         )
-                        logger.info("Auto-requested screen share ${event.streamId} at layer $defaultLayer")
+                        logger.info("Auto-requested a screen share at layer $defaultLayer")
                     }
                 }
             }

@@ -208,6 +208,9 @@ internal class VoiceRig(private val test: TestScope) {
             log += "DROP@$id"
         }
 
+        /** Runs right before a frame is recorded as sent (to interleave another thread). */
+        var beforeSend: ((Long, ClientEvent) -> Unit)? = null
+
         /** Like [KaikuWebSocket.sendOn]: the frame goes out on socket [id], or not at all. */
         fun sendOn(id: Long, event: ClientEvent): Boolean {
             val join = event is ClientEvent.VoiceJoin
@@ -216,6 +219,7 @@ internal class VoiceRig(private val test: TestScope) {
                 if (join) step("join:refused")
                 return false
             }
+            beforeSend?.invoke(id, event)
             frames += id to event
             log += "send:${event::class.simpleName}@$id"
             server.receive(id, event)
