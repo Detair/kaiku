@@ -46,6 +46,9 @@ const POLL_WAIT_S = 20;
 /** First pause after a failed poll; it doubles up to [`POLL_RETRY_MAX_MS`]. */
 const POLL_RETRY_MS = 3_000;
 const POLL_RETRY_MAX_MS = 30_000;
+/** Reads of a replaced attempt's final state after a restart, and the first gap. */
+const FINISH_READS = 3;
+const FINISH_READ_GAP_MS = 1_000;
 
 type Patch = Pick<PcSetupStatus, "state"> & Partial<Pick<PcSetupStatus, "reason" | "enrollment_id">>;
 
@@ -147,7 +150,9 @@ export const WebPasskeyStep: Component<PcSetupStepProps> = (props) => {
       const start = await startPcSetupPasskey(id);
       const credential = await createPasskeyCredential(start.options, mine.signal);
       await finishPcSetupPasskey(id, start.ceremony_id, credential, defaultPasskeyLabel());
-      if (!mine.signal.aborted) props.onState(id, { state: "completed", reason: null });
+      // The passkey exists: say so even if the step was left meanwhile (the
+      // dialog drops it for another attempt or after a server-reported end).
+      props.onState(id, { state: "completed", reason: null });
     } catch (err) {
       if (!mine.signal.aborted) {
         // The attempt cannot take a passkey this way: only Start again helps.
@@ -212,6 +217,12 @@ const KNOWN_REASONS = [
   "gone",
   "poll_refused",
 ];
+
+/**
+ * An end the client made up (a poll refused for a reason the server did not
+ * report): a server-confirmed end may still replace it.
+ */
+const clientMade = (s: PcSetupStatus): boolean => s.reason === "poll_refused";
 
 /** An unknown state or reason: the generic failure, never a specific end. */
 const isUnknown = (s: Pick<PcSetupStatus, "state" | "reason">): boolean =>
@@ -289,13 +300,17 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
     const cur = status();
     // Only answers about the attempt on screen count.
     if (cur && cur.attempt_id !== input.attempt_id) return;
-    // Every state that is not live (`completed` too) is final.
-    if (cur && !isLive(cur)) return;
     // An unknown reason, also on a live state, is the generic end (C27).
     const res: PcSetupStatus = isUnknown(input) && isLive(input) ? { ...input, state: "expired" } : input;
-    // A late answer never takes a step back (a code just typed, a finished
-    // passkey); only `claimed` may return to `waiting` (released, or expired).
-    if (cur && rank(res.state) < rank(cur.state) && !(cur.state === "claimed" && res.state === "waiting")) return;
+    if (cur && !isLive(cur)) {
+      // Every server-reported end (`completed` too) is final; an end the
+      // client made up gives way to an end the server reports.
+      if (!clientMade(cur) || isLive(res) || clientMade(res)) return;
+    } else if (cur && rank(res.state) < rank(cur.state) && !(cur.state === "claimed" && res.state === "waiting")) {
+      // A late answer never takes a step back (a code just typed, a finished
+      // passkey); only `claimed` may return to `waiting` (released, or expired).
+      return;
+    }
     setStatus((prev) => ({ ...res, enrollment_id: res.enrollment_id ?? prev?.enrollment_id }));
     if (res.state !== "waiting") setQr("");
     else if (res.qr_payload) setQr(res.qr_payload);
@@ -305,8 +320,10 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
   const patch = (attemptId: string, p: Patch) => {
     const cur = status();
     if (cur?.attempt_id !== attemptId) return;
-    // As for polls: never leave an end, never take a step back.
-    if (!isLive(cur) || rank(p.state) < rank(cur.state)) return;
+    // As for polls: never leave a server-reported end, never take a step back.
+    if (!isLive(cur)) {
+      if (!clientMade(cur) || LIVE_PC_SETUP_STATES.includes(p.state)) return;
+    } else if (rank(p.state) < rank(cur.state)) return;
     setStatus((prev) => (prev ? { ...prev, reason: null, ...p } : prev));
     if (p.state !== "waiting") setQr("");
     ended(p.state);
@@ -358,16 +375,27 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
   };
 
   /**
-   * After a restart from `code` or `enrolled`: if the old attempt completed
-   * (its finish won, Locking 6), the PC reports that and gives the new
-   * attempt up; otherwise nothing changes.
+   * After a restart from `code` or `enrolled`: if the replaced attempt
+   * completed (its finish won, Locking 6), the PC reports that and gives up
+   * the attempt it shows instead. The read is retried a few times; its
+   * answer counts until the dialog reaches another server-reported end,
+   * also after a further restart.
    */
-  const finishWon = async (mine: number, oldId: string, newId: string) => {
-    const old = await pollPcSetup(oldId, 0).catch(() => null);
-    if (old?.state !== "completed" || mine !== generation) return;
+  const finishWon = async (oldId: string) => {
+    let old: PcSetupStatus | null = null;
+    for (let i = 0; i < FINISH_READS; i++) {
+      if (closed) return;
+      old = await pollPcSetup(oldId, 0).catch(() => null);
+      if (old) break;
+      if (i + 1 < FINISH_READS) await sleep(FINISH_READ_GAP_MS * 2 ** i);
+    }
+    if (closed || old?.state !== "completed") return;
+    const cur = status();
+    if (cur && !isLive(cur) && !clientMade(cur)) return;
     generation++;
     polling?.abort();
-    void cancelPcSetup(newId).catch(() => undefined);
+    setStarting(false);
+    if (cur && isLive(cur)) void cancelPcSetup(cur.attempt_id).catch(() => undefined);
     setQr("");
     setStatus({ ...old, attempt_id: oldId });
   };
@@ -376,7 +404,7 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
     const mine = ++generation;
     polling?.abort();
     // Locking 6: a finish may have won against this restart; the attempt on
-    // screen is asked once more after the start (`finishWon`).
+    // screen is asked again after the start (`finishWon`).
     const previous = status();
     const mayHaveFinished = !!previous && ["code", "enrolled"].includes(previous.state);
     setStatus(null);
@@ -387,11 +415,14 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
     try {
       const started = await startPcSetup();
       if (mine !== generation) {
-        // The dialog closed meanwhile: give up the attempt the server just made.
-        if (closed) void cancelPcSetup(started.attempt_id).catch(() => undefined);
+        // The dialog closed, or a replaced attempt turned out completed,
+        // meanwhile: give up the attempt the server just made.
+        if (closed || status()?.state === "completed") {
+          void cancelPcSetup(started.attempt_id).catch(() => undefined);
+        }
         return;
       }
-      if (previous && mayHaveFinished) void finishWon(mine, previous.attempt_id, started.attempt_id);
+      if (previous && mayHaveFinished) void finishWon(previous.attempt_id);
       setStatus({ attempt_id: started.attempt_id, state: "waiting", reason: null });
       setQr(started.qr_payload);
       setStarting(false);
