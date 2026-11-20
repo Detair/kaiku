@@ -1238,11 +1238,13 @@ class SetupOwner internal constructor(
      * wait). [provisional]: the word came from the key-device probe, which is about this install,
      * not this key: the record says so until a signature of this key was accepted, and goes back
      * to [rec]'s phase if it is refused ([StoredKeyDevice.provisionalFrom]). A record whose key
-     * such a word was already found not to be about takes it no more.
+     * such a word was already found not to be about takes it no more: the screen says so and the
+     * server is asked again (at every return to the app, every 15 minutes, "Try again"); once the
+     * other key is removed there, the rule for unfinished claims applies.
      */
     private suspend fun onDone(a: Attempt?, rec: StoredKeyDevice, authenticatorState: String?, readyAt: String?, provisional: Boolean = false) {
         live(a)
-        if (provisional && rec.notThisKey) return show(a, SetupUi.Ended(R.string.setup_failed_generic, canRetry = false))
+        if (provisional && rec.notThisKey) return show(a, SetupUi.Ended(R.string.setup_not_this_key, canRetry = true))
         if (authenticatorState == "pending") {
             // Without its ready time (C27 always sends one) the device-login probe tells it.
             val at = parseInstant(readyAt) ?: return askKeyDevice(a, rec, taken = null, about = null)
@@ -1277,7 +1279,7 @@ class SetupOwner internal constructor(
 
     private suspend fun pending(a: Attempt?, rec: StoredKeyDevice, readyAt: java.time.Instant, provisional: Boolean = false) {
         live(a)
-        if (provisional && rec.notThisKey) return show(a, SetupUi.Ended(R.string.setup_failed_generic, canRetry = false))
+        if (provisional && rec.notThisKey) return show(a, SetupUi.Ended(R.string.setup_not_this_key, canRetry = true))
         val next = keyDevices.update(rec) {
             it.copy(
                 phase = KeyDevicePhase.PENDING, readyAt = readyAt, unanswered = null,

@@ -1415,9 +1415,18 @@ class SetupOwnerTest {
         val again = SetupPendingViewModel(owner(f))
         approval.nextChallenge = activeChallenge
         again.check()
-        assertTrue(again.ui.value is SetupUi.Ended)
+        assertEquals(SetupUi.Ended(R.string.setup_not_this_key, canRetry = true), again.ui.value)
         assertEquals(KeyDevicePhase.CLAIMING, f.repo.phase())
         assertTrue(f.keyStore.hasKey())
+        // Once the other key is removed on the server, the phone gets out by itself: the probe
+        // then says "no key device" and the rule for unfinished claims applies (times long over).
+        boot.advance(io.wolftown.kaiku.data.keydevice.KeyAnswers.CLAIM_LIFE_WITH_MARGIN)
+        approval.failWith = noKeyDeviceAt(f.repo.record.value!!.claimVoidAfter!!.plusSeconds(60))
+        again.check()
+        advanceTimeBy(10_000)
+        runCurrent()
+        assertNull(f.repo.local())
+        assertFalse(f.keyStore.hasKey())
     }
 
     // ── One link at a time on its way to the setup screen ─────────────────────────────────────

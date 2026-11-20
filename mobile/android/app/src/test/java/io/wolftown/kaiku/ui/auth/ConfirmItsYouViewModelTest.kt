@@ -386,4 +386,16 @@ class ConfirmItsYouViewModelTest {
         assertEquals(ConfirmDone.PENDING, w.ui.value.done)
         assertEquals(at, w.ui.value.readyAt)
     }
+
+    /** The two sign-in outcomes that keep the key say what happened and what the person can do. */
+    @Test fun `a refused other key and a lost install id each have their own text`() {
+        assertEquals(R.string.setup_not_this_key, signInResultText(DeviceSignInResult.Failed("NOT_THIS_KEY")))
+        assertEquals(R.string.confirm_install_unknown, signInResultText(DeviceSignInResult.Failed("INSTALL_ID_LOST")))
+        assertEquals(R.string.security_sign_in_failed, signInResultText(DeviceSignInResult.Failed("SOMETHING_ELSE")))
+        // At the end of a setup the first one is asked again, not left as a dead end.
+        assertEquals(
+            io.wolftown.kaiku.ui.auth.setup.SetupUi.Ended(R.string.setup_not_this_key, canRetry = true),
+            io.wolftown.kaiku.ui.auth.setup.finalSignInUi(DeviceSignInResult.Failed("NOT_THIS_KEY")),
+        )
+    }
 }

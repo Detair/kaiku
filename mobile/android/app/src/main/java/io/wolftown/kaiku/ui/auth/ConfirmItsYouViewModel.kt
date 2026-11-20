@@ -57,8 +57,14 @@ internal fun signInResultText(r: DeviceSignInResult): Int? = when (r) {
     DeviceSignInResult.Banned -> R.string.auth_login_banned
     DeviceSignInResult.Network -> R.string.security_network_error
     DeviceSignInResult.Expired -> R.string.security_took_too_long
-    is DeviceSignInResult.Failed ->
-        if (r.code == "UV_LOCKED_OUT") R.string.security_locked_out else R.string.security_sign_in_failed
+    is DeviceSignInResult.Failed -> when (r.code) {
+        "UV_LOCKED_OUT" -> R.string.security_locked_out
+        // The server's word about this install was about another key; the setup is back where it was.
+        "NOT_THIS_KEY" -> R.string.setup_not_this_key
+        // The install id this key was enrolled under is lost: the key is kept, nothing changed.
+        "INSTALL_ID_LOST" -> R.string.confirm_install_unknown
+        else -> R.string.security_sign_in_failed
+    }
 }
 
 /**

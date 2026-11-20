@@ -689,6 +689,15 @@ with a listed code, an unknown code, an unreadable body) keeps the key.
 | `POST /auth/enrollments/status` | 404 `ENROLLMENT_TOKEN_INVALID` | the enrolment is not known any more: the key device is asked; this alone forgets nothing |
 | `POST /auth/enrollments/status` | anything else | the key stays; the wait goes on |
 
+Taken together, the phone forgets a key or a record only in these cases: (1) the five refusals of
+the claim; (2) the claim check's new challenge for this enrolment and key (the earlier claim can no
+longer land); (3) the lost-claim rule below; (4) a stored `cancelled` or `failed` of the enrolment;
+(5) an unfinished claim once its time is over by the server's and the phone's measure and a later
+probe still finds no key device; (6) "no key device" or "removed" for an active or pending key device
+(not one that took the probe's word only provisionally, not one whose install id is lost); (7) the
+answer to its own removal; (8) Android invalidated the key; (9) the person discarded a setup that can
+never finish.
+
 A claim is sent once per challenge and never again. Checking a claim whose answer is not known asks
 for a new `enroll_pop` challenge for the same link and key: the server gives it only while the
 enrolment is still open, under the enrolment's lock, and voids every earlier challenge, so the old
