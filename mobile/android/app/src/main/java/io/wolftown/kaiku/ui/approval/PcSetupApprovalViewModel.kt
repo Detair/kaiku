@@ -76,6 +76,13 @@ class PcSetupApprovalViewModel @Inject constructor(
 ) : ViewModel() {
 
     private companion object {
+        /** The end reasons of C27; any other one reads as the generic failure. */
+        private val KNOWN_REASONS = setOf(
+            "session_ended", "device_revoked", "no_key_device", "may_approve_off", "account_banned",
+            "timeout", "code_expired", "restarted", "cancelled", "refused", "reported",
+            "too_many_codes", "enrollment_expired",
+        )
+
         val logger: Logger = Logger.getLogger("PcSetupApproval")
         const val POLL_INTERVAL_MS = 1_000L
     }
@@ -334,7 +341,12 @@ class PcSetupApprovalViewModel @Inject constructor(
      * The end text of a status, null while the attempt is live. A state or reason this app does not
      * know reads as the generic failure (C27) and ends polling.
      */
-    private fun endText(s: PcSetupPhoneStatus): Int? = when (s.state) {
+    private fun endText(s: PcSetupPhoneStatus): Int? = when {
+        s.reason != null && s.reason !in KNOWN_REASONS -> R.string.pc_setup_failed
+        else -> knownEndText(s)
+    }
+
+    private fun knownEndText(s: PcSetupPhoneStatus): Int? = when (s.state) {
         "waiting", "claimed", "code", "enrolled" -> null
         "completed" -> R.string.pc_setup_done
         "failed" -> R.string.pc_setup_too_many_codes

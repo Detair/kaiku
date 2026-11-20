@@ -381,6 +381,12 @@ class PcSetupApprovalViewModelTest {
         val cases = listOf(
             PcSetupPhoneStatus("time_travel") to R.string.pc_setup_failed,
             PcSetupPhoneStatus("expired", "some_new_reason") to R.string.pc_setup_failed,
+            // An unknown reason wins over a known state, live or ended.
+            PcSetupPhoneStatus("failed", "some_new_reason") to R.string.pc_setup_failed,
+            PcSetupPhoneStatus("refused", "some_new_reason") to R.string.pc_setup_failed,
+            PcSetupPhoneStatus("reported", "some_new_reason") to R.string.pc_setup_failed,
+            PcSetupPhoneStatus("code", "some_new_reason") to R.string.pc_setup_failed,
+            PcSetupPhoneStatus("enrolled", "some_new_reason") to R.string.pc_setup_failed,
             PcSetupPhoneStatus("expired", "timeout") to R.string.pc_setup_timeout,
             PcSetupPhoneStatus("cancelled", null) to R.string.pc_setup_cancelled,
             PcSetupPhoneStatus("cancelled", "restarted") to R.string.pc_setup_cancelled,
