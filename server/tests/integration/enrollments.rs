@@ -1775,3 +1775,220 @@ async fn attestation_leaf_must_certify_the_claimed_key(pool: PgPool) {
     })).await;
     assert_eq!(s, 201, "{b}");
 }
+
+/// The status answer as raw bytes, for the wire shape.
+async fn status_bytes(app: &TestApp, id: Uuid, secret: &str) -> (u16, String) {
+    use http_body_util::BodyExt;
+    let req = peer_request(Method::POST, "/auth/enrollments/status")
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            json!({"enrollment_id": id, "claim_secret": secret}).to_string(),
+        ))
+        .unwrap();
+    let resp = app.oneshot(req).await;
+    let code = resp.status().as_u16();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    (code, String::from_utf8(bytes.to_vec()).unwrap())
+}
+
+/// `(state, ended_at)` of an enrolment row.
+async fn stored(pool: &PgPool, id: Uuid) -> (String, Option<chrono::DateTime<chrono::Utc>>) {
+    sqlx::query_as("SELECT state, ended_at FROM enrollments WHERE id = $1")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// A claimed CLI enrolment: `(id, code, claim secret)`.
+async fn claimed_cli(app: &TestApp, user: Uuid) -> (Uuid, String, String) {
+    let issued = issue(app, user, EnrollmentVariant::Cli, Issuer::Cli)
+        .await
+        .unwrap();
+    let (s, c) = claim_with(
+        app,
+        &issued.setup_token,
+        &Phone::new(),
+        "Pixel 8",
+        good(),
+        "per_use",
+    )
+    .await;
+    assert_eq!(s, 201, "{c}");
+    (
+        issued.enrollment_id,
+        c["code"].as_str().unwrap().to_string(),
+        c["claim_secret"].as_str().unwrap().to_string(),
+    )
+}
+
+/// A status call for a claimed enrolment whose code time is over stores
+/// `expired` and answers it; a wrong claim secret changes nothing; a
+/// confirmation after that is refused with `ENROLLMENT_STATE`, even if
+/// the row's code time were still running.
+#[sqlx::test]
+async fn status_past_due_stores_expired_and_refuses_a_later_confirm(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let (id, code, secret) = claimed_cli(&app, user).await;
+    sqlx::query(
+        "UPDATE enrollments SET code_expires_at = NOW() - INTERVAL '1 second' WHERE id = $1",
+    )
+    .bind(id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    // A caller without the claim secret learns nothing and settles nothing.
+    let (s, _) = status(&app, id, &b64u_encode(&[7u8; 32])).await;
+    assert_eq!(s, 404);
+    assert_eq!(stored(&pool, id).await, ("claimed".to_string(), None));
+
+    let (s, st) = status(&app, id, &secret).await;
+    assert_eq!((s, st["state"].as_str()), (200, Some("expired")), "{st}");
+    let (state, ended_at) = stored(&pool, id).await;
+    assert_eq!(state, "expired");
+    assert!(ended_at.is_some(), "stored like the sweep stores it");
+    // Answered again from the stored row, unchanged.
+    let (_, again) = status(&app, id, &secret).await;
+    assert_eq!(again["state"], "expired");
+    assert_eq!(stored(&pool, id).await, (state, ended_at));
+
+    // `expired` is final: the stored state refuses the confirmation, not
+    // the clock.
+    sqlx::query(
+        "UPDATE enrollments SET code_expires_at = NOW() + INTERVAL '5 minutes' WHERE id = $1",
+    )
+    .bind(id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(matches!(
+        confirm_cli(&app, id, &code).await,
+        Err(ApprovalError::EnrollmentState)
+    ));
+    let devices: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM approval_devices WHERE enrollment_id = $1")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(devices, 0);
+}
+
+/// A confirmation that passed its own expiry check and has not committed
+/// yet: a status call that arrives after the code time is over waits for
+/// it and answers `done`, never `expired`.
+#[sqlx::test]
+async fn status_waits_for_a_running_confirmation_and_answers_done(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let (id, code, secret) = claimed_cli(&app, user).await;
+    sqlx::query(
+        "UPDATE enrollments SET code_expires_at = NOW() + INTERVAL '2 seconds' WHERE id = $1",
+    )
+    .bind(id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    // The confirmation runs inside the code time and is held before its commit.
+    let ctx = AuthCtx::from(&app.state);
+    let mut held = pool.begin().await.unwrap();
+    let (e, after) = confirm_tx(&mut held, &ctx, id, Confirmer::Cli, code.as_bytes())
+        .await
+        .unwrap();
+    assert_eq!(e.state, "done");
+    // The code time ends while the confirmation is still held.
+    loop {
+        let over: bool =
+            sqlx::query_scalar("SELECT code_expires_at <= NOW() FROM enrollments WHERE id = $1")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        if over {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let poll = status(&app, id, &secret);
+    tokio::pin!(poll);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(700), &mut poll)
+            .await
+            .is_err(),
+        "the status call waits for the running confirmation"
+    );
+    held.commit().await.unwrap();
+    vc_server::approvals::enrollments::after_done(&app.state, after).await;
+    let (s, st) = tokio::time::timeout(std::time::Duration::from_secs(10), poll)
+        .await
+        .expect("the status call answers once the confirmation committed");
+    assert_eq!((s, st["state"].as_str()), (200, Some("done")), "{st}");
+    assert_eq!(st["authenticator_state"], "active");
+    assert_eq!(stored(&pool, id).await.0, "done");
+}
+
+/// The other states answer as before, without a write; the answer carries
+/// the enrolment's id after the earlier fields, which keep their bytes.
+#[sqlx::test]
+async fn status_of_other_states_is_unchanged_and_carries_the_id(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+
+    // claimed, code time running
+    let (claimed, _, claimed_secret) = claimed_cli(&app, user).await;
+    // done
+    let (done, done_code, done_secret) = claimed_cli(&app, user).await;
+    confirm_cli(&app, done, &done_code).await.unwrap();
+    // cancelled
+    let (cancelled, _, cancelled_secret) = claimed_cli(&app, user).await;
+    {
+        let ctx = AuthCtx::from(&app.state);
+        let mut tx = pool.begin().await.unwrap();
+        cancel_tx(&mut tx, &ctx, cancelled, EnrollmentCanceller::Issuer)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    }
+    // failed
+    let (failed, failed_code, failed_secret) = claimed_cli(&app, user).await;
+    let wrong = if failed_code == "000000" {
+        "111111"
+    } else {
+        "000000"
+    };
+    for _ in 0..3 {
+        let _ = confirm_cli(&app, failed, wrong).await;
+    }
+    // expired by the sweep
+    let (swept, _, swept_secret) = claimed_cli(&app, user).await;
+    sqlx::query(
+        "UPDATE enrollments SET code_expires_at = NOW() - INTERVAL '1 second' WHERE id = $1",
+    )
+    .bind(swept)
+    .execute(&pool)
+    .await
+    .unwrap();
+    vc_server::auth::timers::run_once(&app.state).await.unwrap();
+
+    let cases = [
+        (claimed, &claimed_secret, "claimed", "null"),
+        (done, &done_secret, "done", "\"active\""),
+        (cancelled, &cancelled_secret, "cancelled", "null"),
+        (failed, &failed_secret, "failed", "null"),
+        (swept, &swept_secret, "expired", "null"),
+    ];
+    for (id, secret, want, authenticator) in cases {
+        let before = stored(&pool, id).await;
+        assert_eq!(before.0, want);
+        let (s, body) = status_bytes(&app, id, secret).await;
+        assert_eq!(s, 200, "{body}");
+        assert_eq!(
+            body,
+            format!(
+                r#"{{"state":"{want}","authenticator_state":{authenticator},"ready_at":null,"enrollment_id":"{id}"}}"#
+            )
+        );
+        assert_eq!(stored(&pool, id).await, before, "no write for {want}");
+    }
+}
