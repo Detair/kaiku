@@ -272,7 +272,7 @@ class EnrollmentIssuerViewModel internal constructor(
                 }
                 val digits = t.digits.toByteArray(Charsets.US_ASCII)
                 val prompt = UvPrompt(R.string.security_uv_title, activity.getString(R.string.issuer_uv_subtitle, ctx.label, ctx.subjectUsername))
-                when (val out = signer.sign(activity, ch, SigKind.ENROLL, local.userId, deviceIds.id(), Decision.APPROVE, digits, prompt)) {
+                when (val out = signer.sign(activity, ch, SigKind.ENROLL, local.userId, deviceIds.id(), Decision.APPROVE, digits, prompt, keyDevices.record.value?.keyId)) {
                     is SignOutcome.Rejected -> mismatch(ch.challengeId)
                     is SignOutcome.Uv -> _ui.value = when (out.result) {
                         UvResult.Cancelled -> t

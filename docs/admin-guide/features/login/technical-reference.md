@@ -627,6 +627,20 @@ reconciled) or "took too long" (sign-in). A key generated for a setup that was s
 deleted at once; a new key is never made while a claim of this phone is stored (the waiting screen
 reconciles it first).
 
+**The key record and the key: compare-and-set.** The phone keeps one record (server, account, key
+device id, enrolment id, the key's id = SHA-256 of its public key, the setup that made it, phase
+`CLAIMING` → `CLAIMED` → `PENDING` / `ACTIVE`) and one key under one Keystore alias. Both are reached
+through one component, and every change names what it expects: a key is made only while no record is
+stored (a key without a record is an unclaimed left-over and is deleted first; a new alias whose
+certificate cannot be read back is deleted again); the first record is written only where none is
+stored and the alias holds that record's key; a record is replaced or forgotten only by a caller
+holding that very record (all of the fields above), and its key is deleted only if the alias holds
+it; a signature is made only with the key the caller names (another key in the alias → nothing is
+signed, and nothing is forgotten). A write that does not reach storage is an error to the caller and
+changes nothing. A record that cannot be read (a Keystore failure, a damaged value) is "unreadable",
+not "absent": until it can be read the app restores no stored session, starts no setup, deletes no
+key, and shows one screen with "Try again".
+
 **The sign-in made only to remove the phone ("Use another account").** A signed-out key phone signs
 in with its key only to remove itself (`key_device.remove` needs a session). That session never
 becomes a usable sign-in: the app stores a mark before the sign-in; the flow's clean-up cannot be

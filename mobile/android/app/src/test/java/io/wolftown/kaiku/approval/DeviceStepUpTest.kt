@@ -1,5 +1,7 @@
 package io.wolftown.kaiku.approval
 
+import io.wolftown.kaiku.testutil.saveClaimed
+import io.wolftown.kaiku.testutil.markActive
 import androidx.fragment.app.FragmentActivity
 import io.mockk.coEvery
 import io.mockk.every

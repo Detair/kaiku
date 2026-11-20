@@ -12,11 +12,14 @@ import io.wolftown.kaiku.testutil.SigFixtures.bytes
 import io.wolftown.kaiku.testutil.SigFixtures.challengeFor
 import io.wolftown.kaiku.testutil.SigFixtures.unb64u
 import io.wolftown.kaiku.testutil.SigFixtures.verifyP256
+import kotlinx.coroutines.async
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class DeviceSignerTest {
 
     private val keyStore = SoftwareApprovalKeyStore()
@@ -31,7 +34,7 @@ class DeviceSignerTest {
         val signer = DeviceSigner(keyStore, verifier, checks)
         val ch = challengeFor(SigKind.LOGIN, 1, V01_CONTEXT, "qr")
 
-        val out = signer.sign(activity, ch, SigKind.LOGIN, USER_ID, DEVICE_ID, Decision.APPROVE, bytes(0xa0..0xbf), prompt)
+        val out = signer.sign(activity, ch, SigKind.LOGIN, USER_ID, DEVICE_ID, Decision.APPROVE, bytes(0xa0..0xbf), prompt, keyStore.keyId())
 
         out as SignOutcome.Signed
         val expected = KaikuSig.message(unb64u(ch.signingPrefix), Decision.APPROVE, bytes(0xa0..0xbf))
@@ -46,7 +49,7 @@ class DeviceSignerTest {
         val verifier = FakeUserVerifier(keyStore)
         pinned = "https://other.example.com"
         val out = DeviceSigner(keyStore, verifier, checks)
-            .sign(activity, challengeFor(SigKind.LOGIN, 1, V01_CONTEXT), SigKind.LOGIN, USER_ID, DEVICE_ID, Decision.APPROVE, ByteArray(0), prompt)
+            .sign(activity, challengeFor(SigKind.LOGIN, 1, V01_CONTEXT), SigKind.LOGIN, USER_ID, DEVICE_ID, Decision.APPROVE, ByteArray(0), prompt, keyStore.keyId())
         assertEquals(SignOutcome.Rejected(RejectReason.ORIGIN), out)
         assertTrue(verifier.prompts.isEmpty())
     }
@@ -55,14 +58,14 @@ class DeviceSignerTest {
         keyStore.generate(ByteArray(32), UvPolicy.choose(30, true, true) as UvDecision.Use)
         keyStore.invalidated = true
         val out = DeviceSigner(keyStore, FakeUserVerifier(keyStore), checks)
-            .sign(activity, challengeFor(SigKind.LOGIN, 1, V01_CONTEXT), SigKind.LOGIN, USER_ID, DEVICE_ID, Decision.APPROVE, ByteArray(0), prompt)
+            .sign(activity, challengeFor(SigKind.LOGIN, 1, V01_CONTEXT), SigKind.LOGIN, USER_ID, DEVICE_ID, Decision.APPROVE, ByteArray(0), prompt, keyStore.keyId())
         assertEquals(SignOutcome.Uv(UvResult.KeyInvalidated), out)
     }
 
     @Test fun `missing key maps to KeyInvalidated without a prompt`() = runTest {
         val verifier = FakeUserVerifier(keyStore)
         val out = DeviceSigner(keyStore, verifier, checks)
-            .sign(activity, challengeFor(SigKind.LOGIN, 1, V01_CONTEXT), SigKind.LOGIN, USER_ID, DEVICE_ID, Decision.APPROVE, ByteArray(0), prompt)
+            .sign(activity, challengeFor(SigKind.LOGIN, 1, V01_CONTEXT), SigKind.LOGIN, USER_ID, DEVICE_ID, Decision.APPROVE, ByteArray(0), prompt, "some-key")
         assertEquals(SignOutcome.Uv(UvResult.KeyInvalidated), out)
         assertTrue(verifier.prompts.isEmpty())
     }
@@ -71,18 +74,18 @@ class DeviceSignerTest {
         keyStore.generate(ByteArray(32), UvPolicy.choose(30, true, true) as UvDecision.Use)
         val verifier = FakeUserVerifier(keyStore, result = UvResult.Cancelled)
         val out = DeviceSigner(keyStore, verifier, checks)
-            .sign(activity, challengeFor(SigKind.LOGIN, 1, V01_CONTEXT), SigKind.LOGIN, USER_ID, DEVICE_ID, Decision.REPORT, ByteArray(0), prompt)
+            .sign(activity, challengeFor(SigKind.LOGIN, 1, V01_CONTEXT), SigKind.LOGIN, USER_ID, DEVICE_ID, Decision.REPORT, ByteArray(0), prompt, keyStore.keyId())
         assertEquals(SignOutcome.Uv(UvResult.Cancelled), out)
     }
 
     @Test fun `an unexpected keystore failure is a failed result, not a crash`() = runTest {
         keyStore.generate(ByteArray(32), UvPolicy.choose(30, true, true) as UvDecision.Use)
         val throwing = object : UserVerifier {
-            override suspend fun sign(activity: FragmentActivity, prompt: UvPrompt, message: ByteArray): UvResult =
+            override suspend fun sign(activity: FragmentActivity, prompt: UvPrompt, message: ByteArray, keyId: String): UvResult =
                 throw java.security.ProviderException("Keystore operation failed")
         }
         val out = DeviceSigner(keyStore, throwing, checks)
-            .sign(activity, challengeFor(SigKind.LOGIN, 1, V01_CONTEXT), SigKind.LOGIN, USER_ID, DEVICE_ID, Decision.APPROVE, ByteArray(0), prompt)
+            .sign(activity, challengeFor(SigKind.LOGIN, 1, V01_CONTEXT), SigKind.LOGIN, USER_ID, DEVICE_ID, Decision.APPROVE, ByteArray(0), prompt, keyStore.keyId())
         assertTrue(out is SignOutcome.Uv && out.result is UvResult.Failed)
     }
 
@@ -91,7 +94,7 @@ class DeviceSignerTest {
         keyStore.invalidated = true
         var hooked = 0
         val out = DeviceSigner(keyStore, FakeUserVerifier(keyStore), checks, onKeyInvalidated = { hooked++ })
-            .sign(activity, challengeFor(SigKind.LOGIN, 1, V01_CONTEXT), SigKind.LOGIN, USER_ID, DEVICE_ID, Decision.APPROVE, ByteArray(0), prompt)
+            .sign(activity, challengeFor(SigKind.LOGIN, 1, V01_CONTEXT), SigKind.LOGIN, USER_ID, DEVICE_ID, Decision.APPROVE, ByteArray(0), prompt, keyStore.keyId())
         assertEquals(SignOutcome.Uv(UvResult.KeyInvalidated), out)
         assertEquals(1, hooked)
     }
@@ -100,11 +103,11 @@ class DeviceSignerTest {
         keyStore.generate(ByteArray(32), UvPolicy.choose(30, true, true) as UvDecision.Use)
         var reported = 0
         val throwing = object : UserVerifier {
-            override suspend fun sign(activity: FragmentActivity, prompt: UvPrompt, message: ByteArray): UvResult =
+            override suspend fun sign(activity: FragmentActivity, prompt: UvPrompt, message: ByteArray, keyId: String): UvResult =
                 throw java.security.UnrecoverableKeyException("User changed or deleted their auth credentials")
         }
         val out = DeviceSigner(keyStore, throwing, checks) { reported++ }
-            .sign(activity, challengeFor(SigKind.LOGIN, 1, V01_CONTEXT, "qr"), SigKind.LOGIN, USER_ID, DEVICE_ID, Decision.APPROVE, bytes(0xa0..0xbf), prompt)
+            .sign(activity, challengeFor(SigKind.LOGIN, 1, V01_CONTEXT, "qr"), SigKind.LOGIN, USER_ID, DEVICE_ID, Decision.APPROVE, bytes(0xa0..0xbf), prompt, keyStore.keyId())
         assertEquals(SignOutcome.Uv(UvResult.Failed("KEYSTORE_UnrecoverableKeyException")), out)
         assertEquals(0, reported)
         assertTrue(keyStore.hasKey())
@@ -117,12 +120,65 @@ class DeviceSignerTest {
             io.mockk.every { cause } returns null
         }
         val throwing = object : UserVerifier {
-            override suspend fun sign(activity: FragmentActivity, prompt: UvPrompt, message: ByteArray): UvResult =
+            override suspend fun sign(activity: FragmentActivity, prompt: UvPrompt, message: ByteArray, keyId: String): UvResult =
                 throw java.security.UnrecoverableKeyException("x").apply { initCause(invalidated) }
         }
         val out = DeviceSigner(keyStore, throwing, checks) { reported++ }
-            .sign(activity, challengeFor(SigKind.LOGIN, 1, V01_CONTEXT, "qr"), SigKind.LOGIN, USER_ID, DEVICE_ID, Decision.APPROVE, bytes(0xa0..0xbf), prompt)
+            .sign(activity, challengeFor(SigKind.LOGIN, 1, V01_CONTEXT, "qr"), SigKind.LOGIN, USER_ID, DEVICE_ID, Decision.APPROVE, bytes(0xa0..0xbf), prompt, keyStore.keyId())
         assertEquals(SignOutcome.Uv(UvResult.KeyInvalidated), out)
         assertEquals(1, reported)
+    }
+
+    private fun newKey(): String {
+        keyStore.delete()
+        return keyStore.generate(ByteArray(32), UvPolicy.choose(30, true, true) as UvDecision.Use).keyId
+    }
+
+    @Test fun `another key in the alias is never signed with, prompted for or reported`() = runTest {
+        val mine = newKey()
+        val other = newKey()
+        var reported = 0
+        val verifier = FakeUserVerifier(keyStore)
+        val out = DeviceSigner(keyStore, verifier, checks) { reported++ }
+            .sign(activity, challengeFor(SigKind.LOGIN, 1, V01_CONTEXT), SigKind.LOGIN, USER_ID, DEVICE_ID, Decision.APPROVE, ByteArray(0), prompt, mine)
+        assertEquals(SignOutcome.Uv(UvResult.Failed("KEY_CHANGED")), out)
+        assertTrue(verifier.prompts.isEmpty())
+        assertEquals(0, reported)
+        assertEquals(other, keyStore.keyId())
+    }
+
+    @Test fun `a key replaced while the prompt is open is not signed with`() = runTest {
+        val mine = newKey()
+        val verifier = FakeUserVerifier(keyStore)
+        verifier.gate = kotlinx.coroutines.CompletableDeferred()
+        var reported = 0
+        val signer = DeviceSigner(keyStore, verifier, checks) { reported++ }
+        val job = async {
+            signer.sign(activity, challengeFor(SigKind.LOGIN, 1, V01_CONTEXT), SigKind.LOGIN, USER_ID, DEVICE_ID, Decision.APPROVE, ByteArray(0), prompt, mine)
+        }
+        testScheduler.runCurrent()
+        val other = newKey()
+        verifier.gate!!.complete(Unit)
+        assertEquals(SignOutcome.Uv(UvResult.Failed("KEY_CHANGED")), job.await())
+        assertEquals(0, reported)
+        assertEquals(other, keyStore.keyId())
+    }
+
+    @Test fun `a caller that holds no key signs nothing`() = runTest {
+        newKey()
+        val verifier = FakeUserVerifier(keyStore)
+        val out = DeviceSigner(keyStore, verifier, checks)
+            .sign(activity, challengeFor(SigKind.LOGIN, 1, V01_CONTEXT), SigKind.LOGIN, USER_ID, DEVICE_ID, Decision.APPROVE, ByteArray(0), prompt, null)
+        assertEquals(SignOutcome.Uv(UvResult.Failed("KEY_CHANGED")), out)
+        assertTrue(verifier.prompts.isEmpty())
+    }
+
+    @Test fun `the invalidation hook gets the key that was asked for`() = runTest {
+        val mine = newKey()
+        keyStore.invalidated = true
+        val reported = mutableListOf<String?>()
+        DeviceSigner(keyStore, FakeUserVerifier(keyStore), checks) { reported += it }
+            .sign(activity, challengeFor(SigKind.LOGIN, 1, V01_CONTEXT), SigKind.LOGIN, USER_ID, DEVICE_ID, Decision.APPROVE, ByteArray(0), prompt, mine)
+        assertEquals(listOf<String?>(mine), reported)
     }
 }

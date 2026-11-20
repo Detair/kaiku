@@ -29,15 +29,35 @@ class SoftwareApprovalKeyStore : ApprovalKeyStore {
 
     override fun keyUvClass(): UvClass? = uvClass
 
-    override fun delete() {
+    /** Deletions that were asked for, with the key id they named. */
+    val deleteAsked = mutableListOf<String?>()
+
+    /** The Keystore refuses to delete. */
+    var failDelete = false
+
+    @Synchronized
+    override fun delete(expectedKeyId: String?): Boolean {
+        deleteAsked += expectedKeyId
+        if (failDelete) throw java.security.KeyStoreException("busy")
+        val p = pair ?: return true
+        if (KeyId.of(p.public.encoded) != expectedKeyId) return false
+        delete()
+        return true
+    }
+
+    /** Test set-up: a phone without a key. */
+    @Synchronized
+    fun delete() {
         pair = null
         uvClass = null
         invalidated = false
     }
 
-    override fun signature(): Signature {
+    @Synchronized
+    override fun signature(expectedKeyId: String): Signature {
         if (invalidated) throw KeyInvalidatedException()
         val p = pair ?: throw NoApprovalKeyException()
+        if (KeyId.of(p.public.encoded) != expectedKeyId) throw KeyChangedException()
         return Signature.getInstance("SHA256withECDSA").apply { initSign(p.private) }
     }
 }
@@ -50,10 +70,17 @@ class FakeUserVerifier(
     val prompts = mutableListOf<UvPrompt>()
     val signedMessages = mutableListOf<ByteArray>()
 
-    override suspend fun sign(activity: FragmentActivity, prompt: UvPrompt, message: ByteArray): UvResult {
+    /** The key each signature was asked for. */
+    val keyIds = mutableListOf<String>()
+    /** Holds the next prompt until completed (the person has not answered yet). */
+    var gate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+
+    override suspend fun sign(activity: FragmentActivity, prompt: UvPrompt, message: ByteArray, keyId: String): UvResult {
         prompts += prompt
+        keyIds += keyId
+        gate?.await()
         result?.let { return it }
         signedMessages += message
-        return signNow(keyStore, message)
+        return signNow(keyStore, message, keyId)
     }
 }

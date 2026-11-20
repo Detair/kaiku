@@ -13,6 +13,9 @@ import kotlinx.coroutines.withTimeoutOrNull
  * signature found out, the device is reported while a session still works (the
  * unsigned `invalidated` route; the server revokes it and notifies), and the key
  * and its metadata are forgotten. Never replaced silently: the phone is set up again.
+ *
+ * Only the key the signature was asked for is forgotten, and only while the stored record still
+ * names it: a record made for another key meanwhile is not touched.
  */
 class KeyInvalidation @Inject constructor(
     private val approvalApi: ApprovalApi,
@@ -25,13 +28,14 @@ class KeyInvalidation @Inject constructor(
     }
 
     /**
-     * Runs to the end even when the screen that found out is left meanwhile: the report is
-     * bounded, and the key and its record are always forgotten.
+     * [keyId]: the key the failed signature named (null: its record named none). Runs to the end
+     * even when the screen that found out is left meanwhile: the report is bounded.
      */
-    suspend fun handle() = withContext(NonCancellable) {
+    suspend fun handle(keyId: String?) = withContext(NonCancellable) {
+        val about = keyDevices.record.value?.takeIf { it.keyId == keyId } ?: return@withContext
         try {
-            val id = keyDevices.local()?.keyDeviceId
-            if (id != null && authRepository.hasLiveSession()) {
+            val id = about.device.keyDeviceId
+            if (id != null && about.phase == KeyDevicePhase.ACTIVE && authRepository.hasLiveSession()) {
                 try {
                     withTimeoutOrNull(REPORT_TIMEOUT_MS) { approvalApi.reportInvalidated(id) }
                 } catch (e: Exception) {
@@ -39,7 +43,7 @@ class KeyInvalidation @Inject constructor(
                 }
             }
         } finally {
-            keyDevices.forget()
+            keyDevices.forget(about, Forget.KEY_INVALIDATED)
         }
     }
 }

@@ -131,7 +131,7 @@ class LoginApprovalViewModel @Inject constructor(
                 R.string.security_uv_title,
                 activity.getString(if (decision == Decision.APPROVE) R.string.approval_uv_approve else R.string.approval_uv_report),
             )
-            when (val out = signer.sign(activity, ch, SigKind.LOGIN, local.userId, deviceIds.id(), decision, token, prompt)) {
+            when (val out = signer.sign(activity, ch, SigKind.LOGIN, local.userId, deviceIds.id(), decision, token, prompt, keyDevices.record.value?.keyId)) {
                 is SignOutcome.Rejected -> {
                     releaseQuietly(ch.challengeId)
                     _ui.value = LoginApprovalUi.Error(R.string.approval_mismatch, rescan = true)

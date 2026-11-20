@@ -8,7 +8,10 @@ import io.wolftown.kaiku.approval.UvClass
 import io.wolftown.kaiku.approval.UvDecision
 import io.wolftown.kaiku.approval.UvPolicy
 import io.wolftown.kaiku.approval.UvResult
+import io.wolftown.kaiku.data.keydevice.KeyAnswers
+import io.wolftown.kaiku.data.keydevice.KeyDevicePhase
 import io.wolftown.kaiku.data.keydevice.KeyDeviceRepository
+import io.wolftown.kaiku.data.keydevice.StoredKeyDevice
 import io.wolftown.kaiku.data.keydevice.LocalKeyDevice
 import io.wolftown.kaiku.data.local.AuthState
 import kotlinx.coroutines.CoroutineScope
@@ -20,17 +23,21 @@ class KeyDeviceFixture(scope: CoroutineScope, uv: UvResult? = null, active: Bool
     }
     val authState = AuthState(scope)
     /** The persisted record; a second repository on it is the next app start. */
-    val store = InMemoryKeyDeviceStore()
+    val store = InMemoryKeyDeviceStore().apply {
+        if (active) {
+            stored = StoredKeyDevice(
+                LocalKeyDevice("kd1", SigFixtures.USER_ID, SigFixtures.ORIGIN, UvClass.PER_USE, "e1", null, "Alice"),
+                KeyDevicePhase.ACTIVE,
+            )
+        }
+    }
     val repo = KeyDeviceRepository(store, keyStore, authState, scope)
+    val answers = KeyAnswers(repo)
     val verifier = FakeUserVerifier(keyStore, uv)
     val checks = ChallengeVerifier({ SigFixtures.ORIGIN }, { SigFixtures.EXPIRES_AT - 30 })
     val signer = DeviceSigner(keyStore, verifier, checks)
 
     init {
         authState.setLoggedIn(SigFixtures.USER_ID)
-        if (active) {
-            repo.saveClaimed(LocalKeyDevice("kd1", SigFixtures.USER_ID, SigFixtures.ORIGIN, UvClass.PER_USE, "e1", null, "Alice"))
-            repo.markActive(SigFixtures.USER_ID, "kd1")
-        }
     }
 }

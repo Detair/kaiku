@@ -32,10 +32,17 @@ sealed interface UvResult {
     data class Failed(val code: String) : UvResult
 }
 
-/** Asks the phone's own screen lock (never a Kaiku PIN) and signs [message] whole with K_approve. */
+/**
+ * Asks the phone's own screen lock (never a Kaiku PIN) and signs [message] whole with K_approve.
+ * [keyId] names the key the caller holds: with another key in the alias nothing is signed
+ * (`Failed("KEY_CHANGED")`).
+ */
 interface UserVerifier {
-    suspend fun sign(activity: FragmentActivity, prompt: UvPrompt, message: ByteArray): UvResult
+    suspend fun sign(activity: FragmentActivity, prompt: UvPrompt, message: ByteArray, keyId: String): UvResult
 }
+
+/** The result when the alias no longer holds the key the caller asked to sign with. */
+internal val KEY_CHANGED = UvResult.Failed("KEY_CHANGED")
 
 /**
  * Before any prompt (B.1): no key, or a phone without a secure screen lock, is an
@@ -47,12 +54,14 @@ internal fun uvPreflight(hasKey: Boolean, deviceSecure: Boolean): UvResult? =
     if (!hasKey || !deviceSecure) UvResult.KeyInvalidated else null
 
 /** Initialises, signs and maps key failures; used right after the user was verified (or for a per-use key's CryptoObject). */
-internal fun signNow(keyStore: ApprovalKeyStore, message: ByteArray): UvResult = try {
-    finish(keyStore.signature(), message)
+internal fun signNow(keyStore: ApprovalKeyStore, message: ByteArray, keyId: String): UvResult = try {
+    finish(keyStore.signature(keyId), message)
 } catch (_: KeyInvalidatedException) {
     UvResult.KeyInvalidated
 } catch (_: NoApprovalKeyException) {
     UvResult.KeyInvalidated
+} catch (_: KeyChangedException) {
+    KEY_CHANGED
 } catch (e: UserNotAuthenticatedException) {
     throw e // the window closed: the caller asks once more
 } catch (e: Exception) {
@@ -77,7 +86,7 @@ class BiometricUserVerifier(private val keyStore: ApprovalKeyStore) : UserVerifi
         val logger: Logger = Logger.getLogger("UserVerifier")
     }
 
-    override suspend fun sign(activity: FragmentActivity, prompt: UvPrompt, message: ByteArray): UvResult =
+    override suspend fun sign(activity: FragmentActivity, prompt: UvPrompt, message: ByteArray, keyId: String): UvResult =
         withContext(Dispatchers.Main) {
             val deviceSecure = activity.getSystemService(KeyguardManager::class.java)?.isDeviceSecure == true
             uvPreflight(keyStore.hasKey(), deviceSecure)?.let { return@withContext it }
@@ -89,18 +98,21 @@ class BiometricUserVerifier(private val keyStore: ApprovalKeyStore) : UserVerifi
                 return@withContext UvResult.KeyInvalidated
             }
             when (uvClass) {
-                UvClass.WINDOW_10S -> signInWindow(activity, prompt, message)
-                else -> signPerUse(activity, prompt, message)
+                UvClass.WINDOW_10S -> signInWindow(activity, prompt, message, keyId)
+                else -> signPerUse(activity, prompt, message, keyId)
             }
         }
 
-    private suspend fun signPerUse(activity: FragmentActivity, prompt: UvPrompt, message: ByteArray): UvResult {
+    private suspend fun signPerUse(activity: FragmentActivity, prompt: UvPrompt, message: ByteArray, keyId: String): UvResult {
+        // The handle the prompt unlocks is the handle of the key the caller named.
         val signature = try {
-            keyStore.signature()
+            keyStore.signature(keyId)
         } catch (_: KeyInvalidatedException) {
             return UvResult.KeyInvalidated
         } catch (_: NoApprovalKeyException) {
             return UvResult.KeyInvalidated
+        } catch (_: KeyChangedException) {
+            return KEY_CHANGED
         }
         val info = BiometricPrompt.PromptInfo.Builder()
             .setTitle(activity.getString(prompt.title))
@@ -148,14 +160,14 @@ class BiometricUserVerifier(private val keyStore: ApprovalKeyStore) : UserVerifi
         }
     }
 
-    private suspend fun signInWindow(activity: FragmentActivity, prompt: UvPrompt, message: ByteArray): UvResult {
+    private suspend fun signInWindow(activity: FragmentActivity, prompt: UvPrompt, message: ByteArray, keyId: String): UvResult {
         repeat(2) {
             when (val confirmed = confirmCredential(activity, prompt)) {
                 null -> Unit
                 else -> return confirmed
             }
             try {
-                return signNow(keyStore, message)
+                return signNow(keyStore, message, keyId)
             } catch (_: UserNotAuthenticatedException) {
                 // The window closed before the signature; ask once more.
             }

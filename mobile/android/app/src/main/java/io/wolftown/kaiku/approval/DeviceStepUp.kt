@@ -53,7 +53,8 @@ class DeviceStepUp @Inject constructor(
     }
 
     suspend fun stepUp(activity: FragmentActivity, action: StepUpAction, target: String, targetLabel: String): StepUpOutcome {
-        val local = keyDevices.local()
+        val rec = keyDevices.record.value
+        val local = rec?.device
         if (local == null || keyDevices.current() !is KeyDeviceState.Active) return StepUpOutcome.NotKeyDevice
         return try {
             val session = authApi.getMe().session ?: return StepUpOutcome.ProbationSession
@@ -75,6 +76,7 @@ class DeviceStepUp @Inject constructor(
             val out = signer.sign(
                 activity, ch, SigKind.DEVICE_STEPUP, local.userId, deviceIds.id(), Decision.APPROVE, ByteArray(0),
                 UvPrompt(R.string.security_uv_title, subtitle),
+                rec.keyId,
             )
             when (out) {
                 is SignOutcome.Rejected -> StepUpOutcome.Failed("CHALLENGE_${out.reason}")

@@ -1,5 +1,7 @@
 package io.wolftown.kaiku.ui.settings
 
+import io.wolftown.kaiku.testutil.saveClaimed
+import io.wolftown.kaiku.testutil.markActive
 import io.mockk.coEvery
 import io.mockk.mockk
 import io.wolftown.kaiku.approval.DeviceStepUp

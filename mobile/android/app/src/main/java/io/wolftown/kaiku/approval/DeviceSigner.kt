@@ -17,14 +17,16 @@ sealed interface SignOutcome {
 /**
  * Every device signature goes through here: the C26 checks first (a rejected
  * challenge is never prompted), then the UV prompt and the signature over
- * `prefix ‖ decision ‖ lp(response)`.
+ * `prefix ‖ decision ‖ lp(response)`. The caller names the key it holds ([KeyId]): the signature
+ * is made with exactly that key or not at all (another key in the alias → `Failed("KEY_CHANGED")`,
+ * and nothing is reported or forgotten).
  */
 class DeviceSigner(
     private val keyStore: ApprovalKeyStore,
     private val verifier: UserVerifier,
     private val checks: ChallengeVerifier,
-    /** Runs once whenever the key turns out to be invalidated or missing (report + forget). */
-    private val onKeyInvalidated: suspend () -> Unit = {},
+    /** Runs whenever the key named to [sign] turns out to be invalidated or missing (report + forget that key). */
+    private val onKeyInvalidated: suspend (keyId: String?) -> Unit = {},
 ) {
     /** Runs only the checks, for screens that show the context before asking to confirm. */
     fun check(ch: ApprovalChallenge, expected: SigKind, userId: String, deviceId: String): VerifiedChallenge =
@@ -39,6 +41,8 @@ class DeviceSigner(
         decision: Decision,
         response: ByteArray,
         prompt: UvPrompt,
+        /** The key the caller holds; null: it holds none (its record names no key). */
+        keyId: String?,
     ): SignOutcome {
         val verified = try {
             checks.verify(ch, expected, userId, deviceId)
@@ -47,7 +51,11 @@ class DeviceSigner(
         }
         val message = KaikuSig.message(verified.prefix, decision, response)
         val r = try {
-            if (!keyStore.hasKey()) UvResult.KeyInvalidated else verifier.sign(activity, prompt, message)
+            when {
+                !keyStore.hasKey() -> UvResult.KeyInvalidated
+                keyId == null || keyStore.keyId() != keyId -> KEY_CHANGED
+                else -> verifier.sign(activity, prompt, message, keyId)
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (_: KeyInvalidatedException) {
@@ -57,7 +65,9 @@ class DeviceSigner(
             // Keystore failure (ProviderException, …) fails the signature instead of crashing.
             if (isInvalidatedKeyFailure(e)) UvResult.KeyInvalidated else UvResult.Failed("KEYSTORE_" + e.javaClass.simpleName)
         }
-        if (r == UvResult.KeyInvalidated) onKeyInvalidated()
+        // Only the key that was asked for is reported and forgotten, and only if it is still the
+        // phone's key then (the handler compares): a key made meanwhile is never touched.
+        if (r == UvResult.KeyInvalidated) onKeyInvalidated(keyId)
         return when (r) {
             is UvResult.Signed -> SignOutcome.Signed(Base64.getUrlEncoder().withoutPadding().encodeToString(r.der), verified)
             else -> SignOutcome.Uv(r)
