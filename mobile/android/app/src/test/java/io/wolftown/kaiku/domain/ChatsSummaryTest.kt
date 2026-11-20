@@ -13,7 +13,7 @@ class ChatsSummaryTest {
     }
 
     @Test
-    fun `sums unread, never negative, and skips conversations without messages for the newest`() {
+    fun `sums unread over all conversations, never negative`() {
         val s = chatsSummary(
             listOf(
                 DmConversation(id = "new", unreadCount = -1),
@@ -22,21 +22,22 @@ class ChatsSummaryTest {
             )
         )
         assertEquals(4, s.unread)
-        // With unread messages, the newest of those.
-        assertEquals("a", s.newest?.id)
+        // The preview is the conversation the chat list shows first.
+        assertEquals("new", s.newest?.id)
     }
 
     @Test
-    fun `with unread messages the row shows the newest conversation that has them`() {
-        // Anna's message is unread; then the user wrote to Bert (newest, read).
+    fun `the row previews the conversation with the latest activity, like the chat list`() {
+        // Anna's message is unread; then the user wrote to Bert: the list shows Bert first.
         val s = chatsSummary(
             listOf(
                 DmConversation(id = "bert", unreadCount = 0, lastMessage = LastMessagePreview("2", "hi")),
                 DmConversation(id = "anna", unreadCount = 1, lastMessage = LastMessagePreview("1", "ok")),
             )
         )
+        // The number still counts Anna's unread message.
         assertEquals(1, s.unread)
-        assertEquals("anna", s.newest?.id)
+        assertEquals("bert", s.newest?.id)
     }
 
     @Test

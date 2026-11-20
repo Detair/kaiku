@@ -406,7 +406,8 @@ class HomeViewModelTest {
         advanceUntilIdle()
 
         assertEquals(3, viewModel.chats.value.unread)
-        assertEquals("anna", viewModel.chats.value.newest?.id)
+        // The preview is the conversation the chat list shows first.
+        assertEquals("empty-new", viewModel.chats.value.newest?.id)
         assertEquals("me", viewModel.currentUserId.value)
     }
 }

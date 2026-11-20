@@ -33,9 +33,9 @@ import io.wolftown.kaiku.domain.ChatsSummary
 import io.wolftown.kaiku.ui.dm.conversationPreview
 
 /**
- * The first thing on the start page: "Chats" with a conversation (the newest
- * unread one, else the newest) and the number of unread direct messages; one
- * tap opens the chat list. Shown whether or not the user is on a server.
+ * The first thing on the start page: "Chats" with the conversation that had
+ * the latest activity (the one the chat list shows first) and the number of
+ * unread direct messages in all conversations; one tap opens the chat list. Shown whether or not the user is on a server.
  */
 @Composable
 fun ChatsEntry(summary: ChatsSummary, currentUserId: String, onOpen: () -> Unit) {
