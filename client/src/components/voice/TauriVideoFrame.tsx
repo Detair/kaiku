@@ -17,6 +17,7 @@
 import { Component, Show, onMount, onCleanup, createSignal } from "solid-js";
 import { NativeYuvRenderer, parseNativeFrame } from "@/lib/voice/nativeVideoRenderer";
 import { isTauri } from "@/lib/tauri/common";
+import { t } from "@/i18n";
 
 /**
  * This page instance. The desktop app ends every subscription of an older
@@ -36,6 +37,7 @@ const TauriVideoFrame: Component<TauriVideoFrameProps> = (props) => {
   let renderer: NativeYuvRenderer | null = null;
   let disposed = false;
   let earlyFrames = 0;
+  let failed = false;
   let subscription: {
     invoke: (cmd: string, args: Record<string, unknown>) => Promise<unknown>;
     id: number;
@@ -47,6 +49,25 @@ const TauriVideoFrame: Component<TauriVideoFrameProps> = (props) => {
   // string and there is no matching subscriber, so we render the placeholder.
   const isScreenShare = () =>
     props.streamId !== "webcam" && props.streamId !== "default";
+
+  /** A native call whose failure is logged, never unhandled. */
+  const call = (
+    invoke: (cmd: string, args: Record<string, unknown>) => Promise<unknown>,
+    cmd: string,
+    id: number,
+  ) => {
+    invoke(cmd, { streamId: props.streamId, subscriptionId: id }).catch((err: unknown) =>
+      console.debug(`[TauriVideoFrame] ${cmd} failed:`, err),
+    );
+  };
+
+  /** The view goes: native stops sending and decoding for it. */
+  const release = () => {
+    if (subscription) {
+      call(subscription.invoke, "unsubscribe_video_frames", subscription.id);
+      subscription = null;
+    }
+  };
 
   onMount(async () => {
     if (!isTauri() || !canvasRef || !isScreenShare()) return;
@@ -67,11 +88,8 @@ const TauriVideoFrame: Component<TauriVideoFrameProps> = (props) => {
         // Taken: the next frame may come (flow control; also for frames
         // that cannot be shown).
         if (subscription) {
-          void subscription.invoke("ack_video_frame", {
-            streamId: props.streamId,
-            subscriptionId: subscription.id,
-          });
-        } else {
+          call(subscription.invoke, "ack_video_frame", subscription.id);
+        } else if (!failed) {
           earlyFrames += 1; // acknowledged once the subscription id is known
         }
         if (!renderer || !(raw instanceof ArrayBuffer)) return;
@@ -81,8 +99,14 @@ const TauriVideoFrame: Component<TauriVideoFrameProps> = (props) => {
           renderer.renderFrame(frame);
           if (!hasFrames()) setHasFrames(true);
         } catch (err) {
+          // Shown as the tile's error state; nothing keeps decoding into a
+          // hidden canvas.
           console.error("[TauriVideoFrame] render failed:", err);
           setError(err instanceof Error ? err.message : String(err));
+          failed = true;
+          renderer?.dispose();
+          renderer = null;
+          release();
         }
       };
 
@@ -91,13 +115,11 @@ const TauriVideoFrame: Component<TauriVideoFrameProps> = (props) => {
         pageId: PAGE_ID,
         onFrame: channel,
       });
-      if (disposed) {
-        void invoke("unsubscribe_video_frames", { streamId: props.streamId, subscriptionId: id });
+      if (disposed || failed) {
+        call(invoke, "unsubscribe_video_frames", id);
       } else {
         subscription = { invoke, id };
-        for (; earlyFrames > 0; earlyFrames--) {
-          void invoke("ack_video_frame", { streamId: props.streamId, subscriptionId: id });
-        }
+        for (; earlyFrames > 0; earlyFrames--) call(invoke, "ack_video_frame", id);
       }
     } catch (err) {
       console.error("[TauriVideoFrame] subscribe failed:", err);
@@ -109,15 +131,7 @@ const TauriVideoFrame: Component<TauriVideoFrameProps> = (props) => {
     disposed = true;
     renderer?.dispose();
     renderer = null;
-    // The view goes: the decoder stops sending to it (and stops decoding
-    // when no view of the stream is left).
-    if (subscription) {
-      void subscription.invoke("unsubscribe_video_frames", {
-        streamId: props.streamId,
-        subscriptionId: subscription.id,
-      });
-      subscription = null;
-    }
+    release();
   });
 
   return (
@@ -125,14 +139,14 @@ const TauriVideoFrame: Component<TauriVideoFrameProps> = (props) => {
       <Show
         when={isScreenShare()}
         fallback={
-          <span class="text-text-secondary text-sm">Video stream active</span>
+          <span class="text-text-secondary text-sm">{t("voice.tile.videoActive")}</span>
         }
       >
         <Show
           when={!error()}
           fallback={
             <span class="text-text-secondary text-sm">
-              Video error: {error()}
+              {t("voice.tile.videoError", { message: error() ?? "" })}
             </span>
           }
         >
@@ -143,7 +157,7 @@ const TauriVideoFrame: Component<TauriVideoFrameProps> = (props) => {
           />
           <Show when={!hasFrames()}>
             <span class="text-text-secondary text-sm">
-              Video stream active
+              {t("voice.tile.videoActive")}
             </span>
           </Show>
         </Show>

@@ -46,6 +46,8 @@ export const voice = {
   "voice.media.error.rateLimited": "Too many starts in a row. Wait a moment and try again.",
   "voice.media.error.unannounced": "The server did not accept your video, so it was stopped.",
   "voice.tile.you": "You",
+  "voice.tile.videoActive": "Video stream active",
+  "voice.tile.videoError": "The video cannot be shown: {{message}}",
   "voice.ptt.plainKeyRefused": "Choose a key with Ctrl, Alt or ⌘, or F13–F24, so your game still gets the key.",
   "voice.ptt.conflict": "PTT and PTM keys must be different",
   "voice.ptt.browserFocusOnlyTitle": "Push-to-talk works only in this tab",

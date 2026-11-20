@@ -10,6 +10,7 @@ const h = vi.hoisted(() => ({
   channels: [] as Array<{ onmessage: ((m: unknown) => void) | null }>,
   invoke: vi.fn(),
   resolveSubscribe: null as ((id: number) => void) | null,
+  renderThrows: false,
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -24,10 +25,12 @@ vi.mock("@tauri-apps/api/core", () => ({
 vi.mock("@/lib/tauri/common", () => ({ isTauri: () => true }));
 vi.mock("@/lib/voice/nativeVideoRenderer", () => ({
   NativeYuvRenderer: class {
-    renderFrame() {}
+    renderFrame() {
+      if (h.renderThrows) throw new Error("texture too large");
+    }
     dispose() {}
   },
-  parseNativeFrame: () => null,
+  parseNativeFrame: () => ({ stream_id: "s1" }),
 }));
 
 import TauriVideoFrame from "../TauriVideoFrame";
@@ -40,6 +43,7 @@ afterEach(() => {
   cleanup();
   h.channels.length = 0;
   h.invoke.mockReset();
+  h.renderThrows = false;
 });
 
 describe("TauriVideoFrame", () => {
@@ -69,5 +73,40 @@ describe("TauriVideoFrame", () => {
       streamId: "s1",
       subscriptionId: 7,
     });
+  });
+
+  it("a render error shows the tile's error and ends the subscription", async () => {
+    h.renderThrows = true;
+    h.invoke.mockImplementation((cmd: string) =>
+      Promise.resolve(cmd === "subscribe_video_frames" ? 9 : undefined),
+    );
+    const { findByText } = render(() => <TauriVideoFrame userId="u" streamId="s1" />);
+    await flush();
+    h.channels[0].onmessage?.(new ArrayBuffer(64));
+    expect(await findByText(/cannot be shown/)).toBeTruthy();
+    expect(h.invoke).toHaveBeenCalledWith("unsubscribe_video_frames", {
+      streamId: "s1",
+      subscriptionId: 9,
+    });
+    // Later frames are neither acknowledged nor rendered.
+    const acks = () => h.invoke.mock.calls.filter(([c]) => c === "ack_video_frame").length;
+    const before = acks();
+    h.channels[0].onmessage?.(new ArrayBuffer(64));
+    expect(acks()).toBe(before);
+  });
+
+  it("a failing acknowledgement is caught", async () => {
+    const unhandled = vi.fn();
+    process.on("unhandledRejection", unhandled);
+    h.invoke.mockImplementation((cmd: string) =>
+      cmd === "subscribe_video_frames" ? Promise.resolve(3) : Promise.reject(new Error("view gone")),
+    );
+    vi.spyOn(console, "debug").mockImplementation(() => {});
+    render(() => <TauriVideoFrame userId="u" streamId="s1" />);
+    await flush();
+    h.channels[0].onmessage?.(new ArrayBuffer(64));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(unhandled).not.toHaveBeenCalled();
+    process.off("unhandledRejection", unhandled);
   });
 });

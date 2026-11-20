@@ -76,11 +76,22 @@ vi.mock("@/lib/pttManager", () => ({
   createTauriPttListeners: vi.fn().mockResolvedValue(vi.fn()),
 }));
 
+const viewerSpy = vi.hoisted(() => ({ removeTracksOfUser: vi.fn() }));
+vi.mock("@/stores/screenShareViewer", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/stores/screenShareViewer")>()),
+  removeTracksOfUser: viewerSpy.removeTracksOfUser,
+}));
+vi.mock("@/stores/auth", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/stores/auth")>()),
+  currentUser: () => ({ id: "me" }),
+}));
+
 import {
   voiceState,
   setVoiceState,
   joinVoice,
   leaveVoice,
+  startScreenShare,
   toggleMute,
   toggleDeafen,
   setSpeaking,
@@ -495,6 +506,29 @@ describe("voice store", () => {
       await expect(joinVoice("ch-1")).rejects.toThrow("Microphone access denied");
       expect(voiceState.state).toBe("disconnected");
       expect(voiceState.channelId).toBeNull();
+    });
+  });
+
+  describe("own screen preview and the share code", () => {
+    it("leaving removes the own screen self-preview", async () => {
+      mockAdapter.join.mockResolvedValue({ ok: true });
+      await joinVoice("ch-1");
+      viewerSpy.removeTracksOfUser.mockClear();
+      await leaveVoice();
+      await vi.waitFor(() => expect(viewerSpy.removeTracksOfUser).toHaveBeenCalledWith("me"));
+    });
+
+    it("a share code chunk that cannot load gives the load-failure text", async () => {
+      vi.doMock("../mediaPublish", () => {
+        throw new Error("chunk failed to load");
+      });
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      const result = await startScreenShare("medium");
+      expect(result).toEqual({
+        ok: false,
+        error: "Part of Kaiku could not be loaded. Check your connection, then reload.",
+      });
+      vi.doUnmock("../mediaPublish");
     });
   });
 

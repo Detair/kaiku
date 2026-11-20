@@ -117,6 +117,7 @@ describe("screen share start waits for the server", () => {
     ["RATE_LIMITED", "voice.media.error.rateLimited"],
     ["DUPLICATE_STREAM_ID", "voice.screenShare.error.refused"],
     ["UNAUTHORIZED", "voice.screenShare.error.refused"],
+    ["INTERNAL_ERROR", "voice.screenShare.error.refused"],
     ["VOICE_ERROR", "voice.screenShare.error.refused"],
   ])("refusal %s stops the capture and gives %s", async (code, key) => {
     const { pub, log, flags } = setup();
@@ -389,12 +390,24 @@ describe("old servers (rc.5) and correlation", () => {
     );
   });
 
-  it("an unknown code is not the answer to a start (it times out instead)", async () => {
+  it("an unknown code does not settle a start, but its timeout says it was not accepted", async () => {
     vi.useFakeTimers();
     const { pub } = setup();
     const start = pub.startScreenShare();
     await flush();
     pub.handleAnswer({ type: "voice_error", code: "SOMETHING_NEW", message: "x" });
+    await flush();
+    expect(pub.isStarting()).toBe(true);
+    vi.advanceTimersByTime(MEDIA_START_TIMEOUT_MS);
+    expect(await start).toEqual({ ok: false, error: "voice.screenShare.error.refused" });
+    vi.useRealTimers();
+  });
+
+  it("a silent timeout still says the server did not answer", async () => {
+    vi.useFakeTimers();
+    const { pub } = setup();
+    const start = pub.startScreenShare();
+    await flush();
     vi.advanceTimersByTime(MEDIA_START_TIMEOUT_MS);
     expect(await start).toEqual({ ok: false, error: "voice.screenShare.error.noAnswer" });
     vi.useRealTimers();
@@ -464,17 +477,19 @@ describe("a stop is never withheld (same session, any voice state)", () => {
     expect(s.log).toContain("sendWebcamStop");
   });
 
-  it("a late acceptance after a timeout is answered with a stop", async () => {
+  it("a timeout sends exactly one stop, also when the acceptance comes late", async () => {
     vi.useFakeTimers();
     const s = setup();
     const start = s.pub.startScreenShare();
     await flush();
     vi.advanceTimersByTime(MEDIA_START_TIMEOUT_MS);
     await start;
-    s.log.length = 0;
     s.pub.handleAnswer(started("s1"));
     await flush();
-    expect(s.log).toEqual(["sendStop:s1"]);
+    // The stop right after the timeout follows the start on the same
+    // socket; the late acceptance needs nothing more.
+    expect(s.log.filter((l) => l === "sendStop:s1")).toHaveLength(1);
+    expect(s.log).not.toContain("publish:s1");
     vi.useRealTimers();
   });
 });
@@ -513,7 +528,7 @@ describe("only a sent start can be answered", () => {
     const s = setup();
     const start = s.pub.startScreenShare();
     await flush();
-    for (const code of ["WEBRTC_ERROR", "INTERNAL_ERROR", "AUDIO_SOURCE_UNANNOUNCED", "CHANNEL_FULL"]) {
+    for (const code of ["WEBRTC_ERROR", "AUDIO_SOURCE_UNANNOUNCED", "CHANNEL_FULL"]) {
       s.pub.handleAnswer({ type: "voice_error", code, message: "x" });
     }
     await flush();
@@ -553,17 +568,58 @@ describe("starts end with their session and with the dialog", () => {
     expect(await second).toEqual({ ok: true });
   });
 
-  it("closing the dialog during the wait aborts the start; a later acceptance is taken back", async () => {
+  it("closing the dialog during the wait aborts the start with exactly one stop", async () => {
     const s = setup();
     const start = s.pub.startScreenShare();
     await flush();
     s.pub.cancelStart();
     expect(await start).toEqual({ ok: false });
     expect(s.log).toContain("adapterStop:s1");
-    s.log.length = 0;
     s.pub.handleAnswer(started("s1"));
     await flush();
     expect(s.log).not.toContain("publish:s1");
+    expect(s.log.filter((l) => l === "sendStop:s1")).toHaveLength(1);
+  });
+
+  it("closing the dialog during the publish step stops the share again", async () => {
+    const s = setup();
+    let finishPublish!: () => void;
+    s.adapter.publishScreenShare.mockImplementationOnce(
+      (id: string) =>
+        new Promise((resolve) => {
+          finishPublish = () => {
+            s.log.push(`publish:${id}`);
+            resolve({ ok: true, value: undefined });
+          };
+        }) as never,
+    );
+    const start = s.pub.startScreenShare();
+    await flush();
+    s.pub.handleAnswer(started("s1"));
+    await flush();
+    s.pub.cancelStart(); // the start is past its wait: publishing
+    finishPublish();
+    expect(await start).toEqual({ ok: false });
+    expect(s.log).toEqual(expect.arrayContaining(["publish:s1", "adapterStop:s1", "sendStop:s1"]));
+    expect(s.flags.screenSharing).toBeFalsy();
+  });
+
+  it("webcam: a late acceptance of a timed-out start does not stop the next camera", async () => {
+    vi.useFakeTimers();
+    const s = setup();
+    const first = s.pub.startWebcam();
+    await flush();
+    vi.advanceTimersByTime(MEDIA_START_TIMEOUT_MS);
+    await first;
+    const second = s.pub.startWebcam();
+    await flush();
+    // The first start's late acceptance, then the second's own.
+    s.pub.handleAnswer({ type: "webcam_started", channel_id: CH, user_id: ME });
+    expect(await second).toEqual({ ok: true });
+    s.pub.handleAnswer({ type: "webcam_started", channel_id: CH, user_id: ME });
+    await flush();
+    expect(s.log.filter((l) => l === "sendWebcamStop")).toHaveLength(1); // only the timeout's
+    vi.useRealTimers();
   });
 
   it("closing the dialog while the picker is open releases the capture when it arrives", async () => {

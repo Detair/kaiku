@@ -1967,6 +1967,8 @@
   "voice.tile.poppedOut": "",
   "voice.tile.screenOf": "",
   "voice.tile.stopSharing": "",
+  "voice.tile.videoActive": "",
+  "voice.tile.videoError": "",
   "voice.tile.you": "",
   "voice.toast.degraded": "",
   "voice.toast.packetLoss": "",
