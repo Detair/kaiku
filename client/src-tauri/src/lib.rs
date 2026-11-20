@@ -178,6 +178,7 @@ pub fn run() {
             commands::voice::voice_probe,
             commands::voice::subscribe_video_frames,
             commands::voice::unsubscribe_video_frames,
+            commands::voice::ack_video_frame,
             // Tray commands
             commands::tray::tray_set_unread,
             commands::tray::set_tray_voice_state,
@@ -315,8 +316,10 @@ pub struct VoiceState {
     pub prepared_webcam: Option<PreparedWebcam>,
     /// Active webcam pipeline, if any.
     pub webcam: Option<WebcamPipeline>,
-    /// Publisher renegotiation (never two offers out at once).
+    /// Publisher negotiation (one offer at a time, with a deadline).
     pub negotiation: webrtc::PublisherNegotiation,
+    /// Publications whose track waits for an applied answer.
+    pub unconfirmed: Vec<commands::video_negotiation::Unconfirmed>,
     /// Audio mixer for combining remote subscriber tracks.
     pub audio_mixer: Option<voice::audio_mixer::AudioMixer>,
     /// Handles for active video decode tasks (aborted on leave).
@@ -347,6 +350,7 @@ impl VoiceState {
             prepared_webcam: None,
             webcam: None,
             negotiation: webrtc::PublisherNegotiation::default(),
+            unconfirmed: Vec::new(),
             audio_mixer: None,
             video_tasks: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             active_video_count: Arc::new(AtomicUsize::new(0)),

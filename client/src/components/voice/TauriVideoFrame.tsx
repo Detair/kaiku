@@ -18,6 +18,12 @@ import { Component, Show, onMount, onCleanup, createSignal } from "solid-js";
 import { NativeYuvRenderer, parseNativeFrame } from "@/lib/voice/nativeVideoRenderer";
 import { isTauri } from "@/lib/tauri/common";
 
+/**
+ * This page instance. The desktop app ends every subscription of an older
+ * instance (a reload) when this one subscribes.
+ */
+const PAGE_ID = crypto.randomUUID();
+
 interface TauriVideoFrameProps {
   userId: string;
   streamId: string;
@@ -29,6 +35,7 @@ const TauriVideoFrame: Component<TauriVideoFrameProps> = (props) => {
   const [error, setError] = createSignal<string | null>(null);
   let renderer: NativeYuvRenderer | null = null;
   let disposed = false;
+  let earlyFrames = 0;
   let subscription: {
     invoke: (cmd: string, args: Record<string, unknown>) => Promise<unknown>;
     id: number;
@@ -57,6 +64,16 @@ const TauriVideoFrame: Component<TauriVideoFrameProps> = (props) => {
       // Raw bytes per frame (no JSON), parsed into views of one buffer.
       const channel = new Channel<ArrayBuffer>();
       channel.onmessage = (raw) => {
+        // Taken: the next frame may come (flow control; also for frames
+        // that cannot be shown).
+        if (subscription) {
+          void subscription.invoke("ack_video_frame", {
+            streamId: props.streamId,
+            subscriptionId: subscription.id,
+          });
+        } else {
+          earlyFrames += 1; // acknowledged once the subscription id is known
+        }
         if (!renderer || !(raw instanceof ArrayBuffer)) return;
         const frame = parseNativeFrame(raw, props.streamId);
         if (!frame) return;
@@ -71,12 +88,16 @@ const TauriVideoFrame: Component<TauriVideoFrameProps> = (props) => {
 
       const id = await invoke<number>("subscribe_video_frames", {
         streamId: props.streamId,
+        pageId: PAGE_ID,
         onFrame: channel,
       });
       if (disposed) {
         void invoke("unsubscribe_video_frames", { streamId: props.streamId, subscriptionId: id });
       } else {
         subscription = { invoke, id };
+        for (; earlyFrames > 0; earlyFrames--) {
+          void invoke("ack_video_frame", { streamId: props.streamId, subscriptionId: id });
+        }
       }
     } catch (err) {
       console.error("[TauriVideoFrame] subscribe failed:", err);

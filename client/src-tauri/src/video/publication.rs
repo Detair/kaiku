@@ -31,6 +31,27 @@ use crate::capture::I420Frame;
 /// Fewest time between two forced key frames.
 pub const KEYFRAME_MIN_INTERVAL: Duration = Duration::from_secs(1);
 
+/// The sender makes a key frame at least this often, so a viewer who
+/// subscribes late sees a picture within this time even when its key frame
+/// request does not reach the sender.
+pub const KEYFRAME_PERIOD: Duration = Duration::from_secs(3);
+
+/// Why a capture ended by itself (set by the capture thread before it
+/// drops its frame sender; `None` = the source simply ended).
+pub type EndReason = Arc<Mutex<Option<&'static str>>>;
+
+/// Reason codes sent to the frontend with `voice:local_capture_ended`.
+pub mod end_reason {
+    /// The source ended (window closed, sharing stopped, camera gone).
+    pub const ENDED: &str = "ended";
+    /// The capture delivered no usable picture.
+    pub const NO_FRAMES: &str = "no_frames";
+    /// The video encoder could not start.
+    pub const ENCODER_FAILED: &str = "encoder_failed";
+    /// The connection could not be renegotiated for the new track.
+    pub const NOT_SENT: &str = "not_sent";
+}
+
 /// Key frame requests from RTCP (PLI/FIR), rate-limited.
 #[derive(Debug)]
 pub struct KeyframeGate {
@@ -114,14 +135,20 @@ pub fn run_encode_loop<E: PublicationEncoder>(
     packets: &mpsc::Sender<Vec<EncodedPacket>>,
     keyframes: &KeyframeGate,
     shutdown: &watch::Receiver<bool>,
+    keyframe_period: Duration,
 ) -> EncodeLoopEnd {
+    let mut last_keyframe = Instant::now();
     loop {
         if *shutdown.borrow() {
             return EncodeLoopEnd::Shutdown;
         }
         match frames.recv_timeout(Duration::from_millis(16)) {
             Ok(frame) => {
-                if keyframes.take_due(Instant::now()) {
+                let now = Instant::now();
+                if now.duration_since(last_keyframe) >= keyframe_period {
+                    keyframes.request();
+                }
+                if keyframes.take_due(now) {
                     if let Err(e) = encoder.force_keyframe() {
                         warn!("Key frame could not be forced: {e}");
                     }
@@ -129,6 +156,9 @@ pub fn run_encode_loop<E: PublicationEncoder>(
                 match encoder.encode(&frame) {
                     Ok(out) if out.is_empty() => {}
                     Ok(out) => {
+                        if out.iter().any(|p| p.is_keyframe) {
+                            last_keyframe = now;
+                        }
                         if packets.blocking_send(out).is_err() {
                             return EncodeLoopEnd::SinkClosed;
                         }
@@ -154,6 +184,7 @@ pub type StartCapture = Box<
     dyn FnOnce(
             std_mpsc::SyncSender<I420Frame>,
             watch::Receiver<bool>,
+            EndReason,
         ) -> Result<tokio::task::JoinHandle<()>, String>
         + Send,
 >;
@@ -167,17 +198,19 @@ pub struct VideoPublication {
 
 impl VideoPublication {
     /// Start capture → encode → RTP plus the RTCP reader for `sender`.
-    /// `on_capture_end` runs once if the capture ends by itself.
+    /// `on_capture_end(reason)` runs once if the capture ends by itself
+    /// (or the encoder cannot start); see [`end_reason`].
     pub fn start(
         params: QualityParams,
         track: Arc<TrackLocalStaticRTP>,
         sender: Arc<RTCRtpSender>,
         start_capture: StartCapture,
-        on_capture_end: Box<dyn FnOnce() + Send>,
+        on_capture_end: Box<dyn FnOnce(&'static str) + Send>,
     ) -> Result<Self, String> {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let (frame_tx, frame_rx) = std_mpsc::sync_channel::<I420Frame>(2);
-        let capture = start_capture(frame_tx, shutdown_tx.subscribe())?;
+        let reason: EndReason = Arc::new(Mutex::new(None));
+        let capture = start_capture(frame_tx, shutdown_tx.subscribe(), reason.clone())?;
         let keyframes = Arc::new(KeyframeGate::new(KEYFRAME_MIN_INTERVAL));
         let (pkt_tx, mut pkt_rx) = mpsc::channel::<Vec<EncodedPacket>>(4);
 
@@ -188,14 +221,31 @@ impl VideoPublication {
                 let mut encoder = match Vp8Encoder::new(&params) {
                     Ok(e) => e,
                     Err(e) => {
+                        // Without an encoder nothing is sent: end it visibly.
                         error!("Failed to create VP8 encoder: {e}");
+                        drop(frame_rx);
+                        if !*shutdown.borrow() {
+                            on_capture_end(end_reason::ENCODER_FAILED);
+                        }
                         return;
                     }
                 };
-                let end = run_encode_loop(&mut encoder, &frame_rx, &pkt_tx, &keyframes, &shutdown);
+                let end = run_encode_loop(
+                    &mut encoder,
+                    &frame_rx,
+                    &pkt_tx,
+                    &keyframes,
+                    &shutdown,
+                    KEYFRAME_PERIOD,
+                );
                 info!(?end, "Video encoder stopped");
                 if end == EncodeLoopEnd::CaptureEnded {
-                    on_capture_end();
+                    let why = reason
+                        .lock()
+                        .ok()
+                        .and_then(|r| *r)
+                        .unwrap_or(end_reason::ENDED);
+                    on_capture_end(why);
                 }
             })
         };
@@ -336,7 +386,14 @@ mod tests {
         gate.request();
         frame_tx.send(frame()).unwrap();
         drop(frame_tx);
-        let end = run_encode_loop(&mut enc, &frame_rx, &pkt_tx, &gate, &shutdown_rx);
+        let end = run_encode_loop(
+            &mut enc,
+            &frame_rx,
+            &pkt_tx,
+            &gate,
+            &shutdown_rx,
+            KEYFRAME_PERIOD,
+        );
         assert_eq!(end, EncodeLoopEnd::CaptureEnded);
         assert_eq!(enc.encoded, 2);
         assert_eq!(enc.forced, 1);
@@ -344,17 +401,100 @@ mod tests {
     }
 
     #[test]
-    fn capture_that_ends_by_itself_is_told_apart_from_shutdown() {
+    fn shutdown_is_told_apart_from_a_capture_that_ended() {
         let (frame_tx, frame_rx) = std_mpsc::sync_channel::<I420Frame>(1);
         let (pkt_tx, _pkt_rx) = mpsc::channel(1);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let gate = KeyframeGate::new(KEYFRAME_MIN_INTERVAL);
+        let mut enc = FakeEncoder::default();
+        // The capture ends by itself: the frame sender is dropped.
+        drop(frame_tx);
+        assert_eq!(
+            run_encode_loop(
+                &mut enc,
+                &frame_rx,
+                &pkt_tx,
+                &gate,
+                &shutdown_rx,
+                KEYFRAME_PERIOD
+            ),
+            EncodeLoopEnd::CaptureEnded
+        );
+        // The same ending after a shutdown request is a shutdown.
+        let (frame_tx, frame_rx) = std_mpsc::sync_channel::<I420Frame>(1);
         shutdown_tx.send(true).unwrap();
         drop(frame_tx);
-        let mut enc = FakeEncoder::default();
         assert_eq!(
-            run_encode_loop(&mut enc, &frame_rx, &pkt_tx, &gate, &shutdown_rx),
+            run_encode_loop(
+                &mut enc,
+                &frame_rx,
+                &pkt_tx,
+                &gate,
+                &shutdown_rx,
+                KEYFRAME_PERIOD
+            ),
             EncodeLoopEnd::Shutdown
         );
+    }
+
+    #[test]
+    fn periodic_keyframe_without_any_request() {
+        let (frame_tx, frame_rx) = std_mpsc::sync_channel(8);
+        let (pkt_tx, _pkt_rx) = mpsc::channel(8);
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let gate = KeyframeGate::new(Duration::ZERO);
+        let mut enc = FakeEncoder::default();
+        for _ in 0..3 {
+            frame_tx.send(frame()).unwrap();
+        }
+        drop(frame_tx);
+        // A zero period: every frame is due (no PLI involved).
+        run_encode_loop(
+            &mut enc,
+            &frame_rx,
+            &pkt_tx,
+            &gate,
+            &shutdown_rx,
+            Duration::ZERO,
+        );
+        assert_eq!(enc.forced, 3);
+        // The default period makes none in a short burst.
+        let (frame_tx, frame_rx) = std_mpsc::sync_channel(8);
+        let mut enc = FakeEncoder::default();
+        frame_tx.send(frame()).unwrap();
+        drop(frame_tx);
+        run_encode_loop(
+            &mut enc,
+            &frame_rx,
+            &pkt_tx,
+            &gate,
+            &shutdown_rx,
+            KEYFRAME_PERIOD,
+        );
+        assert_eq!(enc.forced, 0);
+    }
+
+    #[test]
+    fn rtcp_flood_gives_one_keyframe_per_interval() {
+        let (frame_tx, frame_rx) = std_mpsc::sync_channel(64);
+        let (pkt_tx, _pkt_rx) = mpsc::channel(64);
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let gate = KeyframeGate::new(Duration::from_mins(1));
+        let mut enc = FakeEncoder::default();
+        for _ in 0..20 {
+            gate.request(); // a PLI before every frame
+            frame_tx.send(frame()).unwrap();
+        }
+        drop(frame_tx);
+        run_encode_loop(
+            &mut enc,
+            &frame_rx,
+            &pkt_tx,
+            &gate,
+            &shutdown_rx,
+            KEYFRAME_PERIOD,
+        );
+        assert_eq!(enc.encoded, 20);
+        assert_eq!(enc.forced, 1, "rate limit holds under a flood");
     }
 }

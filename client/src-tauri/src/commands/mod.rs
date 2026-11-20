@@ -17,6 +17,7 @@ pub mod screen_share;
 pub mod settings;
 pub mod sound;
 pub mod tray;
+pub mod video_negotiation;
 pub mod voice;
 pub mod webcam;
 pub mod websocket;

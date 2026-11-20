@@ -156,9 +156,14 @@ impl VideoEncoder for Vp8Encoder {
         self.i420_buf.extend_from_slice(&frame.u);
         self.i420_buf.extend_from_slice(&frame.v);
 
+        // libvpx counts in its own timebase (1/fps): one unit per frame.
+        // The 90 kHz value is only for RTP.
         let packets = self
             .encoder
-            .encode(pts_90khz as i64, &self.i420_buf)
+            .encode(
+                i64::try_from(self.frame_count).unwrap_or(i64::MAX),
+                &self.i420_buf,
+            )
             .map_err(|e| VideoError::EncodeFailed(format!("VP8 encode: {e}")))?;
 
         self.frame_count += 1;

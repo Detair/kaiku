@@ -141,12 +141,27 @@ export function refusalKey(kind: MediaKind, code: string, message: string): Mess
   return "voice.screenShare.error.refused";
 }
 
+/** Text for a share that ended by itself; null when the source just ended. */
+export function endedReasonKey(reason?: string): MessageKey | null {
+  switch (reason) {
+    case "no_frames":
+      return "voice.screenShare.error.noFrames";
+    case "encoder_failed":
+      return "voice.media.error.encoderFailed";
+    case "not_sent":
+      return "voice.media.error.notSent";
+    default:
+      return null;
+  }
+}
+
 /** Text for a capture that could not be opened; null when the user cancelled. */
 export function captureErrorKey(kind: MediaKind, error: VoiceError): MessageKey | null {
   switch (error.type) {
     case "cancelled":
       return null;
     case "permission_denied":
+      if (error.message === "portal_denied") return "voice.screenShare.error.portalDenied";
       return kind === "screen" ? "voice.screenShare.error.blocked" : "voice.webcam.error.blocked";
     case "device_not_found":
       return kind === "screen" ? "voice.screenShare.error.noSource" : "voice.webcam.error.notFound";
@@ -504,13 +519,20 @@ export function createMediaPublisher(ctx: MediaContext) {
    * A capture ended by itself. During its start the start is aborted (the
    * start's own path releases it); once live the normal stop runs.
    */
-  async function captureEnded(kind: MediaKind, streamId: string | null): Promise<void> {
+  async function captureEnded(
+    kind: MediaKind,
+    streamId: string | null,
+    reason?: string,
+  ): Promise<void> {
     if (inFlight && inFlight.kind === kind && (kind === "webcam" || inFlight.streamId === streamId)) {
       inFlight.settle({ kind: "aborted" });
       return;
     }
+    const wasLive = kind === "screen" ? !!streamId && screens.has(streamId) : webcam !== null;
     if (kind === "screen" && streamId) await stopScreenShare(streamId);
     else if (kind === "webcam") await stopWebcam();
+    const key = endedReasonKey(reason);
+    if (wasLive && key) ctx.notify(ctx.t(key));
   }
 
   /**

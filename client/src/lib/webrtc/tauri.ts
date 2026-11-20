@@ -77,6 +77,7 @@ export function mapCaptureError(err: unknown): VoiceError {
   const text = typeof err === "string" ? err : err instanceof Error ? err.message : String(err);
   if (text.startsWith("PORTAL_CANCELLED")) return { type: "cancelled", message: "portal" };
   if (text.startsWith("PORTAL_UNAVAILABLE")) return { type: "not_found", message: "portal_unavailable" };
+  if (text.startsWith("PORTAL_DENIED")) return { type: "permission_denied", message: "portal_denied" };
   if (text.startsWith("PERMISSION_DENIED")) return { type: "permission_denied", message: text };
   if (text.startsWith("NO_DEVICE")) return { type: "device_not_found", message: text };
   if (/not connected|Not in a voice channel|Voice not initialized/i.test(text)) {
@@ -117,6 +118,8 @@ export class TauriVoiceAdapter implements VoiceAdapter {
   private deafened = false;
   private noiseSuppression = false;
   private webcamActive = false;
+  /** Native publication id of the prepared or running camera. */
+  private webcamId: string | null = null;
 
   // Previous cumulative receive counters for interval packet-loss
   // calculation (same pattern as the browser adapter's prevStats)
@@ -662,7 +665,7 @@ export class TauriVoiceAdapter implements VoiceAdapter {
       return { ok: false, error: { type: "unknown", message: "Webcam already active" } };
     }
     try {
-      await invoke("prepare_webcam", {
+      this.webcamId = await invoke<string>("prepare_webcam", {
         quality: options?.quality ?? "medium",
         deviceId: options?.deviceId != null ? Number(options.deviceId) : null,
       });
@@ -680,7 +683,7 @@ export class TauriVoiceAdapter implements VoiceAdapter {
       return { ok: false, error: { type: "unknown", message: "Webcam not active" } };
     }
     try {
-      await invoke("start_webcam");
+      await invoke("start_webcam", { publicationId: this.webcamId });
       return { ok: true, value: undefined };
     } catch (err) {
       console.error("[TauriVoiceAdapter] Failed to start webcam:", err);
@@ -699,6 +702,7 @@ export class TauriVoiceAdapter implements VoiceAdapter {
     }
 
     this.webcamActive = false;
+    this.webcamId = null;
     try {
       await invoke("stop_webcam");
       console.log("[TauriVoiceAdapter] Webcam stopped");
@@ -802,14 +806,14 @@ export class TauriVoiceAdapter implements VoiceAdapter {
       }),
 
       // VAD speaking indicator
-      listen<{ kind: "screen" | "webcam"; stream_id: string | null }>(
+      listen<{ kind: "screen" | "webcam"; stream_id: string | null; reason?: string }>(
         "voice:local_capture_ended",
         (event) => {
-          const { kind, stream_id } = event.payload;
-          // Only a capture this window still holds counts.
+          const { kind, stream_id, reason } = event.payload;
+          // Only a capture this window still holds counts (by its id).
           if (kind === "screen" && (!stream_id || !this.activeScreenShares.has(stream_id))) return;
-          if (kind === "webcam" && !this.webcamActive) return;
-          this.eventHandlers.onLocalMediaEnded?.(kind, kind === "screen" ? stream_id : null);
+          if (kind === "webcam" && (!this.webcamActive || stream_id !== this.webcamId)) return;
+          this.eventHandlers.onLocalMediaEnded?.(kind, kind === "screen" ? stream_id : null, reason);
         },
       ),
       listen<boolean>("voice:speaking", (event) => {

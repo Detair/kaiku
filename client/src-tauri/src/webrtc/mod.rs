@@ -33,15 +33,12 @@ use crate::video::rtp::VP8_PAYLOAD_TYPE;
 
 /// Build 3-layer simulcast encoding parameters (high / medium / low).
 ///
-/// **Limitation:** webrtc-rs 0.11 `add_transceiver_from_track` accepts
-/// `send_encodings` but only uses the `rid` field to annotate the SDP.
-/// It does **not** actually produce multiple encoded streams at different
-/// resolutions/bitrates — the Tauri client sends a single RTP stream from
-/// its capture + VP9-encode pipeline. True simulcast requires feeding
-/// three separately encoded streams, which is tracked as future work.
-///
-/// The RID values ("h", "m", "l") are set so the SDP matches the browser
-/// simulcast offer, allowing the SFU to parse the layers correctly.
+/// **Not applied:** webrtc-rs (0.17) `add_transceiver_from_track` reads
+/// only the direction from its init and ignores `send_encodings`, so no
+/// RID appears in the SDP and the desktop app sends one plain (non-
+/// simulcast) VP8 stream; the SFU handles that like a browser without
+/// simulcast. Kept so the intent is in one place if real simulcast (three
+/// separately encoded streams) is added later.
 fn simulcast_encodings() -> Vec<RTCRtpEncodingParameters> {
     vec![
         RTCRtpEncodingParameters {
@@ -90,46 +87,97 @@ impl VideoKind {
     }
 }
 
-/// Publisher renegotiation: never two offers out at once. A change while an
-/// offer waits for its answer is sent as one new offer right after it.
+/// Publisher negotiation: never two offers out at once, and never stuck.
+///
+/// Every offer (the join's first one included) gets an id. A change while
+/// an offer waits for its answer is sent as one new offer right after it.
+/// An offer that gets no usable answer (deadline, a rejected or failing
+/// answer, a failed send) is offered again once; if that fails too the
+/// caller gives up visibly ([`OfferFailure::GiveUp`]).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct PublisherNegotiation {
-    awaiting_answer: bool,
+    outstanding: Option<Outstanding>,
     pending: bool,
+    next_id: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Outstanding {
+    id: u64,
+    retried: bool,
+}
+
+/// What to do after an offer failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OfferFailure {
+    /// Not the outstanding offer (already answered or replaced): nothing.
+    Stale,
+    /// Offer again under this id (the only retry).
+    Retry(u64),
+    /// The retry failed too: the changes waiting for it must fail.
+    GiveUp,
 }
 
 impl PublisherNegotiation {
-    /// A track was added or removed. `true`: create and send an offer now.
-    pub const fn request(&mut self) -> bool {
-        if self.awaiting_answer {
+    const fn take_id(&mut self) -> u64 {
+        self.next_id += 1;
+        self.next_id
+    }
+
+    /// A track was added or removed (or the join's first offer).
+    /// `Some(id)`: create and send an offer with this id now.
+    pub const fn request(&mut self) -> Option<u64> {
+        if self.outstanding.is_some() {
             self.pending = true;
-            false
+            None
         } else {
-            self.awaiting_answer = true;
-            true
+            let id = self.take_id();
+            self.outstanding = Some(Outstanding { id, retried: false });
+            Some(id)
         }
     }
 
-    /// The answer to our offer was applied. `true`: send the next offer now.
-    pub const fn answered(&mut self) -> bool {
+    /// The answer to the outstanding offer was applied. `Some(id)`: send
+    /// the queued change now under this id.
+    pub const fn answered(&mut self) -> Option<u64> {
         if self.pending {
             self.pending = false;
-            true
+            let id = self.take_id();
+            self.outstanding = Some(Outstanding { id, retried: false });
+            Some(id)
         } else {
-            self.awaiting_answer = false;
-            false
+            self.outstanding = None;
+            None
         }
     }
 
-    /// Sending the offer failed: nothing is outstanding any more.
-    pub const fn failed(&mut self) {
-        self.awaiting_answer = false;
-        self.pending = false;
+    /// Offer `id` got no usable answer (or could not be sent).
+    pub const fn offer_failed(&mut self, id: u64) -> OfferFailure {
+        match self.outstanding {
+            Some(o) if o.id == id && !o.retried => {
+                let id = self.take_id();
+                // A queued change is part of the new offer.
+                self.pending = false;
+                self.outstanding = Some(Outstanding { id, retried: true });
+                OfferFailure::Retry(id)
+            }
+            Some(o) if o.id == id => {
+                self.outstanding = None;
+                self.pending = false;
+                OfferFailure::GiveUp
+            }
+            _ => OfferFailure::Stale,
+        }
+    }
+
+    /// The id of the offer that waits for its answer.
+    pub fn outstanding_id(&self) -> Option<u64> {
+        self.outstanding.map(|o| o.id)
     }
 
     /// Whether an offer of ours is out.
     pub const fn is_awaiting_answer(&self) -> bool {
-        self.awaiting_answer
+        self.outstanding.is_some()
     }
 }
 
@@ -935,7 +983,7 @@ impl WebRtcClient {
             format!("{}-{publication_id}", kind.track_prefix()),
             format!("{}-{publication_id}", kind.stream_prefix()),
         ));
-        // Same simulcast RID annotation as the browser path (see above).
+        // `send_encodings` is ignored by webrtc-rs (see `simulcast_encodings`).
         let transceiver = pc
             .add_transceiver_from_track(
                 track.clone() as Arc<dyn TrackLocal + Send + Sync>,
@@ -1153,16 +1201,48 @@ mod tests {
     #[test]
     fn negotiation_never_has_two_offers_out() {
         let mut n = PublisherNegotiation::default();
-        assert!(n.request(), "first change: offer now");
-        assert!(!n.request(), "second change while waiting: queued");
-        assert!(!n.request(), "third change: still one queued offer");
-        assert!(n.answered(), "answer arrives: send the queued offer");
-        assert!(n.is_awaiting_answer());
-        assert!(!n.answered(), "its answer: nothing more to send");
+        let first = n.request().expect("first change: offer now");
+        assert_eq!(n.request(), None, "second change while waiting: queued");
+        assert_eq!(n.request(), None, "third change: still one queued offer");
+        let next = n.answered().expect("answer arrives: send the queued offer");
+        assert_ne!(first, next);
+        assert_eq!(n.outstanding_id(), Some(next));
+        assert_eq!(n.answered(), None, "its answer: nothing more to send");
         assert!(!n.is_awaiting_answer());
-        assert!(n.request());
-        n.failed();
-        assert!(n.request(), "a failed send leaves nothing outstanding");
+    }
+
+    #[test]
+    fn a_lost_answer_is_offered_once_more_then_given_up() {
+        let mut n = PublisherNegotiation::default();
+        let id = n.request().unwrap();
+        assert_eq!(n.request(), None, "a change waits behind the lost offer");
+        let OfferFailure::Retry(retry) = n.offer_failed(id) else {
+            panic!("first failure retries")
+        };
+        assert_eq!(
+            n.offer_failed(id),
+            OfferFailure::Stale,
+            "the old id is gone"
+        );
+        assert_eq!(n.offer_failed(retry), OfferFailure::GiveUp);
+        assert!(!n.is_awaiting_answer(), "nothing stays stuck");
+        assert!(n.request().is_some(), "the next change offers at once");
+    }
+
+    #[test]
+    fn a_retry_that_gets_its_answer_clears_the_guard() {
+        let mut n = PublisherNegotiation::default();
+        let id = n.request().unwrap();
+        let OfferFailure::Retry(retry) = n.offer_failed(id) else {
+            panic!("retry")
+        };
+        assert_eq!(n.outstanding_id(), Some(retry));
+        assert_eq!(n.answered(), None);
+        assert_eq!(
+            n.offer_failed(retry),
+            OfferFailure::Stale,
+            "answered: deadline is moot"
+        );
     }
 
     /// (stream id, direction) of each media section that names a stream.

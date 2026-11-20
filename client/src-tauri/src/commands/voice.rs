@@ -524,6 +524,11 @@ pub async fn join_voice(
 
     voice_state.channel_id = Some(channel_id.clone());
 
+    // The join's offer is the first one of the negotiation guard.
+    voice_state.negotiation = crate::webrtc::PublisherNegotiation::default();
+    voice_state.unconfirmed.clear();
+    let _ = voice_state.negotiation.request();
+
     // Create publisher offer
     let offer_sdp = voice_state
         .webrtc
@@ -575,21 +580,25 @@ pub async fn handle_voice_publisher_answer(
         ));
     }
 
+    // Answer to a renegotiation (a share or the camera came or went): call
+    // audio already runs. A failing answer is retried, then given up.
+    if voice_state.audio_tx.is_some() {
+        let ctx = crate::commands::video_negotiation::NegotiationCtx::from_state(&state, &app);
+        crate::commands::video_negotiation::apply_renegotiation_answer(voice_state, &ctx, &sdp)
+            .await;
+        return Ok(());
+    }
+
     // Set the remote description (answer) on the publisher PC
     voice_state
         .webrtc
         .set_remote_answer(&sdp)
         .await
         .map_err(|e| e.to_string())?;
-
-    // Answer to a renegotiation (a share or the camera came or went): call
-    // audio already runs. Send the next offer if a change waited for this.
-    if voice_state.audio_tx.is_some() {
-        if voice_state.negotiation.answered() {
-            crate::commands::screen_share::send_publisher_offer(voice_state, &state.websocket)
-                .await?;
-        }
-        return Ok(());
+    // The join's offer is answered; a share started meanwhile goes now.
+    if let Some(next) = voice_state.negotiation.answered() {
+        let ctx = crate::commands::video_negotiation::NegotiationCtx::from_state(&state, &app);
+        crate::commands::video_negotiation::send_offer(voice_state, &ctx, next).await;
     }
 
     // Fetched first: the uplink sender is wired before anything can fail.
@@ -840,6 +849,7 @@ impl NativeSession for VoiceState {
             bounded_step("webcam", pipeline.shutdown()).await;
         }
         self.negotiation = crate::webrtc::PublisherNegotiation::default();
+        self.unconfirmed.clear();
 
         // Stop all video decode tasks
         {
@@ -1269,16 +1279,21 @@ pub async fn get_voice_channel(state: State<'_, AppState>) -> Result<Option<Stri
     }
 }
 
-/// Subscribe a view (a video tile) to the decoded frames of `stream_id`.
+/// Subscribe a view (a video tile) of page instance `page_id` to the
+/// decoded frames of `stream_id`.
 ///
 /// Frames arrive on `on_frame` as raw bytes (`ArrayBuffer`, layout in
-/// `voice/frame_buffer.rs`), at most 30 per second. The decode task looks
-/// the views up for every packet, so this works before the track arrives,
-/// after it, and again after a re-mount. Returns the subscription id for
-/// [`unsubscribe_video_frames`].
+/// `voice/frame_buffer.rs`) under flow control: the page acknowledges each
+/// frame with [`ack_video_frame`]; at most two frames per view and four in
+/// total are unacknowledged, at most 30 per second per view. Views of an
+/// older page instance end when a new instance subscribes. The decode task
+/// looks the views up for every packet, so this works before the track
+/// arrives, after it, and again after a re-mount. Returns the subscription
+/// id for [`ack_video_frame`] and [`unsubscribe_video_frames`].
 #[command]
 pub async fn subscribe_video_frames(
     stream_id: String,
+    page_id: String,
     on_frame: tauri::ipc::Channel<tauri::ipc::Response>,
     state: State<'_, AppState>,
 ) -> Result<u64, String> {
@@ -1289,10 +1304,24 @@ pub async fn subscribe_video_frames(
         .as_ref()
         .ok_or_else(|| "Voice state not initialized".to_string())?;
     let (frame_buffer, frame_rx) = FrameBuffer::new();
-    spawn_frame_emitter(on_frame, frame_rx);
-    let id = voice.video_frame_sinks.subscribe(&stream_id, frame_buffer);
+    let sinks = voice.video_frame_sinks.clone();
+    let (id, flow) = sinks.subscribe(&stream_id, &page_id, frame_buffer);
+    spawn_frame_emitter(sinks, on_frame, frame_rx, flow);
     info!(stream_id = %stream_id, subscription = id, "Registered video frame subscription");
     Ok(id)
+}
+
+/// The page has taken (rendered) a frame of this view.
+#[command]
+pub async fn ack_video_frame(
+    stream_id: String,
+    subscription_id: u64,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    if let Some(voice) = state.voice.read().await.as_ref() {
+        voice.video_frame_sinks.ack(&stream_id, subscription_id);
+    }
+    Ok(())
 }
 
 /// Remove a view registered by [`subscribe_video_frames`] (tile unmounted).

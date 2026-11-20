@@ -7,8 +7,10 @@
 //! closed (`unsubscribe_video_frames`) is seen at once. While nobody
 //! watches, packets are read and dropped without decoding (so the SFU does
 //! not see a stalled receiver). When the first view appears the decoder
-//! starts fresh and a key frame is requested, so the picture appears at the
-//! next key frame instead of after the sender's next periodic one.
+//! starts fresh and a key frame is requested on the subscriber connection.
+//! The picture appears with the next key frame: the sender makes one at
+//! least every 3 s (`video::publication::KEYFRAME_PERIOD`), and sooner once
+//! the server forwards the request to the sender.
 //!
 //! The native VP8 decoder + RTP depacketizer live in the `kaiku-vp8-decoder`
 //! sub-crate (under `client/src-tauri/vp8-decoder/`) so the unsafe libvpx FFI
@@ -110,6 +112,8 @@ where
             Ok(frames) => {
                 let mut delivered = 0;
                 for frame in frames {
+                    // One shared frame for every view: no copies of the planes.
+                    let frame = Arc::new(frame);
                     for view in &views {
                         view.push(frame.clone());
                     }
@@ -240,7 +244,7 @@ mod tests {
         p
     }
 
-    fn latest(rx: &tokio::sync::watch::Receiver<Option<DecodedFrame>>) -> Option<u64> {
+    fn latest(rx: &tokio::sync::watch::Receiver<Option<Arc<DecodedFrame>>>) -> Option<u64> {
         rx.borrow().as_ref().map(|f| f.pts_ms)
     }
 
@@ -266,14 +270,14 @@ mod tests {
 
         // The tile opens: decoder starts, one key frame request.
         let (fb, rx) = FrameBuffer::new();
-        let first = sinks.subscribe("s1", fb);
+        let (first, _) = sinks.subscribe("s1", "page", fb);
         assert_eq!(router.on_packet(&packet(2)), 1);
         assert_eq!(latest(&rx), Some(2));
         assert_eq!((made.get(), keyframes.get()), (1, 1));
 
         // Layout change: a second view of the same stream gets frames at once.
         let (fb2, rx2) = FrameBuffer::new();
-        let second = sinks.subscribe("s1", fb2);
+        let (second, _) = sinks.subscribe("s1", "page", fb2);
         router.on_packet(&packet(3));
         assert_eq!(latest(&rx2), Some(3));
         assert_eq!(keyframes.get(), 1, "no new request while watched");
@@ -288,7 +292,7 @@ mod tests {
         assert!(sinks.unsubscribe("s1", second));
         assert_eq!(router.on_packet(&packet(5)), 0);
         let (fb3, rx3) = FrameBuffer::new();
-        sinks.subscribe("s1", fb3);
+        sinks.subscribe("s1", "page", fb3);
         router.on_packet(&packet(6));
         assert_eq!(latest(&rx3), Some(6));
         assert_eq!((made.get(), keyframes.get()), (2, 2));
@@ -298,7 +302,7 @@ mod tests {
     fn views_of_another_stream_get_nothing() {
         let sinks = FrameSinks::default();
         let (fb, rx) = FrameBuffer::new();
-        sinks.subscribe("other", fb);
+        sinks.subscribe("other", "page", fb);
         let mut router = DecodeRouter::new("s1".into(), sinks, || Some(OneFramePerPacket), || {});
         assert_eq!(router.on_packet(&packet(1)), 0);
         assert_eq!(latest(&rx), None);

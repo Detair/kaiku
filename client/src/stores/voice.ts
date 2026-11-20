@@ -587,10 +587,10 @@ function installAdapterHandlers(adapter: VoiceAdapter): void {
         },
       );
     },
-    onLocalMediaEnded: (kind, streamId) => {
+    onLocalMediaEnded: (kind, streamId, reason) => {
       // The browser's own "Stop sharing" bar, a closed window, a revoked
       // permission: the same stop as the button.
-      void publisher().then((p) => p?.captureEnded(kind, streamId));
+      void publisher().then((p) => p?.captureEnded(kind, streamId, reason));
     },
     onWebcamTrack: (userId, track) => {
       console.log("[Voice] Webcam track received:", userId);

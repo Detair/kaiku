@@ -625,3 +625,42 @@ describe("starts end with their session and with the dialog", () => {
     expect(s.log).toContain("adapterStopWebcam");
   });
 });
+
+describe("a share that ends by itself says why", () => {
+  it.each([
+    ["no_frames", "voice.screenShare.error.noFrames"],
+    ["not_sent", "voice.media.error.notSent"],
+    ["encoder_failed", "voice.media.error.encoderFailed"],
+  ])("%s: normal stop plus a text", async (reason, key) => {
+    const s = setup();
+    const start = s.pub.startScreenShare();
+    await flush();
+    s.pub.handleAnswer(started("s1"));
+    await start;
+    await s.pub.captureEnded("screen", "s1", reason);
+    expect(s.log).toContain("sendStop:s1");
+    expect(s.notify).toHaveBeenCalledWith(key);
+  });
+
+  it("a source that just ended gets no text", async () => {
+    const s = setup();
+    const start = s.pub.startScreenShare();
+    await flush();
+    s.pub.handleAnswer(started("s1"));
+    await start;
+    await s.pub.captureEnded("screen", "s1", "ended");
+    expect(s.notify).not.toHaveBeenCalled();
+  });
+
+  it("a portal denial has its own text", async () => {
+    const s = setup();
+    s.adapter.captureScreen.mockResolvedValueOnce({
+      ok: false,
+      error: { type: "permission_denied", message: "portal_denied" },
+    } as never);
+    expect(await s.pub.startScreenShare()).toEqual({
+      ok: false,
+      error: "voice.screenShare.error.portalDenied",
+    });
+  });
+});

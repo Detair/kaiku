@@ -14,18 +14,17 @@
 
 use serde::Serialize;
 use tauri::{command, AppHandle, Emitter, State};
-use tokio::sync::RwLock;
 use tracing::{info, warn};
 use uuid::Uuid;
 
+use super::video_negotiation::{renegotiate, NegotiationCtx, Unconfirmed};
 use crate::capture::capturer::FrameCapturer;
 use crate::capture::source::enumerate_sources;
 use crate::capture::{CaptureSource, CaptureSourceType};
-use crate::network::{ClientEvent, WebSocketManager};
 use crate::video::publication::{StartCapture, VideoPublication};
 use crate::video::QualityParams;
 use crate::webrtc::VideoKind;
-use crate::{AppState, VoiceState};
+use crate::AppState;
 
 /// Event to the frontend when a capture ended by itself.
 pub const LOCAL_CAPTURE_ENDED_EVENT: &str = "voice:local_capture_ended";
@@ -35,6 +34,8 @@ pub const LOCAL_CAPTURE_ENDED_EVENT: &str = "voice:local_capture_ended";
 pub struct LocalCaptureEnded {
     pub kind: &'static str,
     pub stream_id: Option<String>,
+    /// Why it ended (`video::publication::end_reason`).
+    pub reason: &'static str,
 }
 
 /// Where a prepared share's frames come from.
@@ -168,43 +169,6 @@ pub async fn enumerate_capture_sources() -> Result<Vec<CaptureSource>, String> {
     Ok(sources)
 }
 
-/// Send a publisher offer now if no other offer of ours is out (else the
-/// answer handler sends one right after the outstanding answer).
-pub async fn renegotiate(
-    voice: &mut VoiceState,
-    ws: &RwLock<Option<WebSocketManager>>,
-) -> Result<(), String> {
-    if !voice.negotiation.request() {
-        return Ok(());
-    }
-    send_publisher_offer(voice, ws).await
-}
-
-/// Create and send a publisher offer (renegotiation).
-pub async fn send_publisher_offer(
-    voice: &mut VoiceState,
-    ws: &RwLock<Option<WebSocketManager>>,
-) -> Result<(), String> {
-    let result = async {
-        let channel_id = voice.channel_id.clone().ok_or("Not in a voice channel")?;
-        let sdp = voice
-            .webrtc
-            .create_offer()
-            .await
-            .map_err(|e| e.to_string())?;
-        let guard = ws.read().await;
-        let sender = guard.as_ref().ok_or("WebSocket not connected")?;
-        sender
-            .send(ClientEvent::VoicePublisherOffer { channel_id, sdp })
-            .await
-    }
-    .await;
-    if result.is_err() {
-        voice.negotiation.failed();
-    }
-    result
-}
-
 /// Step 1: choose and check the source; nothing is sent.
 #[command]
 #[tracing::instrument(skip(state))]
@@ -278,12 +242,17 @@ async fn choose_source(
     _source_id: Option<String>,
     quality: String,
 ) -> Result<PreparedShare, String> {
-    let stream = crate::capture::portal::open_screencast(&crate::capture::portal::DbusPortal)
+    use crate::capture::portal::{open_screencast, DbusPortal, DIALOG_TIMEOUT};
+    let stream = open_screencast(&DbusPortal, DIALOG_TIMEOUT)
         .await
         .map_err(|e| e.code_text())?;
     Ok(PreparedShare {
         source_name: stream.label(),
-        source_type: CaptureSourceType::Monitor,
+        source_type: if stream.is_window() {
+            CaptureSourceType::Window
+        } else {
+            CaptureSourceType::Monitor
+        },
         source: ShareSource::Portal(stream),
         quality,
     })
@@ -291,15 +260,16 @@ async fn choose_source(
 
 fn capture_starter(source: ShareSource, params: QualityParams) -> StartCapture {
     match source {
-        ShareSource::Native { source_id } => Box::new(move |frames, shutdown| {
+        // scap cannot tell why a capture ended: the reason stays "ended".
+        ShareSource::Native { source_id } => Box::new(move |frames, shutdown, _reason| {
             FrameCapturer::new(source_id, params.fps, params.width, params.height)
                 .start(frames, shutdown)
                 .map_err(|e| e.to_string())
         }),
         #[cfg(target_os = "linux")]
-        ShareSource::Portal(stream) => Box::new(move |frames, shutdown| {
+        ShareSource::Portal(stream) => Box::new(move |frames, shutdown, reason| {
             Ok(crate::capture::pipewire_capture::start(
-                stream, params, frames, shutdown,
+                stream, params, frames, shutdown, reason,
             ))
         }),
     }
@@ -331,12 +301,13 @@ pub async fn start_screen_share(
     let on_end = {
         let app = app.clone();
         let stream_id = stream_id.clone();
-        Box::new(move || {
+        Box::new(move |reason: &'static str| {
             let _ = app.emit(
                 LOCAL_CAPTURE_ENDED_EVENT,
                 LocalCaptureEnded {
                     kind: VideoKind::Screen.as_str(),
                     stream_id: Some(stream_id),
+                    reason,
                 },
             );
         })
@@ -363,33 +334,49 @@ pub async fn start_screen_share(
             publication,
         },
     );
-    renegotiate(v, &state.websocket).await?;
+    let ctx = NegotiationCtx::from_state(&state, &app);
+    renegotiate(v, &ctx, Some(Unconfirmed::Screen(stream_uuid))).await;
     info!(stream_id = %stream_id, "Screen share started");
     Ok(())
 }
 
-/// Stop a screen share, prepared or live.
+/// Stop a screen share, prepared or live. The publication is shut down
+/// outside the voice lock (it may take up to 3 s), so answers, candidates
+/// and mute keep flowing meanwhile.
 #[command]
-#[tracing::instrument(skip(state))]
+#[tracing::instrument(skip(state, app))]
 pub async fn stop_screen_share(
     stream_id: String,
     state: State<'_, AppState>,
+    app: AppHandle,
 ) -> Result<(), String> {
     let stream_uuid = Uuid::parse_str(&stream_id).map_err(|e| format!("Invalid stream_id: {e}"))?;
-    let mut voice = state.voice.write().await;
-    let v = voice.as_mut().ok_or("Voice not initialized")?;
-    match v.shares.remove(stream_uuid) {
-        Removed::Nothing => Ok(()),
-        Removed::Prepared(_) => Ok(()), // dropping closes a portal session
-        Removed::Live(live) => {
-            let sender = live.publication.sender.clone();
-            live.publication.shutdown().await;
-            if let Err(e) = v.webrtc.remove_video_sender(&sender).await {
-                warn!("Removing the share's sender failed: {e}");
-            }
-            renegotiate(v, &state.websocket).await
+    let (live, epoch) = {
+        let mut voice = state.voice.write().await;
+        let v = voice.as_mut().ok_or("Voice not initialized")?;
+        v.unconfirmed
+            .retain(|u| *u != Unconfirmed::Screen(stream_uuid));
+        match v.shares.remove(stream_uuid) {
+            Removed::Live(live) => (live, v.session_epoch),
+            // Nothing, or prepared only (dropping closes a portal session).
+            Removed::Nothing | Removed::Prepared(_) => return Ok(()),
         }
+    };
+    let sender = live.publication.sender.clone();
+    live.publication.shutdown().await;
+    let mut voice = state.voice.write().await;
+    let Some(v) = voice.as_mut() else {
+        return Ok(());
+    };
+    if v.session_epoch != epoch {
+        return Ok(()); // a newer session; this one's connection is gone
     }
+    if let Err(e) = v.webrtc.remove_video_sender(&sender).await {
+        warn!("Removing the share's sender failed: {e}");
+    }
+    let ctx = NegotiationCtx::from_state(&state, &app);
+    renegotiate(v, &ctx, None).await;
+    Ok(())
 }
 
 /// Current screen share status.

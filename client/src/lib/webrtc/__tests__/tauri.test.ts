@@ -482,6 +482,40 @@ describe("TauriVoiceAdapter screen share (capture, then publish after the answer
     emit("voice:local_capture_ended", { kind: "screen", stream_id: "other" });
     expect(ended).not.toHaveBeenCalled();
     emit("voice:local_capture_ended", { kind: "screen", stream_id: "s1" });
-    expect(ended).toHaveBeenCalledWith("screen", "s1");
+    expect(ended).toHaveBeenCalledWith("screen", "s1", undefined);
+  });
+});
+
+describe("TauriVoiceAdapter webcam publication id and end reasons", () => {
+  beforeEach(() => {
+    registry.clear();
+    pending = [];
+    failing.clear();
+  });
+
+  it("start names the prepared camera; an end event of another camera is ignored", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockReset().mockImplementation(async (cmd: string) =>
+      cmd === "prepare_webcam" ? "cam-1" : undefined,
+    );
+    const adapter = new TauriVoiceAdapter();
+    const ended = vi.fn();
+    adapter.setEventHandlers({ onLocalMediaEnded: ended });
+    await flushListen();
+    await adapter.captureWebcam({});
+    await adapter.publishWebcam();
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith("start_webcam", { publicationId: "cam-1" });
+    emit("voice:local_capture_ended", { kind: "webcam", stream_id: "old-cam", reason: "ended" });
+    expect(ended).not.toHaveBeenCalled();
+    emit("voice:local_capture_ended", { kind: "webcam", stream_id: "cam-1", reason: "not_sent" });
+    expect(ended).toHaveBeenCalledWith("webcam", null, "not_sent");
+  });
+
+  it("a portal denial is its own error", async () => {
+    const { mapCaptureError } = await import("../tauri");
+    expect(mapCaptureError("PORTAL_DENIED")).toEqual({
+      type: "permission_denied",
+      message: "portal_denied",
+    });
   });
 });

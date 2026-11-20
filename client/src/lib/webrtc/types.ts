@@ -104,7 +104,12 @@ export interface VoiceAdapterEvents {
    * shared window closed, permission revoked, the portal session ended):
    * the owner runs its normal stop for it. `streamId` is null for the webcam.
    */
-  onLocalMediaEnded?: (kind: "screen" | "webcam", streamId: string | null) => void;
+  onLocalMediaEnded?: (
+    kind: "screen" | "webcam",
+    streamId: string | null,
+    /** Native: why (`ended`, `no_frames`, `encoder_failed`, `not_sent`). */
+    reason?: string,
+  ) => void;
 
   // Webcam events
   onWebcamTrack?: (userId: string, track: MediaStreamTrack | null) => void;

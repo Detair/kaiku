@@ -9,11 +9,13 @@
 
 use std::cell::Cell;
 use std::rc::Rc;
+use std::sync::atomic::Ordering;
 use std::sync::mpsc as std_mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use pipewire as pw;
 use pw::spa;
+use pw::spa::buffer::{ChunkFlags, DataType};
 use pw::spa::param::format::{FormatProperties, MediaSubtype, MediaType};
 use pw::spa::param::video::{VideoFormat, VideoInfoRaw};
 use pw::spa::param::ParamType;
@@ -26,6 +28,7 @@ use tracing::{debug, info, warn};
 use super::convert::{infer_row_stride, I420Converter, PixelLayout};
 use super::portal::PortalStream;
 use super::I420Frame;
+use crate::video::publication::{end_reason, EndReason};
 use crate::video::QualityParams;
 
 /// Our converter's layout for a negotiated `PipeWire` format.
@@ -43,11 +46,8 @@ pub const fn layout_for(format: VideoFormat) -> Option<PixelLayout> {
 /// reports them, clamped to the mapped data.
 pub fn chunk_bytes(data: &[u8], chunk_offset: u32, chunk_size: u32) -> &[u8] {
     let start = (chunk_offset as usize).min(data.len());
-    let end = if chunk_size == 0 {
-        data.len()
-    } else {
-        start.saturating_add(chunk_size as usize).min(data.len())
-    };
+    // Size 0 is an empty buffer (`usable_chunk` skips it before this).
+    let end = start.saturating_add(chunk_size as usize).min(data.len());
     &data[start..end]
 }
 
@@ -121,17 +121,94 @@ fn format_params(fps: u32) -> Result<Vec<u8>, String> {
     .map_err(|e| e.to_string())
 }
 
+/// No usable picture this long after the stream was connected: the share
+/// ends with a clear reason instead of staying black.
+pub const NO_FRAME_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Paused this long after it was streaming: the system stopped the share
+/// (its "stop sharing" control pauses or unlinks the node).
+pub const PAUSED_END: Duration = Duration::from_secs(2);
+
+/// Decides when a portal stream is over.
+#[derive(Debug)]
+pub struct StreamWatchdog {
+    connected_at: Instant,
+    got_frame: bool,
+    streamed: bool,
+    paused_since: Option<Instant>,
+}
+
+impl StreamWatchdog {
+    pub const fn new(connected_at: Instant) -> Self {
+        Self {
+            connected_at,
+            got_frame: false,
+            streamed: false,
+            paused_since: None,
+        }
+    }
+
+    /// A frame was converted and handed on.
+    pub const fn frame(&mut self) {
+        self.got_frame = true;
+    }
+
+    /// The stream's current state.
+    pub fn state(&mut self, state: &StreamState, now: Instant) {
+        match state {
+            StreamState::Streaming => {
+                self.streamed = true;
+                self.paused_since = None;
+            }
+            StreamState::Paused if self.streamed => {
+                self.paused_since.get_or_insert(now);
+            }
+            _ => {}
+        }
+    }
+
+    /// `Some(reason)` when the capture should end now.
+    pub fn check(&self, now: Instant, session_closed: bool) -> Option<&'static str> {
+        if session_closed {
+            return Some(end_reason::ENDED);
+        }
+        if self
+            .paused_since
+            .is_some_and(|at| now.duration_since(at) >= PAUSED_END)
+        {
+            return Some(end_reason::ENDED);
+        }
+        if !self.got_frame && now.duration_since(self.connected_at) >= NO_FRAME_TIMEOUT {
+            return Some(end_reason::NO_FRAMES);
+        }
+        None
+    }
+}
+
+/// Whether a buffer can be read as packed pixels: mapped memory (not a
+/// DMA-BUF, which may be tiled), a non-empty chunk, not marked corrupted.
+pub fn usable_chunk(data_type: DataType, corrupted: bool, size: u32) -> bool {
+    (data_type == DataType::MemFd || data_type == DataType::MemPtr) && !corrupted && size > 0
+}
+
 /// Read the portal stream until shutdown or until it ends.
 fn run(
     stream: PortalStream,
     params: QualityParams,
     frames: std_mpsc::SyncSender<I420Frame>,
-    shutdown: watch::Receiver<bool>,
-) -> Result<(), String> {
+    shutdown: &watch::Receiver<bool>,
+) -> Result<Option<&'static str>, String> {
     pw::init();
     let mainloop = pw::main_loop::MainLoop::new(None).map_err(|e| e.to_string())?;
     let context = pw::context::Context::new(&mainloop).map_err(|e| e.to_string())?;
-    let PortalStream { fd, node_id, .. } = stream;
+    // `_session` keeps the portal session open until this function returns.
+    let PortalStream {
+        fd,
+        node_id,
+        closed,
+        guard: _session,
+        ..
+    } = stream;
     let core = context.connect_fd(fd, None).map_err(|e| e.to_string())?;
     let pw_stream = pw::stream::Stream::new(
         &core,
@@ -146,7 +223,10 @@ fn run(
 
     let ended = Rc::new(Cell::new(false));
     let ended_cb = ended.clone();
+    let delivered = Rc::new(Cell::new(false));
+    let delivered_cb = delivered.clone();
     let mut converter: Option<I420Converter> = None;
+    let mut warned_type = false;
     let max = (params.width, params.height);
 
     let _listener = pw_stream
@@ -189,10 +269,23 @@ fn run(
             let Some(first) = datas.first_mut() else {
                 return;
             };
-            let (offset, chunk_size, stride) = {
+            let data_type = first.type_();
+            let (offset, chunk_size, stride, corrupted) = {
                 let chunk = first.chunk();
-                (chunk.offset(), chunk.size(), chunk.stride())
+                (
+                    chunk.offset(),
+                    chunk.size(),
+                    chunk.stride(),
+                    chunk.flags().contains(ChunkFlags::CORRUPTED),
+                )
             };
+            if !usable_chunk(data_type, corrupted, chunk_size) {
+                if !warned_type && data_type != DataType::MemFd && data_type != DataType::MemPtr {
+                    warn!(?data_type, "Screen cast buffers are not mapped memory");
+                    warned_type = true;
+                }
+                return;
+            }
             let Some(mapped) = first.data() else { return };
             let bytes = chunk_bytes(mapped, offset, chunk_size);
             let Some(stride) = row_stride(bytes, size.width, size.height, layout, stride) else {
@@ -203,6 +296,7 @@ fn run(
                 *conv = I420Converter::new(layout, max.0, max.1);
             }
             if let Some(i420) = conv.convert(bytes, size.width, size.height, stride) {
+                delivered_cb.set(true);
                 if frames.try_send(i420).is_err() {
                     debug!("Screen frame dropped (encoder behind)");
                 }
@@ -217,42 +311,57 @@ fn run(
         .connect(
             Direction::Input,
             Some(node_id),
-            StreamFlags::AUTOCONNECT | StreamFlags::MAP_BUFFERS,
+            // Never relinked to another node once the portal's node is gone.
+            StreamFlags::AUTOCONNECT | StreamFlags::MAP_BUFFERS | StreamFlags::DONT_RECONNECT,
             &mut [pod],
         )
         .map_err(|e| e.to_string())?;
 
     let pw_loop = mainloop.loop_();
-    let mut streaming = false;
-    loop {
+    let mut watchdog = StreamWatchdog::new(Instant::now());
+    let reason = loop {
         if *shutdown.borrow() {
-            break;
+            break None;
         }
         pw_loop.iterate(Duration::from_millis(50));
-        match pw_stream.state() {
-            StreamState::Streaming => streaming = true,
-            StreamState::Unconnected if streaming => ended.set(true),
-            _ => {}
+        let now = Instant::now();
+        if delivered.get() {
+            watchdog.frame();
         }
+        watchdog.state(&pw_stream.state(), now);
         if ended.get() {
             info!("Screen cast stream ended");
-            break;
+            break Some(end_reason::ENDED);
         }
-    }
+        if let Some(reason) = watchdog.check(now, closed.load(Ordering::Acquire)) {
+            info!(reason, "Screen cast capture ends");
+            break Some(reason);
+        }
+    };
     let _ = pw_stream.disconnect();
-    Ok(())
+    Ok(reason)
 }
 
-/// Start the capture thread for a portal stream.
+/// Start the capture thread for a portal stream. Its end reason (no
+/// picture, stream over) is written to `reason` before the frame sender
+/// is dropped.
 pub fn start(
     stream: PortalStream,
     params: QualityParams,
     frames: std_mpsc::SyncSender<I420Frame>,
     shutdown: watch::Receiver<bool>,
+    reason: EndReason,
 ) -> tokio::task::JoinHandle<()> {
     tokio::task::spawn_blocking(move || {
-        if let Err(e) = run(stream, params, frames, shutdown) {
-            warn!("Screen cast capture failed: {e}");
+        let why = match run(stream, params, frames, &shutdown) {
+            Ok(why) => why,
+            Err(e) => {
+                warn!("Screen cast capture failed: {e}");
+                Some(end_reason::NO_FRAMES)
+            }
+        };
+        if let (Some(why), Ok(mut slot)) = (why, reason.lock()) {
+            *slot = Some(why);
         }
     })
 }
@@ -280,7 +389,7 @@ mod tests {
         assert_eq!(chunk_bytes(&data, 10, 20).len(), 20);
         assert_eq!(chunk_bytes(&data, 90, 50).len(), 10);
         assert_eq!(chunk_bytes(&data, 200, 10).len(), 0);
-        assert_eq!(chunk_bytes(&data, 0, 0).len(), 100, "size 0: whole buffer");
+        assert_eq!(chunk_bytes(&data, 0, 0).len(), 0, "size 0 is empty");
     }
 
     #[test]
@@ -297,5 +406,58 @@ mod tests {
     fn format_params_serialize() {
         let bytes = format_params(30).expect("pod");
         assert!(Pod::from_bytes(&bytes).is_some());
+    }
+
+    #[test]
+    fn only_mapped_non_empty_uncorrupted_chunks_are_read() {
+        assert!(usable_chunk(DataType::MemFd, false, 100));
+        assert!(usable_chunk(DataType::MemPtr, false, 100));
+        assert!(
+            !usable_chunk(DataType::DmaBuf, false, 100),
+            "DMA-BUF may be tiled"
+        );
+        assert!(!usable_chunk(DataType::MemFd, true, 100), "corrupted");
+        assert!(!usable_chunk(DataType::MemFd, false, 0), "empty buffer");
+    }
+
+    #[test]
+    fn no_picture_within_the_timeout_ends_with_no_frames() {
+        let t0 = Instant::now();
+        let mut w = StreamWatchdog::new(t0);
+        w.state(&StreamState::Streaming, t0);
+        assert_eq!(w.check(t0 + Duration::from_secs(4), false), None);
+        assert_eq!(
+            w.check(t0 + NO_FRAME_TIMEOUT, false),
+            Some(end_reason::NO_FRAMES)
+        );
+        // With a picture it keeps going.
+        let mut w = StreamWatchdog::new(t0);
+        w.frame();
+        assert_eq!(w.check(t0 + Duration::from_mins(1), false), None);
+    }
+
+    #[test]
+    fn stop_in_the_system_indicator_ends_the_capture() {
+        let t0 = Instant::now();
+        // The portal closes the session.
+        let mut w = StreamWatchdog::new(t0);
+        w.frame();
+        assert_eq!(w.check(t0, true), Some(end_reason::ENDED));
+        // Or the stream falls back to paused for good.
+        w.state(&StreamState::Streaming, t0);
+        w.state(&StreamState::Paused, t0 + Duration::from_secs(1));
+        assert_eq!(w.check(t0 + Duration::from_secs(2), false), None);
+        assert_eq!(
+            w.check(t0 + Duration::from_secs(1) + PAUSED_END, false),
+            Some(end_reason::ENDED)
+        );
+        // A short pause that resumes does not end it.
+        w.state(&StreamState::Streaming, t0 + Duration::from_secs(10));
+        assert_eq!(w.check(t0 + Duration::from_secs(20), false), None);
+        // Paused before it ever streamed (negotiating) is not an end.
+        let mut fresh = StreamWatchdog::new(t0);
+        fresh.frame();
+        fresh.state(&StreamState::Paused, t0);
+        assert_eq!(fresh.check(t0 + Duration::from_secs(9), false), None);
     }
 }
