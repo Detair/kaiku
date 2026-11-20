@@ -2530,3 +2530,51 @@ async fn device_removal_against_finish(pool: PgPool) {
         ("expired".into(), Some("device_revoked".into()))
     );
 }
+
+// ============================================================================
+// Polling never starves the flow (real rate limiter)
+// ============================================================================
+
+/// What the two clients poll in about 90 seconds at their densest (one poll a
+/// second each, as if every long-poll came back at once): the PC from the
+/// start, the phone once it shows the code. Any answer is fine, also 429.
+async fn ninety_seconds_of_polling(p: &Pc, id: &str, phone: bool) {
+    for _ in 0..90 {
+        call(&p.app, Method::GET, &format!("/auth/pc-setups/{id}?wait=0"), &p.token, None).await;
+        if phone {
+            call(
+                &p.app,
+                Method::GET,
+                &format!("/api/pc-setups/{id}?wait=0"),
+                &p.dev.access_token,
+                None,
+            )
+            .await;
+        }
+    }
+}
+
+#[sqlx::test]
+async fn a_slow_person_finishes_with_the_real_rate_limiter(pool: PgPool) {
+    let mut p = pc(&pool).await;
+    let (router, _limiter) = super::helpers::passkeys::limited_router(&p.app).await;
+    p.app.router = router;
+    let a = started(&p).await;
+    let id = id_of(&a);
+    ninety_seconds_of_polling(&p, &id, false).await;
+    let (token, bytes) = qr_token(&a["qr_payload"]);
+    // The QR rotated meanwhile in real life; here the first one is still current.
+    let (s, c) = claim(&p.app, &p.dev, &token).await;
+    assert_eq!(s, 201, "{c}");
+    ninety_seconds_of_polling(&p, &id, false).await;
+    let (s, ok) = answer(&p.app, &p.dev, &c, &bytes, Decision::Approve).await;
+    assert_eq!(s, 200, "{ok}");
+    ninety_seconds_of_polling(&p, &id, true).await;
+    let (s, body) = enter(&p, &p.token, &id, ok["code"].as_str().unwrap()).await;
+    assert_eq!((s, body["state"].as_str()), (200, Some("enrolled")), "{body}");
+    ninety_seconds_of_polling(&p, &id, true).await;
+    let body = ceremony(&p, &id).await;
+    ninety_seconds_of_polling(&p, &id, true).await;
+    let (s, pk) = passkey_finish(&p, &p.token, &id, body).await;
+    assert_eq!(s, 201, "{pk}");
+}

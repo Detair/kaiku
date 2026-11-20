@@ -931,7 +931,9 @@ Nothing below changes an existing contract entry; a client that does not know it
   the Android tests (kept apart so the V01–V05 file still holds exactly those five).
 - **Enrolment variant** `pc_setup` (byte 3) exists only on enrolment rows; it never appears as the variant
   of an `enroll` challenge, and an `enroll` context carrying it is rejected.
-- **Phone routes** (bearer of the scanning key device, `may_approve` on, `ApprovalLogin` limit):
+- **Phone routes** (bearer of the scanning key device, `may_approve` on, `ApprovalLogin` limit per user;
+  the status poll `GET /api/pc-setups/{attempt_id}` counts in the per-user `Read` bucket instead, so polling
+  never uses up the requests the steps need):
 
   | Route | Body → answer |
   |---|---|
@@ -958,7 +960,8 @@ Nothing below changes an existing contract entry; a client that does not know it
 
 - `GET /api/me/security` gains `can_set_up_this_pc: bool` (a probation session of an account with an active
   key device and `may_approve` on). Clients ignore it when absent.
-- **PC routes** (bearer of the requesting probation session, `ApprovalLogin` per user; another session of
+- **PC routes** (bearer of the requesting probation session, `ApprovalLogin` per user, except the status
+  poll `GET /auth/pc-setups/{id}` in the per-user `Read` bucket; another session of
   the same account, or an unknown id, gets 404 `APPROVAL_NOT_FOUND` on every attempt route):
 
   | Route | Body → answer |

@@ -637,6 +637,9 @@ sequenceDiagram
   `too_many_codes`, `enrollment_expired`.
 - **Audit rows** `auth.pc_setup.start`, `.approve`, `.report`, `.refuse`, `.enrol` and `.complete` carry
   only the attempt id.
+- **Rate limits:** every step is in the per-user `ApprovalLogin` class (30 per minute); the two status
+  polls (`GET /auth/pc-setups/{id}`, `GET /api/pc-setups/{attempt_id}`) count in the per-user `Read`
+  class, so a slow person's polling never blocks the code entry or the passkey.
 - **No push is involved**; both sides poll at most once a second (long-poll `?wait=` ≤ 25 s; at most 32
   attempt long-polls per server process, beyond that a poll answers at once).
 

@@ -29,7 +29,8 @@ interface ApprovalApi {
     suspend fun answerPcSetup(challengeId: String, decision: String, responseB64u: String, signatureB64u: String): PcSetupAnswer
     suspend fun refusePcSetup(challengeId: String)
     /** The scanning phone's view of its attempt (no long-poll: the app asks at most once a second). */
-    suspend fun pcSetupStatus(attemptId: String): PcSetupPhoneStatus
+    /** The scanning phone's long-poll (`wait` 0..25 s; the server answers early on a change). */
+    suspend fun pcSetupStatus(attemptId: String, waitSeconds: Int): PcSetupPhoneStatus
     suspend fun release(challengeId: String)
     /** [origin]: the key's own server (absolute URL), never another configured one; null = configured. */
     suspend fun deviceLoginChallenge(userId: String, deviceId: String, origin: String? = null): ApprovalChallenge
@@ -120,8 +121,8 @@ class ApprovalApiImpl @Inject constructor(private val httpClient: HttpClient) : 
         httpClient.post("/api/pc-setups/$challengeId/refuse").ensureSuccess("pc setup refuse failed")
     }
 
-    override suspend fun pcSetupStatus(attemptId: String): PcSetupPhoneStatus {
-        val r = httpClient.get("/api/pc-setups/$attemptId")
+    override suspend fun pcSetupStatus(attemptId: String, waitSeconds: Int): PcSetupPhoneStatus {
+        val r = httpClient.get("/api/pc-setups/$attemptId?wait=$waitSeconds")
         r.ensureSuccess("pc setup status failed")
         return r.body()
     }

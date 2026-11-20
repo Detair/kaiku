@@ -181,6 +181,15 @@ class PcSetupApprovalViewModelTest {
         v.viewModelScope.coroutineContext[kotlinx.coroutines.Job]!!.cancel()
     }
 
+    @Test fun `the phone's poll is a long-poll`() = runTest {
+        val (v, _) = vm()
+        v.start(payload)
+        v.approve(activity)
+        advanceTimeBy(1_100)
+        assertTrue(api.pcStatusWaits.isNotEmpty())
+        assertTrue(api.pcStatusWaits.all { it == io.wolftown.kaiku.data.api.LongPoll.WAIT_SECONDS })
+    }
+
     @Test fun `polls at most once a second`() = runTest {
         val (v, _) = vm()
         v.start(payload)

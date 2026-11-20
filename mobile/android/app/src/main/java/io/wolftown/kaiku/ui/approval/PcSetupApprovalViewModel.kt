@@ -18,6 +18,7 @@ import io.wolftown.kaiku.approval.UvPrompt
 import io.wolftown.kaiku.approval.UvResult
 import io.wolftown.kaiku.data.api.ApiException
 import io.wolftown.kaiku.data.api.ApprovalApi
+import io.wolftown.kaiku.data.api.LongPoll
 import io.wolftown.kaiku.data.keydevice.KeyDeviceRepository
 import io.wolftown.kaiku.domain.ScanPayload
 import io.wolftown.kaiku.domain.model.ApprovalChallenge
@@ -237,8 +238,9 @@ class PcSetupApprovalViewModel @Inject constructor(
     }
 
     /**
-     * Asks for the attempt's state once a second (the next request starts a full second after the
-     * last one ended) while the code is shown. A lost connection changes nothing on screen.
+     * Long-polls the attempt's state while the code is shown (the server answers early on a change;
+     * the next request starts a full second after the last one ended). A lost connection changes
+     * nothing on screen.
      */
     private fun startPolling(attemptId: String) {
         poll?.cancel()
@@ -246,7 +248,7 @@ class PcSetupApprovalViewModel @Inject constructor(
             while (true) {
                 delay(POLL_INTERVAL_MS)
                 val status = try {
-                    approvalApi.pcSetupStatus(attemptId)
+                    approvalApi.pcSetupStatus(attemptId, LongPoll.WAIT_SECONDS)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: ApiException) {

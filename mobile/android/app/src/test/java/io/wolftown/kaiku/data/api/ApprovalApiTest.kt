@@ -133,8 +133,10 @@ class ApprovalApiTest {
         api.refusePcSetup("c1")
         assertEquals("/api/pc-setups/c1/refuse", rec.last.path)
         rec.status = HttpStatusCode.OK; rec.body = """{"state":"code","reason":null}"""
-        assertEquals("code", api.pcSetupStatus("a1").state)
+        assertEquals("code", api.pcSetupStatus("a1", LongPoll.WAIT_SECONDS).state)
         assertEquals(HttpMethod.Get, rec.last.method)
         assertEquals("/api/pc-setups/a1", rec.last.path)
+        // A long-poll, as C26 says: the server answers early on any change.
+        assertTrue(rec.last.url, rec.last.url.endsWith("/api/pc-setups/a1?wait=${LongPoll.WAIT_SECONDS}"))
     }
 }

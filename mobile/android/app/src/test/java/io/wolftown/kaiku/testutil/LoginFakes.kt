@@ -84,8 +84,10 @@ class FakeApprovalApi : ApprovalApi {
         calls += "refusePc:$challengeId"
         pcRefuseFailure?.let { throw it }
     }
-    override suspend fun pcSetupStatus(attemptId: String): io.wolftown.kaiku.domain.model.PcSetupPhoneStatus {
+    var pcStatusWaits = mutableListOf<Int>()
+    override suspend fun pcSetupStatus(attemptId: String, waitSeconds: Int): io.wolftown.kaiku.domain.model.PcSetupPhoneStatus {
         pcStatusCalls++
+        pcStatusWaits += waitSeconds
         pcStatusTimes += pcClock()
         if (pcStatuses.isNotEmpty()) pcLastStatus = pcStatuses.removeFirst()
         val s = pcLastStatus
