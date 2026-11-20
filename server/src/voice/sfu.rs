@@ -566,6 +566,49 @@ fn ice_network_plan(family: IceIpFamily, public_ip: Option<&str>) -> IceNetworkP
     }
 }
 
+/// Whether `ip` cannot be reached from the internet (loopback, private,
+/// link-local, shared address space, unique local).
+fn is_private_or_local(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            let o = v4.octets();
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || (o[0] == 100 && (o[1] & 0xc0) == 64) // 100.64.0.0/10
+        }
+        std::net::IpAddr::V6(v6) => {
+            let s = v6.segments();
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || (s[0] & 0xfe00) == 0xfc00 // unique local
+                || (s[0] & 0xffc0) == 0xfe80 // link-local
+        }
+    }
+}
+
+/// The SFU offers its own host addresses only. Without `PUBLIC_IP`, a
+/// server whose addresses are all private (behind NAT, in a container) is
+/// unreachable for clients outside that network: say so at start.
+fn warn_if_only_private_addresses(allowed: Option<&[String]>) {
+    let Ok(found) = webrtc::util::ifaces::ifaces() else {
+        return;
+    };
+    let any_public = found
+        .iter()
+        .filter(|i| allowed.is_none_or(|a| a.contains(&i.name)))
+        .filter_map(|i| i.addr.map(|a| a.ip()))
+        .any(|ip| !is_private_or_local(ip));
+    if !any_public {
+        warn!(
+            "PUBLIC_IP is not set and this host has only private addresses: voice clients outside \
+             this network cannot reach the SFU (it uses no STUN/TURN itself). Set PUBLIC_IP to the \
+             address clients reach this host on."
+        );
+    }
+}
+
 /// Configured interface names that do not exist on this host.
 fn unmatched_interface_names<'a>(allowed: &'a [String], available: &[&str]) -> Vec<&'a str> {
     allowed
@@ -680,6 +723,10 @@ impl SfuServer {
                 webrtc::ice_transport::ice_candidate_type::RTCIceCandidateType::Host,
             );
             info!(public_ip = %public_ip, "SFU NAT 1:1 IP configured");
+        }
+
+        if config.public_ip.is_none() {
+            warn_if_only_private_addresses(config.voice_ice_interfaces.as_deref());
         }
 
         // Restrict ICE to the configured interfaces.
@@ -2048,6 +2095,26 @@ mod ice_filter_tests {
         config.voice_ice_interfaces = Some(vec!["no-such-if0".to_owned()]);
         let ips = gather_ips(config).await;
         assert!(ips.is_empty(), "{ips:?}");
+    }
+
+    #[test]
+    fn private_and_local_addresses_are_recognised() {
+        for ip in [
+            "10.1.2.3",
+            "172.16.0.1",
+            "192.168.1.1",
+            "127.0.0.1",
+            "169.254.1.1",
+            "100.64.0.1",
+            "fd00::1",
+            "fe80::1",
+            "::1",
+        ] {
+            assert!(is_private_or_local(ip.parse().unwrap()), "{ip}");
+        }
+        for ip in ["203.0.113.5", "8.8.8.8", "2001:db8::1", "100.128.0.1"] {
+            assert!(!is_private_or_local(ip.parse().unwrap()), "{ip}");
+        }
     }
 
     #[test]
