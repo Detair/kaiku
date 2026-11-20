@@ -14,14 +14,19 @@ import io.wolftown.kaiku.data.local.AuthState
 import kotlinx.coroutines.CoroutineScope
 
 /** An active key device for the C26 fixture user/device, with a software key and a scripted UV. */
-class KeyDeviceFixture(scope: CoroutineScope, uv: UvResult? = null, active: Boolean = true) {
+class KeyDeviceFixture(
+    scope: CoroutineScope,
+    uv: UvResult? = null,
+    active: Boolean = true,
+    now: Long = SigFixtures.EXPIRES_AT - 30,
+) {
     val keyStore = SoftwareApprovalKeyStore().apply {
         generate(ByteArray(32), UvPolicy.choose(30, true, true) as UvDecision.Use)
     }
     val authState = AuthState(scope)
     val repo = KeyDeviceRepository(InMemoryKeyDeviceStore(), keyStore, authState, scope)
     val verifier = FakeUserVerifier(keyStore, uv)
-    val checks = ChallengeVerifier({ SigFixtures.ORIGIN }, { SigFixtures.EXPIRES_AT - 30 })
+    val checks = ChallengeVerifier({ SigFixtures.ORIGIN }, { now })
     val signer = DeviceSigner(keyStore, verifier, checks)
 
     init {

@@ -8,6 +8,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import io.ktor.http.HttpStatusCode
 import io.wolftown.kaiku.R
 import io.wolftown.kaiku.approval.ChallengeRejected
+import io.wolftown.kaiku.approval.RejectReason
 import io.wolftown.kaiku.approval.Decision
 import io.wolftown.kaiku.approval.DeviceIdProvider
 import io.wolftown.kaiku.approval.DeviceSigner
@@ -119,9 +120,10 @@ class PcSetupApprovalViewModel @Inject constructor(
                 throw e
             } catch (e: Exception) {
                 // ChallengeRejected, or a context that cannot be read: never shown, never signed.
-                logger.warning("PC setup challenge refused: ${(e as? ChallengeRejected)?.reason ?: e.javaClass.simpleName}")
+                val reason = (e as? ChallengeRejected)?.reason
+                logger.warning("PC setup challenge refused: ${reason ?: e.javaClass.simpleName}")
                 releaseQuietly(ch.challengeId)
-                _ui.value = PcSetupUi.Error(R.string.approval_mismatch, rescan = true)
+                _ui.value = PcSetupUi.Error(rejectedText(reason), rescan = true)
             }
         }
     }
@@ -170,7 +172,7 @@ class PcSetupApprovalViewModel @Inject constructor(
             when (val out = signer.sign(activity, ch, SigKind.PC_SETUP, local.userId, deviceIds.id(), decision, token, prompt)) {
                 is SignOutcome.Rejected -> {
                     releaseQuietly(ch.challengeId)
-                    _ui.value = PcSetupUi.Error(R.string.approval_mismatch, rescan = true)
+                    _ui.value = PcSetupUi.Error(rejectedText(out.reason), rescan = true)
                 }
                 is SignOutcome.Uv -> _ui.value = when (out.result) {
                     UvResult.Cancelled -> back
@@ -234,6 +236,8 @@ class PcSetupApprovalViewModel @Inject constructor(
      * leaving throws the code away and the computer can then only start again.
      */
     fun requestBack(): Boolean {
+        // A decision is being sent: Back is swallowed, or the code it brings back would be lost.
+        if (_ui.value == PcSetupUi.Working) return false
         if (_ui.value is PcSetupUi.Code) {
             _leaveAsked.value = true
             return false
@@ -266,16 +270,29 @@ class PcSetupApprovalViewModel @Inject constructor(
     private fun startPolling(attemptId: String) {
         poll?.cancel()
         poll = viewModelScope.launch {
+            var pause = POLL_INTERVAL_MS
             while (true) {
-                delay(POLL_INTERVAL_MS)
+                delay(pause)
+                pause = POLL_INTERVAL_MS
                 val status = try {
                     approvalApi.pcSetupStatus(attemptId, LongPoll.WAIT_SECONDS)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: ApiException) {
-                    if (e.status == HttpStatusCode.NotFound) {
-                        _ui.value = PcSetupUi.Finished(R.string.pc_setup_cancelled, ok = false)
-                        return@launch
+                    when {
+                        e.status == HttpStatusCode.NotFound -> {
+                            end(R.string.pc_setup_cancelled)
+                            return@launch
+                        }
+                        // Wait as long as the server asks.
+                        e.status == HttpStatusCode.TooManyRequests ->
+                            pause = maxOf(POLL_INTERVAL_MS, (e.fields.retryAfterSeconds ?: 0L) * 1_000L)
+                        // A refusal that waiting does not change ends the screen.
+                        e.status.value in 400..499 && e.status != HttpStatusCode.RequestTimeout &&
+                            e.status != HttpStatusCode.Unauthorized -> {
+                            end(R.string.pc_setup_failed)
+                            return@launch
+                        }
                     }
                     continue
                 } catch (_: Exception) {
@@ -284,6 +301,15 @@ class PcSetupApprovalViewModel @Inject constructor(
                 if (apply(status)) return@launch
             }
         }
+    }
+
+    /** A challenge the phone refused: one that ran out took too long; anything else does not match. */
+    private fun rejectedText(reason: RejectReason?): Int =
+        if (reason == RejectReason.EXPIRED) R.string.approval_expired else R.string.approval_mismatch
+
+    private fun end(@StringRes msg: Int) {
+        _leaveAsked.value = false
+        _ui.value = PcSetupUi.Finished(msg, ok = false)
     }
 
     /** True when the attempt has ended and polling stops. */
@@ -302,21 +328,29 @@ class PcSetupApprovalViewModel @Inject constructor(
         return false
     }
 
+    /**
+     * The end text of a status, null while the attempt is live. A state or reason this app does not
+     * know reads as the generic failure (C27) and ends polling.
+     */
     private fun endText(s: PcSetupPhoneStatus): Int? = when (s.state) {
+        "waiting", "claimed", "code", "enrolled" -> null
         "completed" -> R.string.pc_setup_done
         "failed" -> R.string.pc_setup_too_many_codes
         "refused" -> R.string.pc_setup_denied
         "reported" -> R.string.pc_setup_reported
         "cancelled", "expired" -> when (s.reason) {
+            null, "cancelled", "restarted" ->
+                if (s.state == "cancelled") R.string.pc_setup_cancelled else R.string.pc_setup_failed
             "session_ended" -> R.string.pc_setup_session_ended
             "code_expired" -> R.string.pc_setup_code_expired
+            "timeout" -> R.string.pc_setup_timeout
             // The passkey on the PC failed (too many, already registered) or never finished: never "Done".
             "enrollment_expired", "too_many_codes", "device_revoked", "no_key_device", "account_banned" ->
                 R.string.pc_setup_failed
             "may_approve_off" -> R.string.scan_may_approve_off
-            else -> R.string.pc_setup_cancelled
+            else -> R.string.pc_setup_failed
         }
-        else -> null
+        else -> R.string.pc_setup_failed
     }
 
     private suspend fun releaseQuietly(id: String) {

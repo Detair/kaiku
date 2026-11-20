@@ -58,8 +58,9 @@ class PcSetupApprovalViewModelTest {
         active: Boolean = true,
         context: String = ctxJson(),
         n: Int = 16,
+        now: Long = SigFixtures.EXPIRES_AT - 30,
     ): Pair<PcSetupApprovalViewModel, KeyDeviceFixture> {
-        val f = KeyDeviceFixture(backgroundScope, uv, active)
+        val f = KeyDeviceFixture(backgroundScope, uv, active, now)
         api.nextChallenge = SigFixtures.challengeFor(SigKind.PC_SETUP, n, context, wireKind = "pc_setup")
         api.pcClock = { testScheduler.currentTime }
         return PcSetupApprovalViewModel(api, f.signer, f.repo, { SigFixtures.DEVICE_ID }, appScope = backgroundScope) to f
@@ -356,5 +357,86 @@ class PcSetupApprovalViewModelTest {
         v.start(payload)
         v.approve(activity)
         assertTrue(api.calls.none { it.startsWith("release") })
+    }
+
+    // Fix round 3: Back while sending, unknown ends, poll errors, an expired challenge.
+
+    @Test fun `back while the decision is being sent is swallowed and the code is shown after`() = runTest {
+        val (v, _) = vm()
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        api.answerGate = gate
+        v.start(payload)
+        v.approve(activity)
+        assertEquals(PcSetupUi.Working, v.ui.value)
+        assertFalse(v.requestBack())
+        assertFalse(v.leaveAsked.value)
+        gate.complete(Unit)
+        assertEquals(PcSetupUi.Code("123456"), v.ui.value)
+        v.viewModelScope.coroutineContext[kotlinx.coroutines.Job]!!.cancel()
+    }
+
+    @Test fun `an unknown state or reason ends with the generic text and stops polling`() = runTest {
+        val cases = listOf(
+            PcSetupPhoneStatus("time_travel") to R.string.pc_setup_failed,
+            PcSetupPhoneStatus("expired", "some_new_reason") to R.string.pc_setup_failed,
+            PcSetupPhoneStatus("expired", "timeout") to R.string.pc_setup_timeout,
+            PcSetupPhoneStatus("cancelled", null) to R.string.pc_setup_cancelled,
+            PcSetupPhoneStatus("cancelled", "restarted") to R.string.pc_setup_cancelled,
+        )
+        cases.forEach { (status, expected) ->
+            val (v, _) = vm()
+            api.pcStatuses.clear()
+            v.start(payload)
+            v.approve(activity)
+            api.pcStatuses.add(status)
+            advanceTimeBy(1_100)
+            assertEquals(status.toString(), PcSetupUi.Finished(expected, ok = false), v.ui.value)
+            val calls = api.pcStatusCalls
+            advanceTimeBy(5_000)
+            assertEquals(status.toString(), calls, api.pcStatusCalls)
+            v.viewModelScope.coroutineContext[kotlinx.coroutines.Job]!!.cancel()
+        }
+    }
+
+    @Test fun `a vanished attempt closes the leave question`() = runTest {
+        val (v, _) = vm()
+        v.start(payload)
+        v.approve(activity)
+        assertFalse(v.requestBack())
+        api.pcStatuses.add(apiError(404, "APPROVAL_NOT_FOUND"))
+        advanceTimeBy(1_100)
+        assertEquals(PcSetupUi.Finished(R.string.pc_setup_cancelled, ok = false), v.ui.value)
+        assertFalse(v.leaveAsked.value)
+        v.viewModelScope.coroutineContext[kotlinx.coroutines.Job]!!.cancel()
+    }
+
+    @Test fun `a 429 waits for Retry-After and a refusal that cannot change ends`() = runTest {
+        val (v, _) = vm()
+        v.start(payload)
+        v.approve(activity)
+        api.pcStatuses.add(apiError(429, "TOO_MANY_ATTEMPTS", io.wolftown.kaiku.data.api.ApiErrorFields(retryAfterSeconds = 10)))
+        api.pcStatuses.add(PcSetupPhoneStatus("code"))
+        advanceTimeBy(1_100)
+        assertEquals(1, api.pcStatusCalls)
+        advanceTimeBy(8_000)
+        assertEquals(1, api.pcStatusCalls)
+        advanceTimeBy(2_500)
+        assertEquals(2, api.pcStatusCalls)
+        v.viewModelScope.coroutineContext[kotlinx.coroutines.Job]!!.cancel()
+
+        val (w, _) = vm()
+        api.pcStatuses.clear()
+        w.start(payload)
+        w.approve(activity)
+        api.pcStatuses.add(apiError(403, "KEY_DEVICE_REQUIRED"))
+        advanceTimeBy(1_100)
+        assertEquals(PcSetupUi.Finished(R.string.pc_setup_failed, ok = false), w.ui.value)
+        w.viewModelScope.coroutineContext[kotlinx.coroutines.Job]!!.cancel()
+    }
+
+    @Test fun `a challenge that expired before the tap says it took too long`() = runTest {
+        val (v, _) = vm(now = SigFixtures.EXPIRES_AT + 600)
+        v.start(payload)
+        assertEquals(PcSetupUi.Error(R.string.approval_expired, rescan = true), v.ui.value)
     }
 }

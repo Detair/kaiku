@@ -410,6 +410,7 @@
     <string name="pc_setup_already_claimed">Another phone is already confirming this.</string>
     <string name="pc_setup_session_ended">That session has ended.</string>
     <string name="pc_setup_too_many_codes">Too many wrong codes. Start again on the computer.</string>
+    <string name="pc_setup_timeout">This took too long. Start again on the computer.</string>
     <string name="pc_setup_code_expired">The code ran out of time. Start again on the computer.</string>
     <string name="pc_setup_cancelled">Cancelled. Start again on the computer if you want to continue.</string>
     <string name="pc_setup_answer_lost">The answer may not have arrived. Press Start again on the computer.</string>

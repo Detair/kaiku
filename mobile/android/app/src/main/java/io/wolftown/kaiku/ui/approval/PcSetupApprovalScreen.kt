@@ -66,9 +66,9 @@ fun PcSetupApprovalScreen(
             if (payload != null) viewModel.start(payload) else onDone()
         }
     }
-    // No Back while a decision is being sent: it would cut the answer short. On the code screen
-    // Back asks first: leaving throws the code away.
-    BackHandler(enabled = ui != PcSetupUi.Working) {
+    // Back is always handled here: while a decision is being sent it is swallowed (leaving would
+    // lose the code the answer brings back); on the code screen it asks first.
+    BackHandler(enabled = true) {
         if (viewModel.requestBack()) {
             viewModel.back()
             onDone()
