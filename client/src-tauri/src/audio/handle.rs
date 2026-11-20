@@ -1847,6 +1847,9 @@ fn capture_config(device: &Device) -> (CaptureFormat, SampleFormat) {
     (format, sample_format)
 }
 
+/// Source of capture stream ids (a restarted microphone gets a new one).
+static NEXT_CAPTURE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+
 /// What the capture callback needs besides the device format.
 struct CaptureContext {
     muted: Arc<AtomicBool>,
@@ -1918,12 +1921,14 @@ where
                 if !active.load(Ordering::Relaxed) {
                     return;
                 }
-                if muted.load(Ordering::Relaxed) {
+                // Muted frames still pass the front end so the capture's
+                // frame count (the RTP clock) keeps running.
+                let is_muted = muted.load(Ordering::Relaxed);
+                if is_muted {
                     processor.on_muted();
-                    return;
                 }
                 convert_in_chunks(data, channels, &mut converted, |chunk| {
-                    front_end.push(chunk, |frame| processor.process_frame(frame));
+                    front_end.push(chunk, |frame| processor.process_frame(frame, is_muted));
                 });
             },
             stream_error_callback(reporter),
@@ -1971,8 +1976,11 @@ struct CaptureProcessor {
     samples_i16: [i16; FRAME_SIZE],
     encode_buf: Vec<u8>,
     gate_open: bool,
-    /// Frames not sent since the last packet (gate closed or send failed).
-    skipped_frames: u32,
+    /// This capture stream's id and the index of the next 20 ms frame.
+    capture: u32,
+    frame_index: u64,
+    /// Gated or muted frames since the last sent one.
+    talkspurt_pending: bool,
     indicator_speaking: bool,
     last_speech_time: Instant,
     vad_config: VadConfig,
@@ -1999,7 +2007,9 @@ impl CaptureProcessor {
             samples_i16: [0; FRAME_SIZE],
             encode_buf: vec![0u8; 4000],
             gate_open: false,
-            skipped_frames: 0,
+            capture: NEXT_CAPTURE.fetch_add(1, Ordering::Relaxed),
+            frame_index: 0,
+            talkspurt_pending: false,
             indicator_speaking: false,
             last_speech_time: Instant::now(),
             vad_config,
@@ -2023,8 +2033,15 @@ impl CaptureProcessor {
         }
     }
 
-    /// Process one 960-sample 48 kHz mono frame.
-    fn process_frame(&mut self, frame: &[f32]) {
+    /// Process one 960-sample 48 kHz mono frame. Every frame counts in the
+    /// capture's timeline; a muted one goes no further.
+    fn process_frame(&mut self, frame: &[f32], muted: bool) {
+        let index = self.frame_index;
+        self.frame_index += 1;
+        if muted {
+            self.talkspurt_pending = true;
+            return;
+        }
         for (half, original) in frame.chunks_exact(RNNOISE_FRAME_SIZE).enumerate() {
             // RNNoise works in the i16 range.
             for (dst, &s) in self.rnnoise_input.iter_mut().zip(original) {
@@ -2068,8 +2085,8 @@ impl CaptureProcessor {
         }
 
         if !self.gate_open {
-            // Not sent; the sender advances the RTP timestamp over it.
-            self.skipped_frames = self.skipped_frames.saturating_add(1);
+            // Not sent; the RTP timestamp still advances over it.
+            self.talkspurt_pending = true;
             return;
         }
 
@@ -2086,19 +2103,21 @@ impl CaptureProcessor {
         match self.encoder.encode(&self.samples_i16, &mut self.encode_buf) {
             Ok(len) => {
                 let encoded = EncodedFrame {
-                    skipped_frames: self.skipped_frames,
+                    capture: self.capture,
+                    frame: index,
+                    captured_at: Instant::now(),
+                    talkspurt: self.talkspurt_pending,
                     opus: self.encode_buf[..len].to_vec(),
                 };
                 if let Err(e) = self.output_tx.try_send(encoded) {
-                    // Lost here: the next packet's timestamp covers it.
-                    self.skipped_frames = self.skipped_frames.saturating_add(1);
+                    // Lost here: the next frame's index covers the time;
+                    // no talk spurt starts.
                     warn!("Failed to send encoded audio: {}", e);
                 } else {
-                    self.skipped_frames = 0;
+                    self.talkspurt_pending = false;
                 }
             }
             Err(e) => {
-                self.skipped_frames = self.skipped_frames.saturating_add(1);
                 error!("Opus encode error: {}", e);
             }
         }
@@ -2539,14 +2558,37 @@ mod tests {
         let mut processor = CaptureProcessor::new(tx, vad.clone(), None).unwrap();
         let frame = [0.1f32; FRAME_SIZE];
         for _ in 0..7 {
-            processor.process_frame(&frame);
+            processor.process_frame(&frame, false);
         }
         assert!(rx.try_recv().is_err(), "a gated frame was sent");
         vad.set_enabled(false); // gate open
-        processor.process_frame(&frame);
-        assert_eq!(rx.try_recv().unwrap().skipped_frames, 7);
-        processor.process_frame(&frame);
-        assert_eq!(rx.try_recv().unwrap().skipped_frames, 0);
+        processor.process_frame(&frame, false);
+        let sent = rx.try_recv().unwrap();
+        assert_eq!((sent.frame, sent.talkspurt), (7, true));
+        processor.process_frame(&frame, false);
+        let sent = rx.try_recv().unwrap();
+        assert_eq!((sent.frame, sent.talkspurt), (8, false));
+        // Muted frames count too and start a talk spurt.
+        for _ in 0..3 {
+            processor.process_frame(&frame, true);
+        }
+        processor.process_frame(&frame, false);
+        let sent = rx.try_recv().unwrap();
+        assert_eq!((sent.frame, sent.talkspurt), (12, true));
+        assert_eq!(sent.capture, processor.capture);
+    }
+
+    #[test]
+    fn a_frame_that_cannot_be_queued_starts_no_talk_spurt() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let mut processor = CaptureProcessor::new(tx, VadConfig::new(), None).unwrap();
+        let frame = [0.1f32; FRAME_SIZE];
+        processor.process_frame(&frame, false); // queued
+        processor.process_frame(&frame, false); // queue full: lost
+        assert_eq!(rx.try_recv().unwrap().frame, 0);
+        processor.process_frame(&frame, false);
+        let sent = rx.try_recv().unwrap();
+        assert_eq!((sent.frame, sent.talkspurt), (2, false));
     }
 
     /// What the fake audio streams did, in order.

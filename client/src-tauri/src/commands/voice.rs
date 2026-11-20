@@ -1392,11 +1392,12 @@ async fn send_audio_to_track(
     info!("Starting RTP audio sender task (SSRC: {})", ssrc);
 
     while let Some(frame) = audio_rx.recv().await {
-        let stamp = clock.stamp(
-            frame.skipped_frames,
-            std::time::Instant::now(),
-            audio_rx.len(),
-        );
+        let stamp = clock.stamp(voice::rtp_clock::CapturePosition {
+            capture: frame.capture,
+            frame: frame.frame,
+            at: frame.captured_at,
+            talkspurt: frame.talkspurt,
+        });
         // Create RTP packet
         let rtp_packet = RtpPacket {
             header: webrtc::rtp::header::Header {
@@ -1642,7 +1643,10 @@ mod tests {
         let mut sender_rx = sender_rx.expect("uplink sender wired");
         // The microphone's frames still reach the WebRTC sender.
         let frame = EncodedFrame {
-            skipped_frames: 0,
+            capture: 1,
+            frame: 0,
+            captured_at: std::time::Instant::now(),
+            talkspurt: false,
             opus: vec![7],
         };
         started.audio_tx.try_send(frame.clone()).unwrap();
