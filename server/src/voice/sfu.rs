@@ -1046,24 +1046,10 @@ impl SfuServer {
             )
             .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
 
-        // Simulcast needs the media id and the layer id (rid) in each RTP
-        // packet: without these extensions in the answer, a sender cannot
-        // tell the server which layer a packet belongs to.
-        for uri in [
-            "urn:ietf:params:rtp-hdrext:sdes:mid",
-            "urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id",
-            "urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id",
-        ] {
-            media_engine
-                .register_header_extension(
-                    webrtc::rtp_transceiver::rtp_codec::RTCRtpHeaderExtensionCapability {
-                        uri: uri.to_owned(),
-                    },
-                    RTPCodecType::Video,
-                    None,
-                )
-                .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
-        }
+        // The media-id and layer-id (rid) header extensions are not offered
+        // on purpose: without them a sender that offers several encodings
+        // gets an answer without simulcast and sends one stream. Forwarding
+        // between simulcast layers is not ready for production yet.
 
         // Create interceptor registry
         let mut registry = Registry::new();
