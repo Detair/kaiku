@@ -234,6 +234,26 @@ class ConfirmItsYouViewModelTest {
         assertEquals(R.string.security_took_too_long, v.ui.value.error)
     }
 
+    /**
+     * A sign-in whose prompt never answers (it could not be shown, or its screen went away) does not
+     * keep the screen busy for good: after its limit (180 s) the person can try again.
+     */
+    @Test fun `a sign-in that never ends is given up after its limit`() = runTest {
+        val v = lapsed()
+        coEvery { deviceSignIn.signIn(any(), any()) } coAnswers { kotlinx.coroutines.awaitCancellation() }
+        v.confirm(activity)
+        advanceTimeBy(180_000L - 1)
+        assertTrue(v.ui.value.working)
+        advanceTimeBy(2)
+        assertEquals(false, v.ui.value.working)
+        assertEquals(R.string.security_took_too_long, v.ui.value.error)
+        // The person can try again.
+        coEvery { deviceSignIn.signIn(any(), any()) } returns DeviceSignInResult.Cancelled
+        v.confirm(activity)
+        coVerify(exactly = 2) { deviceSignIn.signIn(any(), any()) }
+        assertEquals(false, v.ui.value.working)
+    }
+
     @Test fun `a key forgotten while the screen is open leaves only OK`() = runTest {
         val f = lapsedFixture()
         val v = vm(f)

@@ -79,8 +79,11 @@ interface ApprovalKeyStore {
     fun generate(attestationChallenge: ByteArray, d: UvDecision.Use): GeneratedKey
     fun publicKeySpki(): ByteArray?
 
-    /** How the existing key verifies its user, read from the key itself; null without a key. */
-    fun keyUvClass(): UvClass?
+    /**
+     * How the key [expectedKeyId] verifies its user, read from the key itself; null without a key.
+     * Throws [KeyChangedException] when the alias holds another key (whatever state that key is in).
+     */
+    fun keyUvClass(expectedKeyId: String): UvClass?
 
     /**
      * Deletes the key only if it is [expectedKeyId] (null: an alias whose public key cannot be
@@ -95,6 +98,18 @@ interface ApprovalKeyStore {
      * `android.security.keystore.UserNotAuthenticatedException`.
      */
     fun signature(expectedKeyId: String): Signature
+}
+
+/**
+ * The private key under the alias, only if the alias holds the key [expectedKeyId]: which key it
+ * is, is read from its certificate before the key itself is looked up. Another key in the alias is
+ * therefore [KeyChangedException] whatever state it is in (an invalidated one included), never
+ * mistaken for this key being invalidated.
+ */
+internal inline fun <K : Any> keyFor(expectedKeyId: String, hasAlias: () -> Boolean, publicId: () -> String?, privateKey: () -> K?): K {
+    if (!hasAlias()) throw NoApprovalKeyException()
+    if (publicId() != expectedKeyId) throw KeyChangedException()
+    return privateKey() ?: throw NoApprovalKeyException()
 }
 
 /** The [KeyId] of the key in the alias; null without a readable one. */
@@ -164,8 +179,9 @@ class AndroidApprovalKeyStore(private val context: Context) : ApprovalKeyStore {
     override fun publicKeySpki(): ByteArray? = keyStore().getCertificate(ALIAS)?.publicKey?.encoded
 
     @Synchronized
-    override fun keyUvClass(): UvClass? {
-        val key = privateKey() ?: return null
+    override fun keyUvClass(expectedKeyId: String): UvClass? {
+        if (!hasKey()) return null
+        val key = keyFor(expectedKeyId, ::hasKey, { publicKeySpki()?.let(KeyId::of) }, ::privateKey)
         val info = invalidationMapped { KeyFactory.getInstance(key.algorithm, PROVIDER).getKeySpec(key, KeyInfo::class.java) }
         val timeout = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             info.userAuthenticationValidityDurationSeconds.takeIf { it >= 0 } ?: 0
@@ -187,10 +203,9 @@ class AndroidApprovalKeyStore(private val context: Context) : ApprovalKeyStore {
 
     @Synchronized
     override fun signature(expectedKeyId: String): Signature {
-        val key = privateKey() ?: throw NoApprovalKeyException()
         // Checked under the same monitor that guards generating and deleting: the handle
         // initialised below is the handle of exactly this key.
-        if (publicKeySpki()?.let(KeyId::of) != expectedKeyId) throw KeyChangedException()
+        val key = keyFor(expectedKeyId, ::hasKey, { publicKeySpki()?.let(KeyId::of) }, ::privateKey)
         return invalidationMapped { Signature.getInstance("SHA256withECDSA").apply { initSign(key) } }
     }
 

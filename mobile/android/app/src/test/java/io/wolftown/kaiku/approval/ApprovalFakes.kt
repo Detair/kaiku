@@ -27,7 +27,11 @@ class SoftwareApprovalKeyStore : ApprovalKeyStore {
 
     override fun publicKeySpki(): ByteArray? = pair?.public?.encoded
 
-    override fun keyUvClass(): UvClass? = uvClass
+    override fun keyUvClass(expectedKeyId: String): UvClass? {
+        val p = pair ?: return null
+        if (KeyId.of(p.public.encoded) != expectedKeyId) throw KeyChangedException()
+        return uvClass
+    }
 
     /** Deletions that were asked for, with the key id they named. */
     val deleteAsked = mutableListOf<String?>()

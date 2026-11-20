@@ -106,6 +106,9 @@ class ConfirmItsYouViewModel @Inject constructor(
     companion object {
         /** The longest "Use another account" may take (two prompts, each on a challenge of two minutes). */
         const val REMOVAL_TIMEOUT_MS = 300_000L
+
+        /** The longest "Confirm it's you" may take: its requests and the prompt, whose challenge lasts 120 s. */
+        const val SIGN_IN_TIMEOUT_MS = 180_000L
     }
 
     private val _ui = MutableStateFlow(
@@ -157,7 +160,14 @@ class ConfirmItsYouViewModel @Inject constructor(
         if (_ui.value.working || _ui.value.keyGone) return
         _ui.update { it.copy(working = true, error = null) }
         viewModelScope.launch {
-            val r = deviceSignIn.signIn(activity, if (stayingSignedIn) SignInPurpose.STAY_SIGNED_IN else SignInPurpose.SIGN_IN)
+            val r = withTimeoutOrNull(SIGN_IN_TIMEOUT_MS) {
+                deviceSignIn.signIn(activity, if (stayingSignedIn) SignInPurpose.STAY_SIGNED_IN else SignInPurpose.SIGN_IN)
+            } ?: if (!stayingSignedIn && keyDevices.current() is KeyDeviceState.Active) {
+                // It got through just as the limit hit (a renewal runs signed in: it cannot tell).
+                DeviceSignInResult.Success
+            } else {
+                DeviceSignInResult.Expired
+            }
             _ui.update {
                 it.copy(
                     working = false,

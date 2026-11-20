@@ -9,6 +9,7 @@ import io.wolftown.kaiku.data.keydevice.KeyDeviceRepository
 import io.wolftown.kaiku.data.keydevice.KeyDeviceState
 import io.wolftown.kaiku.domain.model.StepUpAction
 import io.wolftown.kaiku.domain.model.StepUpGrant
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.IOException
 import javax.inject.Inject
 import kotlin.coroutines.cancellation.CancellationException
@@ -40,6 +41,11 @@ class DeviceStepUp @Inject constructor(
     private val deviceIds: DeviceIdProvider,
     private val authApi: AuthApi,
 ) {
+    companion object {
+        /** The longest a step-up may take: its requests and the prompt, whose challenge lasts 120 s. */
+        const val STEP_UP_TIMEOUT_MS = 180_000L
+    }
+
     /** This phone holds an active key (the session may still be probation). */
     fun isKeyDevice(): Boolean = keyDevices.local() != null && keyDevices.current() is KeyDeviceState.Active
 
@@ -52,7 +58,14 @@ class DeviceStepUp @Inject constructor(
         false
     }
 
-    suspend fun stepUp(activity: FragmentActivity, action: StepUpAction, target: String, targetLabel: String): StepUpOutcome {
+    /**
+     * At most [STEP_UP_TIMEOUT_MS]: a step-up that has not ended by then is stopped and reported as
+     * having taken too long, so the person can try again.
+     */
+    suspend fun stepUp(activity: FragmentActivity, action: StepUpAction, target: String, targetLabel: String): StepUpOutcome =
+        withTimeoutOrNull(STEP_UP_TIMEOUT_MS) { stepUpOnce(activity, action, target) } ?: StepUpOutcome.Failed("TOOK_TOO_LONG")
+
+    private suspend fun stepUpOnce(activity: FragmentActivity, action: StepUpAction, target: String): StepUpOutcome {
         val rec = keyDevices.record.value
         val local = rec?.device
         if (local == null || keyDevices.current() !is KeyDeviceState.Active) return StepUpOutcome.NotKeyDevice
