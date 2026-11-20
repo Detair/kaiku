@@ -323,6 +323,38 @@ pub fn register_metrics() {
             .build()
     });
     register_storage_cleanup_gauges(&meter);
+    register_voice_gauges(&meter);
+}
+
+/// Inactive m-lines (transceivers of removed tracks) summed over all live
+/// subscriber connections.
+static VOICE_INACTIVE_MLINES: AtomicU64 = AtomicU64::new(0);
+
+/// A subscriber connection gained one inactive m-line.
+pub fn voice_inactive_mline_added() {
+    VOICE_INACTIVE_MLINES.fetch_add(1, Ordering::Relaxed);
+}
+
+/// A subscriber connection with `n` inactive m-lines is gone.
+pub fn voice_inactive_mlines_released(n: u64) {
+    let _ = VOICE_INACTIVE_MLINES.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+        Some(v.saturating_sub(n))
+    });
+}
+
+fn register_voice_gauges(meter: &opentelemetry::metrics::Meter) {
+    static REGISTERED: std::sync::Once = std::sync::Once::new();
+    REGISTERED.call_once(|| {
+        meter
+            .u64_observable_gauge("kaiku_voice_inactive_mlines")
+            .with_description(
+                "Inactive m-lines (removed tracks) kept in live voice subscriber connections",
+            )
+            .with_callback(|observer| {
+                observer.observe(VOICE_INACTIVE_MLINES.load(Ordering::Relaxed), &[]);
+            })
+            .build();
+    });
 }
 
 /// Object keys waiting for deletion (outbox `storage_pending_deletes`).
@@ -541,6 +573,7 @@ const LEVEL_METRICS: &[&str] = &[
     "kaiku_db_pool_connections_idle",
     "kaiku_ws_connections_active",
     "kaiku_voice_sessions_active",
+    "kaiku_voice_inactive_mlines",
 ];
 
 /// Whether `metric_name` is a level metric (see [`LEVEL_METRICS`]).

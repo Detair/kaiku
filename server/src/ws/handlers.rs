@@ -235,8 +235,8 @@ pub async fn handler(
         // Respond with the protocol to confirm (required for WebSocket handshake)
         return ws
             .protocols(["access_token"])
-            .max_message_size(256 * 1024)
-            .max_frame_size(64 * 1024)
+            .max_message_size(MAX_INBOUND_MESSAGE)
+            .max_frame_size(MAX_INBOUND_MESSAGE)
             .on_upgrade(move |socket| async move {
                 handle_socket(socket, state, user_id, session_id).await;
                 // The slots are held for the socket's whole life.
@@ -245,10 +245,15 @@ pub async fn handler(
     }
 
     // No header token — accept upgrade, authenticate via first frame
-    ws.max_message_size(256 * 1024)
-        .max_frame_size(64 * 1024)
+    ws.max_message_size(MAX_INBOUND_MESSAGE)
+        .max_frame_size(MAX_INBOUND_MESSAGE)
         .on_upgrade(move |socket| handle_post_connect_auth(socket, state, ip_permit))
 }
+
+/// Largest inbound WebSocket message, and frame: a single frame may carry a
+/// whole message (large voice session descriptions arrive as one frame).
+/// The read buffer of a socket holds at most one message either way.
+const MAX_INBOUND_MESSAGE: usize = 256 * 1024;
 
 /// Why a connection was refused before it became a socket task.
 #[derive(Clone, Copy)]

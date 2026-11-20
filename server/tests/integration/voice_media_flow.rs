@@ -336,6 +336,16 @@ async fn ten_joins_and_leaves_keep_senders_constant(pool: PgPool) {
             tokio::time::sleep(Duration::from_millis(50)).await;
         };
         assert_eq!(active, 0, "round {round}: departed track still sent");
+        // Each departure leaves exactly one inactive m-line, and the server
+        // counts it.
+        let room = f.app.state.sfu.get_room(f.voice).await.expect("room");
+        let inactive = room
+            .get_peer(stay.user_id)
+            .await
+            .expect("stay")
+            .inactive_mlines();
+        assert_eq!(inactive, round + 1, "round {round}: inactive m-lines");
+        assert_eq!(transceivers, inactive, "round {round}: transceivers");
         let first = *transceivers_after_first.get_or_insert(transceivers);
         assert!(
             transceivers <= first + round,

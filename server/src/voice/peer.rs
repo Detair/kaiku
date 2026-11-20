@@ -83,12 +83,29 @@ pub struct Peer {
     /// Set once the peer left its room or was replaced: its late track
     /// callbacks and forwarders must not touch the room any more.
     retired: AtomicBool,
+    /// Inactive m-lines on `subscriber_pc`: transceivers of removed tracks,
+    /// which webrtc-rs keeps (see [`Peer::add_outgoing_track`]).
+    inactive_mlines: std::sync::atomic::AtomicUsize,
     /// Whether an audio track was taken as this peer's microphone.
     microphone_claimed: AtomicBool,
     /// Login session of the socket that joined with this peer (set once by
     /// the join; `None` when unknown).
     auth_session: std::sync::OnceLock<Option<Uuid>>,
 }
+
+impl Drop for Peer {
+    fn drop(&mut self) {
+        crate::observability::metrics::voice_inactive_mlines_released(
+            self.inactive_mlines
+                .load(std::sync::atomic::Ordering::Relaxed) as u64,
+        );
+    }
+}
+
+/// Inactive m-lines on one subscriber connection at which the server warns
+/// once. Offers and answers grow by roughly 0.5–1 KiB per inactive m-line;
+/// the inbound frame limit (256 KiB) is reached at several hundred.
+pub const INACTIVE_MLINE_WARN_THRESHOLD: usize = 60;
 
 /// Offer/answer state of a peer's subscriber connection.
 ///
@@ -137,6 +154,7 @@ impl Peer {
             negotiation: tokio::sync::Mutex::new(SubscriberNegotiation::default()),
             retired: AtomicBool::new(false),
             microphone_claimed: AtomicBool::new(false),
+            inactive_mlines: std::sync::atomic::AtomicUsize::new(0),
             auth_session: std::sync::OnceLock::new(),
         }
     }
@@ -230,6 +248,8 @@ impl Peer {
                                 error = %e,
                                 "failed to remove track from subscriber PC"
                             );
+                        } else {
+                            self.count_inactive_mline();
                         }
                         break;
                     }
@@ -269,6 +289,30 @@ impl Peer {
             .values()
             .cloned()
             .collect()
+    }
+
+    /// Count one more inactive m-line; warn once when a long session has
+    /// collected many (each makes every later offer and answer bigger).
+    fn count_inactive_mline(&self) {
+        crate::observability::metrics::voice_inactive_mline_added();
+        let n = self
+            .inactive_mlines
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1;
+        if n == INACTIVE_MLINE_WARN_THRESHOLD {
+            tracing::warn!(
+                user_id = %self.user_id,
+                channel_id = %self.channel_id,
+                inactive_mlines = n,
+                "Voice subscriber connection keeps many inactive m-lines; rejoining resets them"
+            );
+        }
+    }
+
+    /// Inactive m-lines on this peer's subscriber connection.
+    pub fn inactive_mlines(&self) -> usize {
+        self.inactive_mlines
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Returns the number of outgoing tracks on the subscriber `PeerConnection`.

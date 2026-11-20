@@ -247,3 +247,18 @@ If Loki ingest cost is high:
           severity_texts: ["DEBUG", "TRACE"]
   ```
 - Insert `filter/logs_level` before `batch` in the logs pipeline.
+
+---
+
+## Voice sessions with many inactive m-lines
+
+Every track that leaves a participant's voice connection (someone leaves, rejoins, stops a share or a
+webcam) stays there as an inactive m-line until that participant rejoins. Each one makes the voice
+session descriptions of that connection about 0.5–1 KiB bigger.
+
+- **Signal:** the gauge `kaiku_voice_inactive_mlines` (sum over all live voice connections) and one
+  warn-level log line per connection when it reaches 60: "Voice subscriber connection keeps many inactive
+  m-lines; rejoining resets them".
+- **Effect:** none for a long time; inbound WebSocket messages are limited to 256 KiB (several hundred
+  inactive m-lines). A connection that gets there drops and the client rejoins with a fresh one.
+- **Action:** none needed; the participant leaving and rejoining voice resets the count.

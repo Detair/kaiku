@@ -314,3 +314,29 @@ async fn blocked_user_cannot_join_group_dm_call(pool: PgPool) {
     let room = app.state.sfu.get_room(dm).await.expect("room");
     assert_eq!(room.participant_count().await, 1);
 }
+
+/// A single inbound frame of up to 256 KiB (a large session description of
+/// a long voice session) does not end the socket.
+#[sqlx::test]
+async fn large_single_frame_keeps_the_socket(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let server = spawn_test_server(app.router.clone()).await;
+    let (owner, _) = create_test_user(&pool).await;
+    let guild = create_guild(&pool, owner).await;
+    let voice = create_voice_channel(&pool, guild, "voice").await;
+    let mut ws = ws_connect(&server, &generate_access_token(&app.config, owner)).await;
+    next_ws_event(&mut ws, "ready", EVENT_TIMEOUT).await;
+    join_voice(&mut ws, voice).await;
+    next_ws_event(&mut ws, "voice_room_state", EVENT_TIMEOUT).await;
+
+    // ~150 KiB answer in one frame (not a valid description; it is refused,
+    // the socket stays).
+    let sdp = format!("v=0\r\n{}", "a=x\r\n".repeat(30_000));
+    send(
+        &mut ws,
+        serde_json::json!({ "type": "voice_subscriber_answer", "channel_id": voice, "sdp": sdp }),
+    )
+    .await;
+    let err = next_ws_event(&mut ws, "voice_error", EVENT_TIMEOUT).await;
+    assert!(err["code"].is_string(), "{err}");
+}
