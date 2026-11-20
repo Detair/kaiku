@@ -219,6 +219,7 @@ impl Room {
         }
 
         let replaced = if let Some(old_peer) = peers.remove(&peer.user_id) {
+            old_peer.retire();
             tracing::info!(user_id = %peer.user_id, "Replacing voice peer of the same user");
             // Lock order as in `get_participant_info`: peers, shares, webcams.
             let screen_shares = {
@@ -252,6 +253,8 @@ impl Room {
     /// Must run before a replacing peer of the same user publishes (the
     /// router keys sources by user).
     pub async fn detach_media(&self, departed: &Peer) {
+        // From now on its late track callbacks and forwarders do nothing.
+        departed.retire();
         let user_id = departed.user_id;
         self.track_router.remove_source(user_id).await;
         self.track_router
@@ -299,7 +302,8 @@ impl Room {
         }
         let peer = peers.remove(&user_id);
 
-        if peer.is_some() {
+        if let Some(peer) = &peer {
+            peer.retire();
             // Clean up track subscriptions
             self.track_router.remove_source(user_id).await;
             self.track_router.remove_subscriber_from_all(user_id).await;
@@ -955,6 +959,13 @@ impl SfuServer {
                             }
                         }
                     };
+
+                    // A peer that left or was replaced while this track was
+                    // being resolved must not touch the room (its user may
+                    // have a new peer here already).
+                    if peer.is_retired() {
+                        return;
+                    }
 
                     // For video tracks with a valid RID, store in simulcast_tracks.
                     let is_simulcast = !rid.is_empty() && source_type.is_video();

@@ -94,22 +94,24 @@ pub async fn handle_voice_event(
             result
         }
         ClientEvent::VoiceLeave { channel_id } => {
-            handle_leave(sfu, pool, user_id, channel_id, screen_share_limiter).await
+            handle_leave(sfu, pool, user_id, channel_id, screen_share_limiter, tx).await
         }
         ClientEvent::VoicePublisherOffer { channel_id, sdp } => {
-            handle_publisher_offer(sfu, user_id, channel_id, &sdp).await
+            handle_publisher_offer(sfu, user_id, channel_id, &sdp, tx).await
         }
         ClientEvent::VoiceSubscriberAnswer { channel_id, sdp } => {
-            handle_subscriber_answer(sfu, user_id, channel_id, &sdp).await
+            handle_subscriber_answer(sfu, user_id, channel_id, &sdp, tx).await
         }
         ClientEvent::VoiceIceCandidate {
             channel_id,
             candidate,
             pc_type,
-        } => handle_ice_candidate(sfu, user_id, channel_id, &candidate, &pc_type).await,
-        ClientEvent::VoiceMute { channel_id } => handle_mute(sfu, user_id, channel_id, true).await,
+        } => handle_ice_candidate(sfu, user_id, channel_id, &candidate, &pc_type, tx).await,
+        ClientEvent::VoiceMute { channel_id } => {
+            handle_mute(sfu, user_id, channel_id, true, tx).await
+        }
         ClientEvent::VoiceUnmute { channel_id } => {
-            handle_mute(sfu, user_id, channel_id, false).await
+            handle_mute(sfu, user_id, channel_id, false, tx).await
         }
         ClientEvent::VoiceStats {
             channel_id,
@@ -128,7 +130,7 @@ pub async fn handle_voice_event(
                 quality,
                 timestamp,
             };
-            handle_voice_stats(sfu, pool, user_id, channel_id, stats).await
+            handle_voice_stats(sfu, pool, user_id, channel_id, stats, tx).await
         }
         ClientEvent::VoiceScreenShareStart {
             channel_id,
@@ -149,6 +151,7 @@ pub async fn handle_voice_event(
                     source_label: &source_label,
                 },
                 screen_share_limiter,
+                tx,
             )
             .await
         }
@@ -156,15 +159,15 @@ pub async fn handle_voice_event(
             channel_id,
             stream_id,
         } => {
-            handle_screen_share_stop(sfu, user_id, channel_id, stream_id, screen_share_limiter)
+            handle_screen_share_stop(sfu, user_id, channel_id, stream_id, screen_share_limiter, tx)
                 .await
         }
         ClientEvent::VoiceWebcamStart {
             channel_id,
             quality,
-        } => handle_webcam_start(sfu, pool, user_id, channel_id, quality).await,
+        } => handle_webcam_start(sfu, pool, user_id, channel_id, quality, tx).await,
         ClientEvent::VoiceWebcamStop { channel_id } => {
-            handle_webcam_stop(sfu, user_id, channel_id).await
+            handle_webcam_stop(sfu, user_id, channel_id, tx).await
         }
         ClientEvent::VoiceSetLayerPreference {
             channel_id,
@@ -481,11 +484,43 @@ async fn handle_leave(
     user_id: Uuid,
     channel_id: Uuid,
     screen_share_limiter: Option<&ScreenShareLimiter>,
+    tx: &mpsc::Sender<OutboundMsg>,
 ) -> Result<(), VoiceError> {
     info!(user_id = %user_id, channel_id = %channel_id, "User leaving voice channel");
-    super::leave::leave_voice_internal(sfu, pool, user_id, channel_id, screen_share_limiter, None)
+    // Only this socket's own seat: after the user moved to another device,
+    // a leave from the old one changes nothing.
+    let Some(room) = sfu.get_room(channel_id).await else {
+        return Ok(());
+    };
+    let Ok(peer) = owned_peer(&room, user_id, tx).await else {
+        debug!(user_id = %user_id, channel_id = %channel_id, "Leave from a socket without a seat ignored");
+        return Ok(());
+    };
+    super::leave::leave_voice_internal(
+        sfu,
+        pool,
+        user_id,
+        channel_id,
+        screen_share_limiter,
+        Some(peer.session_id),
+    )
+    .await
+    .map(|_| ())
+}
+
+/// The peer of `user_id` in `room` that belongs to the socket `tx`. Every
+/// voice event except the join acts only on its own socket's peer: after
+/// the same user joined from another socket, the old socket's events find
+/// nothing (`PARTICIPANT_NOT_FOUND`) and never reach the new session.
+async fn owned_peer(
+    room: &Room,
+    user_id: Uuid,
+    tx: &mpsc::Sender<OutboundMsg>,
+) -> Result<Arc<super::peer::Peer>, VoiceError> {
+    room.get_peer(user_id)
         .await
-        .map(|_| ())
+        .filter(|peer| peer.signal_tx.same_channel(tx))
+        .ok_or(VoiceError::ParticipantNotFound(user_id))
 }
 
 /// Handle a publisher SDP offer from the client.
@@ -497,6 +532,7 @@ async fn handle_publisher_offer(
     user_id: Uuid,
     channel_id: Uuid,
     sdp: &str,
+    tx: &mpsc::Sender<OutboundMsg>,
 ) -> Result<(), VoiceError> {
     debug!(user_id = %user_id, channel_id = %channel_id, "Received publisher offer");
 
@@ -505,10 +541,7 @@ async fn handle_publisher_offer(
         .await
         .ok_or(VoiceError::RoomNotFound(channel_id))?;
 
-    let peer = room
-        .get_peer(user_id)
-        .await
-        .ok_or(VoiceError::ParticipantNotFound(user_id))?;
+    let peer = owned_peer(&room, user_id, tx).await?;
 
     match SfuServer::handle_publisher_offer(&peer, sdp.to_string()).await {
         Ok(answer_sdp) => {
@@ -638,6 +671,7 @@ async fn handle_subscriber_answer(
     user_id: Uuid,
     channel_id: Uuid,
     sdp: &str,
+    tx: &mpsc::Sender<OutboundMsg>,
 ) -> Result<(), VoiceError> {
     debug!(user_id = %user_id, channel_id = %channel_id, "Received subscriber answer");
 
@@ -646,10 +680,7 @@ async fn handle_subscriber_answer(
         .await
         .ok_or(VoiceError::RoomNotFound(channel_id))?;
 
-    let peer = room
-        .get_peer(user_id)
-        .await
-        .ok_or(VoiceError::ParticipantNotFound(user_id))?;
+    let peer = owned_peer(&room, user_id, tx).await?;
 
     SfuServer::handle_subscriber_answer(&peer, sdp.to_string())
         .await
@@ -671,6 +702,7 @@ async fn handle_ice_candidate(
     channel_id: Uuid,
     candidate: &str,
     pc_type: &PcType,
+    tx: &mpsc::Sender<OutboundMsg>,
 ) -> Result<(), VoiceError> {
     debug!(user_id = %user_id, channel_id = %channel_id, pc_type = %pc_type, "Received ICE candidate");
 
@@ -679,10 +711,7 @@ async fn handle_ice_candidate(
         .await
         .ok_or(VoiceError::RoomNotFound(channel_id))?;
 
-    let peer = room
-        .get_peer(user_id)
-        .await
-        .ok_or(VoiceError::ParticipantNotFound(user_id))?;
+    let peer = owned_peer(&room, user_id, tx).await?;
 
     if let Err(e) = SfuServer::handle_ice_candidate(&peer, candidate, pc_type).await {
         error!(user_id = %user_id, channel_id = %channel_id, pc_type = %pc_type, error = %e, "failed to add ICE candidate");
@@ -697,6 +726,7 @@ async fn handle_mute(
     user_id: Uuid,
     channel_id: Uuid,
     muted: bool,
+    tx: &mpsc::Sender<OutboundMsg>,
 ) -> Result<(), VoiceError> {
     debug!(
         user_id = %user_id,
@@ -710,10 +740,7 @@ async fn handle_mute(
         .await
         .ok_or(VoiceError::RoomNotFound(channel_id))?;
 
-    let peer = room
-        .get_peer(user_id)
-        .await
-        .ok_or(VoiceError::ParticipantNotFound(user_id))?;
+    let peer = owned_peer(&room, user_id, tx).await?;
 
     peer.set_self_muted(muted).await;
 
@@ -745,6 +772,7 @@ async fn handle_voice_stats(
     user_id: Uuid,
     channel_id: Uuid,
     mut stats: VoiceStats,
+    tx: &mpsc::Sender<OutboundMsg>,
 ) -> Result<(), VoiceError> {
     // Rate limit check
     if sfu.check_stats_rate_limit(user_id).await.is_err() {
@@ -766,7 +794,7 @@ async fn handle_voice_stats(
     let Some(room) = sfu.get_room(channel_id).await else {
         return Ok(());
     };
-    let Some(peer) = room.get_peer(user_id).await else {
+    let Ok(peer) = owned_peer(&room, user_id, tx).await else {
         warn!(user_id = %user_id, channel_id = %channel_id, "User sent voice stats for a room they are not in");
         return Ok(());
     };
@@ -812,6 +840,7 @@ async fn handle_screen_share_start(
     pool: &PgPool,
     params: HandleScreenShareStartParams<'_>,
     screen_share_limiter: Option<&ScreenShareLimiter>,
+    tx: &mpsc::Sender<OutboundMsg>,
 ) -> Result<(), VoiceError> {
     info!(user_id = %params.user_id, channel_id = %params.channel_id, quality = ?params.quality, "User starting screen share");
 
@@ -837,10 +866,7 @@ async fn handle_screen_share_start(
         .ok_or(VoiceError::RoomNotFound(params.channel_id))?;
 
     // Check user is in the room
-    let peer = room
-        .get_peer(params.user_id)
-        .await
-        .ok_or(VoiceError::ParticipantNotFound(params.user_id))?;
+    let peer = owned_peer(&room, params.user_id, tx).await?;
 
     // Check if user has reached the per-user stream limit (max 3 concurrent streams)
     {
@@ -943,6 +969,7 @@ async fn handle_screen_share_stop(
     channel_id: Uuid,
     stream_id: Uuid,
     screen_share_limiter: Option<&ScreenShareLimiter>,
+    tx: &mpsc::Sender<OutboundMsg>,
 ) -> Result<(), VoiceError> {
     info!(user_id = %user_id, channel_id = %channel_id, stream_id = %stream_id, "User stopping screen share");
 
@@ -951,6 +978,10 @@ async fn handle_screen_share_stop(
         .get_room(channel_id)
         .await
         .ok_or(VoiceError::RoomNotFound(channel_id))?;
+    let peer = owned_peer(&room, user_id, tx).await?;
+    // An announcement this stop ends must never bind a later track.
+    peer.remove_pending_sources(|s| s.stream_id() == Some(stream_id))
+        .await;
 
     // Look up the specific stream by stream_id and verify ownership.
     let share_info = {
@@ -979,15 +1010,13 @@ async fn handle_screen_share_stop(
     }
 
     // Collect only the track sources belonging to this specific stream_id
-    let screen_sources: Vec<TrackSource> = if let Some(peer) = room.get_peer(user_id).await {
+    let screen_sources: Vec<TrackSource> = {
         let incoming = peer.incoming_tracks.read().await;
         incoming
             .keys()
             .filter(|s| s.stream_id() == Some(stream_id))
             .copied()
             .collect()
-    } else {
-        Vec::new()
     };
 
     // Clean up screen share tracks from the track router
@@ -998,7 +1027,7 @@ async fn handle_screen_share_stop(
     }
 
     // Remove incoming tracks from the peer
-    if let Some(peer) = room.get_peer(user_id).await {
+    {
         let mut incoming = peer.incoming_tracks.write().await;
         for source in &screen_sources {
             incoming.remove(source);
@@ -1051,6 +1080,7 @@ async fn handle_webcam_start(
     user_id: Uuid,
     channel_id: Uuid,
     quality: Quality,
+    tx: &mpsc::Sender<OutboundMsg>,
 ) -> Result<(), VoiceError> {
     info!(user_id = %user_id, channel_id = %channel_id, quality = ?quality, "User starting webcam");
 
@@ -1069,10 +1099,7 @@ async fn handle_webcam_start(
         .ok_or(VoiceError::RoomNotFound(channel_id))?;
 
     // Check user is in the room
-    let peer = room
-        .get_peer(user_id)
-        .await
-        .ok_or(VoiceError::ParticipantNotFound(user_id))?;
+    let peer = owned_peer(&room, user_id, tx).await?;
 
     // Check if user already has webcam active
     {
@@ -1119,6 +1146,7 @@ async fn handle_webcam_stop(
     sfu: &Arc<SfuServer>,
     user_id: Uuid,
     channel_id: Uuid,
+    tx: &mpsc::Sender<OutboundMsg>,
 ) -> Result<(), VoiceError> {
     info!(user_id = %user_id, channel_id = %channel_id, "User stopping webcam");
 
@@ -1127,6 +1155,10 @@ async fn handle_webcam_stop(
         .get_room(channel_id)
         .await
         .ok_or(VoiceError::RoomNotFound(channel_id))?;
+    let peer = owned_peer(&room, user_id, tx).await?;
+    // A webcam announcement this stop ends must never bind a later track.
+    peer.remove_pending_sources(|s| *s == TrackSource::Webcam)
+        .await;
 
     // Remove webcam from room
     if room.remove_webcam(user_id).await.is_none() {
@@ -1143,13 +1175,10 @@ async fn handle_webcam_stop(
 
     // Remove the incoming webcam track from the peer and clean up outgoing tracks
     // on all other peers
-    if let Some(peer) = room.get_peer(user_id).await {
-        // Remove the incoming track record
-        {
-            let mut incoming = peer.incoming_tracks.write().await;
-            incoming.remove(&TrackSource::Webcam);
-        }
-    }
+    peer.incoming_tracks
+        .write()
+        .await
+        .remove(&TrackSource::Webcam);
 
     // Remove outgoing tracks from all subscribers and renegotiate
     let other_peers = room.get_other_peers(user_id).await;
@@ -1211,9 +1240,7 @@ async fn handle_set_layer_preference(
         .ok_or(VoiceError::RoomNotFound(channel_id))?;
 
     // Verify the requesting user is in the room
-    room.get_peer(user_id)
-        .await
-        .ok_or(VoiceError::ParticipantNotFound(user_id))?;
+    owned_peer(&room, user_id, tx).await?;
 
     if let Some(new_layer) = room.track_router.set_layer_preference(
         user_id,

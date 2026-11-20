@@ -477,6 +477,12 @@ pub fn spawn_rtp_forwarder(
                 Ok((packet, _attributes)) => {
                     packet_count += 1;
 
+                    // The peer left or was replaced: its user's sources may
+                    // belong to a new peer now.
+                    if peer.is_retired() {
+                        break;
+                    }
+
                     // Drop audio packets from muted peers. Video tracks (screen share,
                     // webcam) are not affected by mute state.
                     if source_type == TrackSource::Microphone && peer.is_effectively_muted().await {

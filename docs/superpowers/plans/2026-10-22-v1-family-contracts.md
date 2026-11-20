@@ -982,6 +982,11 @@ Server → client event, sent only to the socket that owned the removed voice pe
   tracks). The others see one participant throughout: no `voice_user_left`, a fresh `voice_user_joined` for
   the same `user_id` (upsert). A second `voice_join` on the **same** socket also replaces the peer but sends no
   `voice_removed`.
+- Server: every voice event other than `voice_join` acts only on the seat of the socket that sends it. After a
+  replacement the old socket holds none: its `voice_leave` is a silent no-op, its publisher offers, subscriber
+  answers, ICE candidates, share/webcam starts and stops answer `voice_error` `PARTICIPANT_NOT_FOUND`, its mute
+  and stats are ignored, and its disconnect removes nothing. Media the old connections still send is not
+  forwarded.
 - Client: tear down both peer connections, stop capture, clear voice state, show one line of text for the
   reason. The client must not rejoin on its own (C32) after `voice_removed`. For `session_replaced` the text
   says that the call continues on another device; a ringing UI for that call stops too.

@@ -80,6 +80,9 @@ pub struct Peer {
     /// Offer/answer state of `subscriber_pc` (the server offers). See
     /// [`SubscriberNegotiation`]; only `SfuServer` touches it.
     pub(crate) negotiation: tokio::sync::Mutex<SubscriberNegotiation>,
+    /// Set once the peer left its room or was replaced: its late track
+    /// callbacks and forwarders must not touch the room any more.
+    retired: AtomicBool,
 }
 
 /// Offer/answer state of a peer's subscriber connection.
@@ -127,7 +130,19 @@ impl Peer {
             has_subscribed: AtomicBool::new(false),
             admission: std::sync::OnceLock::new(),
             negotiation: tokio::sync::Mutex::new(SubscriberNegotiation::default()),
+            retired: AtomicBool::new(false),
         }
+    }
+
+    /// Mark the peer as gone from its room (left or replaced).
+    pub fn retire(&self) {
+        self.retired
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Whether the peer left its room or was replaced.
+    pub fn is_retired(&self) -> bool {
+        self.retired.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// Record the access epochs of the join check (first call wins).
@@ -251,6 +266,12 @@ impl Peer {
         pending.push(source);
         drop(pending);
         self.announced.notify_waiters();
+    }
+
+    /// Drop queued announcements matching `pred` (their share or webcam
+    /// ended before a track came).
+    pub async fn remove_pending_sources(&self, pred: impl Fn(&TrackSource) -> bool) {
+        self.pending_track_sources.write().await.retain(|s| !pred(s));
     }
 
     /// Take the oldest announced video source; if none is queued, wait up to
