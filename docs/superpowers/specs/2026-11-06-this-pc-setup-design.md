@@ -276,6 +276,9 @@ These rules extend B.7. Reviewers should check them against `server/src/approval
 7. **One clock (as built).** Every expiry of an attempt, its challenge, its enrolment and the requesting
    session is decided on the database's clock: `clock_timestamp()` read after the locks are held
    (attempt transitions, the challenge's issue and answer), so a wait for a lock never extends a deadline.
+   A challenge's stored expiry is the earlier of the database clock plus its lifetime and its parent's
+   stored deadline (attempt, enrolment or code), in whole seconds, computed in the one statement that
+   inserts it; this holds for every challenge kind that has a parent.
 
 ### Step 6: signing in
 

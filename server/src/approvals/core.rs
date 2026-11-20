@@ -164,11 +164,23 @@ fn variant_of(ctx: &CanonicalContext) -> Option<String> {
 
 /// Issue a challenge: a random v4 id (not a secret), a 32-byte CSPRNG
 /// nonce, `expires_at` = now + `ttl` (whole seconds, as signed).
-#[tracing::instrument(skip(conn, ctx, new), fields(kind = new.context.kind().as_str()))]
 pub async fn issue(
     conn: &mut PgConnection,
     ctx: &AuthCtx<'_>,
     new: NewChallenge,
+) -> Result<ApprovalChallenge, ApprovalError> {
+    issue_until(conn, ctx, new, None).await
+}
+
+/// [`issue`] for a challenge with a parent: it never outlives `not_after`,
+/// the parent's stored deadline (a login attempt's, an enrolment's or its
+/// code's, a "Set up this PC" attempt's).
+#[tracing::instrument(skip(conn, ctx, new), fields(kind = new.context.kind().as_str()))]
+pub async fn issue_until(
+    conn: &mut PgConnection,
+    ctx: &AuthCtx<'_>,
+    new: NewChallenge,
+    not_after: Option<DateTime<Utc>>,
 ) -> Result<ApprovalChallenge, ApprovalError> {
     if new.ttl > Duration::minutes(MAX_TTL_MINUTES) || new.ttl <= Duration::zero() {
         return Err(ApprovalError::Validation(
@@ -177,25 +189,21 @@ pub async fn issue(
     }
     let mut nonce = [0u8; 32];
     OsRng.fill_bytes(&mut nonce);
-    // The database's clock: every expiry of a challenge is compared with it
-    // (`NOW()`, `clock_timestamp()` in the sweeps and transitions).
-    let now: DateTime<Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
-        .fetch_one(&mut *conn)
-        .await?;
-    // Whole seconds: the signed `expires_at` is an i64 of Unix seconds.
-    let expires_at =
-        DateTime::from_timestamp((now + new.ttl).timestamp(), 0).unwrap_or(now + new.ttl);
-    // Flooring a remaining lifetime under a second can land at or before
-    // now: such a challenge would be past due when issued.
-    if expires_at <= now {
-        return Err(ApprovalError::Expired);
-    }
     let (requester_kind, requester_id) = new.requester.parts();
-    let row: ChallengeRow = sqlx::query_as(
-        "INSERT INTO approvals (id, kind, variant, approver_id, subject_id, device_id,
+    // One statement on the database's clock: `expires_at` = the earlier of
+    // now + `ttl` and the parent's deadline, in whole seconds (the signed
+    // `expires_at` is an i64 of Unix seconds, so signed and stored agree).
+    // Flooring a remaining lifetime under a second can land at or before
+    // now: such a challenge is not inserted.
+    let row: Option<ChallengeRow> = sqlx::query_as(
+        "WITH c AS (SELECT clock_timestamp() AS now)
+         INSERT INTO approvals (id, kind, variant, approver_id, subject_id, device_id,
                                 requester_kind, requester_id, nonce, context_hash, context,
                                 display, transfer_hash, state, created_at, expires_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'issued', $14, $15)
+         SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'issued', c.now,
+                date_trunc('second', LEAST(c.now + make_interval(secs => $14), $15))
+           FROM c
+          WHERE date_trunc('second', LEAST(c.now + make_interval(secs => $14), $15)) > c.now
          RETURNING *",
     )
     .bind(Uuid::new_v4())
@@ -211,10 +219,11 @@ pub async fn issue(
     .bind(new.context.to_json())
     .bind(&new.display)
     .bind(new.transfer_hash.map(|h| h.to_vec()))
-    .bind(now)
-    .bind(expires_at)
-    .fetch_one(&mut *conn)
+    .bind(new.ttl.num_milliseconds() as f64 / 1000.0)
+    .bind(not_after)
+    .fetch_optional(&mut *conn)
     .await?;
+    let row = row.ok_or(ApprovalError::Expired)?;
     row.to_wire(ctx.origin())
 }
 

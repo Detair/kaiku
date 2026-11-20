@@ -643,7 +643,9 @@ sequenceDiagram
   challenge length and expiry, session and enrolment liveness) is decided on the database's clock:
   `clock_timestamp()` read after the locks (`lock_attempt`, `lock_for_answer`, the challenge's issue
   time), so a wait for a lock never extends a deadline; the sweeps' and polls' hints use `NOW()` of their
-  own statement.
+  own statement. Every challenge kind with a parent (`login`, `enroll`, `enroll_pop`, `pc_setup`) is
+  stored with the earlier of the database clock plus its lifetime and the parent's stored deadline, in
+  whole seconds, in the statement that inserts it, so it never outlives its attempt, enrolment or code.
 - **Scan answers in order:** the scanning device's live key-device session first (403
   `KEY_DEVICE_REQUIRED`, 401, 403 `ACCOUNT_BANNED`), then the account's `may_approve` (403
   `APPROVAL_NOT_ALLOWED`), then the attempt (404 `LOGIN_CODE_STALE` when it ended, also when a poll or the

@@ -3197,3 +3197,39 @@ async fn another_account_sees_a_claimed_code_as_its_own_answer(pool: PgPool) {
         "{b}"
     );
 }
+
+#[sqlx::test]
+async fn the_pc_setup_challenge_never_outlives_its_attempt(pool: PgPool) {
+    let p = pc(&pool).await;
+    let a = started(&p).await;
+    let id = id_of(&a);
+    sqlx::query("UPDATE pc_setup_attempts SET expires_at = NOW() + INTERVAL '20.7 seconds' WHERE id = $1::uuid")
+        .bind(&id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (token, _) = qr_token(&a["qr_payload"]);
+    // The scan waits for the phone's device row after the attempt was locked.
+    let mut holder = pool.begin().await.unwrap();
+    sqlx::query("SELECT 1 FROM approval_devices WHERE id = $1 FOR UPDATE")
+        .bind(p.dev.row_id)
+        .execute(&mut *holder)
+        .await
+        .unwrap();
+    let release = async {
+        super::helpers::wait_for_lock_waiters(&pool, 1).await;
+        tokio::time::sleep(std::time::Duration::from_millis(2_500)).await;
+        holder.commit().await.unwrap();
+    };
+    let ((s, c), ()) = tokio::join!(claim(&p.app, &p.dev, &token), release);
+    assert_eq!(s, 201, "{c}");
+    let within: bool = sqlx::query_scalar(
+        "SELECT c.expires_at <= a.expires_at FROM approvals c JOIN pc_setup_attempts a ON a.id = c.requester_id
+          WHERE c.id = $1::uuid",
+    )
+    .bind(c["challenge_id"].as_str().unwrap())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(within, "the stored expiry is capped by the attempt's");
+}

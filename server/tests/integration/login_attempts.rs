@@ -957,3 +957,28 @@ async fn old_qr_routes_are_gone(pool: PgPool) {
     }
     let _ = TEST_ORIGIN;
 }
+
+#[sqlx::test]
+async fn the_login_challenge_never_outlives_its_attempt(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let dev = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    let (attempt, _) = create_native(&app).await;
+    sqlx::query("UPDATE login_attempts SET expires_at = NOW() + INTERVAL '30.7 seconds' WHERE id = $1::uuid")
+        .bind(attempt_id(&attempt))
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (token, _) = qr_token(&attempt);
+    let (s, c) = claim(&app, &dev, &token).await;
+    assert_eq!(s, 201, "{c}");
+    let within: bool = sqlx::query_scalar(
+        "SELECT c.expires_at <= a.expires_at FROM approvals c JOIN login_attempts a ON a.id = c.requester_id
+          WHERE c.id = $1::uuid",
+    )
+    .bind(c["challenge_id"].as_str().unwrap())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(within, "the stored expiry is capped by the attempt's");
+}

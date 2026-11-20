@@ -23,7 +23,7 @@ use super::context::{
     EnrollVariant,
 };
 use super::core::{
-    issue, lock_for_answer, set_state, verify, ChallengeRow, ChallengeState, NewChallenge,
+    issue_until, lock_for_answer, set_state, verify, ChallengeRow, ChallengeState, NewChallenge,
     Requester,
 };
 use super::devices::attestation::{check as check_attestation, clean_label};
@@ -707,7 +707,7 @@ pub async fn pop_challenge(
         .try_into()
         .map_err(|_| ApprovalError::EnrollmentState)?;
     let ttl = (row.expires_at - Utc::now()).min(Duration::minutes(super::core::MAX_TTL_MINUTES));
-    let challenge = issue(
+    let challenge = issue_until(
         &mut tx,
         ctx,
         NewChallenge {
@@ -725,6 +725,7 @@ pub async fn pop_challenge(
             transfer_hash: None,
             ttl,
         },
+        Some(row.expires_at),
     )
     .await?;
     tx.commit().await?;
@@ -1167,7 +1168,7 @@ pub async fn issuer_challenge_tx(
     .execute(&mut *conn)
     .await?;
     let ttl = (code_expires_at - Utc::now()).min(Duration::minutes(super::core::MAX_TTL_MINUTES));
-    issue(
+    issue_until(
         conn,
         ctx,
         NewChallenge {
@@ -1193,6 +1194,7 @@ pub async fn issuer_challenge_tx(
             transfer_hash: row.code_hash.as_deref().and_then(|h| h.try_into().ok()),
             ttl,
         },
+        Some(code_expires_at),
     )
     .await
 }

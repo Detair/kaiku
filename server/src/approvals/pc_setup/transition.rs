@@ -23,7 +23,7 @@ use uuid::Uuid;
 use super::{AttemptState, CHALLENGE_TTL, CODE_DIGITS, CODE_MINUTES, QR_ROTATE_SECS};
 use crate::approvals::context::{sid_hash, CanonicalContext, PcSetupContext};
 use crate::approvals::core::{
-    issue, lock_for_answer, set_state, verify, ChallengeRow, ChallengeState, NewChallenge,
+    issue_until, lock_for_answer, set_state, verify, ChallengeRow, ChallengeState, NewChallenge,
     Requester,
 };
 use crate::approvals::devices::{
@@ -914,7 +914,7 @@ pub async fn claim_tx(
     if ttl_end - now < Duration::seconds(MIN_CHALLENGE_SECS) {
         return Err(ApprovalError::LoginCodeStale);
     }
-    let challenge = issue(
+    let challenge = issue_until(
         conn,
         ctx,
         NewChallenge {
@@ -925,8 +925,9 @@ pub async fn claim_tx(
             requester: Requester::PcSetupAttempt(a.id),
             display: serde_json::json!({}),
             transfer_hash: Some(hash),
-            ttl: ttl_end - now,
+            ttl: CHALLENGE_TTL,
         },
+        Some(a.expires_at),
     )
     .await
     .map_err(|e| match e {
