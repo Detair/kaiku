@@ -42,6 +42,9 @@ use crate::auth::strong::AuthenticatorRef;
 use crate::auth::AuthUser;
 use crate::security_events::{record, Actor, EventType, NewSecurityEvent};
 
+/// The shortest `pc_setup` challenge worth issuing.
+const MIN_CHALLENGE_SECS: i64 = 2;
+
 /// Bound of the place shown on the phone (as the login label).
 const MAX_PLACE_CHARS: usize = 64;
 
@@ -831,6 +834,11 @@ pub async fn claim_tx(
         place,
     });
     let ttl_end = (Utc::now() + CHALLENGE_TTL).min(a.expires_at);
+    // An attempt in its last seconds is as good as over: no challenge a
+    // phone could answer fits (the challenge's end is whole seconds).
+    if ttl_end - Utc::now() < Duration::seconds(MIN_CHALLENGE_SECS) {
+        return Err(ApprovalError::LoginCodeStale);
+    }
     let challenge = issue(
         conn,
         ctx,

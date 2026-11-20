@@ -2423,7 +2423,18 @@ async fn refresh_reuse_against_code_entry(pool: PgPool) {
             assert_eq!(state, "enrolled");
             let eid = b["enrollment_id"].as_str().unwrap();
             assert_eq!(enrollment_state(&pool, eid).await, "expired");
+        } else {
+            // The end came first: nothing advanced and no enrolment exists.
+            assert_ne!(state, "enrolled", "{s} {b}");
+            let n: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM enrollments WHERE subject_id = $1")
+                    .bind(p.user)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(n, 0, "{s} {b}");
         }
+        assert!(!session_live(&pool, p.sid).await);
     }
     // The reuse commits first: the code entry creates nothing.
     let p = pc(&pool).await;
@@ -2717,4 +2728,69 @@ async fn logout_of_two_sessions_never_holds_both_rows(pool: PgPool) {
     assert_eq!(s, 200);
     assert!(mine_ended, "each session ends in its own transaction");
     assert!(!session_live(&pool, other).await);
+}
+
+#[sqlx::test]
+async fn a_second_scan_of_a_claimed_code_is_refused(pool: PgPool) {
+    let p = pc(&pool).await;
+    let a = started(&p).await;
+    let (token, _) = qr_token(&a["qr_payload"]);
+    let (s, c) = claim(&p.app, &p.dev, &token).await;
+    assert_eq!(s, 201, "{c}");
+    let (s, b) = claim(&p.app, &p.dev, &token).await;
+    assert_eq!((s, b["error"].as_str()), (409, Some("LOGIN_ATTEMPT_CLAIMED")), "{b}");
+    assert_eq!(attempt_state(&pool, &id_of(&a)).await.0, "claimed");
+}
+
+#[sqlx::test]
+async fn a_second_finish_adds_no_second_passkey(pool: PgPool) {
+    let p = pc(&pool).await;
+    let (id, _) = enrolled(&p).await;
+    let first = ceremony(&p, &id).await;
+    let second = ceremony(&p, &id).await;
+    let (s, pk) = passkey_finish(&p, &p.token, &id, first).await;
+    assert_eq!(s, 201, "{pk}");
+    let (s, b) = passkey_finish(&p, &p.token, &id, second).await;
+    assert_eq!((s, b["error"].as_str()), (409, Some("APPROVAL_STATE")), "{b}");
+    assert_eq!(passkeys_of(&pool, p.user).await, 1);
+}
+
+#[sqlx::test]
+async fn a_code_after_cancel_is_refused(pool: PgPool) {
+    let p = pc(&pool).await;
+    let (id, code) = with_code(&p).await;
+    // The cancel holds the locks while the code entry waits for them.
+    let mut holder = pool.begin().await.unwrap();
+    let mut locked =
+        vc_server::approvals::pc_setup::transition::lock_attempt(&mut holder, id.parse().unwrap())
+            .await
+            .unwrap();
+    vc_server::approvals::pc_setup::transition::cancel_attempt_tx(
+        &mut holder,
+        &mut locked,
+        vc_server::approvals::pc_setup::transition::EndCause::Cancelled,
+    )
+    .await
+    .unwrap();
+    let release = async {
+        super::helpers::wait_for_lock_waiters(&pool, 1).await;
+        holder.commit().await.unwrap();
+    };
+    let ((s, b), ()) = tokio::join!(enter(&p, &p.token, &id, &code), release);
+    assert_eq!((s, b["error"].as_str()), (409, Some("APPROVAL_STATE")), "{b}");
+    assert_eq!(attempt_state(&pool, &id).await.0, "cancelled");
+}
+
+#[sqlx::test]
+async fn a_scan_in_the_attempts_last_instant_is_stale(pool: PgPool) {
+    let p = pc(&pool).await;
+    let a = started(&p).await;
+    sqlx::query("UPDATE pc_setup_attempts SET expires_at = NOW() + INTERVAL '900 milliseconds' WHERE id = $1::uuid")
+        .bind(id_of(&a))
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (token, _) = qr_token(&a["qr_payload"]);
+    let (s, b) = claim(&p.app, &p.dev, &token).await;
+    assert_eq!((s, b["error"].as_str()), (404, Some("LOGIN_CODE_STALE")), "{b}");
 }
