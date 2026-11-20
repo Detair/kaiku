@@ -416,6 +416,19 @@ mod tests {
         assert!(limiter.try_acquire(peer, EventClass::PublisherOffer));
     }
 
+    /// Subscriber answers have their own, wider bucket: 30 in a burst, and
+    /// they do not use up the publisher-offer bucket.
+    #[tokio::test(start_paused = true)]
+    async fn subscriber_answers_have_their_own_bucket() {
+        let limiter = VoiceRateLimiter::new();
+        let peer = Uuid::new_v4();
+        for _ in 0..30 {
+            assert!(limiter.try_acquire(peer, EventClass::SubscriberAnswer));
+        }
+        assert!(!limiter.try_acquire(peer, EventClass::SubscriberAnswer));
+        assert!(limiter.try_acquire(peer, EventClass::PublisherOffer));
+    }
+
     #[test]
     fn event_class_scope_labels_are_stable() {
         assert_eq!(
@@ -427,6 +440,7 @@ mod tests {
             "ice_candidate_subscriber"
         );
         assert_eq!(EventClass::PublisherOffer.as_scope(), "publisher_offer");
+        assert_eq!(EventClass::SubscriberAnswer.as_scope(), "subscriber_answer");
         assert_eq!(
             EventClass::ScreenShareToggle.as_scope(),
             "screen_share_toggle"

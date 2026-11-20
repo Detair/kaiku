@@ -2000,7 +2000,12 @@ mod host_candidate_tests {
         let _ = tokio::time::timeout(Duration::from_secs(10), gathered.recv()).await;
         let sdp = pc.local_description().await.expect("desc").sdp;
         peer.close().await;
-        for line in sdp.lines().filter(|l| l.starts_with("a=candidate:")) {
+        let candidates: Vec<&str> = sdp
+            .lines()
+            .filter(|l| l.starts_with("a=candidate:"))
+            .collect();
+        assert!(!candidates.is_empty(), "no candidates gathered:\n{sdp}");
+        for line in candidates {
             assert!(line.contains(" typ host"), "non-host candidate: {line}");
         }
     }
