@@ -1819,17 +1819,17 @@ impl SocketAccess {
         for _ in 0..DECISION_REVALIDATIONS {
             #[cfg(test)]
             self.seam().await;
-            // This socket's revalidation first, then a permit of the pool,
-            // under one deadline for both waits: no permit of the pool is
-            // held while waiting for a socket, and the gate is let go when
-            // the deadline passes. Never one of the permits other sockets'
+            // This socket's revalidation first (a frame's read under way
+            // is waited for, without a deadline: the answer is then this
+            // request's own read, only later), then a permit of the pool,
+            // for at most [`ADMIN_SUBSCRIBE_WAIT`]; the gate is let go when
+            // that passes. No permit of the pool is held while waiting for
+            // a socket, and never one of the permits other sockets'
             // revalidations wait for.
-            let deadline = Instant::now() + ADMIN_SUBSCRIBE_WAIT;
-            let Ok(gate) = tokio::time::timeout_at(deadline, self.refresh_gate.lock()).await else {
-                break;
-            };
+            let gate = self.refresh_gate.lock().await;
             let pool = Arc::clone(&self.subscribe_permits);
-            let Ok(Ok(permit)) = tokio::time::timeout_at(deadline, pool.acquire_owned()).await
+            let Ok(Ok(permit)) =
+                tokio::time::timeout(ADMIN_SUBSCRIBE_WAIT, pool.acquire_owned()).await
             else {
                 break;
             };
@@ -3803,33 +3803,96 @@ mod tests {
         ));
     }
 
+    /// While every permit of the other revalidations is taken for longer
+    /// than an `admin_subscribe` waits for its pool, a refused socket gets
+    /// the same reply with and without an admin frame being decided: the
+    /// subscribe waits for its socket's revalidation (the frame's) and then
+    /// answers from its own read; only the time differs.
+    #[tokio::test(start_paused = true)]
+    async fn a_busy_socket_delays_the_answer_but_does_not_change_it() {
+        let mut answers = Vec::new();
+        for frame in [false, true] {
+            let u = Uuid::new_v4();
+            let access = admin_socket(u, false).await;
+            cooled_down().await;
+            // A change of the user's own that leaves them refused.
+            registry().bump_user(u);
+            let all = REVALIDATION_PERMITS
+                .acquire_many(u32::try_from(REVALIDATION_CONCURRENCY).unwrap())
+                .await
+                .unwrap();
+            let sender = async {
+                if frame {
+                    assert!(!access.admit_admin().await);
+                }
+            };
+            let subscribe = access.subscribe_admin();
+            tokio::pin!(sender, subscribe);
+            let sent = futures::poll!(&mut sender).is_ready();
+            let mut answer = None;
+            if let std::task::Poll::Ready(early) = futures::poll!(&mut subscribe) {
+                answer = Some(early);
+            }
+            tokio::time::advance(ADMIN_SUBSCRIBE_WAIT * 3).await;
+            if answer.is_none() {
+                if let std::task::Poll::Ready(late) = futures::poll!(&mut subscribe) {
+                    answer = Some(late);
+                }
+            }
+            drop(all);
+            // Both go on (the gate is handed over in order).
+            let rest = async {
+                if !sent {
+                    sender.await;
+                }
+            };
+            let answer = match answer {
+                Some(answer) => {
+                    rest.await;
+                    answer
+                }
+                None => tokio::join!(rest, subscribe).1,
+            };
+            answers.push(answer);
+        }
+        assert_eq!(answers, [AdminSubscription::Refused; 2]);
+    }
+
     /// A subscribe that could not be decided in time says so: it answers
-    /// "not decided yet" and does not take the answer a frame's read
-    /// settled meanwhile (frames decide on their own reads).
+    /// "not decided yet" when the pool for its reads stays busy, and does
+    /// not take the answer a frame's read settled meanwhile (frames decide
+    /// on their own reads).
     #[tokio::test(start_paused = true)]
     async fn a_subscribe_that_ran_out_of_time_answers_undecided() {
         let u = Uuid::new_v4();
         let access = SocketAccess::new(u, lazy_pool());
         install(&access, &[], false, None);
-        // The socket's own revalidation is under way.
+        // Another subscribe's read holds the pool, and the socket's own
+        // revalidation is under way.
+        let busy = Arc::clone(&access.subscribe_permits)
+            .acquire_owned()
+            .await
+            .unwrap();
         let gate = access.refresh_gate.lock().await;
         let subscribe = access.subscribe_admin();
         tokio::pin!(subscribe);
         assert!(futures::poll!(&mut subscribe).is_pending());
         // A frame is taken, and its own read, planned after the request,
-        // settles "not elevated".
+        // settles "not elevated" before the subscribe has the gate.
         assert!(access.admin_frame_taken());
         let Planned::Run(plan) = access.plan() else {
             panic!("nothing planned");
         };
         access.apply(&plan, admin_found(false));
         assert_eq!(admin_decision(&access), Some(false));
+        drop(gate);
+        assert!(futures::poll!(&mut subscribe).is_pending());
         tokio::time::advance(ADMIN_SUBSCRIBE_WAIT).await;
         assert_eq!(
             futures::poll!(&mut subscribe),
             std::task::Poll::Ready(AdminSubscription::Undecided)
         );
-        drop(gate);
+        drop(busy);
     }
 
     /// The close after [`FAILURE_CLOSE_AFTER`] covers the reads an
