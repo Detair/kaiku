@@ -1473,13 +1473,15 @@ impl SfuServer {
                 if state.offer_seq != seq || state.awaiting_answer_since.is_none() {
                     return;
                 }
-                if state.repeated {
+                if state.repeated && !state.again {
                     debug!(user_id = %peer.user_id, "Repeated subscriber offer unanswered; releasing");
                     state.awaiting_answer_since = None;
-                    state.again = false;
                     return;
                 }
-                state.repeated = true;
+                // Repeat once; a change that came in meanwhile is offered now
+                // (with a repeat of its own) instead of being dropped. Changes
+                // are only ever dropped with the seat.
+                state.repeated = !state.again;
                 match Self::open_offer(&peer, &mut state).await {
                     Ok(next) => next,
                     Err(e) => {
@@ -1528,11 +1530,11 @@ impl SfuServer {
             let mut state = peer.negotiation.lock().await;
             if state.offer_seq == seq {
                 state.awaiting_answer_since = None;
-                // A change that waited for this offer must not be lost: try
-                // again shortly (the queue may only have been busy).
-                if state.again {
-                    Self::retry_offer_later(peer);
-                }
+                // Neither the change this offer carried nor one that waited
+                // for it may be lost: offer again shortly (the queue may only
+                // have been busy; a closed socket ends the seat).
+                state.again = true;
+                Self::retry_offer_later(peer);
             }
         } else {
             Self::watch_offer(peer, seq);
@@ -1992,6 +1994,64 @@ mod negotiation_tests {
             .is_none());
         let _ = client.close().await;
         let _ = old_client.close().await;
+        peer.close().await;
+    }
+
+    /// An offer that could not be sent is offered again shortly, even with
+    /// no other change pending (the change it carried must not be lost).
+    #[tokio::test(start_paused = true)]
+    async fn an_offer_that_could_not_be_sent_is_offered_again() {
+        let (_sfu, peer, mut rx, _client) = setup().await;
+        peer.add_outgoing_track(
+            Uuid::from_u128(3),
+            TrackSource::Microphone,
+            audio_track("u3"),
+        )
+        .await
+        .expect("track");
+        // A full queue: the offer cannot be sent within its bound.
+        for _ in 0..16 {
+            if peer.signal_tx.try_send(OutboundMsg::Ping).is_err() {
+                break;
+            }
+        }
+        assert!(SfuServer::renegotiate(&peer).await.is_err());
+        while rx.try_recv().is_ok() {}
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        offer_sdp(rx.try_recv().expect("the change was offered again"));
+        peer.close().await;
+    }
+
+    /// A change made while a repeated offer waits is offered when the repeat
+    /// times out, not dropped with it.
+    #[tokio::test(start_paused = true)]
+    async fn a_change_during_the_repeat_is_offered_after_it() {
+        let (_sfu, peer, mut rx, _client) = setup().await;
+        peer.add_outgoing_track(
+            Uuid::from_u128(3),
+            TrackSource::Microphone,
+            audio_track("u3"),
+        )
+        .await
+        .expect("track");
+        SfuServer::renegotiate(&peer).await.expect("offer");
+        offer_sdp(rx.try_recv().expect("offer sent"));
+        tokio::time::sleep(SUBSCRIBER_ANSWER_TIMEOUT + Duration::from_secs(1)).await;
+        offer_sdp(rx.try_recv().expect("repeat sent"));
+
+        peer.add_outgoing_track(
+            Uuid::from_u128(4),
+            TrackSource::Microphone,
+            audio_track("u4"),
+        )
+        .await
+        .expect("track 2");
+        SfuServer::renegotiate(&peer).await.expect("coalesced");
+        assert!(rx.try_recv().is_err());
+
+        tokio::time::sleep(SUBSCRIBER_ANSWER_TIMEOUT + Duration::from_secs(1)).await;
+        let next = offer_sdp(rx.try_recv().expect("the change was offered"));
+        assert_eq!(next.matches("m=audio").count(), 2, "{next}");
         peer.close().await;
     }
 
