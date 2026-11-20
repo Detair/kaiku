@@ -101,8 +101,10 @@
 //!    elevation that ran out keeps its earlier "yes": nothing is written on it, every frame is read
 //!    on its own. The reads it asks for run in a pool of their own
 //!    ([`ADMIN_SUBSCRIBE_CONCURRENCY`]) and never take one of the permits other revalidations wait
-//!    for; it waits a bounded time for that pool and otherwise leaves the request to the socket's
-//!    own revalidation, like any scope that is not current.
+//!    for. It takes its socket's revalidation gate first and a permit of that pool second, under
+//!    one deadline for both waits, and lets go of the gate when the deadline passes: no task holds
+//!    a permit while it waits for a gate. Meanwhile frames queued on that socket wait behind it (at
+//!    most the deadline). After the deadline it answers "not decided yet".
 //!
 //! # Revalidation cost
 //!
@@ -215,8 +217,9 @@ static REVALIDATION_PERMITS: tokio::sync::Semaphore =
 /// for. One more database connection at most.
 pub const ADMIN_SUBSCRIBE_CONCURRENCY: usize = 1;
 
-/// Longest an `admin_subscribe` waits for that pool. After it the request
-/// is answered "not decided yet" and left to the socket's own revalidation.
+/// Longest an `admin_subscribe` waits for its socket's revalidation gate
+/// and a permit of that pool together (one deadline for both). After it the
+/// request is answered "not decided yet"; frames decide on their own reads.
 const ADMIN_SUBSCRIBE_WAIT: Duration = Duration::from_secs(1);
 
 /// How soon after an `admin_subscribe` had the admin stream read, the next
@@ -1799,15 +1802,24 @@ impl SocketAccess {
             AdminRequest::Read(asked) => asked,
         };
         for _ in 0..DECISION_REVALIDATIONS {
-            // Never one of the permits other sockets' revalidations wait
-            // for, and no long wait behind other sockets' subscribes.
+            #[cfg(test)]
+            self.seam().await;
+            // This socket's revalidation first, then a permit of the pool,
+            // under one deadline for both waits: no permit of the pool is
+            // held while waiting for a socket, and the gate is let go when
+            // the deadline passes. Never one of the permits other sockets'
+            // revalidations wait for.
+            let deadline = Instant::now() + ADMIN_SUBSCRIBE_WAIT;
+            let Ok(gate) = tokio::time::timeout_at(deadline, self.refresh_gate.lock()).await else {
+                break;
+            };
             let pool = Arc::clone(&self.subscribe_permits);
-            let Ok(Ok(permit)) =
-                tokio::time::timeout(ADMIN_SUBSCRIBE_WAIT, pool.acquire_owned()).await
+            let Ok(Ok(permit)) = tokio::time::timeout_at(deadline, pool.acquire_owned()).await
             else {
                 break;
             };
-            let attempt = self.revalidate(Some(permit)).await;
+            let attempt = self.revalidate(&gate, Some(permit)).await;
+            drop(gate);
             #[cfg(test)]
             self.seam().await;
             match self.admin_answer(asked) {
@@ -1927,19 +1939,22 @@ impl SocketAccess {
     /// Nothing is consumed before the read succeeded: dropping this future
     /// leaves every scope as it was.
     pub async fn refresh(&self) -> Result<(), AccessCheckFailed> {
-        self.revalidate(None).await
-    }
-
-    /// [`Self::refresh`], with the permit its read runs under: an
-    /// `admin_subscribe` brings one of its own pool (`own`); every other
-    /// revalidation waits for one of the process-wide ones.
-    async fn revalidate(
-        &self,
-        own: Option<tokio::sync::OwnedSemaphorePermit>,
-    ) -> Result<(), AccessCheckFailed> {
         #[cfg(test)]
         self.seam().await;
-        let _gate = self.refresh_gate.lock().await;
+        let gate = self.refresh_gate.lock().await;
+        self.revalidate(&gate, None).await
+    }
+
+    /// [`Self::refresh`] under the socket's revalidation gate, which the
+    /// caller holds (`_gate`), with the permit its read runs under: an
+    /// `admin_subscribe` brings one of its own pool (`own`); every other
+    /// revalidation waits for one of the process-wide ones. Every caller
+    /// takes the gate before any permit.
+    async fn revalidate(
+        &self,
+        _gate: &tokio::sync::MutexGuard<'_, ()>,
+        own: Option<tokio::sync::OwnedSemaphorePermit>,
+    ) -> Result<(), AccessCheckFailed> {
         let plan = match self.plan() {
             Planned::Nothing => return Ok(()),
             Planned::Backoff => return Err(AccessCheckFailed),
@@ -3703,6 +3718,63 @@ mod tests {
         assert!(access.refresh().await.is_ok());
         assert_eq!(admin_decision(&access), Some(true));
         drop(busy);
+    }
+
+    /// An `admin_subscribe` waits for its own socket's revalidation first
+    /// and for a permit of its pool second, under one deadline: while one
+    /// socket's sender holds that socket's revalidation and waits for a
+    /// permit of the other revalidations, that socket's subscribe holds no
+    /// permit of the pool, and another socket's subscribe is read.
+    #[tokio::test(start_paused = true)]
+    async fn a_subscribe_waits_for_its_socket_before_it_takes_a_pool_permit() {
+        let (u, other, g, c) = (
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+        );
+        let first = SocketAccess::new(u, lazy_pool());
+        let scope = ChannelScope::Guild(g);
+        assert_eq!(
+            first.commit_subscribe(c, scope, first.snapshot(scope), true),
+            SubscribeCommit::Recorded
+        );
+        registry().bump_guild(g);
+        install(&first, &[], true, Some(g));
+        // Both sockets share one pool, as all of them do outside tests.
+        let mut second = SocketAccess::new(other, lazy_pool());
+        Arc::get_mut(&mut second)
+            .expect("not shared yet")
+            .subscribe_permits = Arc::clone(&first.subscribe_permits);
+        install(&second, &[], true, None);
+
+        let all = REVALIDATION_PERMITS
+            .acquire_many(u32::try_from(REVALIDATION_CONCURRENCY).unwrap())
+            .await
+            .unwrap();
+        // The first socket's sender takes its gate and waits for a permit.
+        let frame = first.admit(c);
+        let waiting = first.subscribe_admin();
+        tokio::pin!(frame, waiting);
+        assert!(futures::poll!(&mut frame).is_pending());
+        assert!(futures::poll!(&mut waiting).is_pending());
+        assert_eq!(
+            first.subscribe_permits.available_permits(),
+            ADMIN_SUBSCRIBE_CONCURRENCY,
+            "a subscribe holds a permit of the pool while it waits for its socket"
+        );
+        assert_eq!(
+            second.subscribe_admin().await,
+            AdminSubscription::Allowed,
+            "another socket's subscribe was not read"
+        );
+        drop(all);
+        assert!(frame.await);
+        // Answered by a read, or by its deadline.
+        assert!(matches!(
+            waiting.await,
+            AdminSubscription::Allowed | AdminSubscription::Undecided
+        ));
     }
 
     /// A read that began before the admin frame was taken does not decide
