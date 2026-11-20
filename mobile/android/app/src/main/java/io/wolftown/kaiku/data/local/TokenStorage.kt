@@ -146,6 +146,17 @@ class TokenStorage internal constructor(
         return fallback
     }
 
+    /** [read], or null when the store cannot read it; never resets anything. */
+    private inline fun <T> peek(read: () -> T): T? = try {
+        read()
+    } catch (_: GeneralSecurityException) {
+        null
+    } catch (_: IOException) {
+        null
+    } catch (_: SecurityException) {
+        null
+    }
+
     private inline fun isReadable(read: () -> Unit): Boolean = try {
         read()
         true
@@ -182,10 +193,13 @@ class TokenStorage internal constructor(
      */
     @Synchronized
     fun saveSession(serverUrl: String?, accessToken: String, refreshToken: String?, expiresIn: Int, userId: String): Boolean {
+        // What is stored now, to put back if the write fails. Read without the reset of an unreadable
+        // store: the store is about to hold a new session, and a value that cannot be read is taken
+        // as absent (it is not put back).
         val before = listOf(KEY_SERVER_URL, KEY_ACCESS_TOKEN, KEY_REFRESH_TOKEN, KEY_USER_ID).associateWith { k ->
-            readOr(null) { prefs.getString(k, null) }
+            peek { prefs.getString(k, null) }
         }
-        val expiresBefore = getAccessTokenExpiresAtMillis()
+        val expiresBefore = peek { prefs.getLong(KEY_EXPIRES_AT, 0L) } ?: 0L
         val expiresAt = System.currentTimeMillis() + expiresIn * 1000L
         val written = try {
             prefs.edit()
@@ -197,6 +211,10 @@ class TokenStorage internal constructor(
                 .commit()
         } catch (e: RuntimeException) {
             false
+        } catch (e: GeneralSecurityException) {
+            false
+        } catch (e: IOException) {
+            false
         }
         if (!written) {
             logger.warning("Failed to persist the session; nothing of it is kept")
@@ -206,6 +224,8 @@ class TokenStorage internal constructor(
                     if (expiresBefore != 0L) putLong(KEY_EXPIRES_AT, expiresBefore) else remove(KEY_EXPIRES_AT)
                 }.commit()
             } catch (_: RuntimeException) {
+            } catch (_: GeneralSecurityException) {
+            } catch (_: IOException) {
             }
             return false
         }

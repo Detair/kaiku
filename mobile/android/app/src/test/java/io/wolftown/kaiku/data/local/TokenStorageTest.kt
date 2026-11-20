@@ -71,6 +71,59 @@ class TokenStorageTest {
         assertTrue(store.getSessionGeneration() > generation)
     }
 
+    /**
+     * A device sign-in over a store whose old values cannot be read: the new session is stored, and
+     * no "sign in again" notice is left behind for a session that was just made.
+     */
+    @Test
+    fun `a session stored over unreadable old values leaves no sign-in-again notice`() {
+        val prefs = ThrowingReadPreferences(InMemorySharedPreferences())
+        val store = TokenStorage(prefs)
+        store.saveTokens("access-1", "refresh-1", 900, "user-1")
+        prefs.failure = ThrowingReadPreferences.decryptFailure()
+        prefs.failures = 5 // the old values; reads work again afterwards
+
+        assertTrue(store.saveSession("https://chat.example.com", "access-2", "refresh-2", 900, "user-2"))
+
+        prefs.failure = null
+        assertEquals("access-2", store.getAccessToken())
+        assertEquals("user-2", store.getUserId())
+        assertFalse(store.consumeStorageResetNotice())
+    }
+
+    /** A value that cannot be encrypted (the key store fails) makes the write fail, not the app. */
+    @Test
+    fun `a session that cannot be encrypted is not stored and nothing escapes`() {
+        val backing = InMemorySharedPreferences()
+        var failEncrypt = false
+        val prefs = object : android.content.SharedPreferences by backing {
+            override fun edit(): android.content.SharedPreferences.Editor {
+                val e = backing.edit()
+                return object : android.content.SharedPreferences.Editor by e {
+                    override fun putString(key: String?, value: String?): android.content.SharedPreferences.Editor {
+                        if (failEncrypt) throw java.security.GeneralSecurityException("key store")
+                        e.putString(key, value); return this
+                    }
+                    override fun putLong(key: String?, value: Long): android.content.SharedPreferences.Editor {
+                        if (failEncrypt) throw java.io.IOException("key store")
+                        e.putLong(key, value); return this
+                    }
+                    override fun remove(key: String?): android.content.SharedPreferences.Editor { e.remove(key); return this }
+                }
+            }
+        }
+        val store = TokenStorage(prefs)
+        store.saveTokens("access-1", "refresh-1", 900, "user-1")
+        val generation = store.getSessionGeneration()
+        failEncrypt = true
+
+        assertFalse(store.saveSession("https://chat.example.com", "access-2", "refresh-2", 900, "user-2"))
+
+        failEncrypt = false
+        assertEquals("access-1", store.getAccessToken())
+        assertEquals(generation, store.getSessionGeneration())
+    }
+
     @Test
     fun `conditional save writes nothing after clear`() {
         storage.clear()
