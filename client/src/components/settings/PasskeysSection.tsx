@@ -25,32 +25,9 @@ import {
   type Passkey,
 } from "@/lib/tauri/passkeys";
 import { signalRemoved } from "@/lib/webauthn";
+import { defaultPasskeyLabel } from "@/lib/passkeyLabel";
 import { StepUpCancelled, withStepUp } from "@/lib/stepUp";
 import { errorText } from "@/i18n/errors";
-
-/** "Firefox on Linux" for a new passkey's default name. */
-function defaultLabel(): string {
-  const ua = navigator.userAgent;
-  const browser = /Edg\//.test(ua)
-    ? "Edge"
-    : /Firefox\//.test(ua)
-      ? "Firefox"
-      : /Chrome\//.test(ua)
-        ? "Chrome"
-        : /Safari\//.test(ua)
-          ? "Safari"
-          : "Browser";
-  const os = /Android/.test(ua)
-    ? "Android"
-    : /Windows/.test(ua)
-      ? "Windows"
-      : /Mac OS X|Macintosh/.test(ua)
-        ? "macOS"
-        : /Linux/.test(ua)
-          ? "Linux"
-          : "";
-  return os ? t("passkeys.settings.defaultLabel", { browser, os }) : browser;
-}
 
 function failureText(err: unknown): string {
   if (err instanceof PasskeyError) return formatPasskeyError(err);
@@ -98,7 +75,7 @@ const PasskeysSection: Component<{ empty?: JSX.Element }> = (props) => {
   const add = () =>
     run((signal) =>
       withStepUp({ action: "passkey.add", target: "", targetLabel: "" }, async () => {
-        await registerPasskey({ label: defaultLabel(), signal });
+        await registerPasskey({ label: defaultPasskeyLabel(), signal });
       }),
     );
 

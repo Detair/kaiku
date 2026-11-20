@@ -1974,6 +1974,8 @@ async fn nothing_is_stored_before_redeem(pool: PgPool) {
     assert_eq!(passkeys_of(&pool, p.user).await, 1);
     assert_eq!(enrollment_state(&pool, &enrollment).await, "done");
     assert_eq!(attempt_state(&pool, &id).await.0, "completed");
+    // Named after the browser that made it, never just "Passkey".
+    assert_eq!(r.json()["passkey"]["label"], "Web browser", "{}", r.body);
 }
 
 #[sqlx::test]

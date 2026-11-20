@@ -9,7 +9,7 @@ export const I18N_GUARDED_FILES = [
   "src/views/{Login,Register,InviteJoin,NotFound,Main}.tsx",
   // v1.0 login (L2a): sign-in steps, setup links, requests, registration binding.
   "src/views/{AccountRequestView,RecoverAccount,RegistrationBind,SecureAccount,SetupLink}.tsx",
-  "src/components/auth/{AuthPageShell,CodeEntry,DialogShell,FullSessionRequiredDialog,ProbationBanner,QrCodeImage,RecoveryCodeInput,RecoveryCodesDisplay,StepUpDialog}.tsx",
+  "src/components/auth/{AuthPageShell,CodeEntry,DialogShell,FullSessionRequiredDialog,ProbationBanner,QrCodeImage,RecoveryCodeInput,RecoveryCodesDisplay,SetUpThisPc,SetUpThisPcButton,SetUpThisPcDesktop,SetUpThisPcHost,StepUpDialog}.tsx",
   "src/components/auth/login/*.tsx",
   "src/components/security/*.tsx",
   "src/components/settings/security/*.tsx",

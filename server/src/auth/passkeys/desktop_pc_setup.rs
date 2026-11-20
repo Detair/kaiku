@@ -467,8 +467,14 @@ pub async fn finish(
             return retry_redirect(flow_id);
         }
     }
-    // The label `register` uses when none is given; renamed in settings.
-    let label = String::from("Passkey");
+    // Named after the browser that made it ("Firefox on Linux"), like a
+    // passkey added in the browser itself; renamed in settings.
+    let label = crate::auth::login_attempts::core::client_label(
+        ClientClass::Web,
+        headers
+            .get(header::USER_AGENT)
+            .and_then(|v| v.to_str().ok()),
+    );
     let code = new_handoff_code();
     let ctx = AuthCtx::from(&state);
     let mut flow = stored.flow.clone();

@@ -278,8 +278,8 @@ you can sign in with it and get full access here.
    minutes and three tries; after three wrong codes the attempt ends and both screens say so.
 5. Create the passkey when the browser asks, then sign in with it (**Sign in with your passkey**).
 
-**Never tell the code to anyone and never type it on a page someone sent you.** Kaiku staff and your
-admin will never ask for it. If someone asked you to do this, choose **I didn't start this** on the
+**Never tell the code to anyone and never type it on a page someone sent you.** Nobody, not even
+your admin, will ask for it. If someone asked you to do this, choose **I didn't start this** on the
 phone: it asks first whether to end that computer's session, and then ends it.
 
 On the phone, **No** simply declines. On the computer, **Start again** is always available. If the

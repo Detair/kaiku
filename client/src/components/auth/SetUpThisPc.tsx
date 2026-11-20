@@ -20,6 +20,7 @@ import { codeIs } from "@/lib/errorCode";
 import { PASSKEY_ERRORS, passkeyFailureText } from "@/lib/authErrors";
 import { HttpError, isTauri } from "@/lib/tauri/common";
 import { createPasskeyCredential } from "@/lib/tauri/passkeys";
+import { defaultPasskeyLabel } from "@/lib/passkeyLabel";
 import {
   LIVE_PC_SETUP_STATES,
   cancelPcSetup,
@@ -136,10 +137,10 @@ export const WebPasskeyStep: Component<PcSetupStepProps> = (props) => {
     setBusy(true);
     setError(null);
     try {
-      const start = await startPcSetupPasskey(props.attemptId);
+      const start = await startPcSetupPasskey(id);
       const credential = await createPasskeyCredential(start.options, mine.signal);
-      await finishPcSetupPasskey(props.attemptId, start.ceremony_id, credential, null);
-      props.onState({ state: "completed", reason: null });
+      await finishPcSetupPasskey(id, start.ceremony_id, credential, defaultPasskeyLabel());
+      if (!mine.signal.aborted) props.onState(id, { state: "completed", reason: null });
     } catch (err) {
       if (!mine.signal.aborted) {
         setError(passkeyFailureText(err, "auth.pcSetup.registerFailed", PASSKEY_ERRORS) || null);

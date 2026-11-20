@@ -315,7 +315,8 @@ describe("code and passkey on the web", () => {
     await typeCode("123456");
     fireEvent.click(await screen.findByRole("button", { name: "Create a passkey" }));
     await waitFor(() =>
-      expect(pc.finishPcSetupPasskey).toHaveBeenCalledWith(ID, "c1", { id: "cred" }, null),
+      // Named like every passkey made in a browser ("Firefox on Linux").
+      expect(pc.finishPcSetupPasskey).toHaveBeenCalledWith(ID, "c1", { id: "cred" }, expect.stringMatching(/\S/)),
     );
     expect(createPasskeyCredential).toHaveBeenCalledWith({ publicKey: { challenge: "x" } }, expect.anything());
     fireEvent.click(await screen.findByRole("button", { name: "Sign in with your passkey" }));

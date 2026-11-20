@@ -197,7 +197,7 @@ Every key-device signature answers a single-use server **challenge** of the appr
 | `device_login` | 0x03 | – | `POST /auth/device-login` | empty | 120 s |
 | `device_stepup` | 0x04 | – | `POST /api/approvals/{id}/answer` | empty | 120 s; the grant ≤ 300 s |
 | `enroll_pop` | 0x05 | – | `POST /auth/enrollments/claim` | empty | the setup token's lifetime |
-| `pc_setup` | 0x06 | – | `POST /api/pc-setups/{id}/answer` | the 32 scanned QR token bytes | 120 s from the scan (attempt ≤ 10 min) |
+| `pc_setup` | 0x06 | – | `POST /api/pc-setups/{cid}/answer` | the 32 scanned QR token bytes | 120 s from the scan (attempt ≤ 10 min) |
 
 `login` and `pc_setup` are answered approve or report (`pc_setup`'s "No" is the unsigned `refuse`); `enroll` approve only (its "No" is the unsigned deny, which
 cancels the enrolment); proofs approve only. Bytes 0x10–0x1F are reserved for v1.1 agent kinds; a
