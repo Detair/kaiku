@@ -22,7 +22,11 @@ import kotlinx.coroutines.test.runCurrent
 internal const val WALL = 1_700_000_000_000L
 
 internal class FakeCallApi : CallApi {
+    /** The requests in the order they went out; the rig also notes the microphone service start here ("hold"). */
     val calls = mutableListOf<String>()
+
+    /** The requests alone. */
+    val requests get() = calls.filter { it != "hold" }
 
     /** The signed-in session each request was built for. */
     val sessions = mutableListOf<Long>()
@@ -109,6 +113,9 @@ internal class CallRig(val test: TestScope, val dm: String = "dm-1") {
     /** Clock jump on top of virtual time (device sleep). */
     var slept = 0L
 
+    /** Whether Android lets the microphone service start. */
+    var holdGranted = true
+
     val voice: VoiceRepository = mockk(relaxed = true) {
         every { callEnds } returns this@CallRig.callEnds
         every { currentChannelId } returns voiceChannel
@@ -117,6 +124,11 @@ internal class CallRig(val test: TestScope, val dm: String = "dm-1") {
             gate = call.gate
             tag = call.tag
             voiceChannel.value = firstArg()
+        }
+        // The microphone service, asked for at the tap; in the order of the requests.
+        every { holdForCall(any(), any(), any()) } answers {
+            api.calls += "hold"
+            holdGranted
         }
         coEvery { leaveChannel() } coAnswers { voiceChannel.value = null }
         // Like the voice layer: only the call's own session is left.

@@ -150,8 +150,10 @@ class VoiceCallService : Service() {
             return START_NOT_STICKY
         }
 
-        // Channel is created at app start (NotificationChannels.ensureCreated).
-        val notification = buildNotification(channelName, status = null)
+        // Channel is created at app start (NotificationChannels.ensureCreated). A call's service
+        // starts when the user answers, before its voice session exists: it is connecting.
+        val connecting = forCall && voiceRepository.holdsServiceForCall
+        val notification = buildNotification(channelName, status = if (connecting) R.string.voice_call_connecting else null)
 
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {

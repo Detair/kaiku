@@ -593,6 +593,12 @@ class CallController internal constructor(
                 is CallEffect.RestLeave -> lanes.submit(effect.channelId) {
                     quietly("leave") { api.leave(effect.channelId, ticket.requestSession()) }
                 }
+                is CallEffect.HoldVoice -> {
+                    // Now, in the actor, right after the tap: the microphone service is up before
+                    // any request goes out. If Android refuses it, the call cannot have a microphone.
+                    val held = voice.holdForCall(tagBase + effect.voiceId, effect.channelId, directory.titleOf(effect.channelId))
+                    if (!held) offer(CallEvent.VoiceJoinFailed(effect.channelId, effect.voiceId))
+                }
                 is CallEffect.JoinVoice -> joinVoice(effect.channelId, effect.voiceId)
                 is CallEffect.Resync -> resync(effect.channelId, effect.askedFor)
                 is CallEffect.ArmBusyCap -> armBusyCap(effect.channelId, effect.callId, effect.startedAtMs)

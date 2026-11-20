@@ -736,8 +736,74 @@ class VoiceRepository @Inject constructor(
                 running.owner.cancel()
             }
         }
-        withContext(NonCancellable) { replaceSession(Expected.OfCall(tag), null) }
+        withContext(NonCancellable) {
+            replaceSession(Expected.OfCall(tag), null)
+            // A call that ends before its session took the microphone service over gives it up.
+            releaseHold(tag)
+        }
     }
+
+    // -- The microphone service ----------------------------------------------------
+
+    /**
+     * Orders the starts and stops of the microphone service and guards
+     * [heldForCall]. No WebRTC callback takes it; where it nests,
+     * [sessionLock] is taken inside it, never the other way round.
+     */
+    private val serviceLock = Any()
+
+    /** The call (its tag) the service was started for before its session exists, or null. Guarded by [serviceLock]. */
+    private var heldForCall: Long? = null
+
+    /**
+     * Starts the microphone service for the DM call [tag] now, before the
+     * call's voice session exists: when the user taps Call or Accept the
+     * app is in front, which Android requires to start a microphone
+     * service, while the session is opened only after the requests to the
+     * server and the ICE configuration, when the user may have left the app.
+     * The call's session takes the service over ([SessionSteps.prepare]);
+     * [leaveCall] gives it up if no session ever did. A session that is
+     * current meanwhile (a voice channel being left for the call) keeps
+     * running under it.
+     *
+     * Returns false if Android refused the start.
+     */
+    fun holdForCall(tag: Long, channelId: String, title: String?): Boolean = synchronized(serviceLock) {
+        try {
+            VoiceCallService.start(context, channelId, title ?: channelId, forCall = true)
+        } catch (e: IllegalStateException) {
+            // ForegroundServiceStartNotAllowedException (API 31+) is one.
+            logger.warning("Call service refused for a call: ${e::class.simpleName}")
+            return false
+        } catch (e: SecurityException) {
+            logger.warning("Call service refused for a call: ${e::class.simpleName}")
+            return false
+        }
+        heldForCall = tag
+        true
+    }
+
+    /** Gives up the service held for call [tag] if no session took it over. */
+    private fun releaseHold(tag: Long) = synchronized(serviceLock) {
+        if (heldForCall != tag) return
+        heldForCall = null
+        val running = synchronized(sessionLock) { live }
+        if (running == null) {
+            VoiceCallService.stop(context)
+            return
+        }
+        // The user is still in a voice session (the call never replaced it): the service is its again.
+        try {
+            VoiceCallService.start(context, running.channelId, running.call?.title ?: running.channelId, forCall = running.call != null)
+        } catch (e: IllegalStateException) {
+            logger.warning("Call service not handed back: ${e::class.simpleName}")
+        } catch (e: SecurityException) {
+            logger.warning("Call service not handed back: ${e::class.simpleName}")
+        }
+    }
+
+    /** Whether the microphone service is up for a call whose session is not open yet (its first notification says "Connecting…"). */
+    val holdsServiceForCall: Boolean get() = synchronized(serviceLock) { heldForCall != null }
 
     /**
      * Signed-in user: ends the call at once, synchronously, before the
@@ -768,7 +834,13 @@ class VoiceRepository @Inject constructor(
         }
         synchronized(joinLock) { joinJob?.cancel() }
         _endNotice.value = null
-        if (session == null) return
+        // A call that was being answered: its hold on the microphone service ends with the session.
+        val held = synchronized(serviceLock) { heldForCall.also { heldForCall = null } }
+        if (session == null) {
+            // No session to tear down: the service goes by itself (off the caller's thread).
+            if (held != null) releaseScope.launch { synchronized(serviceLock) { VoiceCallService.stop(context) } }
+            return
+        }
         session.owner.cancel()
         if (closedHere) {
             session.joinSocket.value?.let { socket ->
@@ -1055,7 +1127,9 @@ class VoiceRepository @Inject constructor(
         /**
          * Starts the call service (the microphone foreground service) as soon
          * as the set-up stands, before the join waits for a socket: right
-         * after the user's tap, while the app is in the foreground. Android
+         * after the user's tap, while the app is in the foreground. (A DM
+         * call's service is started even earlier, at the tap itself,
+         * [holdForCall]; its session only takes it over here.) Android
          * 12+ refuses to start a foreground service from the background, and
          * a join can be held for the socket long after the user left the
          * app. The service then stays for the whole session, through the
@@ -1088,13 +1162,20 @@ class VoiceRepository @Inject constructor(
                     }
                 }
             }
-            try {
-                VoiceCallService.start(context, channelId, session.call?.title ?: channelId, forCall = session.call != null)
-            } catch (e: IllegalStateException) {
-                // ForegroundServiceStartNotAllowedException (API 31+) is one.
-                throw VoiceServiceStartException(e)
-            } catch (e: SecurityException) {
-                throw VoiceServiceStartException(e)
+            synchronized(serviceLock) {
+                // A call's service was started when the user tapped Call or Accept: taken over.
+                if (session.call != null && heldForCall == session.call.tag) {
+                    heldForCall = null
+                    return
+                }
+                try {
+                    VoiceCallService.start(context, channelId, session.call?.title ?: channelId, forCall = session.call != null)
+                } catch (e: IllegalStateException) {
+                    // ForegroundServiceStartNotAllowedException (API 31+) is one.
+                    throw VoiceServiceStartException(e)
+                } catch (e: SecurityException) {
+                    throw VoiceServiceStartException(e)
+                }
             }
         }
 
@@ -1310,7 +1391,11 @@ class VoiceRepository @Inject constructor(
     private fun releaseMedia() {
         webRtcManager.closePeerConnections()
         audioRouteManager.abandonAudioFocus()
-        VoiceCallService.stop(context)
+        synchronized(serviceLock) {
+            // A call that is being answered holds the service for its own session: it stays
+            // up while the session before it is torn down.
+            if (heldForCall == null) VoiceCallService.stop(context)
+        }
         // Nothing is captured any more: both layers say "not muted" (the next join sets both again).
         applyMuteToMicrophone()
     }

@@ -50,7 +50,7 @@ class CallControllerTest {
         r.accept()
         runCurrent()
 
-        assertEquals(listOf("join"), r.api.calls)
+        assertEquals(listOf("join"), r.api.requests)
         coVerify(exactly = 1) { r.voice.joinCall(dm, match<VoiceRepository.CallSession> { it.title == "Anna" }) }
         assertEquals(CallState.Connected(dm, "c-1", 0L, setOf("anna")), r.state)
         assertEquals(listOf("ring:c-1:Anna", "stop:c-1"), r.notifier.log)
@@ -63,7 +63,7 @@ class CallControllerTest {
         r.server(ServerEvent.CallParticipantJoined(dm, "c-1", "me", "me"))
         assertEquals(CallState.Idle, r.state)
         assertEquals(listOf("ring:c-1:Anna", "stop:c-1"), r.notifier.log)
-        assertTrue(r.api.calls.isEmpty())
+        assertTrue(r.api.requests.isEmpty())
     }
 
     @Test
@@ -75,7 +75,7 @@ class CallControllerTest {
         advanceTimeBy(1); runCurrent()
         assertEquals(CallState.Idle, r.state)
         assertEquals(listOf("ring:c-1:Anna", "stop:c-1", "missed:c-1"), r.notifier.log)
-        assertTrue(r.api.calls.isEmpty())
+        assertTrue(r.api.requests.isEmpty())
     }
 
     @Test
@@ -94,14 +94,14 @@ class CallControllerTest {
         val r = rig()
         r.startCall()
         runCurrent()
-        assertEquals(listOf("start"), r.api.calls)
+        assertEquals(listOf("start"), r.api.requests)
         assertEquals(CallState.Outgoing(dm, "c-1", 0L, voice = true), r.state)
         coVerify(exactly = 1) { r.voice.joinCall(dm, match<VoiceRepository.CallSession> { it.title == "Anna" }) }
 
         advanceTimeBy(100_000); runCurrent()
 
         assertEquals(CallState.Ended(dm, CallEndReason.NoAnswer), r.state)
-        assertEquals(listOf("start", "leave"), r.api.calls)
+        assertEquals(listOf("start", "leave"), r.api.requests)
         coVerify(exactly = 1) { r.voice.leaveCall(any()) }
         advanceTimeBy(CallMachine.ENDED_SHOWN_MS); runCurrent()
         assertEquals(CallState.Idle, r.state)
@@ -145,7 +145,7 @@ class CallControllerTest {
         r.ring()
         r.api.current = null
         r.server(ServerEvent.Ready("me"))
-        assertEquals(listOf("get"), r.api.calls)
+        assertEquals(listOf("get"), r.api.requests)
         assertEquals(CallState.Idle, r.state)
         assertEquals(listOf("ring:c-1:Anna", "stop:c-1", "missed:c-1"), r.notifier.log)
     }
@@ -161,7 +161,7 @@ class CallControllerTest {
         runCurrent()
         assertEquals(CallState.Idle, r.state)
         coVerify(exactly = 1) { r.voice.leaveCall(any()) }
-        assertTrue("leave" !in r.api.calls)
+        assertTrue("leave" !in r.api.requests)
     }
 
     @Test
@@ -177,7 +177,7 @@ class CallControllerTest {
     fun `no resync without a call`() = runTest {
         val r = rig()
         r.server(ServerEvent.Ready("me"))
-        assertTrue(r.api.calls.isEmpty())
+        assertTrue(r.api.requests.isEmpty())
     }
 
     @Test
@@ -208,7 +208,7 @@ class CallControllerTest {
         runCurrent()
         assertEquals(CallState.Ended(dm, CallEndReason.Removed, VoiceRemovedReason.SessionReplaced), r.state)
         // Taking the call on another device must not end it for everyone.
-        assertEquals(listOf("join"), r.api.calls)
+        assertEquals(listOf("join"), r.api.requests)
     }
 
     @Test
@@ -220,7 +220,7 @@ class CallControllerTest {
         r.hangUp()
         runCurrent()
         assertEquals(CallState.Ended(dm, CallEndReason.Left), r.state)
-        assertEquals(listOf("join", "leave"), r.api.calls)
+        assertEquals(listOf("join", "leave"), r.api.requests)
         coVerify(exactly = 1) { r.voice.leaveCall(any()) }
     }
 
@@ -244,7 +244,7 @@ class CallControllerTest {
         // The server is asked first: it still rings that very call.
         r.serverRings("c-5")
         r.declineFromNotification("c-5")
-        assertEquals(listOf("get", "decline"), r.api.calls)
+        assertEquals(listOf("get", "decline"), r.api.requests)
         assertEquals(listOf("stop:c-5"), r.notifier.log)
     }
 
@@ -254,7 +254,7 @@ class CallControllerTest {
         // The notification's call is over; the same person calls again and the server rings that.
         r.serverRings("c-6")
         r.declineFromNotification("c-5")
-        assertEquals(listOf("get"), r.api.calls)
+        assertEquals(listOf("get"), r.api.requests)
     }
 
     @Test
@@ -265,7 +265,7 @@ class CallControllerTest {
         assertEquals(false, r.ringNotification("c-5", account = "other"))
         assertEquals(false, r.startCall(account = "other"))
         runCurrent()
-        assertTrue(r.api.calls.isEmpty())
+        assertTrue(r.api.requests.isEmpty())
         assertEquals(CallState.Idle, r.state)
     }
 
@@ -276,11 +276,11 @@ class CallControllerTest {
         r.ringNotification()
         runCurrent()
         // Known only from its notification: shown, and checked with the server at once.
-        assertEquals(listOf("get"), r.api.calls)
+        assertEquals(listOf("get"), r.api.requests)
         assertEquals(CallState.Incoming(dm, "c-1", "anna", "Anna", 0L), r.state)
         r.decline()
         runCurrent()
-        assertEquals(listOf("get", "decline"), r.api.calls)
+        assertEquals(listOf("get", "decline"), r.api.requests)
     }
 
     @Test
@@ -303,7 +303,7 @@ class CallControllerTest {
         r.accept("c-1")
         r.api.getGate!!.complete(Unit)
         runCurrent()
-        assertTrue("join" !in r.api.calls)
+        assertTrue("join" !in r.api.requests)
         assertEquals(CallState.Ended(dm, CallEndReason.Gone), r.state)
         coVerify(exactly = 0) { r.voice.joinCall(any(), any<VoiceRepository.CallSession>()) }
     }
@@ -315,7 +315,7 @@ class CallControllerTest {
         r.api.joinAnswers = "c-2"
         r.accept()
         runCurrent()
-        assertEquals(listOf("join", "leave"), r.api.calls)
+        assertEquals(listOf("join", "leave"), r.api.requests)
         assertEquals(CallState.Ended(dm, CallEndReason.Gone), r.state)
         coVerify(exactly = 0) { r.voice.joinCall(any(), any<VoiceRepository.CallSession>()) }
     }
@@ -331,7 +331,7 @@ class CallControllerTest {
         r.controller.submit(CallInput.Accept(asked))
         runCurrent()
         assertEquals("c-2", (r.state as CallState.Incoming).callId)
-        assertTrue("join" !in r.api.calls)
+        assertTrue("join" !in r.api.requests)
     }
 
     @Test
@@ -458,7 +458,7 @@ class CallControllerTest {
         r.hangUp()
         runCurrent()
         // FakeApi answers at once; the start is processed after the hang-up.
-        assertEquals(listOf("start", "leave"), api.calls)
+        assertEquals(listOf("start", "leave"), api.requests)
         answer.complete(Unit)
     }
 
@@ -493,7 +493,7 @@ class CallControllerTest {
         r.accept()
         runCurrent()
         assertEquals(CallState.Ended(dm, CallEndReason.Removed, VoiceRemovedReason.SessionReplaced), r.state)
-        assertEquals(listOf("join"), r.api.calls)
+        assertEquals(listOf("join"), r.api.requests)
     }
 
     @Test
@@ -543,7 +543,7 @@ class CallControllerTest {
         r.api.declineGate!!.complete(Unit)
         runCurrent()
         assertTrue(done.isCompleted)
-        assertEquals(listOf("decline"), r.api.calls)
+        assertEquals(listOf("decline"), r.api.requests)
     }
 
     @Test
@@ -555,7 +555,7 @@ class CallControllerTest {
         // The shown ring is another call of that conversation: the old one is over, and the
         // server's decline would hit the call that rings now.
         assertEquals("c-2", (r.state as CallState.Incoming).callId)
-        assertTrue(r.api.calls.isEmpty())
+        assertTrue(r.api.requests.isEmpty())
         assertTrue(r.notifier.log.none { it.startsWith("stop:") })
     }
 
@@ -615,7 +615,7 @@ class CallControllerTest {
         runCurrent()
         advanceTimeBy(10_000); runCurrent()
 
-        assertEquals("a request of the old account went out after the sign-out", listOf("start"), r.api.calls)
+        assertEquals("a request of the old account went out after the sign-out", listOf("start"), r.api.requests)
         assertTrue(r.api.sessions.all { it == first })
         assertEquals(CallState.Idle, r.state)
         assertTrue(r.notifier.log.none { it.startsWith("OVER:") })
@@ -629,7 +629,7 @@ class CallControllerTest {
         r.accept()
         runCurrent()
         val posted = r.notifier.log.size
-        val sent = r.api.calls.size
+        val sent = r.api.requests.size
 
         r.signOut()
         r.sessions.signIn("bert")
@@ -640,7 +640,7 @@ class CallControllerTest {
         advanceTimeBy(200_000); runCurrent()
 
         assertEquals(CallState.Idle, r.state)
-        assertEquals("a request after the sign-out: ${r.api.calls}", sent, r.api.calls.size)
+        assertEquals("a request after the sign-out: ${r.api.requests}", sent, r.api.requests.size)
         assertEquals(listOf("stopAll"), r.notifier.log.drop(posted))
         assertEquals(0, r.controller.busyLanes())
     }
@@ -654,7 +654,7 @@ class CallControllerTest {
         assertEquals(false, r.startCall())
         runCurrent()
         assertEquals(CallState.Idle, r.state)
-        assertTrue(r.api.calls.isEmpty())
+        assertTrue(r.api.requests.isEmpty())
         assertTrue(r.notifier.log.isEmpty())
     }
 
@@ -791,5 +791,48 @@ class CallControllerTest {
         runCurrent()
         assertEquals("c-4", (r.state as CallState.Incoming).callId)
         assertEquals(listOf("missed-if-ringing:c-3", "ring:c-4:Anna"), r.notifier.log)
+    }
+
+    // -- The microphone service starts at the tap --------------------------------------
+
+    @Test
+    fun `accepting starts the microphone service before the answer goes to the server`() = runTest {
+        val r = rig()
+        r.ring()
+        r.accept()
+        runCurrent()
+        assertEquals(listOf("hold", "join"), r.api.calls)
+    }
+
+    @Test
+    fun `calling starts the microphone service before the call is started on the server`() = runTest {
+        val r = rig()
+        r.startCall()
+        runCurrent()
+        assertEquals(listOf("hold", "start"), r.api.calls)
+    }
+
+    @Test
+    fun `a call that ends before its voice session opened gives the microphone service up`() = runTest {
+        val r = rig()
+        r.api.startError = ApiException(HttpStatusCode.Forbidden, "blocked", code = CallApi.BLOCKED)
+        r.startCall()
+        runCurrent()
+        assertEquals(CallState.Ended(r.dm, CallEndReason.Blocked), r.state)
+        // The leave of the call's own voice tag: the voice layer stops the service nobody took over.
+        coVerify(exactly = 1) { r.voice.leaveCall(any()) }
+        coVerify(exactly = 0) { r.voice.joinCall(any(), any<VoiceRepository.CallSession>()) }
+    }
+
+    @Test
+    fun `a microphone service Android refuses ends the answer as failed and leaves the call`() = runTest {
+        val r = rig()
+        r.holdGranted = false
+        r.ring()
+        r.accept()
+        runCurrent()
+        assertEquals(CallState.Ended(r.dm, CallEndReason.Failed), r.state)
+        assertEquals(listOf("join", "leave"), r.api.requests)
+        coVerify(exactly = 0) { r.voice.joinCall(any(), any<VoiceRepository.CallSession>()) }
     }
 }

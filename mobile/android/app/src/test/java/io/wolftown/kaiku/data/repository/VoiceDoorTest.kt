@@ -235,4 +235,72 @@ class VoiceDoorTest {
         assertEquals(listOf(CallVoiceEnd(7, VoiceEnd.Left)), ends)
         assertEquals(null, rig.repository.current.value?.callTag)
     }
+
+    // -- The microphone service of a call starts when it is answered ------------------------
+
+    private fun VoiceRig.serviceLog() = log.filter { it.startsWith("service:") }
+
+    @Test
+    fun `a call's microphone service starts at the tap and its session takes it over`() = rigTest { rig ->
+        rig.socket.ready()
+        assertTrue(rig.repository.holdForCall(1, dm, "Anna"))
+        // Up before anything of the session exists.
+        assertEquals(listOf("service:start"), rig.serviceLog())
+        assertTrue(rig.log.none { it == "sub" })
+
+        launch(start = CoroutineStart.UNDISPATCHED) { rig.repository.joinCall(dm, call(1)) }
+        runCurrent()
+        assertEquals("started again for its session", listOf("service:start"), rig.serviceLog())
+        assertEquals(dm, rig.repository.currentChannelId.value)
+
+        rig.repository.leaveCall(1)
+        runCurrent()
+        assertEquals(listOf("service:start", "service:stop"), rig.serviceLog())
+    }
+
+    @Test
+    fun `a microphone service no session took over is stopped when its call ends`() = rigTest { rig ->
+        assertTrue(rig.repository.holdForCall(1, dm, "Anna"))
+        // The call failed before its voice session was asked for.
+        rig.repository.leaveCall(1)
+        runCurrent()
+        assertEquals(listOf("service:start", "service:stop"), rig.serviceLog())
+        rig.assertNoCallNotification()
+    }
+
+    @Test
+    fun `answering a call in a voice channel keeps the microphone service up through the switch`() = rigTest { rig ->
+        rig.socket.ready()
+        rig.joinAndConnectFirst()
+        assertTrue(rig.repository.holdForCall(1, dm, "Anna"))
+        launch(start = CoroutineStart.UNDISPATCHED) { rig.repository.joinCall(dm, call(1)) }
+        runCurrent()
+
+        assertEquals(dm, rig.repository.currentChannelId.value)
+        assertTrue("the service was stopped between the two sessions: ${rig.log}", rig.serviceLog().none { it == "service:stop" })
+        rig.assertOneSessionAtATime()
+    }
+
+    @Test
+    fun `a call that fails while a voice channel is still on leaves the microphone service to the channel`() = rigTest { rig ->
+        rig.socket.ready()
+        rig.joinAndConnectFirst()
+        assertTrue(rig.repository.holdForCall(1, dm, "Anna"))
+        rig.repository.leaveCall(1)
+        runCurrent()
+
+        assertEquals(rig.channel, rig.repository.currentChannelId.value)
+        assertTrue(rig.serviceLog().none { it == "service:stop" })
+        assertTrue(rig.service.notificationShown)
+    }
+
+    @Test
+    fun `a sign-out while a call is being answered stops its microphone service`() = rigTest { rig ->
+        assertTrue(rig.repository.holdForCall(1, dm, "Anna"))
+        rig.signOut()
+        // Stopped on the release thread.
+        val deadline = System.currentTimeMillis() + 5_000
+        while ("service:stop" !in rig.log && System.currentTimeMillis() < deadline) Thread.sleep(5)
+        assertEquals(listOf("service:start", "service:stop"), rig.serviceLog())
+    }
 }

@@ -226,6 +226,14 @@ sealed interface CallEffect {
     data class RestLeave(val channelId: String) : CallEffect
     data class JoinVoice(val channelId: String, val callId: String?, val voiceId: Long) : CallEffect
 
+    /**
+     * Start the microphone service for the call's voice session [voiceId]
+     * now: the user has just tapped Call or Accept, so the app is in front,
+     * which Android requires for a microphone service; by the time the
+     * requests to the server are through it may not be any more.
+     */
+    data class HoldVoice(val channelId: String, val voiceId: Long) : CallEffect
+
     /** Ask the server about the shown call, for [askedFor]. */
     data class Resync(val channelId: String, val askedFor: CallState) : CallEffect
 
@@ -389,9 +397,12 @@ object CallMachine {
 
         fun start(e: CallEvent.Start): CallStep {
             if (!idle) return same()
+            val voiceId = ++voiceSeq
+            // The microphone service first, while the app is in front.
+            effects += CallEffect.HoldVoice(e.channelId, voiceId)
             effects += CallEffect.RestStart(e.channelId, e.nowMs)
             effects += CallEffect.ArmRingCap(e.channelId, e.nowMs)
-            return to(CallState.Outgoing(e.channelId, null, e.nowMs, voiceId = ++voiceSeq))
+            return to(CallState.Outgoing(e.channelId, null, e.nowMs, voiceId = voiceId))
         }
 
         fun startOk(e: CallEvent.StartOk): CallStep {
@@ -496,12 +507,15 @@ object CallMachine {
             val s = state as? CallState.Incoming ?: return same()
             // Only the ring that was accepted: another call ringing there now is not answered.
             if (s.channelId != e.channelId || s.callId != e.callId) return same()
+            val voiceId = ++voiceSeq
             effects += CallEffect.StopRing(s.channelId, s.callId)
+            // The microphone service first, while the screen the user answered on is in front.
+            effects += CallEffect.HoldVoice(s.channelId, voiceId)
             effects += CallEffect.RestJoin(s.channelId, s.callId, verify = !s.verified)
             // Everyone seen answering while it rang is in the call too (group calls), and the
             // caller unless they left meanwhile.
             val others = if (s.callerLeft) s.joined else s.joined + s.callerId
-            return to(CallState.Connecting(s.channelId, s.callId, others, voiceId = ++voiceSeq))
+            return to(CallState.Connecting(s.channelId, s.callId, others, voiceId = voiceId))
         }
 
         fun joinOk(e: CallEvent.JoinOk): CallStep {
@@ -546,7 +560,8 @@ object CallMachine {
                 else -> return same()
             }
             if (channelId != e.channelId || e.voiceId != shownVoiceId()) return same()
-            leave(channelId, callId)
+            // A start that has not answered yet is left when its answer comes (see startOk).
+            if (callId != null || state !is CallState.Outgoing) leave(channelId, callId)
             rememberEnded(channelId, callId)
             return endedState(channelId, CallEndReason.Failed)
         }

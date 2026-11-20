@@ -94,7 +94,8 @@ class CallMachineTest {
     @Test
     fun `start rings out and arms the cap`() {
         assertEquals(CallState.Outgoing(dm, null, 5L), send(Start(dm, 5L)))
-        assertEquals(listOf(RestStart(dm, 5L), ArmRingCap(dm, 5L)), effects)
+        // The microphone service first (the app is in front now), then the request.
+        assertEquals(listOf(CallEffect.HoldVoice(dm, voice), RestStart(dm, 5L), ArmRingCap(dm, 5L)), effects)
     }
 
     @Test
@@ -204,7 +205,7 @@ class CallMachineTest {
     fun `accept stops the ring and answers`() {
         incoming()
         assertEquals(CallState.Connecting(dm, "c-1", setOf("anna")), send(accept()))
-        assertEquals(listOf(StopRing(dm, "c-1"), RestJoin(dm, "c-1")), effects)
+        assertEquals(listOf(StopRing(dm, "c-1"), CallEffect.HoldVoice(dm, voice), RestJoin(dm, "c-1")), effects)
         send(JoinOk(dm, "c-1"))
         assertEquals(listOf(JoinVoice(dm, "c-1", voice)), effects)
         assertEquals(CallState.Connected(dm, "c-1", 1_000L, setOf("anna")), send(VoiceJoined(dm, 1_000L, voice)))
@@ -830,7 +831,7 @@ class CallMachineTest {
         send(Rang(dm, "c-1", "anna", "Anna", 0L, fromNotification = true))
         assertEquals(false, (model.state as CallState.Incoming).verified)
         send(Accept(dm, "c-1"))
-        assertEquals(listOf(StopRing(dm, "c-1"), RestJoin(dm, "c-1", verify = true)), effects)
+        assertEquals(listOf(StopRing(dm, "c-1"), CallEffect.HoldVoice(dm, voice), RestJoin(dm, "c-1", verify = true)), effects)
 
         model = CallModel()
         send(Rang(dm, "c-1", "anna", "Anna", 0L, fromNotification = true))
@@ -845,7 +846,7 @@ class CallMachineTest {
         send(Resynced(dm, snapshot(callId = "c-1", ringing = true, active = false, startedBy = "anna", participants = emptySet()), 1L, asked))
         assertEquals(true, (model.state as CallState.Incoming).verified)
         send(Accept(dm, "c-1"))
-        assertEquals(listOf(StopRing(dm, "c-1"), RestJoin(dm, "c-1", verify = false)), effects)
+        assertEquals(listOf(StopRing(dm, "c-1"), CallEffect.HoldVoice(dm, voice), RestJoin(dm, "c-1", verify = false)), effects)
     }
 
     @Test
@@ -910,5 +911,28 @@ class CallMachineTest {
         send(hangUp())
         assertTrue(send(CallEvent.EndedShown("dm-2")) is CallState.Ended)
         assertEquals(CallState.Idle, send(CallEvent.EndedShown(dm)))
+    }
+
+    // -- The microphone service ---------------------------------------------------------
+
+    @Test
+    fun `a microphone service that cannot start fails a call whose start is still out without leaving twice`() {
+        send(Start(dm, 0L))
+        assertEquals(CallState.Ended(dm, CallEndReason.Failed), send(VoiceJoinFailed(dm, voice)))
+        // No leave yet: the start has not answered. Its answer is left, once.
+        assertEquals(listOf(ArmEndedTimer), effects)
+        send(StartOk(dm, "c-1", 0L))
+        assertEquals(listOf(RestLeave(dm)), effects)
+    }
+
+    @Test
+    fun `a microphone service that cannot start fails an answer and leaves once`() {
+        incoming()
+        send(accept())
+        assertEquals(CallState.Ended(dm, CallEndReason.Failed), send(VoiceJoinFailed(dm, voice)))
+        assertEquals(listOf(RestLeave(dm), ArmEndedTimer), effects)
+        // The answer is accepted late: already left.
+        send(JoinOk(dm, "c-1"))
+        assertTrue(effects.isEmpty())
     }
 }
