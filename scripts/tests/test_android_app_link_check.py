@@ -21,8 +21,11 @@ def attr(depth: int, name: str, value: str, raw: bool = True) -> str:
     return f"{pad}A: {NS}:{name}(0x01010000)={value}"
 
 
-def manifest(*filters: str, activity: str = "io.wolftown.kaiku.ui.MainActivity") -> str:
-    """An aapt2 xmltree dump shaped like the real one, with the given intent filters on the activity."""
+def manifest(*filters: str, activity: str = "io.wolftown.kaiku.ui.MainActivity", alias: tuple[str, ...] = (), alias_target: str = "io.wolftown.kaiku.ui.MainActivity") -> str:
+    """An aapt2 xmltree dump shaped like the real one, with the given intent filters on the activity.
+
+    alias: intent filters of an activity-alias that targets alias_target.
+    """
     lines = [
         "N: android=http://schemas.android.com/apk/res/android (line=2)",
         "  E: manifest (line=2)",
@@ -31,6 +34,13 @@ def manifest(*filters: str, activity: str = "io.wolftown.kaiku.ui.MainActivity")
         attr(12, "name", activity),
     ]
     lines += filters
+    if alias:
+        lines += [
+            "          E: activity-alias (line=90)",
+            attr(12, "name", "io.wolftown.kaiku.ui.Links"),
+            attr(12, "targetActivity", alias_target),
+        ]
+        lines += alias
     return "\n".join(lines) + "\n"
 
 
@@ -90,6 +100,57 @@ class AppLinkCheckTest(unittest.TestCase):
         other_host = setup_filter(data=[("scheme", "https"), ("host", "other.example.org")])
         self.assertEqual([], check.problems(manifest(setup_filter(), other_host, callback_filter()), HOST))
 
+    def test_a_wildcard_host_that_covers_the_host_fails(self):
+        # Android matches a host that starts with * against every host that ends with the rest.
+        for wild in ("*.example.com", "*", "*example.com", "*.com"):
+            for data in (
+                [("scheme", "https"), ("host", wild)],
+                [("scheme", "https"), ("host", wild), ("path", "/setup")],
+                [("scheme", "https"), ("host", HOST), ("host", wild), ("path", "/setup")],
+            ):
+                with self.subTest(wild=wild, data=data):
+                    self.assertTrue(check.problems(manifest(setup_filter(), setup_filter(data=data, verify=False)), HOST))
+                    self.assertTrue(check.problems(manifest(setup_filter(data=data)), HOST))
+        # A wildcard that cannot match this host is another host's business.
+        elsewhere = setup_filter(data=[("scheme", "https"), ("host", "*.example.org"), ("path", "/x")], verify=False)
+        self.assertEqual([], check.problems(manifest(setup_filter(), elsewhere), HOST))
+
+    def test_an_https_filter_without_a_host_fails(self):
+        # Without a host Android matches every https link, whatever paths the filter names.
+        for data in (
+            [("scheme", "https")],
+            [("scheme", "https"), ("path", "/setup")],
+            [("scheme", "https"), ("pathPrefix", "/setup")],
+        ):
+            with self.subTest(data):
+                hostless = setup_filter(data=data, verify=False)
+                self.assertTrue(check.problems(manifest(setup_filter(), hostless), HOST))
+                self.assertTrue(check.problems(manifest(hostless), HOST))
+        # The app's own scheme without a host is not an https filter.
+        own = setup_filter(data=[("scheme", "kaiku"), ("host", "setup")], verify=False)
+        self.assertEqual([], check.problems(manifest(setup_filter(), own), HOST))
+
+    def test_an_alias_of_main_activity_is_checked_like_it(self):
+        whole_host = setup_filter(data=[("scheme", "https"), ("host", HOST)], verify=False)
+        self.assertEqual(
+            [f"https filter for {HOST} without a path (on an alias of MainActivity)"],
+            check.problems(manifest(setup_filter(), alias=(whole_host,)), HOST),
+        )
+        for data in (
+            [("scheme", "https"), ("host", HOST), ("pathPrefix", "/")],
+            [("scheme", "https"), ("host", "*.example.com"), ("path", "/setup")],
+            [("scheme", "https")],
+        ):
+            with self.subTest(data):
+                self.assertTrue(check.problems(manifest(setup_filter(), alias=(setup_filter(data=data, verify=False),)), HOST))
+        # An alias with exact paths of its own stays allowed, but it does not stand in for the
+        # setup filter on MainActivity itself.
+        self.assertEqual([], check.problems(manifest(setup_filter(), alias=(callback_filter(), setup_filter())), HOST))
+        self.assertTrue(check.problems(manifest(alias=(setup_filter(),)), HOST))
+        # An alias of another activity is not looked at.
+        other = manifest(setup_filter(), alias=(whole_host,), alias_target="io.wolftown.kaiku.OtherActivity")
+        self.assertEqual([], check.problems(other, HOST))
+
     def test_a_port_fails(self):
         tree = manifest(setup_filter(data=[("scheme", "https"), ("host", HOST), ("port", "8443"), ("path", "/setup")]))
         self.assertTrue(check.problems(tree, HOST))
@@ -126,6 +187,12 @@ class AppLinkCheckTest(unittest.TestCase):
         self.assertEqual(1, run(prefix, HOST))
         whole_host = manifest(setup_filter(), setup_filter(data=[("scheme", "https"), ("host", HOST)]))
         self.assertEqual(1, run(whole_host, HOST))
+        wildcard = manifest(setup_filter(), setup_filter(data=[("scheme", "https"), ("host", "*.example.com")], verify=False))
+        self.assertEqual(1, run(wildcard, HOST))
+        hostless = manifest(setup_filter(), setup_filter(data=[("scheme", "https")], verify=False))
+        self.assertEqual(1, run(hostless, HOST))
+        alias = manifest(setup_filter(), alias=(setup_filter(data=[("scheme", "https"), ("host", HOST)], verify=False),))
+        self.assertEqual(1, run(alias, HOST))
         self.assertEqual(2, run(manifest(setup_filter())))
 
 

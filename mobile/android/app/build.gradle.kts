@@ -264,7 +264,7 @@ abstract class GenerateAppLinkManifest : DefaultTask() {
             ""
         } else {
             """    <application>
-        <activity android:name="io.wolftown.kaiku.ui.MainActivity">
+        <activity android:name="io.wolftown.kaiku.ui.MainActivity" android:exported="true">
 $filters
         </activity>
     </application>

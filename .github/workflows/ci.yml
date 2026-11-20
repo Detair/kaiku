@@ -599,10 +599,12 @@ jobs:
           export KAIKU_ANDROID_KEYSTORE_PASSWORD="$P"
           export KAIKU_ANDROID_KEY_ALIAS=ci
           export KAIKU_ANDROID_KEY_PASSWORD="$P"
-          ./gradlew assembleRelease -Pkaiku.requireReleaseSigning=true --no-daemon
+          # Built as a release is: with the official server's setup App Link, which the verifier
+          # then requires (the same flag and host as the release workflow).
+          ./gradlew assembleRelease -Pkaiku.requireReleaseSigning=true -PkaikuAppLinkHosts=kaiku.pmind.de --no-daemon
           NAME=$(sed -n 's/^versionName=//p' version.properties)
           CODE=$(sed -n 's/^versionCode=//p' version.properties)
-          ../../scripts/android_verify_apk.sh app/build/outputs/apk/release/app-release.apk "$NAME" "$CODE"
+          ../../scripts/android_verify_apk.sh app/build/outputs/apk/release/app-release.apk "$NAME" "$CODE" --app-link-host kaiku.pmind.de
 
       - name: Verifier rejects the debug APK
         run: |
