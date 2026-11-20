@@ -265,7 +265,9 @@ These rules extend B.7. Reviewers should check them against `server/src/approval
 2. Every attempt transition (scan, approve, report, code entry, cancel, restart, finish, redeem) takes
    the account lock first, then re-checks under it that the requesting session is live and that the
    device is active with `may_approve` on. If not, it moves the attempt to `expired` with a reason the PC
-   can read. The minute sweep expires what no transition reaches. A stale attempt can therefore never
+   can read. The exception is a scan refused for its scanner (checked before the token is read): it
+   writes nothing, and the attempt ends at the PC's next poll or the sweep. The minute sweep expires what
+   no transition reaches. A stale attempt can therefore never
    advance, even before the sweep.
 3. Code entry, finish, redeem and restart all lock account → requesting session row → attempt → enrolment,
    and hold the session lock through commit. A concurrent session end either comes first, and they see it,

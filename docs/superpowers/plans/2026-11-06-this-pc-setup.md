@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- One PR. An auth PR: merge needs the maintainer's explicit OK; and independent reviews.
+- One PR. An auth PR: merge needs the maintainer's explicit OK and independent reviews.
 - QR token 256-bit, rotates every 60 s while `waiting`; attempt ≤10 min in `waiting`/`claimed`; challenge TTL 2 min; code 6 digits, 5 min, 3 tries; enrolment 10 min.
 - Only keyed hashes of the token, code and browser secret are stored. No secret in a URL query, log or audit row.
 - Every attempt transition: account lock → requesting session row → attempt → enrolment, session lock held through commit (spec, Locking 3). Session-ending paths without the account lock never touch attempts.

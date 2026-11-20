@@ -44,14 +44,14 @@ import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 import java.util.Locale
 
+/** Whether the screen handles Back in [ui]: not while the screen lock is asked (the system does). */
+fun screenHandlesBack(ui: PcSetupUi): Boolean = ui != PcSetupUi.Working
+
 /**
  * "Set up this PC" on the key phone: what is granted, the client first, "Yes, continue", an equally
  * large "No" and a smaller "I didn't start this"; after the screen lock the six-digit code. The code
  * is not remembered across process death. Hardened with [SecureScreen].
  */
-/** Whether the screen handles Back in [ui]: not while the screen lock is asked (the system does). */
-fun screenHandlesBack(ui: PcSetupUi): Boolean = ui != PcSetupUi.Working
-
 @Composable
 fun PcSetupApprovalScreen(
     takePayload: () -> ScanPayload.PcSetup?,

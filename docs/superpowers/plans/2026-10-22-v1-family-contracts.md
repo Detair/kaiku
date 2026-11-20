@@ -951,8 +951,9 @@ Nothing below changes an existing contract entry; a client that does not know it
   it first. A scan of another account's code answers 409 `PC_SETUP_OTHER_ACCOUNT` only to a scanner whose
   account may approve, and only while that code is live (waiting or claimed, its session live, its account
   eligible); otherwise 403 `APPROVAL_NOT_ALLOWED` or 404 `LOGIN_CODE_STALE`. A scan checks the scanner
-  first, before the token is looked at: its key-device session (403 `KEY_DEVICE_REQUIRED`, 401
-  `INVALID_TOKEN`, 403 `ACCOUNT_BANNED`), then its account's `may_approve` (403 `APPROVAL_NOT_ALLOWED`). A
+  first, before the token is looked at, in this order: its account's ban (403 `ACCOUNT_BANNED`), its key
+  device active (403 `KEY_DEVICE_REQUIRED`), its session live (401 `INVALID_TOKEN`), that session bound to
+  the device (403 `KEY_DEVICE_REQUIRED`), then its account's `may_approve` (403 `APPROVAL_NOT_ALLOWED`). A
   scanner refused there gets the same answer whether or not the token exists, and nothing is written for
   it (an attempt it cannot claim ends through the PC's poll or the sweep). Then the token: unknown, rotated
   or not live → 404 `LOGIN_CODE_STALE`; for the own account the attempt is re-checked under its locks (404
@@ -1023,7 +1024,8 @@ Nothing below changes an existing contract entry; a client that does not know it
   hand-off page itself keeps `no-referrer`. Anything else is refused before the flow is read or changed:
   `code` and `options` with 403 `FORBIDDEN`, `finish` and `cancel` with a 403 page that sends the person
   back to the app. The `SameSite=Strict` cookie also travels with requests from other origins of the same
-  site.
+  site. A page load that a browser marks as coming from another site (`Sec-Fetch-Site` other than `none`
+  or `same-origin`) gets the expired page and stores nothing in the flow.
 - **The code form** posts (`method="post"`, `action=…/code`) and is disabled in the markup until the
   page's script has installed its handler; without script the page shows a notice and the keypad stays
   disabled, so the code never lands in a URL. A 429 keeps the keypad; another try is possible after `Retry-After`.
