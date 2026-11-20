@@ -2136,8 +2136,8 @@ impl PlaybackQueue {
 /// silence them when deafened (still taking them, so the device keeps pacing
 /// the mixer and no stale audio piles up), zero-fill the rest, and account
 /// for what was consumed. No allocation, no logging.
-fn fill_output(queue: &PlaybackQueue, deaf: bool, data: &mut [f32]) {
-    queue.level.note_request(data.len());
+fn fill_output(queue: &PlaybackQueue, generation: u32, deaf: bool, data: &mut [f32]) {
+    queue.level.note_request(generation, data.len());
     match queue.samples.pop_into(data, deaf) {
         Some(taken) => {
             data[taken..].fill(0.0);
@@ -2146,6 +2146,7 @@ fn fill_output(queue: &PlaybackQueue, deaf: bool, data: &mut [f32]) {
         // The other stream of a device switch is reading: play silence.
         None => data.fill(0.0),
     }
+    queue.level.callback_done(generation);
 }
 
 /// Run playback task (owns the Stream)
@@ -2293,11 +2294,14 @@ fn build_buffer_output_stream(
 
     let queue = playback_buffer.clone();
     let deafened = deafened.clone();
+    // This stream becomes the measured one; a failed start hands that back.
+    let previous = queue.level.active_stream();
+    let generation = queue.level.begin_stream();
 
     let stream = match device.build_output_stream(
         &config,
         move |data: &mut [f32], _| {
-            fill_output(&queue, deafened.load(Ordering::Relaxed), data);
+            fill_output(&queue, generation, deafened.load(Ordering::Relaxed), data);
         },
         stream_error_callback(reporter.clone()),
         None,
@@ -2305,12 +2309,14 @@ fn build_buffer_output_stream(
         Ok(s) => s,
         Err(e) => {
             error!("Failed to build playback stream: {}", e);
+            playback_buffer.level.activate(previous);
             return Err(map_build_error(&e));
         }
     };
 
     if let Err(e) = stream.play() {
         error!("Failed to start playback stream: {}", e);
+        playback_buffer.level.activate(previous);
         return Err(map_play_error(&e));
     }
 
@@ -2349,8 +2355,6 @@ fn playback_control_loop(
                 ) {
                     Ok(new_stream) => {
                         stream = Some(new_stream);
-                        // The new device has its own block size.
-                        playback_buffer.level.reset_request();
                         reporter.recover();
                         reporter = new_reporter;
                         set_active(active, Some(reporter.event.device.clone()));
@@ -2510,7 +2514,7 @@ mod tests {
         queue.push(&[0.5; 960]);
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         let q = queue.clone();
-        let busy = queue.clone();
+        let busy = queue;
         std::thread::spawn(move || {
             // A pusher hammering the ring meanwhile.
             for _ in 0..10_000 {
@@ -2519,7 +2523,7 @@ mod tests {
         });
         std::thread::spawn(move || {
             let mut data = vec![1.0f32; 480];
-            fill_output(&q, true, &mut data);
+            fill_output(&q, 1, true, &mut data);
             let _ = done_tx.send(data.iter().all(|s| *s == 0.0));
         });
         let finished = done_rx.recv_timeout(Duration::from_millis(500));

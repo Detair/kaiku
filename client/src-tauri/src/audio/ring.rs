@@ -32,17 +32,15 @@ impl SampleRing {
         }
     }
 
-    pub fn capacity(&self) -> usize {
-        self.buf.len()
-    }
-
     /// Samples waiting to be read.
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.head
             .load(Ordering::Acquire)
             .wrapping_sub(self.tail.load(Ordering::Acquire))
     }
 
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -102,11 +100,19 @@ mod tests {
         assert_eq!(ring.len(), 8);
         let mut out = [0.0; 5];
         assert_eq!(ring.pop_into(&mut out, false), Some(5));
-        assert_eq!(out, [1.0, 2.0, 3.0, 4.0, 5.0]);
+        assert_eq!(
+            out.map(f32::to_bits),
+            [1.0f32, 2.0, 3.0, 4.0, 5.0].map(f32::to_bits)
+        );
         assert_eq!(ring.push(&[11.0, 12.0]), 2);
         let mut out = [0.0; 10];
         assert_eq!(ring.pop_into(&mut out, false), Some(5));
-        assert_eq!(&out[..5], &[6.0, 7.0, 8.0, 11.0, 12.0]);
+        let got: Vec<u32> = out[..5].iter().map(|v| v.to_bits()).collect();
+        let want: Vec<u32> = [6.0f32, 7.0, 8.0, 11.0, 12.0]
+            .iter()
+            .map(|v| v.to_bits())
+            .collect();
+        assert_eq!(got, want);
         assert!(ring.is_empty());
     }
 
@@ -116,7 +122,7 @@ mod tests {
         ring.push(&[0.5, 0.5]);
         let mut out = [9.0; 3];
         assert_eq!(ring.pop_into(&mut out, true), Some(2));
-        assert_eq!(out, [0.0, 0.0, 9.0]);
+        assert_eq!(out.map(f32::to_bits), [0.0f32, 0.0, 9.0].map(f32::to_bits));
         assert!(ring.is_empty());
     }
 
@@ -142,7 +148,7 @@ mod tests {
         while expected < 200_000 {
             if let Some(n) = ring.pop_into(&mut out, false) {
                 for v in &out[..n] {
-                    assert_eq!(*v, expected as f32);
+                    assert_eq!(v.to_bits(), (expected as f32).to_bits());
                     expected += 1;
                 }
             }

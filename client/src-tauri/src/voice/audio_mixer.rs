@@ -142,14 +142,57 @@ pub struct TrackHandle {
     pub packets: mpsc::Sender<RtpIn>,
 }
 
-/// How many 20 ms frames to produce now, given the samples already queued
-/// for the device and the largest block it asks for at once.
-pub fn frames_needed(queued: usize, request: usize) -> usize {
-    let target = request + OUTPUT_HEADROOM_SAMPLES;
-    target
-        .saturating_sub(queued)
-        .div_ceil(FRAME_SAMPLES)
-        .min(MAX_FRAMES_PER_WAKE)
+/// One 20 ms frame in microseconds.
+const FRAME_US: u64 = 20_000;
+
+/// Decides how many frames the mixer renders per wake.
+///
+/// Frames are rendered evenly, one per 20 ms of elapsed time, so every
+/// track's jitter buffer is ticked at an even pace whatever the device's
+/// block size; the output queue absorbs the device's blocks. The pace is
+/// matched to the device at one fixed phase of its cycle: right after a
+/// callback, the queue is at its low point, which is held at one frame
+/// (one extra frame when below, one skipped when a frame above). Device
+/// clock drift thus becomes an occasional extra or skipped tick, which the
+/// jitter buffer absorbs like sender drift. Rendering never runs more than
+/// one device block plus three frames ahead of the device (no device: three
+/// frames).
+#[derive(Debug, Default)]
+pub struct Pacer {
+    credit_us: u64,
+    seen_callbacks: u64,
+}
+
+impl Pacer {
+    /// Frames to render now, `elapsed_us` after the previous wake, with
+    /// `queued` samples waiting for the device, its recent block size
+    /// `request` and its completed `callbacks`.
+    pub fn frames(
+        &mut self,
+        elapsed_us: u64,
+        queued: usize,
+        request: usize,
+        callbacks: u64,
+    ) -> usize {
+        let cap = MAX_FRAMES_PER_WAKE as u64 * FRAME_US;
+        self.credit_us = (self.credit_us + elapsed_us).min(cap);
+        let mut due = (self.credit_us / FRAME_US) as usize;
+        self.credit_us %= FRAME_US;
+        if callbacks != self.seen_callbacks {
+            self.seen_callbacks = callbacks;
+            // The device has just taken its block: the queue's low point.
+            if queued < OUTPUT_HEADROOM_SAMPLES {
+                due += (OUTPUT_HEADROOM_SAMPLES - queued).div_ceil(FRAME_SAMPLES);
+            } else if queued >= OUTPUT_HEADROOM_SAMPLES + FRAME_SAMPLES {
+                due = due.saturating_sub(1);
+            }
+        }
+        let bound = request + 3 * FRAME_SAMPLES;
+        while due > 0 && queued + due * FRAME_SAMPLES > bound {
+            due -= 1;
+        }
+        due.min(MAX_FRAMES_PER_WAKE)
+    }
 }
 
 /// A registered remote track.
@@ -283,6 +326,8 @@ impl AudioMixer {
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut frame = vec![0.0f32; FRAME_SAMPLES];
         let mut last_stats = Instant::now();
+        let mut pacer = Pacer::default();
+        let mut last_wake = Instant::now();
 
         'run: loop {
             // When no tracks are registered, block-wait for the next command
@@ -339,9 +384,19 @@ impl AudioMixer {
                 continue;
             }
 
-            // 3. One frame per track per output frame, as many as the device needs right now.
-            let now_ms = ms_since(epoch, Instant::now());
-            for _ in 0..frames_needed(level.queued(), level.request()) {
+            // 3. One frame per track per output frame, evenly in time and matched to what the
+            //    device consumes (see `Pacer`).
+            let now = Instant::now();
+            let elapsed_us = now.saturating_duration_since(last_wake).as_micros() as u64;
+            last_wake = now;
+            let now_ms = ms_since(epoch, now);
+            let due = pacer.frames(
+                elapsed_us,
+                level.queued(),
+                level.request(),
+                level.callbacks(),
+            );
+            for _ in 0..due {
                 let mut mixed = vec![0.0f32; FRAME_SAMPLES];
                 for track in tracks.values_mut() {
                     if track.playout.next_frame(now_ms, &mut frame) {
@@ -537,16 +592,18 @@ mod tests {
     ) -> tokio::task::JoinHandle<Vec<f32>> {
         tokio::spawn(async move {
             let mut seen = Vec::new();
+            let stream = level.begin_stream();
             let mut tick = tokio::time::interval(Duration::from_millis(20));
             let deadline = Instant::now() + Duration::from_millis(1500);
             while Instant::now() < deadline {
                 tick.tick().await;
-                level.note_request(FRAME_SAMPLES);
+                level.note_request(stream, FRAME_SAMPLES);
                 while let Ok(frame) = out_rx.try_recv() {
                     assert_eq!(frame.len(), FRAME_SAMPLES);
                     seen.push(frame[0]);
                 }
                 level.consumed(FRAME_SAMPLES);
+                level.callback_done(stream);
             }
             seen
         })
@@ -687,7 +744,8 @@ mod tests {
         while out_rx.try_recv().is_ok() {
             produced += 1;
         }
-        assert_eq!(produced, frames_needed(0, 0));
+        // Without a device: at most three frames ahead.
+        assert_eq!(produced, 3);
         assert_eq!(level.queued(), produced * FRAME_SAMPLES);
         // The device plays it: the mixer follows.
         level.consumed(FRAME_SAMPLES);
@@ -730,16 +788,19 @@ mod tests {
 
     fn device_run_consumed(block_ms: usize) -> (usize, usize, usize, usize) {
         let level = OutputLevel::new();
+        let stream = level.begin_stream();
+        let mut pacer = Pacer::default();
         let block = block_ms * 96; // stereo samples at 48 kHz
         let mut queue = 0usize;
         let (mut produced, mut discarded, mut missing, mut consumed) = (0, 0, 0, 0);
         for t in 0..20_000usize {
             let steady = t >= 10_000;
             if t % 5 == 0 {
-                for _ in 0..frames_needed(level.queued(), level.request()) {
+                let n = pacer.frames(5_000, level.queued(), level.request(), level.callbacks());
+                for _ in 0..n {
                     level.produced(FRAME_SAMPLES);
                     queue += FRAME_SAMPLES;
-                    let excess = crate::audio::queue_excess(queue);
+                    let excess = queue.saturating_sub(crate::audio::MAX_QUEUE_SAMPLES);
                     queue -= excess;
                     level.consumed(excess);
                     if steady {
@@ -749,10 +810,11 @@ mod tests {
                 }
             }
             if t % block_ms == 0 {
-                level.note_request(block);
+                level.note_request(stream, block);
                 let take = queue.min(block);
                 queue -= take;
                 level.consumed(take);
+                level.callback_done(stream);
                 if steady {
                     missing += block - take;
                     consumed += take;
@@ -799,14 +861,15 @@ mod tests {
     #[test]
     fn block_estimate_follows_the_device() {
         let level = OutputLevel::new();
-        level.note_request(400 * 96); // one priming callback
+        let stream = level.begin_stream();
+        level.note_request(stream, 400 * 96); // one priming callback
         level.roll_window();
         for _ in 0..3 {
-            level.note_request(10 * 96);
+            level.note_request(stream, 10 * 96);
             level.roll_window();
         }
         assert_eq!(level.request(), 10 * 96);
-        level.reset_request();
+        level.begin_stream(); // another device
         assert_eq!(level.request(), 0);
     }
 
@@ -855,16 +918,193 @@ mod tests {
         drop(old);
     }
 
+    /// Outcome of five simulated minutes of a remote stream played through
+    /// one track behind a device taking `block_ms` per callback.
+    #[derive(Debug)]
+    struct PlayRun {
+        /// Counters accumulated after the warm-up.
+        stats: PlayoutStats,
+        conceals: usize,
+        device_missing: usize,
+        target_ms: f64,
+    }
+
+    /// Packets arrive every `period_us` (20 000 = exact) with no network
+    /// jitter; the mixer wakes every 5 ms and asks `pace` how many frames
+    /// to render; the device takes `block_ms` per callback. Concealment and
+    /// device gaps are counted after a 5 s warm-up.
+    fn play_run(
+        block_ms: u64,
+        period_us: u64,
+        mut pace: impl FnMut(u64, &OutputLevel) -> usize,
+    ) -> PlayRun {
+        let conceals = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let decoder = CountingDecoder {
+            conceals: conceals.clone(),
+        };
+        let mut playout = TrackPlayout::new(Box::new(decoder) as Box<dyn FrameDecoder + Send>);
+        let level = OutputLevel::new();
+        let generation = level.begin_stream();
+        let block = block_ms as usize * 96;
+        let mut queue = 0usize;
+        let mut frame = vec![0.0f32; FRAME_SAMPLES];
+        let (mut seq, mut device_missing) = (0u32, 0usize);
+        let mut warm_conceals = 0;
+        let mut warm = PlayoutStats::default();
+        for t_ms in 0..300_000u64 {
+            let t_us = t_ms * 1000;
+            while u64::from(seq) * period_us <= t_us {
+                playout.push(
+                    1,
+                    seq as u16,
+                    seq.wrapping_mul(960),
+                    seq == 0,
+                    u64::from(seq) * period_us / 1000,
+                    vec![1],
+                );
+                seq += 1;
+            }
+            if t_ms == 5_000 {
+                warm_conceals = conceals.load(std::sync::atomic::Ordering::Relaxed);
+                warm = playout.stats();
+            }
+            if t_ms % 5 == 0 {
+                for _ in 0..pace(t_ms, &level) {
+                    playout.next_frame(t_ms, &mut frame);
+                    level.produced(FRAME_SAMPLES);
+                    queue += FRAME_SAMPLES;
+                }
+            }
+            if t_ms % block_ms == 0 && t_ms > 0 {
+                level.note_request(generation, block);
+                let take = queue.min(block);
+                queue -= take;
+                level.consumed(take);
+                level.callback_done(generation);
+                if t_ms > 5_000 {
+                    device_missing += block - take;
+                }
+            }
+            if t_ms % 1000 == 999 {
+                level.roll_window();
+            }
+        }
+        let mut stats = playout.stats();
+        let (b, w) = (&mut stats.buffer, warm.buffer);
+        b.underruns -= w.underruns;
+        b.drift_drops -= w.drift_drops;
+        b.drift_inserts -= w.drift_inserts;
+        b.lost -= w.lost;
+        PlayRun {
+            stats,
+            conceals: conceals.load(std::sync::atomic::Ordering::Relaxed) - warm_conceals,
+            device_missing,
+            target_ms: stats.target_delay_ms,
+        }
+    }
+
+    /// Decoder that counts concealment calls.
+    struct CountingDecoder {
+        conceals: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl FrameDecoder for CountingDecoder {
+        fn decode(&mut self, _packet: &[u8], out: &mut [f32]) -> Result<usize, String> {
+            out[..FRAME_SAMPLES].fill(0.5);
+            Ok(FRAME_SAMPLES / 2)
+        }
+        fn decode_fec(&mut self, _next: &[u8], out: &mut [f32]) -> Result<usize, String> {
+            self.conceals
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            out.fill(0.0);
+            Ok(out.len() / 2)
+        }
+        fn conceal(&mut self, out: &mut [f32]) -> Result<usize, String> {
+            self.conceals
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            out.fill(0.0);
+            Ok(out.len() / 2)
+        }
+        fn has_fec(&self, _packet: &[u8]) -> bool {
+            false
+        }
+        fn duration(&self, _packet: &[u8]) -> Option<u32> {
+            Some(960)
+        }
+        fn reset(&mut self) {}
+    }
+
+    const SWEEP_BLOCKS: [u64; 8] = [10, 20, 50, 100, 160, 200, 300, 400];
+
+    /// With a clean network, the device's block size must not matter to
+    /// the jitter buffer: no underruns, no concealment, no drift
+    /// adjustments, target at its floor.
     #[test]
-    fn frames_needed_keeps_one_block_plus_a_frame_queued() {
-        // Nothing known about the device yet: one frame.
-        assert_eq!(frames_needed(0, 0), 1);
-        assert_eq!(frames_needed(FRAME_SAMPLES, 0), 0);
-        // Device takes 1024 stereo frames (2048 samples) per callback.
-        assert_eq!(frames_needed(0, 2048), 3);
-        assert_eq!(frames_needed(2048, 2048), 1);
-        assert_eq!(frames_needed(2048 + FRAME_SAMPLES, 2048), 0);
-        // Never more than three per wake.
-        assert_eq!(frames_needed(0, 48_000), MAX_FRAMES_PER_WAKE);
+    fn clean_stream_plays_untouched_behind_any_device_block() {
+        for block_ms in SWEEP_BLOCKS {
+            let mut pacer = Pacer::default();
+            let run = play_run(block_ms, 20_000, |_, level| {
+                pacer.frames(5_000, level.queued(), level.request(), level.callbacks())
+            });
+            let b = run.stats.buffer;
+            assert_eq!(
+                (b.underruns, run.conceals, b.drift_drops, b.drift_inserts),
+                (0, 0, 0, 0),
+                "{block_ms} ms blocks: {run:?}"
+            );
+            assert_eq!(run.device_missing, 0, "{block_ms} ms blocks: {run:?}");
+            assert!(
+                (run.target_ms - 40.0).abs() < 1e-9,
+                "{block_ms} ms: {run:?}"
+            );
+        }
+    }
+
+    /// The same with the sender's clock 0.1 % off: only the expected
+    /// adjustments (4 min 55 s after warm-up × 0.1 % ≈ 15 frames).
+    #[test]
+    fn drifting_stream_gets_only_the_expected_adjustments_behind_any_block() {
+        for (period_us, slow) in [(20_020u64, true), (19_980, false)] {
+            for block_ms in SWEEP_BLOCKS {
+                let mut pacer = Pacer::default();
+                let run = play_run(block_ms, period_us, |_, level| {
+                    pacer.frames(5_000, level.queued(), level.request(), level.callbacks())
+                });
+                let b = run.stats.buffer;
+                let (wanted, other) = if slow {
+                    (b.drift_inserts, b.drift_drops)
+                } else {
+                    (b.drift_drops, b.drift_inserts)
+                };
+                assert!(
+                    (12..=18).contains(&wanted),
+                    "{block_ms} ms, {period_us}: {run:?}"
+                );
+                assert_eq!(other, 0, "{block_ms} ms, {period_us}: {run:?}");
+                assert_eq!(b.underruns, 0, "{block_ms} ms, {period_us}: {run:?}");
+                assert_eq!(run.device_missing, 0, "{block_ms} ms, {period_us}: {run:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn pacer_renders_evenly_and_meets_the_device_at_its_low_point() {
+        let mut pacer = Pacer::default();
+        // No device yet: one frame per 20 ms, at most three frames ahead.
+        assert_eq!(pacer.frames(20_000, 0, 0, 0), 1);
+        assert_eq!(pacer.frames(10_000, FRAME_SAMPLES, 0, 0), 0);
+        assert_eq!(pacer.frames(10_000, FRAME_SAMPLES, 0, 0), 1);
+        assert_eq!(pacer.frames(60_000, 3 * FRAME_SAMPLES, 0, 0), 0);
+        // A 100 ms device took its first block and left the queue empty:
+        // one frame to reach the headroom, plus the even pace.
+        let block = 100 * 96;
+        assert_eq!(pacer.frames(20_000, 0, block, 1), 2);
+        // Even pace between callbacks, however large the block.
+        assert_eq!(pacer.frames(20_000, 2 * FRAME_SAMPLES, block, 1), 1);
+        // At the next low point the queue is a frame too full (device
+        // clock slower): one frame is skipped.
+        assert_eq!(pacer.frames(20_000, 2 * FRAME_SAMPLES, block, 2), 0);
+        // Never more than three per wake, even after a long stall.
+        assert_eq!(pacer.frames(1_000_000, 0, block, 3), 3);
     }
 }
