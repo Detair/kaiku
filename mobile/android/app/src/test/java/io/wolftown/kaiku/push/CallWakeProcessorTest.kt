@@ -348,7 +348,11 @@ class CallWakeProcessorTest {
 
     @Test
     fun `logout right before posting posts nothing`() = runTest {
-        sink.beforePost = { refreshToken = null }
+        // As the token store does it: the session-end hook's advance, then the stored session goes.
+        sink.beforePost = {
+            sessions.advance()
+            refreshToken = null
+        }
 
         // Handed to the call owner, whose post is checked in one step with the posting.
         ring()

@@ -29,8 +29,15 @@ object SessionEndHook {
     @Volatile
     private var first: (() -> Unit)? = null
 
-    /** Sets the blocks, run in this order (the app does this once, at start); none removes them. */
+    /**
+     * Sets the blocks, run in this order. Once: the app does it at start, and
+     * a second set is refused with an [IllegalStateException] instead of
+     * replacing the first (which would drop what the first one ends).
+     * Without blocks it removes them (tests).
+     */
+    @Synchronized
     fun install(vararg blocks: () -> Unit) {
+        check(blocks.isEmpty() || this.blocks.isEmpty()) { "session-end blocks are already installed" }
         this.blocks = blocks.toList()
     }
 
@@ -38,8 +45,11 @@ object SessionEndHook {
      * Sets what runs before every block, whatever was installed when: the
      * advance of the session generation ([SessionGeneration.advance]). So a
      * block, and everything it stops, already sees the old generation as over.
+     * Once, like [install]; null removes it (tests).
      */
+    @Synchronized
     fun installFirst(advance: (() -> Unit)?) {
+        check(advance == null || first == null) { "the session generation's advance is already installed" }
         first = advance
     }
 

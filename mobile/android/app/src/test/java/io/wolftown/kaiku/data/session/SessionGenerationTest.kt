@@ -158,4 +158,73 @@ class SessionGenerationTest {
         SessionEndHook.beforeSessionEnds()
         assertEquals("every part already sees the old generation as over", listOf(false, false), seen)
     }
+
+    @Test
+    fun `the stored account is read once and never for a liveness check`() {
+        var reads = 0
+        val generation = SessionGeneration({ AuthSession.LoggedOut }, { reads++; "anna" })
+        val ticket = generation.enter("anna")!!
+        assertEquals(ticket, generation.enter())
+        repeat(3) { assertTrue(ticket.alive) }
+        assertTrue(ticket.open)
+        assertEquals("one read of the store, at the first entry", 1, reads)
+    }
+
+    @Test
+    fun `once the session ended nobody is stored and the store is not read again`() {
+        var reads = 0
+        val generation = SessionGeneration({ AuthSession.LoggedOut }, { reads++; "anna" })
+        val ticket = generation.enter()!!
+        generation.advance()
+        assertFalse(ticket.alive)
+        assertNull("the stored session was removed with the advance", generation.enter())
+        assertEquals(1, reads)
+    }
+
+    @Test
+    fun `a liveness check alone never reads the store`() {
+        var reads = 0
+        val sessions = FakeSessions("anna")
+        var session: AuthSession = sessions.session
+        val generation = SessionGeneration({ session }, { reads++; "anna" })
+        val ticket = generation.enter()!!
+        // The account state is gone without the store having been read: nothing to check against.
+        session = AuthSession.LoggedOut
+        assertFalse(ticket.alive)
+        assertEquals(0, reads)
+    }
+
+    @Test
+    fun `a read of the store that ends the session itself leaves nobody signed in`() {
+        var reads = 0
+        lateinit var generation: SessionGeneration
+        // An unreadable store resets itself inside the read: the session-end hook runs there.
+        generation = SessionGeneration({ AuthSession.LoggedOut }, {
+            reads++
+            generation.advance()
+            "anna"
+        })
+        assertNull(generation.enter())
+        assertNull(generation.enter("anna"))
+        assertEquals(1, reads)
+    }
+
+    @Test
+    fun `a second set of session-end parts is refused and the first one stays`() {
+        var ran = 0
+        SessionEndHook.install({ ran++ })
+        assertThrows(IllegalStateException::class.java) { SessionEndHook.install({ ran += 100 }) }
+        SessionEndHook.beforeSessionEnds()
+        assertEquals("the parts installed first still run, and only they", 1, ran)
+    }
+
+    @Test
+    fun `a second advance for the hook is refused and the first one stays`() {
+        val sessions = FakeSessions("anna")
+        val ticket = sessions.generation.enter()!!
+        SessionEndHook.installFirst { sessions.generation.advance() }
+        assertThrows(IllegalStateException::class.java) { SessionEndHook.installFirst { } }
+        SessionEndHook.beforeSessionEnds()
+        assertFalse(ticket.alive)
+    }
 }

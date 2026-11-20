@@ -105,12 +105,40 @@ class SessionGeneration internal constructor(
 
     private class Account(val userId: String, val sessionId: Long?)
 
+    /**
+     * The stored account of a process that has not restored its session.
+     * The store is read once, by the first [enter] that needs it (on the
+     * caller's thread, holding no lock of this class), and what it said is
+     * kept until [advance], after which nobody is stored. A liveness check
+     * ([Ticket.alive], [Ticket.open]) never reads the store: it may run
+     * under its caller's locks, and a store that cannot be read ends the
+     * session on the reading thread.
+     */
+    @Volatile
+    private var stored: String? = null
+
+    @Volatile
+    private var storedKnown = false
+
+    private fun readStoredOnce() {
+        if (storedKnown) return
+        val generation = number
+        val read = storedAccount()
+        synchronized(lock) {
+            // An advance during the read (also one the read itself set off) wins: nobody is stored.
+            if (!storedKnown && number == generation) {
+                stored = read
+                storedKnown = true
+            }
+        }
+    }
+
     private fun account(): Account? {
         val now = session()
         if (now is AuthSession.LoggedIn) {
             return if (now.sessionId > endedUpTo) Account(now.userId, now.sessionId) else null
         }
-        return storedAccount()?.let { Account(it, null) }
+        return stored?.let { Account(it, null) }
     }
 
     /**
@@ -118,6 +146,7 @@ class SessionGeneration internal constructor(
      * (or the session is just ending) or, with [account], when someone else is.
      */
     fun enter(account: String? = null): Ticket? {
+        if (session() !is AuthSession.LoggedIn) readStoredOnce()
         val generation = number
         val now = account() ?: return null
         if (account != null && now.userId != account) return null
@@ -182,6 +211,9 @@ class SessionGeneration internal constructor(
         val ending = session() as? AuthSession.LoggedIn
         val ended = synchronized(lock) {
             number++
+            // The stored session goes with this generation: nobody is stored from here on.
+            stored = null
+            storedKnown = true
             if (ending != null && ending.sessionId > endedUpTo) endedUpTo = ending.sessionId
             scopes.toList().also { scopes.clear() }
         }
