@@ -36,11 +36,14 @@ The new flow starts where the person is:
 ## Why this needs care
 
 The login spec deliberately has no such path. Open question 5 says a key-device path for PCs "would
-need a proximity check that Kaiku does not have", and two anti-goals are close to this flow:
+need a proximity check that Kaiku does not have", and two anti-goals are close to this flow. The flow therefore requires:
 
-- "An attacker tricks a user into scanning *the attacker's* QR code";
-- "A stolen browser or desktop session becomes a permanent takeover: it adds its own key device or
-  passkey".
+- the person who scans the QR code holds the phone and sees the computer the code is for: the phone
+  shows what is about to happen, the screen lock signs the confirmation, and the person also types the
+  code the phone shows on that computer, so a scan alone never enrols a passkey;
+- a browser or desktop session that is only signed in never becomes a permanent sign-in by itself: the
+  server refuses to give it a key device or passkey of its own without the phone's confirmation and the
+  typed code.
 
 Why a scan is not enough here: F2's QR sign-in yields only a probation session, so its confirmation
 may stand for a computer the person does not see. Here the same confirmation would lead to a passkey,
@@ -389,7 +392,7 @@ entries. The user guide, admin guide and technical reference under
 - Web and desktop: reuse `CodeEntry`, `ProbationBanner` and the desktop flow client; strings in the i18n
   files.
 - No private hostnames or IPs in the public repository.
-- An auth PR. Needs the maintainer's explicit merge OK, and reviews by Codex, Flash and Fable as the
+- An auth PR. Needs the maintainer's explicit merge OK, and independent reviews, as the
   largest late auth change of v1.0.
 
 ## Tests that must exist
@@ -448,39 +451,21 @@ without FCM.
 - `client/src/components/auth/ProbationBanner.tsx`, `server/src/auth/passkeys/desktop.rs`,
   `server/src/approvals/cascade.rs`, `server/src/approvals/enrollments/`, `mobile/android/app/src/main/java/io/wolftown/kaiku/ui/scan/`.
 
-## Appendix: design review round 1
+## Design decisions from review
 
-| Finding | From | Resolution |
-|---|---|---|
-| Setup token after the code is an unbound bearer secret | Codex, Flash (Blocker), Fable M4 | Token removed; registration bound to the session or the desktop flow's redeem |
-| "That wasn't me" leaves the requesting session alive | Fable M1 | It now ends that session |
-| Report marks credentials: wrong generation, voids requests, self-lockout | Flash (Blocker), Codex, Fable M3 | The (call) is reverted: no credential is marked |
-| Report needs signature and UV | Codex | Specified |
-| Attempt in the session cascade collides with B.7 | Fable M2 | Attempts stay out; every transition re-checks under the account lock |
-| Attempts missing from the cascades | Flash (Blocker) | Rejected as stated: a stale attempt cannot advance because of the re-check (Locking 2); the enrolment does ride the cascades |
-| Issuance race with refresh-reuse revocation | Codex | Locking 3 |
-| `enrolled` has no exit, restart leaves the child alive | Flash, Codex, Fable m4 | SM5 rows, Locking 6 |
-| Identical answer traps a person with two accounts | Flash | The (call) is changed: own answer, no name |
-| Passkey in the browser unusable from the desktop app | Flash | Rejected: F1 runs in the same system browser |
-| 25-minute chain violates B.2's 10 minutes | Flash | Rejected: B.2 binds challenges; the only challenge here lives 2 minutes |
-| Lost code entry response | Flash | Poll sees `enrolled`; no secret to re-send |
-| Code lost on phone lock | Flash | Kept in memory while the app lives |
-| Challenge expiry, eligibility at start, phone polling, readable reasons | Codex, Fable m1–m3, m5 | Specified |
-
-## Appendix: design review round 2 (Codex: NOT READY)
-
-| Finding | Resolution |
-|---|---|
-| Desktop: the flow URL alone must not lead to a registration that the app then redeems | Code entered in the browser before any ceremony |
-| Finish and redeem lock order deadlocks or misses logout | Locking 3 now covers them and restart |
-
-Codex confirmed in this round: registration on the web needs the requesting session itself, and reverting the credential
-remediation is safe.
-
-## Appendix: design review round 3 (Codex: NOT READY)
-
-| Finding | Resolution |
-|---|---|
-| After the right code, only the browser that typed it may run the ceremony | Browser secret set by the code entry, required by `options` and `finish` |
-
-Codex confirmed in this round that the lock order is sound against logout and the cascades.
+- No setup token after the code: registration is bound to the requesting session, or to the desktop flow's redeem.
+- After the right code, only the browser that typed it may run the ceremony: the code entry sets a browser secret that `options` and `finish` require.
+- On the desktop, the flow URL alone does not lead to a registration that the app then redeems: the code is entered in the browser before any ceremony.
+- "That wasn't me" ends the requesting session.
+- The report marks no credential.
+- The report needs a signature and user verification.
+- Attempts stay out of the session cascade; every transition re-checks under the account lock. A stale attempt cannot advance because of that re-check (Locking 2); the enrolment rides the cascades.
+- The issuance race with refresh-reuse revocation is covered by Locking 3.
+- Finish and redeem lock order is covered by Locking 3, which also covers restart; the lock order holds against logout and the cascades.
+- `enrolled` has an exit and a restart does not leave the child alive: see the SM5 rows and Locking 6.
+- The answer on the phone is its own, with no name, so a person with two accounts is not stuck.
+- The passkey in the browser works from the desktop app because F1 runs in the same system browser.
+- B.2's 10 minutes bind challenges; the only challenge here lives 2 minutes.
+- A lost code-entry response is recovered by the poll, which sees `enrolled`; there is no secret to re-send.
+- The code stays in memory while the app lives, so a phone lock does not lose it.
+- Challenge expiry, eligibility at start, phone polling and readable reasons are specified.

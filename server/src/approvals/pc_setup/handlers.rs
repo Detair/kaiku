@@ -39,7 +39,7 @@ pub const MAX_WAIT_SECS: u8 = 25;
 /// Long-poll re-read interval (as DC13).
 const POLL_STEP: std::time::Duration = std::time::Duration::from_millis(500);
 /// Concurrent attempt long-polls per process; when they are taken the
-/// answer comes at once (as the login attempts' Fable M3).
+/// answer comes at once, as for the login attempts.
 const MAX_LONG_POLLS: usize = 32;
 static LONG_POLLS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(MAX_LONG_POLLS);
 /// Waiting long-polls per user (any of their sessions and devices).

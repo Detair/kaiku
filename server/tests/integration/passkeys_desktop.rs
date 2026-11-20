@@ -2055,7 +2055,7 @@ async fn desktop_redeem_needs_code_verifier_and_the_starting_session(pool: PgPoo
 
 #[sqlx::test]
 async fn restart_voids_the_desktop_flow(pool: PgPool) {
-    // Ruling 10: a restart voids open desktop flows by refusal at redeem.
+    // A restart voids open desktop flows: redeem is refused.
     let p = desktop_pc(&pool).await;
     let (id, flow, handoff, _) = handed_off(&p).await;
     let r = TestApp::request(Method::POST, "/auth/pc-setups")
@@ -2238,7 +2238,7 @@ async fn pending_cred_id(p: &Pc, flow: &Flow) -> Vec<u8> {
 
 #[sqlx::test]
 async fn desktop_redeem_keeps_passkey_errors_readable(pool: PgPool) {
-    // Ruling 16: the passkey limit and a known credential at redeem → 409
+    // The passkey limit and a known credential at redeem answer 409
     // with their own code; the attempt stays `enrolled` and readable.
     let p = desktop_pc(&pool).await;
     let (id, flow, handoff, _) = handed_off(&p).await;
