@@ -414,12 +414,21 @@ impl TrackRouter {
         source_type: TrackSource,
         pref: LayerPreference,
     ) -> Option<Layer> {
+        // A source without layers (one stream) has nothing to switch: the
+        // choice is kept, no layer change happens or is reported.
+        let has_layers = self
+            .simulcast_tracks
+            .iter()
+            .any(|e| e.key().0 == source_user_id && e.key().1 == source_type);
         let key = (source_user_id, source_type);
         let mut changed = None;
         if let Some(mut subs) = self.subscriptions.get_mut(&key) {
             for sub in subs.iter_mut() {
                 if sub.subscriber_id == subscriber_id {
                     sub.preferred_layer = pref;
+                    if !has_layers {
+                        continue;
+                    }
                     let target = select_layer(pref, sub.remb_estimate);
                     if target != sub.active_layer {
                         sub.active_layer = target;
@@ -805,6 +814,38 @@ mod tests {
 #[cfg(test)]
 mod simulcast_tests {
     use super::*;
+
+    /// A viewer's own layer choice on a source without layers reports no
+    /// layer change (it receives the one stream either way).
+    #[test]
+    fn a_layer_choice_on_a_source_without_layers_reports_nothing() {
+        let router = TrackRouter::new();
+        let (source, viewer) = (Uuid::new_v4(), Uuid::new_v4());
+        router
+            .subscriptions
+            .entry((source, TrackSource::Webcam))
+            .or_default()
+            .push(Subscription {
+                subscriber_id: viewer,
+                local_track: Arc::new(TrackLocalStaticRTP::new(
+                    RTCRtpCodecCapability {
+                        mime_type: "video/VP8".into(),
+                        clock_rate: 90_000,
+                        ..Default::default()
+                    },
+                    "t".into(),
+                    "s".into(),
+                )),
+                preferred_layer: LayerPreference::Auto,
+                active_layer: Layer::High,
+                remb_estimate: u64::MAX,
+                last_layer_change: Instant::now(),
+            });
+        assert_eq!(
+            router.set_layer_preference(viewer, source, TrackSource::Webcam, LayerPreference::Low),
+            None
+        );
+    }
 
     /// A source without simulcast layers (one stream, e.g. a screen share)
     /// gets no layer selection from a viewer's bandwidth estimate: no layer
