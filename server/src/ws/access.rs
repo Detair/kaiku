@@ -3869,14 +3869,114 @@ mod tests {
         /// Per admin frame: when it was taken, when it was decided, and
         /// whether it was written.
         frames: Vec<(u64, u64, bool)>,
-        /// Per `admin_subscribe`: when it arrived, and its answer.
-        answers: Vec<(u64, AdminSubscription)>,
+        /// Per `admin_subscribe`: when it arrived, when it was answered,
+        /// and the answer.
+        answers: Vec<(u64, u64, AdminSubscription)>,
         /// When the user's epoch moved, the elevation ended, it began.
         bumped: Option<u64>,
         ended: Option<u64>,
         began: Option<u64>,
         /// The database failed at some point.
         failed: bool,
+    }
+
+    impl Trace {
+        /// Whether a read said `said` that began no earlier than `since`
+        /// and no later than `until`.
+        fn read_between(&self, since: u64, until: u64, said: bool) -> bool {
+            self.reads
+                .iter()
+                .any(|(began, answer)| (since..=until).contains(began) && *answer == Some(said))
+        }
+
+        /// What must hold for the frames and answers of every schedule, on
+        /// a socket whose first `admin_subscribe` was answered `elevated`
+        /// and whose own task was `doing` (`Err`: what does not hold).
+        ///
+        /// A decision is justified only by a read that began after what
+        /// asked for it and no later than the decision: a later read, for
+        /// something else, does not make an earlier decision right.
+        fn check(&self, elevated: bool, doing: Doing) -> Result<(), &'static str> {
+            for &(taken, decided, written) in &self.frames {
+                if written {
+                    // On a "yes" whose read began after the frame was
+                    // taken, and after the last epoch move its decision
+                    // saw.
+                    let moved = self.bumped.filter(|bumped| *bumped < decided);
+                    let since = moved.map_or(taken, |bumped| bumped.max(taken));
+                    if !self.read_between(since, decided, true) {
+                        return Err("a frame was written without a read of its own");
+                    }
+                    continue;
+                }
+                // Nothing that was owed is lost while the database
+                // answers: not while the elevation lasts, and not once it
+                // began.
+                let owed = if elevated {
+                    self.ended.is_none_or(|ended| ended > decided)
+                } else {
+                    self.began.is_some_and(|began| began < taken)
+                };
+                if owed && !self.failed && doing != Doing::Resubscribe {
+                    return Err("a frame the socket was owed was not written");
+                }
+            }
+            for &(asked, answered, answer) in &self.answers {
+                let justified = match answer {
+                    AdminSubscription::Allowed => self.read_between(asked, answered, true),
+                    AdminSubscription::Refused => self.read_between(asked, answered, false),
+                    AdminSubscription::Undecided => self.failed,
+                };
+                if !justified {
+                    return Err("a subscribe was answered without a read to say so");
+                }
+            }
+            Ok(())
+        }
+    }
+
+    /// The explorer's own judgement, on made-up traces: a read counts for a
+    /// decision only if it began within it.
+    #[test]
+    fn the_explorer_wants_a_read_within_each_decision() {
+        let yes = Some(true);
+        // A frame taken at 3 is written at 5 on the read from 2; the next
+        // frame's read at 8 does not make that right.
+        let late = Trace {
+            reads: vec![(2, yes), (8, yes)],
+            frames: vec![(3, 5, true), (7, 9, true)],
+            ..Trace::default()
+        };
+        assert_eq!(
+            late.check(true, Doing::Backstop),
+            Err("a frame was written without a read of its own")
+        );
+        // With a read of its own at 4 it is.
+        let own = Trace {
+            reads: vec![(2, yes), (4, yes), (8, yes)],
+            ..late
+        };
+        assert_eq!(own.check(true, Doing::Backstop), Ok(()));
+
+        // "Allowed" at 3, before the elevation at 5 and the first read that
+        // says so at 7.
+        let early = Trace {
+            reads: vec![(2, Some(false)), (7, yes)],
+            answers: vec![(2, 3, AdminSubscription::Allowed)],
+            bumped: Some(5),
+            began: Some(5),
+            ..Trace::default()
+        };
+        assert_eq!(
+            early.check(false, Doing::Subscribe),
+            Err("a subscribe was answered without a read to say so")
+        );
+        // Answered at 8, after that read, it is.
+        let waited = Trace {
+            answers: vec![(2, 8, AdminSubscription::Allowed)],
+            ..early
+        };
+        assert_eq!(waited.check(false, Doing::Subscribe), Ok(()));
     }
 
     /// What the schedules of one [`explore`] family have in common.
@@ -3966,7 +4066,7 @@ mod tests {
             }
             let asked = tick.get();
             let answer = access.subscribe_admin().await;
-            trace.borrow_mut().answers.push((asked, answer));
+            trace.borrow_mut().answers.push((asked, tick.get(), answer));
         };
         let mut tasks: [std::pin::Pin<Box<dyn std::future::Future<Output = ()> + '_>>; 2] =
             [Box::pin(sender), Box::pin(socket)];
@@ -4072,44 +4172,8 @@ mod tests {
         drop(tasks);
 
         let trace = trace.into_inner();
-        let read_since = |since: u64, said: bool| {
-            trace
-                .reads
-                .iter()
-                .any(|(began, answer)| *began >= since && *answer == Some(said))
-        };
-        for &(taken, decided, written) in &trace.frames {
-            if written {
-                // On a "yes" whose read began after the frame was taken,
-                // and after the last epoch move its decision saw.
-                let moved = trace.bumped.filter(|bumped| *bumped < decided);
-                assert!(
-                    read_since(moved.map_or(taken, |bumped| bumped.max(taken)), true),
-                    "a frame was written without a read of its own: {}",
-                    case()
-                );
-                continue;
-            }
-            // Nothing that was owed is lost while the database answers:
-            // not while the elevation lasts, and not once it began.
-            let owed = if elevated {
-                trace.ended.is_none_or(|ended| ended > decided)
-            } else {
-                trace.began.is_some_and(|began| began < taken)
-            };
-            assert!(
-                !owed || trace.failed || doing == Doing::Resubscribe,
-                "a frame the socket was owed was not written: {}",
-                case()
-            );
-        }
-        for &(asked, answer) in &trace.answers {
-            let answered = match answer {
-                AdminSubscription::Allowed => read_since(asked, true),
-                AdminSubscription::Refused => read_since(asked, false),
-                AdminSubscription::Undecided => trace.failed,
-            };
-            assert!(answered, "{answer:?} without a read to say so: {}", case());
+        if let Err(wrong) = trace.check(elevated, doing) {
+            panic!("{wrong}: {}", case());
         }
         let resync = access.take_resync();
         if !trace.failed {
