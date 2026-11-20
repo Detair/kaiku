@@ -9,6 +9,7 @@ import io.wolftown.kaiku.data.session.CacheSessionTeardown
 import io.wolftown.kaiku.data.session.RealtimeSessionTeardown
 import io.wolftown.kaiku.data.session.SessionTeardown
 import io.wolftown.kaiku.data.session.VoiceSessionTeardown
+import io.wolftown.kaiku.data.session.WorkSessionTeardown
 
 /**
  * The steps [io.wolftown.kaiku.data.session.SessionTeardownRunner] runs when a
@@ -18,6 +19,10 @@ import io.wolftown.kaiku.data.session.VoiceSessionTeardown
 @Module
 @InstallIn(SingletonComponent::class)
 abstract class SessionTeardownModule {
+
+    @Binds
+    @IntoSet
+    abstract fun bindWorkTeardown(impl: WorkSessionTeardown): SessionTeardown
 
     @Binds
     @IntoSet

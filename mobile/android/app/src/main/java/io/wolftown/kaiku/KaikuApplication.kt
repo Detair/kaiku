@@ -25,6 +25,7 @@ import okhttp3.OkHttpClient
 import io.wolftown.kaiku.data.call.CallController
 import io.wolftown.kaiku.data.repository.VoiceRepository
 import io.wolftown.kaiku.data.session.SessionEndHook
+import io.wolftown.kaiku.data.session.SessionGeneration
 import java.util.concurrent.TimeUnit
 import java.util.logging.Logger
 import javax.inject.Inject
@@ -55,6 +56,10 @@ class KaikuApplication : Application(), SingletonImageLoader.Factory, Configurat
     /** Ended synchronously before a stored session is removed ([SessionEndHook]). */
     @Inject
     lateinit var voiceRepository: VoiceRepository
+
+    /** Advanced by the session-end hook before anything else. */
+    @Inject
+    lateinit var sessionGeneration: SessionGeneration
 
     /** The one owner of DM call state; observes the socket from the start. */
     @Inject
@@ -88,8 +93,10 @@ class KaikuApplication : Application(), SingletonImageLoader.Factory, Configurat
         // Observe Ready before the first connect can produce one.
         resyncCoordinator.start()
         sessionTeardownRunner.start()
-        // Voice and the microphone end before the account state is cleared.
-        // The microphone first; each part runs even if the other fails.
+        // Before a stored session is removed: first the session generation moves on (nothing of
+        // the old account runs, sends or publishes after it), then voice and the microphone
+        // end, then the calls. Each part runs even if another fails.
+        SessionEndHook.installFirst { sessionGeneration.advance() }
         SessionEndHook.install(
             { voiceRepository.endForSignOut() },
             { callController.endForSignOut() },
