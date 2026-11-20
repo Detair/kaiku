@@ -742,6 +742,23 @@ class CallControllerTest {
     }
 
     @Test
+    fun `a call's voice session is closed in the same step as its local end, before the lane leaves it`() = runTest {
+        val r = rig()
+        r.ring()
+        r.accept()
+        runCurrent()
+        val tag = r.tag
+        // The voice lane is busy: its leave of this call cannot run yet.
+        val laneBusy = kotlinx.coroutines.CompletableDeferred<Unit>()
+        coEvery { r.voice.leaveCall(any()) } coAnswers { laneBusy.await() }
+        r.controller.submit(CallInput.HangUp(CallRef("me", dm, "c-1")))
+        runCurrent()
+        // Closed already: a rejoin that its gate allowed sends no voice_join any more.
+        assertTrue("not closed in the step of the end: ${r.voiceOps}", "close:$tag" in r.voiceOps)
+        laneBusy.complete(Unit)
+    }
+
+    @Test
     fun `a session that is being signed out takes no new call`() = runTest {
         val r = rig()
         // The sign-out has started (its teardown runs); the tokens are still stored.

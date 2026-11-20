@@ -860,6 +860,9 @@ class CallController internal constructor(
          * step with the leave.
          */
         private fun leaveVoice(voiceId: Long) {
+            // In this step: the call's session sends nothing more (no rejoin of a call that is
+            // over); the rest of the leave follows in the lane.
+            voice.closeCall(tagBase + voiceId)
             val join = voiceJob?.takeIf { it.voiceId == voiceId }
             if (join != null) voiceJob = null
             val running = join?.cancel()

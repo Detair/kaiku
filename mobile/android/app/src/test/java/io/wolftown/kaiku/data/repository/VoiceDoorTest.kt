@@ -8,6 +8,7 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -443,6 +444,25 @@ class VoiceDoorTest {
 
         assertEquals("the next account's voice session was ended", rig.channel, rig.repository.currentChannelId.value)
         assertEquals(listOf("join:${rig.channel}"), rig.joinsAndLeaves())
+    }
+
+    @Test
+    fun `a call's session closed at the call's end sends no voice_join, also for a rejoin already allowed`() = rigTest { rig ->
+        rig.socket.ready()
+        launch(start = CoroutineStart.UNDISPATCHED) { runCatching { rig.repository.joinCall(dm, call(1)) } }
+        runCurrent()
+        assertEquals(dm, rig.repository.currentChannelId.value)
+        val joins = rig.joins().size
+        // The socket drops; the call ends here before the rejoin sends anything.
+        rig.socket.drop()
+        runCurrent()
+        rig.repository.closeCall(1)
+        rig.socket.ready()
+        advanceTimeBy(5_000); runCurrent()
+
+        assertEquals("a voice_join for a call that is over: ${rig.log}", joins, rig.joins().size)
+        // Another call's tag closes nothing.
+        rig.repository.closeCall(2)
     }
 
     // -- A leave names the session it was tapped for -------------------------------------------

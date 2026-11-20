@@ -197,6 +197,7 @@ internal class CallRig(
             holdGranted && firstArg<SessionGeneration.Ticket>().alive
         }
         every { setCallMuted(any(), any()) } answers { voiceOps += "mute" }
+        every { closeCall(any()) } answers { voiceOps += "close:${firstArg<Long>()}" }
         coEvery { leaveChannel() } coAnswers { voiceChannel.value = null }
         // Like the voice layer: only the call's own session is left.
         coEvery { leaveCall(any()) } coAnswers {

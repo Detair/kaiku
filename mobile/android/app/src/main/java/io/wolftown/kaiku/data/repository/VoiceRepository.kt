@@ -771,8 +771,13 @@ class VoiceRepository @Inject constructor(
      * one. Any other session (a voice channel the user moved to, another
      * call) is left alone: check and leave are one step under the door.
      */
-    suspend fun leaveCall(tag: Long) {
-        // Wins at once: no voice_join of that session after this.
+    /**
+     * Closes the voice session of the DM call [tag], if it is the running one, at once and
+     * without waiting: from here on it sends no `voice_join` (also not a rejoin already
+     * allowed) and opens no connection. No call into WebRTC; the teardown follows through
+     * [leaveCall].
+     */
+    fun closeCall(tag: Long) {
         synchronized(sessionLock) {
             live?.takeIf { it.call != null && it.call.tag == tag }?.let { running ->
                 live = null
@@ -780,6 +785,10 @@ class VoiceRepository @Inject constructor(
                 running.owner.cancel()
             }
         }
+    }
+
+    suspend fun leaveCall(tag: Long) {
+        closeCall(tag)
         withContext(NonCancellable) {
             replaceSession(Expected.OfCall(tag), null)
             // A call that ends before its session took the microphone service over gives it up.
