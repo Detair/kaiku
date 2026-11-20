@@ -759,6 +759,15 @@ describe("DM call voice is a session of the voice owner (C32, desktop)", () => {
     expect(showToast).not.toHaveBeenCalled();
   });
 
+  it("voice_removed while ringing (session_replaced): ring stops, no decline and no leave", async () => {
+    const tauri = await import("@/lib/tauri");
+    receiveIncomingCall("dm-x", "u2", "Bob", "call-1");
+    expect(await handleCallVoiceRemoved("dm-x", "The call continues on another device.")).toBe(true);
+    expect(callState.currentCall.status).toBe("idle");
+    expect(tauri.leaveDMCall).not.toHaveBeenCalled();
+    expect(mockAdapter.leave).not.toHaveBeenCalled();
+  });
+
   it("voice_removed for another channel is not for the call", async () => {
     await connectedCall();
     expect(await handleCallVoiceRemoved("ch-other", "Removed")).toBe(false);

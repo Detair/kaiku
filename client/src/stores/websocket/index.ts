@@ -4,6 +4,7 @@
  * Manages WebSocket connection and routes events to appropriate stores.
  */
 
+import { noteMediaAnswer } from "@/stores/mediaAckHook";
 import { noteVoiceInbound } from "../voiceShutdownHook";
 import { loadServerFeatures, isHiddenChannel } from "@/stores/serverFeatures";
 import { isTextLikeChannelType } from "@/lib/channelTypes";
@@ -528,6 +529,8 @@ export async function handleServerEvent(event: ServerEvent): Promise<void> {
       break;
 
     case "screen_share_started":
+      // The answer to our own start (C30) goes to the publish flow first.
+      noteMediaAnswer(event);
       await handleScreenShareStarted(event);
       break;
 
@@ -540,6 +543,7 @@ export async function handleServerEvent(event: ServerEvent): Promise<void> {
       break;
 
     case "webcam_started":
+      noteMediaAnswer(event);
       await handleWebcamStarted(event);
       break;
 
@@ -553,6 +557,8 @@ export async function handleServerEvent(event: ServerEvent): Promise<void> {
       // answer to "Already in voice channel" is gone; the server replaces
       // a stale peer of the same user on `voice_join`, C32.)
       console.error("Voice error:", event.code, event.message);
+      // A refused screen share / webcam start, or a dropped video (C30).
+      noteMediaAnswer(event);
       break;
 
     case "voice_removed": {

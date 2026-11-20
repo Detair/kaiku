@@ -99,6 +99,13 @@ export interface VoiceAdapterEvents {
   onScreenShareTrack?: (userId: string, streamId: string, track: MediaStreamTrack | null) => void;
   onScreenShareTrackRemoved?: (userId: string, streamId: string) => void;
 
+  /**
+   * A local capture ended by itself (the browser's "Stop sharing" bar, the
+   * shared window closed, permission revoked, the portal session ended):
+   * the owner runs its normal stop for it. `streamId` is null for the webcam.
+   */
+  onLocalMediaEnded?: (kind: "screen" | "webcam", streamId: string | null) => void;
+
   // Webcam events
   onWebcamTrack?: (userId: string, track: MediaStreamTrack | null) => void;
   onWebcamTrackRemoved?: (userId: string) => void;
@@ -153,6 +160,12 @@ export interface ScreenShareOptions {
   withAudio?: boolean;
   /** Unique stream identifier. Auto-generated if not provided. */
   streamId?: string;
+}
+
+/** What a screen capture brings before it is published. */
+export interface CapturedScreen {
+  hasAudio: boolean;
+  sourceLabel: string;
 }
 
 /**
@@ -402,8 +415,13 @@ export interface VoiceAdapter {
    */
   setUserVolume?(userId: string, volume: number): Promise<VoiceResult<void>>;
 
-  // Screen sharing
-  startScreenShare(options?: ScreenShareOptions): Promise<VoiceResult<void>>;
+  // Screen sharing. A share is captured first and published (tracks added,
+  // renegotiated) only after the server accepted it (C30).
+  /** Open the capture; nothing is sent. Cancelling the picker gives `cancelled`. */
+  captureScreen(options: ScreenShareOptions & { streamId: string }): Promise<VoiceResult<CapturedScreen>>;
+  /** Send the captured share (after `screen_share_started`). */
+  publishScreenShare(streamId: string): Promise<VoiceResult<void>>;
+  /** Stop a share, published or only captured. */
   stopScreenShare(streamId?: string): Promise<VoiceResult<void>>;
   stopAllScreenShares(): Promise<VoiceResult<void>>;
   isScreenSharing(): boolean;
@@ -416,8 +434,9 @@ export interface VoiceAdapter {
   /** Enumerate native capture sources (Tauri only). Returns null if not supported. */
   enumerateCaptureSources?(): Promise<CaptureSource[] | null>;
 
-  // Webcam
-  startWebcam(options?: WebcamOptions): Promise<VoiceResult<void>>;
+  // Webcam: captured first, published after `webcam_started` (C30).
+  captureWebcam(options?: WebcamOptions): Promise<VoiceResult<void>>;
+  publishWebcam(): Promise<VoiceResult<void>>;
   stopWebcam(): Promise<VoiceResult<void>>;
   isWebcamActive(): boolean;
 

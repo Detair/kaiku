@@ -802,6 +802,41 @@ describe("websocket store", () => {
       );
     });
 
+    it("start answers and voice errors reach the screen share flow (C30)", async () => {
+      const { setMediaAnswerListener } = await import("@/stores/mediaAckHook");
+      const seen: string[] = [];
+      setMediaAnswerListener((a) => seen.push(a.type === "voice_error" ? a.code : a.type));
+      try {
+        await fire("ws:server_event", {
+          type: "screen_share_started",
+          channel_id: "x",
+          user_id: "u",
+          stream_id: "s",
+          username: "n",
+          source_label: "l",
+          has_audio: false,
+          quality: "medium",
+        });
+        await fire("ws:server_event", {
+          type: "webcam_started",
+          channel_id: "x",
+          user_id: "u",
+          username: "n",
+          quality: "medium",
+        });
+        await fire("ws:server_event", {
+          type: "voice_error",
+          code: "SCREEN_SHARE_FORBIDDEN",
+          message: "m",
+        });
+        await vi.waitFor(() =>
+          expect(seen).toEqual(["screen_share_started", "webcam_started", "SCREEN_SHARE_FORBIDDEN"]),
+        );
+      } finally {
+        setMediaAnswerListener(null);
+      }
+    });
+
     it("call_ended passes the call_id to the store", async () => {
       const call = await import("@/stores/call");
       await fire("ws:server_event", {

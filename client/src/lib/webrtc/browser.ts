@@ -16,6 +16,7 @@ import type {
   ScreenShareQuality,
   WebcamOptions,
   ConnectionMetrics,
+  CapturedScreen,
 } from "./types";
 import { buildConnectionMetrics, deltaLossPercent } from "./types";
 import { VOICE_JOIN_CANCELLED, type VoiceSessionHandle } from "./voiceSession";
@@ -40,6 +41,13 @@ function simulcastEncodings(
     { rid: "m", maxBitrate: 800_000, scaleResolutionDownBy: 2.0, maxFramerate: Math.min(24, highFramerate) },
     { rid: "l", maxBitrate: 200_000, scaleResolutionDownBy: 4.0, maxFramerate: 15 },
   ];
+}
+
+/** A screen capture; senders are set once it is published. */
+interface ScreenShareEntry {
+  stream: MediaStream;
+  videoSender: RTCRtpSender | null;
+  audioSender: RTCRtpSender | null;
 }
 
 /** HTMLAudioElement extended with the non-standard setSinkId API (Chrome/Edge). */
@@ -129,15 +137,14 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
   private remoteStreams = new Map<string, MediaStream>();
 
   // Screen share state — keyed by streamId for multi-stream support
-  private screenShares: Map<string, {
-    stream: MediaStream;
-    videoSender: RTCRtpSender;
-    audioSender: RTCRtpSender | null;
-  }> = new Map();
+  // A capture is held from `captureScreen` on; its senders exist only once
+  // it is published (after the server accepted the share, C30).
+  private screenShares: Map<string, ScreenShareEntry> = new Map();
 
   // Webcam state
   private webcamStream: MediaStream | null = null;
   private webcamSender: RTCRtpSender | null = null;
+  private webcamQuality: ScreenShareQuality = "medium";
 
   // Mic test
   private micTestStream: MediaStream | null = null;
@@ -1217,119 +1224,109 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     return result;
   }
 
-  async startScreenShare(
-    options?: ScreenShareOptions,
-  ): Promise<VoiceResult<void>> {
-    const publisher = this.publisherState;
+  /**
+   * Open the capture (browser picker) for a screen share. Nothing is sent
+   * yet: the track is added only by `publishScreenShare` once the server
+   * accepted the share (C30). If the capture ends by itself (the browser's
+   * own "Stop sharing" bar, the window closes, permission is revoked),
+   * `onLocalMediaEnded("screen", id)` asks the owner to run its normal stop.
+   */
+  async captureScreen(
+    options: ScreenShareOptions & { streamId: string },
+  ): Promise<VoiceResult<CapturedScreen>> {
     const session = this.session;
-    if (!publisher || !session) {
+    if (!this.publisherState || !session) {
       return { ok: false, error: { type: "not_connected" } };
     }
+    const streamId = options.streamId;
+    if (this.screenShares.has(streamId)) {
+      return { ok: false, error: { type: "unknown", message: "Stream already exists" } };
+    }
 
+    let stream: MediaStream;
     try {
-      const streamId = options?.streamId ?? crypto.randomUUID();
-
-      // Capture screen with quality constraints
-      const constraints = this.getDisplayMediaConstraints(
-        options?.quality ?? "medium",
-      );
-      const stream = await navigator.mediaDevices.getDisplayMedia({
+      const constraints = this.getDisplayMediaConstraints(options.quality ?? "medium");
+      stream = await navigator.mediaDevices.getDisplayMedia({
         video: constraints.video,
-        audio: options?.withAudio ?? false,
+        audio: options.withAudio ?? false,
       });
-      // The picker can stay open for any length of time: a capture granted
-      // after the call ended (or another began) is stopped at once.
-      if (!this.holds(session)) {
-        stream.getTracks().forEach((track) => track.stop());
-        return { ok: false, error: { type: "not_connected" } };
-      }
-
-      // Add video track to publisher PC
-      const videoTrack = stream.getVideoTracks()[0];
-      const videoSender = publisher.pc.addTrack(videoTrack, stream);
-
-      // Add audio track if present
-      let audioSender: RTCRtpSender | null = null;
-      const audioTrack = stream.getAudioTracks()[0];
-      if (audioTrack) {
-        audioSender = publisher.pc.addTrack(audioTrack, stream);
-      }
-
-      // onnegotiationneeded fires automatically -> creates offer -> server answers -> RTP flows
-
-      // Handle user stopping share via browser UI
-      videoTrack.onended = () => {
-        console.log("[BrowserVoiceAdapter] Screen share track ended by user, streamId:", streamId);
-        this.stopScreenShare(streamId);
-      };
-
-      // Store for cleanup
-      this.screenShares.set(streamId, { stream, videoSender, audioSender });
-
-      console.log("[BrowserVoiceAdapter] Screen share started, streamId:", streamId);
-
-      return { ok: true, value: undefined };
     } catch (err) {
-      console.error("[BrowserVoiceAdapter] Failed to start screen share:", err);
+      console.error("[BrowserVoiceAdapter] Failed to capture screen:", err);
       return { ok: false, error: this.mapScreenShareError(err) };
     }
+    // The picker can stay open for any length of time: a capture granted
+    // after the call ended (or another began) is stopped at once.
+    const videoTrack = stream.getVideoTracks()[0];
+    if (!this.holds(session) || !videoTrack) {
+      stream.getTracks().forEach((track) => track.stop());
+      return {
+        ok: false,
+        error: videoTrack ? { type: "not_connected" } : { type: "not_found", message: "No video" },
+      };
+    }
+
+    const entry: ScreenShareEntry = { stream, videoSender: null, audioSender: null };
+    videoTrack.addEventListener("ended", () => {
+      // Only the capture this entry still holds counts.
+      if (this.screenShares.get(streamId) !== entry) return;
+      this.eventHandlers.onLocalMediaEnded?.("screen", streamId);
+    });
+    this.screenShares.set(streamId, entry);
+    return {
+      ok: true,
+      value: {
+        hasAudio: stream.getAudioTracks().length > 0,
+        sourceLabel: videoTrack.label || "Screen",
+      },
+    };
   }
 
-  async stopScreenShare(streamId?: string): Promise<VoiceResult<void>> {
+  /**
+   * Add the tracks of a captured screen share to the publisher connection
+   * (renegotiation follows through `onnegotiationneeded`).
+   */
+  async publishScreenShare(streamId: string): Promise<VoiceResult<void>> {
     const publisher = this.publisherState;
-    if (!publisher) {
-      return { ok: false, error: { type: "not_connected" } };
+    const entry = this.screenShares.get(streamId);
+    if (!publisher) return { ok: false, error: { type: "not_connected" } };
+    if (!entry) {
+      return { ok: false, error: { type: "unknown", message: "No capture for stream" } };
     }
+    if (entry.videoSender) return { ok: true, value: undefined };
+    const videoTrack = entry.stream.getVideoTracks()[0];
+    if (!videoTrack || videoTrack.readyState === "ended") {
+      return { ok: false, error: { type: "cancelled", message: "Capture ended" } };
+    }
+    entry.videoSender = publisher.pc.addTrack(videoTrack, entry.stream);
+    const audioTrack = entry.stream.getAudioTracks()[0];
+    if (audioTrack) entry.audioSender = publisher.pc.addTrack(audioTrack, entry.stream);
+    return { ok: true, value: undefined };
+  }
 
+  /**
+   * Stop a screen share, published or only captured: its senders leave the
+   * publisher connection (renegotiation follows) and the capture stops.
+   */
+  async stopScreenShare(streamId?: string): Promise<VoiceResult<void>> {
     const targetId = streamId || this.screenShares.keys().next().value;
-    if (!targetId) {
-      return {
-        ok: false,
-        error: { type: "unknown", message: "No active screen share" },
-      };
+    const share = targetId ? this.screenShares.get(targetId) : undefined;
+    if (!targetId || !share) {
+      return { ok: false, error: { type: "unknown", message: "No such screen share" } };
     }
-
-    const share = this.screenShares.get(targetId);
-    if (!share) {
-      return {
-        ok: false,
-        error: { type: "unknown", message: `Screen share ${targetId} not found` },
-      };
-    }
-
-    // Remove tracks from publisher PC
-    publisher.pc.removeTrack(share.videoSender);
-    if (share.audioSender) {
-      publisher.pc.removeTrack(share.audioSender);
-    }
-
-    // Stop media tracks
-    share.stream.getTracks().forEach((t) => t.stop());
-
-    // onnegotiationneeded fires automatically -> renegotiates
-
     this.screenShares.delete(targetId);
-
-    // Notify listeners
-    this.eventHandlers.onScreenShareStopped?.("", targetId, "user_stopped");
-
-    console.log("[BrowserVoiceAdapter] Screen share stopped:", targetId);
-
+    const publisher = this.publisherState;
+    if (publisher && publisher.pc.signalingState !== "closed") {
+      if (share.videoSender) publisher.pc.removeTrack(share.videoSender);
+      if (share.audioSender) publisher.pc.removeTrack(share.audioSender);
+    }
+    share.stream.getTracks().forEach((t) => t.stop());
     return { ok: true, value: undefined };
   }
 
   async stopAllScreenShares(): Promise<VoiceResult<void>> {
-    if (this.screenShares.size === 0) {
-      return { ok: true, value: undefined };
-    }
-
-    // Collect IDs first to avoid mutating map during iteration
-    const streamIds = [...this.screenShares.keys()];
-    for (const id of streamIds) {
+    for (const id of [...this.screenShares.keys()]) {
       await this.stopScreenShare(id);
     }
-
-    console.log("[BrowserVoiceAdapter] All screen shares stopped");
     return { ok: true, value: undefined };
   }
 
@@ -1339,88 +1336,79 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     return this.webcamStream !== null;
   }
 
-  async startWebcam(options?: WebcamOptions): Promise<VoiceResult<void>> {
-    const publisher = this.publisherState;
+  /**
+   * Open the camera. Nothing is sent until `publishWebcam` (after the
+   * server's `webcam_started`, C30). A camera that ends by itself reports
+   * `onLocalMediaEnded("webcam", null)`.
+   */
+  async captureWebcam(options?: WebcamOptions): Promise<VoiceResult<void>> {
     const session = this.session;
-    if (!publisher || !session) {
+    if (!this.publisherState || !session) {
       return { ok: false, error: { type: "not_connected" } };
     }
-
     if (this.webcamStream) {
-      return {
-        ok: false,
-        error: { type: "unknown", message: "Webcam already active" },
-      };
+      return { ok: false, error: { type: "unknown", message: "Webcam already active" } };
     }
-
+    let stream: MediaStream;
     try {
-      const constraints: MediaStreamConstraints = {
+      stream = await navigator.mediaDevices.getUserMedia({
         video: {
           deviceId: options?.deviceId ? { exact: options.deviceId } : undefined,
           width: { ideal: 640 },
           height: { ideal: 480 },
           frameRate: { ideal: 30 },
         },
-      };
-
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      // A camera granted after the call ended (or another began) is stopped.
-      if (!this.holds(session)) {
-        stream.getTracks().forEach((track) => track.stop());
-        return { ok: false, error: { type: "not_connected" } };
-      }
-      const videoTrack = stream.getVideoTracks()[0];
-      if (!videoTrack) {
-        stream.getTracks().forEach((t) => t.stop());
-        return {
-          ok: false,
-          error: {
-            type: "unknown",
-            message: "No video track in webcam stream",
-          },
-        };
-      }
-
-      // Listen for track ending (e.g., user revokes camera permission)
-      videoTrack.onended = () => {
-        console.log("[BrowserVoiceAdapter] Webcam track ended by user/system");
-        this.cleanupWebcamState();
-      };
-
-      // Add video track to publisher peer connection with simulcast encodings
-      const webcamBitrate = QUALITY_BITRATES[options?.quality ?? "medium"];
-      const webcamTransceiver = publisher.pc.addTransceiver(videoTrack, {
-        direction: "sendonly",
-        streams: [stream],
-        sendEncodings: simulcastEncodings(webcamBitrate),
       });
-      this.webcamSender = webcamTransceiver.sender;
-      this.webcamStream = stream;
-
-      console.log("[BrowserVoiceAdapter] Webcam started");
-      return { ok: true, value: undefined };
     } catch (err) {
       console.error("[BrowserVoiceAdapter] Failed to start webcam:", err);
       return { ok: false, error: this.mapMediaError(err) };
     }
+    const videoTrack = stream.getVideoTracks()[0];
+    // A camera granted after the call ended (or another began) is stopped.
+    if (!this.holds(session) || !videoTrack) {
+      stream.getTracks().forEach((track) => track.stop());
+      return {
+        ok: false,
+        error: videoTrack
+          ? { type: "not_connected" }
+          : { type: "unknown", message: "No video track in webcam stream" },
+      };
+    }
+    videoTrack.addEventListener("ended", () => {
+      if (this.webcamStream !== stream) return;
+      this.eventHandlers.onLocalMediaEnded?.("webcam", null);
+    });
+    this.webcamStream = stream;
+    this.webcamQuality = options?.quality ?? "medium";
+    return { ok: true, value: undefined };
+  }
+
+  /** Add the captured camera to the publisher connection (simulcast). */
+  async publishWebcam(): Promise<VoiceResult<void>> {
+    const publisher = this.publisherState;
+    const stream = this.webcamStream;
+    if (!publisher) return { ok: false, error: { type: "not_connected" } };
+    if (!stream) return { ok: false, error: { type: "unknown", message: "Webcam not active" } };
+    if (this.webcamSender) return { ok: true, value: undefined };
+    const videoTrack = stream.getVideoTracks()[0];
+    if (!videoTrack || videoTrack.readyState === "ended") {
+      return { ok: false, error: { type: "cancelled", message: "Camera ended" } };
+    }
+    const transceiver = publisher.pc.addTransceiver(videoTrack, {
+      direction: "sendonly",
+      streams: [stream],
+      sendEncodings: simulcastEncodings(QUALITY_BITRATES[this.webcamQuality]),
+    });
+    this.webcamSender = transceiver.sender;
+    return { ok: true, value: undefined };
   }
 
   async stopWebcam(): Promise<VoiceResult<void>> {
     if (!this.webcamStream) {
-      return {
-        ok: false,
-        error: { type: "unknown", message: "Webcam not active" },
-      };
+      return { ok: false, error: { type: "unknown", message: "Webcam not active" } };
     }
-
-    try {
-      this.cleanupWebcamState();
-      console.log("[BrowserVoiceAdapter] Webcam stopped");
-      return { ok: true, value: undefined };
-    } catch (err) {
-      console.error("[BrowserVoiceAdapter] Failed to stop webcam:", err);
-      return { ok: false, error: { type: "unknown", message: String(err) } };
-    }
+    this.cleanupWebcamState();
+    return { ok: true, value: undefined };
   }
 
   // Cleanup
@@ -1532,10 +1520,12 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     if (err instanceof DOMException) {
       switch (err.name) {
         case "NotAllowedError":
-          return {
-            type: "permission_denied",
-            message: "Screen share permission denied. Please allow screen sharing in your browser.",
-          };
+          // Chrome and Firefox report "Cancel" in their picker as
+          // NotAllowedError; only a block by the system or a policy is a
+          // real permission problem ("Permission denied by system").
+          return /system|policy/i.test(err.message)
+            ? { type: "permission_denied", message: err.message }
+            : { type: "cancelled", message: "Screen share cancelled" };
         case "AbortError":
           return { type: "cancelled", message: "Screen share cancelled" };
         case "NotFoundError":
@@ -1563,7 +1553,11 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
 
   private cleanupWebcamState(): void {
     // Remove track from publisher peer connection
-    if (this.publisherState && this.webcamSender) {
+    if (
+      this.publisherState &&
+      this.webcamSender &&
+      this.publisherState.pc.signalingState !== "closed"
+    ) {
       this.publisherState.pc.removeTrack(this.webcamSender);
     }
 

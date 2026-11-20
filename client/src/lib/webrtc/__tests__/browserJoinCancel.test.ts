@@ -245,7 +245,7 @@ describe("BrowserVoiceAdapter sessions (one handle per join)", () => {
     });
     const adapter = new BrowserVoiceAdapter();
     await adapter.join(A);
-    const sharing = adapter.startScreenShare({ streamId: "s1" });
+    const sharing = adapter.captureScreen({ streamId: "s1" });
     await flush();
 
     await adapter.leave(A);

@@ -435,3 +435,53 @@ describe("TauriVoiceAdapter sessions (one handle per join)", () => {
     expect(invoke).toHaveBeenLastCalledWith("join_voice", { channelId: "ch-a", epoch: last() });
   });
 });
+
+describe("TauriVoiceAdapter screen share (capture, then publish after the answer)", () => {
+  beforeEach(() => {
+    registry.clear();
+    pending = [];
+    failing.clear();
+  });
+
+  it("captureScreen only prepares; publishScreenShare starts the native share", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockReset().mockImplementation(async (cmd: string) =>
+      cmd === "prepare_screen_share" ? { source_name: "Display 1", has_audio: false } : undefined,
+    );
+    const adapter = new TauriVoiceAdapter();
+    const captured = await adapter.captureScreen({ streamId: "s1", sourceId: "display:1" });
+    expect(captured).toEqual({ ok: true, value: { hasAudio: false, sourceLabel: "Display 1" } });
+    expect(vi.mocked(invoke).mock.calls.map(([c]) => c)).toEqual(["prepare_screen_share"]);
+    await adapter.publishScreenShare("s1");
+    expect(vi.mocked(invoke).mock.calls.map(([c]) => c)).toEqual([
+      "prepare_screen_share",
+      "start_screen_share",
+    ]);
+  });
+
+  it("portal cancel and missing portal map to cancel / portal_unavailable", async () => {
+    const { mapCaptureError } = await import("../tauri");
+    expect(mapCaptureError("PORTAL_CANCELLED")).toEqual({ type: "cancelled", message: "portal" });
+    expect(mapCaptureError("PORTAL_UNAVAILABLE: no portal")).toEqual({
+      type: "not_found",
+      message: "portal_unavailable",
+    });
+    expect(mapCaptureError("Not in a voice channel")).toEqual({ type: "not_connected" });
+  });
+
+  it("a native capture that ended by itself is reported once for a held share", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockReset().mockImplementation(async (cmd: string) =>
+      cmd === "prepare_screen_share" ? { source_name: "W", has_audio: false } : undefined,
+    );
+    const adapter = new TauriVoiceAdapter();
+    const ended = vi.fn();
+    adapter.setEventHandlers({ onLocalMediaEnded: ended });
+    await flushListen();
+    await adapter.captureScreen({ streamId: "s1" });
+    emit("voice:local_capture_ended", { kind: "screen", stream_id: "other" });
+    expect(ended).not.toHaveBeenCalled();
+    emit("voice:local_capture_ended", { kind: "screen", stream_id: "s1" });
+    expect(ended).toHaveBeenCalledWith("screen", "s1");
+  });
+});

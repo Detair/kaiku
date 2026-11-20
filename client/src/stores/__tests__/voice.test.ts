@@ -376,6 +376,22 @@ describe("voice store", () => {
       );
     });
 
+    it.each(["kicked", "banned", "permission_lost", "channel_deleted", "session_replaced", "new_reason"])(
+      "%s: no voice_leave and no adapter leave go out (the server already removed the peer)",
+      async (reason) => {
+        const { wsSend, wsScreenShareStop, wsWebcamStop } = await import("@/lib/tauri");
+        mockAdapter.join.mockResolvedValue({ ok: true });
+        await joinVoice("ch-1");
+        vi.mocked(wsSend).mockClear();
+        mockAdapter.leave.mockClear();
+        await handleVoiceRemoved("ch-1", reason);
+        expect(mockAdapter.leave).not.toHaveBeenCalled();
+        expect(wsSend).not.toHaveBeenCalledWith(expect.objectContaining({ type: "voice_leave" }));
+        expect(wsScreenShareStop).not.toHaveBeenCalled();
+        expect(wsWebcamStop).not.toHaveBeenCalled();
+      },
+    );
+
     it("treats an unknown reason like kicked", async () => {
       const { showToast } = await import("@/components/ui/Toast");
       mockAdapter.join.mockResolvedValue({ ok: true });

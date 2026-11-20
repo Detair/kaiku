@@ -11,6 +11,7 @@ import type {
   VoiceAdapter,
   VoiceConnectionState,
   VoiceError,
+  CapturedScreen,
   VoiceResult,
   VoiceAdapterEvents,
   AudioDevice,
@@ -65,6 +66,23 @@ interface NativeSession {
   nativeEpoch: number | null;
   /** Ended: a join step that resumes now stops. */
   ended: boolean;
+}
+
+/**
+ * Error of a native capture command. Codes from Rust: `PORTAL_CANCELLED`
+ * (the system dialog was closed), `PORTAL_UNAVAILABLE` (no portal on this
+ * Linux system), `PERMISSION_DENIED` (macOS screen recording not allowed).
+ */
+export function mapCaptureError(err: unknown): VoiceError {
+  const text = typeof err === "string" ? err : err instanceof Error ? err.message : String(err);
+  if (text.startsWith("PORTAL_CANCELLED")) return { type: "cancelled", message: "portal" };
+  if (text.startsWith("PORTAL_UNAVAILABLE")) return { type: "not_found", message: "portal_unavailable" };
+  if (text.startsWith("PERMISSION_DENIED")) return { type: "permission_denied", message: text };
+  if (text.startsWith("NO_DEVICE")) return { type: "device_not_found", message: text };
+  if (/not connected|Not in a voice channel|Voice not initialized/i.test(text)) {
+    return { type: "not_connected" };
+  }
+  return { type: "unknown", message: text };
 }
 
 /**
@@ -554,78 +572,64 @@ export class TauriVoiceAdapter implements VoiceAdapter {
     }
   }
 
-  async startScreenShare(
-    options?: ScreenShareOptions,
-  ): Promise<VoiceResult<void>> {
-    console.log("[TauriVoiceAdapter] Starting native screen share", options);
-
-    if (this.activeScreenShares.size >= 3) {
-      return {
-        ok: false,
-        error: { type: "unknown", message: "Maximum of 3 concurrent screen shares reached" },
-      };
+  /**
+   * Prepare a native capture: check the source (Windows/macOS) or let the
+   * system dialog choose it (Linux portal). Nothing is sent yet; the track
+   * is added by `publishScreenShare` after the server accepted the share.
+   */
+  async captureScreen(
+    options: ScreenShareOptions & { streamId: string },
+  ): Promise<VoiceResult<CapturedScreen>> {
+    if (this.activeScreenShares.size > 0) {
+      return { ok: false, error: { type: "unknown", message: "Already sharing" } };
     }
-
-    if (!options?.sourceId) {
-      return {
-        ok: false,
-        error: { type: "unknown", message: "No source selected" },
-      };
-    }
-
-    const streamId = options.streamId ?? crypto.randomUUID();
-
     try {
-      await invoke("start_screen_share", {
-        sourceId: options.sourceId,
-        quality: options.quality ?? "medium",
-        withAudio: options.withAudio ?? false,
-        streamId,
+      const prepared = await invoke<{ source_name: string; has_audio: boolean }>(
+        "prepare_screen_share",
+        {
+          streamId: options.streamId,
+          sourceId: options.sourceId ?? null,
+          quality: options.quality ?? "medium",
+          withAudio: options.withAudio ?? false,
+        },
+      );
+      this.activeScreenShares.set(options.streamId, {
+        sourceName: prepared.source_name,
+        withAudio: prepared.has_audio,
       });
+      return {
+        ok: true,
+        value: { hasAudio: prepared.has_audio, sourceLabel: prepared.source_name || "Screen" },
+      };
+    } catch (err) {
+      console.error("[TauriVoiceAdapter] Failed to prepare screen share:", err);
+      return { ok: false, error: mapCaptureError(err) };
+    }
+  }
 
-      // Fetch source name from status
-      let sourceName = "Screen";
-      try {
-        const statuses = await invoke<{ stream_id: string; source_name: string }[]>(
-          "get_screen_share_status",
-        );
-        const thisStatus = statuses.find((s) => s.stream_id === streamId);
-        sourceName = thisStatus?.source_name ?? "Screen";
-      } catch {
-        // Fall through with default
-      }
-
-      this.activeScreenShares.set(streamId, {
-        sourceName,
-        withAudio: options.withAudio ?? false,
-      });
-
-      console.log(`[TauriVoiceAdapter] Native screen share started: ${streamId}`);
+  /** Start the prepared capture and send it (track added, renegotiated). */
+  async publishScreenShare(streamId: string): Promise<VoiceResult<void>> {
+    if (!this.activeScreenShares.has(streamId)) {
+      return { ok: false, error: { type: "unknown", message: "No capture for stream" } };
+    }
+    try {
+      await invoke("start_screen_share", { streamId });
       return { ok: true, value: undefined };
     } catch (err) {
       console.error("[TauriVoiceAdapter] Failed to start screen share:", err);
-      return { ok: false, error: this.mapTauriError(err) };
+      return { ok: false, error: mapCaptureError(err) };
     }
   }
 
   async stopScreenShare(streamId?: string): Promise<VoiceResult<void>> {
-    if (this.activeScreenShares.size === 0) {
-      return {
-        ok: false,
-        error: { type: "unknown", message: "Not sharing screen" },
-      };
-    }
-
-    // If no streamId given, stop the first one
     const targetId = streamId ?? [...this.activeScreenShares.keys()][0];
-    console.log(`[TauriVoiceAdapter] Stopping native screen share: ${targetId}`);
-
+    if (!targetId) {
+      return { ok: false, error: { type: "unknown", message: "Not sharing screen" } };
+    }
+    // Forgotten first: a stop that fails natively still ends the share here.
+    this.activeScreenShares.delete(targetId);
     try {
       await invoke("stop_screen_share", { streamId: targetId });
-
-      this.activeScreenShares.delete(targetId);
-
-      console.log(`[TauriVoiceAdapter] Screen share stopped: ${targetId}`);
       return { ok: true, value: undefined };
     } catch (err) {
       console.error("[TauriVoiceAdapter] Failed to stop screen share:", err);
@@ -652,27 +656,35 @@ export class TauriVoiceAdapter implements VoiceAdapter {
     return this.webcamActive;
   }
 
-  async startWebcam(options?: WebcamOptions): Promise<VoiceResult<void>> {
-    console.log("[TauriVoiceAdapter] Starting webcam", options);
-
+  /** Check the camera and remember the choice; nothing is sent yet. */
+  async captureWebcam(options?: WebcamOptions): Promise<VoiceResult<void>> {
     if (this.webcamActive) {
-      return {
-        ok: false,
-        error: { type: "unknown", message: "Webcam already active" },
-      };
+      return { ok: false, error: { type: "unknown", message: "Webcam already active" } };
     }
-
     try {
-      await invoke("start_webcam", {
+      await invoke("prepare_webcam", {
         quality: options?.quality ?? "medium",
-        deviceId: options?.deviceId ?? null,
+        deviceId: options?.deviceId != null ? Number(options.deviceId) : null,
       });
       this.webcamActive = true;
-      console.log("[TauriVoiceAdapter] Webcam started");
+      return { ok: true, value: undefined };
+    } catch (err) {
+      console.error("[TauriVoiceAdapter] Failed to prepare webcam:", err);
+      return { ok: false, error: mapCaptureError(err) };
+    }
+  }
+
+  /** Start the prepared camera and send it (after `webcam_started`). */
+  async publishWebcam(): Promise<VoiceResult<void>> {
+    if (!this.webcamActive) {
+      return { ok: false, error: { type: "unknown", message: "Webcam not active" } };
+    }
+    try {
+      await invoke("start_webcam");
       return { ok: true, value: undefined };
     } catch (err) {
       console.error("[TauriVoiceAdapter] Failed to start webcam:", err);
-      return { ok: false, error: this.mapTauriError(err) };
+      return { ok: false, error: mapCaptureError(err) };
     }
   }
 
@@ -686,9 +698,9 @@ export class TauriVoiceAdapter implements VoiceAdapter {
       };
     }
 
+    this.webcamActive = false;
     try {
       await invoke("stop_webcam");
-      this.webcamActive = false;
       console.log("[TauriVoiceAdapter] Webcam stopped");
       return { ok: true, value: undefined };
     } catch (err) {
@@ -790,6 +802,16 @@ export class TauriVoiceAdapter implements VoiceAdapter {
       }),
 
       // VAD speaking indicator
+      listen<{ kind: "screen" | "webcam"; stream_id: string | null }>(
+        "voice:local_capture_ended",
+        (event) => {
+          const { kind, stream_id } = event.payload;
+          // Only a capture this window still holds counts.
+          if (kind === "screen" && (!stream_id || !this.activeScreenShares.has(stream_id))) return;
+          if (kind === "webcam" && !this.webcamActive) return;
+          this.eventHandlers.onLocalMediaEnded?.(kind, kind === "screen" ? stream_id : null);
+        },
+      ),
       listen<boolean>("voice:speaking", (event) => {
         this.eventHandlers.onSpeakingChange?.(event.payload);
       }),

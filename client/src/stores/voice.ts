@@ -162,6 +162,11 @@ function heldSession(): VoiceSessionHandle | null {
   return voiceOwner.sessionOf(channelWish);
 }
 
+/** The held channel session (screen share / webcam flow). */
+export function currentChannelSession(): VoiceSessionHandle | null {
+  return heldSession();
+}
+
 /** Remote `<audio>` elements per user (browser mode), for cleanup. */
 const remoteAudioElements = new Map<string, HTMLAudioElement>();
 
@@ -568,12 +573,12 @@ function installAdapterHandlers(adapter: VoiceAdapter): void {
         },
       );
     },
-    onScreenShareStopped: (_userId, _streamId, reason) => {
-      console.log("[Voice] Screen share stopped:", reason);
-      // Sync local state only when no more streams remain
-      if (!adapter.isScreenSharing()) {
-        setVoiceState({ screenSharing: false });
-      }
+    onLocalMediaEnded: (kind, streamId) => {
+      // The browser's own "Stop sharing" bar, a closed window, a revoked
+      // permission: the same stop as the button.
+      void import("./mediaPublish")
+        .then(({ mediaPublisher }) => mediaPublisher())
+        .then((publisher) => publisher.captureEnded(kind, streamId));
     },
     onWebcamTrack: (userId, track) => {
       console.log("[Voice] Webcam track received:", userId);
@@ -1138,219 +1143,40 @@ export function setSpeaking(speaking: boolean): void {
   setVoiceState({ speaking });
 }
 
-/**
- * Start screen sharing.
- *
- * @param quality - Quality tier (low/medium/high/premium)
- * @param sourceId - Native capture source ID (Tauri only, from ScreenShareSourcePicker)
- */
+// Screen share and webcam: the start waits for the server's answer before
+// any track is sent (C30), and every way a share ends runs one stop. The
+// flow lives in `mediaPublish.ts` (loaded on first use, not at start-up).
+
+/** Start sharing the screen (`sourceId`: native capture source, desktop only). */
 export async function startScreenShare(
   quality?: ScreenShareQuality,
   sourceId?: string,
-): Promise<{ ok: boolean; error?: string }> {
-  if (voiceState.state !== "connected" || !voiceState.channelId) {
-    return { ok: false, error: t("voice.error.notConnected") };
-  }
-
-  // Generate a stream ID for this screen share
-  const streamId = crypto.randomUUID();
-  // The share belongs to this session; the picker can take long.
-  const session = heldSession();
-  const channelId = voiceState.channelId;
-
-  const adapter = await createVoiceAdapter();
-
-  // Start the capture (native source for Tauri, browser getDisplayMedia for web)
-  const result = await adapter.startScreenShare({ quality, sourceId, streamId });
-
-  if (!result.ok) {
-    console.error("Failed to start screen share:", result.error);
-    return { ok: false, error: getErrorMessage(result.error) };
-  }
-  if (!isSameSession(session, heldSession()) || voiceState.state !== "connected") {
-    await adapter.stopScreenShare(streamId);
-    return { ok: false, error: t("voice.error.notConnected") };
-  }
-
-  // Get actual screen share info from the adapter
-  const shareInfo = adapter.getScreenShareInfo(streamId);
-  const hasAudio = shareInfo?.hasAudio ?? false;
-  const sourceLabel = shareInfo?.sourceLabel ?? "Screen";
-
-  // Notify server about screen share start
-  try {
-    await tauri.wsScreenShareStart(
-      channelId,
-      streamId,
-      quality || "medium",
-      hasAudio,
-      sourceLabel,
-    );
-  } catch (err) {
-    console.error("Failed to notify server of screen share start:", err);
-    // Stop capture since server notification failed
-    await adapter.stopScreenShare(streamId);
-    return { ok: false, error: t("voice.error.notifyFailed") };
-  }
-
-  // Register our own capture track for self-preview. The SFU forwards our track
-  // to OTHER subscribers, never back to us, so our own tile would otherwise have
-  // no track and render blank. The browser adapter exposes the local track; the
-  // native adapter returns null (it renders its own preview), so this is a no-op
-  // there.
-  const localTrack = adapter.getScreenShareTrack(streamId);
-  if (localTrack) {
-    const me = currentUser();
-    const { addAvailableTrack } = await import("@/stores/screenShareViewer");
-    addAvailableTrack(
-      streamId,
-      localTrack,
-      me?.id ?? "self",
-      me?.display_name || me?.username || "You",
-      sourceLabel,
-    );
-  }
-
-  setVoiceState({ screenSharing: true });
-  return { ok: true };
+): Promise<{ ok: boolean; error?: string; note?: string }> {
+  const { mediaPublisher } = await import("./mediaPublish");
+  return (await mediaPublisher()).startScreenShare(quality, sourceId);
 }
 
-/**
- * Stop a specific screen share stream, or all streams if no streamId given.
- */
+/** Stop one own screen share, or all of them. */
 export async function stopScreenShare(streamId?: string): Promise<void> {
   if (!voiceState.screenSharing) return;
-
-  const channelId = voiceState.channelId;
-  const adapter = await createVoiceAdapter();
-
-  // Remove our own self-preview track(s) from the viewer. Stopping a track
-  // programmatically doesn't reliably fire `onended`, so clear it explicitly.
-  const { removeAvailableTrack } = await import("@/stores/screenShareViewer");
-
-  if (streamId) {
-    // Stop a specific stream
-    const result = await adapter.stopScreenShare(streamId);
-    if (!result.ok) {
-      console.error("Failed to stop screen share:", result.error);
-    }
-    removeAvailableTrack(streamId);
-
-    // Notify server about this specific stream stop
-    if (channelId) {
-      try {
-        await tauri.wsScreenShareStop(channelId, streamId);
-      } catch (err) {
-        console.error("Failed to notify server of screen share stop:", err);
-        showToast({
-          type: "warning",
-          title: t("voice.toast.shareStopped.title"),
-          message: t("voice.toast.shareStopped.message"),
-          duration: 5000,
-          id: "screen-share-stop-warning",
-        });
-      }
-    }
-
-    // If no more streams are active, clear sharing state
-    if (!adapter.isScreenSharing()) {
-      setVoiceState({ screenSharing: false });
-    }
-  } else {
-    // Stop all streams
-    const allInfo = adapter.getAllScreenShareInfo();
-    const result = await adapter.stopAllScreenShares();
-    if (!result.ok) {
-      console.error("Failed to stop all screen shares:", result.error);
-    }
-    for (const info of allInfo) removeAvailableTrack(info.streamId);
-
-    // Notify server about each stream stop
-    if (channelId) {
-      for (const info of allInfo) {
-        try {
-          await tauri.wsScreenShareStop(channelId, info.streamId);
-        } catch (err) {
-          console.error("Failed to notify server of screen share stop:", err);
-        }
-      }
-    }
-
-    setVoiceState({ screenSharing: false });
-  }
+  const { mediaPublisher } = await import("./mediaPublish");
+  await (await mediaPublisher()).stopScreenShare(streamId);
 }
 
-/**
- * Start webcam.
- *
- * @param quality - Quality tier (low/medium/high/premium)
- * @param deviceId - Camera device ID
- */
+/** Start the camera. */
 export async function startWebcam(
   quality?: ScreenShareQuality,
   deviceId?: string,
-): Promise<{ ok: boolean; error?: string }> {
-  if (voiceState.state !== "connected" || !voiceState.channelId) {
-    return { ok: false, error: t("voice.error.notConnected") };
-  }
-
-  if (voiceState.webcamActive) {
-    return { ok: false, error: t("voice.error.webcamActive") };
-  }
-
-  const session = heldSession();
-  const channelId = voiceState.channelId;
-  const adapter = await createVoiceAdapter();
-
-  const result = await adapter.startWebcam({ quality, deviceId });
-
-  if (!result.ok) {
-    console.error("Failed to start webcam:", result.error);
-    return { ok: false, error: getErrorMessage(result.error) };
-  }
-  if (!isSameSession(session, heldSession()) || voiceState.state !== "connected") {
-    await adapter.stopWebcam();
-    return { ok: false, error: t("voice.error.notConnected") };
-  }
-
-  // Notify server about webcam start
-  try {
-    await tauri.wsWebcamStart(channelId, quality || "medium");
-  } catch (err) {
-    console.error("Failed to notify server of webcam start:", err);
-    await adapter.stopWebcam();
-    return { ok: false, error: t("voice.error.notifyFailed") };
-  }
-
-  setVoiceState({ webcamActive: true });
-  return { ok: true };
+): Promise<{ ok: boolean; error?: string; note?: string }> {
+  const { mediaPublisher } = await import("./mediaPublish");
+  return (await mediaPublisher()).startWebcam(quality, deviceId);
 }
 
-/**
- * Stop webcam.
- */
+/** Stop the camera. */
 export async function stopWebcam(): Promise<void> {
   if (!voiceState.webcamActive) return;
-
-  const channelId = voiceState.channelId;
-
-  const adapter = await createVoiceAdapter();
-  const result = await adapter.stopWebcam();
-
-  if (!result.ok) {
-    console.error("Failed to stop webcam:", result.error);
-  }
-
-  // Notify server about webcam stop
-  if (channelId) {
-    try {
-      await tauri.wsWebcamStop(channelId);
-    } catch (err) {
-      console.error("Failed to notify server of webcam stop:", err);
-    }
-  }
-
-  setVoiceState({ webcamActive: false });
+  const { mediaPublisher } = await import("./mediaPublish");
+  await (await mediaPublisher()).stopWebcam();
 }
 
 /**
