@@ -47,7 +47,14 @@ import * as tauri from "@/lib/tauri";
  * Displays the currently viewed screen share with controls.
  */
 const ScreenShareViewer: Component = () => {
+  // The shown <video>: a signal, so a new element (a view mode change)
+  // gets the track too.
+  const [videoEl, setVideoEl] = createSignal<HTMLVideoElement>();
   let videoRef: HTMLVideoElement | undefined;
+  const takeVideo = (el: HTMLVideoElement) => {
+    videoRef = el;
+    setVideoEl(el);
+  };
   const [autoplayBlocked, setAutoplayBlocked] = createSignal(false);
   const [contextMenu, setContextMenu] = createSignal<{
     x: number;
@@ -73,9 +80,10 @@ const ScreenShareViewer: Component = () => {
     setContextMenu({ x: e.clientX, y: e.clientY, userId, streamId });
   };
 
-  // Attach video track to video element when it changes
+  // Attach the video track to the shown element when either changes
   createEffect(() => {
     const track = viewerState.videoTrack;
+    const videoRef = videoEl();
     if (track && videoRef) {
       const stream = new MediaStream([track]);
       videoRef.srcObject = stream;
@@ -110,11 +118,11 @@ const ScreenShareViewer: Component = () => {
     }
   };
 
-  // Apply volume to video element when it changes
+  // Apply volume to the shown element when either changes
   createEffect(() => {
-    if (videoRef) {
-      videoRef.volume = viewerState.screenVolume / 100;
-    }
+    const volume = viewerState.screenVolume / 100;
+    const el = videoEl();
+    if (el) el.volume = volume;
   });
 
   // Cleanup on unmount
@@ -243,7 +251,7 @@ const ScreenShareViewer: Component = () => {
         <Show when={viewerState.layoutMode === "focus"}>
           <Show when={viewerState.viewMode === "spotlight"}>
             <SpotlightView
-              videoRef={(el) => (videoRef = el)}
+              videoRef={takeVideo}
               sharerName={sharerName()}
               onClose={handleClose}
               onCycleMode={cycleViewMode}
@@ -257,7 +265,7 @@ const ScreenShareViewer: Component = () => {
           </Show>
           <Show when={viewerState.viewMode === "pip"}>
             <PipView
-              videoRef={(el) => (videoRef = el)}
+              videoRef={takeVideo}
               sharerName={sharerName()}
               onClose={handleClose}
               onCycleMode={cycleViewMode}
@@ -270,7 +278,7 @@ const ScreenShareViewer: Component = () => {
           </Show>
           <Show when={viewerState.viewMode === "theater"}>
             <TheaterView
-              videoRef={(el) => (videoRef = el)}
+              videoRef={takeVideo}
               sharerName={sharerName()}
               onClose={handleClose}
               onCycleMode={cycleViewMode}
