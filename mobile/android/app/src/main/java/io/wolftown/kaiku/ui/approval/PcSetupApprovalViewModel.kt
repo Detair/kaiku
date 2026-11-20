@@ -85,6 +85,9 @@ class PcSetupApprovalViewModel @Inject constructor(
 
         val logger: Logger = Logger.getLogger("PcSetupApproval")
         const val POLL_INTERVAL_MS = 1_000L
+
+        /** The code's lifetime from approval (C27: 5 minutes). */
+        const val CODE_LIFETIME_MS = 5 * 60_000L
     }
 
     private val _ui = MutableStateFlow<PcSetupUi>(PcSetupUi.Claiming)
@@ -94,6 +97,10 @@ class PcSetupApprovalViewModel @Inject constructor(
     private var challenge: ApprovalChallenge? = null
     private var context: PcSetupContext? = null
     private var poll: Job? = null
+    /** Ends a code screen whose polling stopped, once the code's time is over. */
+    private var codeTimer: Job? = null
+    private var pollStopped = false
+    private var codeOver = false
 
     /** A claimed challenge that is not decided yet (to release on leave). */
     private var open = false
@@ -206,6 +213,7 @@ class PcSetupApprovalViewModel @Inject constructor(
                             _ui.value = PcSetupUi.Error(R.string.pc_setup_failed, rescan = false)
                         } else {
                             _ui.value = PcSetupUi.Code(code)
+                            startCodeTimer(answer.codeExpiresAt)
                             startPolling(ctx.attemptId)
                         }
                     }
@@ -301,9 +309,14 @@ class PcSetupApprovalViewModel @Inject constructor(
                         e.status == HttpStatusCode.TooManyRequests ->
                             pause = maxOf(POLL_INTERVAL_MS, (e.fields.retryAfterSeconds ?: 0L) * 1_000L)
                         // An answer that says nothing about the attempt: stop asking, but keep
-                        // the code on screen; it ends when the person leaves.
+                        // the code on screen until the person leaves or its time is over
+                        // (startCodeTimer).
                         e.status.value in 400..499 && e.status != HttpStatusCode.RequestTimeout &&
-                            e.status != HttpStatusCode.Unauthorized -> return@launch
+                            e.status != HttpStatusCode.Unauthorized -> {
+                            pollStopped = true
+                            endIfCodeOver()
+                            return@launch
+                        }
                     }
                     continue
                 } catch (_: Exception) {
@@ -312,6 +325,33 @@ class PcSetupApprovalViewModel @Inject constructor(
                 if (apply(status)) return@launch
             }
         }
+    }
+
+    /**
+     * The code's time: until the expiry the server stated (if any), else the code's lifetime, measured
+     * on this phone's own elapsed time since the code was shown. Only a screen whose polling stopped
+     * ends by it; a polling screen ends with what the server reports.
+     */
+    private fun startCodeTimer(expiresAt: String?) {
+        val lifetime = CODE_LIFETIME_MS
+        val stated = expiresAt
+            ?.let { runCatching { java.time.Instant.parse(it) }.getOrNull() }
+            ?.let { java.time.Duration.between(java.time.Instant.now(), it).toMillis() }
+        // A stated expiry that this phone's clock puts in the past or beyond the lifetime (a clock
+        // that is off) is not trusted: the lifetime counts then.
+        val wait = stated?.takeIf { it in 1..lifetime } ?: lifetime
+        codeTimer?.cancel()
+        pollStopped = false
+        codeOver = false
+        codeTimer = viewModelScope.launch {
+            delay(wait)
+            codeOver = true
+            endIfCodeOver()
+        }
+    }
+
+    private fun endIfCodeOver() {
+        if (pollStopped && codeOver && _ui.value is PcSetupUi.Code) end(R.string.pc_setup_code_expired)
     }
 
     /** A challenge the phone refused: one that ran out took too long; anything else does not match. */
