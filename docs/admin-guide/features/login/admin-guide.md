@@ -291,13 +291,14 @@ created. It needs **no push notifications** (a server without FCM works) and no 
   started the attempt. It marks no password or TOTP compromised. If the person used a password,
   TOTP or recovery code as their only proof (part 2 of the owner rule), the passkey stays and only
   the requesting session ends; remove the passkey from the key phone or the panel.
-- **Residual risk:** a person who is fooled into scanning an attacker's QR code, confirming with the
-  screen lock *and* handing over the 6-digit code gives an attacker who already holds a session of
-  that account a full passkey: new sign-in methods, other sessions ended, and, for an admin, the admin
-  panel. It is not a proximity check. The mitigations are the code step, the account match,
-  `may_approve` off by default, the phone's wording and the notice with "That wasn't me". Keep
-  `may_approve` off for the least experienced members, as with QR sign-in. Passkeys over hybrid remain
-  the only phishing-resistant path.
+- **Trust limit:** the passkey goes to the session that showed the QR code. A person who confirms a
+  scan with the screen lock *and* types the 6-digit code for a session they did not start gives that
+  session a full passkey: new sign-in methods, other sessions ended, and, for an admin, the admin
+  panel. It is not a proximity check. The phone asks to continue only for a computer in front of the
+  person, the code must be typed on that computer, the account must match, `may_approve` is off by
+  default, and every passkey made this way is announced with "That wasn't me". Keep `may_approve` off
+  for the least experienced members, as with QR sign-in. Passkeys over hybrid remain the only
+  cross-device path with a proximity guarantee.
 - **Limits:** a chat-only session can start at most 10 attempts within 10 minutes, an account 30. Someone
   who signed in with the member's password could use up the account's starts for a while; the member
   ends that session from the key phone.

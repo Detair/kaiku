@@ -1348,18 +1348,17 @@ these are the rules.
     rule-2 cascade; the repudiation screen warns first (B.6.6) **(rev 5)**.
 14. **Request-notice fatigue (rev 4):** a holder of request factors can start and withdraw
     requests, at most three notice threads per account per delay period (B.5).
-15. **"Set up this PC" social engineering (rev 6):** a person fooled into scanning an attacker's QR
-    code, confirming with the screen lock and passing on or typing the 6-digit code gives an attacker
-    who already has a session on the account a full passkey, which means changed sign-in methods,
-    other sessions ended and, on an admin account, the admin panel. It is the same class as B.6.1
-    with a higher impact, and not a proximity check: a live phishing page, or a caller who talks the
-    person through it, still gets through. Mitigations: the code step (the attacker must obtain the
-    code, not only a scan), the account match, `may_approve` off by default for family accounts (the
+15. **"Set up this PC": the passkey goes to the session that showed the code (rev 6).** A person who
+    confirms a scan with the screen lock and types the 6-digit code for a session they did not start
+    gives that session a full passkey, which means changed sign-in methods, other sessions ended and,
+    on an admin account, the admin panel. It is the same class as B.6.1 with a higher impact, and not
+    a proximity check: the server cannot tell where the person who types the code stands. Limits: the
+    code step (a scan alone creates nothing), the account match, `may_approve` off by default for family accounts (the
     button needs it on), the phone's wording ("Only continue if you started this on a computer in
     front of you, and nobody asked you to"), the notice to every address with "That wasn't me",
     which also ends the requesting session, and at most 3 wrong codes per approval. A report marks
-    no password or TOTP compromised: a report never costs the owner their own password. Passkeys over hybrid remain the only
-    phishing-resistant cross-device path.
+    no password or TOTP compromised: a report never costs the owner their own password. Passkeys over
+    hybrid remain the only cross-device path with a proximity guarantee.
 
 ### B.7 State machines (normative)
 
@@ -1743,7 +1742,7 @@ plans):
    fully trusted. Acceptable? A key-device path for PCs would need a proximity check that Kaiku
    does not have. **Answer (rev 6):** admin work on a PC still needs a passkey. "Set up this PC" (F5e)
    is a way to get one from the key phone, with a code typed on the PC as the replacement for the
-   missing proximity check, not an exception to the rule; its residual risk is B.6.15.
+   missing proximity check, not an exception to the rule; its trust limit is B.6.15.
 6. **Release branch:** cut `release/1.0` at RC3 so v1.1/v1.2 can merge to main earlier, or keep
    them open until the v1.0 tag?
 

@@ -1849,7 +1849,7 @@ async fn set_cookie_has_the_exact_attributes(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn leaked_flow_url_cannot_race_after_the_right_code(pool: PgPool) {
+async fn only_the_browser_that_typed_the_code_continues_the_flow(pool: PgPool) {
     let p = desktop_pc(&pool).await;
     let (id, code) = with_code(&p).await;
     let flow = pc_flow(&p, &id).await;
@@ -1857,7 +1857,7 @@ async fn leaked_flow_url_cannot_race_after_the_right_code(pool: PgPool) {
     // The legitimate browser runs its ceremony.
     let opts = pc_options(&p, &flow, Some(&cookie)).await;
     let (cred, ceremony_id) = registered(&opts);
-    // A URL holder: no ceremony without the cookie (and none with another).
+    // Without the cookie (or with another) there is no ceremony.
     assert_eq!(pc_options(&p, &flow, None).await.status, 400);
     let fake = format!("{PCSETUP_COOKIE}={}", "A".repeat(43));
     assert_eq!(pc_options(&p, &flow, Some(&fake)).await.status, 400);
@@ -1904,9 +1904,9 @@ async fn leaked_flow_url_cannot_race_after_the_right_code(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn relayed_handoff_from_a_leaked_flow_url_is_impossible(pool: PgPool) {
-    // Spec rounds 2 and 3: without the phone's code there is no ceremony, so
-    // no hand-off exists to relay to the legitimate app.
+async fn a_flow_without_the_phones_code_hands_back_nothing(pool: PgPool) {
+    // Without the phone's code there is no ceremony, so the flow hands
+    // nothing back to the app.
     let p = desktop_pc(&pool).await;
     let (id, code) = with_code(&p).await;
     let flow = pc_flow(&p, &id).await;

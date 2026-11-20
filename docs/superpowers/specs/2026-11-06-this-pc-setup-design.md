@@ -42,29 +42,31 @@ need a proximity check that Kaiku does not have", and two anti-goals are close t
 - "A stolen browser or desktop session becomes a permanent takeover: it adds its own key device or
   passkey".
 
-The danger is concrete. F2's QR scan can be relayed, which is acceptable because it yields only a
-probation session. The same scan here would yield a passkey, which means sign-in changes, ending the
-owner's sessions and, on an admin account, the admin panel. So a scan and the screen lock alone must
-never be enough to give a chat-only session a passkey: the person at the phone also has to type a code
-on the computer in front of them.
+Why a scan is not enough here: F2's QR sign-in yields only a probation session, so its confirmation
+may stand for a computer the person does not see. Here the same confirmation would lead to a passkey,
+which means sign-in changes, ending the owner's sessions and, on an admin account, the admin panel. So
+the server never gives a chat-only session a passkey for a scan and the screen lock alone: the person
+at the phone also types a code on the computer in front of them.
 
-F5a is safe against this because its secret starts on the trusted phone and the person has to hand it
-over. A flow that starts on the PC reverses that, so it needs something to replace it.
+F5a needs no such step because its secret starts on the trusted phone and the person moves it on purpose.
+A flow that starts on the PC reverses that direction, so it needs a deliberate step of its own.
 
 ## D1: the code typed on the PC (decided: option A)
 
-| Option | Fooled person must | Effort for the person | Assessment |
+| Option | Before a passkey is created, the person must | Effort for the person | Assessment |
 |---|---|---|---|
-| **A. Code from phone to PC (chosen)** | scan, confirm with the screen lock, **and** read a code from their phone to the attacker or type it into the attacker's page | one 6-digit code | Comparable to F5a, plus F5a's attacker needs no prior session here |
-| B. Scan and screen lock only | scan and confirm | none, as first proposed to the maintainer | One fooled scan turns a stolen session into a takeover; contradicts the second anti-goal |
+| **A. Code from phone to PC (chosen)** | scan, confirm with the screen lock, **and** type the code the phone shows on the computer | one 6-digit code | A deliberate step on each device, comparable to F5a |
+| B. Scan and screen lock only | scan and confirm | none, as first proposed to the maintainer | One confirmation would give the session that showed the code a passkey; contradicts the second anti-goal |
 | C. Scan and screen lock, then 24 h wait with Cancel | scan and confirm, then nobody cancels for 24 h | none, but the PC stays chat-only until tomorrow | Same delay as "Secure my account"; defeats the purpose for the person at the PC |
 
 A code from the PC typed on the phone adds nothing: it travels in the same direction as the QR code,
-so whoever supplies the one supplies the other.
+from the same screen.
 
-Limits of option A, stated honestly: it is not a proximity check. A live phishing page, or a caller
-who talks the person through it, still gets through. Passkeys over hybrid remain the only
-phishing-resistant cross-device path, and this flow does not replace them.
+Trust limits of option A: the code shows that whoever typed it got it from the person at the phone; the
+server cannot tell where that person stands. It is not a proximity check. The phone therefore says to
+type the code only on the computer where this was started, and every passkey made this way is
+announced with "That wasn't me". Passkeys over hybrid remain the only cross-device path with a
+proximity guarantee, and this flow does not replace them.
 
 ## D2: who gets the button (decided: default unchanged)
 
@@ -72,12 +74,13 @@ phishing-resistant cross-device path, and this flow does not replace them.
 the button needs it on. **Decision:** keep that default, so the flow serves people whose phone may
 already confirm sign-ins, and an admin turns the existing switch on for a relative who needs it. No new
 admin UI. The rejected alternative, on by default for family accounts, would make this flow and QR sign-in
-available to everyone and widen the residual risk below to the people least likely to spot a trick.
+available to everyone, including people who never asked for it, and widen the trust limit above to them.
 
 ## Goals
 
 - A person with a key device gets a passkey on this PC without finding a phone menu or moving a link.
-- A stolen probation session alone gets nothing, and neither does a QR photo. There is no setup link
+- A probation session alone gets nothing, and neither does a picture of the QR code: a passkey needs the
+  scan, the screen lock and the typed code. There is no setup link
   in this flow to lose: no secret that creates a passkey ever leaves the requesting client's session.
 - Every use is visible afterwards and can be undone with "That wasn't me".
 - It works without push notifications. A server without FCM is a supported setup.
@@ -159,9 +162,9 @@ The screen says what is granted, not just what is signing in:
 > Only continue if you started this on a computer in front of you, and nobody asked you to.
 
 The client description and the age come from what the server stored when the session was created,
-never from the request that starts the attempt, so a session holder cannot choose them **(call)**. With
-a stolen session this honestly describes the victim's own browser and reads as reassuring. The context
-screen cannot tell these cases apart; the code step and the phone's wording are the control.
+never from the request that starts the attempt, so a session holder cannot choose them **(call)**. They
+describe the session that showed the code, not who holds it now; the context screen cannot tell that,
+so the code step and the phone's wording are the control.
 
 The actions are **Yes, continue**, a prominent **No**, and a smaller **I didn't start this**.
 
@@ -175,7 +178,7 @@ The actions are **Yes, continue**, a prominent **No**, and a smaller **I didn't 
   can only end the session that showed the QR.
 
   It does **not** mark any password or TOTP compromised **(call)**. F3's report does, because a correct
-  password was typed at that moment. Here the session may be days old, and a stolen session says nothing
+  password was typed at that moment. Here the session may be days old, and a report about it says nothing
   about the password, so a report must not cost the owner their own password. The notice says what happened and offers the existing paths: the
   security log's "That wasn't me" on the sign-in that created that session, and changing the password.
 
@@ -351,10 +354,10 @@ To be applied with this feature, as revision 6:
 - **B.7:** add SM5 and the locking rules above.
 - **C29:** add the desktop flow purpose.
 - **F5:** add **F5e**, pointing to this document.
-- **B.6:** add a residual risk: a person fooled into scanning and passing on the code gives an
-  attacker who already has a session on the account a full passkey. Mitigated by the account match,
-  `may_approve` off by default for family accounts, the phone's wording and the notices with "That
-  wasn't me". Same class as B.6.1 with a higher impact.
+- **B.6:** add a trust limit: the passkey goes to the session that showed the QR code, so a person who
+  confirms a scan and types the code for a session they did not start gives that session a full
+  passkey. Limited by the account match, `may_approve` off by default for family accounts, the phone's
+  wording and the notices with "That wasn't me". Same class as B.6.1 with a higher impact.
 - **Open question 5:** record the answer. Admin work on a PC still needs a passkey, and this flow is a
   way to get one, not an exception.
 
@@ -404,10 +407,10 @@ Server:
 - `registration_needs_the_requesting_session`: browser routes refuse another session and no session;
 - `desktop_redeem_needs_code_verifier_and_the_starting_session`;
 - `desktop_flow_options_refused_before_the_right_code`;
-- `relayed_handoff_from_a_leaked_flow_url_is_impossible`: without the phone's code there is no ceremony,
-  so no hand-off exists to relay to the legitimate app;
-- `leaked_flow_url_cannot_race_after_the_right_code`: `options` and `finish` refuse without the browser
-  secret set by that code entry, and a second code entry on the flow is refused;
+- `a_flow_without_the_phones_code_hands_back_nothing`: without the phone's code there is no ceremony,
+  so the flow hands nothing back to the app;
+- `only_the_browser_that_typed_the_code_continues_the_flow`: `options` and `finish` refuse without the
+  browser secret set by that code entry, and a second code entry on the flow is refused;
 - `lost_code_entry_response_recovers_by_poll`;
 - `session_ended_or_device_revoked_stops_every_transition`, before the sweep has run;
 - `ending_the_session_or_revoking_the_device_voids_the_enrolment`;
@@ -471,7 +474,7 @@ without FCM.
 | Desktop: the flow URL alone must not lead to a registration that the app then redeems | Code entered in the browser before any ceremony |
 | Finish and redeem lock order deadlocks or misses logout | Locking 3 now covers them and restart |
 
-Codex confirmed in this round: the web path closes the leaked-link attack, and reverting the credential
+Codex confirmed in this round: registration on the web needs the requesting session itself, and reverting the credential
 remediation is safe.
 
 ## Appendix: design review round 3 (Codex: NOT READY)

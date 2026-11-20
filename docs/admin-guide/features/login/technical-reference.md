@@ -1052,12 +1052,12 @@ Residual risks (spec B.6, as implemented):
 13. **Hostile use of owner-rule part 2** by someone with a session and the TOTP secret or a recovery
     code while the account has no strong authenticator.
 14. **Request-notice fatigue:** at most 3 self-service starts per account per delay period.
-15. **"Set up this PC" social engineering.** A person fooled into scanning an attacker's QR code,
-    confirming with the screen lock and passing on the 6-digit code gives an attacker who already holds
-    a session of the account a full passkey (changed sign-in methods, sessions ended, admin panel for an
-    admin). Same class as 1 with a higher impact, and not a proximity check. Mitigated by the code step,
-    the account match, `may_approve` off by default for family accounts, the phone's wording, and the
-    notice with "That wasn't me", which also ends the requesting session. A report marks no credential.
+15. **"Set up this PC": the passkey goes to the session that showed the code.** A person who confirms
+    a scan with the screen lock and types the 6-digit code for a session they did not start gives that
+    session a full passkey (changed sign-in methods, sessions ended, admin panel for an admin). Same
+    class as 1 with a higher impact, and not a proximity check. Limited by the code step, the account
+    match, `may_approve` off by default for family accounts, the phone's wording, and the notice with
+    "That wasn't me", which also ends the requesting session. A report marks no credential.
 
 Coordinator and maintainer decisions recorded in the implementation notes:
 
