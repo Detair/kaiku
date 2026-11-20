@@ -61,7 +61,7 @@ class DeviceStepUp @Inject constructor(
             if (session.assurance != "full") return StepUpOutcome.ProbationSession
             val ch = approvalApi.stepUp(action.wire, target)
             val verified = try {
-                signer.check(ch, SigKind.DEVICE_STEPUP, local.userId, deviceIds.id())
+                signer.check(ch, SigKind.DEVICE_STEPUP, local.userId, rec.installId ?: deviceIds.id())
             } catch (e: ChallengeRejected) {
                 return StepUpOutcome.Failed("CHALLENGE_${e.reason}")
             }
@@ -74,7 +74,7 @@ class DeviceStepUp @Inject constructor(
             val label = ctx.targetLabel
             val subtitle = if (takesLabel) activity.getString(res, label) else activity.getString(res)
             val out = signer.sign(
-                activity, ch, SigKind.DEVICE_STEPUP, local.userId, deviceIds.id(), Decision.APPROVE, ByteArray(0),
+                activity, ch, SigKind.DEVICE_STEPUP, local.userId, rec.installId ?: deviceIds.id(), Decision.APPROVE, ByteArray(0),
                 UvPrompt(R.string.security_uv_title, subtitle),
                 rec.keyId,
             )

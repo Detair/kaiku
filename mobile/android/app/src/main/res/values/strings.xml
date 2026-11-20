@@ -684,6 +684,15 @@
     <string name="setup_leave_continue">Continue setup</string>
     <string name="setup_claim_waiting">Kaiku could not yet find out whether this phone was set up. It checks again by itself; this can take up to 20 minutes. If the setup did not go through, you can then start again with a new setup code.</string>
     <string name="security_key_storage_unreadable">Kaiku could not read what it has saved about this phone\'s key. Nothing was changed. Try again. If this stays, restart the phone and open Kaiku again.</string>
+    <string name="security_clear_storage_hint">Last resort if nothing else helps: in Android\'s settings open Apps, Kaiku, Storage and choose \"Clear storage\". Kaiku then starts like a newly installed app and this phone can be set up again. If this phone is your only key, ask your admin first.</string>
+    <string name="auth_server_tied_to_key">This phone is a Kaiku key for the server it has now, or is being set up as one. The server can be changed once that has ended.</string>
+    <string name="setup_cannot_ask_hint">Kaiku could not ask the server about this setup. It asks again each time you open Kaiku.</string>
+    <string name="setup_discard">Discard this unfinished setup</string>
+    <string name="setup_discard_title">Discard this unfinished setup?</string>
+    <string name="setup_discard_body">Kaiku has not been able to ask this setup\'s server for a long time. If you discard the setup, this phone deletes the key it made for it. This cannot be undone. If the setup did finish on the server, an admin has to remove this phone there and send you a new setup code.</string>
+    <string name="setup_discard_confirm">Discard</string>
+    <string name="setup_discard_keep">Keep it</string>
+    <string name="setup_discarded">The unfinished setup was discarded. You can set up this phone again with a new setup code.</string>
     <string name="setup_link_ignored">Another setup link was opened. It was not used, because this setup is still running.</string>
     <string name="auth_login_set_up_phone_hint">New here? Use the setup code or link you got from your admin.</string>
     <string name="auth_login_already_set_up">Already set up? Sign in</string>

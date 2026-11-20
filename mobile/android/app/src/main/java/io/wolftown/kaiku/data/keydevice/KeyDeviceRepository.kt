@@ -69,12 +69,14 @@ sealed interface Change {
     val done: Boolean get() = this is Done
 }
 
-/** Why a record and its key are forgotten. Only these two exist (see [KeyDeviceRepository.forget]). */
+/** Why a record and its key are forgotten. Only these three exist (see [KeyDeviceRepository.forget]). */
 enum class Forget {
     /** A server answer, decided by [KeyAnswers.settle]. */
     SERVER_ANSWER,
     /** Android invalidated this key (screen lock removed), found by a signature with it. */
     KEY_INVALIDATED,
+    /** The person discarded an unfinished setup whose server could not be asked for a long time ([SetupDiscard]). */
+    DISCARDED_BY_PERSON,
 }
 
 /** What [KeyDeviceRepository.generateKey] did. */
@@ -234,7 +236,8 @@ class KeyDeviceRepository @Inject constructor(
 
     /**
      * Puts [next] in place of [expected], only while [expected] is the stored record. A record
-     * never changes its server, account, key or setup this way.
+     * never changes its server, account, key or setup this way, and an install id it names stays
+     * whatever [next] says.
      */
     @Synchronized
     fun replace(expected: StoredKeyDevice, next: StoredKeyDevice): Change {
@@ -245,7 +248,7 @@ class KeyDeviceRepository @Inject constructor(
             next.device.origin == now.device.origin && next.device.userId == now.device.userId &&
                 next.keyId == now.keyId && next.attemptId == now.attemptId,
         ) { "a record keeps its server, account, key and setup" }
-        return write(next)
+        return write(if (now.installId != null) next.copy(installId = now.installId) else next)
     }
 
     /** [replace] with the stored record's current times kept: [change] gets the record as stored now. */
@@ -256,20 +259,35 @@ class KeyDeviceRepository @Inject constructor(
         return replace(now, change(now))
     }
 
+    /**
+     * A record written before records named their install id takes [id]: the id the app has now,
+     * under which such a record was enrolled. A record that names one keeps it, whatever [id] is.
+     */
+    @Synchronized
+    fun bindInstallId(id: String): Change {
+        if (storage is KeyStorage.Unreadable) return Change.Unreadable
+        val now = stored() ?: return Change.Mismatch
+        if (now.installId != null) return Change.Done(now)
+        return write(now.copy(installId = id))
+    }
+
     /** The time of the last "stay signed in" prompt, kept beside [expected]. */
     fun markRenewalPrompted(expected: StoredKeyDevice, at: Instant): Change = update(expected) { it.copy(lastRenewalPromptAt = at) }
 
     /**
      * Forgets [expected] and its key, only while [expected] is the stored record. The record is
      * cleared durably first (a clear that fails deletes nothing); then the key goes if the alias
-     * holds this record's key. Two callers exist: [KeyAnswers.settle] for a server answer and
-     * [KeyInvalidation] for a key Android invalidated.
+     * holds this record's key. Three callers exist: [KeyAnswers.settle] for a server answer,
+     * [KeyInvalidation] for a key Android invalidated, and [SetupDiscard] for the person's own
+     * decision about an unfinished setup.
      */
     @Synchronized
     fun forget(expected: StoredKeyDevice, why: Forget): Change {
         if (storage is KeyStorage.Unreadable) return Change.Unreadable
         val now = stored()
         if (now == null || !(now sameAs expected)) return Change.Mismatch
+        // A person's decision ends an unfinished setup only, never an active key.
+        if (why == Forget.DISCARDED_BY_PERSON && now.phase == KeyDevicePhase.ACTIVE) return Change.Mismatch
         if (!store.clear()) return Change.WriteFailed
         set(KeyStorage.Absent)
         logger.info("Key device forgotten: $why")

@@ -242,4 +242,76 @@ class KeyDeviceRepositoryTest {
         assertTrue(failed.exceptionOrNull() is java.security.KeyStoreException)
         assertFalse(alias)
     }
+
+    // ── The install id of a record ────────────────────────────────────────────────────────────
+
+    @Test fun `a record keeps the install id it names, whatever a later write says`() = runTest {
+        val repo = repo()
+        val first = (repo.create(claiming().copy(installId = "install-1")) as Change.Done).record!!
+        val claimed = (repo.replace(first, first.copy(phase = KeyDevicePhase.CLAIMED, installId = "install-2")) as Change.Done).record!!
+        assertEquals("install-1", claimed.installId)
+        val later = (repo.update(claimed) { it.copy(installId = null, sessionCap = Instant.parse("2027-01-01T00:00:00Z")) } as Change.Done).record!!
+        assertEquals("install-1", later.installId)
+        assertEquals("install-1", store.stored!!.installId)
+        // Named once, it is not taken from the app again.
+        assertEquals(Change.Done(later), repo.bindInstallId("install-3"))
+        assertEquals("install-1", store.stored!!.installId)
+    }
+
+    @Test fun `a record from before it named its install id takes the app's, once`() = runTest {
+        val repo = repo()
+        repo.saveClaimed(device)
+        assertNull(repo.record.value!!.installId)
+        assertTrue(repo.bindInstallId("install-1").done)
+        assertEquals("install-1", repo.record.value!!.installId)
+        assertEquals("install-1", store.stored!!.installId)
+        repo.bindInstallId("install-2")
+        assertEquals("install-1", repo.record.value!!.installId)
+        // It is still the same record to whoever held it before.
+        assertTrue(repo.update(StoredKeyDevice(device, KeyDevicePhase.CLAIMED, keyId = keyStore.keyId())) { it }.done)
+    }
+
+    @Test fun `no install id is taken where there is no record, the store cannot be read, or the write fails`() = runTest {
+        val repo = repo()
+        assertEquals(Change.Mismatch, repo.bindInstallId("install-1"))
+        assertTrue(store.writes.isEmpty())
+        repo.saveClaimed(device)
+        store.failWrites = true
+        assertEquals(Change.WriteFailed, repo.bindInstallId("install-1"))
+        assertNull(repo.record.value!!.installId)
+        store.failWrites = false
+        store.unreadable = true
+        repo.reload()
+        assertEquals(Change.Unreadable, repo.bindInstallId("install-1"))
+        assertNull(store.stored!!.installId)
+    }
+
+    // ── The person's own decision ─────────────────────────────────────────────────────────────
+
+    @Test fun `a person's decision never forgets an active key`() = runTest {
+        val authState = AuthState(backgroundScope)
+        val repo = repo(authState)
+        repo.saveClaimed(device)
+        repo.markActive("u1", "kd1")
+        val active = repo.record.value!!
+        assertEquals(Change.Mismatch, repo.forget(active, Forget.DISCARDED_BY_PERSON))
+        assertEquals(KeyDevicePhase.ACTIVE, repo.phase())
+        assertTrue(keyStore.hasKey())
+        assertFalse(store.writes.contains("clear"))
+    }
+
+    @Test fun `a person's decision forgets an unfinished setup only if it is the stored one`() = runTest {
+        for (phase in listOf(KeyDevicePhase.CLAIMING, KeyDevicePhase.CLAIMED, KeyDevicePhase.PENDING)) {
+            store.stored = null
+            if (!keyStore.hasKey()) keyStore.generate(ByteArray(32), use)
+            val repo = repo()
+            val rec = (repo.create(claiming()) as Change.Done).record!!
+            val now = if (phase == KeyDevicePhase.CLAIMING) rec else (repo.replace(rec, rec.copy(phase = phase)) as Change.Done).record!!
+            assertEquals(phase.name, Change.Mismatch, repo.forget(now.copy(attemptId = "another"), Forget.DISCARDED_BY_PERSON))
+            assertTrue(phase.name, keyStore.hasKey())
+            assertTrue(phase.name, repo.forget(now, Forget.DISCARDED_BY_PERSON).done)
+            assertNull(phase.name, repo.record.value)
+            assertFalse(phase.name, keyStore.hasKey())
+        }
+    }
 }

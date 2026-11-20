@@ -20,6 +20,7 @@ import io.wolftown.kaiku.BuildConfig
 import io.wolftown.kaiku.R
 import io.wolftown.kaiku.data.api.ProbeResult
 import io.wolftown.kaiku.data.api.ServerProbe
+import io.wolftown.kaiku.data.keydevice.KeyDeviceRepository
 import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.data.repository.AuthRepository
 import io.wolftown.kaiku.domain.InvalidServerAddressException
@@ -54,7 +55,8 @@ internal fun serverAddressErrorRes(error: Throwable): Int =
 class ServerUrlViewModel @Inject constructor(
     private val tokenStorage: TokenStorage,
     private val authRepository: AuthRepository,
-    private val serverProbe: ServerProbe
+    private val serverProbe: ServerProbe,
+    private val keyDevices: KeyDeviceRepository,
 ) : ViewModel() {
 
     // Shows the current server (or the family default) so most people only tap Connect.
@@ -72,6 +74,12 @@ class ServerUrlViewModel @Inject constructor(
 
     fun onConnectClicked() {
         if (_uiState.value.isChecking) return
+        // A key, or a setup that is not finished, ties this phone to its server: the address is
+        // not changed under it (also while what the phone has saved about it cannot be read).
+        if (keyDevices.unreadable() || keyDevices.record.value != null) {
+            _uiState.update { it.copy(error = R.string.auth_server_tied_to_key) }
+            return
+        }
         val address = normalizeServerAddress(_uiState.value.url).getOrElse {
             _uiState.update { state -> state.copy(error = serverAddressErrorRes(it)) }
             return
@@ -81,6 +89,11 @@ class ServerUrlViewModel @Inject constructor(
         viewModelScope.launch {
             when (serverProbe.probe(address)) {
                 is ProbeResult.Ok -> {
+                    // Asked again now that the server answered: a key record may have come meanwhile.
+                    if (keyDevices.unreadable() || keyDevices.record.value != null) {
+                        _uiState.update { it.copy(isChecking = false, error = R.string.auth_server_tied_to_key) }
+                        return@launch
+                    }
                     // Nothing from the old server may carry over: drop its pending
                     // password change and any stored session, then save.
                     authRepository.cancelPasswordChange()

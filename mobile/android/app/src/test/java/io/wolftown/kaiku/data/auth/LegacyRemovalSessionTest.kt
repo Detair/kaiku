@@ -70,7 +70,7 @@ class LegacyRemovalSessionTest {
         assertEquals("left-access", tokenStorage.getAccessToken())
 
         val repo = KeyDeviceRepository(store, SoftwareApprovalKeyStore(), AuthState(backgroundScope), backgroundScope)
-        val gate = KeyStorageGate(repo, legacy)
+        val gate = KeyStorageGate(repo, legacy) { "install-1" }
         assertTrue(gate.unreadable())
         assertFalse(gate.retry())
         assertEquals("left-access", tokenStorage.getAccessToken())
@@ -112,5 +112,40 @@ class LegacyRemovalSessionTest {
                 override fun putLong(key: String?, value: Long) = apply { e.putLong(key, value) }
             }
         }
+    }
+
+    /**
+     * A key record from before records named their install id takes the id the app has at the
+     * next start. From then on a question about that key device names this id, whatever becomes
+     * of the app's own.
+     */
+    @Test fun `at a start a key record without an install id takes the app's, and keeps it`() = runTest {
+        val keyStore = SoftwareApprovalKeyStore().apply {
+            generate(ByteArray(32), io.wolftown.kaiku.approval.UvPolicy.choose(30, true, true) as io.wolftown.kaiku.approval.UvDecision.Use)
+        }
+        store.stored = io.wolftown.kaiku.data.keydevice.StoredKeyDevice(
+            io.wolftown.kaiku.data.keydevice.LocalKeyDevice("kd1", "u1", "https://chat.example.com", io.wolftown.kaiku.approval.UvClass.PER_USE, "e1", null),
+            io.wolftown.kaiku.data.keydevice.KeyDevicePhase.ACTIVE,
+        )
+        val repo = KeyDeviceRepository(store, keyStore, AuthState(backgroundScope), backgroundScope)
+        var appId = "install-1"
+        var asked = 0
+        val gate = KeyStorageGate(repo, LegacyRemovalSession(store, tokenStorage, authApi, backgroundScope)) { asked++; appId }
+        gate.bindInstallId()
+        assertEquals("install-1", store.stored!!.installId)
+        // The app's own id changes later (its file was lost and made anew): the record keeps its own.
+        appId = "install-2"
+        gate.bindInstallId()
+        assertEquals("install-1", store.stored!!.installId)
+        assertEquals(1, asked)
+    }
+
+    @Test fun `a phone without a key record is not given an install id for it`() = runTest {
+        store.stored = null
+        val repo = KeyDeviceRepository(store, SoftwareApprovalKeyStore(), AuthState(backgroundScope), backgroundScope)
+        var asked = 0
+        KeyStorageGate(repo, LegacyRemovalSession(store, tokenStorage, authApi, backgroundScope)) { asked++; "install-1" }.bindInstallId()
+        assertEquals(0, asked)
+        assertTrue(store.writes.isEmpty())
     }
 }

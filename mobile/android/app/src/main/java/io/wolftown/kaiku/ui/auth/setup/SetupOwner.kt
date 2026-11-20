@@ -33,6 +33,7 @@ import io.wolftown.kaiku.data.keydevice.LocalKeyDevice
 import io.wolftown.kaiku.data.keydevice.NewKey
 import io.wolftown.kaiku.data.keydevice.ServerAnswer
 import io.wolftown.kaiku.data.keydevice.ServerKeyState
+import io.wolftown.kaiku.data.keydevice.SetupDiscard
 import io.wolftown.kaiku.data.keydevice.StoredKeyDevice
 import io.wolftown.kaiku.data.keydevice.Verdict
 import io.wolftown.kaiku.di.SetupCoroutineScope
@@ -61,6 +62,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import java.time.Instant
 import java.util.Base64
 import java.util.UUID
 import java.util.logging.Logger
@@ -86,11 +88,17 @@ import kotlin.coroutines.cancellation.CancellationException
  * 2. Links. Every setup link goes through [offer] (opened) and [start] (delivered to a screen).
  *    While a setup is held (started and not at an end: stopped, failed, finished) the same link
  *    again changes nothing and every other link is only noted ([linkIgnored]), whatever the server
- *    or the screen, the waiting screen included. Once the setup has ended on any screen, a link
- *    opened again starts. [SetupOwnerTest: `a link opened over the waiting screen is noted there
- *    and not used`, `after the waiting screen reported the end, a link opened again starts`;
+ *    or the screen, the waiting screen included. The same code is the same link however it
+ *    arrived (scanned or opened). Once the setup has ended on any screen, a link opened again
+ *    starts. While a claim of this phone is stored, a link is never a new setup: the stored claim
+ *    is checked first, and only if that check gives it up does the link start ([nextLink]).
+ *    [SetupOwnerTest: `a link opened over the waiting screen is noted there
+ *    and not used`, `after the waiting screen reported the end, a link opened again starts`,
+ *    `a fresh link opened over a lost claim settles that claim and then starts`,
+ *    `a claim whose code was shown is not given up by a fresh link`;
  *    SetupFlowViewModelTest: the `a link …` and `… is not used` tests,
- *    `the running link delivered again does not start it over`]
+ *    `the running link delivered again does not start it over`,
+ *    `the same code scanned and then opened as a link is the same setup`]
  * 3. One step. At most one step runs ([running]); it is installed before its first line can run
  *    and stopped before the flow changes. A step that is no longer the running one sends no
  *    request, writes nothing and changes no screen: it checks [live] after every suspension point.
@@ -104,24 +112,48 @@ import kotlin.coroutines.cancellation.CancellationException
  *    `nothing is sent when the claim cannot be recorded first`,
  *    `a key that is no longer this setup's key signs no claim and writes no record`]
  * 5. Forgetting only on listed answers. A stored record, and with it the key, is forgotten only by
- *    [KeyAnswers.settle], on an answer of [KeyAnswers.rows], asked on the record's own server. A
- *    claim is sent once per challenge and never again; an answer that does not settle it leaves the
- *    record `CLAIMING`, and [reconcileClaim] asks. [KeyAnswersTest, KeyForgetCallSitesTest;
+ *    [KeyAnswers.settle], on an answer of [KeyAnswers.rows], asked on the record's own server (or,
+ *    for an unfinished setup only, by the person's own decision, rule 8). A claim is sent once per
+ *    challenge and never again; an answer that does not settle it leaves the record `CLAIMING`,
+ *    and [reconcileClaim] asks: the enrolment first, then, after that answer, the key device. A
+ *    code is shown only once its arrival is stored (`CLAIMED`), so a stored `CLAIMING` always
+ *    means that no code of that claim was ever on this phone's screen: such a claim is given up at
+ *    once when its enrolment says "already claimed" and the key device asked afterwards is not
+ *    there. [KeyAnswersTest, KeyForgetCallSitesTest;
  *    SetupOwnerTest: `a claim refused for good forgets its own key and record`,
  *    `any other answer to a claim keeps the key and the record`,
  *    `an undecided claim answer is checked with the enrolment, never sent again`,
- *    `a claim that times out and was stored is recovered, not replayed into a refusal`]
+ *    `a claim that times out and was stored is recovered, not replayed into a refusal`,
+ *    `a code is shown only once its arrival is recorded`,
+ *    `the key device is asked only after the enrolment has answered`,
+ *    `a lost claim is given up at once when its enrolment is claimed and no key device came of it`,
+ *    `a lost claim is kept when the enrolment says anything else`,
+ *    `a lost claim is kept when the key device cannot be asked`,
+ *    `a lost claim without its link keeps waiting for its time`]
  * 6. The server. The app adopts a link's server only through [SetupEnvironment.adoptServer], which
- *    refuses once the app is tied to a server or holds a record; it is put back when the adopting
- *    setup is abandoned. [SetupOwnerTest: the two `a server question answered late adopts nothing …`
- *    tests; OriginPinTest: `a setup adopts its server only while the app is tied to none and holds
- *    no key record`]
+ *    refuses once the app is tied to a server or holds a record; when the adopting setup is
+ *    abandoned, exactly what was saved before is put back (a server, or none). Every question
+ *    about a stored setup names the install id it was claimed under ([StoredKeyDevice.installId]).
+ *    [SetupOwnerTest: the two `a server question answered late adopts nothing …`
+ *    tests, `a setup is asked about under the install id it was claimed with`; OriginPinTest:
+ *    `a setup adopts its server only while the app is tied to none and holds no key record`,
+ *    `an abandoned setup puts back the server that was saved before, or none`]
  * 7. Bounded. The claim and the final sign-in are never stopped by a link, Back or Cancel; the
  *    claim's answer counts as not known after [CLAIM_TIMEOUT_MS], and the screen leaves the final
  *    sign-in after [SIGN_IN_TIMEOUT_MS] whatever the sign-in still has to finish.
  *    [SetupFlowViewModelTest: `a claim whose answer never comes ends as not sure after a while`;
  *    SetupOwnerTest: `the screen leaves the final sign-in at its limit, whatever the sign-in still
- *    has to finish`]
+ *    has to finish`, `a sign-in that got through just as the limit hit counts as signed in`,
+ *    `the last screen closing while the claim is on its way leaves the claim to be checked`]
+ * 8. A way out. A stored unfinished setup is never given up without its server's word, except by
+ *    the person: when the last question about it got no usable answer ([cannotAsk]) and its own
+ *    time is long past by the phone's clock ([discardable], [SetupDiscard]), the screen offers to
+ *    discard it and asks first. [discard] checks all of that again, forgets only that very record,
+ *    and never an active key. [SetupOwnerTest: `an unfinished setup whose server cannot be asked
+ *    may be discarded once its own time is long past`, `discarding is withdrawn as soon as the
+ *    server answers again`, `discarding is checked again when it is asked for`, `a waiting key
+ *    device may be discarded only a day after it should have been ready`; SetupDiscardTest;
+ *    KeyDeviceRepositoryTest: `a person's decision never forgets an active key`]
  */
 @Singleton
 class SetupOwner internal constructor(
@@ -134,10 +166,13 @@ class SetupOwner internal constructor(
     private val env: SetupEnvironment,
     private val probe: KeyDeviceProbe,
     private val answers: KeyAnswers,
+    private val discards: SetupDiscard,
     /** Lives as long as the app; steps run on the main thread. */
     private val scope: CoroutineScope,
     /** The suitability probe and key generation (StrongBox, attestation) take seconds: never on Main. */
     private val keyDispatcher: CoroutineDispatcher,
+    /** The phone's own clock (only for when an unfinished setup may be discarded). */
+    private val clock: () -> Instant = Instant::now,
 ) {
 
     @Inject
@@ -151,8 +186,9 @@ class SetupOwner internal constructor(
         env: SetupEnvironment,
         probe: KeyDeviceProbe,
         answers: KeyAnswers,
+        discards: SetupDiscard,
         @SetupCoroutineScope scope: CoroutineScope,
-    ) : this(enrollmentApi, suitability, signer, keyDevices, deviceIds, deviceSignIn, env, probe, answers, scope, Dispatchers.Default)
+    ) : this(enrollmentApi, suitability, signer, keyDevices, deviceIds, deviceSignIn, env, probe, answers, discards, scope, Dispatchers.Default)
 
     companion object {
         /** The longest the signed claim may take before its answer counts as not known. */
@@ -174,7 +210,7 @@ class SetupOwner internal constructor(
      * One accepted setup code and its canonical origin, fixed for good. The rest is filled in by
      * this attempt's own steps only (a superseded step stops before writing, see [live]).
      */
-    private class Attempt(val entry: SetupEntry, val origin: String) {
+    private class Attempt(val entry: SetupEntry, val origin: String, val installId: String) {
         /** Goes into every record this attempt stores. */
         val id: String = UUID.randomUUID().toString()
         var serverName: String = ""
@@ -205,6 +241,18 @@ class SetupOwner internal constructor(
     }
 
     private var attempt: Attempt? = null
+    /**
+     * The attempt whose claim is stored without its answer (`CLAIMING`), kept after its screen closed:
+     * only its link can ask the enrolment what became of that claim. In memory only, like every link.
+     */
+    private var claimKeeper: Attempt? = null
+    /**
+     * Another link that was opened while a stored claim without an answer is being checked: it
+     * starts once that claim is given up. In memory only, and gone when the setup is cleared.
+     */
+    private var nextLink: SetupEntry? = null
+    /** The stored unfinished setup whose server could not be asked just now (see [discard]). */
+    private var stuckOn: StoredKeyDevice? = null
     private var running: Step? = null
     /** A setup code was handed in, or a stored setup opened, and nothing reset it since. */
     private var handed = false
@@ -229,12 +277,24 @@ class SetupOwner internal constructor(
     /** A setup link arrived while this setup was running and was not used (the screen says so). */
     val linkIgnored: StateFlow<Boolean> = _linkIgnored.asStateFlow()
 
+    private val _cannotAsk = MutableStateFlow(false)
+    /** The stored setup's server could not be asked just now; the screen names what is left to do. */
+    val cannotAsk: StateFlow<Boolean> = _cannotAsk.asStateFlow()
+
+    private val _discardable = MutableStateFlow(false)
+    /** [cannotAsk], and the setup's own time is long past: the person may discard it ([discard]). */
+    val discardable: StateFlow<Boolean> = _discardable.asStateFlow()
+
     private val _scanReady = MutableStateFlow<UvDecision?>(null)
     /** C26 "Suitability": the screen lock and a hardware key store, checked before any scan. */
     val scanReady: StateFlow<UvDecision?> = _scanReady.asStateFlow()
 
-    /** Runs the suitability check before the scanner opens (again after the screen-lock settings). */
-    fun checkBeforeScan() {
+    /**
+     * Runs the suitability check before the scanner opens (again after the screen-lock settings).
+     * [fresh]: the scanner screen was entered; what an earlier visit found no longer counts.
+     */
+    fun checkBeforeScan(fresh: Boolean = false) {
+        if (fresh) _scanReady.value = null
         scope.launch { _scanReady.value = withContext(keyDispatcher) { suitability.check() } }
     }
 
@@ -280,6 +340,10 @@ class SetupOwner internal constructor(
     private fun idle() {
         stop()
         attempt = null
+        // The link of a claim without an answer is kept only while that claim is the stored record.
+        if (claimKeeper?.rec?.let { it.phase == KeyDevicePhase.CLAIMING && it sameAs keyDevices.record.value } != true) claimKeeper = null
+        nextLink = null
+        asking()
         handed = false
         _waiting.value = false
         _linkIgnored.value = false
@@ -297,7 +361,7 @@ class SetupOwner internal constructor(
      */
     fun offer(e: SetupEntry): Boolean {
         if (!held()) return true
-        if (e != attempt?.entry) _linkIgnored.value = true
+        if (!e.sameCodeAs(attempt?.entry)) _linkIgnored.value = true
         return false
     }
 
@@ -323,6 +387,7 @@ class SetupOwner internal constructor(
     /** Runs [block] as the one step in flight for [a]; installed before it runs, after the old one stopped. */
     private fun step(a: Attempt?, block: suspend () -> Unit): Job {
         stop()
+        asking()
         val s = Step(a)
         s.job = scope.launch(start = CoroutineStart.LAZY) { block() }
         running = s
@@ -363,7 +428,7 @@ class SetupOwner internal constructor(
         handed = true
         _startedFlow.value = true
         if (wasHeld) {
-            if (e != attempt?.entry) _linkIgnored.value = true
+            if (!e.sameCodeAs(attempt?.entry)) _linkIgnored.value = true
             return
         }
         if (keyDevices.unreadable()) {
@@ -387,12 +452,15 @@ class SetupOwner internal constructor(
         val claim = unresolvedClaim()
         if (claim != null) {
             // Not a new setup: a claim of this phone is stored, and the server decides it first.
-            // The attempt that made it stays (it still holds what the claim check needs).
-            if (attempt?.entry != e) _linkIgnored.value = true
-            return resumeClaim(claim)
+            // The attempt that made it stays (it still holds what the claim check needs). If the
+            // check gives that claim up, this link starts.
+            val own = e.sameCodeAs((attempt ?: claimKeeper)?.entry)
+            if (!own) _linkIgnored.value = true
+            return resumeClaim(claim, then = if (own) null else e)
         }
         abandonUnclaimed()
-        val a = Attempt(e, o)
+        nextLink = null
+        val a = Attempt(e, o, deviceIds.id())
         attempt = a
         _waiting.value = false
         _linkIgnored.value = false
@@ -406,10 +474,21 @@ class SetupOwner internal constructor(
         step(a) { open(a) }
     }
 
-    /** A stored claim is looked at again: by the attempt that made it, or on the waiting screen. */
-    private fun resumeClaim(claim: StoredKeyDevice) {
-        val a = attempt
-        if (a != null && claim.phase == KeyDevicePhase.CLAIMING && a.rec?.sameAs(claim) == true) {
+    /** The attempt that stored [claim] as a claim without an answer, if this process still has it. */
+    private fun makerOf(claim: StoredKeyDevice): Attempt? =
+        (attempt ?: claimKeeper)?.takeIf { claim.phase == KeyDevicePhase.CLAIMING && it.rec?.sameAs(claim) == true }
+
+    /**
+     * A stored claim is looked at again: by the attempt that made it, or on the waiting screen.
+     * [then]: another link that was opened; it starts if the check gives the stored claim up (now,
+     * or at a later "Try again").
+     */
+    private fun resumeClaim(claim: StoredKeyDevice, then: SetupEntry? = null) {
+        val a = makerOf(claim)
+        if (a != null) {
+            if (then != null) nextLink = then
+            attempt = a
+            _waiting.value = false
             _ui.value = SetupUi.Opening
             step(a) { reconcileClaim(a, claim, null) }
         } else {
@@ -443,7 +522,7 @@ class SetupOwner internal constructor(
         val rec = keyDevices.record.value ?: return end(R.string.setup_already_key)
         _ui.value = SetupUi.Opening
         step(a) {
-            val st = probe.probe(rec.device.userId, rec.device.origin)
+            val st = probe.probe(rec)
             live(a)
             if (st !is ServerKeyState.Gone) return@step show(a, SetupUi.Ended(R.string.setup_already_key, canRetry = false))
             if (keyDevices.record.value != null) {
@@ -543,14 +622,18 @@ class SetupOwner internal constructor(
         if (signingIn || now == SetupUi.SigningIn || now == SetupUi.SignInPaused || now == SetupUi.SignInTimedOut ||
             now == SetupUi.Done || now == SetupUi.Claiming || (now is SetupUi.Ended && !now.canRetry)
         ) return
-        if (checkJob?.isActive == true) return
-        val a = attempt
+        // A check that is under way is left alone, except while it only waits to ask again: then
+        // "Try again" (and coming back to the app) asks at once.
+        if (checkJob?.isActive == true && now != SetupUi.ClaimWaiting) return
+        val a = attempt ?: makerOf(rec)?.also { attempt = it }
+        // The waiting screen shows no setup steps: a link noted earlier does not start from here.
+        nextLink = null
         if (now == SetupUi.Resume || now is SetupUi.Ended || now == SetupUi.ClaimWaiting) _ui.value = storedUi()
         checkJob = step(a) {
             when {
                 rec.phase == KeyDevicePhase.CLAIMED && rec.device.claimSecret != null -> awaitCode(a, rec)
                 rec.phase == KeyDevicePhase.CLAIMING -> reconcileClaim(a, rec, null)
-                else -> askKeyDevice(a, rec, unknown = null, about = null)
+                else -> askKeyDevice(a, rec, unknown = null, taken = null, about = null)
             }
         }
     }
@@ -674,7 +757,7 @@ class SetupOwner internal constructor(
                 KeyResult.AlreadyKey -> return show(a, SetupUi.Ended(R.string.setup_already_key, canRetry = false))
                 KeyResult.Unreadable -> return show(a, SetupUi.Ended(R.string.security_key_storage_unreadable, canRetry = false))
             }
-            val p = enrollmentApi.popChallenge(a.entry.tokenB64u, deviceIds.id(), b64u(k.spki), a.origin)
+            val p = enrollmentApi.popChallenge(a.entry.tokenB64u, a.installId, b64u(k.spki), a.origin)
             live(a)
             val signedIn = env.signedInUserId()
             if (signedIn != null && signedIn != p.subject.userId) {
@@ -682,7 +765,7 @@ class SetupOwner internal constructor(
                 return show(a, SetupUi.Ended(R.string.setup_for_someone_else, canRetry = false, arg = nameOf(p.subject)))
             }
             val verified = try {
-                signer.check(p.challenge, SigKind.ENROLL_POP, p.subject.userId, deviceIds.id())
+                signer.check(p.challenge, SigKind.ENROLL_POP, p.subject.userId, a.installId)
             } catch (r: ChallengeRejected) {
                 logger.warning("PoP challenge refused: ${r.reason}")
                 dropKey(a)
@@ -722,7 +805,7 @@ class SetupOwner internal constructor(
             // The prompt names the signed account name and server, never an unsigned display name.
             val prompt = UvPrompt(R.string.security_uv_title, activity.getString(R.string.setup_uv_subtitle, shown.username, shown.host))
             // Signed with this attempt's key or not at all: another key in the alias is never used.
-            val out = signer.sign(activity, ch, SigKind.ENROLL_POP, s.userId, deviceIds.id(), Decision.APPROVE, ByteArray(0), prompt, k.keyId)
+            val out = signer.sign(activity, ch, SigKind.ENROLL_POP, s.userId, a.installId, Decision.APPROVE, ByteArray(0), prompt, k.keyId)
             live(a)
             when (out) {
                 is SignOutcome.Rejected -> {
@@ -771,6 +854,9 @@ class SetupOwner internal constructor(
                 attemptId = a.id,
                 // After the challenge the claim answers can no longer be stored; a code it got lasts 5 minutes more.
                 claimVoidAfter = parseInstant(ch.expiresAt)?.plus(KeyAnswers.CLAIM_VOID_MARGIN),
+                // The server will list the key device under this install id.
+                installId = a.installId,
+                since = clock(),
             ),
         )
         val rec = (created as? Change.Done)?.record
@@ -780,6 +866,7 @@ class SetupOwner internal constructor(
             return show(a, SetupUi.Ended(R.string.setup_failed_generic, canRetry = true))
         }
         a.rec = rec
+        claimKeeper = a
         // From here until the answer (or the time limit): no link, no Back, no Cancel stops the request.
         show(a, SetupUi.Claiming)
         try {
@@ -795,18 +882,17 @@ class SetupOwner internal constructor(
                 phase = KeyDevicePhase.CLAIMED,
                 claimVoidAfter = null,
             )
-            val stored = when (val w = keyDevices.replace(rec, claimed)) {
-                is Change.Done -> claimed.also { a.rec = it }
-                // The code is shown all the same (it exists only in this answer); storage still says
-                // "answer not known", which the next start checks with the server.
-                Change.WriteFailed -> claimed
-                else -> {
-                    logger.warning("Claimed setup not recorded: ${w.javaClass.simpleName}")
-                    return show(a, SetupUi.Ended(R.string.setup_failed_generic, canRetry = true))
-                }
+            // The code is shown only once storage says it was received. A stored `CLAIMING` therefore
+            // always means: no code of this claim was ever on this phone's screen, in this run of
+            // the app or an earlier one (the claim check and the key-device probe rely on it).
+            val w = keyDevices.replace(rec, claimed)
+            if (w !is Change.Done) {
+                logger.warning("Claimed setup not recorded: ${w.javaClass.simpleName}")
+                return show(a, SetupUi.Ended(R.string.setup_failed_generic, canRetry = true))
             }
+            a.rec = claimed
             show(a, SetupUi.ShowCode(CodeFormat.group(res.code.orEmpty()), parseInstant(res.codeExpiresAt)))
-            awaitCode(a, stored)
+            awaitCode(a, claimed)
         } catch (c: CancellationException) {
             throw c
         } catch (x: Exception) {
@@ -831,27 +917,33 @@ class SetupOwner internal constructor(
     /**
      * A claim whose answer did not settle it ([rec] is `CLAIMING`). It is never sent again.
      *
-     * With the link still in memory ([a] made this record) the enrolment itself is asked, by a
-     * new proof-of-possession challenge for the same link and key, which the server gives under
+     * With the link still in memory ([a] made this record) the enrolment itself is asked first, by
+     * a new proof-of-possession challenge for the same link and key, which the server gives under
      * the enrolment's lock: given → the enrolment is still open and every earlier claim of it is
      * void, so the record goes and the same link starts again; "not valid" → the server does not
-     * know an open or claimed enrolment for it. Then the key device itself is asked: active or
-     * pending → the claim had landed and the setup goes on; none → the record is forgotten if the
-     * enrolment is gone too, or once the time a claim could still be stored has passed by the
+     * know an open or claimed enrolment for it; "already claimed" → a claim is stored. Then, after
+     * that answer, the key device itself is asked: active or pending → the claim had landed and
+     * the setup goes on; none → the record is forgotten at once if the enrolment is gone or claimed
+     * (this phone never got the claim's answer, so a code it may have got was never shown and
+     * nobody can confirm it: "ask for a new setup code"). Without the link only the key device can
+     * be asked, and "none" counts once the time a claim could still be stored has passed by the
      * server's clock; until then the screen says it is still checking and asks again by itself.
+     *
+     * Once the record is given up, another link that was opened meanwhile ([nextLink]) starts.
      */
     private suspend fun reconcileClaim(a: Attempt?, rec: StoredKeyDevice, claimError: Exception?) {
         var unknown: KeyAnswers.EnrolmentUnknown? = null
+        var taken: KeyAnswers.ClaimTaken? = null
         var about: Exception? = claimError
         val k = a?.key
         if (a != null && k != null && a.rec?.sameAs(rec) == true) {
             try {
-                val p = enrollmentApi.popChallenge(a.entry.tokenB64u, deviceIds.id(), b64u(k.spki), a.origin)
+                val p = enrollmentApi.popChallenge(a.entry.tokenB64u, a.installId, b64u(k.spki), a.origin)
                 live(a)
                 // Only a challenge of this very enrolment, for this very key, says the enrolment is
                 // still open; any other answer under that status proves nothing.
                 val thisEnrolment = try {
-                    val ctx = signer.check(p.challenge, SigKind.ENROLL_POP, rec.device.userId, deviceIds.id()).context as? EnrollPopContext
+                    val ctx = signer.check(p.challenge, SigKind.ENROLL_POP, rec.device.userId, a.installId).context as? EnrollPopContext
                     ctx != null && ctx.enrollmentId == rec.device.enrollmentId && ctx.newKeyHash.contentEquals(KaikuSig.sha256(k.spki))
                 } catch (r: ChallengeRejected) {
                     false
@@ -859,21 +951,43 @@ class SetupOwner internal constructor(
                 if (thisEnrolment && answers.settle(rec, a.origin, Ask.CLAIM_CHECK, ServerAnswer(201)).forgotten) {
                     a.key = null
                     a.rec = null
-                    return begin(a.entry, a.origin)
+                    claimKeeper = null
+                    val then = nextLink
+                    return when {
+                        // The link that was opened meanwhile starts,
+                        then != null -> startFresh(then)
+                        // the waiting screen says the setup is over (it shows no setup steps),
+                        _waiting.value -> show(a, SetupUi.Ended(R.string.setup_not_finished, canRetry = false))
+                        // and on the setup screen the same link starts again.
+                        else -> begin(a.entry, a.origin)
+                    }
                 }
                 return show(a, SetupUi.Ended(R.string.setup_claim_unsure, canRetry = true))
             } catch (c: CancellationException) {
                 throw c
             } catch (x: ApiException) {
                 live(a)
-                unknown = (answers.settle(rec, a.origin, Ask.CLAIM_CHECK, ServerAnswer.of(x)) as? KeyAnswers.Settled.Kept)?.unknown
+                val kept = answers.settle(rec, a.origin, Ask.CLAIM_CHECK, ServerAnswer.of(x)) as? KeyAnswers.Settled.Kept
+                unknown = kept?.unknown
+                taken = kept?.taken
                 if (about == null) about = x
             } catch (x: Exception) {
                 live(a)
+                couldNotAsk(rec)
                 return show(a, SetupUi.Ended(R.string.setup_claim_unsure, canRetry = true))
             }
         }
-        askKeyDevice(a, rec, unknown, about)
+        // Asked only now, after the enrolment's answer: a claim that completed by itself meanwhile
+        // shows here as a key device and is taken over.
+        askKeyDevice(a, rec, unknown, taken, about)
+    }
+
+    /** After a stored claim was given up: [e], opened while it was checked, is a setup of its own now. */
+    private fun startFresh(e: SetupEntry) {
+        nextLink = null
+        attempt = null
+        _waiting.value = false
+        start(e)
     }
 
     /**
@@ -881,14 +995,21 @@ class SetupOwner internal constructor(
      * any more): the server's view of this phone's key device decides. [about]: the refusal that
      * led here, for the text when the setup turns out to be over.
      */
-    private suspend fun askKeyDevice(a: Attempt?, rec: StoredKeyDevice, unknown: KeyAnswers.EnrolmentUnknown?, about: Exception?) {
+    private suspend fun askKeyDevice(
+        a: Attempt?,
+        rec: StoredKeyDevice,
+        unknown: KeyAnswers.EnrolmentUnknown?,
+        taken: KeyAnswers.ClaimTaken?,
+        about: Exception?,
+    ) {
         while (true) {
-            val st = probe.probe(rec.device.userId, rec.device.origin)
+            val st = probe.probe(rec)
             live(a)
             when (st) {
                 ServerKeyState.Active -> return onDone(a, rec, "active", null, null)
                 is ServerKeyState.Pending -> return pending(a, rec, st.readyAt)
                 ServerKeyState.Unknown -> {
+                    couldNotAsk(rec)
                     if (_ui.value !is SetupUi.Pending) {
                         // On the setup screen: "the connection broke, try again"; on the waiting screen: "no connection".
                         val msg = if (a != null) R.string.setup_claim_unsure else R.string.security_network_error
@@ -897,21 +1018,70 @@ class SetupOwner internal constructor(
                     return
                 }
                 is ServerKeyState.Gone -> {
-                    val settled = answers.settle(rec, originOf(rec), Ask.DEVICE_LOGIN_CHALLENGE, st.answer, unknown = unknown)
+                    val settled = answers.settle(
+                        rec, originOf(rec), Ask.DEVICE_LOGIN_CHALLENGE, st.answer, unknown = unknown, taken = taken, askedAt = st.askedAt,
+                    )
                     if (settled.forgotten) {
                         a?.key = null
                         a?.rec = null
+                        claimKeeper = null
+                        nextLink?.let { return startFresh(it) }
+                        // Given up because its enrolment is claimed and made no key device here: a new code is needed.
+                        if (taken != null) return show(a, SetupUi.Ended(R.string.setup_already_used, canRetry = false))
                         return show(a, about?.let(::setupErrorFor) ?: SetupUi.Ended(overText(rec), canRetry = false))
                     }
                     // A claim whose answer never came, still within the time the server could store it.
                     val again = (settled as? KeyAnswers.Settled.Kept)?.askAgainIn
-                        ?: return show(a, SetupUi.Ended(R.string.setup_claim_unsure, canRetry = true))
+                    if (again == null) {
+                        // "No key device", without a time to count from: nothing more can be asked.
+                        couldNotAsk(rec)
+                        return show(a, SetupUi.Ended(R.string.setup_claim_unsure, canRetry = true))
+                    }
                     show(a, SetupUi.ClaimWaiting)
                     delay(again.toMillis() + ASK_AGAIN_SLACK_MS)
                     live(a)
                 }
             }
         }
+    }
+
+    /**
+     * An ask of the stored unfinished setup's server gave nothing usable. The screen then names the
+     * last resort, and offers to discard the setup once its own time is long past ([SetupDiscard]).
+     */
+    private fun couldNotAsk(rec: StoredKeyDevice) {
+        if (rec.phase == KeyDevicePhase.ACTIVE || keyDevices.record.value?.sameAs(rec) != true) return
+        val now = clock()
+        val noted = discards.noteCouldNotAsk(rec, now)
+        stuckOn = noted
+        _cannotAsk.value = true
+        _discardable.value = discards.offered(noted, now)
+    }
+
+    /** A new question is on its way (or the setup changed): what the last one could not learn no longer counts. */
+    private fun asking() {
+        stuckOn = null
+        _cannotAsk.value = false
+        _discardable.value = false
+    }
+
+    /**
+     * "Discard this unfinished setup", confirmed by the person: only for the stored record whose
+     * server could not be asked just now, only once its own time is long past by the phone's clock
+     * (both checked again here), never for an active key. The record and its key are forgotten
+     * through [SetupDiscard]; the setup is over and a new link starts.
+     */
+    fun discard() {
+        val rec = stuckOn ?: return
+        if (claimInFlight || signingIn || !_discardable.value) return
+        val now = keyDevices.record.value?.takeIf { it sameAs rec } ?: return
+        if (!discards.discard(now, clock()).done) return
+        stop()
+        attempt = null
+        claimKeeper = null
+        nextLink = null
+        asking()
+        _ui.value = SetupUi.Ended(R.string.setup_discarded, canRetry = false)
     }
 
     @StringRes
@@ -944,9 +1114,10 @@ class SetupOwner internal constructor(
                     // An enrolment the server no longer knows (a finished one is swept 30 days after it
                     // ended): the key device decides whether the setup is over.
                     if (settled.verdict == Verdict.ENROLMENT_UNKNOWN) {
-                        return askKeyDevice(a, start, (settled as? KeyAnswers.Settled.Kept)?.unknown, if (showsCode) x else null)
+                        return askKeyDevice(a, start, (settled as? KeyAnswers.Settled.Kept)?.unknown, null, if (showsCode) x else null)
                     }
                 }
+                couldNotAsk(start)
                 // Without the code on screen the next check asks again; with it, this one does.
                 if (!showsCode) return
                 val retryAfterMs = (x as? ApiException)?.fields?.retryAfterSeconds?.times(1000)
@@ -956,6 +1127,7 @@ class SetupOwner internal constructor(
                 continue
             }
             live(a)
+            asking()
             // Cancelled or reset while the long-poll ran: its answer changes nothing any more.
             if (!(_ui.value is SetupUi.ShowCode || _ui.value == SetupUi.WaitingForCode)) return
             val ended = when (s.state) {
@@ -990,7 +1162,7 @@ class SetupOwner internal constructor(
         val base = if (enrollmentId != null) rec.device.copy(enrollmentId = enrollmentId) else rec.device
         if (authenticatorState == "pending") {
             // Without its ready time (C27 always sends one) the device-login probe tells it.
-            val at = parseInstant(readyAt) ?: return askKeyDevice(a, rec, unknown = null, about = null)
+            val at = parseInstant(readyAt) ?: return askKeyDevice(a, rec, unknown = null, taken = null, about = null)
             return pending(a, rec, at, base)
         }
         // Active on the server: kept as an active key, so a restart before the sign-in below opens
@@ -1053,6 +1225,7 @@ class SetupOwner internal constructor(
         stop()
         abandonUnclaimed()
         _linkIgnored.value = false
+        nextLink = null
         val claimed = unresolvedClaim() != null
         _ui.value = SetupUi.Ended(if (claimed) R.string.setup_stopped_after_code else R.string.setup_stopped, canRetry = claimed)
     }

@@ -86,4 +86,28 @@ class SetupLinksTest {
         assertNull(SetupLinks.parse("https://chat.example.com/setup/x#v=1&t=$token"))
         assertNull(SetupLinks.parse("https://chat.example.com/auth/callback#v=1&t=$token"))
     }
+
+    /** While the app cannot start, the setup link that opened it is kept for the setup screen; nothing else is. */
+    @org.junit.Test fun `a setup link that opened the app is kept for later, any other link is not`() {
+        PendingSetupLinks.clear()
+        org.junit.Assert.assertFalse(PendingSetupLinks.keep(null))
+        org.junit.Assert.assertFalse(PendingSetupLinks.keep("kaiku://auth/callback?code=x"))
+        org.junit.Assert.assertFalse(PendingSetupLinks.keep("kaiku://login/v1?o=https%3A%2F%2Fchat.example.com&t=$token"))
+        org.junit.Assert.assertFalse(PendingSetupLinks.keep("https://chat.example.com/channels/1"))
+        assertNull(PendingSetupLinks.pending.value)
+        org.junit.Assert.assertTrue(PendingSetupLinks.keep("https://chat.example.com/setup#v=1&t=$token"))
+        assertEquals(SetupEntry("https://chat.example.com", token, SetupEntry.Source.LINK), PendingSetupLinks.take())
+        assertNull(PendingSetupLinks.take())
+    }
+
+    /** The screen shown while the key record cannot be read keeps the launch link before it returns. */
+    @org.junit.Test fun `the unreadable screen keeps the link the app was opened with`() {
+        val root = generateSequence(java.io.File("").absoluteFile) { it.parentFile }
+            .map { java.io.File(it, "src/main/java/io/wolftown/kaiku") }
+            .first { it.isDirectory }
+        val activity = java.io.File(root, "ui/MainActivity.kt").readText()
+        val gate = activity.substringAfter("if (keyStorage.unreadable()) {").substringBefore("return")
+        org.junit.Assert.assertTrue(gate.contains("savedInstanceState == null && PendingSetupLinks.keep(intent?.data?.toString())"))
+        org.junit.Assert.assertTrue(gate.contains("KeyStorageUnreadable("))
+    }
 }

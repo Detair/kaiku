@@ -30,6 +30,17 @@ data class StoredKeyDevice(
      * key into a key device (its challenge has run out, and so has any code a claim would have got).
      */
     val claimVoidAfter: Instant? = null,
+    /**
+     * The install id this key device was enrolled under (the server lists the key device by account
+     * and this id). Every question about it is asked with this id, whatever id the app has now;
+     * null for a record written before this field existed.
+     */
+    val installId: String? = null,
+    /**
+     * The phone's own clock when the claim was recorded, or, for a record without it, when its
+     * server first could not be asked. Only [SetupDiscard] reads it.
+     */
+    val since: Instant? = null,
 ) {
     /**
      * Whether [other] is this very record: same server, account, key device, enrolment, key, setup
@@ -87,6 +98,8 @@ class PrefsKeyDeviceStore(private val prefs: SharedPreferences) : KeyDeviceStore
         const val KEY_ID = "key_id"
         const val ATTEMPT_ID = "attempt_id"
         const val CLAIM_VOID_AFTER = "claim_void_after"
+        const val INSTALL_ID = "install_id"
+        const val SINCE = "since"
         const val LEGACY_REMOVAL_SIGN_IN = "removal_sign_in"
         val REQUIRED = listOf(PHASE, USER_ID, ORIGIN, ENROLLMENT_ID)
     }
@@ -125,6 +138,8 @@ class PrefsKeyDeviceStore(private val prefs: SharedPreferences) : KeyDeviceStore
                         keyId = prefs.getString(KEY_ID, null),
                         attemptId = prefs.getString(ATTEMPT_ID, null),
                         claimVoidAfter = prefs.getString(CLAIM_VOID_AFTER, null)?.let(Instant::parse),
+                        installId = prefs.getString(INSTALL_ID, null),
+                        since = prefs.getString(SINCE, null)?.let(Instant::parse),
                     ),
                 )
             }
@@ -154,6 +169,8 @@ class PrefsKeyDeviceStore(private val prefs: SharedPreferences) : KeyDeviceStore
             .putString(KEY_ID, s.keyId)
             .putString(ATTEMPT_ID, s.attemptId)
             .putString(CLAIM_VOID_AFTER, s.claimVoidAfter?.toString())
+            .putString(INSTALL_ID, s.installId)
+            .putString(SINCE, s.since?.toString())
             .commit()
     } catch (e: Exception) {
         logger.warning("Key-device store not written: ${e.javaClass.simpleName}")
@@ -164,7 +181,7 @@ class PrefsKeyDeviceStore(private val prefs: SharedPreferences) : KeyDeviceStore
     override fun clear(): Boolean = try {
         // The legacy flag is not part of the record and has its own clean-up.
         val editor = prefs.edit()
-        (REQUIRED + listOf(KEY_DEVICE_ID, UV_CLASS, CLAIM_SECRET, ACCOUNT_NAME, READY_AT, SESSION_CAP, RENEWAL_PROMPT, KEY_ID, ATTEMPT_ID, CLAIM_VOID_AFTER))
+        (REQUIRED + listOf(KEY_DEVICE_ID, UV_CLASS, CLAIM_SECRET, ACCOUNT_NAME, READY_AT, SESSION_CAP, RENEWAL_PROMPT, KEY_ID, ATTEMPT_ID, CLAIM_VOID_AFTER, INSTALL_ID, SINCE))
             .forEach { editor.remove(it) }
         editor.commit()
     } catch (e: Exception) {

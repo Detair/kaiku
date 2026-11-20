@@ -114,4 +114,38 @@ class OriginPinTest {
         assertEquals(true, env.adoptServer(SigFixtures.ORIGIN))
         assertEquals(listOf(SigFixtures.ORIGIN), saved)
     }
+
+    /** A setup that adopted its server and is abandoned puts back exactly what was saved before, also "nothing". */
+    @Test fun `an abandoned setup puts back the server that was saved before, or none`() = runTest {
+        val authState = AuthState(backgroundScope)
+        val repo = KeyDeviceRepository(InMemoryKeyDeviceStore(), SoftwareApprovalKeyStore(), authState, backgroundScope)
+        val tokens = TokenStorage(io.wolftown.kaiku.testutil.InMemorySharedPreferences())
+        val env = io.wolftown.kaiku.ui.auth.setup.AndroidSetupEnvironment(OriginPin(repo, authState, tokens), authState, tokens, repo)
+
+        // No server was saved (a build without a default one).
+        val before = env.savedServer()
+        assertNull(before)
+        assertEquals(true, env.adoptServer(SigFixtures.ORIGIN))
+        assertEquals(SigFixtures.ORIGIN, tokens.getServerUrl())
+        env.restoreServer(before)
+        assertNull(tokens.getServerUrl())
+
+        // A server the person had typed in.
+        tokens.saveServerUrl("https://typed.example.net")
+        val typed = env.savedServer()
+        assertEquals(true, env.adoptServer(SigFixtures.ORIGIN))
+        env.restoreServer(typed)
+        assertEquals("https://typed.example.net", tokens.getServerUrl())
+    }
+
+    @Test fun `clearing the saved server starts a new session generation and leaves the rest`() {
+        val tokens = TokenStorage(io.wolftown.kaiku.testutil.InMemorySharedPreferences())
+        tokens.saveServerUrl("https://chat.example.com")
+        tokens.saveTokens("a", "r", 900, "u1")
+        val generation = tokens.getSessionGeneration()
+        tokens.clearServerUrl()
+        assertNull(tokens.getServerUrl())
+        assertEquals("a", tokens.getAccessToken())
+        assertEquals(true, tokens.getSessionGeneration() != generation)
+    }
 }

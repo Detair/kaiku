@@ -55,7 +55,13 @@ class SetupFlowViewModelTest {
     private val entry = SetupEntry(SigFixtures.ORIGIN, token, SetupEntry.Source.SCAN)
     private val enroll = FakeEnrollmentApi()
     private var decision: UvDecision = UvPolicy.choose(30, true, true)
-    private val suitability = object : DeviceSuitabilityChecker { override fun check() = decision }
+    private var suitabilityChecks = 0
+    private val suitability = object : DeviceSuitabilityChecker {
+        override fun check(): UvDecision {
+            suitabilityChecks++
+            return decision
+        }
+    }
     private val deviceSignIn: DeviceSignIn = mockk()
     private val env = FakeSetupEnvironment()
     private val approval = FakeApprovalApi()
@@ -353,15 +359,55 @@ class SetupFlowViewModelTest {
         val (v, f) = vm()
         v.start(entry)
         v.confirmSubject(activity)
-        // The enrolment is claimed (by this phone's lost claim, or by someone else) and the server
-        // lists no key device for this phone: nothing proves the key worthless, so it stays.
+        // The enrolment is claimed (by this phone's lost claim, or by someone else) and the server,
+        // asked after that, lists no key device for this phone. This phone never got the claim's
+        // answer, so no code of it can be confirmed: the key is worthless and a new code is needed.
         enroll.popAnswers += apiError(409, "ENROLLMENT_ALREADY_CLAIMED")
         approval.failWith = apiError(404, "KEY_DEVICE_UNKNOWN")
         v.retry()
-        assertEquals(SetupUi.Ended(R.string.setup_claim_unsure, canRetry = true), v.ui.value)
-        assertTrue(f.keyStore.hasKey())
-        assertEquals(KeyDevicePhase.CLAIMING, f.repo.phase())
+        assertEquals(SetupUi.Ended(R.string.setup_already_used, canRetry = false), v.ui.value)
+        assertFalse(f.keyStore.hasKey())
+        assertNull(f.repo.local())
         assertEquals(1, enroll.calls.count { it == "claim" })
+    }
+
+    /** A screen lock set up meanwhile, or a check that failed once, must not stick to later visits of the scanner. */
+    @Test fun `the scanner checks what the phone can do anew at every visit, once`() = runTest {
+        val f = KeyDeviceFixture(backgroundScope, active = false)
+        val owner = owner(f)
+        decision = UvDecision.Unsuitable(io.wolftown.kaiku.approval.UnsuitableReason.NO_SCREEN_LOCK)
+        val first = SetupFlowViewModel(owner)
+        first.enterScanner()
+        assertEquals(decision, first.scanReady.value)
+        // The same visit again (a rotation): not asked again.
+        first.enterScanner()
+        assertEquals(1, suitabilityChecks)
+        first.onCleared()
+        // A later visit: the person has set a screen lock meanwhile.
+        decision = UvPolicy.choose(30, true, true)
+        val second = SetupFlowViewModel(owner)
+        second.enterScanner()
+        assertEquals(2, suitabilityChecks)
+        assertEquals(decision, second.scanReady.value)
+    }
+
+    /** The code on the screen and the link in the mail are one and the same setup code. */
+    @Test fun `the same code scanned and then opened as a link is the same setup`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        val (v, f) = vm()
+        v.start(entry)
+        assertTrue(v.ui.value is SetupUi.ConfirmSubject)
+        val key = f.keyStore.keyId()
+        val asLink = SetupEntry(SigFixtures.ORIGIN + "/", token, SetupEntry.Source.LINK)
+        // Opened while the scanned setup is held: not a second setup, and not "another link" either.
+        v.start(asLink)
+        assertFalse(v.linkIgnored.value)
+        assertTrue(v.ui.value is SetupUi.ConfirmSubject)
+        assertEquals(key, f.keyStore.keyId())
+        assertEquals(listOf(token), enroll.openTokens)
+        // A code for another setup is still another link.
+        v.start(SetupEntry(SigFixtures.ORIGIN, "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8", SetupEntry.Source.LINK))
+        assertTrue(v.linkIgnored.value)
     }
 
     @Test fun `a restored setup screen with a stored setup hands over to the waiting screen`() = runTest {
@@ -507,7 +553,7 @@ class SetupFlowViewModelTest {
         assertEquals(generated, f.keyStore.generatedChallenges.size)
     }
 
-    @Test fun `a new setup code while a claim is unresolved goes to the waiting screen`() = runTest {
+    @Test fun `a setup code scanned while a claim without its link is unresolved goes to the waiting screen`() = runTest {
         env.pinned = SigFixtures.ORIGIN
         enroll.claimFailure = IOException("timeout")
         val (v, f) = vm()
@@ -515,11 +561,35 @@ class SetupFlowViewModelTest {
         v.confirmSubject(activity)
         assertEquals(KeyDevicePhase.CLAIMING, f.repo.phase())
         val generated = f.keyStore.generatedChallenges.size
-        v.reset()
-        v.start(entry) // the person scans again
-        assertEquals(SetupUi.Resume, v.ui.value)
+        v.onCleared()
+        // After a restart the claim's link is gone (it is never stored); the person scans again.
+        val restarted = SetupFlowViewModel(owner(f))
+        restarted.start(entry)
+        assertEquals(SetupUi.Resume, restarted.ui.value)
         assertTrue(f.keyStore.hasKey())
         assertEquals(generated, f.keyStore.generatedChallenges.size)
+        assertEquals(1, enroll.popCalls)
+    }
+
+    @Test fun `the same code scanned again while its claim is unresolved asks the enrolment first and makes no key`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        enroll.claimFailure = IOException("timeout")
+        val (v, f) = vm()
+        v.start(entry)
+        v.confirmSubject(activity)
+        val key = f.keyStore.keyId()
+        val generated = f.keyStore.generatedChallenges.size
+        v.reset() // back to the scanner
+        // The enrolment is claimed; what became of the key device cannot be asked right now.
+        enroll.popAnswers += apiError(409, "ENROLLMENT_ALREADY_CLAIMED")
+        approval.failWith = IOException("offline")
+        v.start(entry)
+        assertEquals(SetupUi.Ended(R.string.setup_claim_unsure, canRetry = true), v.ui.value)
+        assertEquals(2, enroll.popCalls)
+        assertEquals(key, f.keyStore.keyId())
+        assertEquals(generated, f.keyStore.generatedChallenges.size)
+        assertEquals(KeyDevicePhase.CLAIMING, f.repo.phase())
+        assertEquals(1, enroll.calls.count { it == "claim" })
     }
 
     @Test fun `the subject screen and the prompt show the signed name and the server first`() = runTest {

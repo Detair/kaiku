@@ -8,6 +8,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import io.wolftown.kaiku.R
 import io.wolftown.kaiku.ui.shared.KaikuTheme
+import io.wolftown.kaiku.ui.shared.KeyBody
 import io.wolftown.kaiku.ui.shared.KeyNotice
 import io.wolftown.kaiku.ui.shared.KeyPrimaryButton
 import io.wolftown.kaiku.ui.shared.KeyScreen
@@ -25,6 +26,7 @@ fun KeyStorageUnreadable(onRetry: () -> Unit) {
                 KeyTitle(stringResource(R.string.app_name))
                 KeyNotice(stringResource(R.string.security_key_storage_unreadable), warning = true)
                 KeyPrimaryButton(stringResource(R.string.common_try_again), onClick = onRetry)
+                KeyBody(stringResource(R.string.security_clear_storage_hint), secondary = true)
             }
         }
     }

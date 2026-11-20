@@ -94,7 +94,8 @@ class DeviceSignIn @Inject constructor(
         // Captured before anything is sent: a logout, a server change or another session meanwhile
         // means the answer is not installed (and is ended on the server).
         val start = authRepository.beginDeviceSignIn(local.origin) ?: return DeviceSignInResult.Failed("OTHER_SERVER")
-        val deviceId = deviceIds.id()
+        // The install id the key device was enrolled under, whatever id the app has now.
+        val deviceId = rec.installId ?: deviceIds.id()
         var ask = Ask.DEVICE_LOGIN_CHALLENGE
         return try {
             val ch = approvalApi.deviceLoginChallenge(local.userId, deviceId, origin)
@@ -134,6 +135,8 @@ class DeviceSignIn @Inject constructor(
                             device = it.device.copy(keyDeviceId = user.session?.keyDeviceId ?: it.device.keyDeviceId, claimSecret = null),
                             readyAt = null,
                             sessionCap = cap,
+                            // The server just took this id for the key device: it is the record's from now on.
+                            installId = it.installId ?: deviceId,
                         )
                     }
                     when (taken) {

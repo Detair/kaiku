@@ -237,6 +237,16 @@ class TokenStorage internal constructor(
         }
     }
 
+    /** Removes the saved server address (back to "none saved"). Starts a new session generation. */
+    @Synchronized
+    fun clearServerUrl() {
+        sessionGeneration++
+        val success = prefs.edit().remove(KEY_SERVER_URL).commit()
+        if (!success) {
+            logger.warning("Failed to clear server URL from storage")
+        }
+    }
+
     /** Epoch millis at which the stored access token expires, or 0 when none is stored. */
     fun getAccessTokenExpiresAtMillis(): Long = readOr(0L) { prefs.getLong(KEY_EXPIRES_AT, 0L) }
 

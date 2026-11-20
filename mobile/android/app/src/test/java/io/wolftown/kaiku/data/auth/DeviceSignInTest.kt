@@ -86,7 +86,28 @@ class DeviceSignInTest {
         val invalidation = io.wolftown.kaiku.data.keydevice.KeyInvalidation(api, repo, authRepository)
         val v = FakeUserVerifier(keyStore, uv).also { verifier = it }
         val signer = DeviceSigner(keyStore, v, checks, invalidation::handle)
-        return DeviceSignIn(api, signer, repo, { SigFixtures.DEVICE_ID }, authRepository, KeyAnswers(repo)) to repo
+        return DeviceSignIn(api, signer, repo, { appInstallId }, authRepository, KeyAnswers(repo)) to repo
+    }
+
+    /** The install id the app has now. */
+    private var appInstallId = SigFixtures.DEVICE_ID
+
+    /** The server lists the key device under the id it was enrolled with: the sign-in names that one. */
+    @Test fun `the sign-in names the install id of the record, whatever id the app has now`() = runTest {
+        val (signIn, repo) = setUp()
+        repo.bindInstallId(SigFixtures.DEVICE_ID)
+        appInstallId = "0a0a0a0a-0a0a-4a0a-8a0a-0a0a0a0a0a0a"
+        assertEquals(DeviceSignInResult.Success, signIn.signIn(activity))
+        assertEquals("deviceLoginChallenge:${SigFixtures.USER_ID}:${SigFixtures.DEVICE_ID}", api.calls.first())
+        assertEquals(SigFixtures.DEVICE_ID, repo.record.value!!.installId)
+    }
+
+    @Test fun `a sign-in that worked records the install id it was made under`() = runTest {
+        val (signIn, repo) = setUp()
+        assertEquals(null, repo.record.value!!.installId)
+        assertEquals(DeviceSignInResult.Success, signIn.signIn(activity))
+        assertEquals(SigFixtures.DEVICE_ID, repo.record.value!!.installId)
+        assertEquals(SigFixtures.DEVICE_ID, store.stored!!.installId)
     }
 
     @Test fun `device sign-in installs a full session`() = runTest {

@@ -44,7 +44,7 @@ class ConfirmItsYouViewModelTest {
     private val deviceSignIn: DeviceSignIn = mockk()
     private val signOut: KeyDeviceSignOut = mockk(relaxed = true)
     private val probe: KeyDeviceProbe = mockk {
-        coEvery { probe(any(), any()) } returns ServerKeyState.Active
+        coEvery { probe(any()) } returns ServerKeyState.Active
     }
     private val gone = ServerKeyState.Gone(ServerAnswer(404, "KEY_DEVICE_UNKNOWN"))
 
@@ -224,7 +224,7 @@ class ConfirmItsYouViewModelTest {
 
     @Test fun `a key the admin removed is noticed on open and the phone is no key any more`() = runTest {
         // No tap needed; the text says what happened and OK leads to the sign-in for a new setup.
-        coEvery { probe.probe(any(), any()) } returns gone
+        coEvery { probe.probe(any()) } returns gone
         val f = lapsedFixture()
         val v = vm(f)
         assertTrue(v.ui.value.keyGone)
@@ -244,19 +244,19 @@ class ConfirmItsYouViewModelTest {
             // "Gone" in words only: not one of the server's two answers.
             ServerKeyState.Gone(ServerAnswer(500, "KEY_DEVICE_UNKNOWN")),
         )) {
-            coEvery { probe.probe(any(), any()) } returns st
+            coEvery { probe.probe(any()) } returns st
             val f = lapsedFixture()
             val v = vm(f)
             assertEquals(false, v.ui.value.keyGone)
             assertNotNull(st.toString(), f.repo.local())
         }
-        coVerify { probe.probe(SigFixtures.USER_ID, SigFixtures.ORIGIN) }
+        coVerify { probe.probe(match { it.device.userId == SigFixtures.USER_ID && it.device.origin == SigFixtures.ORIGIN }) }
     }
 
     @Test fun `a probe answer about a key that was replaced meanwhile forgets nothing`() = runTest {
         val f = lapsedFixture()
         val held = kotlinx.coroutines.CompletableDeferred<Unit>()
-        coEvery { probe.probe(any(), any()) } coAnswers {
+        coEvery { probe.probe(any()) } coAnswers {
             held.await()
             gone
         }
@@ -277,7 +277,7 @@ class ConfirmItsYouViewModelTest {
     @Test fun `a signed-in phone is not probed`() = runTest {
         val f = KeyDeviceFixture(backgroundScope) // signed in: the renewal screen
         vm(f)
-        coVerify(exactly = 0) { probe.probe(any(), any()) }
+        coVerify(exactly = 0) { probe.probe(any()) }
     }
 
     @Test fun `prompts name their purpose and a slow prompt says so`() = runTest {

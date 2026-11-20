@@ -93,7 +93,8 @@ class PhoneRemoval @Inject constructor(
         val origin = KaikuPayloads.canonicalOrigin(rec.device.origin)?.takeIf { it.startsWith("https://") }
             ?: return RemovalResult.Failed("OTHER_SERVER")
         val userId = rec.device.userId
-        val deviceId = deviceIds.id()
+        // The install id the key device was enrolled under, whatever id the app has now.
+        val deviceId = rec.installId ?: deviceIds.id()
         // The removal's credentials: here, and in the calls below that are handed them, only.
         var session: AuthResponse? = null
         var endedByServer = false

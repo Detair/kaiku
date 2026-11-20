@@ -21,12 +21,27 @@ class KeyForgetCallSitesTest {
         .map { it.relativeTo(root).path }
         .toSet()
 
-    @Test fun `a record is forgotten only for a server answer or an invalidated key`() {
+    @Test fun `a record is forgotten only for a server answer, an invalidated key, or the person's decision about an unfinished setup`() {
         // Who calls it (it is defined in the repository).
-        assertEquals(setOf("data/keydevice/KeyAnswers.kt", "data/keydevice/KeyInvalidation.kt"), filesWith(Regex("""\.forget\(""")))
+        assertEquals(
+            setOf("data/keydevice/KeyAnswers.kt", "data/keydevice/KeyInvalidation.kt", "data/keydevice/SetupDiscard.kt"),
+            filesWith(Regex("""\.forget\(""")),
+        )
         assertEquals(setOf("data/keydevice/KeyDeviceRepository.kt"), filesWith(Regex("""fun forget\(""")))
         assertEquals(setOf("data/keydevice/KeyAnswers.kt"), filesWith(Regex("""Forget\.SERVER_ANSWER""")))
         assertEquals(setOf("data/keydevice/KeyInvalidation.kt"), filesWith(Regex("""Forget\.KEY_INVALIDATED""")))
+        // The person's decision: made in one place (the repository only refuses it for an active key),
+        // reached from one place (the one setup), which the two setup screens show.
+        assertEquals(
+            setOf("data/keydevice/SetupDiscard.kt", "data/keydevice/KeyDeviceRepository.kt"),
+            filesWith(Regex("""Forget\.DISCARDED_BY_PERSON""")),
+        )
+        assertEquals(setOf("ui/auth/setup/SetupOwner.kt"), filesWith(Regex("""discards\.discard\(""")))
+        assertEquals(
+            setOf("ui/auth/setup/SetupFlowViewModel.kt", "ui/auth/setup/SetupPendingViewModel.kt"),
+            filesWith(Regex("""owner\.discard\(""")),
+        )
+        assertEquals(3, Forget.entries.size)
     }
 
     @Test fun `answers settle keys in these places only`() {
@@ -71,10 +86,12 @@ class KeyForgetCallSitesTest {
                 "data/keydevice/KeyAnswers.kt",
                 "data/auth/DeviceSignIn.kt",
                 "data/auth/KeyDeviceSignOut.kt",
+                "data/keydevice/SetupDiscard.kt",
+                "data/auth/LegacyRemovalSession.kt",
                 "ui/auth/setup/SetupOwner.kt",
                 "ui/MainActivity.kt",
             ),
-            filesWith(Regex("""keyDevices\.(create|replace|update|markRenewalPrompted)\(""")) + "data/keydevice/KeyDeviceRepository.kt",
+            filesWith(Regex("""keyDevices\.(create|replace|update|markRenewalPrompted|bindInstallId)\(""")) + "data/keydevice/KeyDeviceRepository.kt",
         )
     }
 

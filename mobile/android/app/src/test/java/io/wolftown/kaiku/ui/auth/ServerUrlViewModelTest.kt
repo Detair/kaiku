@@ -31,6 +31,8 @@ class ServerUrlViewModelTest {
     private lateinit var authRepository: AuthRepository
     private lateinit var serverProbe: ServerProbe
     private lateinit var viewModel: ServerUrlViewModel
+    private val keyStore = io.wolftown.kaiku.testutil.InMemoryKeyDeviceStore()
+    private lateinit var keyDevices: io.wolftown.kaiku.data.keydevice.KeyDeviceRepository
 
     @Before
     fun setUp() {
@@ -39,7 +41,12 @@ class ServerUrlViewModelTest {
         every { tokenStorage.getServerUrl() } returns null
         authRepository = mockk(relaxed = true)
         serverProbe = mockk()
-        viewModel = ServerUrlViewModel(tokenStorage, authRepository, serverProbe)
+        keyDevices = io.wolftown.kaiku.data.keydevice.KeyDeviceRepository(
+            keyStore, io.wolftown.kaiku.approval.SoftwareApprovalKeyStore(),
+            io.wolftown.kaiku.data.local.AuthState(kotlinx.coroutines.CoroutineScope(Dispatchers.Unconfined)),
+            kotlinx.coroutines.CoroutineScope(Dispatchers.Unconfined),
+        )
+        viewModel = ServerUrlViewModel(tokenStorage, authRepository, serverProbe, keyDevices)
     }
 
     @After
@@ -56,7 +63,7 @@ class ServerUrlViewModelTest {
     fun `starts with the stored server when there is one`() {
         every { tokenStorage.getServerUrl() } returns "https://other.example"
 
-        val vm = ServerUrlViewModel(tokenStorage, authRepository, serverProbe)
+        val vm = ServerUrlViewModel(tokenStorage, authRepository, serverProbe, keyDevices)
 
         assertEquals("https://other.example", vm.uiState.value.url)
     }
@@ -66,7 +73,7 @@ class ServerUrlViewModelTest {
         assertFalse(viewModel.canGoBack)
         every { tokenStorage.getServerUrl() } returns "https://other.example"
 
-        assertTrue(ServerUrlViewModel(tokenStorage, authRepository, serverProbe).canGoBack)
+        assertTrue(ServerUrlViewModel(tokenStorage, authRepository, serverProbe, keyDevices).canGoBack)
     }
 
     @Test
@@ -130,5 +137,63 @@ class ServerUrlViewModelTest {
         assertEquals(R.string.auth_server_unreachable, viewModel.uiState.value.error)
         assertFalse(viewModel.uiState.value.isChecking)
         verify(exactly = 0) { tokenStorage.saveServerUrl(any()) }
+    }
+
+    private fun claimedRecord() = io.wolftown.kaiku.data.keydevice.StoredKeyDevice(
+        io.wolftown.kaiku.data.keydevice.LocalKeyDevice(null, "u1", "https://chat.example.com", io.wolftown.kaiku.approval.UvClass.PER_USE, "e1", "s"),
+        io.wolftown.kaiku.data.keydevice.KeyDevicePhase.CLAIMED,
+        keyId = "k1",
+    )
+
+    /** A key, or a setup that is not finished, ties the phone to its server: the address is not changed under it. */
+    @Test
+    fun `the server is not changed while this phone holds a key record`() = runTest {
+        coEvery { serverProbe.probe(any()) } returns ProbeResult.Ok(true)
+        keyStore.stored = claimedRecord()
+        keyDevices.reload()
+
+        viewModel.onUrlChanged("other.example.org")
+        viewModel.onConnectClicked()
+        advanceUntilIdle()
+
+        assertEquals(R.string.auth_server_tied_to_key, viewModel.uiState.value.error)
+        assertFalse(viewModel.uiState.value.connectSuccess)
+        verify(exactly = 0) { tokenStorage.saveServerUrl(any()) }
+        verify(exactly = 0) { tokenStorage.clear() }
+        io.mockk.coVerify(exactly = 0) { serverProbe.probe(any()) }
+    }
+
+    @Test
+    fun `nor while what it has saved about its key cannot be read`() = runTest {
+        coEvery { serverProbe.probe(any()) } returns ProbeResult.Ok(true)
+        keyStore.unreadable = true
+        keyDevices.reload()
+
+        viewModel.onUrlChanged("other.example.org")
+        viewModel.onConnectClicked()
+        advanceUntilIdle()
+
+        assertEquals(R.string.auth_server_tied_to_key, viewModel.uiState.value.error)
+        verify(exactly = 0) { tokenStorage.saveServerUrl(any()) }
+        verify(exactly = 0) { tokenStorage.clear() }
+    }
+
+    @Test
+    fun `a key record that came while the server was being checked keeps the address too`() = runTest {
+        coEvery { serverProbe.probe(any()) } coAnswers {
+            keyStore.stored = claimedRecord()
+            keyDevices.reload()
+            ProbeResult.Ok(true)
+        }
+
+        viewModel.onUrlChanged("other.example.org")
+        viewModel.onConnectClicked()
+        advanceUntilIdle()
+
+        assertEquals(R.string.auth_server_tied_to_key, viewModel.uiState.value.error)
+        assertFalse(viewModel.uiState.value.isChecking)
+        assertFalse(viewModel.uiState.value.connectSuccess)
+        verify(exactly = 0) { tokenStorage.saveServerUrl(any()) }
+        verify(exactly = 0) { tokenStorage.clear() }
     }
 }

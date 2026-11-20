@@ -347,6 +347,28 @@ class SetupPendingViewModelTest {
         assertFalse(f.keyStore.hasKey())
     }
 
+    /** "Try again" asks at once, also while the screen only waits to ask again by itself. */
+    @Test fun `try again while the phone waits to ask again asks at once`() = runTest {
+        val (repo, _) = repo()
+        repo.seed(StoredKeyDevice(pendingDevice().copy(claimSecret = null), KeyDevicePhase.CLAIMING, claimVoidAfter = claimTime))
+        approval.failWith = noKeyDeviceAt(claimTime.minusSeconds(600))
+        val v = pendingVm(repo)
+        v.check()
+        assertEquals(SetupUi.ClaimWaiting, v.ui.value)
+        val asked = approval.calls.size
+        // The claim did land meanwhile.
+        approval.failWith = null
+        approval.nextChallenge = SigFixtures.challengeFor(SigKind.DEVICE_LOGIN, 3, SigFixtures.V03_CONTEXT)
+        v.check() // no time has passed
+        assertEquals(asked + 1, approval.calls.size)
+        assertEquals(SetupUi.SigningIn, v.ui.value)
+        assertEquals(KeyDevicePhase.ACTIVE, repo.phase())
+        // The wait it replaced asks nothing more.
+        advanceTimeBy(700_000)
+        runCurrent()
+        assertEquals(asked + 1, approval.calls.size)
+    }
+
     @Test fun `without the server's time a claim is not given up`() = runTest {
         val (repo, f) = repo()
         repo.seed(StoredKeyDevice(pendingDevice().copy(claimSecret = null), KeyDevicePhase.CLAIMING, claimVoidAfter = claimTime))

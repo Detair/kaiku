@@ -38,6 +38,11 @@ enum class Verdict {
     CLAIM_UNDECIDED,
     /** The enrolment is still open and every earlier claim of it is void: nothing was stored for the key. */
     CLAIM_VOID,
+    /**
+     * The enrolment is claimed. For a claim whose answer this phone never got, the key-device probe
+     * asked after this answer says whether that claim made this phone a key.
+     */
+    CLAIM_TAKEN,
     /** The enrolment ended without making a key device. */
     ENROLMENT_ENDED,
     /** The server does not know the enrolment (any more); whether a key device came of it, the key-device probe says. */
@@ -55,6 +60,15 @@ data class ServerAnswer(val status: Int, val code: String? = null, val state: St
 }
 
 /**
+ * The order in which questions were asked and answers taken, in this process: a number that only
+ * grows. One answer can then be required to belong to a question asked after another answer.
+ */
+object AskOrder {
+    private val n = java.util.concurrent.atomic.AtomicLong()
+    fun next(): Long = n.incrementAndGet()
+}
+
+/**
  * Every answer that can cost this phone its key, as data ([rows]), and the one function through
  * which such an answer forgets a record ([settle]). An answer that is not in the table (another
  * status with a listed code, an unknown code, no readable body, any status not listed) keeps the key.
@@ -67,6 +81,12 @@ data class ServerAnswer(val status: Int, val code: String? = null, val state: St
  * - "already claimed" can be this phone's own claim that was stored after its answer was lost,
  *   and "not valid" is first read without the lock: neither forgets; the claim check asks under
  *   the lock (a new challenge for the same link and key voids every earlier one);
+ * - a claim check that says "already claimed" (under the lock: a claim is stored) for a record
+ *   whose own claim never got its answer, followed by a key-device probe asked after it that says
+ *   "no key device": the stored claim is not a key device of this phone and cannot become one
+ *   (a code it may have got was in the answer that never arrived, so nobody can confirm it; or
+ *   another phone holds the link). In that order a claim that completed by itself shows as a key
+ *   device in the probe and is taken over instead;
  * - an enrolment status counts only as `200` with an ending state, asked for the record's own
  *   enrolment (the answer is bound to the id and secret that were sent).
  */
@@ -83,6 +103,14 @@ class KeyAnswers @Inject constructor(private val keyDevices: KeyDeviceRepository
 
     private class UnknownFor(val about: StoredKeyDevice) : EnrolmentUnknown
 
+    /**
+     * Proof that the claim check said "already claimed" about one record whose own claim never got
+     * its answer, and when ([AskOrder]). Only [settle] makes one.
+     */
+    sealed interface ClaimTaken
+
+    private class TakenFor(val about: StoredKeyDevice, val at: Long) : ClaimTaken
+
     sealed interface Settled {
         val verdict: Verdict
 
@@ -95,6 +123,8 @@ class KeyAnswers @Inject constructor(private val keyDevices: KeyDeviceRepository
             override val verdict: Verdict,
             val unknown: EnrolmentUnknown? = null,
             val askAgainIn: Duration? = null,
+            /** The claim check said "already claimed"; pass it with the answer of a probe asked afterwards. */
+            val taken: ClaimTaken? = null,
         ) : Settled
         data class Forgotten(override val verdict: Verdict) : Settled
 
@@ -125,6 +155,7 @@ class KeyAnswers @Inject constructor(private val keyDevices: KeyDeviceRepository
             Row(Ask.CLAIM, 409, "APPROVAL_STATE", null, Verdict.CLAIM_UNDECIDED),
             Row(Ask.CLAIM, 409, "ENROLLMENT_STATE", null, Verdict.CLAIM_UNDECIDED),
             Row(Ask.CLAIM_CHECK, 201, null, null, Verdict.CLAIM_VOID),
+            Row(Ask.CLAIM_CHECK, 409, "ENROLLMENT_ALREADY_CLAIMED", null, Verdict.CLAIM_TAKEN),
             Row(Ask.CLAIM_CHECK, 404, "ENROLLMENT_TOKEN_INVALID", null, Verdict.ENROLMENT_UNKNOWN),
             Row(Ask.ENROLMENT_STATUS, 200, null, "cancelled", Verdict.ENROLMENT_ENDED),
             Row(Ask.ENROLMENT_STATUS, 200, null, "expired", Verdict.ENROLMENT_ENDED),
@@ -147,8 +178,10 @@ class KeyAnswers @Inject constructor(private val keyDevices: KeyDeviceRepository
      * comes from [rows]; it forgets only a record in the phase it can speak about, and only if that
      * record is still the stored one ([KeyDeviceRepository.forget]):
      * - [Verdict.KEY_GONE]: an active or pending key device. A claim (`CLAIMING`, `CLAIMED`) only
-     *   with [unknown] (the server no longer knows its enrolment), or, for a claim whose answer
-     *   never came, once the server's own clock is past the time the claim could still be stored;
+     *   with [unknown] (the server no longer knows its enrolment); a claim whose answer never came
+     *   (`CLAIMING`) also with [taken] when this answer is the key-device probe's and was asked
+     *   ([askedAt]) after the claim check's answer, or once the server's own clock is past the time
+     *   the claim could still be stored;
      * - [Verdict.REMOVED]: an active key device;
      * - [Verdict.CLAIM_REFUSED], [Verdict.CLAIM_VOID]: a claim whose answer was not known (`CLAIMING`);
      * - [Verdict.ENROLMENT_ENDED]: a claim waiting for its code (`CLAIMED`) of that very enrolment.
@@ -160,15 +193,22 @@ class KeyAnswers @Inject constructor(private val keyDevices: KeyDeviceRepository
         answer: ServerAnswer,
         askedEnrolment: String? = null,
         unknown: EnrolmentUnknown? = null,
+        taken: ClaimTaken? = null,
+        /** [AskOrder] when the request of [answer] was sent (the key-device probe records it). */
+        askedAt: Long? = null,
     ): Settled {
         val own = KaikuPayloads.canonicalOrigin(expected.device.origin)
         if (askedOrigin == null || own == null || askedOrigin != own || !own.startsWith("https://")) return Settled.Kept(Verdict.KEEP)
         val v = verdict(ask, answer)
         val proven = unknown is UnknownFor && unknown.about sameAs expected
         val phase = expected.phase
+        // The claim's answer never came (the stored phase says so), its enrolment is claimed all
+        // the same, and a probe asked after that answer finds no key device.
+        val claimLost = phase == KeyDevicePhase.CLAIMING && ask == Ask.DEVICE_LOGIN_CHALLENGE &&
+            taken is TakenFor && taken.about sameAs expected && askedAt != null && askedAt > taken.at
         return when (v) {
             Verdict.KEY_GONE -> when {
-                phase == KeyDevicePhase.ACTIVE || phase == KeyDevicePhase.PENDING || proven -> drop(expected, v)
+                phase == KeyDevicePhase.ACTIVE || phase == KeyDevicePhase.PENDING || proven || claimLost -> drop(expected, v)
                 // A claim that has no claim secret to ask its enrolment with.
                 phase == KeyDevicePhase.CLAIMING || expected.device.claimSecret == null -> afterItsTime(expected, answer.serverTime, v)
                 else -> Settled.Kept(v)
@@ -182,6 +222,10 @@ class KeyAnswers @Inject constructor(private val keyDevices: KeyDeviceRepository
                     (ask == Ask.ENROLMENT_STATUS && phase == KeyDevicePhase.CLAIMED && askedEnrolment == expected.device.enrollmentId)
                 Settled.Kept(v, unknown = if (about) UnknownFor(expected) else null)
             }
+            Verdict.CLAIM_TAKEN -> Settled.Kept(
+                v,
+                taken = if (ask == Ask.CLAIM_CHECK && phase == KeyDevicePhase.CLAIMING) TakenFor(expected, AskOrder.next()) else null,
+            )
             Verdict.KEEP, Verdict.CLAIM_UNDECIDED -> Settled.Kept(v)
         }
     }

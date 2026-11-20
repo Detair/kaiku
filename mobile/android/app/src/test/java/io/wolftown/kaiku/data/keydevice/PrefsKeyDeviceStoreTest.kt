@@ -21,6 +21,7 @@ class PrefsKeyDeviceStoreTest {
     private val record = StoredKeyDevice(
         device, KeyDevicePhase.CLAIMING, keyId = "key-1", attemptId = "attempt-1",
         claimVoidAfter = Instant.parse("2026-11-20T10:20:00Z"),
+        installId = "22222222-2222-4222-8222-222222222222", since = Instant.parse("2026-11-20T10:00:00Z"),
     )
 
     private fun store() = PrefsKeyDeviceStore(KeystoreWrappedPreferences(backing, testValueCipher()))
@@ -29,9 +30,18 @@ class PrefsKeyDeviceStoreTest {
         assertEquals(KeyStorage.Absent, store().load())
     }
 
-    @Test fun `a stored key device reads back with its key, setup and claim time`() {
+    @Test fun `a stored key device reads back with its key, setup, install id and times`() {
         assertTrue(store().save(record))
         assertEquals(KeyStorage.Present(record), store().load())
+        assertEquals("22222222-2222-4222-8222-222222222222", (store().load() as KeyStorage.Present).record.installId)
+        assertEquals(Instant.parse("2026-11-20T10:00:00Z"), (store().load() as KeyStorage.Present).record.since)
+    }
+
+    @Test fun `a record saved over one with an install id and a time does not keep the old ones`() {
+        store().save(record)
+        val plain = StoredKeyDevice(device, KeyDevicePhase.ACTIVE, keyId = "key-1")
+        store().save(plain)
+        assertEquals(KeyStorage.Present(plain), store().load())
     }
 
     @Test fun `a record of an earlier version reads back without a key id`() {

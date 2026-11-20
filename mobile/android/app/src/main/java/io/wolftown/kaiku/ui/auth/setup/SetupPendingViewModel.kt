@@ -24,8 +24,11 @@ class SetupPendingViewModel @Inject constructor(private val owner: SetupOwner) :
 
     val ui: StateFlow<SetupUi> = owner.ui
     val linkIgnored: StateFlow<Boolean> = owner.linkIgnored
+    val cannotAsk: StateFlow<Boolean> = owner.cannotAsk
+    val discardable: StateFlow<Boolean> = owner.discardable
 
     fun check() = owner.check()
+    fun discard() = owner.discard()
     fun signIn(activity: FragmentActivity) = owner.signIn(activity)
 
     public override fun onCleared() {

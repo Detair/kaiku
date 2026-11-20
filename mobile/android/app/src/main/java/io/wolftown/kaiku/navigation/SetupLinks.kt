@@ -27,6 +27,17 @@ object PendingSetupLinks {
         _pending.value = e
     }
 
+    /**
+     * The app was opened with [uri] while it could not start (what it has saved about its key
+     * cannot be read): a setup link is kept for the setup screen to take once the app does start.
+     * True when [uri] was a setup link. Nothing else of the link is looked at.
+     */
+    fun keep(uri: String?): Boolean {
+        val e = uri?.let(SetupLinks::parse) ?: return false
+        post(e)
+        return true
+    }
+
     /** Takes the pending link at most once, also with two takers at the same time. */
     fun take(): SetupEntry? = _pending.getAndUpdate { null }
 

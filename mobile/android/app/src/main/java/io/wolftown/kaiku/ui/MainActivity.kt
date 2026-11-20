@@ -85,9 +85,12 @@ class MainActivity : FragmentActivity() {
         // What the phone has saved about its key cannot be read right now: nothing is decided on it
         // (no stored session is restored, no setup starts); the person can try again.
         if (keyStorage.unreadable()) {
+            // A setup link that opened the app is kept (in memory) for after a successful "Try again".
+            if (savedInstanceState == null && PendingSetupLinks.keep(intent?.data?.toString())) intent.data = null
             setContent { KeyStorageUnreadable(onRetry = { if (keyStorage.retry()) recreate() }) }
             return
         }
+        keyStorage.bindInstallId()
         authState.initialize(tokenStorage)
         // On recreation (rotation, theme change, process restore) getIntent() is the
         // original launch intent; handling it again would replay a consumed link.

@@ -74,7 +74,7 @@ interface SetupEnvironment {
     fun adoptServer(origin: String): Boolean
     /** The saved server URL (an unconfigured app may have one typed in, without a session). */
     fun savedServer(): String?
-    /** Puts back the server an abandoned setup replaced (null: none was saved). */
+    /** Puts back what an abandoned setup replaced: the server saved before, or none (null). */
     fun restoreServer(url: String?)
     val deviceLabel: String
     val apiLevel: Int
@@ -95,7 +95,8 @@ class AndroidSetupEnvironment @Inject constructor(
     }
     override fun savedServer(): String? = tokenStorage.getServerUrl()
     override fun restoreServer(url: String?) {
-        if (url != null) tokenStorage.saveServerUrl(url)
+        // Exactly what was there before the setup adopted its server, also when that was nothing.
+        if (url != null) tokenStorage.saveServerUrl(url) else tokenStorage.clearServerUrl()
     }
     override val deviceLabel: String = "${Build.MANUFACTURER} ${Build.MODEL}".trim()
     override val apiLevel: Int = Build.VERSION.SDK_INT
@@ -114,10 +115,22 @@ class SetupFlowViewModel @Inject constructor(private val owner: SetupOwner) : Vi
     val linkIgnored: StateFlow<Boolean> = owner.linkIgnored
     val waiting: StateFlow<Boolean> = owner.waiting
     val scanReady: StateFlow<UvDecision?> = owner.scanReady
+    val cannotAsk: StateFlow<Boolean> = owner.cannotAsk
+    val discardable: StateFlow<Boolean> = owner.discardable
     val startedFlow: StateFlow<Boolean> = owner.startedFlow
     val started: Boolean get() = owner.started
 
+    private var scannerEntered = false
+
+    /** The scanner screen is shown: what the phone can do is checked anew, once per visit (a rotation is not a visit). */
+    fun enterScanner() {
+        if (scannerEntered) return
+        scannerEntered = true
+        owner.checkBeforeScan(fresh = true)
+    }
+
     fun checkBeforeScan() = owner.checkBeforeScan()
+    fun discard() = owner.discard()
     fun start(e: SetupEntry) = owner.start(e)
     fun resumeWithoutEntry() = owner.resumeWithoutEntry()
     fun reset() = owner.reset()

@@ -9,11 +9,13 @@ import io.wolftown.kaiku.data.auth.DeviceSignIn
 import io.wolftown.kaiku.data.keydevice.KeyAnswers
 import io.wolftown.kaiku.data.keydevice.KeyDeviceProbe
 import io.wolftown.kaiku.data.keydevice.KeyDeviceRepository
+import io.wolftown.kaiku.data.keydevice.SetupDiscard
 import io.wolftown.kaiku.testutil.SigFixtures
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import java.time.Instant
 
 /** What the setup needs from the app around it, scripted. */
 class FakeSetupEnvironment : SetupEnvironment {
@@ -55,6 +57,10 @@ internal fun setupOwner(
     },
     keyDispatcher: CoroutineDispatcher = Dispatchers.Unconfined,
     scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
+    /** The phone's own clock. */
+    clock: () -> Instant = Instant::now,
+    /** The install id the app has now. */
+    installId: () -> String = { SigFixtures.DEVICE_ID },
 ): SetupOwner = SetupOwner(
-    enroll, suitability, signer, repo, { SigFixtures.DEVICE_ID }, deviceSignIn, env, probe, KeyAnswers(repo), scope, keyDispatcher,
+    enroll, suitability, signer, repo, installId, deviceSignIn, env, probe, KeyAnswers(repo), SetupDiscard(repo), scope, keyDispatcher, clock,
 )

@@ -215,6 +215,16 @@ class PhoneRemovalTest {
         assertNull(p.f.repo.record.value)
     }
 
+    /** The server lists the key device under the install id it was enrolled with: every request names that one. */
+    @Test fun `the removal names the install id of the record, whatever id the app has now`() = runTest {
+        val p = Phone(this, appInstallId = "0a0a0a0a-0a0a-4a0a-8a0a-0a0a0a0a0a0a")
+        val rec = p.f.repo.record.value!!
+        p.f.store.stored = rec.copy(installId = SigFixtures.DEVICE_ID)
+        p.f.repo.reload()
+        assertEquals(RemovalResult.Removed, p.removal.run(activity))
+        assertTrue("deviceLoginChallenge:${SigFixtures.USER_ID}:${SigFixtures.DEVICE_ID}" in p.approval.calls)
+    }
+
     @Test fun `it has no way to the stored session, the sign-in state, the connection or push`() {
         val takes = PhoneRemoval::class.java.constructors.flatMap { it.parameterTypes.toList() }.map { it.simpleName }
         for (shared in listOf("TokenStorage", "AuthState", "AuthRepository", "RealtimeConnectionManager", "PushRegistrar", "TokenRefresher", "KaikuHttpClient", "DeviceSignIn")) {

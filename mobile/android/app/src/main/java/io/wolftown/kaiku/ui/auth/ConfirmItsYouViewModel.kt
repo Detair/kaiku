@@ -125,9 +125,9 @@ class ConfirmItsYouViewModel @Inject constructor(
         val rec = keyDevices.record.value
         if (rec != null && keyDevices.current() is KeyDeviceState.Lapsed) {
             viewModelScope.launch {
-                val st = probe.probe(rec.device.userId, rec.device.origin)
+                val st = probe.probe(rec)
                 if (st is ServerKeyState.Gone && !_ui.value.working && keyDevices.current() is KeyDeviceState.Lapsed &&
-                    answers.settle(rec, KaikuPayloads.canonicalOrigin(rec.device.origin), Ask.DEVICE_LOGIN_CHALLENGE, st.answer).forgotten
+                    answers.settle(rec, KaikuPayloads.canonicalOrigin(rec.device.origin), Ask.DEVICE_LOGIN_CHALLENGE, st.answer, askedAt = st.askedAt).forgotten
                 ) {
                     _ui.update { it.copy(error = R.string.security_device_revoked, keyGone = true) }
                 }

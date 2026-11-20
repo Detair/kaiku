@@ -60,6 +60,8 @@ fun SetupFlowScreen(
     val ui by viewModel.ui.collectAsState()
     val linkIgnored by viewModel.linkIgnored.collectAsState()
     val waiting by viewModel.waiting.collectAsState()
+    val cannotAsk by viewModel.cannotAsk.collectAsState()
+    val discardable by viewModel.discardable.collectAsState()
 
     // Taken only once composed, so a discarded composition never loses the memory-only code.
     LaunchedEffect(link) {
@@ -72,7 +74,10 @@ fun SetupFlowScreen(
         SetupPendingScreen(onSignedIn = onSignedIn, onEnded = { onBack?.invoke() })
         return
     }
-    SetupFlowSteps(ui = u0, viewModel = viewModel, linkIgnored = linkIgnored, onSignedIn = onSignedIn, onBack = onBack, onRescan = onRescan)
+    SetupFlowSteps(
+        ui = u0, viewModel = viewModel, linkIgnored = linkIgnored, cannotAsk = cannotAsk, discardable = discardable,
+        onSignedIn = onSignedIn, onBack = onBack, onRescan = onRescan,
+    )
 }
 
 @Composable
@@ -80,6 +85,8 @@ private fun SetupFlowSteps(
     ui: SetupUi,
     viewModel: SetupFlowViewModel,
     linkIgnored: Boolean,
+    cannotAsk: Boolean,
+    discardable: Boolean,
     onSignedIn: () -> Unit,
     onBack: (() -> Unit)?,
     onRescan: (() -> Unit)?,
@@ -143,6 +150,7 @@ private fun SetupFlowSteps(
                 KeyNotice(stringResource(R.string.setup_claim_waiting), warning = false)
                 KeyPrimaryButton(stringResource(R.string.common_try_again), onClick = viewModel::retry)
                 if (onBack != null) KeySecondaryButton(stringResource(R.string.common_back), onClick = onBack)
+                KeyBody(stringResource(R.string.security_clear_storage_hint), secondary = true)
             }
             SetupUi.Interrupted -> {
                 KeyNotice(stringResource(R.string.setup_interrupted), warning = true)
@@ -156,6 +164,37 @@ private fun SetupFlowSteps(
                 onBack = onBack,
             )
         }
+        UnfinishedSetupHelp(cannotAsk = cannotAsk, discardable = discardable, onDiscard = viewModel::discard)
+    }
+}
+
+/**
+ * Under a stored setup whose server could not be asked: the last resort in plain words, and, once
+ * the setup's own time is long past, "Discard this unfinished setup" behind a question that says
+ * what it means.
+ */
+@Composable
+internal fun UnfinishedSetupHelp(cannotAsk: Boolean, discardable: Boolean, onDiscard: () -> Unit) {
+    if (!cannotAsk) return
+    var ask by remember { mutableStateOf(false) }
+    KeyBody(stringResource(R.string.setup_cannot_ask_hint), secondary = true)
+    if (discardable) KeySecondaryButton(stringResource(R.string.setup_discard), onClick = { ask = true })
+    KeyBody(stringResource(R.string.security_clear_storage_hint), secondary = true)
+    if (ask && discardable) {
+        AlertDialog(
+            onDismissRequest = { ask = false },
+            title = { Text(stringResource(R.string.setup_discard_title)) },
+            text = { Text(stringResource(R.string.setup_discard_body)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    ask = false
+                    onDiscard()
+                }) { Text(stringResource(R.string.setup_discard_confirm)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { ask = false }) { Text(stringResource(R.string.setup_discard_keep)) }
+            },
+        )
     }
 }
 

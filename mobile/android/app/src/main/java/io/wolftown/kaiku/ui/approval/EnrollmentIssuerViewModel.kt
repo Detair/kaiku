@@ -259,7 +259,7 @@ class EnrollmentIssuerViewModel internal constructor(
                 val ch = approvalApi.enrollmentChallenge(id)
                 openChallengeId = ch.challengeId
                 val verified = try {
-                    signer.check(ch, SigKind.ENROLL, local.userId, deviceIds.id())
+                    signer.check(ch, SigKind.ENROLL, local.userId, keyDevices.record.value?.installId ?: deviceIds.id())
                 } catch (r: ChallengeRejected) {
                     logger.warning("Enrol challenge refused: ${r.reason}")
                     return@launch mismatch(ch.challengeId)
@@ -272,7 +272,7 @@ class EnrollmentIssuerViewModel internal constructor(
                 }
                 val digits = t.digits.toByteArray(Charsets.US_ASCII)
                 val prompt = UvPrompt(R.string.security_uv_title, activity.getString(R.string.issuer_uv_subtitle, ctx.label, ctx.subjectUsername))
-                when (val out = signer.sign(activity, ch, SigKind.ENROLL, local.userId, deviceIds.id(), Decision.APPROVE, digits, prompt, keyDevices.record.value?.keyId)) {
+                when (val out = signer.sign(activity, ch, SigKind.ENROLL, local.userId, keyDevices.record.value?.installId ?: deviceIds.id(), Decision.APPROVE, digits, prompt, keyDevices.record.value?.keyId)) {
                     is SignOutcome.Rejected -> mismatch(ch.challengeId)
                     is SignOutcome.Uv -> _ui.value = when (out.result) {
                         UvResult.Cancelled -> t

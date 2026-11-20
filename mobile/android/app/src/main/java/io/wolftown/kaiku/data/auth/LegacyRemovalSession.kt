@@ -1,5 +1,6 @@
 package io.wolftown.kaiku.data.auth
 
+import io.wolftown.kaiku.approval.DeviceIdProvider
 import io.wolftown.kaiku.data.api.AuthApi
 import io.wolftown.kaiku.data.keydevice.KeyDeviceRepository
 import io.wolftown.kaiku.data.keydevice.KeyDeviceStore
@@ -64,8 +65,25 @@ class LegacyRemovalSession @Inject constructor(
 class KeyStorageGate @Inject constructor(
     private val keyDevices: KeyDeviceRepository,
     private val legacy: LegacyRemovalSession,
+    private val deviceIds: DeviceIdProvider,
 ) {
     fun unreadable(): Boolean = keyDevices.unreadable()
+
+    /**
+     * At every start with a readable record: a key record from before records named their install
+     * id takes the id the app has now, so that from then on every question about that key device
+     * names the id it was enrolled under, whatever becomes of the app's own id. Nothing is read or
+     * made for a phone without a record.
+     */
+    fun bindInstallId() {
+        val rec = keyDevices.record.value ?: return
+        if (rec.installId != null) return
+        if (!keyDevices.bindInstallId(deviceIds.id()).done) logger.warning("Install id not recorded with the key record; the next start tries again")
+    }
+
+    private companion object {
+        val logger: Logger = Logger.getLogger("KeyStorageGate")
+    }
 
     /** True when the store can be read now. */
     fun retry(): Boolean {

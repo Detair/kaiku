@@ -15,6 +15,7 @@ import io.wolftown.kaiku.data.auth.DeviceSignInResult
 import io.wolftown.kaiku.data.keydevice.KeyDevicePhase
 import io.wolftown.kaiku.data.keydevice.KeyDeviceProbe
 import io.wolftown.kaiku.data.keydevice.LocalKeyDevice
+import io.wolftown.kaiku.data.keydevice.SetupDiscard
 import io.wolftown.kaiku.domain.model.ClaimResult
 import io.wolftown.kaiku.domain.model.ClaimStatus
 import io.wolftown.kaiku.domain.model.EnrollmentState
@@ -25,6 +26,7 @@ import io.wolftown.kaiku.testutil.SigFixtures
 import io.wolftown.kaiku.testutil.apiError
 import io.wolftown.kaiku.testutil.markEnrolled
 import io.wolftown.kaiku.testutil.saveClaimed
+import io.wolftown.kaiku.testutil.seed
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -67,7 +69,11 @@ class SetupOwnerTest {
     private val deviceSignIn: DeviceSignIn = mockk()
     private val env = FakeSetupEnvironment()
     private val approval = FakeApprovalApi()
-    private val probe = KeyDeviceProbe(approval) { SigFixtures.DEVICE_ID }
+    /** The install id the app has now. */
+    private var appInstallId = SigFixtures.DEVICE_ID
+    private val probe = KeyDeviceProbe(approval) { appInstallId }
+    /** The phone's own clock. */
+    private var now: Instant = Instant.parse("2026-11-20T09:00:00Z")
     private val use = UvPolicy.choose(30, true, true) as UvDecision.Use
     private val activeChallenge = SigFixtures.challengeFor(SigKind.DEVICE_LOGIN, 3, SigFixtures.V03_CONTEXT)
 
@@ -81,8 +87,12 @@ class SetupOwnerTest {
         f.authState.setLoggedOut()
         coEvery { deviceSignIn.signIn(any(), any()) } returns DeviceSignInResult.Success
         env.hasRecord = { f.repo.record.value != null }
-        return setupOwner(enroll.api, f.repo, f.signer, deviceSignIn, probe, env) to f
+        return owner(f) to f
     }
+
+    /** A setup owner on the phone [f]: the app as it runs now, or (a second one) after a restart. */
+    private fun owner(f: KeyDeviceFixture): SetupOwner =
+        setupOwner(enroll.api, f.repo, f.signer, deviceSignIn, probe, env, clock = { now }, installId = { appInstallId })
 
     private fun noKeyDeviceAt(t: Instant?) = apiError(404, "KEY_DEVICE_UNKNOWN", ApiErrorFields(serverTime = t))
 
@@ -386,9 +396,10 @@ class SetupOwnerTest {
     }
 
     /**
-     * The claim's answer does not come within its limit, but the server stores it. The enrolment
-     * then says "already claimed" and, for a moment, the server lists no key device yet.
-     * Nothing of that deletes the key: the phone waits, asks again, and goes on.
+     * The claim's answer does not come within its limit, but the server stores it (a claim of the
+     * app's own registration makes the key device in the same step). The enrolment then says
+     * "already claimed", and the key device, asked after that answer, is there: the setup goes on
+     * with the same key, and the claim is never sent again.
      */
     @Test fun `a claim that times out and was stored is recovered, not replayed into a refusal`() = runTest {
         env.pinned = SigFixtures.ORIGIN
@@ -404,29 +415,25 @@ class SetupOwnerTest {
         assertEquals(SetupUi.Ended(R.string.setup_claim_unsure, canRetry = true), v.ui.value)
         assertEquals(KeyDevicePhase.CLAIMING, f.repo.phase())
         val key = f.keyStore.keyId()
-        val until = f.repo.record.value!!.claimVoidAfter!!
 
-        // "Try again": the enrolment is claimed; the key device is not listed yet.
+        // "Try again": the enrolment is claimed, and the key device is listed.
         enroll.popAnswers += apiError(409, "ENROLLMENT_ALREADY_CLAIMED")
-        approval.failWith = noKeyDeviceAt(until.minusSeconds(300))
-        v.retry()
-        assertEquals(SetupUi.ClaimWaiting, v.ui.value)
-        assertTrue(owner.held())
-        assertEquals(key, f.keyStore.keyId())
-        assertEquals(KeyDevicePhase.CLAIMING, f.repo.phase())
-
-        // The server has it now: the phone asks again by itself and the setup goes on.
-        approval.failWith = null
         approval.nextChallenge = activeChallenge
-        advanceTimeBy(300_000 + 6_000)
-        runCurrent()
+        v.retry()
+        assertTrue(owner.held())
         assertEquals(SetupUi.SigningIn, v.ui.value)
         assertEquals(KeyDevicePhase.ACTIVE, f.repo.phase())
         assertEquals(key, f.keyStore.keyId())
         assertEquals(0, enroll.calls.count { it == "claim" }) // the held request never completed; none was sent again
     }
 
-    @Test fun `a claim that times out and was never stored is given up only after its time`() = runTest {
+    // ── A claim whose answer was lost ─────────────────────────────────────────────────────────
+
+    /**
+     * The signed claim left the phone and its answer never arrived (no code was shown). The screen
+     * says the connection broke; the record says the claim's answer is not known.
+     */
+    private fun TestScope.lostClaim(): Triple<SetupFlowViewModel, KeyDeviceFixture, SetupOwner> {
         env.pinned = SigFixtures.ORIGIN
         enroll.claimGate = CompletableDeferred()
         val (owner, f) = phone()
@@ -435,19 +442,275 @@ class SetupOwnerTest {
         v.confirmSubject(activity)
         advanceTimeBy(SetupOwner.CLAIM_TIMEOUT_MS + 1)
         runCurrent()
-        val until = f.repo.record.value!!.claimVoidAfter!!
-        // Someone else's claim took the link meanwhile; this phone's key is not a key device.
+        assertEquals(SetupUi.Ended(R.string.setup_claim_unsure, canRetry = true), v.ui.value)
+        assertEquals(KeyDevicePhase.CLAIMING, f.repo.phase())
+        return Triple(v, f, owner)
+    }
+
+    /** The server stored that claim (or another phone used the link): the enrolment is claimed, no key device came of it here. */
+    private fun serverHoldsTheClaim() {
         enroll.popAnswers += apiError(409, "ENROLLMENT_ALREADY_CLAIMED")
-        approval.failWith = noKeyDeviceAt(until.minusSeconds(30))
+        approval.failWith = apiError(404, "KEY_DEVICE_UNKNOWN") // the server's time is not needed
+    }
+
+    @Test fun `a lost claim is given up at once when its enrolment is claimed and no key device came of it`() = runTest {
+        val (v, f, owner) = lostClaim()
+        serverHoldsTheClaim()
         v.retry()
-        assertEquals(SetupUi.ClaimWaiting, v.ui.value)
-        assertTrue(f.keyStore.hasKey())
-        approval.failWith = noKeyDeviceAt(until.plusSeconds(6))
-        advanceTimeBy(30_000 + 6_000)
-        runCurrent()
-        assertTrue(v.ui.value is SetupUi.Ended)
-        assertFalse(f.keyStore.hasKey())
+        assertEquals(SetupUi.Ended(R.string.setup_already_used, canRetry = false), v.ui.value)
         assertNull(f.repo.local())
+        assertFalse(f.keyStore.hasKey())
+        assertEquals("clear", f.store.writes.last())
+        // The claim was never sent again; the key device was asked once, after the enrolment.
+        assertEquals(0, enroll.calls.count { it == "claim" })
+        assertEquals(listOf("deviceLoginChallenge:${FakeEnrollmentApi.SUBJECT_ID}:${SigFixtures.DEVICE_ID}"), approval.calls)
+        // Nothing is held any more: a fresh link is a setup of its own.
+        assertFalse(owner.held())
+        assertTrue(owner.offer(link))
+        v.start(link)
+        assertFalse(v.linkIgnored.value)
+        assertEquals(listOf(token, token2), enroll.openTokens)
+        assertTrue(v.ui.value is SetupUi.ConfirmSubject)
+        assertTrue(f.keyStore.hasKey())
+    }
+
+    /** The claim itself is answered "already claimed" (a request sent twice by the network stack, or another phone was first). */
+    @Test fun `a claim answered 'already claimed' with no key device is given up without a wait`() = runTest {
+        enroll.popAnswers += FakeEnrollmentApi.GIVEN // the challenge for the subject question
+        serverHoldsTheClaim()
+        val (v, f, owner) = atClaim(apiError(409, "ENROLLMENT_ALREADY_CLAIMED"))
+        assertEquals(SetupUi.Ended(R.string.setup_already_used, canRetry = false), v.ui.value)
+        assertNull(f.repo.local())
+        assertFalse(f.keyStore.hasKey())
+        assertFalse(owner.held())
+        assertEquals(1, enroll.calls.count { it == "claim" })
+    }
+
+    /** The admin sent a new link while the phone still says "the connection broke". Opening it settles the old claim and starts. */
+    @Test fun `a fresh link opened over a lost claim settles that claim and then starts`() = runTest {
+        val (v, f, owner) = lostClaim()
+        val oldKey = f.keyStore.keyId()
+        serverHoldsTheClaim()
+        assertTrue(owner.offer(link))
+        v.start(link)
+        // The stored claim was asked about with its own link and key; then the new link started.
+        assertEquals(listOf(token, token2), enroll.openTokens)
+        assertTrue(v.ui.value is SetupUi.ConfirmSubject)
+        assertFalse(v.linkIgnored.value)
+        assertNull(f.repo.local())
+        assertTrue(f.keyStore.hasKey())
+        assertTrue(f.keyStore.keyId() != oldKey)
+        assertTrue(owner.held())
+        // It is a setup like any other: the person confirms, the code is shown.
+        enroll.claimGate = null
+        v.confirmSubject(activity)
+        assertEquals(token2, enroll.lastClaim!!.setupToken)
+        assertTrue(v.ui.value is SetupUi.ShowCode)
+    }
+
+    @Test fun `a fresh link opened while the server cannot be reached starts once 'Try again' settled the old claim`() = runTest {
+        val (v, f, owner) = lostClaim()
+        enroll.popAnswers += IOException("offline")
+        assertTrue(owner.offer(link))
+        v.start(link)
+        // Not used yet, and the screen says so; the stored claim is untouched.
+        assertTrue(v.linkIgnored.value)
+        assertEquals(SetupUi.Ended(R.string.setup_claim_unsure, canRetry = true), v.ui.value)
+        assertEquals(KeyDevicePhase.CLAIMING, f.repo.phase())
+        assertEquals(listOf(token), enroll.openTokens)
+        serverHoldsTheClaim()
+        v.retry()
+        assertEquals(listOf(token, token2), enroll.openTokens)
+        assertTrue(v.ui.value is SetupUi.ConfirmSubject)
+        assertFalse(v.linkIgnored.value)
+    }
+
+    @Test fun `the key device is asked only after the enrolment has answered`() = runTest {
+        val (v, f, _) = lostClaim()
+        serverHoldsTheClaim()
+        val held = CompletableDeferred<Unit>().also { enroll.popGate = it }
+        v.retry()
+        runCurrent()
+        // The enrolment has not answered yet: nothing was asked about the key device.
+        assertTrue(approval.calls.isEmpty())
+        assertEquals(KeyDevicePhase.CLAIMING, f.repo.phase())
+        held.complete(Unit)
+        runCurrent()
+        assertEquals(1, approval.calls.size)
+        assertNull(f.repo.local())
+    }
+
+    @Test fun `a lost claim that became a key device by itself is taken over`() = runTest {
+        // Active: the final sign-in follows.
+        val (v, f, _) = lostClaim()
+        val key = f.keyStore.keyId()
+        enroll.popAnswers += apiError(409, "ENROLLMENT_ALREADY_CLAIMED")
+        approval.nextChallenge = activeChallenge
+        v.retry()
+        assertEquals(SetupUi.SigningIn, v.ui.value)
+        assertEquals(KeyDevicePhase.ACTIVE, f.repo.phase())
+        assertEquals(key, f.keyStore.keyId())
+    }
+
+    @Test fun `a lost claim that became a waiting key device is taken over`() = runTest {
+        val (v, f, _) = lostClaim()
+        val key = f.keyStore.keyId()
+        val readyAt = Instant.parse("2026-11-21T09:00:00Z")
+        enroll.popAnswers += apiError(409, "ENROLLMENT_ALREADY_CLAIMED")
+        approval.failWith = apiError(409, "KEY_DEVICE_PENDING", ApiErrorFields(readyAt = readyAt.toString()))
+        v.retry()
+        assertEquals(SetupUi.Pending(readyAt), v.ui.value)
+        assertEquals(KeyDevicePhase.PENDING, f.repo.phase())
+        assertEquals(key, f.keyStore.keyId())
+    }
+
+    @Test fun `a lost claim is kept when the enrolment says anything else`() = runTest {
+        val (v, f, _) = lostClaim()
+        val key = f.keyStore.keyId()
+        approval.failWith = apiError(404, "KEY_DEVICE_UNKNOWN")
+        for (x in listOf<Exception>(
+            apiError(409, "ENROLLMENT_STATE"), apiError(400, "ENROLLMENT_DEVICE_IN_USE"), apiError(500, "INTERNAL_ERROR"),
+            apiError(429, "TOO_MANY_ATTEMPTS"), apiError(400, "ENROLLMENT_ALREADY_CLAIMED"), apiError(503, "ENROLLMENT_ALREADY_CLAIMED"),
+        )) {
+            enroll.popAnswers += x
+            v.retry()
+            assertEquals(x.toString(), SetupUi.Ended(R.string.setup_claim_unsure, canRetry = true), v.ui.value)
+            assertEquals(x.toString(), key, f.keyStore.keyId())
+            assertEquals(x.toString(), KeyDevicePhase.CLAIMING, f.repo.phase())
+        }
+        assertEquals(0, enroll.calls.count { it == "claim" })
+    }
+
+    @Test fun `a lost claim is kept when the key device cannot be asked`() = runTest {
+        val (v, f, _) = lostClaim()
+        for (x in listOf<Exception>(IOException("offline"), apiError(500, "INTERNAL_ERROR"), apiError(503, "KEY_DEVICE_UNKNOWN"), apiError(403, "ACCOUNT_BANNED"))) {
+            enroll.popAnswers += apiError(409, "ENROLLMENT_ALREADY_CLAIMED")
+            approval.failWith = x
+            v.retry()
+            assertEquals(x.toString(), SetupUi.Ended(R.string.setup_claim_unsure, canRetry = true), v.ui.value)
+            assertTrue(x.toString(), f.keyStore.hasKey())
+            assertEquals(x.toString(), KeyDevicePhase.CLAIMING, f.repo.phase())
+        }
+    }
+
+    /** A code that was shown may still be typed in and confirmed: such a claim waits for its server's word. */
+    @Test fun `a claim whose code was shown is not given up by a fresh link`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        val (owner, f) = phone()
+        val v = SetupFlowViewModel(owner)
+        v.start(entry)
+        v.confirmSubject(activity)
+        assertTrue(v.ui.value is SetupUi.ShowCode)
+        v.cancel()
+        val key = f.keyStore.keyId()
+        val asked = enroll.popCalls
+        serverHoldsTheClaim()
+        assertTrue(owner.offer(link))
+        v.start(link)
+        assertEquals(SetupUi.Resume, v.ui.value)
+        assertTrue(v.linkIgnored.value)
+        assertEquals(asked, enroll.popCalls)
+        assertTrue(approval.calls.isEmpty())
+        assertEquals(KeyDevicePhase.CLAIMED, f.repo.phase())
+        assertEquals(key, f.keyStore.keyId())
+        assertEquals(listOf(token), enroll.openTokens)
+    }
+
+    /** After a restart the link is gone (it is never stored): only the key device can be asked, and that waits for its time. */
+    @Test fun `a lost claim without its link keeps waiting for its time`() = runTest {
+        val (first, f, _) = lostClaim()
+        first.onCleared()
+        val until = f.repo.record.value!!.claimVoidAfter!!
+        val restarted = owner(f)
+        val v = SetupFlowViewModel(restarted)
+        val asked = enroll.popCalls
+        approval.failWith = noKeyDeviceAt(until.minusSeconds(60))
+        v.start(link)
+        assertEquals(SetupUi.Resume, v.ui.value)
+        assertTrue(v.linkIgnored.value)
+        val waiting = SetupPendingViewModel(restarted)
+        waiting.check()
+        assertEquals(SetupUi.ClaimWaiting, waiting.ui.value)
+        assertEquals(asked, enroll.popCalls)
+        assertEquals(KeyDevicePhase.CLAIMING, f.repo.phase())
+        assertTrue(f.keyStore.hasKey())
+        assertEquals(listOf(token), enroll.openTokens)
+        // The screens close: the wait ends with them.
+        waiting.onCleared()
+        v.onCleared()
+    }
+
+    /** The link of a lost claim stays in memory while that claim is stored, also when its screen has closed. */
+    @Test fun `a lost claim is settled with its link after its screen closed, on the waiting screen too`() = runTest {
+        val (first, f, owner) = lostClaim()
+        first.onCleared()
+        assertFalse(owner.held())
+        assertEquals(KeyDevicePhase.CLAIMING, f.repo.phase())
+        serverHoldsTheClaim()
+        val waiting = SetupPendingViewModel(owner)
+        waiting.check()
+        assertEquals(SetupUi.Ended(R.string.setup_already_used, canRetry = false), waiting.ui.value)
+        assertNull(f.repo.local())
+        assertFalse(f.keyStore.hasKey())
+        assertEquals(2, enroll.popCalls) // the challenge for the subject question, then the claim check
+    }
+
+    @Test fun `on the waiting screen a lost claim whose enrolment is still open ends, and the link opened again starts`() = runTest {
+        val (first, f, owner) = lostClaim()
+        first.onCleared()
+        val waiting = SetupPendingViewModel(owner)
+        // The enrolment hands out a new challenge: it is open, and the claim never reached it.
+        waiting.check()
+        assertEquals(SetupUi.Ended(R.string.setup_not_finished, canRetry = false), waiting.ui.value)
+        assertNull(f.repo.local())
+        assertFalse(f.keyStore.hasKey())
+        assertFalse(owner.held())
+        assertTrue(owner.offer(entry))
+    }
+
+    /**
+     * The last screen closes while the claim is on its way: the request is given up, the record
+     * written before it and its key stay, no code is shown anywhere, and the next look asks the server.
+     */
+    @Test fun `the last screen closing while the claim is on its way leaves the claim to be checked`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        enroll.claimGate = CompletableDeferred()
+        val (owner, f) = phone()
+        val v = SetupFlowViewModel(owner)
+        v.start(entry)
+        v.confirmSubject(activity)
+        assertEquals(SetupUi.Claiming, v.ui.value)
+        val key = f.keyStore.keyId()
+        v.onCleared()
+        assertFalse(owner.held())
+        assertEquals(KeyDevicePhase.CLAIMING, f.repo.phase())
+        assertEquals(key, f.keyStore.keyId())
+        // An answer that still arrives belongs to no screen: nothing is stored, nothing is shown.
+        enroll.claimGate!!.complete(Unit)
+        runCurrent()
+        assertEquals(KeyDevicePhase.CLAIMING, f.repo.phase())
+        assertEquals(SetupUi.Opening, owner.ui.value)
+        assertEquals(listOf("save:CLAIMING"), f.store.writes)
+        // The waiting screen asks: the server did store the claim, and no code of it was ever seen.
+        serverHoldsTheClaim()
+        val waiting = SetupPendingViewModel(owner)
+        waiting.check()
+        assertEquals(SetupUi.Ended(R.string.setup_already_used, canRetry = false), waiting.ui.value)
+        assertNull(f.repo.local())
+    }
+
+    /** The server is asked about a setup under the install id it was claimed with, whatever id the app has later. */
+    @Test fun `a setup is asked about under the install id it was claimed with`() = runTest {
+        val (first, f, _) = lostClaim()
+        assertEquals(SigFixtures.DEVICE_ID, f.repo.record.value!!.installId)
+        first.onCleared()
+        // The app's own id was lost and made anew (it is not kept with the key record).
+        appInstallId = "0a0a0a0a-0a0a-4a0a-8a0a-0a0a0a0a0a0a"
+        val waiting = SetupPendingViewModel(owner(f))
+        approval.failWith = noKeyDeviceAt(null)
+        waiting.check()
+        assertEquals(listOf("deviceLoginChallenge:${FakeEnrollmentApi.SUBJECT_ID}:${SigFixtures.DEVICE_ID}"), approval.calls)
+        assertEquals(SigFixtures.DEVICE_ID, f.repo.record.value!!.installId)
     }
 
     @Test fun `a claim check answered with a challenge of another enrolment or key proves nothing`() = runTest {
@@ -500,7 +763,12 @@ class SetupOwnerTest {
         assertEquals(other, f.keyStore.keyId())
     }
 
-    @Test fun `the code is shown even when the claimed state could not be stored`() = runTest {
+    /**
+     * A stored "answer not known" must mean that no code of that claim was ever on this screen.
+     * So a code whose arrival could not be recorded is not shown; the claim is checked like any
+     * other whose answer is not known.
+     */
+    @Test fun `a code is shown only once its arrival is recorded`() = runTest {
         env.pinned = SigFixtures.ORIGIN
         val (owner, f) = phone()
         val v = SetupFlowViewModel(owner)
@@ -510,9 +778,183 @@ class SetupOwnerTest {
         f.store.failWrites = true // storage fails after the claim was recorded and sent
         enroll.claimGate!!.complete(Unit)
         runCurrent()
-        assertEquals("123 456", (v.ui.value as SetupUi.ShowCode).code)
+        assertEquals(SetupUi.Ended(R.string.setup_failed_generic, canRetry = true), v.ui.value)
         assertEquals(KeyDevicePhase.CLAIMING, f.repo.phase())
         assertTrue(f.keyStore.hasKey())
+        assertFalse(enroll.calls.contains("status"))
+        // "Try again": the enrolment is claimed, this phone is no key device, and nobody saw the code.
+        f.store.failWrites = false
+        serverHoldsTheClaim()
+        v.retry()
+        assertEquals(SetupUi.Ended(R.string.setup_already_used, canRetry = false), v.ui.value)
+        assertNull(f.repo.local())
+        assertEquals(1, enroll.calls.count { it == "claim" })
+    }
+
+    // ── A setup whose server cannot be asked ──────────────────────────────────────────────────
+
+    /** A claim waits for its code; the app was closed; the waiting screen of the next start. */
+    private fun TestScope.waitingForCode(): Triple<SetupPendingViewModel, KeyDeviceFixture, SetupOwner> {
+        env.pinned = SigFixtures.ORIGIN
+        val (first, f) = phone()
+        val v = SetupFlowViewModel(first)
+        v.start(entry)
+        v.confirmSubject(activity)
+        assertTrue(v.ui.value is SetupUi.ShowCode)
+        v.onCleared()
+        val later = owner(f)
+        return Triple(SetupPendingViewModel(later), f, later)
+    }
+
+    @Test fun `an unfinished setup whose server cannot be asked may be discarded once its own time is long past`() = runTest {
+        val (waiting, f, owner) = waitingForCode()
+        assertEquals(now, f.repo.record.value!!.since)
+        enroll.statusFailures += IOException("no route to host")
+        waiting.check()
+        // The screen says the server could not be asked; discarding is not offered yet.
+        assertTrue(waiting.cannotAsk.value)
+        assertFalse(waiting.discardable.value)
+        waiting.discard()
+        assertEquals(KeyDevicePhase.CLAIMED, f.repo.phase())
+        assertTrue(f.keyStore.hasKey())
+
+        now = now.plus(SetupDiscard.CLAIM_AFTER).plusSeconds(1)
+        enroll.statusFailures += IOException("no route to host")
+        waiting.check()
+        assertTrue(waiting.cannotAsk.value)
+        assertTrue(waiting.discardable.value)
+        // Offering it changes nothing by itself.
+        assertEquals(KeyDevicePhase.CLAIMED, f.repo.phase())
+
+        waiting.discard()
+        assertEquals(SetupUi.Ended(R.string.setup_discarded, canRetry = false), waiting.ui.value)
+        assertNull(f.repo.local())
+        assertFalse(f.keyStore.hasKey())
+        assertEquals("clear", f.store.writes.last())
+        assertFalse(waiting.cannotAsk.value)
+        assertFalse(waiting.discardable.value)
+        // A new link starts a setup.
+        assertFalse(owner.held())
+        assertTrue(owner.offer(link))
+    }
+
+    @Test fun `discarding is withdrawn as soon as the server answers again`() = runTest {
+        val (waiting, f, _) = waitingForCode()
+        now = now.plus(SetupDiscard.CLAIM_AFTER).plusSeconds(1)
+        enroll.statusFailures += IOException("no route to host")
+        waiting.check()
+        assertTrue(waiting.discardable.value)
+        // The server is back: the claim still waits for its code.
+        enroll.statuses += ClaimStatus(EnrollmentState.CLAIMED)
+        waiting.check()
+        runCurrent()
+        assertFalse(waiting.cannotAsk.value)
+        assertFalse(waiting.discardable.value)
+        waiting.discard()
+        assertEquals(KeyDevicePhase.CLAIMED, f.repo.phase())
+        assertTrue(f.keyStore.hasKey())
+    }
+
+    @Test fun `with the code on screen a failed question is noted, and the next answer takes the note back`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        val (owner, _) = phone()
+        val v = SetupFlowViewModel(owner)
+        v.start(entry)
+        enroll.statusFailures += IOException("offline")
+        enroll.statuses += ClaimStatus(EnrollmentState.CLAIMED)
+        v.confirmSubject(activity)
+        assertTrue(v.ui.value is SetupUi.ShowCode)
+        assertTrue(v.cannotAsk.value)
+        assertFalse(v.discardable.value)
+        // It asks again by itself; the server answers: the code is still waiting.
+        advanceTimeBy(2_001)
+        runCurrent()
+        assertTrue(v.ui.value is SetupUi.ShowCode)
+        assertFalse(v.cannotAsk.value)
+    }
+
+    @Test fun `discarding is checked again when it is asked for`() = runTest {
+        val (waiting, f, _) = waitingForCode()
+        now = now.plus(SetupDiscard.CLAIM_AFTER).plusSeconds(1)
+        enroll.statusFailures += IOException("no route to host")
+        waiting.check()
+        assertTrue(waiting.discardable.value)
+        // The phone's clock was put back meanwhile: the setup's own time is not past any more.
+        now = now.minus(SetupDiscard.CLAIM_AFTER)
+        waiting.discard()
+        assertEquals(KeyDevicePhase.CLAIMED, f.repo.phase())
+        assertTrue(f.keyStore.hasKey())
+        // The stored record is another one by now (the setup went on elsewhere): it is not the one offered.
+        now = now.plus(SetupDiscard.CLAIM_AFTER)
+        val rec = f.repo.record.value!!
+        f.repo.update(rec) { it.copy(phase = KeyDevicePhase.PENDING, readyAt = now.plusSeconds(3600)) }
+        waiting.discard()
+        assertEquals(KeyDevicePhase.PENDING, f.repo.phase())
+        assertTrue(f.keyStore.hasKey())
+    }
+
+    @Test fun `a waiting key device may be discarded only a day after it should have been ready`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        val (owner, f) = phone()
+        f.keyStore.generate(ByteArray(32), use)
+        val readyAt = now.plusSeconds(24 * 3600)
+        f.repo.seed(
+            io.wolftown.kaiku.data.keydevice.StoredKeyDevice(
+                LocalKeyDevice(null, FakeEnrollmentApi.SUBJECT_ID, SigFixtures.ORIGIN, UvClass.PER_USE, "e1", null, "Oma"),
+                KeyDevicePhase.PENDING, readyAt = readyAt, keyId = f.keyStore.keyId(), installId = SigFixtures.DEVICE_ID,
+            ),
+        )
+        val waiting = SetupPendingViewModel(owner)
+        approval.failWith = IOException("no route to host")
+        for (at in listOf(now, readyAt.plusSeconds(1), readyAt.plus(SetupDiscard.PENDING_AFTER))) {
+            now = at
+            waiting.check()
+            assertTrue(waiting.cannotAsk.value)
+            assertFalse(at.toString(), waiting.discardable.value)
+        }
+        now = readyAt.plus(SetupDiscard.PENDING_AFTER).plusSeconds(1)
+        waiting.check()
+        assertTrue(waiting.discardable.value)
+        waiting.discard()
+        assertNull(f.repo.local())
+        assertFalse(f.keyStore.hasKey())
+    }
+
+    @Test fun `a setup stored without its time counts from when its server first could not be asked`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        val (owner, f) = phone()
+        f.keyStore.generate(ByteArray(32), use)
+        f.repo.saveClaimed(LocalKeyDevice(null, FakeEnrollmentApi.SUBJECT_ID, SigFixtures.ORIGIN, UvClass.PER_USE, "e1", "claim-secret", "Oma"))
+        val waiting = SetupPendingViewModel(owner)
+        // Long after whenever it was made, by any clock: without a time of its own nothing is offered yet.
+        now = now.plusSeconds(30L * 24 * 3600)
+        enroll.statusFailures += IOException("no route to host")
+        waiting.check()
+        assertTrue(waiting.cannotAsk.value)
+        assertFalse(waiting.discardable.value)
+        assertEquals(now, f.repo.record.value!!.since)
+        now = now.plus(SetupDiscard.CLAIM_AFTER).plusSeconds(1)
+        enroll.statusFailures += IOException("no route to host")
+        waiting.check()
+        assertTrue(waiting.discardable.value)
+    }
+
+    @Test fun `a lost claim whose server gives no time may be discarded after its own time`() = runTest {
+        val (first, f, _) = lostClaim()
+        first.onCleared()
+        val waiting = SetupPendingViewModel(owner(f))
+        // "No key device", and no server time to count the claim's own time by: nothing can be decided.
+        approval.failWith = noKeyDeviceAt(null)
+        waiting.check()
+        assertEquals(SetupUi.Ended(R.string.setup_claim_unsure, canRetry = true), waiting.ui.value)
+        assertTrue(waiting.cannotAsk.value)
+        assertFalse(waiting.discardable.value)
+        now = now.plus(SetupDiscard.CLAIM_AFTER).plusSeconds(1)
+        waiting.check()
+        assertTrue(waiting.discardable.value)
+        waiting.discard()
+        assertEquals(SetupUi.Ended(R.string.setup_discarded, canRetry = false), waiting.ui.value)
+        assertNull(f.repo.local())
     }
 
     // ── The server ────────────────────────────────────────────────────────────────────────────
@@ -578,5 +1020,25 @@ class SetupOwnerTest {
         advanceTimeBy(10_000)
         runCurrent()
         assertTrue(revoked)
+    }
+
+    /** The session was installed, and the sign-in was still finishing when the screen's limit hit: it is a sign-in. */
+    @Test fun `a sign-in that got through just as the limit hit counts as signed in`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        enroll.statuses += ClaimStatus(EnrollmentState.DONE, "active")
+        val (owner, f) = phone()
+        coEvery { deviceSignIn.signIn(any(), any()) } coAnswers {
+            delay(SetupOwner.SIGN_IN_TIMEOUT_MS - 1)
+            f.authState.setLoggedIn(FakeEnrollmentApi.SUBJECT_ID)
+            awaitCancellation()
+        }
+        val v = SetupFlowViewModel(owner)
+        v.start(entry)
+        v.confirmSubject(activity)
+        runCurrent()
+        v.signIn(activity)
+        advanceTimeBy(SetupOwner.SIGN_IN_TIMEOUT_MS + 1)
+        runCurrent()
+        assertEquals(SetupUi.Done, v.ui.value)
     }
 }
