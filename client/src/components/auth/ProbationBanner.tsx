@@ -44,8 +44,10 @@ const ProbationBanner: Component = () => {
   const canSignIn = () => hasPasskey() && canUsePasskeys();
   // The text names only a way this account has: signing in with a passkey,
   // "Set up this PC", or neither (then the hint below says to ask the admin).
+  // Until the overview has confirmed one (pending or failed), it names none.
   const text = (): MessageKey => {
-    if (!meSecurity() || canSignIn()) return "auth.probation.text";
+    if (!meSecurity()) return "auth.probation.neutral";
+    if (canSignIn()) return "auth.probation.text";
     return canSetUpThisPc() ? "pcSetup.banner.setUp" : "pcSetup.banner.noPasskey";
   };
 

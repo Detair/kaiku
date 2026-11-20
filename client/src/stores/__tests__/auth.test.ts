@@ -230,11 +230,24 @@ describe("auth store", () => {
       expect(authState.setupRequired).toBe(false);
 
       setAuthState({ user: null, isInitialized: false });
-      vi.mocked(tauri.isServerSetupComplete).mockRejectedValue(new Error("offline"));
+      vi.mocked(tauri.isServerSetupComplete).mockRejectedValueOnce(new Error("offline"));
       await initAuth();
       await tick();
       expect(authState.user).not.toBeNull();
       expect(authState.setupRequired).toBe(false);
+    });
+
+    it("a setup check that failed is not a check: the tour waits and it is asked again", async () => {
+      vi.mocked(tauri.getCurrentUser).mockResolvedValue({ user: createUser(), error_reason: null });
+      vi.mocked(tauri.isServerSetupComplete)
+        .mockRejectedValueOnce(new Error("offline"))
+        .mockResolvedValueOnce(false);
+      await initAuth();
+      await tick();
+      expect(setupStatusKnown()).toBe(false);
+      await vi.waitFor(() => expect(setupStatusKnown()).toBe(true), { timeout: 5_000 });
+      expect(tauri.isServerSetupComplete).toHaveBeenCalledTimes(2);
+      expect(authState.setupRequired).toBe(true);
     });
 
     it("the setup status is not known until a restored session has asked", async () => {

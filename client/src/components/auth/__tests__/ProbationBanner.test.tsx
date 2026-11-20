@@ -17,6 +17,7 @@ vi.mock("@/lib/tauri/passkeys", async (orig) => ({
 
 import ProbationBanner from "../ProbationBanner";
 import { setAuthState, isProbation, sessionInfo } from "@/stores/auth";
+import { resetMeSecurity } from "@/stores/security";
 import type { User } from "@/lib/types";
 
 function user(session: unknown): User {
@@ -78,11 +79,36 @@ describe("ProbationBanner", () => {
     setAuthState({ user: user(probation) });
     render(() => <ProbationBanner />);
     expect(
-      screen.getByText(
+      await screen.findByText(
         "Signed in for chat only. To change sign-in settings or do admin work, sign in with a passkey.",
       ),
     ).toBeTruthy();
     await waitFor(() => expect(screen.getByRole("button", { name: "Sign in with a passkey" })).toBeTruthy());
+  });
+
+  it("names no way to sign in until the overview confirms one", async () => {
+    const passkeyText =
+      "Signed in for chat only. To change sign-in settings or do admin work, sign in with a passkey.";
+    resetMeSecurity();
+    // Pending.
+    let answer: (v: unknown) => void = () => undefined;
+    getMeSecurity.mockImplementation(() => new Promise((r) => (answer = r)));
+    setAuthState({ user: user(probation) });
+    render(() => <ProbationBanner />);
+    expect(screen.queryByText(passkeyText)).toBeNull();
+    expect(screen.getByRole("region").textContent).toContain("Signed in for chat only.");
+    answer(security(1));
+    expect(await screen.findByText(passkeyText)).toBeTruthy();
+    cleanup();
+    resetMeSecurity();
+    // Failed.
+    getMeSecurity.mockReset();
+    getMeSecurity.mockRejectedValue(new Error("offline"));
+    render(() => <ProbationBanner />);
+    await waitFor(() => expect(getMeSecurity).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.queryByText(passkeyText)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Sign in with a passkey" })).toBeNull();
   });
 
   it("is a row above the page, not an overlay on the channel header", () => {

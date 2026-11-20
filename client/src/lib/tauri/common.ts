@@ -955,11 +955,10 @@ async function sendHttpRequest<T>(
 
   try {
     return { data: JSON.parse(text) as T, status: response.status };
-  } catch (parseError) {
-    console.error(
-      `[httpRequest] Failed to parse success response as JSON for ${cleanPath}:`,
-      text.slice(0, 200),
-    );
+  } catch {
+    // Never a part of the body: a success answer may carry a secret (a QR
+    // token, a code).
+    console.error(`[httpRequest] Failed to parse success response as JSON for ${cleanPath}`);
     throw new HttpError(
       response.status,
       `Invalid JSON response from ${cleanPath}`,

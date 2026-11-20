@@ -18,7 +18,7 @@ vi.mock("@tauri-apps/api/core", async (orig) => ({
   isTauri: () => tauriMode.on,
 }));
 
-import { pollPcSetup } from "../pcSetup";
+import { pollPcSetup, startPcSetup } from "../pcSetup";
 import { setUpThisPcInBrowser, PasskeyError } from "../passkeys";
 import { browserState, clearBrowserTokens, setNativeAuthInfo } from "../common";
 
@@ -128,5 +128,20 @@ describe("setUpThisPcInBrowser", () => {
     const ids = invoke.mock.calls.filter((c) => c[0] === "passkey_pc_setup").map((c) => (c[1] as { cancelId: string }).cancelId);
     expect(ids).toHaveLength(2);
     expect(ids[0]).not.toBe(ids[1]);
+  });
+});
+
+describe("an unreadable success answer", () => {
+  it("is logged without any part of its body (it may carry the QR token)", async () => {
+    const secret = "kaiku://pcsetup/v1?o=x&t=SECRETTOKENSECRETTOKEN";
+    fetchMock.mockResolvedValue(
+      new Response(`{"attempt_id":"${ID}","qr_payload":"${secret}"`, { status: 201 }),
+    );
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    await expect(startPcSetup()).rejects.toThrow();
+    const text = logged.mock.calls.flat().map(String).join(" ");
+    expect(text).not.toContain("SECRETTOKEN");
+    expect(text).not.toContain("qr_payload");
+    logged.mockRestore();
   });
 });

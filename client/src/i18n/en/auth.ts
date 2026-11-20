@@ -145,6 +145,7 @@ export const auth = {
   "auth.setup.expired": "This setup ran out of time. Ask for a new setup link.",
   "auth.setup.wrongCodes": "The code was typed wrong three times. Ask for a new setup link.",
   "auth.setup.signIn": "Sign in",
+  "auth.probation.neutral": "Signed in for chat only. Changing sign-in settings and admin work need a full sign-in.",
   "auth.probation.text": "Signed in for chat only. To change sign-in settings or do admin work, sign in with a passkey.",
   "auth.probation.signIn": "Sign in with a passkey",
   "auth.probation.addPasskeyHint": "Your phone can't confirm this yet. Ask your admin.",
