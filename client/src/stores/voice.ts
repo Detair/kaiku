@@ -65,6 +65,12 @@ interface VoiceStoreState {
    * "Rejoin" action. Cleared by any own join or leave.
    */
   lostChannelId: string | null;
+  /**
+   * Name and server of the joined channel, kept for the voice bar when the
+   * channel list shows another server or Home.
+   */
+  channelName: string | null;
+  guildId: string | null;
 
   // Screen sharing
   screenSharing: boolean;
@@ -93,6 +99,8 @@ const [voiceState, setVoiceState] = createStore<VoiceStoreState>({
   participants: {},
   error: null,
   lostChannelId: null,
+  channelName: null,
+  guildId: null,
   screenSharing: false,
   screenShares: [],
   webcamActive: false,
@@ -761,7 +769,15 @@ export async function joinVoice(channelId: string): Promise<void> {
   const wish = voiceOwner.wish("channel", channelId, channelHooks(channelId));
   channelWish = wish;
   const outcome = voiceOwner.request(wish);
-  setVoiceState({ state: "connecting", channelId, error: null, lostChannelId: null });
+  const joined = channelsState.channels.find((c) => c.id === channelId);
+  setVoiceState({
+    state: "connecting",
+    channelId,
+    error: null,
+    lostChannelId: null,
+    channelName: joined?.name ?? null,
+    guildId: joined?.guild_id ?? null,
+  });
 
   const result = await outcome;
   if (result.type === "failed") throw new Error(getErrorMessage(result.error));

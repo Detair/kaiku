@@ -16,7 +16,7 @@ interface VoiceTileStripProps {
   orientation: "vertical" | "horizontal";
   onTileClick: (tileId: string) => void;
   poppedOutStreams: Set<string>;
-  onPopOut: (streamId: string) => void;
+  onPopOut?: (streamId: string) => void;
   onBringBack: (streamId: string) => void;
   onStopShare?: (streamId: string) => void;
   localUserId?: string;
@@ -60,8 +60,8 @@ const VoiceTileStrip: Component<VoiceTileStripProps> = (props) => {
                   : undefined
               }
               onPopOut={
-                tile.type === "screen_share"
-                  ? () => props.onPopOut(tile.streamId)
+                tile.type === "screen_share" && props.onPopOut
+                  ? () => props.onPopOut?.(tile.streamId)
                   : undefined
               }
               onBringBack={

@@ -27,7 +27,6 @@ vi.mock("@/stores/call", () => ({
 }));
 vi.mock("@/lib/tauri", () => ({
   startDMCall: vi.fn(),
-  joinVoice: vi.fn(),
   uploadDMAvatar: vi.fn(),
   updateDMName: vi.fn(),
   validateFileSize: vi.fn(),

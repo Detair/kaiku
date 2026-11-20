@@ -16,7 +16,9 @@ import {
   getLocalMetrics,
 } from "@/stores/voice";
 import { getChannel, selectChannel } from "@/stores/channels";
-import { startViewing } from "@/stores/screenShareViewer";
+import { guildsState, selectGuild } from "@/stores/guilds";
+import { startViewing, requestTileFocus } from "@/stores/screenShareViewer";
+import { isTauri } from "@/lib/tauri/common";
 import { formatElapsedTime, getParticipantDisplayName } from "@/lib/utils";
 import { QualityIndicator } from "./QualityIndicator";
 import { QualityTooltip } from "./QualityTooltip";
@@ -35,6 +37,30 @@ const VoicePanel: Component = () => {
   };
 
   const participants = () => getParticipants();
+  const channelName = () =>
+    channel()?.name || voiceState.channelName || t("voice.panel.fallbackChannel");
+
+  /** Back to the call's channel, from Home or another server too. */
+  const openVoiceChannel = async () => {
+    const chId = voiceState.channelId;
+    if (!chId) return;
+    const guildId = voiceState.guildId;
+    if (guildId && guildsState.activeGuildId !== guildId) await selectGuild(guildId);
+    selectChannel(chId);
+  };
+
+  /**
+   * Browser: the full-screen viewer. Desktop: there is no browser track, so
+   * the channel view opens with the share as the focused tile.
+   */
+  const openShare = (streamId: string) => {
+    if (isTauri()) {
+      requestTileFocus(streamId);
+      void openVoiceChannel();
+    } else {
+      startViewing(streamId);
+    }
+  };
 
   const handleDisconnect = () => {
     leaveVoice();
@@ -132,10 +158,8 @@ const VoicePanel: Component = () => {
             />
             <div
               class="min-w-0 cursor-pointer"
-              onClick={() => {
-                const chId = voiceState.channelId;
-                if (chId) selectChannel(chId);
-              }}
+              data-testid="voice-panel-open-channel"
+              onClick={() => void openVoiceChannel()}
             >
               <div
                 class="text-xs font-semibold hover:underline"
@@ -148,7 +172,7 @@ const VoicePanel: Component = () => {
                 {statusText()}
               </div>
               <div class="text-xs text-text-secondary truncate flex items-center gap-1.5">
-                <span class="hover:text-text-primary transition-colors">{channel()?.name || t("voice.panel.fallbackChannel")}</span>
+                <span class="hover:text-text-primary transition-colors">{channelName()}</span>
                 <Show when={isConnected()}>
                   <span class="text-text-muted">&middot;</span>
                   <span class="font-mono">{elapsedTime()}</span>
@@ -209,9 +233,7 @@ const VoicePanel: Component = () => {
                           const share = voiceState.screenShares.find(
                             (s) => s.user_id === participant.user_id,
                           );
-                          if (share) {
-                            startViewing(share.stream_id);
-                          }
+                          if (share) openShare(share.stream_id);
                         }}
                         class="p-0.5 hover:bg-accent-success/30 rounded transition-colors"
                         title={t("voice.panel.viewScreenShare")}
@@ -234,7 +256,8 @@ const VoicePanel: Component = () => {
               {(share) => (
                 <div
                   class="flex items-center gap-2 px-2 py-1.5 rounded bg-white/5 hover:bg-white/10 cursor-pointer transition-colors"
-                  onClick={() => startViewing(share.stream_id)}
+                  data-testid="voice-panel-share"
+                  onClick={() => openShare(share.stream_id)}
                 >
                   <MonitorUp class="w-4 h-4 text-accent-success" />
                   <div class="flex-1 min-w-0">
@@ -253,8 +276,8 @@ const VoicePanel: Component = () => {
           </div>
         </Show>
 
-        {/* Voice controls - only when fully connected */}
-        <Show when={isConnected()}>
+        {/* Voice controls: mute/deafen stay usable while reconnecting */}
+        <Show when={isConnected() || voiceState.state === "reconnecting"}>
           <VoiceControls />
         </Show>
       </div>

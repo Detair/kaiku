@@ -8,6 +8,7 @@
  * per user.
  */
 
+import { createSignal } from "solid-js";
 import { createStore } from "solid-js/store";
 
 /** View mode for the screen share viewer */
@@ -315,3 +316,20 @@ export function isViewingStream(streamId: string): boolean {
 }
 
 export { viewerState };
+
+/**
+ * A request to show a share as the focused tile of the voice channel view
+ * (desktop: there is no browser track for the full-screen viewer).
+ */
+const [tileFocusRequest, setTileFocusRequest] = createSignal<string | null>(null);
+export { tileFocusRequest };
+
+/** Ask the voice channel view to focus `streamId`. */
+export function requestTileFocus(streamId: string): void {
+  setTileFocusRequest(streamId);
+}
+
+/** The view has taken the request. */
+export function clearTileFocusRequest(): void {
+  setTileFocusRequest(null);
+}

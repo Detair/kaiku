@@ -13,7 +13,6 @@ vi.mock("@/lib/tauri", () => ({
   getDMList: vi.fn(),
   createDM: vi.fn(),
   startDMCall: vi.fn(),
-  joinVoice: vi.fn(),
   uploadDMAvatar: vi.fn(),
   updateDMName: vi.fn(),
   validateFileSize: vi.fn(),

@@ -19,7 +19,12 @@ import {
 import type { VoiceParticipant } from "@/lib/types";
 import type { ScreenShareInfo } from "@/lib/webrtc/types";
 import { authState } from "@/stores/auth";
-import { viewerState } from "@/stores/screenShareViewer";
+import {
+  viewerState,
+  tileFocusRequest,
+  clearTileFocusRequest,
+} from "@/stores/screenShareViewer";
+import { isTauri } from "@/lib/tauri/common";
 import { stopScreenShare } from "@/stores/voice";
 import VoiceTile from "./VoiceTile";
 import type { TileData } from "./VoiceTile";
@@ -113,6 +118,19 @@ const VoiceTileGrid: Component<VoiceTileGridProps> = (props) => {
 
     setPrevShareCount(currentCount);
   });
+
+  // A share chosen in the voice panel (desktop) opens focused here.
+  createEffect(() => {
+    const streamId = tileFocusRequest();
+    if (!streamId) return;
+    if (props.screenShares.some((s) => s.stream_id === streamId)) {
+      setFocusedTileId(`screen:${streamId}`);
+    }
+    clearTileFocusRequest();
+  });
+
+  // Pop-out needs a browser video track: not in the desktop app.
+  const canPopOut = !isTauri();
 
   // ---- View mode ----
   const viewMode = () => (focusedTileId() ? "focus" : "grid");
@@ -249,7 +267,7 @@ const VoiceTileGrid: Component<VoiceTileGridProps> = (props) => {
                       : undefined
                   }
                   onPopOut={
-                    tile.type === "screen_share"
+                    canPopOut && tile.type === "screen_share"
                       ? () => handlePopOut(tile.streamId)
                       : undefined
                   }
@@ -296,7 +314,7 @@ const VoiceTileGrid: Component<VoiceTileGridProps> = (props) => {
                         : undefined
                     }
                     onPopOut={
-                      tile().type === "screen_share"
+                      canPopOut && tile().type === "screen_share"
                         ? () => handlePopOut(screenTile().streamId)
                         : undefined
                     }
@@ -324,7 +342,7 @@ const VoiceTileGrid: Component<VoiceTileGridProps> = (props) => {
               orientation={stripOrientation()}
               onTileClick={handleTileClick}
               poppedOutStreams={poppedOutStreams()}
-              onPopOut={handlePopOut}
+              onPopOut={canPopOut ? handlePopOut : undefined}
               onBringBack={handleBringBack}
               localUserId={authState.user?.id}
               onStopShare={(streamId) => {
