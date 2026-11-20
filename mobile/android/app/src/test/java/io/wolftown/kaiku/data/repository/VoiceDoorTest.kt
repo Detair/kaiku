@@ -322,6 +322,23 @@ class VoiceDoorTest {
     }
 
     @Test
+    fun `a sign-out's late stop of a held service leaves the service of the next account's call`() = rigTest { rig ->
+        assertTrue(rig.hold(1))
+        val done = java.util.concurrent.CountDownLatch(1)
+        // The release thread gets to the stop only after the next account signed in and called.
+        rig.repository.beforeHoldStop = {
+            rig.sessions.signIn("bert")
+            assertTrue(rig.hold(2))
+            done.countDown()
+        }
+        rig.signOut()
+        assertTrue(done.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        Thread.sleep(50)
+        assertEquals("the next account's call lost its microphone service", listOf("service:start", "service:start"), rig.serviceLog())
+        assertTrue(rig.repository.holdsServiceForCall)
+    }
+
+    @Test
     fun `a held microphone service that reports it could not start tells the call, once`() = rigTest { rig ->
         var failed = 0
         assertTrue(rig.hold(1, onStartFailed = { failed++ }))

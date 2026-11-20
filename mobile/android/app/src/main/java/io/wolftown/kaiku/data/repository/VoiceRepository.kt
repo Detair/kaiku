@@ -951,7 +951,15 @@ class VoiceRepository @Inject constructor(
         }
         if (session == null) {
             // No session to tear down: the service goes by itself (off the caller's thread).
-            if (held != null) releaseScope.launch { synchronized(serviceLock) { VoiceCallService.stop(context) } }
+            // Only if nothing took the service since: a call of the next account that was
+            // started meanwhile keeps it.
+            if (held != null) releaseScope.launch {
+                beforeHoldStop()
+                synchronized(serviceLock) {
+                    val untaken = heldForCall == null && synchronized(sessionLock) { live == null }
+                    if (untaken) VoiceCallService.stop(context)
+                }
+            }
             return
         }
         session.owner.cancel()
@@ -986,6 +994,10 @@ class VoiceRepository @Inject constructor(
     }
 
     /** Runs the release of a sign-out ([endForSignOut]) on its own thread. */
+    /** Runs on the release thread right before a sign-out's stop of a held service (tests). */
+    @Volatile
+    internal var beforeHoldStop: () -> Unit = {}
+
     private val releaseScope = CoroutineScope(
         SupervisorJob() + java.util.concurrent.Executors.newSingleThreadExecutor { r ->
             Thread(r, "voice-release").apply { isDaemon = true }
