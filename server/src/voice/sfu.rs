@@ -610,17 +610,6 @@ impl Room {
         shares.insert(info.stream_id, info);
     }
 
-    /// Add a screen share session unless its `stream_id` is taken (check
-    /// and insert under one lock). Returns whether it was added.
-    pub async fn try_add_screen_share(&self, info: ScreenShareInfo) -> bool {
-        let mut shares = self.screen_shares.write().await;
-        if shares.contains_key(&info.stream_id) {
-            return false;
-        }
-        shares.insert(info.stream_id, info);
-        true
-    }
-
     /// Whether `peer` is the user's current seat in this room. Callers that
     /// need the answer to hold while they change room state use the
     /// `*_for` methods, which decide it under the same lock.
@@ -823,12 +812,6 @@ impl Room {
     pub async fn get_screen_shares(&self) -> Vec<ScreenShareInfo> {
         let shares = self.screen_shares.read().await;
         shares.values().cloned().collect()
-    }
-
-    /// Add a webcam session.
-    pub async fn add_webcam(&self, info: WebcamInfo) {
-        let mut webcams = self.webcams.write().await;
-        webcams.insert(info.user_id, info);
     }
 
     /// Remove a webcam session.

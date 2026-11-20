@@ -104,8 +104,6 @@ pub struct TrackRouter {
     /// Simulcast layers: `(source_user_id, source_type, layer)` -> remote track.
     /// Populated when the SFU receives tracks with an RID (simulcast layers).
     simulcast_tracks: DashMap<(Uuid, TrackSource, Layer), Arc<TrackRemote>>,
-    /// Holds secondary layers (Medium/Low) that arrived before their High layer.
-    pending_secondary: DashMap<(Uuid, Layer), Arc<TrackRemote>>,
 }
 
 impl TrackRouter {
@@ -114,7 +112,6 @@ impl TrackRouter {
         Self {
             subscriptions: DashMap::new(),
             simulcast_tracks: DashMap::new(),
-            pending_secondary: DashMap::new(),
         }
     }
 
@@ -267,9 +264,6 @@ impl TrackRouter {
         // Clean up simulcast tracks for this source
         self.simulcast_tracks
             .retain(|(uid, _, _), _| *uid != source_user_id);
-        // Clean up pending secondary layers for this source
-        self.pending_secondary
-            .retain(|(uid, _), _| *uid != source_user_id);
 
         debug!(source = %source_user_id, "Removed source and all subscriptions");
     }
@@ -340,28 +334,7 @@ impl TrackRouter {
             .map(|s| s.active_layer)
     }
 
-    /// Look up the `TrackSource` for a user from a specific simulcast layer.
-    ///
-    /// Used by the SFU `on_track` callback: when a secondary simulcast layer
-    /// (Medium/Low) arrives, we need the source type that the primary (High)
-    /// layer already registered, so we don't pop from the pending queue twice.
-    pub fn find_source_type_for_user(&self, user_id: Uuid, layer: Layer) -> Option<TrackSource> {
-        self.simulcast_tracks.iter().find_map(|entry| {
-            let (uid, src, l) = entry.key();
-            if *uid == user_id && *l == layer {
-                Some(*src)
-            } else {
-                None
-            }
-        })
-    }
-
-    /// Store a simulcast track and drain any pending secondary layers.
-    ///
-    /// When the High layer arrives first, secondary entries don't exist yet.
-    /// When a secondary layer arrives first, it is stashed in `pending_secondary`.
-    /// When High then arrives, this method drains those pending entries under the
-    /// now-known `source_type`.
+    /// Store a simulcast layer of a source.
     pub fn store_simulcast_track(
         &self,
         user_id: Uuid,
@@ -371,34 +344,6 @@ impl TrackRouter {
     ) {
         self.simulcast_tracks
             .insert((user_id, source_type, layer), track);
-
-        // If this is the High layer, drain any pending secondaries for this user.
-        if layer == Layer::High {
-            for pending_layer in [Layer::Medium, Layer::Low] {
-                if let Some((_, pending_track)) =
-                    self.pending_secondary.remove(&(user_id, pending_layer))
-                {
-                    self.simulcast_tracks
-                        .insert((user_id, source_type, pending_layer), pending_track);
-                    debug!(
-                        source = %user_id,
-                        source_type = ?source_type,
-                        layer = ?pending_layer,
-                        "Drained pending secondary simulcast track"
-                    );
-                }
-            }
-        }
-    }
-
-    /// Stash a secondary simulcast layer that arrived before the High layer.
-    pub fn stash_pending_secondary(&self, user_id: Uuid, layer: Layer, track: Arc<TrackRemote>) {
-        self.pending_secondary.insert((user_id, layer), track);
-        debug!(
-            source = %user_id,
-            layer = ?layer,
-            "Stashed pending secondary simulcast track (High not yet received)"
-        );
     }
 
     /// Get the number of subscribers for a source.
