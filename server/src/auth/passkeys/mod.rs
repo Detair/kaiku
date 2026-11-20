@@ -133,6 +133,10 @@ pub fn router(state: &AppState) -> Router<AppState> {
         .route(
             "/passkeys/desktop/flows/{flow_id}/cancel",
             post(desktop_pc_setup::cancel),
+        )
+        .route(
+            "/passkeys/desktop/flows/{flow_id}",
+            get(desktop_pc_setup::page),
         );
     // Public for `sign_in`, bearer-bound for `step_up` (C29 steps 2 and 6).
     let desktop_api = Router::new()
@@ -142,14 +146,12 @@ pub fn router(state: &AppState) -> Router<AppState> {
             state.clone(),
             crate::auth::optional_auth,
         ));
-    // The ceremony page (one Valkey read) and its assets stay outside the
-    // bucket, so page loads never push a hand-off into 429 (Fable m5).
+    // The sign-in ceremony page (one Valkey read) and the assets stay
+    // outside the bucket, so page loads never push a hand-off into 429. The
+    // "Set up this PC" page is inside it: for the browser that typed the
+    // code it checks the attempt under its locks on every load.
     let assets = Router::new()
         .route("/passkeys/desktop/{flow_id}", get(desktop::page))
-        .route(
-            "/passkeys/desktop/flows/{flow_id}",
-            get(desktop_pc_setup::page),
-        )
         .route(
             "/passkeys/assets/ceremony.js",
             get(desktop_page::ceremony_js),

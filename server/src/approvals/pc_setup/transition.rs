@@ -202,10 +202,10 @@ async fn lock_session(
     user: Uuid,
     sid: Uuid,
 ) -> sqlx::Result<Option<RequestingSession>> {
-    sqlx::query_as(
-        "SELECT id,
-                ended_at IS NULL AND expires_at > clock_timestamp()
-                    AND absolute_expires_at > clock_timestamp() AS live,
+    // The row lock first, then the clock: liveness is decided on the
+    // database's clock read after the lock is held.
+    let row: Option<SessionRow> = sqlx::query_as(
+        "SELECT id, ended_at, expires_at, absolute_expires_at,
                 assurance, client_class,
                 -- The User-Agent of the session's creation only: a refresh cannot
                 -- change it, and a session created without one keeps none.
@@ -217,7 +217,38 @@ async fn lock_session(
     .bind(sid)
     .bind(user)
     .fetch_optional(&mut *conn)
-    .await
+    .await?;
+    let Some(r) = row else {
+        return Ok(None);
+    };
+    let now: DateTime<Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
+        .fetch_one(&mut *conn)
+        .await?;
+    Ok(Some(RequestingSession {
+        id: r.id,
+        live: r.ended_at.is_none() && r.expires_at > now && r.absolute_expires_at > now,
+        assurance: r.assurance,
+        client_class: r.client_class,
+        user_agent: r.user_agent,
+        city: r.city,
+        country: r.country,
+        created_at: r.created_at,
+    }))
+}
+
+/// The locked session row, before its liveness is decided.
+#[derive(sqlx::FromRow)]
+struct SessionRow {
+    id: Uuid,
+    ended_at: Option<DateTime<Utc>>,
+    expires_at: DateTime<Utc>,
+    absolute_expires_at: DateTime<Utc>,
+    assurance: String,
+    client_class: String,
+    user_agent: Option<String>,
+    city: Option<String>,
+    country: Option<String>,
+    created_at: DateTime<Utc>,
 }
 
 /// Whether `user` has an active key device.

@@ -16,7 +16,8 @@
 //! result (60 s); `redeem` with the hand-off code, the verifier and the
 //! starting session's bearer stores the passkey through
 //! [`complete_enrolment`] under the locks of Locking 3. A restart (or any
-//! end of the attempt) voids the flow by refusal there (Ruling 10).
+//! end of the attempt) voids the flow: `finish` and `redeem` re-lock the
+//! attempt and refuse it, so a stale flow never stores a passkey.
 
 use axum::extract::{Path, RawQuery, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
@@ -181,7 +182,7 @@ fn has_secret(state: &AppState, headers: &HeaderMap, flow: &DesktopFlow) -> bool
 }
 
 /// `Set-Cookie` for the browser secret: host-only, session lifetime (the
-/// flow lives at most 10 minutes), scoped to the flow's routes.
+/// flow lives at most 15 minutes), scoped to the flow's routes.
 fn secret_cookie(state: &AppState, flow_id: Uuid, secret: &Secret256) -> AuthResult<HeaderValue> {
     let config = &state.config;
     let name = crate::auth::cookies::cookie_name(PCSETUP_COOKIE, config);
@@ -362,8 +363,8 @@ fn no_store(mut response: Response) -> Response {
 
 /// Fresh creation options for the browser that typed the code. Without
 /// the cookie → 400 `PASSKEY_CEREMONY_INVALID`. An attempt that can no
-/// longer register ends the flow (the page then shows "expired"; the PC
-/// reads the reason from its poll); a transient failure keeps it.
+/// longer register is refused here and the flow is kept: the page reloads
+/// and hands the refusal to the app (`page`).
 #[tracing::instrument(skip_all)]
 pub async fn options(
     State(state): State<AppState>,
@@ -464,8 +465,8 @@ pub async fn finish(
             return retry_redirect(flow_id);
         }
     };
-    // Ruling 10: an ended or restarted attempt refuses here already; a
-    // transient failure keeps the flow for a retry.
+    // An ended or restarted attempt refuses here already (it is re-locked);
+    // a transient failure keeps the flow for a retry.
     match registration_open(&state, flow_id, &stored.flow).await {
         Ok(()) => {}
         Err(e) if is_refusal(&e) => {

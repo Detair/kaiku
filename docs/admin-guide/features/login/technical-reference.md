@@ -641,15 +641,17 @@ sequenceDiagram
   `too_many_codes`, `enrollment_expired`.
 - **One clock:** every deadline of an attempt and of its challenge (QR rotation, 10 minutes, code,
   challenge length and expiry, session and enrolment liveness) is decided on the database's clock:
-  `clock_timestamp()` read after the locks (`lock_attempt`, `lock_for_answer`, the challenge's issue
-  time), so a wait for a lock never extends a deadline; the sweeps' and polls' hints use `NOW()` of their
-  own statement. Every challenge kind with a parent (`login`, `enroll`, `enroll_pop`, `pc_setup`) is
+  `clock_timestamp()` read after the row locks are held (the requesting session's and the enrolment's
+  liveness, `lock_attempt`, `lock_for_answer`) or in the inserting statement (the challenge), so a wait
+  for a lock never extends a deadline. The sweeps' and polls' hints, the phone's own key-device session
+  check (shared by every challenge kind) and the other-account hint use `NOW()` of their statement. Every challenge kind with a parent (`login`, `enroll`, `enroll_pop`, `pc_setup`) is
   stored with the earlier of the database clock plus its lifetime and the parent's stored deadline, in
   whole seconds, in the statement that inserts it, so it never outlives its attempt, enrolment or code.
-- **Scan answers in order:** the scanning device's live key-device session first (403
-  `KEY_DEVICE_REQUIRED`, 401, 403 `ACCOUNT_BANNED`), then the account's `may_approve` (403
-  `APPROVAL_NOT_ALLOWED`), then the attempt (404 `LOGIN_CODE_STALE` when it ended, also when a poll or the
-  sweep ended it first). Another account's code counts as live while it waits or is claimed, whatever
+- **Scan answers in order:** a token that no longer belongs to a waiting or claimed attempt (every end
+  drops it) answers 404 `LOGIN_CODE_STALE` before any other check. For a token that resolves: the
+  scanning device's live key-device session (403 `KEY_DEVICE_REQUIRED`, 401, 403 `ACCOUNT_BANNED`), then
+  the account's `may_approve` (403 `APPROVAL_NOT_ALLOWED`), then the attempt (404 when it ended between
+  the lookup and the lock). Another account's code counts as live while it waits or is claimed, whatever
   its paused rotation time says.
 - **Answers:** a code typed after the 5 minutes answers 410 also when a poll or the sweep ended the
   attempt first; the phone's `answer`/`refuse`/`release` answer 404 to any caller but the claiming device

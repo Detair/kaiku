@@ -390,7 +390,7 @@ const DE: Texts = Texts {
     pc_passkey_prompt: "Erstelle den Passkey f\u{fc}r diesen Computer.",
     pc_create: "Passkey erstellen",
     pc_failed: "Das hat nicht geklappt. Versuch es noch einmal.",
-    pc_already: "Dieser Passkey ist schon bei deinem Konto. Nimm einen anderen oder geh zurück zur App.",
+    pc_already: "Dieser Passkey ist schon bei deinem Konto. Nimm einen anderen oder geh zur\u{fc}ck zur App.",
 };
 
 const fn texts(lang: Lang) -> &'static Texts {

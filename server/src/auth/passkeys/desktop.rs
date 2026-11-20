@@ -160,7 +160,8 @@ async fn take_result(state: &AppState, flow_id: Uuid) -> AuthResult<Option<Deskt
 /// Compare-and-set on the flow key in one script: only if the stored JSON is
 /// still `expected`. `ttl_ms = None` keeps the TTL (never extends or
 /// shortens it); `Some(ms)` sets exactly `ms` (the pending result's 60 s of
-/// C29 step 4, also near the flow's end); `new = None` deletes.
+/// C29 step 4, also near the flow's end; a `pc_setup` flow's enrolment time
+/// after the right code); `new = None` deletes.
 const FLOW_CAS: &str = r"
 local cur = redis.call('GET', KEYS[1])
 if (not cur) or cur ~= ARGV[1] then return 0 end
@@ -651,7 +652,7 @@ pub(super) async fn fail_with(
             return unavailable_page(lang);
         }
     }
-    tracing::info!(code, "desktop passkey finish refused");
+    tracing::info!(code, "desktop passkey flow refused");
     handoff_page(&stored.flow.loopback, flow_id, HandoffField::Error(code))
 }
 

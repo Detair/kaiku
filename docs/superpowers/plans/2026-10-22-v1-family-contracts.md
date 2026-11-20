@@ -950,9 +950,11 @@ Nothing below changes an existing contract entry; a client that does not know it
   403 `APPROVAL_NOT_ALLOWED` (`may_approve` off) or 409 `APPROVAL_STATE`, also when a poll or the sweep ended
   it first. A scan of another account's code answers 409 `PC_SETUP_OTHER_ACCOUNT` only to a scanner whose
   account may approve, and only while that code is live (waiting or claimed, its session live, its account
-  eligible); otherwise 403 `APPROVAL_NOT_ALLOWED` or 404 `LOGIN_CODE_STALE`. A scan of the own account's code
-  checks the scanning device's key-device session first (403 `KEY_DEVICE_REQUIRED`), then `may_approve`
-  (403 `APPROVAL_NOT_ALLOWED`), then the attempt (404 `LOGIN_CODE_STALE` when it ended). Every answer that can carry the QR token or the
+  eligible); otherwise 403 `APPROVAL_NOT_ALLOWED` or 404 `LOGIN_CODE_STALE`. A token that no longer belongs to a
+  waiting or claimed attempt answers 404 `LOGIN_CODE_STALE` before any other check. For a token of the own
+  account that resolves: the scanning device's key-device session (403 `KEY_DEVICE_REQUIRED`), then
+  `may_approve` (403 `APPROVAL_NOT_ALLOWED`), then the attempt (404 `LOGIN_CODE_STALE` when it ended in
+  between). Every answer that can carry the QR token or the
   code (start, `current`, the PC's and the phone's polls, `answer`) has `Cache-Control: no-store`; a new passkey sends the `authenticators_changed` hint.
   The code is returned **only** in the approve answer and never sent again; the app keeps it in memory
   while the attempt is in `code`. The phone checks, before UV, what B.2 lists, and displays only values of

@@ -204,10 +204,11 @@ async fn lock_enrolment(
 ) -> Result<Uuid, ApprovalError> {
     let a = &locked.attempt;
     let id = a.enrollment_id.ok_or(ApprovalError::State)?;
-    let live: Option<Uuid> = sqlx::query_scalar(
-        "SELECT id FROM enrollments
+    // The row lock first, then the clock (read after the lock is held).
+    let deadline: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
+        "SELECT expires_at FROM enrollments
           WHERE id = $1 AND variant = 'pc_setup' AND subject_id = $2 AND issuer_session_id = $3
-            AND state = 'issued' AND expires_at > clock_timestamp()
+            AND state = 'issued'
             FOR UPDATE",
     )
     .bind(id)
@@ -215,7 +216,14 @@ async fn lock_enrolment(
     .bind(a.session_id)
     .fetch_optional(&mut *conn)
     .await?;
-    live.ok_or(ApprovalError::State)
+    let deadline = deadline.ok_or(ApprovalError::State)?;
+    let now: chrono::DateTime<chrono::Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
+        .fetch_one(&mut *conn)
+        .await?;
+    if deadline <= now {
+        return Err(ApprovalError::State);
+    }
+    Ok(id)
 }
 
 /// Whether the account can take one more active passkey (409

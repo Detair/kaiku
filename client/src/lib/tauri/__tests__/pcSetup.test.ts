@@ -91,7 +91,7 @@ describe("setUpThisPcInBrowser", () => {
     });
   });
 
-  it("aborting cancels the flow by the attempt id and rejects as ABORTED", async () => {
+  it("aborting cancels the flow by its own cancel handle and rejects as ABORTED", async () => {
     let fail: (e: unknown) => void = () => undefined;
     invoke.mockImplementation((cmd: string) =>
       cmd === "passkey_pc_setup" ? new Promise((_, reject) => (fail = reject)) : Promise.resolve(undefined),

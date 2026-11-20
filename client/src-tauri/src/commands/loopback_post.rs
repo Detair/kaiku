@@ -21,8 +21,10 @@ use super::oidc_loopback::{Acceptor, CallbackTimeout};
 
 /// The listener never waits longer than a flow lives (10 minutes).
 pub const FLOW_LISTEN_MAX: Duration = Duration::from_mins(10);
-/// "Set up this PC": the server's flow lives 15 minutes (the code's 5 plus
-/// the enrolment's 10); the app waits as long, never past the flow's end.
+/// "Set up this PC": the server's flow lives up to 15 minutes (the code's 5
+/// plus the enrolment's 10; after the right code at least the enrolment's
+/// 10); the app waits up to the flow's `expires_at` from its start, so a
+/// flow that ended earlier simply never hands back.
 pub const PC_SETUP_LISTEN_MAX: Duration = Duration::from_mins(15);
 /// Request line, headers and body together.
 pub const MAX_REQUEST_BYTES: usize = 8 * 1024;
