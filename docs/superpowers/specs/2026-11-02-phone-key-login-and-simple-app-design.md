@@ -964,7 +964,8 @@ history and error texts: [2026-11-06-this-pc-setup-design.md](2026-11-06-this-pc
 4. On approval the phone alone gets a 6-digit code (5 min, 3 tries, kept in memory while the app
    lives). The code is typed where the passkey will be created: in the page on the web, in the
    system browser on the desktop (a browser secret cookie is set by the right code; `options` and
-   `finish` refuse without it).
+   `finish` refuse without it). Only the path the code took may register the passkey, and only a
+   desktop-class session starts a desktop flow.
 5. **There is no setup token.** Registration is bound to the requesting session (web) or to the
    desktop flow's `redeem` (C29), which stores the passkey as `active` (SM2 variant `pc_setup`).
 6. The PC then signs in with the passkey (F1). The existing "new passkey" notice goes to all

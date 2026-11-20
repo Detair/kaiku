@@ -27,6 +27,32 @@ use crate::auth::passkeys::MAX_ACTIVE_PASSKEYS;
 use crate::auth::AuthError;
 use crate::security_events::{record, Actor, EventType, NewSecurityEvent};
 
+/// Where the right code was typed, and so the only way its passkey may be
+/// registered (spec Step 5): the code proves that whoever registers is with
+/// the person holding the phone, so registration takes the same path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodePath {
+    /// The requesting session's own route (the page of the browser client).
+    Web,
+    /// The desktop flow with this id; its browser holds the browser secret.
+    DesktopFlow(Uuid),
+}
+
+impl CodePath {
+    const fn columns(self) -> (&'static str, Option<Uuid>) {
+        match self {
+            Self::Web => ("web", None),
+            Self::DesktopFlow(id) => ("desktop_flow", Some(id)),
+        }
+    }
+
+    /// Whether `a`'s right code came this way.
+    fn matches(self, a: &super::transition::AttemptRow) -> bool {
+        let (via, flow) = self.columns();
+        a.code_via.as_deref() == Some(via) && a.code_flow_id == flow
+    }
+}
+
 /// What a typed code did. A wrong code and the third wrong code are
 /// outcomes, not errors: their effects (the try, the failed attempt, its
 /// event) are committed.
@@ -66,6 +92,7 @@ pub async fn enter_code(
     ctx: &AuthCtx<'_>,
     locked: &LockedAttempt,
     code: &str,
+    path: CodePath,
 ) -> Result<CodeOutcome, ApprovalError> {
     if let Some(e) = not_live(locked, AttemptState::Code) {
         return Err(e);
@@ -98,13 +125,17 @@ pub async fn enter_code(
         .bind(i32::try_from(ENROLLMENT_MINUTES).unwrap_or(10))
         .execute(&mut *conn)
         .await?;
+        let (via, flow) = path.columns();
         sqlx::query(
             "UPDATE pc_setup_attempts
-                SET state = 'enrolled', enrollment_id = $2, code_hash = NULL
+                SET state = 'enrolled', enrollment_id = $2, code_hash = NULL,
+                    code_via = $3, code_flow_id = $4
               WHERE id = $1",
         )
         .bind(a.id)
         .bind(enrollment_id)
+        .bind(via)
+        .bind(flow)
         .execute(&mut *conn)
         .await?;
         audit(conn, a.user_id, "auth.pc_setup.enrol", a.id).await?;
@@ -181,14 +212,19 @@ async fn passkey_room(conn: &mut PgConnection, user_id: Uuid) -> Result<(), Appr
 }
 
 /// The checks of `passkey/start` under the locks: the attempt is
-/// `enrolled`, its enrolment live and the account has room. Returns the
+/// `enrolled` through `path` (the code was typed the way the passkey is now
+/// registered), its enrolment live and the account has room. Returns the
 /// enrolment id the ceremony is bound to.
 pub async fn registration_open(
     conn: &mut PgConnection,
     locked: &LockedAttempt,
+    path: CodePath,
 ) -> Result<Uuid, ApprovalError> {
     if let Some(e) = not_live(locked, AttemptState::Enrolled) {
         return Err(e);
+    }
+    if !path.matches(&locked.attempt) {
+        return Err(ApprovalError::State);
     }
     let enrollment_id = lock_enrolment(conn, locked).await?;
     passkey_room(conn, locked.attempt.user_id).await?;
@@ -219,9 +255,10 @@ pub async fn complete_enrolment(
     conn: &mut PgConnection,
     ctx: &AuthCtx<'_>,
     locked: &LockedAttempt,
+    path: CodePath,
     credential: Credential<'_>,
 ) -> Result<PasskeyRow, ApprovalError> {
-    let enrollment_id = registration_open(conn, locked).await?;
+    let enrollment_id = registration_open(conn, locked, path).await?;
     let a = &locked.attempt;
     let known: bool = sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM passkeys WHERE credential_id = $1 AND state <> 'revoked')",

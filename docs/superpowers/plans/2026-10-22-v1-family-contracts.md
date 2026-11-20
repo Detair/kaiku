@@ -986,7 +986,8 @@ Nothing below changes an existing contract entry; a client that does not know it
 - **Desktop purpose `pc_setup`** (F1 desktop flow; registration in the system browser, the first desktop
   registration). `POST /auth/passkeys/desktop/flows` takes `{purpose: "pc_setup", attempt_id, loopback_port,
   callback_path, client_challenge}` with `X-Kaiku-Client: desktop` and the requesting session's bearer; the
-  attempt must be the session's and in `code` (404 otherwise). The answer is 201 `{flow_id, url, expires_at}`
+  attempt must be the session's (404 otherwise), the session's stored client class must be `desktop` (403
+  `FORBIDDEN` otherwise; the header alone is not enough) and the attempt in `code` (400). The answer is 201 `{flow_id, url, expires_at}`
   with `url` = `{PUBLIC_URL}/auth/passkeys/desktop/flows/{flow_id}` (not `/desktop/{flow_id}`).
 - **Routes**, all under `/auth/passkeys/desktop/flows/{flow_id}` so that they share the cookie's path: `GET`
   the page (asks for the code first), `POST …/code {code}` (answers `{state, tries_left?}`; wrong entries
@@ -997,6 +998,10 @@ Nothing below changes an existing contract entry; a client that does not know it
   prefix and `Secure` are dropped), stored only as a keyed hash in the flow. The hash is written to the flow
   **before** the code entry is committed, so a failed commit leaves the code unspent. `options`, `finish`
   and `cancel` after the code refuse without it; a flow URL alone is worthless.
+- **One path per attempt.** The attempt records how the right code arrived (`web` or this flow); only that
+  path registers. The web `passkey/start|finish` answer 409 `APPROVAL_STATE` for an attempt whose code came
+  through a flow; a flow's `options`, `finish` and `redeem` refuse an attempt whose code did not come through
+  it. `redeem` consumes a flow only when it holds a pending result; without one nothing is changed.
 - A failed finish keeps the flow so the same browser can retry (the code is spent); the page redirects (303)
   back to the flow's page instead of re-posting.
 - **Hand-off.** Steps 4 and 5 (hand-off page, loopback POST) are unchanged. `finish` only verifies the

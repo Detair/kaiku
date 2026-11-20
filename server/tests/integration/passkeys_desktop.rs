@@ -1525,7 +1525,8 @@ use super::helpers::create_probation_session_with_token;
 use super::helpers::login::login_config;
 use super::helpers::passkeys::test_passkey_rp;
 use crate::pc_setup::{
-    attempt_state, contains_code, enrollment_state, passkeys_of, with_code, wrong, Pc,
+    attempt_state, contains_code, enrollment_state, passkey_start, passkeys_of, with_code, wrong,
+    Pc,
 };
 
 /// The cookie's name and path prefix (spec Step 5, browser secret).
@@ -1540,6 +1541,8 @@ async fn desktop_pc(pool: &PgPool) -> Pc {
     let (user, _) = create_test_user(pool).await;
     let dev = KeyDeviceFixture::insert(pool, &app.config, user, "active").await;
     let (sid, token) = create_probation_session_with_token(pool, &app.config, user).await;
+    // The desktop app's session: only such a session starts a `pc_setup` flow.
+    set_client_class(pool, sid, "desktop").await;
     Pc {
         app,
         user,
@@ -1547,6 +1550,15 @@ async fn desktop_pc(pool: &PgPool) -> Pc {
         token,
         dev,
     }
+}
+
+async fn set_client_class(pool: &PgPool, sid: Uuid, class: &str) {
+    sqlx::query("UPDATE sessions SET client_class = $2 WHERE id = $1")
+        .bind(sid)
+        .bind(class)
+        .execute(pool)
+        .await
+        .unwrap();
 }
 
 fn pc_setup_body(attempt_id: &str) -> Value {
@@ -2243,4 +2255,69 @@ async fn desktop_redeem_keeps_passkey_errors_readable(pool: PgPool) {
     );
     assert_eq!(attempt_state(&pool, &id).await, ("enrolled".into(), None));
     assert_eq!(passkeys_of(&pool, q.user).await, 0);
+}
+
+// One path per attempt: the code and the passkey take the same way.
+
+#[sqlx::test]
+async fn a_code_typed_in_a_flow_registers_through_that_flow_only(pool: PgPool) {
+    let p = desktop_pc(&pool).await;
+    let (id, code) = with_code(&p).await;
+    let flow = pc_flow(&p, &id).await;
+    right_code(&p, &flow, &code).await;
+    // The requesting session's web routes refuse the attempt.
+    let (s, body) = passkey_start(&p, &p.token, &id).await;
+    assert_eq!((s, body["error"].as_str()), (409, Some("APPROVAL_STATE")), "{body}");
+    assert_eq!(passkeys_of(&pool, p.user).await, 0);
+    assert_eq!(attempt_state(&pool, &id).await.0, "enrolled");
+}
+
+#[sqlx::test]
+async fn a_code_typed_on_the_web_cannot_be_used_by_a_flow(pool: PgPool) {
+    let p = desktop_pc(&pool).await;
+    let (id, code) = with_code(&p).await;
+    let flow = pc_flow(&p, &id).await;
+    let (s, body) = crate::pc_setup::enter(&p, &p.token, &id, &code).await;
+    assert_eq!((s, body["state"].as_str()), (200, Some("enrolled")), "{body}");
+    // The flow never gets a browser secret, so it has no ceremony to run.
+    assert_eq!(type_code(&p, &flow, &code, None).await.status, 409);
+    assert_eq!(pc_options(&p, &flow, None).await.status, 400);
+    let path: (Option<String>, Option<Uuid>) =
+        sqlx::query_as("SELECT code_via, code_flow_id FROM pc_setup_attempts WHERE id = $1::uuid")
+            .bind(&id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(path, (Some("web".into()), None));
+}
+
+#[sqlx::test]
+async fn a_session_of_another_client_cannot_start_a_pc_setup_flow(pool: PgPool) {
+    let p = desktop_pc(&pool).await;
+    let (id, _) = with_code(&p).await;
+    for class in ["web", "android"] {
+        set_client_class(&pool, p.sid, class).await;
+        // The desktop header alone is not enough.
+        let r = api(
+            &p.app.router,
+            "/auth/passkeys/desktop/flows",
+            pc_setup_body(&id),
+            true,
+            Some(&p.token),
+        )
+        .await;
+        assert_eq!((r.status, r.json()["error"].as_str()), (403, Some("FORBIDDEN")), "{}", r.body);
+    }
+}
+
+#[sqlx::test]
+async fn a_redeem_without_a_pending_result_consumes_nothing(pool: PgPool) {
+    let p = desktop_pc(&pool).await;
+    let (id, code) = with_code(&p).await;
+    let flow = pc_flow(&p, &id).await;
+    let cookie = right_code(&p, &flow, &code).await;
+    // Someone who saw the flow URL redeems before any result exists.
+    assert_invalid(&pc_redeem(&p, &flow, "x", VERIFIER, None).await);
+    // The browser that typed the code still runs its ceremony.
+    assert_eq!(pc_options(&p, &flow, Some(&cookie)).await.status, 200);
 }

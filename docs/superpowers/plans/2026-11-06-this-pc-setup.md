@@ -34,7 +34,7 @@
 ### Task 1: Data model, kind and golden vectors
 
 **Files:**
-- Create: `server/migrations/20261123000000_pc_setup.sql`
+- Create: `server/migrations/20261126000000_pc_setup.sql`
 - Create: `server/src/approvals/pc_setup/mod.rs`
 - Modify: `server/src/approvals/mod.rs`, `signing.rs`, `context.rs`, `secrets.rs`, `golden_tests.rs`, `enrollments/mod.rs`, `core.rs`
 - Modify: `server/src/security_events/types.rs`

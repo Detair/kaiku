@@ -1369,7 +1369,7 @@ async fn can_set_up_this_pc_matches_what_start_accepts(pool: PgPool) {
 // Code entry, the `pc_setup` enrolment and the web registration (Task 3)
 // ============================================================================
 
-use vc_server::approvals::pc_setup::enrolment::{enter_code, CodeOutcome};
+use vc_server::approvals::pc_setup::enrolment::{enter_code, CodeOutcome, CodePath};
 
 use super::helpers::login::TEST_ORIGIN;
 use super::helpers::passkeys::SoftAuthenticator;
@@ -1412,7 +1412,7 @@ async fn enrolled(p: &Pc) -> (String, String) {
     (id, body["enrollment_id"].as_str().unwrap().to_string())
 }
 
-async fn passkey_start(p: &Pc, bearer: &str, id: &str) -> (u16, Value) {
+pub async fn passkey_start(p: &Pc, bearer: &str, id: &str) -> (u16, Value) {
     call(
         &p.app,
         Method::POST,
@@ -2441,7 +2441,9 @@ async fn refresh_reuse_against_code_entry(pool: PgPool) {
             .await
             .unwrap();
     let CodeOutcome::Enrolled { enrollment_id } =
-        enter_code(&mut holder, &ctx, &locked, &code).await.unwrap()
+        enter_code(&mut holder, &ctx, &locked, &code, CodePath::Web)
+            .await
+            .unwrap()
     else {
         panic!("the right code enrols");
     };

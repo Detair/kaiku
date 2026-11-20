@@ -234,6 +234,19 @@ token could be raced by anyone who saw it. Registration is bound to the requesti
   - F1 today supports assertions only. Registration needs a new ceremony kind, pending result and
     redemption handling, which holds the verified credential until `redeem`.
 
+**One path per attempt (as built).** The attempt records how the right code arrived: through the
+requesting session's own route (`web`), or through one specific desktop flow (its id). Only that path
+may register the passkey: the web `passkey/start` and `passkey/finish` refuse an attempt whose code came
+through a flow, and a desktop flow's `options`, `finish` and `redeem` refuse an attempt whose code did
+not come through that flow. A `pc_setup` desktop flow can be started only by a session whose stored
+client class is `desktop`; the request header alone is not enough. Starting in the browser and finishing
+in the desktop app (or the reverse) therefore needs **Start again**.
+
+**The web path's binding is the session's bearer.** After the right code the browser client's page
+registers with the same session's access token and nothing else. Whoever holds that token at that moment
+holds the session anyway (B.4, B.6); the desktop path adds the browser secret because there the code is
+typed outside the app.
+
 At `done` the passkey row is created as `active`. A failed or cancelled ceremony can be retried until
 the enrolment expires (10 minutes). Firefox on Linux gets the existing `LinuxPasskeyHint` guidance
 first, and the PC offers **Start again** at every point.

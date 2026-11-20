@@ -606,7 +606,13 @@ sequenceDiagram
   becomes `enrolled`; a wrong code answers 200 `{state: "code", tries_left}`; the third gives `failed` and
   `pc_setup_failed`. A code that is not 6 digits is refused (400) without spending a try; after the 5
   minutes the answer is 410 `APPROVAL_EXPIRED`. A lost response recovers by the PC's next poll.
-- **Browser (web):** `passkey/start` and `passkey/finish` need the requesting session; the finish creates
+- **One path per attempt:** the right code records how it arrived (`code_via` = `web`, or `desktop_flow`
+  with the flow's id); only that path registers. The web routes refuse an attempt whose code came
+  through a flow (409 `APPROVAL_STATE`), and a flow refuses an attempt whose code came another way. A
+  `pc_setup` desktop flow starts only from a session whose stored client class is `desktop` (403
+  `FORBIDDEN` otherwise).
+- **Browser (web):** `passkey/start` and `passkey/finish` need the requesting session (the bearer is the
+  only binding after the right code: whoever holds the session's access token holds the session); the finish creates
   the `active` passkey (409 `PASSKEY_LIMIT` / `PASSKEY_ALREADY_REGISTERED` keep the attempt readable).
 - **Desktop:** purpose `pc_setup` of the F1 flow (C29). The app starts the flow with its session's bearer
   and the attempt id; the flow URL is `/auth/passkeys/desktop/flows/{flow_id}`. The page asks for the
@@ -617,7 +623,8 @@ sequenceDiagram
   10 minutes, the pending result 60 s.
   `finish` verifies the registration and keeps it as the pending result; nothing takes effect before
   `redeem` (hand-off code, verifier, the starting session's bearer), which stores the passkey and
-  returns no tokens. The F1 routes refuse `pc_setup` flows.
+  returns no tokens. `redeem` consumes a flow only when it holds a pending result; a redeem before the
+  browser has finished changes nothing. The F1 routes refuse `pc_setup` flows.
 - **Notices:** `authenticator_added` (high) with `via: pc_setup`, `attempt_id`, `requesting_sid`, the PC's
   `client_description` and the approving device (`approving_device_id`, `approving_device_label`), to
   every address; "That wasn't me" revokes the passkey, ends its sessions and the

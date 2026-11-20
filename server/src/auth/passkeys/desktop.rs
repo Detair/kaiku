@@ -137,13 +137,21 @@ pub(super) async fn load(state: &AppState, flow_id: Uuid) -> AuthResult<Option<S
     }))
 }
 
-async fn take(state: &AppState, flow_id: Uuid) -> AuthResult<Option<DesktopFlow>> {
-    let raw: Option<String> = state
-        .redis
-        .getdel(key(flow_id))
-        .await
-        .map_err(|e| unavailable(&e))?;
-    Ok(raw.and_then(|r| serde_json::from_str(&r).ok()))
+/// Take a flow for `redeem`, only if it holds a pending result (one
+/// compare-and-set): a flow without one is left as it is, so knowing its
+/// URL cannot end a flow after the browser step began. With a result the
+/// flow is consumed by any redeem, right or wrong (C29 step 5).
+async fn take_result(state: &AppState, flow_id: Uuid) -> AuthResult<Option<DesktopFlow>> {
+    let Some(stored) = load(state, flow_id).await? else {
+        return Ok(None);
+    };
+    if stored.flow.result.is_none() {
+        return Ok(None);
+    }
+    if !cas(state, flow_id, &stored.raw, None, None).await? {
+        return Ok(None);
+    }
+    Ok(Some(stored.flow))
 }
 
 /// Compare-and-set on the flow key in one script: only if the stored JSON is
@@ -863,7 +871,7 @@ pub async fn redeem(
 ) -> AuthResult<Response> {
     require_desktop(&headers)?;
     rp_of(&state)?;
-    let flow = take(&state, body.flow_id).await?;
+    let flow = take_result(&state, body.flow_id).await?;
     let auth = auth.map(|Extension(a)| a);
     let result = redeem_inner(&state, addr, &headers, auth.as_ref(), flow, &body).await;
     if let Err(e) = &result {
@@ -964,8 +972,16 @@ async fn redeem_inner(
             if auth.id != user_id || auth.session_id != Some(session_id) {
                 return Err(AuthError::PasskeyHandoffInvalid);
             }
-            desktop_pc_setup::redeem(state, user_id, session_id, attempt_id, &verified, &label)
-                .await
+            desktop_pc_setup::redeem(
+                state,
+                body.flow_id,
+                user_id,
+                session_id,
+                attempt_id,
+                &verified,
+                &label,
+            )
+            .await
         }
         _ => Err(AuthError::PasskeyHandoffInvalid),
     }

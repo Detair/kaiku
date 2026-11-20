@@ -40,11 +40,12 @@ use super::types::PasskeyView;
 use super::{failure, rp_of};
 use crate::api::AppState;
 use crate::approvals::error::ApprovalError;
-use crate::approvals::pc_setup::enrolment::{self, CodeOutcome, Credential};
+use crate::approvals::pc_setup::enrolment::{self, CodeOutcome, CodePath, Credential};
 use crate::approvals::pc_setup::handlers::{settle, PcSetupCodeEntry};
 use crate::approvals::pc_setup::transition::{self, LockedAttempt};
 use crate::approvals::pc_setup::AttemptState;
 use crate::approvals::secrets::{ct_eq, keyed_hash, Secret256, SecretPurpose};
+use crate::auth::client_class::ClientClass;
 use crate::auth::ctx::AuthCtx;
 use crate::auth::oidc::new_handoff_code;
 use crate::auth::{AuthError, AuthResult, AuthUser};
@@ -74,6 +75,11 @@ pub(super) async fn purpose(
         }
         Err(e) => return Err(to_auth(e)),
     };
+    // Only the desktop app's own session (its stored client class, not a
+    // request header) types the code in the system browser.
+    if auth.session.as_ref().map(|s| s.client_class) != Some(ClientClass::Desktop) {
+        return Err(AuthError::Forbidden);
+    }
     if row.state() != AttemptState::Code {
         return Err(AuthError::Validation(
             "the attempt is not waiting for its code".into(),
@@ -203,12 +209,16 @@ async fn lock(
 
 /// The checks of the passkey step under the locks (attempt `enrolled`, its
 /// enrolment live, room for a passkey), committed as `settle` does.
-async fn registration_open(state: &AppState, flow: &DesktopFlow) -> Result<(), ApprovalError> {
+async fn registration_open(
+    state: &AppState,
+    flow_id: Uuid,
+    flow: &DesktopFlow,
+) -> Result<(), ApprovalError> {
     let ids = ids(flow).ok_or(ApprovalError::NotFound)?;
     let mut tx = state.db.begin().await?;
     let result = async {
         let locked = lock(&mut tx, ids).await?;
-        enrolment::registration_open(&mut tx, &locked).await
+        enrolment::registration_open(&mut tx, &locked, CodePath::DesktopFlow(flow_id)).await
     }
     .await;
     settle(tx, result).await.map(|_| ())
@@ -276,7 +286,14 @@ pub async fn code(
     let mut tx = state.db.begin().await?;
     let result = async {
         let locked = lock(&mut tx, ids).await?;
-        enrolment::enter_code(&mut tx, &ctx, &locked, &body.code).await
+        enrolment::enter_code(
+            &mut tx,
+            &ctx,
+            &locked,
+            &body.code,
+            CodePath::DesktopFlow(flow_id),
+        )
+        .await
     }
     .await;
     let outcome = match result {
@@ -347,7 +364,7 @@ pub async fn options(
         .ok_or(AuthError::PasskeyCeremonyInvalid)?;
     let (user_id, session_id, attempt_id) =
         ids(&stored.flow).ok_or(AuthError::PasskeyCeremonyInvalid)?;
-    if let Err(e) = registration_open(&state, &stored.flow).await {
+    if let Err(e) = registration_open(&state, flow_id, &stored.flow).await {
         if is_refusal(&e) {
             cas(&state, flow_id, &stored.raw, None, None).await?;
         }
@@ -440,7 +457,7 @@ pub async fn finish(
     };
     // Ruling 10: an ended or restarted attempt refuses here already; a
     // transient failure keeps the flow for a retry.
-    match registration_open(&state, &stored.flow).await {
+    match registration_open(&state, flow_id, &stored.flow).await {
         Ok(()) => {}
         Err(e) if is_refusal(&e) => {
             return fail_with(&state, lang, flow_id, &stored, refusal_code(&e)).await;
@@ -514,6 +531,7 @@ pub async fn cancel(
 /// them through commit, then delivers the notice.
 pub(super) async fn redeem(
     state: &AppState,
+    flow_id: Uuid,
     user_id: Uuid,
     session_id: Uuid,
     attempt_id: Uuid,
@@ -524,7 +542,14 @@ pub(super) async fn redeem(
     let mut tx = state.db.begin().await?;
     let result = async {
         let locked = lock(&mut tx, (user_id, session_id, attempt_id)).await?;
-        enrolment::complete_enrolment(&mut tx, &ctx, &locked, Credential { verified, label }).await
+        enrolment::complete_enrolment(
+            &mut tx,
+            &ctx,
+            &locked,
+            CodePath::DesktopFlow(flow_id),
+            Credential { verified, label },
+        )
+        .await
     }
     .await;
     let row = settle(tx, result).await.map_err(to_auth)?;

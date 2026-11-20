@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
-use super::enrolment::{self, CodeOutcome, Credential};
+use super::enrolment::{self, CodeOutcome, CodePath, Credential};
 use super::transition::{self, Answered, AttemptRow};
 use crate::api::AppState;
 use crate::approvals::error::ApprovalError;
@@ -391,7 +391,7 @@ pub async fn code(
     let mut tx = state.db.begin().await?;
     let result = async {
         let locked = lock_own(&mut tx, &auth, id).await?;
-        enrolment::enter_code(&mut tx, &ctx, &locked, &body.code).await
+        enrolment::enter_code(&mut tx, &ctx, &locked, &body.code, CodePath::Web).await
     }
     .await;
     let out = match settle(tx, result).await? {
@@ -441,7 +441,7 @@ pub async fn passkey_start(
     let mut tx = state.db.begin().await?;
     let result = async {
         let locked = lock_own(&mut tx, &auth, id).await?;
-        let enrollment_id = enrolment::registration_open(&mut tx, &locked).await?;
+        let enrollment_id = enrolment::registration_open(&mut tx, &locked, CodePath::Web).await?;
         Ok((locked.attempt.session_id, enrollment_id))
     }
     .await;
@@ -537,6 +537,7 @@ pub async fn passkey_finish(
             &mut tx,
             &ctx,
             &locked,
+            CodePath::Web,
             Credential {
                 verified: &verified,
                 label: &label,

@@ -115,6 +115,9 @@ pub struct AttemptRow {
     pub enrollment_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
+    /// How the right code arrived (`web` or `desktop_flow`), see [`CodePath`].
+    pub code_via: Option<String>,
+    pub code_flow_id: Option<Uuid>,
 }
 
 impl AttemptRow {

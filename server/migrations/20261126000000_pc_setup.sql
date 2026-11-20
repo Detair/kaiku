@@ -34,11 +34,21 @@ CREATE TABLE pc_setup_attempts (
     code_expires_at TIMESTAMPTZ,
     tries SMALLINT NOT NULL DEFAULT 0 CHECK (tries BETWEEN 0 AND 3),
     enrollment_id UUID REFERENCES enrollments(id) ON DELETE SET NULL,
+    -- How the right code arrived, and so the only way the passkey may be
+    -- registered (spec Step 5, one path per attempt): `web` (the requesting
+    -- session's own route and page) or `desktop_flow` (the one desktop flow
+    -- `code_flow_id`, whose browser holds the browser secret).
+    code_via TEXT CHECK (code_via IS NULL OR code_via IN ('web', 'desktop_flow')),
+    code_flow_id UUID,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     -- The 10 minutes bound `waiting` and `claimed`; the code and the
     -- enrolment run on their own clocks after that.
     expires_at TIMESTAMPTZ NOT NULL,
-    CONSTRAINT pc_setup_attempts_ttl CHECK (expires_at <= created_at + INTERVAL '10 minutes')
+    CONSTRAINT pc_setup_attempts_ttl CHECK (expires_at <= created_at + INTERVAL '10 minutes'),
+    CONSTRAINT pc_setup_attempts_code_path CHECK (
+        (code_via IS NULL AND code_flow_id IS NULL)
+        OR (code_via = 'web' AND code_flow_id IS NULL)
+        OR (code_via = 'desktop_flow' AND code_flow_id IS NOT NULL))
 );
 
 -- One live attempt per session: a new start ends the old one (Locking 6).
