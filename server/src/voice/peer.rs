@@ -90,12 +90,17 @@ pub struct Peer {
     /// `(subscriber, source, track)`. Removal of this peer's media touches
     /// exactly these, never a newer peer of the same user.
     forwarded: std::sync::Mutex<Vec<(Uuid, TrackSource, Arc<TrackLocalStaticRTP>)>>,
-    /// Video source bound to each publisher transceiver (`mid`): further
-    /// simulcast layers of that transceiver use it, nothing else does.
-    video_mids: std::sync::Mutex<HashMap<String, TrackSource>>,
-    /// Simulcast layers that arrived before their transceiver's first layer
-    /// was bound to a source.
-    stashed_layers: std::sync::Mutex<Vec<(String, super::track_types::Layer, Arc<TrackRemote>)>>,
+    /// Video source bound to each simulcast publisher transceiver (`mid`) by
+    /// its first layer (`None`: that layer was refused). The other layers of
+    /// the transceiver use it, nothing else does.
+    video_mids: std::sync::Mutex<HashMap<String, Option<TrackSource>>>,
+    /// Number of the latest accepted announcement per source (a timer of an
+    /// older announcement of the same source acts on nothing).
+    announcements: std::sync::Mutex<HashMap<TrackSource, u64>>,
+    /// Held while state is added on behalf of this seat (forwarding a track,
+    /// binding it to a source) and while the seat's media is removed; see
+    /// the lock rules in `sfu.rs`.
+    pub(crate) media: tokio::sync::Mutex<()>,
     /// When a key frame was last requested for each of this peer's video
     /// sources on behalf of its viewers.
     keyframe_requested: std::sync::Mutex<HashMap<TrackSource, tokio::time::Instant>>,
@@ -173,7 +178,8 @@ impl Peer {
             microphone_claimed: AtomicBool::new(false),
             forwarded: std::sync::Mutex::new(Vec::new()),
             video_mids: std::sync::Mutex::new(HashMap::new()),
-            stashed_layers: std::sync::Mutex::new(Vec::new()),
+            announcements: std::sync::Mutex::new(HashMap::new()),
+            media: tokio::sync::Mutex::new(()),
             keyframe_requested: std::sync::Mutex::new(HashMap::new()),
             inactive_mlines: std::sync::atomic::AtomicUsize::new(0),
             auth_session: std::sync::OnceLock::new(),
@@ -415,47 +421,42 @@ impl Peer {
             .retain(|(_, s, _)| *s != source);
     }
 
-    /// Bind the publisher transceiver `mid` to `source` and return the
-    /// simulcast layers of it that arrived earlier.
-    pub fn bind_video_mid(
-        &self,
-        mid: &str,
-        source: TrackSource,
-    ) -> Vec<(super::track_types::Layer, Arc<TrackRemote>)> {
+    /// Bind the simulcast publisher transceiver `mid` to `source` (`None`:
+    /// its first layer was refused).
+    pub fn bind_video_mid(&self, mid: &str, source: Option<TrackSource>) {
         self.video_mids
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(mid.to_owned(), source);
-        let mut stashed = self
-            .stashed_layers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let (mine, rest): (Vec<_>, Vec<_>) = stashed.drain(..).partition(|(m, _, _)| m == mid);
-        *stashed = rest;
-        mine.into_iter().map(|(_, l, t)| (l, t)).collect()
     }
 
-    /// The source bound to transceiver `mid`, or stash the layer until it is.
-    pub fn video_source_for_layer(
-        &self,
-        mid: &str,
-        layer: super::track_types::Layer,
-        track: &Arc<TrackRemote>,
-    ) -> Option<TrackSource> {
-        if let Some(source) = self
-            .video_mids
+    /// The binding of transceiver `mid`, if its first layer was decided.
+    pub fn video_mid(&self, mid: &str) -> Option<Option<TrackSource>> {
+        self.video_mids
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(mid)
             .copied()
-        {
-            return Some(source);
-        }
-        self.stashed_layers
+    }
+
+    /// Record a newly accepted announcement of `source` and return its number.
+    pub fn announce(&self, source: TrackSource) -> u64 {
+        let mut map = self
+            .announcements
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let next = map.values().copied().max().unwrap_or(0) + 1;
+        map.insert(source, next);
+        next
+    }
+
+    /// Whether announcement `number` is still the latest one of `source`.
+    pub fn is_current_announcement(&self, source: TrackSource, number: u64) -> bool {
+        self.announcements
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push((mid.to_owned(), layer, track.clone()));
-        None
+            .get(&source)
+            == Some(&number)
     }
 
     /// Whether a viewer's key-frame request for `source` may go to the

@@ -942,7 +942,11 @@ Media of a participant reaches others only under a source the server accepted.
 - `voice_screen_share_stop` and `voice_webcam_stop` are never rate-limited: a stop is always applied.
 - A `stream_id` is unique in a room: a start with an id that is in use (by anyone) answers `DUPLICATE_STREAM_ID`.
 - Simulcast: further layers (`rid`) of a video track belong to that track's transceiver and its announcement;
-  they never bind to another announcement. A layer that arrives before its first layer waits for it.
+  they never bind to another announcement. The first layer of a track to arrive (whichever `rid`) takes the
+  announcement and counts as the track's media for the 10 s expiry; the other layers forward under it. If the
+  first layer is refused, so are the others.
+- An expiry belongs to the start it was set for: switching a webcam off and on again (or reusing a `stream_id`)
+  starts a new 10 s period. A stop or expiry that races the first track wins: the track is not forwarded.
 - Key frames: a viewer's PLI or FIR for a forwarded video track is passed to the publisher as a PLI, at most once
   per second per track across all viewers (the server also asks for one every 3 s). Viewers may send PLI/FIR
   freely when they need a key frame (late join, decoder error).

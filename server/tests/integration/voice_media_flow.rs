@@ -580,3 +580,128 @@ async fn viewer_keyframe_requests_reach_the_publisher_rate_limited(pool: PgPool)
     );
     assert!(got <= 4, "requests were not coalesced: {got}");
 }
+
+/// A seat replaced while its first track is being forwarded leaves nothing
+/// behind at the others: no ghost forwarded track or subscription that would
+/// later block the user's new seat.
+#[sqlx::test]
+async fn takeover_during_track_forwarding_leaves_no_ghost(pool: PgPool) {
+    let f = fixture(pool).await;
+    let mut viewer = f.participant(SimOptions::default()).await;
+    viewer.join_and_publish_mic().await;
+    let (user, _) = f.member().await;
+
+    let mut old = f.participant_for(user, SimOptions::default()).await;
+    old.join().await;
+    let pause = vc_server::ws::test_hooks::pause_track_before_forwarding(user);
+    old.add_track(false, "mic").await;
+    old.publish().await;
+    tokio::time::timeout(WAIT, pause.reached.notified())
+        .await
+        .expect("the track reached the forwarding step");
+
+    // The same user takes the seat over from another socket meanwhile.
+    let new = f.participant_for(user, SimOptions::default()).await;
+    new.send_join();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    pause.release.notify_one();
+    let mut new = new;
+    new.next_event("voice_room_state", WAIT).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let room = f.app.state.sfu.get_room(f.voice).await.expect("room");
+    let viewer_peer = room.get_peer(viewer.user_id).await.expect("viewer");
+    assert_eq!(
+        viewer_peer.outgoing_tracks_count().await,
+        0,
+        "the replaced seat's track is still forwarded to the viewer"
+    );
+    assert_eq!(
+        room.track_router
+            .subscription_count(user, vc_server::voice::TrackSource::Microphone),
+        0,
+        "a subscription of the replaced seat is left"
+    );
+
+    // The new seat's microphone reaches the viewer.
+    new.add_track(false, "mic").await;
+    new.publish().await;
+    let before = viewer.packets(&mic_track(user));
+    assert!(
+        viewer
+            .wait_for_packets(&mic_track(user), before + 5, WAIT)
+            .await,
+        "the viewer does not hear the new seat"
+    );
+    let _ = old.close().await;
+}
+
+/// A stop that races the share's first track wins: the track is not
+/// forwarded for a share that has ended.
+#[sqlx::test]
+async fn stop_racing_the_first_track_forwards_nothing(pool: PgPool) {
+    let f = fixture(pool).await;
+    let (mut a, mut b) = two_in_call(&f).await;
+
+    let stream = Uuid::new_v4();
+    a.send(share_start(f.voice, stream));
+    a.next_event("screen_share_started", WAIT).await;
+    let pause = vc_server::ws::test_hooks::pause_track_before_forwarding(a.user_id);
+    a.add_track(true, "screen").await;
+    a.publish().await;
+    tokio::time::timeout(WAIT, pause.reached.notified())
+        .await
+        .expect("the track reached the forwarding step");
+    a.send(serde_json::json!({
+        "type": "voice_screen_share_stop",
+        "channel_id": f.voice,
+        "stream_id": stream,
+    }));
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    pause.release.notify_one();
+    b.next_event("screen_share_stopped", WAIT).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let (active, _) = subscriber_counts(&f.app, f.voice, b.user_id).await;
+    assert_eq!(
+        active, 1,
+        "the ended share is still forwarded to the viewer"
+    );
+    let room = f.app.state.sfu.get_room(f.voice).await.expect("room");
+    let a_peer = room.get_peer(a.user_id).await.expect("a");
+    assert!(
+        a_peer.incoming_tracks.read().await.len() == 1,
+        "the ended share's track is still bound"
+    );
+}
+
+/// The expiry belongs to its own start: a webcam switched off and on again
+/// is not ended by the first start's timer.
+#[sqlx::test]
+async fn expiry_acts_only_on_its_own_start(pool: PgPool) {
+    let f = fixture(pool).await;
+    let (mut a, mut b) = two_in_call(&f).await;
+    let start = serde_json::json!({
+        "type": "voice_webcam_start",
+        "channel_id": f.voice,
+        "quality": "medium",
+    });
+    a.send(start.clone());
+    a.next_event("webcam_started", WAIT).await;
+    a.send(serde_json::json!({ "type": "voice_webcam_stop", "channel_id": f.voice }));
+    b.next_event("webcam_stopped", WAIT).await;
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    a.send(start);
+    a.next_event("webcam_started", WAIT).await;
+
+    // The first start's timer fires about 5 s from now; the second's at 10 s.
+    let early = b
+        .try_next_event("webcam_stopped", Duration::from_secs(8))
+        .await;
+    assert!(
+        early.is_none(),
+        "the first start's timer ended the second webcam: {early:?}"
+    );
+    let late = b.next_event("webcam_stopped", Duration::from_secs(6)).await;
+    assert_eq!(late["reason"], "no_media", "{late}");
+}

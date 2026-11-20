@@ -9,6 +9,22 @@
 //! (`Peer::incoming_tracks`, the outgoing track map, the pending sources) are
 //! taken with no room lock held and are never held across a socket send.
 //!
+//! `Peer::media` (per seat, async) guards adding state on behalf of a seat:
+//! the track callback binding a track to a source and forwarding it
+//! (`forward_to`, `Peer::record_forwarded`), the first-offer subscribe path
+//! forwarding an existing seat's tracks, and the end of a share or webcam.
+//! Rule: **a retired seat adds nothing.** Whether the seat is still current
+//! (`Peer::is_retired`) and its source still live is decided after taking
+//! `media`, in the same critical section as the additions;
+//! `Room::detach_media` sets `retired` first and then takes `media` before it
+//! collects the seat's forwarded tracks, so it either sees every addition or
+//! the addition sees `retired`. Additions made under the room locks instead
+//! (registering a share in `try_add_screen_share`, a webcam in `add_webcam`)
+//! re-check `retired` right after and undo themselves. At most one seat's
+//! `media` is held at a time; it is taken with no room lock held; under it
+//! only other peers' leaf locks are taken (outgoing tracks, negotiation), and
+//! renegotiation sends happen after it is released where possible.
+//!
 //! `Peer::negotiation` (the subscriber offer/answer state) is a leaf lock: it
 //! is taken with no room lock held, nothing else of ours is locked while it is
 //! held, and it covers only local WebRTC work (create offer, set local or
@@ -137,20 +153,78 @@ async fn take_live_source(peer: &Peer, room: &Room, video: bool) -> Option<Track
     let deadline = tokio::time::Instant::now() + UNANNOUNCED_TRACK_GRACE;
     loop {
         let source = peer.take_source_until(video, deadline).await?;
-        let live = match source {
-            TrackSource::ScreenVideo(id) | TrackSource::ScreenAudio(id) => room
-                .screen_shares
-                .read()
-                .await
-                .get(&id)
-                .is_some_and(|share| share.user_id == peer.user_id),
-            TrackSource::Webcam => room.webcams.read().await.contains_key(&peer.user_id),
-            TrackSource::Microphone => true,
-        };
-        if live {
+        if source_is_live(room, peer, source).await {
             return Some(source);
         }
         debug!(user_id = %peer.user_id, source = %source, "Discarding announcement of an ended source");
+    }
+}
+
+/// Whether the share or webcam that `source` belongs to is still registered
+/// for `peer` (the microphone always is).
+async fn source_is_live(room: &Room, peer: &Peer, source: TrackSource) -> bool {
+    match source {
+        TrackSource::ScreenVideo(id) | TrackSource::ScreenAudio(id) => room
+            .screen_shares
+            .read()
+            .await
+            .get(&id)
+            .is_some_and(|share| share.user_id == peer.user_id),
+        TrackSource::Webcam => room.webcams.read().await.contains_key(&peer.user_id),
+        TrackSource::Microphone => true,
+    }
+}
+
+/// Forward `source`'s `track` of seat `source_peer` to `subscriber`: router
+/// subscription, outgoing track, the source seat's forwarded list and the
+/// RTCP reader for video. The caller holds `source_peer.media` and has
+/// checked that the seat is current. Returns whether a track was added (the
+/// subscriber then needs a renegotiation).
+pub(crate) async fn forward_to(
+    room: &Room,
+    source_peer: &Arc<Peer>,
+    source: TrackSource,
+    track: &Arc<webrtc::track::track_remote::TrackRemote>,
+    subscriber: &Arc<Peer>,
+) -> bool {
+    let source_user = source_peer.user_id;
+    let Ok(local_track) =
+        room.track_router
+            .create_subscriber_track(source_user, source, subscriber, track)
+    else {
+        return false;
+    };
+    match subscriber
+        .add_outgoing_track(source_user, source, local_track.clone())
+        .await
+    {
+        Ok(sender) => {
+            source_peer.record_forwarded(subscriber.user_id, source, local_track);
+            if source.is_video() {
+                spawn_subscriber_rtcp_reader(
+                    Arc::downgrade(source_peer),
+                    track.ssrc(),
+                    room.track_router.clone(),
+                    subscriber.user_id,
+                    source_user,
+                    source,
+                    sender,
+                    subscriber.signal_tx.clone(),
+                    room.channel_id,
+                );
+            }
+            true
+        }
+        Err(e) => {
+            room.track_router.remove_subscriptions_into(&[local_track]);
+            debug!(
+                source = %source_user,
+                subscriber = %subscriber.user_id,
+                error = %e,
+                "Track not added"
+            );
+            false
+        }
     }
 }
 
@@ -296,6 +370,10 @@ impl Room {
     pub async fn detach_media(&self, departed: &Peer) {
         // From now on its late track callbacks and forwarders do nothing.
         departed.retire();
+        // Wait for a track callback that is adding state for this seat right
+        // now (it checked the seat before it was retired): afterwards the
+        // forwarded list below is complete, and later callbacks see `retired`.
+        let _media = departed.media.lock().await;
         let user_id = departed.user_id;
         // Only this peer instance's media: a newer peer of the same user may
         // already be in the room and keeps its own.
@@ -1070,19 +1148,21 @@ impl SfuServer {
                     // pending queue for the primary layer (High) or non-simulcast
                     // tracks. Secondary layers (Medium, Low) look up the source type
                     // from the already-registered High-layer entry in simulcast_tracks.
-                    let is_secondary_simulcast = !rid.is_empty()
-                        && layer != Layer::High
-                        && track.kind() == RTPCodecType::Video;
-
-                    // The publisher transceiver: further simulcast layers of a
-                    // track bind to its announcement, never to another one.
+                    // A simulcast track arrives as one `on_track` per layer
+                    // (rid), all on one publisher transceiver (`mid`). The first
+                    // layer to arrive binds the transceiver to its announcement
+                    // and is the primary one (incoming track, subscriber
+                    // tracks); the other layers only forward under that binding.
+                    // webrtc-rs runs the callbacks of one connection in order,
+                    // so the binding is in place before the next layer's turn.
                     let mid = transceiver.mid().map(|m| m.to_string()).unwrap_or_default();
-                    let source_type = if is_secondary_simulcast {
-                        let Some(st) = peer.video_source_for_layer(&mid, layer, &track) else {
-                            // Its first layer has not been bound yet: kept
-                            // until it is (dropped with the peer otherwise).
-                            return;
-                        };
+                    let simulcast = !rid.is_empty() && track.kind() == RTPCodecType::Video;
+                    let binding = if simulcast { peer.video_mid(&mid) } else { None };
+                    let is_secondary_simulcast = binding.is_some();
+                    let source_type = if let Some(bound) = binding {
+                        // The transceiver's first layer was refused: so are its
+                        // other layers (refusal already reported).
+                        let Some(st) = bound else { return };
                         st
                     } else {
                         // Every track needs a source the server accepted
@@ -1100,25 +1180,29 @@ impl SfuServer {
                                 return;
                             }
                         };
-                        match video {
-                            None => TrackSource::Microphone,
-                            Some(video) => {
-                                let Some(source) = take_live_source(&peer, &room, video).await
-                                else {
-                                    reject_unannounced_track(&peer, &track, video).await;
-                                    return;
-                                };
-                                source
-                            }
+                        let resolved = match video {
+                            None => Some(TrackSource::Microphone),
+                            Some(video) => take_live_source(&peer, &room, video).await,
+                        };
+                        if simulcast {
+                            peer.bind_video_mid(&mid, resolved);
                         }
+                        let Some(source) = resolved else {
+                            reject_unannounced_track(&peer, &track, video == Some(true)).await;
+                            return;
+                        };
+                        source
                     };
 
-                    // A peer that left or was replaced while this track was
-                    // being resolved must not touch the room (its user may
-                    // have a new peer here already).
-                    if peer.is_retired() {
+                    // Everything below adds state on behalf of this seat, so it
+                    // runs under the seat's media lock and only while the seat
+                    // is current and its source is live (see the module doc).
+                    let media = peer.media.lock().await;
+                    if peer.is_retired() || !source_is_live(&room, &peer, source_type).await {
+                        debug!(user_id = %uid, source = %source_type, "Not forwarding: seat or source ended");
                         return;
                     }
+                    crate::ws::test_hooks::track_before_forwarding(uid).await;
                     // One track per source: a key that is taken stays with its
                     // first track (no second forwarder into its subscribers).
                     if !is_secondary_simulcast
@@ -1128,9 +1212,7 @@ impl SfuServer {
                         return;
                     }
 
-                    // For video tracks with a valid RID, store in simulcast_tracks.
-                    let is_simulcast = !rid.is_empty() && source_type.is_video();
-                    if is_simulcast {
+                    if simulcast {
                         room.track_router.store_simulcast_track(
                             uid,
                             source_type,
@@ -1156,25 +1238,11 @@ impl SfuServer {
                         peer.clone(),
                     );
 
-                    // The first layer of a simulcast transceiver binds it to its
-                    // source; layers of it that arrived earlier start now.
-                    if is_simulcast && !is_secondary_simulcast {
-                        for (early_layer, early) in peer.bind_video_mid(&mid, source_type) {
-                            room.track_router.store_simulcast_track(
-                                uid,
-                                source_type,
-                                early_layer,
-                                early.clone(),
-                            );
-                            spawn_rtp_forwarder(
-                                uid,
-                                source_type,
-                                early_layer,
-                                early,
-                                room.track_router.clone(),
-                                peer.clone(),
-                            );
-                        }
+                    // Secondary layers share the primary layer's subscriber
+                    // tracks: they are only forwarded when a subscriber's active
+                    // layer matches.
+                    if is_secondary_simulcast {
+                        return;
                     }
 
                     // For video tracks: send PLI every 3 seconds so subscribers
@@ -1182,7 +1250,7 @@ impl SfuServer {
                     // pattern — webrtc-rs doesn't include an interval PLI interceptor
                     // by default, and PeerConnection::write_rtcp() doesn't reliably
                     // deliver PLI to the remote browser.
-                    if source_type.is_video() && layer == Layer::High {
+                    if source_type.is_video() {
                         let publisher_pc_weak = Arc::downgrade(&peer.publisher_pc);
                         let track_ssrc = track.ssrc();
                         tokio::spawn(async move {
@@ -1204,14 +1272,6 @@ impl SfuServer {
                         });
                     }
 
-                    // Only create subscriber tracks for the primary layer (High)
-                    // or non-simulcast tracks. Secondary simulcast layers (Medium,
-                    // Low) share the same subscriber local track — they are just
-                    // forwarded when the subscriber's active_layer matches.
-                    if is_simulcast && layer != Layer::High {
-                        return;
-                    }
-
                     // Store incoming track (only for the primary / non-simulcast track)
                     peer.set_incoming_track(source_type, track.clone()).await;
 
@@ -1223,53 +1283,22 @@ impl SfuServer {
                         other_peer_count = other_peers.len(),
                         "Forwarding track to subscribers"
                     );
+                    let mut changed = Vec::new();
                     for other_peer in other_peers {
-                        if let Ok(local_track) = room
-                            .track_router
-                            .create_subscriber_track(uid, source_type, &other_peer, &track)
-                        {
-                            match other_peer
-                                .add_outgoing_track(uid, source_type, local_track.clone())
-                                .await
-                            {
-                                Ok(sender) => {
-                                    peer.record_forwarded(
-                                        other_peer.user_id,
-                                        source_type,
-                                        local_track.clone(),
-                                    );
-                                    if source_type.is_video() {
-                                        spawn_subscriber_rtcp_reader(
-                                            Arc::downgrade(&peer),
-                                            track.ssrc(),
-                                            room.track_router.clone(),
-                                            other_peer.user_id,
-                                            uid,
-                                            source_type,
-                                            sender,
-                                            other_peer.signal_tx.clone(),
-                                            room.channel_id,
-                                        );
-                                    }
-                                    // Renegotiate so subscriber receives updated SDP
-                                    if let Err(e) = Self::renegotiate(&other_peer).await {
-                                        warn!(
-                                            subscriber = %other_peer.user_id,
-                                            error = %e,
-                                            "Renegotiation failed after track add"
-                                        );
-                                    }
-                                }
-                                Err(e) => {
-                                    room.track_router.remove_subscriptions_into(&[local_track]);
-                                    warn!(
-                                        source = %uid,
-                                        subscriber = %other_peer.user_id,
-                                        error = %e,
-                                        "Failed to add outgoing track"
-                                    );
-                                }
-                            }
+                        if forward_to(&room, &peer, source_type, &track, &other_peer).await {
+                            changed.push(other_peer);
+                        }
+                    }
+                    // Renegotiate outside the media lock (a slow socket must not
+                    // hold up a leave or replacement of this seat).
+                    drop(media);
+                    for other_peer in changed {
+                        if let Err(e) = Self::renegotiate(&other_peer).await {
+                            warn!(
+                                subscriber = %other_peer.user_id,
+                                error = %e,
+                                "Renegotiation failed after track add"
+                            );
                         }
                     }
                 })

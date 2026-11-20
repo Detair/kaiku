@@ -443,6 +443,28 @@ pub mod test_hooks {
         wait(voice_join_pauses(), user_id).await;
     }
 
+    fn track_pauses() -> &'static Mutex<HashMap<Uuid, Pause>> {
+        static PAUSES: OnceLock<Mutex<HashMap<Uuid, Pause>>> = OnceLock::new();
+        PAUSES.get_or_init(Mutex::default)
+    }
+
+    /// Pause the next incoming track of `user_id`'s voice seat once the
+    /// server has decided to forward it (its seat was current), before it is
+    /// added to the other participants.
+    pub fn pause_track_before_forwarding(user_id: Uuid) -> Pause {
+        arm();
+        let pause = Pause::default();
+        track_pauses()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(user_id, pause.clone());
+        pause
+    }
+
+    pub(crate) async fn track_before_forwarding(user_id: Uuid) {
+        wait(track_pauses(), user_id).await;
+    }
+
     fn access_counters() -> &'static Mutex<HashMap<Uuid, (usize, usize)>> {
         static COUNTERS: OnceLock<Mutex<HashMap<Uuid, (usize, usize)>>> = OnceLock::new();
         COUNTERS.get_or_init(Mutex::default)

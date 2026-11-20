@@ -18,7 +18,6 @@ use super::screen_share::{
 };
 use super::sfu::{ReplacedMedia, Room, SfuServer};
 use super::stats::VoiceStats;
-use super::track::spawn_subscriber_rtcp_reader;
 use super::track_types::{LayerPreference, TrackSource};
 use super::webcam::WebcamInfo;
 use super::{queries, Quality};
@@ -647,58 +646,24 @@ async fn subscribe_to_existing_tracks(
             .collect()
     };
 
-    for (other_id, other_peer) in &other_peers {
-        let incoming = other_peer.incoming_tracks.read().await;
-        for (source_type, track) in incoming.iter() {
-            match room
-                .track_router
-                .create_subscriber_track(*other_id, *source_type, peer, track)
-            {
-                Ok(local_track) => {
-                    match peer
-                        .add_outgoing_track(*other_id, *source_type, local_track.clone())
-                        .await
-                    {
-                        Ok(sender) => {
-                            other_peer.record_forwarded(user_id, *source_type, local_track.clone());
-                            if source_type.is_video() {
-                                spawn_subscriber_rtcp_reader(
-                                    Arc::downgrade(other_peer),
-                                    track.ssrc(),
-                                    room.track_router.clone(),
-                                    user_id,
-                                    *other_id,
-                                    *source_type,
-                                    sender,
-                                    peer.signal_tx.clone(),
-                                    room.channel_id,
-                                );
-                            }
-                            // PLI for screen shares is sent AFTER renegotiation
-                            // (see below) so the keyframe arrives when the subscriber
-                            // is actually ready to decode.
-                        }
-                        Err(e) => {
-                            room.track_router.remove_subscriptions_into(&[local_track]);
-                            warn!(
-                                source = %other_id,
-                                subscriber = %user_id,
-                                error = %e,
-                                "Failed to add outgoing track for existing peer"
-                            );
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        user_id = %user_id,
-                        source_user = %other_id,
-                        source = ?source_type,
-                        error = %e,
-                        "failed to create subscriber track"
-                    );
-                }
-            }
+    for (_, other_peer) in &other_peers {
+        // State added on behalf of the source seat: under its media lock and
+        // only while it is current (a seat replaced meanwhile has its media
+        // removed under the same lock).
+        let _media = other_peer.media.lock().await;
+        if other_peer.is_retired() {
+            continue;
+        }
+        let incoming: Vec<(TrackSource, Arc<webrtc::track::track_remote::TrackRemote>)> =
+            other_peer
+                .incoming_tracks
+                .read()
+                .await
+                .iter()
+                .map(|(s, t)| (*s, t.clone()))
+                .collect();
+        for (source_type, track) in incoming {
+            super::sfu::forward_to(room, other_peer, source_type, &track, peer).await;
         }
     }
 
@@ -998,10 +963,12 @@ async fn handle_screen_share_start(
         peer.push_pending_source(TrackSource::ScreenAudio(stream_id))
             .await;
     }
+    let announcement = peer.announce(TrackSource::ScreenVideo(stream_id));
     expire_unused_announcement(
         room.clone(),
         peer.clone(),
         TrackSource::ScreenVideo(stream_id),
+        announcement,
         screen_share_limiter.cloned(),
     );
 
@@ -1067,11 +1034,19 @@ fn expire_unused_announcement(
     room: Arc<Room>,
     peer: Arc<super::peer::Peer>,
     source: TrackSource,
+    announcement: u64,
     limiter: Option<ScreenShareLimiter>,
 ) {
     tokio::spawn(async move {
         tokio::time::sleep(ANNOUNCEMENT_TTL).await;
-        if peer.is_retired() || peer.incoming_tracks.read().await.contains_key(&source) {
+        // Only this announcement: a later start of the same source (webcam
+        // off and on, a reused stream id) has its own timer. Any layer of a
+        // simulcast track counts as its media (the first layer to arrive
+        // sets the incoming track).
+        if peer.is_retired()
+            || !peer.is_current_announcement(source, announcement)
+            || peer.incoming_tracks.read().await.contains_key(&source)
+        {
             return;
         }
         let ended = match source {
@@ -1101,6 +1076,9 @@ async fn end_screen_share(
 ) -> Result<(), VoiceError> {
     let user_id = peer.user_id;
     let channel_id = room.channel_id;
+    // Serialized with a track being bound to this share (see `sfu.rs`): a
+    // track never starts forwarding for a share that has ended.
+    let _media = peer.media.lock().await;
     // An announcement this stop ends must never bind a later track.
     peer.remove_pending_sources(|s| s.stream_id() == Some(stream_id))
         .await;
@@ -1235,19 +1213,29 @@ async fn handle_webcam_start(
         }
     }
 
-    // Queue pending track source so setup_track_handler identifies it as Webcam
-    peer.push_pending_source(TrackSource::Webcam).await;
-    expire_unused_announcement(room.clone(), peer.clone(), TrackSource::Webcam, None);
-
-    // In the dual-PC model, the client adds tracks to the publisher PC
-    // and sends a new offer. No server-side transceiver allocation needed.
-
     // Get username for the info
     let username = peer.username.clone();
 
-    // Create webcam info and add to room
+    // Register the webcam first (a track only binds to a live webcam).
     let info = WebcamInfo::new(user_id, username.clone(), quality);
     room.add_webcam(info).await;
+    // The participant left or was replaced meanwhile: its leave may have
+    // missed this webcam, so take it back (a retired seat adds nothing).
+    if peer.is_retired() {
+        room.remove_webcam(user_id).await;
+        return Err(VoiceError::ParticipantNotFound(user_id));
+    }
+
+    // Queue pending track source so setup_track_handler identifies it as Webcam
+    peer.push_pending_source(TrackSource::Webcam).await;
+    let announcement = peer.announce(TrackSource::Webcam);
+    expire_unused_announcement(
+        room.clone(),
+        peer.clone(),
+        TrackSource::Webcam,
+        announcement,
+        None,
+    );
 
     // Broadcast to room (including the user, so they get confirmation)
     room.broadcast_all(ServerEvent::WebcamStarted {
@@ -1297,6 +1285,8 @@ async fn end_webcam(
 ) -> Result<(), VoiceError> {
     let user_id = peer.user_id;
     let channel_id = room.channel_id;
+    // Serialized with a track being bound to the webcam (see `sfu.rs`).
+    let _media = peer.media.lock().await;
     // A webcam announcement this stop ends must never bind a later track.
     peer.remove_pending_sources(|s| *s == TrackSource::Webcam)
         .await;
