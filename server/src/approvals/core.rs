@@ -214,8 +214,9 @@ pub async fn issue(
     row.to_wire(ctx.origin())
 }
 
-/// Issue a `pc_setup` challenge on the database's clock: in the inserting
-/// statement, `expires_at` = the earlier of now + `ttl` and `not_after`
+/// Issue a `pc_setup` challenge on the database's clock.
+///
+/// In the inserting statement, `expires_at` = the earlier of now + `ttl` and `not_after`
 /// (the attempt's stored deadline), in whole seconds (signed and stored
 /// agree). A lifetime that floors to now or earlier inserts nothing
 /// (`Expired`). The other kinds use [`issue`].
@@ -307,8 +308,9 @@ pub async fn lock_for_answer(
     Ok(row)
 }
 
-/// Lock a `pc_setup` challenge for its device without deciding anything
-/// yet ([`lock_for_answer`] without the expiry check): the transition reads
+/// Lock a `pc_setup` challenge for its device without deciding anything.
+///
+/// As [`lock_for_answer`] without the expiry check: the transition reads
 /// the database's clock after all its locks and then calls
 /// [`check_for_answer_at`]. Unknown or another device's → 404.
 pub async fn lock_challenge_row(

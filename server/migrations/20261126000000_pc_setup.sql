@@ -76,7 +76,9 @@ CREATE INDEX idx_pc_setup_attempts_created ON pc_setup_attempts (created_at);
 -- and signs for an attempt comes from this value, which never changes.
 ALTER TABLE sessions ADD COLUMN created_user_agent TEXT
     CHECK (created_user_agent IS NULL OR char_length(created_user_agent) <= 512);
-UPDATE sessions SET created_user_agent = left(user_agent, 512) WHERE user_agent IS NOT NULL;
+-- Sessions from before this migration keep NULL: `user_agent` may already
+-- have been rewritten by a refresh, so it is no creation data; they show the
+-- fixed description of their client class.
 
 -- The challenge kind and its requester.
 ALTER TABLE approvals

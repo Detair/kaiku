@@ -608,10 +608,10 @@ async fn may_approve_off_refuses_scan_and_approval(pool: PgPool) {
         (403, Some("APPROVAL_NOT_ALLOWED")),
         "{body}"
     );
-    assert_eq!(
-        attempt_state(&pool, &id_of(&a)).await,
-        ("expired".into(), Some("may_approve_off".into()))
-    );
+    // Nothing is written for a refused scanner; the PC's poll ends it.
+    assert_eq!(attempt_state(&pool, &id_of(&a)).await.0, "waiting");
+    let (_, st) = pc_poll(&p, &id_of(&a)).await;
+    assert_eq!(st["reason"].as_str(), Some("may_approve_off"), "{st}");
     // Off between the scan and the approval.
     set_may_approve(&pool, p.user, true).await;
     let (id, c, bytes) = claimed(&p).await;
@@ -1466,7 +1466,7 @@ pub async fn passkey_start(p: &Pc, bearer: &str, id: &str) -> (u16, Value) {
     .await
 }
 
-async fn passkey_finish(p: &Pc, bearer: &str, id: &str, body: Value) -> (u16, Value) {
+pub async fn passkey_finish(p: &Pc, bearer: &str, id: &str, body: Value) -> (u16, Value) {
     call(
         &p.app,
         Method::POST,
@@ -3232,4 +3232,253 @@ async fn the_pc_setup_challenge_never_outlives_its_attempt(pool: PgPool) {
     .await
     .unwrap();
     assert!(within, "the stored expiry is capped by the attempt's");
+}
+
+// ============================================================================
+// One clock per transition, read after its last lock (Locking 7)
+// ============================================================================
+
+/// Hold a row (touched by `sql`, so a waiter re-reads it after the wait).
+async fn hold(
+    pool: &PgPool,
+    sql: &'static str,
+    id: Uuid,
+) -> sqlx::Transaction<'static, sqlx::Postgres> {
+    let mut holder = pool.begin().await.unwrap();
+    sqlx::query(sql)
+        .bind(id)
+        .execute(&mut *holder)
+        .await
+        .unwrap();
+    holder
+}
+
+const TOUCH_USER: &str = "UPDATE users SET may_approve = may_approve WHERE id = $1";
+const TOUCH_SESSION: &str = "UPDATE sessions SET expires_at = expires_at WHERE id = $1";
+
+/// Once a request waits behind `holder`, keep it 2 s more, then release.
+/// Returns the database clock just before the release.
+async fn release_after_wait(
+    pool: &PgPool,
+    mut holder: sqlx::Transaction<'static, sqlx::Postgres>,
+) -> chrono::DateTime<chrono::Utc> {
+    super::helpers::wait_for_lock_waiters(pool, 1).await;
+    tokio::time::sleep(std::time::Duration::from_millis(2_000)).await;
+    let at: chrono::DateTime<chrono::Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
+        .fetch_one(&mut *holder)
+        .await
+        .unwrap();
+    holder.commit().await.unwrap();
+    at
+}
+
+#[sqlx::test]
+async fn a_start_that_waited_for_a_lock_gets_its_full_times(pool: PgPool) {
+    let p = pc(&pool).await;
+    let holder = hold(&pool, TOUCH_USER, p.user).await;
+    let ((s, a), released) =
+        tokio::join!(start(&p.app, &p.token), release_after_wait(&pool, holder));
+    assert_eq!(s, 201, "{a}");
+    let (created, rotates, expires): (
+        chrono::DateTime<chrono::Utc>,
+        chrono::DateTime<chrono::Utc>,
+        chrono::DateTime<chrono::Utc>,
+    ) = sqlx::query_as(
+        "SELECT created_at, qr_rotates_at, expires_at FROM pc_setup_attempts WHERE id = $1::uuid",
+    )
+    .bind(id_of(&a))
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(
+        created >= released,
+        "created after the wait: {created} < {released}"
+    );
+    assert_eq!(
+        rotates - created,
+        chrono::Duration::seconds(vc_server::approvals::pc_setup::QR_ROTATE_SECS)
+    );
+    assert_eq!(expires - created, chrono::Duration::minutes(10));
+}
+
+#[sqlx::test]
+async fn an_approval_that_waited_for_a_lock_gets_the_full_five_minutes(pool: PgPool) {
+    let p = pc(&pool).await;
+    let (id, c, bytes) = claimed(&p).await;
+    let holder = hold(&pool, TOUCH_USER, p.user).await;
+    let ((s, b), released) = tokio::join!(
+        answer(&p.app, &p.dev, &c, &bytes, Decision::Approve),
+        release_after_wait(&pool, holder)
+    );
+    assert_eq!(s, 200, "{b}");
+    let until: chrono::DateTime<chrono::Utc> =
+        sqlx::query_scalar("SELECT code_expires_at FROM pc_setup_attempts WHERE id = $1::uuid")
+            .bind(&id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(
+        until >= released + chrono::Duration::minutes(5),
+        "five minutes from after the wait: {until} < {released} + 5 min"
+    );
+}
+
+#[sqlx::test]
+async fn a_code_that_waited_for_a_lock_opens_the_full_ten_minutes(pool: PgPool) {
+    let p = pc(&pool).await;
+    let (id, code) = with_code(&p).await;
+    let holder = hold(&pool, TOUCH_USER, p.user).await;
+    let ((s, b), released) = tokio::join!(
+        enter(&p, &p.token, &id, &code),
+        release_after_wait(&pool, holder)
+    );
+    assert_eq!((s, b["state"].as_str()), (200, Some("enrolled")), "{b}");
+    let (created, expires): (chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>) =
+        sqlx::query_as(
+            "SELECT e.created_at, e.expires_at FROM enrollments e
+               JOIN pc_setup_attempts a ON a.enrollment_id = e.id WHERE a.id = $1::uuid",
+        )
+        .bind(&id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(
+        created >= released,
+        "created after the wait: {created} < {released}"
+    );
+    assert_eq!(expires - created, chrono::Duration::minutes(10));
+}
+
+#[sqlx::test]
+async fn a_scan_that_waited_past_the_qr_time_is_stale(pool: PgPool) {
+    let p = pc(&pool).await;
+    let a = started(&p).await;
+    let (token, _) = qr_token(&a["qr_payload"]);
+    sqlx::query(
+        "UPDATE pc_setup_attempts SET qr_rotates_at = clock_timestamp() + INTERVAL '1 second'
+          WHERE id = $1::uuid",
+    )
+    .bind(id_of(&a))
+    .execute(&pool)
+    .await
+    .unwrap();
+    // The phone's own session row is busy (a refresh) across the QR's time.
+    let phone_sid = p.dev.session_id.unwrap();
+    let holder = hold(&pool, TOUCH_SESSION, phone_sid).await;
+    let ((s, b), _) = tokio::join!(
+        claim(&p.app, &p.dev, &token),
+        release_after_wait(&pool, holder)
+    );
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (404, Some("LOGIN_CODE_STALE")),
+        "{b}"
+    );
+    assert_eq!(attempt_state(&pool, &id_of(&a)).await.0, "waiting");
+}
+
+#[sqlx::test]
+async fn a_phone_session_that_lapsed_during_the_wait_refuses_the_scan(pool: PgPool) {
+    let p = pc(&pool).await;
+    let a = started(&p).await;
+    let (token, _) = qr_token(&a["qr_payload"]);
+    let phone_sid = p.dev.session_id.unwrap();
+    let holder = hold(
+        &pool,
+        "UPDATE sessions SET expires_at = clock_timestamp() + INTERVAL '1 second' WHERE id = $1",
+        phone_sid,
+    )
+    .await;
+    let ((s, b), _) = tokio::join!(
+        claim(&p.app, &p.dev, &token),
+        release_after_wait(&pool, holder)
+    );
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (401, Some("INVALID_TOKEN")),
+        "{b}"
+    );
+    assert_eq!(attempt_state(&pool, &id_of(&a)).await.0, "waiting");
+}
+
+// ============================================================================
+// The scanner first (C26): its refusal does not depend on the token
+// ============================================================================
+
+#[sqlx::test]
+async fn a_scanner_that_may_not_approve_changes_nothing_and_learns_nothing(pool: PgPool) {
+    let p = pc(&pool).await;
+    let a = started(&p).await;
+    let (token, _) = qr_token(&a["qr_payload"]);
+    set_may_approve(&pool, p.user, false).await;
+    for t in [token.clone(), b64u_encode(&[7u8; 32])] {
+        let (s, b) = claim(&p.app, &p.dev, &t).await;
+        assert_eq!(
+            (s, b["error"].as_str()),
+            (403, Some("APPROVAL_NOT_ALLOWED")),
+            "{b}"
+        );
+    }
+    // Nothing was written for the refused scanner; the PC's poll ends it.
+    assert_eq!(
+        attempt_state(&pool, &id_of(&a)).await,
+        ("waiting".into(), None)
+    );
+    let (s, st) = pc_poll(&p, &id_of(&a)).await;
+    assert_eq!(
+        (s, st["state"].as_str(), st["reason"].as_str()),
+        (200, Some("expired"), Some("may_approve_off"))
+    );
+}
+
+#[sqlx::test]
+async fn a_session_without_a_key_device_finds_no_challenge(pool: PgPool) {
+    let p = pc(&pool).await;
+    let (id, c, _) = claimed(&p).await;
+    let cid = c["challenge_id"].as_str().unwrap();
+    // The PC's own probation session, and a full session of another kind.
+    for route in ["answer", "refuse", "release"] {
+        let body = (route == "answer").then(|| {
+            json!({"decision": "approve", "response": b64u_encode(&[0u8; 32]), "signature": "AA"})
+        });
+        let uri = if route == "release" {
+            format!("/api/approvals/{cid}/release")
+        } else {
+            format!("/api/pc-setups/{cid}/{route}")
+        };
+        let (s, b) = call(&p.app, Method::POST, &uri, &p.token, body).await;
+        assert_eq!(
+            (s, b["error"].as_str()),
+            (404, Some("APPROVAL_NOT_FOUND")),
+            "{route}: {b}"
+        );
+    }
+    assert_eq!(attempt_state(&pool, &id).await.0, "claimed");
+}
+
+// ============================================================================
+// Creation data only (Step 3): the migration copies nothing a refresh wrote
+// ============================================================================
+
+#[sqlx::test(migrations = false)]
+async fn sessions_from_before_the_upgrade_keep_no_creation_description(pool: PgPool) {
+    use super::helpers::migrations::{apply_from, apply_until};
+    const PC_SETUP: i64 = 20_261_126_000_000;
+    apply_until(&pool, PC_SETUP).await;
+    let (user, _) = create_test_user(&pool).await;
+    let sid = Uuid::new_v4();
+    insert_session_row(&pool, sid, user, false).await;
+    sqlx::query("UPDATE sessions SET user_agent = 'Refreshed/1.0' WHERE id = $1")
+        .bind(sid)
+        .execute(&pool)
+        .await
+        .unwrap();
+    apply_from(&pool, PC_SETUP).await;
+    let created: Option<String> =
+        sqlx::query_scalar("SELECT created_user_agent FROM sessions WHERE id = $1")
+            .bind(sid)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(created, None);
 }

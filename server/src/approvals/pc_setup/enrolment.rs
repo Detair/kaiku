@@ -128,14 +128,15 @@ pub async fn enter_code(
                  issuer_device_id, setup_token_hash, nonce, authenticator_type, state,
                  created_at, expires_at)
              VALUES ($1, 'pc_setup', $2, 'pc_setup', $3, $4, NULL, $5, 'passkey', 'issued',
-                     NOW(), NOW() + make_interval(mins => $6))",
+                     $6, $7)",
         )
         .bind(enrollment_id)
         .bind(a.user_id)
         .bind(a.session_id)
         .bind(device)
         .bind(nonce.to_vec())
-        .bind(i32::try_from(ENROLLMENT_MINUTES).unwrap_or(10))
+        .bind(locked.now)
+        .bind(locked.now + chrono::Duration::minutes(ENROLLMENT_MINUTES))
         .execute(&mut *conn)
         .await?;
         let (via, flow) = path.columns();
@@ -181,6 +182,7 @@ pub async fn enter_code(
         &mut ended,
         AttemptState::Failed,
         EndCause::TooManyCodes,
+        locked.now,
     )
     .await?;
     // The account only (normal severity, B.5 coalescing).
@@ -195,35 +197,26 @@ pub async fn enter_code(
     Ok(CodeOutcome::Failed)
 }
 
-/// The attempt's live enrolment, locked after the attempt (Locking 3).
-/// Anything but the attempt's own `issued`, unexpired `pc_setup` enrolment
-/// of the requesting session → 409.
-async fn lock_enrolment(
-    conn: &mut PgConnection,
-    locked: &LockedAttempt,
-) -> Result<Uuid, ApprovalError> {
+/// The attempt's live enrolment, locked after the attempt (Locking 3, in
+/// [`lock_attempt_rows`](super::transition::lock_attempt_rows)) and decided
+/// on the transition's clock. Anything but the attempt's own `issued`,
+/// unexpired `pc_setup` enrolment of the requesting session → 409.
+fn live_enrolment(locked: &LockedAttempt) -> Result<Uuid, ApprovalError> {
     let a = &locked.attempt;
     let id = a.enrollment_id.ok_or(ApprovalError::State)?;
-    // The row lock first, then the clock (read after the lock is held).
-    let deadline: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
-        "SELECT expires_at FROM enrollments
-          WHERE id = $1 AND variant = 'pc_setup' AND subject_id = $2 AND issuer_session_id = $3
-            AND state = 'issued'
-            FOR UPDATE",
-    )
-    .bind(id)
-    .bind(a.user_id)
-    .bind(a.session_id)
-    .fetch_optional(&mut *conn)
-    .await?;
-    let deadline = deadline.ok_or(ApprovalError::State)?;
-    let now: chrono::DateTime<chrono::Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
-        .fetch_one(&mut *conn)
-        .await?;
-    if deadline <= now {
-        return Err(ApprovalError::State);
+    match &locked.enrolment {
+        Some(e)
+            if e.id == id
+                && e.variant == "pc_setup"
+                && e.subject_id == a.user_id
+                && e.issuer_session_id == Some(a.session_id)
+                && e.state == "issued"
+                && e.expires_at > locked.now =>
+        {
+            Ok(id)
+        }
+        _ => Err(ApprovalError::State),
     }
-    Ok(id)
 }
 
 /// Whether the account can take one more active passkey (409
@@ -253,7 +246,7 @@ pub async fn registration_open(
     if !path.matches(&locked.attempt) {
         return Err(ApprovalError::State);
     }
-    let enrollment_id = lock_enrolment(conn, locked).await?;
+    let enrollment_id = live_enrolment(locked)?;
     passkey_room(conn, locked.attempt.user_id).await?;
     Ok(enrollment_id)
 }
@@ -338,10 +331,11 @@ pub async fn complete_enrolment(
         .execute(&mut *conn)
         .await?;
     sqlx::query(
-        "UPDATE enrollments SET state = 'done', done_at = NOW(), ended_at = NOW()
+        "UPDATE enrollments SET state = 'done', done_at = $2, ended_at = $2
           WHERE id = $1 AND state = 'issued'",
     )
     .bind(enrollment_id)
+    .bind(locked.now)
     .execute(&mut *conn)
     .await
     .map(one_row)??;

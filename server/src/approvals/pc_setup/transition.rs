@@ -23,8 +23,8 @@ use uuid::Uuid;
 use super::{AttemptState, CHALLENGE_TTL, CODE_DIGITS, CODE_MINUTES, QR_ROTATE_SECS};
 use crate::approvals::context::{sid_hash, CanonicalContext, PcSetupContext};
 use crate::approvals::core::{
-    issue_until, lock_for_answer, set_state, verify, ChallengeRow, ChallengeState, NewChallenge,
-    Requester,
+    check_for_answer_at, issue_until, lock_challenge_row, set_state, verify, ChallengeRow,
+    ChallengeState, NewChallenge, Requester,
 };
 use crate::approvals::devices::{
     key_device_session, require_key_device_snapshot, KeyDeviceSession,
@@ -151,12 +151,37 @@ pub struct LockedAttempt {
     pub account: LockedAccount,
     /// `None` when the session row is gone.
     pub session: Option<RequestingSession>,
+    /// The attempt's enrolment, locked after the attempt (`enrolled` only).
+    pub enrolment: Option<EnrolmentLock>,
     /// Set when this lock expired a stale attempt.
     pub ended_now: Option<EndCause>,
-    /// The database's clock when the locks were held: every deadline of the
-    /// attempt is compared with this one clock (the rows were written with
-    /// the database's `NOW()`).
+    /// The database's clock, read once after every lock of the transition
+    /// is held: every liveness check and every deadline the transition
+    /// issues uses this one value (Locking 7).
     pub now: DateTime<Utc>,
+}
+
+/// The attempt's enrolment row as it is under its lock.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct EnrolmentLock {
+    pub id: Uuid,
+    pub variant: String,
+    pub subject_id: Uuid,
+    pub issuer_session_id: Option<Uuid>,
+    pub state: String,
+    pub expires_at: DateTime<Utc>,
+}
+
+/// An attempt's rows under their locks, before the clock is read.
+///
+/// Account → requesting session → attempt → its enrolment. A transition takes
+/// its own further locks, then [`read_clock`], then [`AttemptLocks::settle`].
+#[derive(Debug)]
+pub struct AttemptLocks {
+    pub attempt: AttemptRow,
+    pub account: LockedAccount,
+    session: Option<SessionRow>,
+    enrolment: Option<EnrolmentLock>,
 }
 
 impl LockedAttempt {
@@ -196,15 +221,14 @@ async fn read(conn: &mut PgConnection, id: Uuid, lock: bool) -> sqlx::Result<Opt
         .await
 }
 
-/// Lock the session row `sid` of `user` and read its liveness.
-async fn lock_session(
+/// Lock the session row `sid` of `user` (its liveness is decided later, on
+/// the transition's one clock).
+async fn lock_session_row(
     conn: &mut PgConnection,
     user: Uuid,
     sid: Uuid,
-) -> sqlx::Result<Option<RequestingSession>> {
-    // The row lock first, then the clock: liveness is decided on the
-    // database's clock read after the lock is held.
-    let row: Option<SessionRow> = sqlx::query_as(
+) -> sqlx::Result<Option<SessionRow>> {
+    sqlx::query_as(
         "SELECT id, ended_at, expires_at, absolute_expires_at,
                 assurance, client_class,
                 -- The User-Agent of the session's creation only: a refresh cannot
@@ -217,27 +241,36 @@ async fn lock_session(
     .bind(sid)
     .bind(user)
     .fetch_optional(&mut *conn)
-    .await?;
-    let Some(r) = row else {
-        return Ok(None);
-    };
-    let now: DateTime<Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
+    .await
+}
+
+impl SessionRow {
+    fn at(self, now: DateTime<Utc>) -> RequestingSession {
+        RequestingSession {
+            id: self.id,
+            live: self.ended_at.is_none()
+                && self.expires_at > now
+                && self.absolute_expires_at > now,
+            assurance: self.assurance,
+            client_class: self.client_class,
+            user_agent: self.user_agent,
+            city: self.city,
+            country: self.country,
+            created_at: self.created_at,
+        }
+    }
+}
+
+/// The database's clock now (`clock_timestamp()`, not the transaction's
+/// start): read once per transition, after its last lock.
+pub async fn read_clock(conn: &mut PgConnection) -> sqlx::Result<DateTime<Utc>> {
+    sqlx::query_scalar("SELECT clock_timestamp()")
         .fetch_one(&mut *conn)
-        .await?;
-    Ok(Some(RequestingSession {
-        id: r.id,
-        live: r.ended_at.is_none() && r.expires_at > now && r.absolute_expires_at > now,
-        assurance: r.assurance,
-        client_class: r.client_class,
-        user_agent: r.user_agent,
-        city: r.city,
-        country: r.country,
-        created_at: r.created_at,
-    }))
+        .await
 }
 
 /// The locked session row, before its liveness is decided.
-#[derive(sqlx::FromRow)]
+#[derive(Debug, sqlx::FromRow)]
 struct SessionRow {
     id: Uuid,
     ended_at: Option<DateTime<Utc>>,
@@ -263,17 +296,25 @@ async fn has_active_device(conn: &mut PgConnection, user: Uuid) -> sqlx::Result<
 
 /// Lock an attempt for a transition (spec Locking 2 and 3).
 ///
-/// Takes the account lock, then the requesting session row (held through
-/// commit), then the attempt, and applies the lazy transitions under them:
-/// a live attempt whose session ended, whose account may no longer approve
-/// or is banned, whose phone was revoked (or, in `waiting`, whose account
-/// has no active key device left) or whose timer ran out moves to `expired`
-/// with that reason (and its open challenge is void); a claim whose
-/// challenge is gone returns to `waiting` without a token. Unknown → 404.
+/// [`lock_attempt_rows`], then the clock, then [`AttemptLocks::settle`]: for
+/// a transition that takes no further lock.
 pub async fn lock_attempt(
     conn: &mut PgConnection,
     attempt_id: Uuid,
 ) -> Result<LockedAttempt, ApprovalError> {
+    let rows = lock_attempt_rows(conn, attempt_id).await?;
+    let now = read_clock(conn).await?;
+    rows.settle(conn, now).await
+}
+
+/// Take an attempt's locks; nothing is decided or written yet.
+///
+/// The account, then the requesting session row (held through commit), then the attempt and, while
+/// it is `enrolled`, its enrolment. Unknown → 404.
+pub async fn lock_attempt_rows(
+    conn: &mut PgConnection,
+    attempt_id: Uuid,
+) -> Result<AttemptLocks, ApprovalError> {
     // `user_id` and `session_id` never change: read them to learn the locks.
     let head: Option<(Uuid, Uuid)> =
         sqlx::query_as("SELECT user_id, session_id FROM pc_setup_attempts WHERE id = $1")
@@ -285,22 +326,53 @@ pub async fn lock_attempt(
         .await?
         .remove(&user)
         .ok_or(ApprovalError::NotFound)?;
-    let session = lock_session(conn, user, sid).await?;
+    let session = lock_session_row(conn, user, sid).await?;
     let attempt = read(conn, attempt_id, true)
         .await?
         .ok_or(ApprovalError::NotFound)?;
-    let now: DateTime<Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
-        .fetch_one(&mut *conn)
-        .await?;
-    let mut locked = LockedAttempt {
+    let enrolment = match attempt.enrollment_id {
+        Some(e) if attempt.state() == AttemptState::Enrolled => {
+            sqlx::query_as(
+                "SELECT id, variant, subject_id, issuer_session_id, state, expires_at
+                   FROM enrollments WHERE id = $1 FOR UPDATE",
+            )
+            .bind(e)
+            .fetch_optional(&mut *conn)
+            .await?
+        }
+        _ => None,
+    };
+    Ok(AttemptLocks {
         attempt,
         account,
         session,
-        ended_now: None,
-        now,
-    };
-    refresh(conn, &mut locked).await?;
-    Ok(locked)
+        enrolment,
+    })
+}
+
+impl AttemptLocks {
+    /// Decide on `now` (the clock read after every lock of the transition):
+    /// a live attempt whose session ended, whose account may no longer
+    /// approve or is banned, whose phone was revoked (or, in `waiting`,
+    /// whose account has no active key device left) or whose timer ran out
+    /// moves to `expired` with that reason (and its open challenge is void);
+    /// a claim whose challenge is gone returns to `waiting` without a token.
+    pub async fn settle(
+        self,
+        conn: &mut PgConnection,
+        now: DateTime<Utc>,
+    ) -> Result<LockedAttempt, ApprovalError> {
+        let mut locked = LockedAttempt {
+            attempt: self.attempt,
+            account: self.account,
+            session: self.session.map(|s| s.at(now)),
+            enrolment: self.enrolment,
+            ended_now: None,
+            now,
+        };
+        refresh(conn, &mut locked).await?;
+        Ok(locked)
+    }
 }
 
 /// Why a live attempt can no longer advance, if it cannot.
@@ -344,13 +416,10 @@ async fn stale_cause(conn: &mut PgConnection, l: &LockedAttempt) -> sqlx::Result
             Some(EndCause::CodeExpired)
         }
         AttemptState::Enrolled => {
-            let live: bool = sqlx::query_scalar(
-                "SELECT EXISTS (SELECT 1 FROM enrollments
-                                 WHERE id = $1 AND state = 'issued' AND expires_at > clock_timestamp())",
-            )
-            .bind(a.enrollment_id)
-            .fetch_one(&mut *conn)
-            .await?;
+            let live = l
+                .enrolment
+                .as_ref()
+                .is_some_and(|e| e.state == "issued" && e.expires_at > now);
             (!live).then_some(EndCause::EnrollmentExpired)
         }
         _ => None,
@@ -362,16 +431,17 @@ async fn refresh(conn: &mut PgConnection, l: &mut LockedAttempt) -> Result<(), A
         return Ok(());
     }
     if let Some(cause) = stale_cause(conn, l).await? {
-        end_tx(conn, &mut l.attempt, AttemptState::Expired, cause).await?;
+        end_tx(conn, &mut l.attempt, AttemptState::Expired, cause, l.now).await?;
         l.ended_now = Some(cause);
         return Ok(());
     }
     if l.attempt.state() == AttemptState::Claimed {
         let live: bool = sqlx::query_scalar(
             "SELECT EXISTS (SELECT 1 FROM approvals
-                             WHERE id = $1 AND state = 'issued' AND expires_at > clock_timestamp())",
+                             WHERE id = $1 AND state = 'issued' AND expires_at > $2)",
         )
         .bind(l.attempt.challenge_id)
+        .bind(l.now)
         .fetch_one(&mut *conn)
         .await?;
         if !live {
@@ -427,6 +497,7 @@ pub(super) async fn end_tx(
     a: &mut AttemptRow,
     to: AttemptState,
     cause: EndCause,
+    now: DateTime<Utc>,
 ) -> sqlx::Result<()> {
     debug_assert!(to.is_terminal());
     void_challenge(conn, a).await?;
@@ -449,10 +520,11 @@ pub(super) async fn end_tx(
             "expired"
         };
         sqlx::query(
-            "UPDATE enrollments SET state = $2, ended_at = NOW() WHERE id = $1 AND state = 'issued'",
+            "UPDATE enrollments SET state = $2, ended_at = $3 WHERE id = $1 AND state = 'issued'",
         )
         .bind(enrollment)
         .bind(ended)
+        .bind(now)
         .execute(&mut *conn)
         .await?;
     }
@@ -474,7 +546,14 @@ pub async fn cancel_attempt_tx(
     if locked.attempt.state().is_terminal() {
         return Ok(false);
     }
-    end_tx(conn, &mut locked.attempt, AttemptState::Cancelled, cause).await?;
+    end_tx(
+        conn,
+        &mut locked.attempt,
+        AttemptState::Cancelled,
+        cause,
+        locked.now,
+    )
+    .await?;
     Ok(true)
 }
 
@@ -495,40 +574,41 @@ pub async fn rotate_tx(
     let token = Secret256::random();
     *a = sqlx::query_as(
         "UPDATE pc_setup_attempts
-            SET qr_token_hash = $2, qr_rotates_at = NOW() + make_interval(secs => $3)
+            SET qr_token_hash = $2, qr_rotates_at = $3
           WHERE id = $1 AND state = 'waiting'
           RETURNING *",
     )
     .bind(a.id)
     .bind(token_hash(ctx, token.as_bytes()).to_vec())
-    .bind(QR_ROTATE_SECS as f64)
+    .bind(now + Duration::seconds(QR_ROTATE_SECS))
     .fetch_one(&mut *conn)
     .await?;
     Ok(Some(token))
 }
 
 /// A SQL predicate over `a` (a `pc_setup_attempts` row): a live attempt that
-/// [`lock_attempt`] would change. Only a hint for polls and the sweep, which
-/// then take the locks; the locked re-check decides.
+/// [`lock_attempt`] would change, on the database's clock at the statement.
+/// A hint for polls and the sweep, which then take the locks (the locked
+/// re-check decides), and the one read of another account's code.
 macro_rules! needs_lock {
     () => {
         "a.state IN ('waiting', 'claimed', 'code', 'enrolled') AND (
-       (a.state IN ('waiting', 'claimed') AND a.expires_at <= NOW())
-    OR (a.state = 'code' AND (a.code_expires_at IS NULL OR a.code_expires_at <= NOW()))
+       (a.state IN ('waiting', 'claimed') AND a.expires_at <= clock_timestamp())
+    OR (a.state = 'code' AND (a.code_expires_at IS NULL OR a.code_expires_at <= clock_timestamp()))
     OR (a.state = 'enrolled' AND NOT EXISTS (
             SELECT 1 FROM enrollments e
-             WHERE e.id = a.enrollment_id AND e.state = 'issued' AND e.expires_at > NOW()))
+             WHERE e.id = a.enrollment_id AND e.state = 'issued' AND e.expires_at > clock_timestamp()))
     OR (a.state = 'claimed' AND NOT EXISTS (
             SELECT 1 FROM approvals c
-             WHERE c.id = a.challenge_id AND c.state = 'issued' AND c.expires_at > NOW()))
+             WHERE c.id = a.challenge_id AND c.state = 'issued' AND c.expires_at > clock_timestamp()))
     OR NOT EXISTS (
             SELECT 1 FROM sessions s
              WHERE s.id = a.session_id AND s.user_id = a.user_id AND s.ended_at IS NULL
-               AND s.expires_at > NOW() AND s.absolute_expires_at > NOW())
+               AND s.expires_at > clock_timestamp() AND s.absolute_expires_at > clock_timestamp())
     OR NOT EXISTS (SELECT 1 FROM users u WHERE u.id = a.user_id AND u.may_approve)
     OR EXISTS (SELECT 1 FROM global_bans gb
                 WHERE gb.user_id = a.user_id
-                  AND (gb.expires_at IS NULL OR gb.expires_at > NOW()))
+                  AND (gb.expires_at IS NULL OR gb.expires_at > clock_timestamp()))
     OR (a.device_id IS NOT NULL AND NOT EXISTS (
             SELECT 1 FROM approval_devices d WHERE d.id = a.device_id AND d.state = 'active'))
     OR (a.state = 'waiting' AND NOT EXISTS (
@@ -544,7 +624,7 @@ async fn needs_lock(conn: &mut PgConnection, id: Uuid, rotation: bool) -> sqlx::
         needs_lock!(),
         ") OR ($2 AND a.state = 'waiting'
                  AND (a.qr_token_hash IS NULL OR a.qr_rotates_at IS NULL
-                      OR a.qr_rotates_at <= NOW()))))"
+                      OR a.qr_rotates_at <= clock_timestamp()))))"
     ))
     .bind(id)
     .bind(rotation)
@@ -594,7 +674,7 @@ pub async fn can_start(conn: &mut PgConnection, auth: &AuthUser) -> sqlx::Result
     let (banned, may_approve): (bool, bool) = sqlx::query_as(
         "SELECT EXISTS (SELECT 1 FROM global_bans gb
                          WHERE gb.user_id = u.id
-                           AND (gb.expires_at IS NULL OR gb.expires_at > NOW())),
+                           AND (gb.expires_at IS NULL OR gb.expires_at > clock_timestamp())),
                 u.may_approve
            FROM users u WHERE u.id = $1",
     )
@@ -635,8 +715,21 @@ pub async fn start_tx(
         .await?
         .remove(&auth.id)
         .ok_or(ApprovalError::PcSetupUnavailable)?;
-    let session = lock_session(conn, auth.id, sid).await?;
-    let Some(session) = session.filter(|s| s.live) else {
+    let session = lock_session_row(conn, auth.id, sid).await?;
+    // The session's live attempt, locked too: every lock before the clock.
+    let previous: Option<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM pc_setup_attempts
+          WHERE session_id = $1 AND state IN ('waiting', 'claimed', 'code', 'enrolled')",
+    )
+    .bind(sid)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let previous = match previous {
+        Some(id) => Some(lock_attempt_rows(conn, id).await?),
+        None => None,
+    };
+    let now = read_clock(conn).await?;
+    let Some(session) = session.map(|s| s.at(now)).filter(|s| s.live) else {
         return Err(crate::auth::AuthError::InvalidToken.into());
     };
     let eligible = Eligibility {
@@ -651,22 +744,20 @@ pub async fn start_tx(
     // Bounds on starts per session and per account, counted under the
     // account lock. `Retry-After` is when the oldest counted start leaves the
     // window.
-    let (in_session, in_account, oldest_session, oldest_account, now): (
+    let (in_session, in_account, oldest_session, oldest_account): (
         i64,
         i64,
         Option<DateTime<Utc>>,
         Option<DateTime<Utc>>,
-        DateTime<Utc>,
     ) = sqlx::query_as(
         "SELECT COUNT(*) FILTER (WHERE session_id = $2), COUNT(*),
-                MIN(created_at) FILTER (WHERE session_id = $2), MIN(created_at),
-                clock_timestamp()
+                MIN(created_at) FILTER (WHERE session_id = $2), MIN(created_at)
            FROM pc_setup_attempts
-          WHERE user_id = $1 AND created_at > NOW() - make_interval(mins => $3)",
+          WHERE user_id = $1 AND created_at > $3",
     )
     .bind(auth.id)
     .bind(sid)
-    .bind(i32::try_from(super::START_WINDOW_MINUTES).unwrap_or(10))
+    .bind(now - Duration::minutes(super::START_WINDOW_MINUTES))
     .fetch_one(&mut *conn)
     .await?;
     let full = if in_session >= super::MAX_STARTS {
@@ -685,31 +776,24 @@ pub async fn start_tx(
         }
         .into());
     }
-    let previous: Option<Uuid> = sqlx::query_scalar(
-        "SELECT id FROM pc_setup_attempts
-          WHERE session_id = $1 AND state IN ('waiting', 'claimed', 'code', 'enrolled')",
-    )
-    .bind(sid)
-    .fetch_optional(&mut *conn)
-    .await?;
     if let Some(previous) = previous {
-        let mut old = lock_attempt(conn, previous).await?;
+        let mut old = previous.settle(conn, now).await?;
         cancel_attempt_tx(conn, &mut old, EndCause::Restarted).await?;
     }
     let token = Secret256::random();
     let attempt: AttemptRow = sqlx::query_as(
         "INSERT INTO pc_setup_attempts
             (id, user_id, session_id, state, qr_token_hash, qr_rotates_at, created_at, expires_at)
-         VALUES ($1, $2, $3, 'waiting', $4, NOW() + make_interval(secs => $5), NOW(),
-                 NOW() + make_interval(mins => $6))
+         VALUES ($1, $2, $3, 'waiting', $4, $5, $6, $7)
          RETURNING *",
     )
     .bind(Uuid::new_v4())
     .bind(auth.id)
     .bind(sid)
     .bind(token_hash(ctx, token.as_bytes()).to_vec())
-    .bind(QR_ROTATE_SECS as f64)
-    .bind(i32::try_from(super::ATTEMPT_MINUTES).unwrap_or(10))
+    .bind(now + Duration::seconds(QR_ROTATE_SECS))
+    .bind(now)
+    .bind(now + Duration::minutes(super::ATTEMPT_MINUTES))
     .fetch_one(&mut *conn)
     .await?;
     audit(conn, auth.id, "auth.pc_setup.start", attempt.id).await?;
@@ -849,13 +933,63 @@ pub(super) fn describe(s: &RequestingSession) -> (String, String) {
     (description, place)
 }
 
+/// The scanning device, read without a lock before the token is looked at
+/// (C26 order): not banned (403 `ACCOUNT_BANNED`), an active key device (403
+/// `KEY_DEVICE_REQUIRED`), its session live (401 `INVALID_TOKEN`) and bound to
+/// it, then the account's `may_approve` (403 `APPROVAL_NOT_ALLOWED`). The
+/// own-account path re-checks all of it under the locks.
+async fn scanner_ready(conn: &mut PgConnection, auth: &AuthUser) -> Result<(), ApprovalError> {
+    let device = require_key_device_snapshot(auth)?;
+    let sid = auth.session_id.ok_or(ApprovalError::KeyDeviceRequired)?;
+    let row: Option<(bool, bool, bool, Option<bool>, bool)> = sqlx::query_as(
+        "SELECT u.may_approve,
+                EXISTS (SELECT 1 FROM global_bans gb
+                         WHERE gb.user_id = u.id
+                           AND (gb.expires_at IS NULL OR gb.expires_at > clock_timestamp())),
+                EXISTS (SELECT 1 FROM approval_devices d
+                         WHERE d.id = $2 AND d.user_id = u.id AND d.state = 'active'),
+                (SELECT s.ended_at IS NULL AND s.expires_at > clock_timestamp()
+                        AND s.absolute_expires_at > clock_timestamp()
+                   FROM sessions s WHERE s.id = $3 AND s.user_id = u.id),
+                EXISTS (SELECT 1 FROM sessions s
+                         WHERE s.id = $3 AND s.user_id = u.id AND s.assurance = 'full'
+                           AND s.authenticator_type = $4 AND s.authenticator_id = $2)
+           FROM users u WHERE u.id = $1",
+    )
+    .bind(auth.id)
+    .bind(device.id)
+    .bind(sid)
+    .bind(crate::auth::strong::AuthenticatorKind::KeyDevice.as_str())
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some((may_approve, banned, device_active, session_live, bound)) = row else {
+        return Err(crate::auth::AuthError::InvalidToken.into());
+    };
+    if banned {
+        return Err(ApprovalError::AccountBanned);
+    }
+    if !device_active {
+        return Err(ApprovalError::KeyDeviceRequired);
+    }
+    if session_live != Some(true) {
+        return Err(crate::auth::AuthError::InvalidToken.into());
+    }
+    if !bound {
+        return Err(ApprovalError::KeyDeviceRequired);
+    }
+    if !may_approve {
+        return Err(ApprovalError::NotAllowed);
+    }
+    Ok(())
+}
+
 /// `POST /api/pc-setups/claim`: the attempt by the token's keyed hash and a
 /// `pc_setup` challenge (2 min, never past the attempt's 10 minutes) for the
 /// scanning key device (SM5 `waiting → claimed`).
 ///
-/// Unknown, rotated or not live → 404 `LOGIN_CODE_STALE`; another account's
-/// live attempt → 409 `PC_SETUP_OTHER_ACCOUNT` (no name, nothing changes);
-/// `may_approve` off → 403 `APPROVAL_NOT_ALLOWED` (the attempt expires).
+/// The scanner is checked first ([`scanner_ready`]); then unknown, rotated
+/// or not live → 404 `LOGIN_CODE_STALE`; another account's live attempt →
+/// 409 `PC_SETUP_OTHER_ACCOUNT` (no name, nothing changes).
 #[tracing::instrument(skip_all, fields(user_id = %auth.id))]
 pub async fn claim_tx(
     conn: &mut PgConnection,
@@ -864,13 +998,20 @@ pub async fn claim_tx(
     token: &[u8; 32],
 ) -> Result<ApprovalChallenge, ApprovalError> {
     require_key_device_snapshot(auth)?;
+    // The scanner first: its refusal is the same whether the token exists,
+    // and nothing is written for it.
+    scanner_ready(conn, auth).await?;
     let hash = token_hash(ctx, token);
-    let seen: Option<(Uuid, Uuid, bool)> = sqlx::query_as(
-        "SELECT id, user_id,
-                state IN ('waiting', 'claimed') AND expires_at > clock_timestamp()
-                    AND (state = 'claimed' OR qr_rotates_at > clock_timestamp())
-           FROM pc_setup_attempts WHERE qr_token_hash = $1",
-    )
+    // One read: the token's attempt and whether it is a live code a scan
+    // could claim (state, timers, session, account, phone).
+    let seen: Option<(Uuid, Uuid, bool)> = sqlx::query_as(concat!(
+        "SELECT a.id, a.user_id,
+                a.state IN ('waiting', 'claimed')
+                AND (a.state = 'claimed' OR a.qr_rotates_at > clock_timestamp())
+                AND NOT (",
+        needs_lock!(),
+        ") FROM pc_setup_attempts a WHERE a.qr_token_hash = $1"
+    ))
     .bind(hash.to_vec())
     .fetch_optional(&mut *conn)
     .await?;
@@ -878,40 +1019,25 @@ pub async fn claim_tx(
         return Err(ApprovalError::LoginCodeStale);
     };
     if owner != auth.id {
-        // Another account's attempt: never locked or changed from here. Only
-        // a scanner that may approve learns that a live code is another
-        // account's; "live" includes the requesting session and account.
-        key_device_session(conn, auth).await?;
-        let may_approve: bool = sqlx::query_scalar("SELECT may_approve FROM users WHERE id = $1")
-            .bind(auth.id)
-            .fetch_one(&mut *conn)
-            .await?;
-        if !may_approve {
-            return Err(ApprovalError::NotAllowed);
-        }
-        let live = live
-            && sqlx::query_scalar::<_, bool>(concat!(
-                "SELECT NOT EXISTS (SELECT 1 FROM pc_setup_attempts a WHERE a.id = $1 AND (",
-                needs_lock!(),
-                "))"
-            ))
-            .bind(id)
-            .fetch_one(&mut *conn)
-            .await?;
+        // Another account's attempt: never locked or changed from here.
         return Err(if live {
             ApprovalError::PcSetupOtherAccount
         } else {
             ApprovalError::LoginCodeStale
         });
     }
-    let mut locked = lock_attempt(conn, id).await?;
-    // The caller's live key-device session first (a revoked device, an
-    // ended session, a banned account get their own answers), then the
-    // account's setting, then the attempt's state, also when a poll or the
-    // sweep ended it before this request.
+    // Every lock (the attempt's, then the phone's device and session), then
+    // the one clock.
+    let rows = lock_attempt_rows(conn, id).await?;
     let dev = key_device_session(conn, auth).await?;
-    if !locked.account.may_approve || locked.end_reason() == Some(EndCause::MayApproveOff.as_str())
-    {
+    if !rows.account.may_approve {
+        return Err(ApprovalError::NotAllowed);
+    }
+    let now = read_clock(conn).await?;
+    let mut locked = rows.settle(conn, now).await?;
+    // The attempt's state, also when a poll or the sweep ended it before
+    // this request.
+    if locked.end_reason() == Some(EndCause::MayApproveOff.as_str()) {
         return Err(ApprovalError::NotAllowed);
     }
     if locked.end_reason().is_some() {
@@ -922,7 +1048,6 @@ pub async fn claim_tx(
     if a.state() == AttemptState::Claimed && current {
         return Err(ApprovalError::LoginAttemptClaimed);
     }
-    let now = locked.now;
     let fresh = a.qr_rotates_at.is_some_and(|t| t > now);
     if a.state() != AttemptState::Waiting || !current || !fresh {
         return Err(ApprovalError::LoginCodeStale);
@@ -997,9 +1122,10 @@ pub async fn lock_for_phone(
     auth: &AuthUser,
     challenge_id: Uuid,
 ) -> Result<PhoneLocked, ApprovalError> {
-    let caller = require_key_device_snapshot(auth)?;
-    // The caller must be the device the challenge was issued to; anyone else
-    // learns nothing and changes nothing (404 before any lock).
+    // Anyone but the device the challenge was issued to learns nothing and
+    // changes nothing (404 before any lock), a session without a key device
+    // too.
+    let caller = require_key_device_snapshot(auth).map_err(|_| ApprovalError::NotFound)?;
     let head: Option<(String, Uuid, String, Uuid, bool)> = sqlx::query_as(
         "SELECT a.kind, a.approver_id, a.requester_kind, a.requester_id,
                 EXISTS (SELECT 1 FROM approval_devices d
@@ -1020,11 +1146,27 @@ pub async fn lock_for_phone(
     {
         return Err(ApprovalError::NotFound);
     }
-    let locked = lock_attempt(conn, attempt_id).await?;
+    // Every lock (attempt, key device and its session, challenge), then the
+    // one clock.
+    let rows = lock_attempt_rows(conn, attempt_id).await?;
+    let dev = match key_device_session(conn, auth).await {
+        Ok(dev) => dev,
+        // The device's own refusal; the attempt still gets its lazy
+        // transitions (a revoked phone ends it), on the clock read now.
+        Err(e) if !matches!(e, ApprovalError::Database(_)) => {
+            let now = read_clock(conn).await?;
+            rows.settle(conn, now).await?;
+            return Err(e);
+        }
+        Err(e) => return Err(e),
+    };
+    let challenge =
+        lock_challenge_row(conn, challenge_id, dev.device.user_id, dev.device.device_id).await?;
+    let now = read_clock(conn).await?;
+    let locked = rows.settle(conn, now).await?;
     // The caller's live key-device session first (a banned account, a
-    // revoked device, an ended session get their own answers), then the
+    // revoked device, an ended session got their own answers), then the
     // attempt's end, also when a poll or the sweep ended it earlier.
-    let dev = key_device_session(conn, auth).await?;
     if !locked.account.may_approve || locked.end_reason() == Some(EndCause::MayApproveOff.as_str())
     {
         return Err(ApprovalError::NotAllowed);
@@ -1032,8 +1174,7 @@ pub async fn lock_for_phone(
     if locked.end_reason().is_some() {
         return Err(ApprovalError::State);
     }
-    let challenge =
-        lock_for_answer(conn, challenge_id, dev.device.user_id, dev.device.device_id).await?;
+    check_for_answer_at(conn, &challenge, now).await?;
     let a = &locked.attempt;
     if a.state() != AttemptState::Claimed
         || a.challenge_id != Some(challenge.id)
@@ -1143,14 +1284,13 @@ pub async fn answer_tx(
             let code_expires_at: DateTime<Utc> = sqlx::query_scalar(
                 "UPDATE pc_setup_attempts
                     SET state = 'code', code_hash = $2, tries = 0, qr_token_hash = NULL,
-                        qr_rotates_at = NULL,
-                        code_expires_at = NOW() + make_interval(mins => $3)
+                        qr_rotates_at = NULL, code_expires_at = $3
                   WHERE id = $1 AND state = 'claimed'
                   RETURNING code_expires_at",
             )
             .bind(attempt_id)
             .bind(hash.to_vec())
-            .bind(i32::try_from(CODE_MINUTES).unwrap_or(5))
+            .bind(locked.now + Duration::minutes(CODE_MINUTES))
             .fetch_one(&mut *conn)
             .await?;
             audit(conn, user, "auth.pc_setup.approve", attempt_id).await?;
@@ -1173,6 +1313,7 @@ pub async fn answer_tx(
                 &mut locked.attempt,
                 AttemptState::Reported,
                 EndCause::Reported,
+                locked.now,
             )
             .await?;
             let sid = locked.attempt.session_id;
@@ -1208,8 +1349,9 @@ pub async fn answer_tx(
             ))
         }
     };
-    sqlx::query("UPDATE approval_devices SET last_used_at = NOW() WHERE id = $1")
+    sqlx::query("UPDATE approval_devices SET last_used_at = $2 WHERE id = $1")
         .bind(dev.device.id)
+        .bind(locked.now)
         .execute(&mut *conn)
         .await?;
     Ok(out)
@@ -1240,6 +1382,7 @@ pub async fn refuse_tx(
         &mut locked.attempt,
         AttemptState::Refused,
         EndCause::Refused,
+        locked.now,
     )
     .await?;
     audit(conn, auth.id, "auth.pc_setup.refuse", locked.attempt.id).await?;
