@@ -198,7 +198,8 @@ fn from_the_page(state: &AppState, headers: &HeaderMap) -> bool {
 }
 
 /// A page load the browser made on its own or from the page itself
-/// (`Sec-Fetch-Site: none` or `same-origin`, or a browser that sends none).
+/// (`Sec-Fetch-Site: none` or `same-origin`). A browser that sends no
+/// `Sec-Fetch-Site` counts as the page's own.
 fn own_navigation(headers: &HeaderMap) -> bool {
     headers
         .get("sec-fetch-site")
@@ -264,6 +265,11 @@ pub async fn page(
     let Ok(flow_id) = Uuid::parse_str(&flow_id) else {
         return expired_page(lang);
     };
+    // A load the browser marks as coming from another site gets the expired
+    // page at every step and stores nothing.
+    if !own_navigation(&headers) {
+        return expired_page(lang);
+    }
     let stored = match load_open(&state, flow_id).await {
         Ok(Some(s)) => s,
         Ok(None) => return expired_page(lang),
@@ -276,12 +282,9 @@ pub async fn page(
         // ended attempt) hands its refusal to the app instead of offering a
         // ceremony that cannot work.
         match registration_open(&state, flow_id, &stored.flow).await {
-            // Stored as the flow's result only for the browser's own
-            // navigation (a load from another site gets the expired page).
-            Err(e) if is_refusal(&e) && own_navigation(&headers) => {
+            Err(e) if is_refusal(&e) => {
                 return fail_with(&state, lang, flow_id, &stored, refusal_code(&e)).await;
             }
-            Err(e) if is_refusal(&e) => return expired_page(lang),
             _ => {}
         }
         let failed = query.as_deref() == Some("failed");

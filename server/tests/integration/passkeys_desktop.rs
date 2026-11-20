@@ -2750,3 +2750,56 @@ async fn only_the_browsers_own_navigation_hands_a_refusal_to_the_app(pool: PgPoo
     let g = browser_from(r, own, Method::GET, &flow.path, None, None, Some(&cookie)).await;
     assert!(hidden(&g.body, "error").is_some(), "{}", g.body);
 }
+
+#[sqlx::test]
+async fn a_page_load_marked_from_another_site_gets_the_expired_page_at_every_step(pool: PgPool) {
+    let p = desktop_pc(&pool).await;
+    let (id, code) = with_code(&p).await;
+    let flow = pc_flow(&p, &id).await;
+    let r = &p.app.router;
+    let get = |site: &'static str, cookie: Option<String>| {
+        let path = flow.path.clone();
+        async move {
+            browser_from(
+                r,
+                Sender {
+                    origin: None,
+                    site: Some(site),
+                },
+                Method::GET,
+                &path,
+                None,
+                None,
+                cookie.as_deref(),
+            )
+            .await
+        }
+    };
+    // Before the code.
+    let g = get("cross-site", None).await;
+    assert_eq!(g.status, 404, "{}", g.body);
+    assert!(!g.body.contains("id=\"code-form\""), "{}", g.body);
+    // The app's own opening still shows the keypad.
+    let g = get("none", None).await;
+    assert!(g.body.contains("id=\"code-form\""), "{}", g.body);
+    let cookie = right_code(&p, &flow, &code).await;
+    // After the code, with the browser's cookie.
+    let g = get("same-site", Some(cookie.clone())).await;
+    assert_eq!(g.status, 404, "{}", g.body);
+    assert!(!g.body.contains("id=\"start\""), "{}", g.body);
+    // The page's own reload (and the redirect after a failed finish) still works.
+    let g = get("same-origin", Some(cookie.clone())).await;
+    assert!(g.body.contains("id=\"start\""), "{}", g.body);
+    // And without the header (a browser that sends none).
+    let g = browser_from(
+        r,
+        UNKNOWN,
+        Method::GET,
+        &flow.path,
+        None,
+        None,
+        Some(&cookie),
+    )
+    .await;
+    assert!(g.body.contains("id=\"start\""), "{}", g.body);
+}
