@@ -4,69 +4,23 @@ import android.os.Build
 import androidx.annotation.StringRes
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.ViewModel
-import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.wolftown.kaiku.R
-import io.wolftown.kaiku.approval.ApprovalKeyStore
-import io.wolftown.kaiku.approval.ChallengeRejected
-import io.wolftown.kaiku.approval.Decision
-import io.wolftown.kaiku.approval.DeviceIdProvider
-import io.wolftown.kaiku.approval.DeviceSigner
-import io.wolftown.kaiku.approval.DeviceSuitabilityChecker
-import io.wolftown.kaiku.approval.EnrollPopContext
-import io.wolftown.kaiku.approval.GeneratedKey
-import io.wolftown.kaiku.approval.KaikuSig
-import io.wolftown.kaiku.approval.SigKind
-import io.wolftown.kaiku.approval.SignOutcome
 import io.wolftown.kaiku.approval.UnsuitableReason
 import io.wolftown.kaiku.approval.UvDecision
-import io.wolftown.kaiku.approval.UvPrompt
-import io.wolftown.kaiku.approval.UvResult
 import io.wolftown.kaiku.data.api.ApiException
-import io.wolftown.kaiku.data.api.EnrollmentApi
-import io.wolftown.kaiku.data.api.LongPoll
-import io.wolftown.kaiku.data.auth.DeviceSignIn
 import io.wolftown.kaiku.data.auth.DeviceSignInResult
 import io.wolftown.kaiku.data.auth.OriginPin
-import io.wolftown.kaiku.data.auth.SignInPurpose
-import io.wolftown.kaiku.data.keydevice.KeyDevicePhase
-import io.wolftown.kaiku.data.keydevice.KeyDeviceProbe
 import io.wolftown.kaiku.data.keydevice.KeyDeviceRepository
-import io.wolftown.kaiku.data.keydevice.ServerKeyState
-import io.wolftown.kaiku.data.keydevice.KeyDeviceState
-import io.wolftown.kaiku.data.keydevice.LocalKeyDevice
+import io.wolftown.kaiku.data.local.AuthSession
 import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.local.TokenStorage
-import io.wolftown.kaiku.domain.CodeFormat
 import io.wolftown.kaiku.domain.KaikuPayloads
-import io.wolftown.kaiku.domain.model.ApprovalChallenge
-import io.wolftown.kaiku.domain.model.EnrollmentClaim
-import io.wolftown.kaiku.domain.model.EnrollmentState
-import io.wolftown.kaiku.domain.model.AccountRef
 import io.wolftown.kaiku.ui.auth.signInResultText
-import kotlinx.coroutines.CoroutineDispatcher
-import kotlinx.coroutines.CoroutineStart
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
 import java.io.IOException
 import java.time.Instant
-import java.util.Base64
-import java.util.logging.Logger
 import javax.inject.Inject
-import kotlin.coroutines.cancellation.CancellationException
 
 sealed interface SetupUi {
     data object Opening : SetupUi
@@ -86,6 +40,11 @@ sealed interface SetupUi {
     data object Claiming : SetupUi
     /** Active: the screen starts the device-key sign-in (it needs the activity for UV). */
     data object SigningIn : SetupUi
+    /**
+     * A claim's answer never came and the server does not list this phone as a key yet: it is
+     * asked again by itself once nothing can come of that claim any more (minutes).
+     */
+    data object ClaimWaiting : SetupUi
     /** The UV prompt of the final sign-in was cancelled: one button to try again. */
     data object SignInPaused : SetupUi
     /** The final sign-in's prompt stayed open past its challenge: say so, one button for a fresh one. */
@@ -107,8 +66,12 @@ interface SetupEnvironment {
     /** The origin a session or a key ties the app to; null = unconfigured. */
     fun pinnedOrigin(): String?
     fun signedInUserId(): String?
-    /** An unconfigured app adopts the setup code's server once the person confirmed it. */
-    fun saveServerOrigin(origin: String)
+    /**
+     * An unconfigured app adopts the setup code's server once the person confirmed it: only if,
+     * at this moment, the app is still tied to no server and holds no key record (the same rule a
+     * link is accepted under). False: nothing was written.
+     */
+    fun adoptServer(origin: String): Boolean
     /** The saved server URL (an unconfigured app may have one typed in, without a session). */
     fun savedServer(): String?
     /** Puts back the server an abandoned setup replaced (null: none was saved). */
@@ -121,11 +84,14 @@ class AndroidSetupEnvironment @Inject constructor(
     private val originPin: OriginPin,
     private val authState: AuthState,
     private val tokenStorage: TokenStorage,
+    private val keyDevices: KeyDeviceRepository,
 ) : SetupEnvironment {
     override fun pinnedOrigin() = originPin.pinned()
-    override fun signedInUserId() = authState.currentUserId.value
-    override fun saveServerOrigin(origin: String) {
+    override fun signedInUserId() = (authState.session.value as? AuthSession.LoggedIn)?.userId
+    override fun adoptServer(origin: String): Boolean {
+        if (keyDevices.unreadable() || keyDevices.record.value != null || originPin.pinned() != null) return false
         if (tokenStorage.getServerUrl()?.let(KaikuPayloads::canonicalOrigin) != origin) tokenStorage.saveServerUrl(origin)
+        return true
     }
     override fun savedServer(): String? = tokenStorage.getServerUrl()
     override fun restoreServer(url: String?) {
@@ -136,737 +102,40 @@ class AndroidSetupEnvironment @Inject constructor(
 }
 
 /**
- * SM2 on the new phone (F5a/F5c, L2-A1): origin check, open (shows the server
- * name to an unconfigured app), suitability, K_approve with the enrolment nonce
- * as attestation challenge, PoP challenge, the subject question, the signed
- * claim, the code, the status long-poll, then device-key sign-in (full) or the
- * 24-hour wait. With a registration [SetupEntry.ticket] the claim is the app's
- * own (no code).
- *
- * The class keeps these rules; the structure below is built so that each holds in one place.
- *
- * 1. One owner. At most one step runs: [running], which holds the step's job and the attempt it
- *    works for. A step is installed in [running] before its coroutine can run a single line (it is
- *    created lazily and started afterwards), so a step that starts the next step straight away is
- *    never overwritten by the step that started it. [stop] cancels [running] and clears it.
- * 2. After a stop. A step that is no longer [running], or whose [Attempt] is no longer the current
- *    one, sends no request, writes nothing to storage and changes no screen: it checks [live] after
- *    every suspension point. The only thing it still does is delete a key it generated itself (4).
- * 3. Links. Every setup link, scanned or opened, goes through [start]. While a setup is in progress
- *    (accepted and not yet stopped, failed or finished) the same link again changes nothing and every
- *    other link is ignored with a notice ([linkIgnored]): a running setup is never replaced by a link,
- *    whatever the server or the screen. Only a link that is accepted becomes the [Attempt]'s link.
- * 4. Keys. A key is generated only in [makeKey], only while no key-device record exists, and within
- *    the same non-cancellable block it is either adopted by the live attempt or deleted. An attempt's
- *    key is deleted only through [deleteIfStored]: still the stored key, and no record names it.
- * 5. Records. A stored record, and with it the key, is forgotten only in [forgetRecord], only while it
- *    is still the record the answer was about, and only on: the server's own answers for a removed key
- *    (404 `KEY_DEVICE_UNKNOWN`, 403 `KEY_DEVICE_REVOKED`, through [KeyDeviceProbe]); a definite refusal
- *    of this attempt's claim; or the server saying the claim's enrolment was cancelled, expired or
- *    failed. A claim found unresolved is never forgotten here: the waiting screen reconciles it.
- * 6. Storage. `CLAIMING` is written before the claim leaves the phone; `CLAIMED`, `PENDING` and
- *    `ACTIVE` only by a live step after the server's answer; the saved server only by [confirmServer],
- *    and it is put back when the attempt that adopted it is abandoned.
- * 7. Bounded. The claim and the final sign-in are never stopped by a link, Back or Cancel; each ends
- *    after [CLAIM_TIMEOUT_MS] or [SIGN_IN_TIMEOUT_MS] at the latest, as an answer that is not known.
+ * A screen's view of the one setup ([SetupOwner]): the scanner screen and the link screen each
+ * have one. It holds no setup of its own; every action goes to the owner, which decides.
  */
 @HiltViewModel
-class SetupFlowViewModel internal constructor(
-    private val enrollmentApi: EnrollmentApi,
-    private val suitability: DeviceSuitabilityChecker,
-    private val keyStore: ApprovalKeyStore,
-    private val signer: DeviceSigner,
-    private val keyDevices: KeyDeviceRepository,
-    private val deviceIds: DeviceIdProvider,
-    private val deviceSignIn: DeviceSignIn,
-    private val env: SetupEnvironment,
-    private val probe: KeyDeviceProbe,
-    /** The suitability probe and key generation (StrongBox, attestation) take seconds: never on Main. */
-    private val keyDispatcher: CoroutineDispatcher,
-) : ViewModel() {
+class SetupFlowViewModel @Inject constructor(private val owner: SetupOwner) : ViewModel() {
 
-    @Inject
-    constructor(
-        enrollmentApi: EnrollmentApi,
-        suitability: DeviceSuitabilityChecker,
-        keyStore: ApprovalKeyStore,
-        signer: DeviceSigner,
-        keyDevices: KeyDeviceRepository,
-        deviceIds: DeviceIdProvider,
-        deviceSignIn: DeviceSignIn,
-        env: SetupEnvironment,
-        probe: KeyDeviceProbe,
-    ) : this(enrollmentApi, suitability, keyStore, signer, keyDevices, deviceIds, deviceSignIn, env, probe, Dispatchers.Default)
+    private val view = owner.attach()
 
-    companion object {
-        /** The longest the signed claim may take before its answer counts as not known. */
-        const val CLAIM_TIMEOUT_MS = 30_000L
-        /** The longest the final sign-in (requests and the prompt, whose challenge lasts 120 s) may take. */
-        const val SIGN_IN_TIMEOUT_MS = 180_000L
-        private val logger: Logger = Logger.getLogger("SetupFlow")
-        private const val RETRY_MS = 2_000L
-        private const val RETRY_MAX_MS = 30_000L
-    }
+    val ui: StateFlow<SetupUi> = owner.ui
+    val linkIgnored: StateFlow<Boolean> = owner.linkIgnored
+    val waiting: StateFlow<Boolean> = owner.waiting
+    val scanReady: StateFlow<UvDecision?> = owner.scanReady
+    val startedFlow: StateFlow<Boolean> = owner.startedFlow
+    val started: Boolean get() = owner.started
 
-    private val _ui = MutableStateFlow<SetupUi>(SetupUi.Opening)
-    val ui: StateFlow<SetupUi> = _ui.asStateFlow()
+    fun checkBeforeScan() = owner.checkBeforeScan()
+    fun start(e: SetupEntry) = owner.start(e)
+    fun resumeWithoutEntry() = owner.resumeWithoutEntry()
+    fun reset() = owner.reset()
+    fun retry() = owner.retry()
+    fun cancel() = owner.cancel()
+    fun confirmServer() = owner.confirmServer()
+    fun recheckScreenLock() = owner.recheckScreenLock()
+    fun confirmSubject(activity: FragmentActivity) = owner.confirmSubject(activity)
+    fun signIn(activity: FragmentActivity) = owner.signIn(activity)
 
-    /**
-     * One accepted setup code and its canonical origin, fixed for good. The rest is filled in by
-     * this attempt's own steps only (a superseded step stops before writing, see [live]).
-     */
-    private class Attempt(val entry: SetupEntry, val origin: String) {
-        var serverName: String = ""
-        var nonce: ByteArray = ByteArray(0)
-        var key: GeneratedKey? = null
-        var pop: ApprovalChallenge? = null
-        var subject: AccountRef? = null
-        var popEnrollmentId: String? = null
-        /** The signed claim, kept in memory so an unanswered claim can be sent again unchanged. */
-        var pendingClaim: PendingClaim? = null
-
-        override fun toString() = "Attempt"
-    }
-
-    private class PendingClaim(val request: EnrollmentClaim, val ticket: String?) {
-        override fun toString() = "PendingClaim"
-    }
-
-    /** The running step: its job and the attempt it works for (rule 1). */
-    private class Step(val attempt: Attempt?) {
-        lateinit var job: Job
-        override fun toString() = "Step"
-    }
-
-    private enum class ForgetBecause { SERVER_SAYS_GONE, CLAIM_REFUSED, ENROLMENT_ENDED }
-
-    private sealed interface KeyResult {
-        class Made(val key: GeneratedKey) : KeyResult
-        /** A claim is stored that is not resolved yet: the waiting screen takes over. */
-        data object ClaimWaiting : KeyResult
-        /** This phone became a key meanwhile. */
-        data object AlreadyKey : KeyResult
-    }
-
-    private var attempt: Attempt? = null
-    private var running: Step? = null
-    /** A setup code was handed to this screen (accepted or not). */
-    private var handed = false
-    private var signingIn = false
-    /** Key generation and deletion, one at a time (a stopped step may still be generating). */
-    private val keyLock = Mutex()
-    /** The server an unconfigured app had saved before this setup adopted the code's one. */
-    private var replacedServer: String? = null
-    private var adoptedServer = false
-
-    val started: Boolean get() = handed
-
-    private val _linkIgnored = MutableStateFlow(false)
-    /** A setup link arrived while this setup was running and was not used (the screen says so). */
-    val linkIgnored: StateFlow<Boolean> = _linkIgnored.asStateFlow()
-
-    private val _scanReady = MutableStateFlow<UvDecision?>(null)
-    /** C26 "Suitability": the screen lock and a hardware key store, checked before any scan. */
-    val scanReady: StateFlow<UvDecision?> = _scanReady.asStateFlow()
-
-    /** Runs the suitability check before the scanner opens (again after the screen-lock settings). */
-    fun checkBeforeScan() {
-        viewModelScope.launch { _scanReady.value = withContext(keyDispatcher) { suitability.check() } }
-    }
-
-    /** For hosts that switch between the scanner and this flow (SetupScanScreen). */
-    private val _startedFlow = MutableStateFlow(false)
-    val startedFlow: StateFlow<Boolean> = _startedFlow.asStateFlow()
-
-    /** The signed claim is on its way: nothing may interrupt it (its answer carries the code). */
-    private val claimInFlight: Boolean get() = _ui.value == SetupUi.Claiming
-
-    /** Back to the scanner after an ended or abandoned setup; an unclaimed new key goes. */
-    fun reset() {
-        if (claimInFlight || signingIn) return
-        stop()
-        // A claim whose answer is unknown keeps its key and record: the next app start reconciles it.
-        abandonUnclaimed()
-        attempt = null
-        handed = false
-        _linkIgnored.value = false
-        _startedFlow.value = false
-        _ui.value = SetupUi.Opening
-    }
-
-    /**
-     * A stored claim (CLAIMING: answer unknown, CLAIMED: waiting for its code) is never replaced by
-     * a new key: the waiting screen reconciles it with the server first.
-     */
-    private fun hasUnresolvedClaim(): Boolean {
-        val phase = keyDevices.phase()
-        return keyDevices.local() != null && (phase == KeyDevicePhase.CLAIMING || phase == KeyDevicePhase.CLAIMED)
-    }
-
-    /** Ends the step in flight; always the first thing before the flow changes. */
-    private fun stop() {
-        running?.job?.cancel()
-        running = null
-    }
-
-    /** Runs [block] as the one step in flight for [a]; installed before it runs, after the old one stopped. */
-    private fun step(a: Attempt?, block: suspend () -> Unit) {
-        stop()
-        val s = Step(a)
-        s.job = viewModelScope.launch(start = CoroutineStart.LAZY) { block() }
-        running = s
-        s.job.start()
-    }
-
-    /** Whether the coroutine with [job] is still the running step of [a], and [a] the current attempt. */
-    private fun isLive(a: Attempt?, job: Job?): Boolean {
-        val s = running
-        return job != null && job.isActive && s != null && s.job === job && s.attempt === a && attempt === a
-    }
-
-    /**
-     * After every suspension point of a step: it goes on only while it is still the running step and
-     * [a] the current attempt; otherwise it ends here, without a request or a state change.
-     */
-    private suspend fun live(a: Attempt?) {
-        val ctx = currentCoroutineContext()
-        ctx.ensureActive()
-        if (!isLive(a, ctx[Job])) throw CancellationException("superseded")
-    }
-
-    /** Sets the screen from a step, only while that step is live. */
-    private suspend fun show(a: Attempt?, ui: SetupUi) {
-        live(a)
-        _ui.value = ui
-    }
-
-    private fun SetupUi.isEnd(): Boolean = this is SetupUi.Ended || this == SetupUi.Interrupted || this == SetupUi.Done
-
-    /** A setup was accepted and has not been stopped, failed or finished yet (rule 3). */
-    private fun inProgress(): Boolean = signingIn || (attempt != null && !_ui.value.isEnd())
-
-    /**
-     * The one way in for a setup code, scanned or opened as a link (rule 3). While a setup is in
-     * progress it is never replaced: the same link again changes nothing, any other one is only
-     * noted. Otherwise an unreadable link or one for another server than the pinned one ends with
-     * its reason, and a usable one starts a new attempt.
-     */
-    fun start(e: SetupEntry) {
-        handed = true
-        _startedFlow.value = true
-        if (inProgress()) {
-            if (e != attempt?.entry) _linkIgnored.value = true
-            return
-        }
-        val o = KaikuPayloads.canonicalOrigin(e.origin)
-        val pinned = env.pinnedOrigin()
-        if (o == null || (pinned != null && pinned != o)) {
-            stop()
-            _ui.value = SetupUi.Ended(if (o == null) R.string.setup_invalid else R.string.setup_other_server, canRetry = false)
-            return
-        }
-        begin(e, o)
-    }
-
-    /** A new attempt for an accepted link (from [start], or the same link looked at again). */
-    private fun begin(e: SetupEntry, o: String) {
-        stop()
-        abandonUnclaimed()
-        val a = Attempt(e, o)
-        attempt = a
-        _linkIgnored.value = false
-        when (keyDevices.current()) {
-            is KeyDeviceState.Active -> return alreadyKey(a)
-            is KeyDeviceState.Lapsed -> return startOnLapsedKey(a)
-            is KeyDeviceState.Pending -> return end(R.string.setup_already_pending)
-            KeyDeviceState.None -> Unit
-        }
-        if (hasUnresolvedClaim()) {
-            _ui.value = SetupUi.Resume
-            return
-        }
-        _ui.value = SetupUi.Opening
-        step(a) { open(a) }
-    }
-
-    /**
-     * A signed-in key phone: "already your key". Its session may be dead (an admin removed this
-     * phone) without the app knowing yet; once the phone is no longer signed in with the key, the
-     * same link is looked at again (a signed-out key then asks its server, [startOnLapsedKey]).
-     */
-    private fun alreadyKey(a: Attempt) {
-        _ui.value = SetupUi.Ended(R.string.setup_already_key, canRetry = false)
-        step(a) {
-            // The state flow may still hold an older value: the phone's state now decides.
-            keyDevices.state.first { keyDevices.current() !is KeyDeviceState.Active }
-            live(a)
-            begin(a.entry, a.origin)
-        }
-    }
-
-    /**
-     * A signed-out key phone may have lost its key on the server (an admin removed it). The key's
-     * own server decides (the public device-login probe): only a key it does not know, or knows as
-     * removed, is forgotten and the setup goes on; anything else keeps the key ("already your key").
-     * The key is forgotten only if it is still the one that was asked about, still signed out.
-     */
-    private fun startOnLapsedKey(a: Attempt) {
-        val local = keyDevices.local() ?: return end(R.string.setup_already_key)
-        _ui.value = SetupUi.Opening
-        step(a) {
-            val st = probe.probe(local.userId, local.origin)
-            live(a)
-            if (st != ServerKeyState.Gone) return@step show(a, SetupUi.Ended(R.string.setup_already_key, canRetry = false))
-            val now = keyDevices.local()
-            if (now != null) {
-                if (now != local || keyDevices.current() !is KeyDeviceState.Lapsed) {
-                    return@step show(a, SetupUi.Ended(R.string.setup_already_key, canRetry = false))
-                }
-                forgetRecord(local, ForgetBecause.SERVER_SAYS_GONE)
-            }
-            open(a)
-        }
-    }
-
-    /** The pin is read now: forgetting a removed key above may have cleared it. */
-    private suspend fun open(a: Attempt) {
-        val pinned = env.pinnedOrigin()
-        if (pinned != null && pinned != a.origin) return show(a, SetupUi.Ended(R.string.setup_other_server, canRetry = false))
-        try {
-            val open = enrollmentApi.open(a.entry.tokenB64u, a.origin)
-            live(a)
-            a.serverName = open.serverName
-            a.nonce = Base64.getUrlDecoder().decode(open.enrollmentNonce)
-            if (pinned == null && a.entry.source != SetupEntry.Source.TICKET) {
-                show(a, SetupUi.ConfirmServer(open.serverName, hostOf(a.origin)))
-            } else {
-                checkSuitability(a)
-            }
-        } catch (c: CancellationException) {
-            throw c
-        } catch (x: Exception) {
-            show(a, setupErrorFor(x))
-        }
-    }
-
-    /**
-     * The setup screen was restored without its setup code (L2-A1; the code never goes into
-     * saved state): a stored setup continues on the waiting screen, which reconciles it with the
-     * server; a finished one goes on; otherwise the person scans (or opens) the code again.
-     */
-    fun resumeWithoutEntry() {
-        if (started) return
-        _ui.value = when {
-            keyDevices.current() is KeyDeviceState.Active -> SetupUi.Done
-            keyDevices.local() != null -> SetupUi.Resume
-            else -> SetupUi.Interrupted
-        }
-    }
-
-    /**
-     * "Start again" / "Try again" / "Keep waiting": an unanswered claim is reconciled (resent if the
-     * server never got it), a claim waiting for its code goes to the waiting screen, which asks the
-     * server; anything else starts this attempt's code over. A key the server may hold is never
-     * replaced here.
-     */
-    fun retry() {
-        if (claimInFlight || signingIn) return
-        val local = keyDevices.local()
-        when {
-            local != null && keyDevices.phase() == KeyDevicePhase.CLAIMING -> reconcile(attempt, local, resend = true)
-            local != null && keyDevices.phase() == KeyDevicePhase.CLAIMED -> {
-                stop()
-                _ui.value = SetupUi.Resume
-            }
-            else -> attempt?.entry?.let(::start)
-        }
-    }
-
-    /** "Yes, set up Kaiku on {server}": the unconfigured app adopts this server (undone if abandoned). */
-    fun confirmServer() {
-        val a = attempt ?: return
-        if (_ui.value !is SetupUi.ConfirmServer) return
-        stop()
-        if (!adoptedServer) {
-            replacedServer = env.savedServer()
-            adoptedServer = true
-        }
-        env.saveServerOrigin(a.origin)
-        _ui.value = SetupUi.Opening
-        step(a) { checkSuitability(a) }
-    }
-
-    /**
-     * Leaving before anything was claimed: the new key goes and a server this setup adopted is
-     * replaced by the one saved before. A recorded claim keeps both.
-     */
-    private fun abandonUnclaimed() {
-        if (keyDevices.local() != null) return
-        // Only the key this instance made, still the one in the store: another setup screen's
-        // ViewModel shares the alias and may hold its own unclaimed key.
-        attempt?.let(::dropKey)
-        if (adoptedServer) {
-            env.restoreServer(replacedServer)
-            adoptedServer = false
-            replacedServer = null
-        }
-    }
-
-    /** Deletes [a]'s new key if it is still the stored one and no claim recorded it. */
-    private fun dropKey(a: Attempt) {
-        val mine = a.key ?: return
-        a.key = null
-        deleteIfStored(mine)
-    }
-
-    /** The only deletion of a key this flow made: still the stored key, and no record names it (rule 4). */
-    private fun deleteIfStored(k: GeneratedKey) {
-        if (keyDevices.local() == null && keyStore.publicKeySpki()?.contentEquals(k.spki) == true) keyStore.delete()
-    }
-
-    /** The only place this flow forgets a stored record and its key (rule 5). */
-    private fun forgetRecord(about: LocalKeyDevice, because: ForgetBecause) {
-        if (keyDevices.local() != about) return
-        logger.info("Setup record forgotten: $because")
-        keyDevices.forget()
-    }
-
-    override fun onCleared() {
-        stop()
-        abandonUnclaimed()
+    public override fun onCleared() {
+        view.close()
         super.onCleared()
     }
 
-    /** Back from the screen-lock settings. */
-    fun recheckScreenLock() {
-        val a = attempt ?: return
-        if (_ui.value !is SetupUi.ScreenLockNeeded) return
-        _ui.value = SetupUi.Opening
-        step(a) { checkSuitability(a) }
-    }
-
-    private suspend fun checkSuitability(a: Attempt) {
-        show(a, SetupUi.Opening)
-        val d = withContext(keyDispatcher) { suitability.check() }
-        live(a)
-        when (d) {
-            is UvDecision.Unsuitable -> show(
-                a,
-                when (d.reason) {
-                    UnsuitableReason.NO_SCREEN_LOCK -> SetupUi.ScreenLockNeeded(d.reason)
-                    UnsuitableReason.NO_HARDWARE_KEYSTORE -> SetupUi.Ended(R.string.setup_cannot_be_key, canRetry = false)
-                },
-            )
-            is UvDecision.Use -> prepareKey(a, d)
-        }
-    }
-
-    /**
-     * The only place a key is made (rule 4). Nothing is made while a record exists: an unresolved
-     * claim goes to the waiting screen, a key device stays as it is. An unclaimed key an earlier
-     * setup left behind (no record names it) is replaced explicitly. Once begun, the generation runs
-     * to its end; then, still without a way to be interrupted, the key is either adopted by [a] (the
-     * step is still live) or deleted again.
-     */
-    private suspend fun makeKey(a: Attempt, d: UvDecision.Use): KeyResult = keyLock.withLock {
-        live(a)
-        if (hasUnresolvedClaim()) return@withLock KeyResult.ClaimWaiting
-        if (keyDevices.local() != null) return@withLock KeyResult.AlreadyKey
-        val me = currentCoroutineContext()[Job]
-        val adopted = withContext(NonCancellable) {
-            val g = withContext(keyDispatcher) {
-                if (keyDevices.local() == null && keyStore.hasKey()) keyStore.delete()
-                keyStore.generate(a.nonce, d)
-            }
-            if (isLive(a, me)) {
-                a.key = g
-                true
-            } else {
-                deleteIfStored(g)
-                false
-            }
-        }
-        live(a)
-        val k = a.key
-        if (!adopted || k == null) throw CancellationException("superseded")
-        KeyResult.Made(k)
-    }
-
-    private suspend fun prepareKey(a: Attempt, d: UvDecision.Use) {
-        try {
-            val k = when (val r = makeKey(a, d)) {
-                is KeyResult.Made -> r.key
-                KeyResult.ClaimWaiting -> return show(a, SetupUi.Resume)
-                KeyResult.AlreadyKey -> return show(a, SetupUi.Ended(R.string.setup_already_key, canRetry = false))
-            }
-            val p = enrollmentApi.popChallenge(a.entry.tokenB64u, deviceIds.id(), b64u(k.spki), a.origin)
-            live(a)
-            val signedIn = env.signedInUserId()
-            if (signedIn != null && signedIn != p.subject.userId) {
-                dropKey(a)
-                return show(a, SetupUi.Ended(R.string.setup_for_someone_else, canRetry = false, arg = nameOf(p.subject)))
-            }
-            val verified = try {
-                signer.check(p.challenge, SigKind.ENROLL_POP, p.subject.userId, deviceIds.id())
-            } catch (r: ChallengeRejected) {
-                logger.warning("PoP challenge refused: ${r.reason}")
-                dropKey(a)
-                return show(a, SetupUi.Ended(R.string.setup_mismatch, canRetry = false))
-            }
-            val ctx = verified.context as EnrollPopContext
-            if (!ctx.attestationChallenge.contentEquals(a.nonce) ||
-                !ctx.newKeyHash.contentEquals(KaikuSig.sha256(k.spki)) ||
-                ctx.subjectUsername != p.subject.username
-            ) {
-                dropKey(a)
-                return show(a, SetupUi.Ended(R.string.setup_mismatch, canRetry = false))
-            }
-            a.pop = p.challenge
-            a.subject = p.subject
-            a.popEnrollmentId = ctx.enrollmentId
-            show(a, SetupUi.ConfirmSubject(p.subject.displayName, ctx.subjectUsername, a.serverName, hostOf(a.origin)))
-        } catch (c: CancellationException) {
-            throw c
-        } catch (x: Exception) {
-            live(a)
-            dropKey(a)
-            show(a, setupErrorFor(x))
-        }
-    }
-
-    /** "Yes, set up for {name}": UV, the signed claim, then the code (or, with a ticket, done). */
-    fun confirmSubject(activity: FragmentActivity) {
-        val a = attempt ?: return
-        val shown = _ui.value as? SetupUi.ConfirmSubject ?: return
-        val ch = a.pop ?: return
-        val s = a.subject ?: return
-        val k = a.key ?: return
-        stop()
-        _ui.value = SetupUi.Opening
-        step(a) {
-            // The prompt names the signed account name and server, never an unsigned display name.
-            val prompt = UvPrompt(R.string.security_uv_title, activity.getString(R.string.setup_uv_subtitle, shown.username, shown.host))
-            val out = signer.sign(activity, ch, SigKind.ENROLL_POP, s.userId, deviceIds.id(), Decision.APPROVE, ByteArray(0), prompt)
-            live(a)
-            when (out) {
-                is SignOutcome.Rejected -> {
-                    dropKey(a)
-                    show(a, SetupUi.Ended(R.string.setup_mismatch, canRetry = false))
-                }
-                is SignOutcome.Uv -> when (out.result) {
-                    UvResult.Cancelled -> show(a, shown)
-                    UvResult.LockedOut -> show(a, SetupUi.Ended(R.string.security_locked_out, canRetry = true))
-                    else -> {
-                        dropKey(a)
-                        show(a, SetupUi.Ended(R.string.setup_failed_generic, canRetry = true))
-                    }
-                }
-                is SignOutcome.Signed -> claim(a, ch, out.signatureB64u, s, k)
-            }
-        }
-    }
-
-    private suspend fun claim(a: Attempt, ch: ApprovalChallenge, signature: String, s: AccountRef, k: GeneratedKey) {
-        live(a)
-        val request = EnrollmentClaim(
-            setupToken = a.entry.tokenB64u,
-            challengeId = ch.challengeId,
-            signature = signature,
-            publicKey = b64u(k.spki),
-            attestationChain = k.attestationChain.map(::b64u),
-            label = env.deviceLabel,
-            uvClass = k.uvClass.wire,
-            apiLevel = env.apiLevel,
-        )
-        a.pendingClaim = PendingClaim(request, a.entry.ticket)
-        // Recorded before the claim leaves the phone: a lost answer (or the app dying) must not cost
-        // a key the server may already have enrolled (a self-claim is `done` at once, SM2).
-        keyDevices.saveClaiming(
-            LocalKeyDevice(
-                keyDeviceId = null, userId = s.userId, origin = a.origin, uvClass = k.uvClass,
-                enrollmentId = a.popEnrollmentId ?: "", claimSecret = null, accountName = nameOf(s),
-            ),
-        )
-        sendClaim(a)
-    }
-
-    /** Sends the kept claim; only a definite refusal deletes the key, anything unclear keeps it. */
-    private suspend fun sendClaim(a: Attempt) {
-        val pc = a.pendingClaim ?: return
-        val claiming = keyDevices.local() ?: return
-        // From here until the answer (or the time limit): no link, no Back, no Cancel stops the request.
-        show(a, SetupUi.Claiming)
-        try {
-            val res = withTimeoutOrNull(CLAIM_TIMEOUT_MS) { enrollmentApi.claim(pc.request, ticket = pc.ticket, origin = a.origin) }
-            live(a)
-            if (res == null) {
-                logger.warning("Claim answer did not come in time")
-                return show(a, SetupUi.Ended(R.string.setup_claim_unsure, canRetry = true))
-            }
-            a.pendingClaim = null
-            val local = claiming.copy(enrollmentId = res.enrollmentId, claimSecret = res.claimSecret)
-            if (res.state == EnrollmentState.DONE.wire) {
-                onDone(a, local, res.authenticatorState, res.readyAt)
-            } else {
-                keyDevices.saveClaimed(local)
-                show(a, SetupUi.ShowCode(CodeFormat.group(res.code.orEmpty()), parseInstant(res.codeExpiresAt)))
-                poll(a, local)
-            }
-        } catch (c: CancellationException) {
-            throw c
-        } catch (x: Exception) {
-            live(a)
-            if (isDefiniteRefusal(x)) {
-                a.pendingClaim = null
-                forgetRecord(claiming, ForgetBecause.CLAIM_REFUSED)
-                show(a, setupErrorFor(x))
-            } else {
-                logger.warning("Claim answer unknown: ${x.javaClass.simpleName}")
-                val tooMany = x is ApiException && x.status.value == 429
-                show(a, SetupUi.Ended(if (tooMany) R.string.errors_rate_limited else R.string.setup_claim_unsure, canRetry = true))
-            }
-        }
-    }
-
-    /**
-     * After an unanswered claim: the server decides. An active or pending key device goes on
-     * (the claim had landed); none known → the kept claim is sent again unchanged (a second
-     * claim of a used token is a definite refusal); unreachable → the offer to try again stays.
-     */
-    private fun reconcile(a: Attempt?, local: LocalKeyDevice, resend: Boolean) {
-        _ui.value = SetupUi.Opening
-        step(a) {
-            val st = probe.probe(local.userId, local.origin)
-            live(a)
-            when (st) {
-                ServerKeyState.Active -> onDone(a, local, "active", null)
-                is ServerKeyState.Pending -> {
-                    keyDevices.markPending(local, st.readyAt)
-                    show(a, SetupUi.Pending(st.readyAt))
-                }
-                ServerKeyState.Gone -> if (resend && a?.pendingClaim != null) {
-                    sendClaim(a)
-                } else {
-                    forgetRecord(local, ForgetBecause.SERVER_SAYS_GONE)
-                    show(a, SetupUi.Ended(R.string.setup_not_finished, canRetry = false))
-                }
-                ServerKeyState.Unknown -> show(a, SetupUi.Ended(R.string.setup_claim_unsure, canRetry = true))
-            }
-        }
-    }
-
-    private suspend fun poll(a: Attempt, local: LocalKeyDevice) {
-        val secret = local.claimSecret ?: return show(a, SetupUi.Ended(R.string.setup_failed_generic, canRetry = false))
-        var backoff = RETRY_MS
-        while (_ui.value is SetupUi.ShowCode) {
-            val s = try {
-                enrollmentApi.status(local.enrollmentId, secret, LongPoll.WAIT_SECONDS, a.origin).also { backoff = RETRY_MS }
-            } catch (c: CancellationException) {
-                throw c
-            } catch (x: Exception) {
-                live(a)
-                // Only a gone enrolment ends the setup; the issuer may still confirm the code
-                // through an outage, and the key must then still exist.
-                if (x is ApiException && (x.status.value == 404 || x.status.value == 410)) {
-                    return afterGoneEnrolment(a, local, x)
-                }
-                val retryAfterMs = (x as? ApiException)?.fields?.retryAfterSeconds?.times(1000)
-                delay(retryAfterMs ?: backoff)
-                live(a)
-                backoff = (backoff * 2).coerceAtMost(RETRY_MAX_MS)
-                continue
-            }
-            live(a)
-            // Cancelled or reset while the long-poll ran: its answer changes nothing any more.
-            if (_ui.value !is SetupUi.ShowCode) return
-            when (s.state) {
-                EnrollmentState.DONE -> return onDone(a, local, s.authenticatorState, s.readyAt)
-                EnrollmentState.CANCELLED -> return forgetAndEnd(a, local, R.string.setup_cancelled)
-                EnrollmentState.EXPIRED -> return forgetAndEnd(a, local, R.string.setup_expired)
-                EnrollmentState.FAILED -> return forgetAndEnd(a, local, R.string.setup_code_failed)
-                else -> Unit
-            }
-        }
-    }
-
-    /**
-     * The enrolment status answered 404/410. A finished enrolment is swept 30 days after it
-     * ended and then answers 404 too, so the key device decides (the device-login probe): only
-     * a key the server does not know is forgotten; unreachable keeps it for a retry.
-     */
-    private suspend fun afterGoneEnrolment(a: Attempt, local: LocalKeyDevice, x: Exception) {
-        val st = probe.probe(local.userId, local.origin)
-        live(a)
-        when (st) {
-            ServerKeyState.Active -> onDone(a, local, "active", null)
-            is ServerKeyState.Pending -> {
-                keyDevices.markPending(local, st.readyAt)
-                show(a, SetupUi.Pending(st.readyAt))
-            }
-            ServerKeyState.Gone -> {
-                forgetRecord(local, ForgetBecause.SERVER_SAYS_GONE)
-                show(a, setupErrorFor(x))
-            }
-            ServerKeyState.Unknown -> show(a, SetupUi.Ended(R.string.setup_claim_unsure, canRetry = true))
-        }
-    }
-
-    private suspend fun onDone(a: Attempt?, local: LocalKeyDevice, authenticatorState: String?, readyAt: String?) {
-        live(a)
-        if (authenticatorState == "pending") {
-            // Without its ready time (C27 always sends one) the device-login probe tells it.
-            val at = parseInstant(readyAt) ?: return reconcile(a, local, resend = false)
-            keyDevices.markPending(local, at)
-            show(a, SetupUi.Pending(at))
-        } else {
-            // Active on the server: kept as an active key, so a restart before the sign-in below
-            // opens "Confirm it's you" instead of losing the setup (a self-claim has no claim secret).
-            keyDevices.markEnrolled(local)
-            show(a, SetupUi.SigningIn)
-        }
-    }
-
-    /** The final device-key sign-in (full session, B.4); bounded by [SIGN_IN_TIMEOUT_MS]. */
-    fun signIn(activity: FragmentActivity) {
-        val now = _ui.value
-        if ((now != SetupUi.SigningIn && now != SetupUi.SignInPaused && now != SetupUi.SignInTimedOut) || signingIn) return
-        signingIn = true
-        _ui.value = SetupUi.SigningIn
-        viewModelScope.launch {
-            // Its own fresh challenge, so a second screen-lock prompt; its text says why.
-            val r = try {
-                withTimeoutOrNull(SIGN_IN_TIMEOUT_MS) { deviceSignIn.signIn(activity, SignInPurpose.AFTER_SETUP) }
-            } finally {
-                signingIn = false
-            }
-            _ui.value = finalSignInUi(r)
-        }
-    }
-
-    /**
-     * "Cancel" (or Back): before the claim nothing was sent that binds anything and the new key
-     * goes. After the claim the server cannot be told; the key and its record stay, so a code typed
-     * in anyway still finishes ("Keep waiting" leads to the waiting screen, as does the next start).
-     * While the claim itself is on its way nothing is stopped: its answer carries the code.
-     */
-    fun cancel() {
-        if (claimInFlight || signingIn) return
-        stop()
-        abandonUnclaimed()
-        _linkIgnored.value = false
-        val claimed = hasUnresolvedClaim()
-        _ui.value = SetupUi.Ended(if (claimed) R.string.setup_stopped_after_code else R.string.setup_stopped, canRetry = claimed)
-    }
-
-    private suspend fun forgetAndEnd(a: Attempt, local: LocalKeyDevice, @StringRes msg: Int) {
-        live(a)
-        forgetRecord(local, ForgetBecause.ENROLMENT_ENDED)
-        show(a, SetupUi.Ended(msg, canRetry = false))
-    }
-
-    /** Outside a step only (a step uses [show]). */
-    private fun end(@StringRes msg: Int) {
-        _ui.value = SetupUi.Ended(msg, canRetry = false)
+    companion object {
+        const val CLAIM_TIMEOUT_MS = SetupOwner.CLAIM_TIMEOUT_MS
+        const val SIGN_IN_TIMEOUT_MS = SetupOwner.SIGN_IN_TIMEOUT_MS
     }
 }
 
@@ -906,14 +175,6 @@ internal fun pendingBackAction(ui: SetupUi): SetupBack = when (setupBackAction(u
     SetupBack.CANCEL, SetupBack.LEAVE -> SetupBack.LEAVE
 }
 
-/**
- * A claim the server definitely refused (it answered and nothing was enrolled): a 4xx other
- * than a timeout or rate limit. Network errors, 5xx and unreadable answers are unclear: the
- * claim may have landed.
- */
-private fun isDefiniteRefusal(x: Exception): Boolean =
-    x is ApiException && x.status.value in 400..499 && x.status.value != 408 && x.status.value != 429
-
 /** Server refusals during setup (C26) as texts. */
 internal fun setupErrorFor(x: Exception): SetupUi.Ended = when (x) {
     is ApiException -> when (x.normalizedCode) {
@@ -934,11 +195,5 @@ internal fun setupErrorFor(x: Exception): SetupUi.Ended = when (x) {
     is IOException -> SetupUi.Ended(R.string.security_network_error, canRetry = true)
     else -> SetupUi.Ended(R.string.setup_failed_generic, canRetry = true)
 }
-
-private fun b64u(b: ByteArray): String = Base64.getUrlEncoder().withoutPadding().encodeToString(b)
-
-private fun nameOf(s: AccountRef): String = s.displayName.ifEmpty { s.username }
-
-private fun hostOf(origin: String): String = origin.substringAfter("://")
 
 internal fun parseInstant(s: String?): Instant? = s?.let { runCatching { Instant.parse(it) }.getOrNull() }

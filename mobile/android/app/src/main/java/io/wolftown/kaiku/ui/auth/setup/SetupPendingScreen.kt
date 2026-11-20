@@ -17,6 +17,7 @@ import androidx.compose.ui.res.stringResource
 import io.wolftown.kaiku.R
 import io.wolftown.kaiku.ui.shared.KeyBody
 import io.wolftown.kaiku.ui.shared.KeyNotice
+import io.wolftown.kaiku.ui.shared.KeyPrimaryButton
 import io.wolftown.kaiku.ui.shared.KeyScreen
 import io.wolftown.kaiku.ui.shared.SecureScreen
 import io.wolftown.kaiku.ui.shared.currentFragmentActivity
@@ -34,12 +35,12 @@ private const val PENDING_CHECK_MS = 15 * 60 * 1000L
 fun SetupPendingScreen(
     onSignedIn: () -> Unit,
     onEnded: () -> Unit = {},
-    /** Shown inside the setup screen: a setup link opened meanwhile was not used. */
-    linkIgnored: Boolean = false,
     viewModel: SetupPendingViewModel = hiltViewModel(),
 ) {
     SecureScreen()
     val ui by viewModel.ui.collectAsState()
+    // A setup link opened while this setup waits was not used; the screen says so wherever it is shown.
+    val linkIgnored by viewModel.linkIgnored.collectAsState()
     val activity = currentFragmentActivity()
 
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { viewModel.check() }
@@ -84,9 +85,13 @@ fun SetupPendingScreen(
     KeyScreen {
         if (linkIgnored) KeyNotice(stringResource(R.string.setup_link_ignored), warning = false)
         when (ui) {
-            SetupUi.Opening -> {
+            SetupUi.Opening, SetupUi.Resume -> {
                 CircularProgressIndicator()
                 KeyBody(stringResource(R.string.setup_checking))
+            }
+            SetupUi.ClaimWaiting -> {
+                KeyNotice(stringResource(R.string.setup_claim_waiting), warning = false)
+                KeyPrimaryButton(stringResource(R.string.common_try_again), onClick = viewModel::check)
             }
             else -> SetupStatus(ui = ui, onSignIn = { activity?.let(viewModel::signIn) }, onRetry = viewModel::check, onBack = onEnded)
         }

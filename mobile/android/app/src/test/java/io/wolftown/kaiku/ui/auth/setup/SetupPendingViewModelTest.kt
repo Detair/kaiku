@@ -1,5 +1,12 @@
 package io.wolftown.kaiku.ui.auth.setup
 
+import io.wolftown.kaiku.testutil.seed
+import io.wolftown.kaiku.data.keydevice.StoredKeyDevice
+import io.wolftown.kaiku.approval.keyId
+import io.wolftown.kaiku.testutil.saveClaimed
+import io.wolftown.kaiku.testutil.saveClaiming
+import io.wolftown.kaiku.testutil.markEnrolled
+import io.wolftown.kaiku.testutil.markPending
 import androidx.fragment.app.FragmentActivity
 import io.mockk.coEvery
 import io.mockk.coVerify
@@ -50,6 +57,9 @@ class SetupPendingViewModelTest {
     private val approval = FakeApprovalApi()
     private val probe = KeyDeviceProbe(approval) { SigFixtures.DEVICE_ID }
 
+    private fun pendingVm(repo: KeyDeviceRepository) =
+        SetupPendingViewModel(setupOwner(enroll.api, repo, mockk(), deviceSignIn, probe))
+
     @Before fun setUp() = Dispatchers.setMain(UnconfinedTestDispatcher())
     @After fun tearDown() = Dispatchers.resetMain()
 
@@ -68,7 +78,7 @@ class SetupPendingViewModelTest {
         // A pending key device asks the key-device probe (the finished enrolment ages out, 30 days).
         approval.failWith = apiError(409, "KEY_DEVICE_PENDING", ApiErrorFields(readyAt = readyAt.toString()))
 
-        val v = SetupPendingViewModel(enroll.api, repo, deviceSignIn, probe)
+        val v = pendingVm(repo)
         v.check()
         assertEquals(SetupUi.Pending(readyAt), v.ui.value)
         approval.failWith = null
@@ -90,7 +100,7 @@ class SetupPendingViewModelTest {
         repo.markPending(pendingDevice(), readyAt)
         approval.failWith = apiError(403, "KEY_DEVICE_REVOKED")
 
-        val v = SetupPendingViewModel(enroll.api, repo, deviceSignIn, probe)
+        val v = pendingVm(repo)
         v.check()
         assertEquals(SetupUi.Ended(R.string.setup_cancelled, canRetry = false), v.ui.value)
         assertEquals(KeyDeviceState.None, repo.current())
@@ -108,7 +118,7 @@ class SetupPendingViewModelTest {
         repo.markEnrolled(pendingDevice().copy(claimSecret = null))
         coEvery { deviceSignIn.signIn(any(), any()) } returns DeviceSignInResult.Success
 
-        val v = SetupPendingViewModel(enroll.api, repo, deviceSignIn, probe)
+        val v = pendingVm(repo)
         assertEquals(SetupUi.SigningIn, v.ui.value)
         v.signIn(activity)
         assertEquals(SetupUi.Done, v.ui.value)
@@ -118,7 +128,7 @@ class SetupPendingViewModelTest {
         val (repo, _) = repo()
         repo.markEnrolled(pendingDevice().copy(claimSecret = null))
         coEvery { deviceSignIn.signIn(any(), any()) } returns DeviceSignInResult.Expired
-        val v = SetupPendingViewModel(enroll.api, repo, deviceSignIn, probe)
+        val v = pendingVm(repo)
         v.signIn(activity)
         coVerify(exactly = 1) { deviceSignIn.signIn(activity, io.wolftown.kaiku.data.auth.SignInPurpose.AFTER_SETUP) }
         assertEquals(SetupUi.SignInTimedOut, v.ui.value)
@@ -133,7 +143,7 @@ class SetupPendingViewModelTest {
         val (repo, _) = repo()
         repo.markEnrolled(pendingDevice().copy(claimSecret = null))
         coEvery { deviceSignIn.signIn(any(), any()) } coAnswers { kotlinx.coroutines.awaitCancellation() }
-        val v = SetupPendingViewModel(enroll.api, repo, deviceSignIn, probe)
+        val v = pendingVm(repo)
         v.signIn(activity)
         assertEquals(SetupUi.SigningIn, v.ui.value)
         advanceTimeBy(SetupFlowViewModel.SIGN_IN_TIMEOUT_MS + 1)
@@ -146,7 +156,7 @@ class SetupPendingViewModelTest {
         repo.saveClaiming(pendingDevice().copy(claimSecret = null))
         approval.nextChallenge = SigFixtures.challengeFor(SigKind.DEVICE_LOGIN, 3, SigFixtures.V03_CONTEXT)
 
-        val v = SetupPendingViewModel(enroll.api, repo, deviceSignIn, probe)
+        val v = pendingVm(repo)
         v.check()
 
         assertEquals(SetupUi.SigningIn, v.ui.value)
@@ -162,10 +172,10 @@ class SetupPendingViewModelTest {
     @Test fun `a swept enrolment of a confirmed key keeps the key`() = runTest {
         val (repo, f) = repo()
         repo.saveClaimed(pendingDevice())
-        enroll.statusFailures += apiError(404, "NOT_FOUND")
+        enroll.statusFailures += apiError(404, "ENROLLMENT_TOKEN_INVALID")
         approval.nextChallenge = SigFixtures.challengeFor(SigKind.DEVICE_LOGIN, 3, SigFixtures.V03_CONTEXT)
 
-        val v = SetupPendingViewModel(enroll.api, repo, deviceSignIn, probe)
+        val v = pendingVm(repo)
         v.check()
 
         assertEquals(SetupUi.SigningIn, v.ui.value)
@@ -173,13 +183,74 @@ class SetupPendingViewModelTest {
         assertTrue(f.keyStore.hasKey())
     }
 
-    @Test fun `an unknown enrolment without a key device forgets the key`() = runTest {
+    @Test fun `a 404 that is not the server's own answer for an unknown enrolment decides nothing`() = runTest {
         val (repo, f) = repo()
         repo.saveClaimed(pendingDevice())
         enroll.statusFailures += apiError(404, "NOT_FOUND")
         approval.failWith = apiError(404, "KEY_DEVICE_UNKNOWN")
 
-        val v = SetupPendingViewModel(enroll.api, repo, deviceSignIn, probe)
+        val v = pendingVm(repo)
+        v.check()
+
+        assertTrue(approval.calls.isEmpty())
+        assertEquals(SetupUi.WaitingForCode, v.ui.value)
+        assertEquals(KeyDevicePhase.CLAIMED, repo.phase())
+        assertTrue(f.keyStore.hasKey())
+    }
+
+    @Test fun `an ending state with another status than 200 decides nothing`() = runTest {
+        // What the client's API layer does with it is its own test; here: the answer as an error.
+        val (repo, f) = repo()
+        repo.saveClaimed(pendingDevice())
+        enroll.statusFailures += io.wolftown.kaiku.data.api.ApiException(io.ktor.http.HttpStatusCode.Accepted, "status failed")
+        val v = pendingVm(repo)
+        v.check()
+        assertEquals(KeyDevicePhase.CLAIMED, repo.phase())
+        assertTrue(f.keyStore.hasKey())
+    }
+
+    @Test fun `an ended enrolment forgets the claim it was asked for`() = runTest {
+        for ((state, text) in listOf(
+            EnrollmentState.EXPIRED to R.string.setup_expired,
+            EnrollmentState.CANCELLED to R.string.setup_cancelled,
+            EnrollmentState.FAILED to R.string.setup_code_failed,
+        )) {
+            val (repo, f) = repo()
+            repo.saveClaimed(pendingDevice())
+            enroll.statuses += ClaimStatus(state)
+            val v = pendingVm(repo)
+            v.check()
+            assertEquals(SetupUi.Ended(text, canRetry = false), v.ui.value)
+            assertEquals(KeyDeviceState.None, repo.current())
+            assertFalse(f.keyStore.hasKey())
+        }
+    }
+
+    @Test fun `a late ending answer for an older claim never costs the claim stored now`() = runTest {
+        val (repo, f) = repo()
+        repo.saveClaimed(pendingDevice())
+        val held = kotlinx.coroutines.CompletableDeferred<Unit>()
+        enroll.statusGate = held
+        enroll.statuses += ClaimStatus(EnrollmentState.EXPIRED)
+        val v = pendingVm(repo)
+        v.check()
+        // While the status request is under way, the phone is set up anew: another enrolment, another key.
+        f.keyStore.delete()
+        val newKey = f.keyStore.generate(ByteArray(32), io.wolftown.kaiku.approval.UvPolicy.choose(30, true, true) as io.wolftown.kaiku.approval.UvDecision.Use).keyId
+        repo.saveClaimed(pendingDevice().copy(enrollmentId = "66666666-6666-4666-8666-000000000002"))
+        held.complete(Unit)
+        runCurrent()
+        assertEquals("66666666-6666-4666-8666-000000000002", repo.local()!!.enrollmentId)
+        assertEquals(newKey, f.keyStore.keyId())
+    }
+
+    @Test fun `an unknown enrolment without a key device forgets the key`() = runTest {
+        val (repo, f) = repo()
+        repo.saveClaimed(pendingDevice())
+        enroll.statusFailures += apiError(404, "ENROLLMENT_TOKEN_INVALID")
+        approval.failWith = apiError(404, "KEY_DEVICE_UNKNOWN")
+
+        val v = pendingVm(repo)
         v.check()
 
         assertEquals(SetupUi.Ended(R.string.setup_cancelled, canRetry = false), v.ui.value)
@@ -193,19 +264,23 @@ class SetupPendingViewModelTest {
         enroll.statusFailures += apiError(410, "ENROLLMENT_FAILED")
         approval.failWith = java.io.IOException("offline")
 
-        val v = SetupPendingViewModel(enroll.api, repo, deviceSignIn, probe)
+        val v = pendingVm(repo)
         v.check()
 
         assertTrue(f.keyStore.hasKey())
         assertEquals(KeyDevicePhase.CLAIMED, repo.phase())
     }
 
-    @Test fun `a claim that never landed is dropped at app start`() = runTest {
-        val (repo, f) = repo()
-        repo.saveClaiming(pendingDevice().copy(claimSecret = null))
-        approval.failWith = apiError(404, "KEY_DEVICE_UNKNOWN")
+    private val claimTime: Instant = Instant.parse("2026-11-03T12:10:00Z")
 
-        val v = SetupPendingViewModel(enroll.api, repo, deviceSignIn, probe)
+    private fun noKeyDeviceAt(t: Instant?) = apiError(404, "KEY_DEVICE_UNKNOWN", ApiErrorFields(serverTime = t))
+
+    @Test fun `a claim that never landed is dropped at app start once its time has passed`() = runTest {
+        val (repo, f) = repo()
+        repo.seed(StoredKeyDevice(pendingDevice().copy(claimSecret = null), KeyDevicePhase.CLAIMING, claimVoidAfter = claimTime))
+        approval.failWith = noKeyDeviceAt(claimTime.plusSeconds(1))
+
+        val v = pendingVm(repo)
         v.check()
 
         assertEquals(SetupUi.Ended(R.string.setup_not_finished, canRetry = false), v.ui.value)
@@ -213,12 +288,59 @@ class SetupPendingViewModelTest {
         assertFalse(f.keyStore.hasKey())
     }
 
+    @Test fun `a claim whose answer never came is kept while the server could still store it`() = runTest {
+        val (repo, f) = repo()
+        repo.seed(StoredKeyDevice(pendingDevice().copy(claimSecret = null), KeyDevicePhase.CLAIMING, claimVoidAfter = claimTime))
+        // The server knows no key device yet, three minutes before the claim's time is over.
+        approval.failWith = noKeyDeviceAt(claimTime.minusSeconds(180))
+
+        val v = pendingVm(repo)
+        v.check()
+
+        assertEquals(SetupUi.ClaimWaiting, v.ui.value)
+        assertEquals(KeyDevicePhase.CLAIMING, repo.phase())
+        assertTrue(f.keyStore.hasKey())
+        // The claim did land after all: the phone asks again by itself and goes on.
+        approval.failWith = null
+        approval.nextChallenge = SigFixtures.challengeFor(SigKind.DEVICE_LOGIN, 3, SigFixtures.V03_CONTEXT)
+        advanceTimeBy(180_000 + 6_000)
+        runCurrent()
+        assertEquals(SetupUi.SigningIn, v.ui.value)
+        assertEquals(KeyDevicePhase.ACTIVE, repo.phase())
+        assertTrue(f.keyStore.hasKey())
+    }
+
+    @Test fun `a kept claim that never became a key is dropped by the next ask after its time`() = runTest {
+        val (repo, f) = repo()
+        repo.seed(StoredKeyDevice(pendingDevice().copy(claimSecret = null), KeyDevicePhase.CLAIMING, claimVoidAfter = claimTime))
+        approval.failWith = noKeyDeviceAt(claimTime.minusSeconds(60))
+        val v = pendingVm(repo)
+        v.check()
+        assertEquals(SetupUi.ClaimWaiting, v.ui.value)
+        approval.failWith = noKeyDeviceAt(claimTime.plusSeconds(6))
+        advanceTimeBy(60_000 + 6_000)
+        runCurrent()
+        assertEquals(SetupUi.Ended(R.string.setup_not_finished, canRetry = false), v.ui.value)
+        assertFalse(f.keyStore.hasKey())
+    }
+
+    @Test fun `without the server's time a claim is not given up`() = runTest {
+        val (repo, f) = repo()
+        repo.seed(StoredKeyDevice(pendingDevice().copy(claimSecret = null), KeyDevicePhase.CLAIMING, claimVoidAfter = claimTime))
+        approval.failWith = noKeyDeviceAt(null)
+        val v = pendingVm(repo)
+        v.check()
+        assertEquals(SetupUi.Ended(R.string.setup_claim_unsure, canRetry = true), v.ui.value)
+        assertEquals(KeyDevicePhase.CLAIMING, repo.phase())
+        assertTrue(f.keyStore.hasKey())
+    }
+
     @Test fun `offline at app start keeps the claim and checks again`() = runTest {
         val (repo, f) = repo()
         repo.saveClaiming(pendingDevice().copy(claimSecret = null))
         approval.failWith = java.io.IOException("offline")
 
-        val v = SetupPendingViewModel(enroll.api, repo, deviceSignIn, probe)
+        val v = pendingVm(repo)
         v.check()
         assertEquals(SetupUi.Ended(R.string.security_network_error, canRetry = true), v.ui.value)
         assertTrue(f.keyStore.hasKey())
@@ -234,7 +356,7 @@ class SetupPendingViewModelTest {
         repo.markPending(pendingDevice().copy(claimSecret = null), readyAt)
         approval.failWith = apiError(409, "KEY_DEVICE_PENDING", ApiErrorFields(readyAt = "2026-11-05T08:00:00Z"))
 
-        val v = SetupPendingViewModel(enroll.api, repo, deviceSignIn, probe)
+        val v = pendingVm(repo)
         assertEquals(SetupUi.Pending(readyAt), v.ui.value)
         v.check()
         assertEquals(SetupUi.Pending(Instant.parse("2026-11-05T08:00:00Z")), v.ui.value)
@@ -251,7 +373,7 @@ class SetupPendingViewModelTest {
         repo.markEnrolled(pendingDevice().copy(claimSecret = null))
         coEvery { deviceSignIn.signIn(any(), any()) } returns DeviceSignInResult.Cancelled
         approval.nextChallenge = SigFixtures.challengeFor(SigKind.DEVICE_LOGIN, 3, SigFixtures.V03_CONTEXT)
-        val v = SetupPendingViewModel(enroll.api, repo, deviceSignIn, probe)
+        val v = pendingVm(repo)
         v.signIn(activity)
         assertEquals(SetupUi.SignInPaused, v.ui.value)
         v.check() // ON_RESUME after the prompt closed
@@ -265,7 +387,7 @@ class SetupPendingViewModelTest {
         repo.saveClaimed(pendingDevice())
         enroll.statuses += ClaimStatus(EnrollmentState.CLAIMED)
         enroll.statuses += ClaimStatus(EnrollmentState.DONE, "pending", readyAt.toString())
-        val v = SetupPendingViewModel(enroll.api, repo, deviceSignIn, probe)
+        val v = pendingVm(repo)
         assertEquals(SetupUi.WaitingForCode, v.ui.value)
         v.check()
         assertEquals(SetupUi.Pending(readyAt), v.ui.value)

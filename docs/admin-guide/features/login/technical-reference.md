@@ -614,18 +614,19 @@ server nor a link preview receives it. On a phone the `/setup` page offers "Open
 `{PUBLIC_URL}/setup?app=missing`, which carries no token and shows the "you need the app" text);
 App Links only for hosts in the build's `kaikuAppLinkHosts`.
 
-**Setup links on the Android app while a setup runs.** From the moment the app accepts a link until
-that setup ends (finished, stopped, failed), every other setup link is ignored with the notice
-"Another setup link was opened. It was not used …" (also on the waiting screen): same server or
-another, pinned or not yet tied to a server, whatever step is shown. The same link delivered again
-(a recreated screen) changes nothing. A running setup is never replaced by a link; the person stops
-it first, and the link opened again then starts (each delivery counts, not only a new value). Every
-request of a setup takes the code and the server from the one accepted link. The signed claim and
-the final device-key sign-in are not interrupted by a link, Back or Cancel; they end after 30 s and
-180 s at the latest, as "not sure whether it worked" (claim; the stored `CLAIMING` record is then
-reconciled) or "took too long" (sign-in). A key generated for a setup that was stopped meanwhile is
-deleted at once; a new key is never made while a claim of this phone is stored (the waiting screen
-reconciles it first).
+**One setup per Android app.** The app has one setup, owned by one process-wide object; the scanner
+screen ("Set up this phone"), the screen a setup link opens and the waiting screen are views of it and
+hold no setup of their own. From the moment a link is accepted until that setup ends (finished,
+stopped, failed, or the waiting screen reporting that the code ran out or the setup was cancelled),
+every other setup link is not used: the app does not navigate for it and the screen showing the setup
+says "Another setup link was opened. It was not used …". This holds for the same server or another,
+tied to a server or not, whatever step is shown, the waiting screen included. The same link delivered
+again changes nothing. Once the setup has ended on any screen, a link opened again starts (one
+delivery is one start). While a claim of this phone is stored and not yet decided by its server, a
+link is never a new setup: the stored claim is checked instead. Every request of a setup takes the
+code and the server from the one accepted link. An app not yet tied to a server adopts the link's
+server only when the person confirms it and the app is, at that moment, still tied to none and holds
+no key record (the rule a link is accepted under); it is put back when that setup is abandoned.
 
 **The key record and the key: compare-and-set.** The phone keeps one record (server, account, key
 device id, enrolment id, the key's id = SHA-256 of its public key, the setup that made it, phase

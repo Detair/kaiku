@@ -166,6 +166,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Android: a setup always talks to the server of the link it was started from; while a setup runs, every other setup link is left unused (the screen says so), whatever its server.
 - Android: the phone forgets its key only on the server's own answers for a removed key, never on the same code with another status.
 - Android: "Use another account" no longer leaves the phone signed in when the app is closed, or the screen is left, while the removal is being confirmed; that sign-in is ended before the app opens again.
+- Android: the app has one setup at a time, whichever screen shows it. A setup link opened while a setup runs, also on the waiting screen, is not used and the screen says so; once the screen says the setup has ended, the link opened again starts.
+- Android: a phone keeps its key when the server's answer to its setup request is lost or unclear ("already used", an error page, no answer): it asks the server what it holds instead of sending the request again, and goes on or starts the same setup again. It forgets the key only on the answers that say nothing was set up.
 - Web: "Open in Kaiku" on the setup page hands the setup code only to the Kaiku app.
 - Android: Kaiku data is no longer copied by cloud backup or when moving to a new phone. "Confirm it's you" is protected against screenshots and taps through other apps like the other key screens.
 - The end-to-end encryption library was updated to a release that clears key material from memory more thoroughly.
@@ -239,7 +241,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Android: "Confirm it's you" no longer gets stuck when the phone stops being a key while the screen is open; it says so and offers OK.
 - Android: a setup link opened again after "Stop setup" now starts, and a setup link opened while the waiting screen is shown says it was not used.
 - Android: sending the setup claim and the last sign-in of a setup no longer wait forever on a server that does not answer; they end as "not sure whether it worked" or "took too long" and offer to try again.
-- Android: going back on the screen-lock step of a setup asks first, and going back on the waiting screen while the phone signs in waits for it.
+- Android: going back on the screen-lock step of a setup asks first, also before a code was scanned, and going back on the waiting screen while the phone signs in waits for it.
+- Android: the last sign-in of a setup leaves its screen after three minutes at the latest.
 - Android: a passkey confirmation in the security settings for another website than your server now says so instead of "That didn't work".
 - Web: "Open in Kaiku" on a phone without the app brings you back to the setup page with what to do, instead of an app store page.
 - Android: a confirmation in the security settings that took too long now says so, and their "read only" notice no longer appears when loading failed.

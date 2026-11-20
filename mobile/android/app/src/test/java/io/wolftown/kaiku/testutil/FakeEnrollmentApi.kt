@@ -48,11 +48,19 @@ class FakeEnrollmentApi {
     var openGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
     var claimGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
     var popGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+    var statusGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+    /** The enrolment ids the status was asked for, in order. */
+    val statusIds = mutableListOf<String>()
+    /** Answers for the next `popChallenge` calls, in order: an exception to throw, or [GIVEN] for a challenge. */
+    val popAnswers = java.util.ArrayDeque<Exception>()
+    var popCalls = 0
     /** `open` requests that left the phone, also those still waiting at [openGate]. */
     var openStarts = 0
 
     companion object {
         const val SUBJECT_ID = "66666666-6666-4666-8666-666666666666"
+        /** In [popAnswers]: the server hands out a challenge. */
+        val GIVEN = Exception("challenge given")
     }
 
     fun popChallengeFor(publicKeyB64u: String, userId: String = SUBJECT_ID): ApprovalChallenge {
@@ -80,7 +88,9 @@ class FakeEnrollmentApi {
         override suspend fun popChallenge(setupToken: String, deviceId: String, publicKeyB64u: String, origin: String?): PopChallenge {
             popGate?.await()
             calls += "popChallenge"; origins += origin
+            popCalls++
             popFailure?.let { throw it }
+            if (popAnswers.isNotEmpty()) popAnswers.removeFirst().let { if (it !== GIVEN) throw it }
             return PopChallenge(popChallengeFor(publicKeyB64u), subject)
         }
         override suspend fun claim(req: EnrollmentClaim, ticket: String?, origin: String?): ClaimResult {
@@ -90,7 +100,9 @@ class FakeEnrollmentApi {
             return claimResult
         }
         override suspend fun status(enrollmentId: String, claimSecret: String, waitSeconds: Int, origin: String?): ClaimStatus {
+            statusGate?.await()
             calls += "status"; origins += origin
+            statusIds += enrollmentId
             lastStatusWait = waitSeconds
             statusFailures.pollFirst()?.let { throw it }
             // A long-poll with nothing new waits (until the test ends).

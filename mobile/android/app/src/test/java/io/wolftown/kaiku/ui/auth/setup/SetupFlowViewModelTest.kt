@@ -1,5 +1,6 @@
 package io.wolftown.kaiku.ui.auth.setup
 
+import io.wolftown.kaiku.testutil.saveClaimed
 import androidx.fragment.app.FragmentActivity
 import io.mockk.coEvery
 import io.mockk.coVerify
@@ -9,6 +10,7 @@ import io.wolftown.kaiku.approval.DeviceSuitabilityChecker
 import io.wolftown.kaiku.approval.UnsuitableReason
 import io.wolftown.kaiku.approval.UvDecision
 import io.wolftown.kaiku.approval.UvPolicy
+import io.wolftown.kaiku.approval.keyId
 import io.wolftown.kaiku.data.auth.DeviceSignIn
 import io.wolftown.kaiku.data.auth.DeviceSignInResult
 import io.wolftown.kaiku.approval.SigKind
@@ -86,20 +88,10 @@ class SetupFlowViewModelTest {
         }
     }
 
-    class FakeSetupEnvironment : SetupEnvironment {
-        var pinned: String? = null
-        /** When set, the pin follows the phone's state (as OriginPin does): the key's origin, else [pinned]. */
-        var pinFrom: (() -> String?)? = null
-        var signedInUser: String? = null
-        val saved = mutableListOf<String>()
-        override fun pinnedOrigin() = pinFrom?.invoke() ?: pinned
-        override fun signedInUserId() = signedInUser
-        var stored: String? = null
-        override fun saveServerOrigin(origin: String) { saved += origin; stored = origin }
-        override fun savedServer() = stored
-        override fun restoreServer(url: String?) { stored = url }
-        override val deviceLabel = "Google Pixel 8"
-        override val apiLevel = 35
+    /** The one setup of the phone [f]; every screen of a test shares it, as in the app. */
+    private fun owner(f: KeyDeviceFixture): SetupOwner {
+        env.hasRecord = { f.repo.record.value != null }
+        return setupOwner(enroll.api, f.repo, f.signer, deviceSignIn, probe, env, suitability, keyDispatcher)
     }
 
     @Before fun setUp() = Dispatchers.setMain(UnconfinedTestDispatcher())
@@ -111,8 +103,7 @@ class SetupFlowViewModelTest {
         f.keyStore.delete()
         f.authState.setLoggedOut()
         coEvery { deviceSignIn.signIn(any(), any()) } returns DeviceSignInResult.Success
-        val v = SetupFlowViewModel(enroll.api, suitability, f.keyStore, f.signer, f.repo, { SigFixtures.DEVICE_ID }, deviceSignIn, env,
-            probe, keyDispatcher = keyDispatcher)
+        val v = SetupFlowViewModel(owner(f))
         return v to f
     }
 
@@ -127,8 +118,7 @@ class SetupFlowViewModelTest {
     @Test fun `phone that is already a key refuses another setup`() = runTest {
         env.pinned = SigFixtures.ORIGIN
         val f = KeyDeviceFixture(backgroundScope)
-        val v = SetupFlowViewModel(enroll.api, suitability, f.keyStore, f.signer, f.repo, { SigFixtures.DEVICE_ID }, deviceSignIn, env,
-            probe, keyDispatcher = keyDispatcher)
+        val v = SetupFlowViewModel(owner(f))
         v.start(entry)
         assertEquals(SetupUi.Ended(R.string.setup_already_key, canRetry = false), v.ui.value)
         assertTrue(enroll.calls.isEmpty())
@@ -242,15 +232,35 @@ class SetupFlowViewModelTest {
         assertNull(f.repo.local())
     }
 
-    @Test fun `already claimed shows ask for a new code`() = runTest {
+    @Test fun `already claimed never deletes the key - the server is asked what it holds`() = runTest {
+        // "Already claimed" can be this phone's own claim that was stored when its answer got lost.
         env.pinned = SigFixtures.ORIGIN
         enroll.claimFailure = apiError(409, "ENROLLMENT_ALREADY_CLAIMED")
+        enroll.popAnswers += FakeEnrollmentApi.GIVEN // the challenge for the subject question
+        enroll.popAnswers += apiError(409, "ENROLLMENT_ALREADY_CLAIMED") // the claim check: still claimed
+        approval.failWith = IOException("offline")
         val (v, f) = vm()
         v.start(entry)
         v.confirmSubject(activity)
-        assertEquals(SetupUi.Ended(R.string.setup_already_used, canRetry = false), v.ui.value)
+        assertEquals(SetupUi.Ended(R.string.setup_claim_unsure, canRetry = true), v.ui.value)
+        assertTrue(f.keyStore.hasKey())
+        assertEquals(KeyDevicePhase.CLAIMING, f.repo.phase())
+        assertEquals(1, enroll.calls.count { it == "claim" })
+    }
+
+    @Test fun `a link someone else used is given up once its server neither knows the enrolment nor a key`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        enroll.claimFailure = apiError(404, "ENROLLMENT_TOKEN_INVALID")
+        enroll.popAnswers += FakeEnrollmentApi.GIVEN
+        enroll.popAnswers += apiError(404, "ENROLLMENT_TOKEN_INVALID") // asked again under the enrolment's lock
+        approval.failWith = apiError(404, "KEY_DEVICE_UNKNOWN")
+        val (v, f) = vm()
+        v.start(entry)
+        v.confirmSubject(activity)
+        assertEquals(SetupUi.Ended(R.string.setup_token_invalid, canRetry = false), v.ui.value)
         assertFalse(f.keyStore.hasKey())
         assertNull(f.repo.local())
+        assertEquals(1, enroll.calls.count { it == "claim" })
     }
 
     @Test fun `register binds this phone with the ticket and no code`() = runTest {
@@ -299,7 +309,9 @@ class SetupFlowViewModelTest {
         val (v, f) = vm()
         v.start(SetupEntry(SigFixtures.ORIGIN, token, SetupEntry.Source.TICKET, ticket = "ticket-secret"))
         v.confirmSubject(activity)
-        // The server had activated the key before the answer was lost.
+        // The server had activated the key before the answer was lost: the enrolment is claimed,
+        // and the key device is there.
+        enroll.popAnswers += apiError(409, "ENROLLMENT_ALREADY_CLAIMED")
         approval.nextChallenge = SigFixtures.challengeFor(SigKind.DEVICE_LOGIN, 3, SigFixtures.V03_CONTEXT)
         v.retry()
         assertEquals(SetupUi.SigningIn, v.ui.value)
@@ -308,19 +320,29 @@ class SetupFlowViewModelTest {
         assertEquals(listOf("deviceLoginChallenge:${FakeEnrollmentApi.SUBJECT_ID}:${SigFixtures.DEVICE_ID}"), approval.calls)
     }
 
-    @Test fun `retry after a claim that never landed sends the same signed claim again`() = runTest {
+    @Test fun `try again after a claim that never landed starts the same link again, never the same claim`() = runTest {
         env.pinned = SigFixtures.ORIGIN
         enroll.claimFailure = IOException("timeout")
         val (v, f) = vm()
         v.start(entry)
         v.confirmSubject(activity)
         val first = enroll.lastClaim!!
+        val firstKey = f.keyStore.keyId()
         enroll.claimFailure = null
-        approval.failWith = apiError(404, "KEY_DEVICE_UNKNOWN")
+        // The enrolment is still open: the server hands out a new challenge, which voids the old claim.
         v.retry()
+        assertEquals(1, enroll.calls.count { it == "claim" })
+        assertEquals(SetupUi.ConfirmSubject("Oma", "oma", "Familie Müller", "chat.example.com"), v.ui.value)
+        assertNull(f.repo.local())
+        assertTrue(f.keyStore.hasKey())
+        assertTrue(f.keyStore.keyId() != firstKey)
+        assertEquals(listOf(token, token), enroll.openTokens)
+        // The person confirms once more: a new claim, signed by the new key.
+        v.confirmSubject(activity)
         assertEquals(2, enroll.calls.count { it == "claim" })
-        assertEquals(first, enroll.lastClaim)
-        assertEquals(1, f.verifier.prompts.size)
+        assertTrue(enroll.lastClaim!!.signature != first.signature)
+        assertEquals(SigFixtures.b64u(f.keyStore.publicKeySpki()!!), enroll.lastClaim!!.publicKey)
+        assertEquals(2, f.verifier.prompts.size)
         assertEquals("123 456", (v.ui.value as SetupUi.ShowCode).code)
         assertEquals(KeyDevicePhase.CLAIMED, f.repo.phase())
     }
@@ -331,12 +353,15 @@ class SetupFlowViewModelTest {
         val (v, f) = vm()
         v.start(entry)
         v.confirmSubject(activity)
-        enroll.claimFailure = apiError(409, "ENROLLMENT_ALREADY_CLAIMED")
+        // The enrolment is claimed (by this phone's lost claim, or by someone else) and the server
+        // lists no key device for this phone: nothing proves the key worthless, so it stays.
+        enroll.popAnswers += apiError(409, "ENROLLMENT_ALREADY_CLAIMED")
         approval.failWith = apiError(404, "KEY_DEVICE_UNKNOWN")
         v.retry()
-        assertEquals(SetupUi.Ended(R.string.setup_already_used, canRetry = false), v.ui.value)
-        assertFalse(f.keyStore.hasKey())
-        assertNull(f.repo.local())
+        assertEquals(SetupUi.Ended(R.string.setup_claim_unsure, canRetry = true), v.ui.value)
+        assertTrue(f.keyStore.hasKey())
+        assertEquals(KeyDevicePhase.CLAIMING, f.repo.phase())
+        assertEquals(1, enroll.calls.count { it == "claim" })
     }
 
     @Test fun `a restored setup screen with a stored setup hands over to the waiting screen`() = runTest {
@@ -389,7 +414,7 @@ class SetupFlowViewModelTest {
      */
     @Test fun `a swept enrolment of an active key keeps the key`() = runTest {
         env.pinned = SigFixtures.ORIGIN
-        enroll.statusFailures += apiError(404, "NOT_FOUND")
+        enroll.statusFailures += apiError(404, "ENROLLMENT_TOKEN_INVALID")
         approval.nextChallenge = SigFixtures.challengeFor(SigKind.DEVICE_LOGIN, 3, SigFixtures.V03_CONTEXT)
         val (v, f) = vm()
         v.start(entry)
@@ -402,7 +427,7 @@ class SetupFlowViewModelTest {
 
     @Test fun `a gone enrolment while the server is unreachable keeps the key`() = runTest {
         env.pinned = SigFixtures.ORIGIN
-        enroll.statusFailures += apiError(410, "ENROLLMENT_FAILED")
+        enroll.statusFailures += apiError(404, "ENROLLMENT_TOKEN_INVALID")
         approval.failWith = IOException("offline")
         val (v, f) = vm()
         v.start(entry)
@@ -410,6 +435,25 @@ class SetupFlowViewModelTest {
         runCurrent()
         assertTrue(f.keyStore.hasKey())
         assertEquals(SetupUi.Ended(R.string.setup_claim_unsure, canRetry = true), v.ui.value)
+    }
+
+    @Test fun `a status answer that is not the server's own keeps the code on screen and the key`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        // 410, a 404 without the server's code, an ending state under another status: none decides.
+        enroll.statusFailures += apiError(410, "ENROLLMENT_FAILED")
+        enroll.statusFailures += apiError(404, "NOT_FOUND")
+        enroll.statusFailures += io.wolftown.kaiku.data.api.ApiException(io.ktor.http.HttpStatusCode.Accepted, "status failed")
+        approval.failWith = apiError(404, "KEY_DEVICE_UNKNOWN")
+        val (v, f) = vm()
+        v.start(entry)
+        v.confirmSubject(activity)
+        advanceTimeBy(20_000)
+        runCurrent()
+        assertTrue(f.keyStore.hasKey())
+        assertEquals(KeyDevicePhase.CLAIMED, f.repo.phase())
+        assertEquals("123 456", (v.ui.value as SetupUi.ShowCode).code)
+        assertTrue(approval.calls.isEmpty())
+        assertEquals(4, enroll.calls.count { it == "status" })
     }
 
     @Test fun `a new code after an ended setup starts again`() = runTest {
@@ -563,25 +607,21 @@ class SetupFlowViewModelTest {
         assertTrue(v.scanReady.value is UvDecision.Use)
     }
 
-    @Test fun `leaving one setup screen never deletes another one's unclaimed key`() = runTest {
+    @Test fun `a second setup screen closing leaves the setup the first one shows`() = runTest {
         env.pinned = SigFixtures.ORIGIN
         val f = KeyDeviceFixture(backgroundScope, active = false)
         f.keyStore.delete()
         f.authState.setLoggedOut()
         coEvery { deviceSignIn.signIn(any(), any()) } returns DeviceSignInResult.Success
-        fun flow() = SetupFlowViewModel(enroll.api, suitability, f.keyStore, f.signer, f.repo, { SigFixtures.DEVICE_ID }, deviceSignIn, env,
-            probe, keyDispatcher = keyDispatcher)
-        val idle = flow()
-        val active = flow()
-        active.start(entry) // generates its key, now at the subject question
-        assertTrue(f.keyStore.hasKey())
-        idle.cancel() // an idle sibling (e.g. a stale setup screen) goes away
-        assertTrue(f.keyStore.hasKey())
-
-        idle.start(entry) // the sibling becomes the active setup: it replaces the orphan with its own key
-        active.cancel() // the first one's key is no longer the stored one
-        assertTrue(f.keyStore.hasKey())
-        idle.cancel() // its own key goes
+        val one = owner(f)
+        val below = SetupFlowViewModel(one)
+        val onTop = SetupFlowViewModel(one)
+        below.start(entry) // generates the key, now at the subject question
+        val key = f.keyStore.keyId()
+        onTop.onCleared() // the screen on top goes away
+        assertEquals(key, f.keyStore.keyId())
+        assertTrue(below.ui.value is SetupUi.ConfirmSubject)
+        below.onCleared() // the last screen goes: the unclaimed key goes with it
         assertFalse(f.keyStore.hasKey())
     }
 
@@ -649,8 +689,7 @@ class SetupFlowViewModelTest {
         env.pinFrom = { f.repo.pinnedOrigin() }
         f.authState.setLoggedOut() // a key without its session: "Confirm it's you"
         coEvery { deviceSignIn.signIn(any(), any()) } returns DeviceSignInResult.Success
-        val v = SetupFlowViewModel(enroll.api, suitability, f.keyStore, f.signer, f.repo, { SigFixtures.DEVICE_ID }, deviceSignIn, env,
-            probe, keyDispatcher = keyDispatcher)
+        val v = SetupFlowViewModel(owner(f))
         return v to f
     }
 
@@ -799,8 +838,7 @@ class SetupFlowViewModelTest {
         val f = KeyDeviceFixture(backgroundScope)
         env.pinFrom = { f.repo.pinnedOrigin() }
         coEvery { deviceSignIn.signIn(any(), any()) } returns DeviceSignInResult.Success
-        val v = SetupFlowViewModel(enroll.api, suitability, f.keyStore, f.signer, f.repo, { SigFixtures.DEVICE_ID }, deviceSignIn, env,
-            probe, keyDispatcher = keyDispatcher)
+        val v = SetupFlowViewModel(owner(f))
         v.start(entry)
         runCurrent()
         assertEquals(SetupUi.Ended(R.string.setup_already_key, canRetry = false), v.ui.value)
@@ -880,12 +918,14 @@ class SetupFlowViewModelTest {
         val (v, f) = vm()
         f.keyStore.generate(ByteArray(32), UvPolicy.choose(30, true, true) as UvDecision.Use)
         f.repo.saveClaimed(LocalKeyDevice(null, FakeEnrollmentApi.SUBJECT_ID, SigFixtures.ORIGIN, UvClass.PER_USE, "e1", "claim-secret", "Oma"))
+        // A claim of this phone is stored: a link is never a new setup then, and the screen says so.
         v.start(entry)
         assertEquals(SetupUi.Resume, v.ui.value)
-        assertFalse(v.linkIgnored.value)
+        assertTrue(v.linkIgnored.value)
         v.start(entry.copy(tokenB64u = token2))
         assertTrue(v.linkIgnored.value)
         assertEquals(SetupUi.Resume, v.ui.value)
+        assertTrue(enroll.calls.isEmpty())
     }
 
     @Test fun `the running link delivered again does not start it over`() = runTest {
@@ -910,8 +950,7 @@ class SetupFlowViewModelTest {
         val f = KeyDeviceFixture(backgroundScope)
         env.pinFrom = { f.repo.pinnedOrigin() }
         coEvery { deviceSignIn.signIn(any(), any()) } returns DeviceSignInResult.Success
-        val v = SetupFlowViewModel(enroll.api, suitability, f.keyStore, f.signer, f.repo, { SigFixtures.DEVICE_ID }, deviceSignIn, env,
-            probe, keyDispatcher = keyDispatcher)
+        val v = SetupFlowViewModel(owner(f))
         backgroundScope.launch(kotlinx.coroutines.Dispatchers.Main) {
             v.ui.collect { if (it == SetupUi.Ended(R.string.setup_already_key, canRetry = false)) f.authState.setLoggedOut() }
         }

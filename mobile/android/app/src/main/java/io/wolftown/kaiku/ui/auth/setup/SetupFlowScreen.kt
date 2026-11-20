@@ -49,30 +49,34 @@ import java.time.format.FormatStyle
  */
 @Composable
 fun SetupFlowScreen(
-    entry: SetupEntry?,
+    /** A setup link waiting to be delivered (memory only); handed to the setup once, then [onLinkTaken]. */
+    link: SetupEntry?,
     onSignedIn: () -> Unit,
     onBack: (() -> Unit)?,
     viewModel: SetupFlowViewModel = hiltViewModel(),
     onRescan: (() -> Unit)? = null,
-    /** Changes with every delivery of a link, so the same link opened again reaches the flow. */
-    delivery: Int = 0,
+    onLinkTaken: (SetupEntry) -> Unit = {},
 ) {
     val ui by viewModel.ui.collectAsState()
     val linkIgnored by viewModel.linkIgnored.collectAsState()
+    val waiting by viewModel.waiting.collectAsState()
 
-    LaunchedEffect(entry, delivery) {
-        when {
-            // Every link goes to the flow: it starts a setup only when none is in progress (the same
-            // link again changes nothing, another one is noted on the screen).
-            entry != null -> viewModel.start(entry)
-            !viewModel.started -> viewModel.resumeWithoutEntry()
+    LaunchedEffect(link) {
+        if (link != null) {
+            // One delivery, one call: the setup starts only when none is held (the same link again
+            // changes nothing, another one is noted on the screen). Taken only once composed, so a
+            // discarded composition never loses the memory-only code.
+            viewModel.start(link)
+            onLinkTaken(link)
+        } else if (!viewModel.started) {
+            viewModel.resumeWithoutEntry()
         }
     }
     val u0 = ui
-    if (u0 is SetupUi.Pending || u0 == SetupUi.Resume) {
+    if (waiting) {
         // L2-A13: the wait (and any reconciliation) continues on the pending screen, also while
         // this screen stays open.
-        SetupPendingScreen(onSignedIn = onSignedIn, onEnded = { onBack?.invoke() }, linkIgnored = linkIgnored)
+        SetupPendingScreen(onSignedIn = onSignedIn, onEnded = { onBack?.invoke() })
         return
     }
     SetupFlowSteps(ui = u0, viewModel = viewModel, linkIgnored = linkIgnored, onSignedIn = onSignedIn, onBack = onBack, onRescan = onRescan)
@@ -142,6 +146,11 @@ private fun SetupFlowSteps(
                 KeySecondaryButton(stringResource(R.string.common_cancel), onClick = viewModel::cancel)
             }
             is SetupUi.ShowCode -> SetupCode(u.code)
+            SetupUi.ClaimWaiting -> {
+                KeyNotice(stringResource(R.string.setup_claim_waiting), warning = false)
+                KeyPrimaryButton(stringResource(R.string.common_try_again), onClick = viewModel::retry)
+                if (onBack != null) KeySecondaryButton(stringResource(R.string.common_back), onClick = onBack)
+            }
             SetupUi.Interrupted -> {
                 KeyNotice(stringResource(R.string.setup_interrupted), warning = true)
                 if (onRescan != null) KeyPrimaryButton(stringResource(R.string.scan_setup_title), onClick = onRescan)
