@@ -229,4 +229,13 @@ class WakeSchedulerTest {
         assertNull(callStore.shown("me", "c1"))
         assertTrue(enqueuer.calls.isEmpty())
     }
+
+    /** A call wake does not read the stored session while the key storage cannot be read. */
+    @Test
+    fun `a call wake reads nothing while the key storage cannot be read`() {
+        val untouchable: io.wolftown.kaiku.data.local.TokenStorage = io.mockk.mockk()
+        val gated = CallWakeIntake(untouchable, callStore, keyStorage = { true })
+        org.junit.Assert.assertFalse(gated.accept(call(CallState.RINGING)))
+        io.mockk.verify { untouchable wasNot io.mockk.Called }
+    }
 }

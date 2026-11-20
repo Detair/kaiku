@@ -31,6 +31,13 @@ class ServerUrlViewModelTest {
     private lateinit var authRepository: AuthRepository
     private lateinit var serverProbe: ServerProbe
     private lateinit var viewModel: ServerUrlViewModel
+    private val keyStore = io.wolftown.kaiku.testutil.InMemoryKeyDeviceStore()
+    private lateinit var keyDevices: io.wolftown.kaiku.data.keydevice.KeyDeviceRepository
+    /** Whether the setup of this phone holds an attempt (as the setup owner reports it). */
+    private var setupHolds = false
+    /** Whether a registration is on its way. */
+    private var registering = false
+    private val serverAddress by lazy { io.wolftown.kaiku.ui.auth.setup.ServerAddressRule(keyDevices, { null }, { setupHolds }, { registering }) }
 
     @Before
     fun setUp() {
@@ -39,7 +46,12 @@ class ServerUrlViewModelTest {
         every { tokenStorage.getServerUrl() } returns null
         authRepository = mockk(relaxed = true)
         serverProbe = mockk()
-        viewModel = ServerUrlViewModel(tokenStorage, authRepository, serverProbe)
+        keyDevices = io.wolftown.kaiku.data.keydevice.KeyDeviceRepository(
+            keyStore, io.wolftown.kaiku.approval.SoftwareApprovalKeyStore(),
+            io.wolftown.kaiku.data.local.AuthState(kotlinx.coroutines.CoroutineScope(Dispatchers.Unconfined)),
+            kotlinx.coroutines.CoroutineScope(Dispatchers.Unconfined),
+        )
+        viewModel = ServerUrlViewModel(tokenStorage, authRepository, serverProbe, serverAddress)
     }
 
     @After
@@ -56,7 +68,7 @@ class ServerUrlViewModelTest {
     fun `starts with the stored server when there is one`() {
         every { tokenStorage.getServerUrl() } returns "https://other.example"
 
-        val vm = ServerUrlViewModel(tokenStorage, authRepository, serverProbe)
+        val vm = ServerUrlViewModel(tokenStorage, authRepository, serverProbe, serverAddress)
 
         assertEquals("https://other.example", vm.uiState.value.url)
     }
@@ -66,7 +78,7 @@ class ServerUrlViewModelTest {
         assertFalse(viewModel.canGoBack)
         every { tokenStorage.getServerUrl() } returns "https://other.example"
 
-        assertTrue(ServerUrlViewModel(tokenStorage, authRepository, serverProbe).canGoBack)
+        assertTrue(ServerUrlViewModel(tokenStorage, authRepository, serverProbe, serverAddress).canGoBack)
     }
 
     @Test
@@ -129,6 +141,158 @@ class ServerUrlViewModelTest {
 
         assertEquals(R.string.auth_server_unreachable, viewModel.uiState.value.error)
         assertFalse(viewModel.uiState.value.isChecking)
+        verify(exactly = 0) { tokenStorage.saveServerUrl(any()) }
+    }
+
+    private fun claimedRecord() = io.wolftown.kaiku.data.keydevice.StoredKeyDevice(
+        io.wolftown.kaiku.data.keydevice.LocalKeyDevice(null, "u1", "https://chat.example.com", io.wolftown.kaiku.approval.UvClass.PER_USE, "e1", "s"),
+        io.wolftown.kaiku.data.keydevice.KeyDevicePhase.CLAIMED,
+        keyId = "k1",
+    )
+
+    /** A key, or a setup that is not finished, ties the phone to its server: the address is not changed under it. */
+    @Test
+    fun `the server is not changed while this phone holds a key record`() = runTest {
+        coEvery { serverProbe.probe(any()) } returns ProbeResult.Ok(true)
+        keyStore.stored = claimedRecord()
+        keyDevices.reload()
+
+        viewModel.onUrlChanged("other.example.org")
+        viewModel.onConnectClicked()
+        advanceUntilIdle()
+
+        assertEquals(R.string.auth_server_tied_to_key, viewModel.uiState.value.error)
+        assertFalse(viewModel.uiState.value.connectSuccess)
+        verify(exactly = 0) { tokenStorage.saveServerUrl(any()) }
+        verify(exactly = 0) { tokenStorage.clear() }
+        io.mockk.coVerify(exactly = 0) { serverProbe.probe(any()) }
+    }
+
+    @Test
+    fun `nor while what it has saved about its key cannot be read`() = runTest {
+        coEvery { serverProbe.probe(any()) } returns ProbeResult.Ok(true)
+        keyStore.unreadable = true
+        keyDevices.reload()
+
+        viewModel.onUrlChanged("other.example.org")
+        viewModel.onConnectClicked()
+        advanceUntilIdle()
+
+        assertEquals(R.string.auth_server_tied_to_key, viewModel.uiState.value.error)
+        verify(exactly = 0) { tokenStorage.saveServerUrl(any()) }
+        verify(exactly = 0) { tokenStorage.clear() }
+    }
+
+    @Test
+    fun `a key record that came while the server was being checked keeps the address too`() = runTest {
+        coEvery { serverProbe.probe(any()) } coAnswers {
+            keyStore.stored = claimedRecord()
+            keyDevices.reload()
+            ProbeResult.Ok(true)
+        }
+
+        viewModel.onUrlChanged("other.example.org")
+        viewModel.onConnectClicked()
+        advanceUntilIdle()
+
+        assertEquals(R.string.auth_server_tied_to_key, viewModel.uiState.value.error)
+        assertFalse(viewModel.uiState.value.isChecking)
+        assertFalse(viewModel.uiState.value.connectSuccess)
+        verify(exactly = 0) { tokenStorage.saveServerUrl(any()) }
+        verify(exactly = 0) { tokenStorage.clear() }
+    }
+
+    /**
+     * Connect is tapped and the server is probed; meanwhile a setup link opens a setup. When the
+     * probe answers, nothing is written (not the address, and the stored session is not cleared),
+     * and the screen says why.
+     */
+    @Test
+    fun `a probe that answers after a setup opened writes nothing`() = runTest {
+        coEvery { serverProbe.probe(any()) } coAnswers {
+            setupHolds = true
+            ProbeResult.Ok(true)
+        }
+
+        viewModel.onUrlChanged("other.example.org")
+        viewModel.onConnectClicked()
+        advanceUntilIdle()
+
+        assertEquals(R.string.auth_server_tied_to_key, viewModel.uiState.value.error)
+        assertFalse(viewModel.uiState.value.isChecking)
+        assertFalse(viewModel.uiState.value.connectSuccess)
+        verify(exactly = 0) { tokenStorage.saveServerUrl(any()) }
+        verify(exactly = 0) { tokenStorage.clear() }
+        verify(exactly = 0) { authRepository.cancelPasswordChange() }
+    }
+
+    @Test
+    fun `nor while a setup holds an attempt`() = runTest {
+        coEvery { serverProbe.probe(any()) } returns ProbeResult.Ok(true)
+        setupHolds = true
+
+        viewModel.onUrlChanged("other.example.org")
+        viewModel.onConnectClicked()
+        advanceUntilIdle()
+
+        assertEquals(R.string.auth_server_tied_to_key, viewModel.uiState.value.error)
+        io.mockk.coVerify(exactly = 0) { serverProbe.probe(any()) }
+    }
+
+    /**
+     * One rule, asked by the one writer of the address: the server-address screen, right before
+     * it writes. A setup never writes the address; nothing else of the app decides it on its own.
+     */
+    @Test
+    fun `the server-address screen asks the one rule and the setup never writes the address`() {
+        val root = generateSequence(java.io.File("").absoluteFile) { it.parentFile }
+            .map { java.io.File(it, "src/main/java/io/wolftown/kaiku") }
+            .first { it.isDirectory }
+        val screen = java.io.File(root, "ui/auth/ServerUrlScreen.kt").readText()
+            .substringAfter("class ServerUrlViewModel").substringBefore("@Composable")
+        assertEquals(2, Regex("""serverAddress\.refusal\(\)""").findAll(screen).count())
+        for (own in listOf("record.value", "unreadable()", "pinned()", "holdsAttempt()")) assertFalse(own, screen.contains(own))
+        for (f in listOf("ui/auth/setup/SetupOwner.kt", "ui/auth/setup/SetupFlowViewModel.kt", "ui/auth/RegisterScreen.kt")) {
+            val src = java.io.File(root, f).readText()
+            assertFalse(f, src.contains("saveServerUrl(") || src.contains("clearServerUrl("))
+        }
+    }
+
+    /** What the rule refuses for: each condition alone. */
+    @Test
+    fun `the rule refuses for each of its conditions alone`() {
+        var pinned: String? = null
+        val rule = io.wolftown.kaiku.ui.auth.setup.ServerAddressRule(keyDevices, { pinned }, { setupHolds }, { registering })
+        assertTrue(rule.mayChange())
+        pinned = "https://chat.example.com"
+        assertFalse(rule.mayChange())
+        pinned = null
+        setupHolds = true
+        assertFalse(rule.mayChange())
+        setupHolds = false
+        registering = true
+        assertFalse(rule.mayChange())
+        registering = false
+        keyStore.stored = claimedRecord()
+        keyDevices.reload()
+        assertFalse(rule.mayChange())
+        keyStore.stored = null
+        keyStore.unreadable = true
+        keyDevices.reload()
+        assertFalse(rule.mayChange())
+    }
+
+    /** A probe that answers while a registration is on its way changes nothing. */
+    @Test
+    fun `a probe that answers during a registration writes nothing`() = runTest {
+        coEvery { serverProbe.probe(any()) } coAnswers {
+            registering = true
+            ProbeResult.Ok(true)
+        }
+        viewModel.onUrlChanged("other.example.org")
+        viewModel.onConnectClicked()
+        advanceUntilIdle()
+        assertEquals(R.string.auth_server_registration_running, viewModel.uiState.value.error)
         verify(exactly = 0) { tokenStorage.saveServerUrl(any()) }
     }
 }

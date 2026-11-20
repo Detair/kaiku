@@ -483,6 +483,20 @@ The browser login page also runs conditional mediation (autofill) in the user-na
 requests carry `X-Kaiku-Client: android` and need `assetlinks.json`; there is no Custom Tab
 fallback in v1.0.
 
+**Android: the site is checked before Credential Manager.** Every passkey call of the Android app
+(sign-in, step-up, adding a passkey, and the removal signals) goes through one check: the request's
+RP ID must be **exactly** the host of the server the app is set up for. No parent domain counts
+(a Kaiku server never uses one), so public suffixes such as `co.uk` or `github.io` never match.
+The RP ID must already be canonical: lower-case ASCII letters, digits, `-` and `.`, no empty label,
+no trailing dot, no port, or an IP address equal to the host. Nothing is converted, so upper case,
+Unicode spellings and invisible characters are refused; a server with an internationalised name
+sends its RP ID in punycode (the server takes it from its parsed `PUBLIC_URL`). Sign-in and step-up
+read the RP ID only from a string `rpId`, creation only from a string `rp.id`, and the request is
+passed on as it was parsed, so the checked value is the only one in it. A refused request never
+reaches Credential Manager; the app says the request is for a different website and sends nothing.
+Side effect: an app set up with another address for the server than the `PUBLIC_URL` host (for
+example a second DNS name) gets that message for passkeys and must use the public address.
+
 **Desktop: system-browser hand-off** (C29, F1 rev 4). The desktop app never runs WebAuthn itself
 (no Tauri webview can assert for the server's RP ID) and never registers passkeys.
 
@@ -596,7 +610,210 @@ New-device routes (public, rate class `AUTH_FLOW`):
 
 Setup link: `{PUBLIC_URL}/setup#v=1&t=<b64u token>`; the token is in the fragment, so neither the
 server nor a link preview receives it. On a phone the `/setup` page offers "Open in Kaiku"
-(`intent://setup/v1?o=…&t=…`); App Links only for hosts in the build's `kaikuAppLinkHosts`.
+(`intent://setup/v1?o=…&t=…`, bound to the Kaiku package, with `S.browser_fallback_url` =
+`{PUBLIC_URL}/setup?app=missing`, which carries no token and shows the "you need the app" text);
+App Links only for hosts in the build's `kaikuAppLinkHosts`.
+
+**One setup per Android app.** The app has one setup, owned by one process-wide object; the scanner
+screen ("Set up this phone"), the screen a setup link opens and the waiting screen are views of it and
+hold no setup of their own. From the moment a link is accepted until that setup ends (finished,
+stopped, failed, or the waiting screen reporting that the setup is over),
+every other setup link is not used: the app does not navigate for it and the screen showing the setup
+says "Another setup link was opened. It was not used …". This holds for the same server or another,
+tied to a server or not, whatever step is shown, the waiting screen included. The same link delivered
+again changes nothing. Once the setup has ended on any screen, a link opened again starts (one
+delivery is one start). The same setup code is the same link however it arrived (scanned, or opened
+as a link). While a claim of this phone is stored and not yet decided by its server, a link is never
+a new setup: the stored claim is checked first, and only if that check gives the claim up does the
+link that was opened start. An opened link is judged against what is stored and what the setup
+holds when it arrives, also at a cold start before any screen exists; a link already accepted and on
+its way to the setup screen keeps its place (a later one is noted), and a link that arrives while the
+key data cannot be read is only kept and judged once "Try again" has read it. Every request of a
+setup takes the code and the server from the one accepted link, with absolute addresses, and its
+challenges are checked against that server. A setup never reads or changes the app's saved server
+address: the address follows the key only when the key signs in (the device-key sign-in sets it), so
+a setup that is stopped, interrupted or never comes back leaves the sign-in where it was, also across
+a restart. A registration likewise fixes its server before it sends anything; its ticket is kept with
+that server and never goes to another one. The "server address" screen is the only place that writes
+the saved server: it refuses while a key record is stored or cannot be read, the app is tied to a
+server, a setup is held, or a registration is on its way ("This phone is a Kaiku key for the server
+it has now, or is being set up as one"), asked again right before it writes. Requests about a key
+never depend on the saved server anyway: each names the record's own server, and device signatures
+are pinned to it. The signed claim, the device-key sign-in, the answers to challenges and the
+registration reach the server at most once: the app's HTTP stack never sends them again by itself.
+
+**The key record and the key: compare-and-set.** The phone keeps one record (server, account, key
+device id, enrolment id, the key's id = SHA-256 of its public key, the setup that made it, the
+install id it was claimed under, phase `CLAIMING` → `CLAIMED` → `PENDING` / `ACTIVE`) and one key
+under one Keystore alias. Both are reached
+through one component, and every change names what it expects: a key is made only while no record is
+stored (a key without a record is an unclaimed left-over and is deleted first; a new alias whose
+certificate cannot be read back is deleted again); the first record is written only where none is
+stored and the alias holds that record's key; a record is replaced or forgotten only by a caller
+holding that very record (all of the fields above), and its key is deleted only if the alias holds
+it; a signature is made only with the key the caller names (another key in the alias → nothing is
+signed, and nothing is forgotten). A write that does not reach storage is an error to the caller and
+changes nothing. A record that cannot be read (a Keystore failure, a damaged value) is "unreadable",
+not "absent": until it can be read the app restores no stored session, starts no setup, deletes no
+key, and shows one screen with "Try again" and, in plain words, the last resort (Android's "Clear
+storage" for the app; "if this phone is your only key, ask your admin first"). A setup link the app
+was opened with is kept in memory and goes to the setup screen once "Try again" worked.
+
+The server lists a key device by account and install id (`device_id`), which the app also uses for
+push and keeps outside the key record. The record names the id it was claimed under, and every
+question about that key device (the probe, the device-key sign-in, the removal, step-up and
+confirmations) uses the record's id, whatever id the app has later; a record never changes the id it
+names. A record written by an earlier version takes the id the app has kept at the next start of the
+app; when the app has kept none (a new one would have to be made, which the server never heard of),
+the record notes that its id is lost, for good, and no "no key device" answer forgets that key.
+
+**Which server answers make the phone forget its key.** One table, one function; the request must
+have gone to the record's own server over https, and the answer forgets only a record in the phase it
+can speak about and only if that record is still the stored one. Anything not listed (another status
+with a listed code, an unknown code, an unreadable body) keeps the key.
+
+| Request | Answer | Effect |
+|---|---|---|
+| `POST /auth/device-login/challenge`, `POST /auth/device-login`, `DELETE /api/approval-devices/{id}` | 404 `KEY_DEVICE_UNKNOWN`, 403 `KEY_DEVICE_REVOKED` | an active or pending key device is forgotten (not one whose install id is lost, nor one that took the probe's word only provisionally); an unfinished claim only as described below |
+| `DELETE /api/approval-devices/{id}` | 200 | forgotten (the person removed this phone) |
+| step-up challenge and answer | any | never forgets |
+| `POST /auth/enrollments/claim` | 400 `VALIDATION_ERROR`, 400 `SIGNATURE_INVALID`, 400 `DEVICE_UNSUITABLE`, 404 `APPROVAL_NOT_FOUND`, 410 `APPROVAL_EXPIRED` | the claim is refused for good and nothing was stored for its key: its record is forgotten |
+| `POST /auth/enrollments/claim` | 409 `ENROLLMENT_ALREADY_CLAIMED`, 404 `ENROLLMENT_TOKEN_INVALID`, 409 `APPROVAL_STATE`, 409 `ENROLLMENT_STATE` | undecided (it may be this phone's own claim, stored when its answer was lost): the key stays and the claim is checked |
+| `POST /auth/enrollments/claim` | anything else, no answer within 30 s | the key stays, the record stays `CLAIMING`; "Try again" checks the claim |
+| claim check (`POST /auth/enrollments/pop-challenge` for the same link and key) | 201 with a new challenge (not the one the claim answered) of this very enrolment and key | the enrolment is still open and every earlier claim of it is void: the `CLAIMING` record is forgotten |
+| claim check | 404 `ENROLLMENT_TOKEN_INVALID` | the enrolment is not known any more: the key device is asked; this alone forgets nothing |
+| claim check | 409 `ENROLLMENT_ALREADY_CLAIMED` | a claim is stored: the key device is asked after this answer; "no key device" then forgets a record whose own claim never got its answer (`CLAIMING`), at once |
+| claim check | anything else | the key stays |
+| `POST /auth/enrollments/status` | 200 with `cancelled` / `failed`, asked for the record's enrolment | a claim waiting for its code is forgotten (both are states the server has stored) |
+| `POST /auth/enrollments/status` | 200 with `expired` | the code has run out: this alone forgets nothing (the server works it out from its clock, also while a confirmation sent just in time is still being stored); the screen says so and the key device is asked, as described below |
+| `POST /auth/enrollments/status` | 404 `ENROLLMENT_TOKEN_INVALID` | the enrolment is not known any more: the key device is asked; this alone forgets nothing |
+| `POST /auth/enrollments/status` | anything else | the key stays; the wait goes on |
+
+Taken together, the phone forgets a key or a record only in these cases: (1) the five refusals of
+the claim; (2) the claim check's new challenge for this enrolment and key, other than the one the claim
+answered (the earlier claim can no longer land); (3) the lost-claim rule below; (4) a stored `cancelled` or `failed` of the enrolment;
+(5) an unfinished claim once its time is over by the server's and the phone's measure (for a code
+that ran out: its expiry plus 2 minutes on the server's clock, and at least the server's code lifetime
+plus 2 minutes on the phone's) and a later
+probe still finds no key device; (6) "no key device" or "removed" for an active or pending key device
+(not one that took the probe's word only provisionally, not one whose install id is lost or was
+never recorded); (7) the
+answer to its own removal; (8) Android invalidated the key; (9) the person discarded a setup that can
+never finish.
+
+A claim is sent once per challenge and never again. Checking a claim whose answer is not known asks
+for a new `enroll_pop` challenge for the same link and key: the server gives it only while the
+enrolment is still open, under the enrolment's lock, and voids every earlier challenge, so the old
+claim can no longer be stored (the phone drops that record and starts the same link again, or the
+link that was opened meanwhile). A claim answer is taken only if it is this claim's: for the
+enrolment the claim was made for, of the kind the claim gets (a code for a link or a scanned code,
+"done" for the app's own registration), with every part; any other answer leaves the stored claim as
+it was, to be checked like a lost one. The key record is created under the same lock as a session
+install, after checking again that no other person and no other server is signed in; otherwise the
+new key is dropped and no claim is sent. A status `done` counts by the key device's state: `active`
+or `pending` as said; `revoked` counts as made and removed since (the final sign-in is refused and ends
+the setup as a removed key); none or an unknown state leaves the claim and its secret as they are, and
+the key-device probe decides.
+
+"Already claimed" is said under the same lock, so a claim is stored by then. The phone then asks the
+key-device probe, and only a probe sent after that answer counts: active or pending → the claim had
+landed (a claim of the app's own registration makes the key device in the same step) and the setup
+goes on with the same key; "no key device" → the record is forgotten at once and the screen says
+"This setup code was already used. Ask for a new one." Nothing can come of such a claim: the phone
+never received its answer (the record is still `CLAIMING`, and a code is put on the screen only
+after its arrival was stored as `CLAIMED`), so a code the claim may have got was never shown and
+nobody can confirm it; or another phone holds the link. All three parts are needed: a record whose
+code was received (`CLAIMED`) waits for its enrolment's own word, any other answer of the claim check
+keeps the key, and a probe that was sent before the claim check answered proves nothing. A fresh link
+opened while such a claim is stored starts by itself once the claim is given up.
+
+Otherwise (without the link, after a restart, for a code that ran out, or for an enrolment the server
+no longer knows) only the probe is left, and "no key device" or "not known" is never final by itself.
+An unfinished claim is given up on it only when all three hold: the server's own time (the answer's
+`Date`) is past the claim's time with its margin; the phone's running time is past the same span
+(measured with the phone's running time and its boot count, so setting the clock changes nothing and a
+restart of the phone counts from its new start, never shortening it); and a probe sent after both
+were found still says "no key device". For a code that arrived with the server's time, the span is the
+code's own: its expiry plus 2 minutes on the server's clock, and on the phone's running time since it
+arrived the server's code lifetime (5 minutes) or its remaining life by the answer's `Date`, whichever
+is longer, plus 2 minutes (a `Date` that runs ahead never shortens the wait; the 2 minutes cover a
+confirmation that passed the server's expiry check just in time and is stored late). A confirmation
+stored more than 2 minutes after its expiry check, while the server still answers, is a known limit:
+it would leave a key device on the account whose key the phone has already let go; the next setup of
+the same phone replaces it, or the phone is removed from the account. For a claim without an answer, and for one
+whose code came without the server's time, it stays the claim's longest life: the challenge's expiry
+plus 10 minutes, and 25 minutes since the claim was recorded. Until then the key stays, the screen
+says what is going on ("The setup code has run out. Kaiku keeps this phone's key for about N more min
+…" for a code that ran out), and the phone asks again by itself ("Try again" asks at once): a
+confirmation that was stored late is taken over. A setup link for the same server opened meanwhile is
+kept (the newest, in memory) and started once the earlier setup has ended; a code given up this way
+ends with "The setup code was not confirmed in time. Ask for a new setup code." The probe identifies account and install, not the key: "active" or
+"pending" from it is taken only provisionally, until a signature of this key was accepted by the
+device-key sign-in; if the server refuses that signature, the record goes back to the claim it was and
+never takes that word again. There is no public route to ask whether a given public key is the one
+claimed for an enrolment.
+
+**A setup whose server cannot be asked.** A stored setup is given up only on its server's word, so a
+server that is gone for good, cannot be reached from this phone, or answers without a usable `Date`
+would leave it stored and every other link unused. What the phone does about that is graded, and
+never rests on one failed request:
+
+- A question that gets no answer of the server itself (no connection, a timeout, or a page that is
+  not the server's, without an error code of its own) is said on the screen ("Kaiku could not ask the
+  server about this setup …", with "Try again") and noted with the key record: on how many separate
+  occasions since its server last answered (failed questions less than an hour apart are one
+  occasion). Any answer with the server's own error code, a refusal, "too many requests" or "no key
+  device" without a `Date` included, deletes the note.
+- The silence counts as lasting only after at least three separate occasions with at least 24 hours
+  between the first and the latest, both measured with the phone's running time (setting the clock
+  changes nothing; a restart of the phone counts only the time since). A phone opened once without a connection, or while the server restarts,
+  shows nothing more than the first line, however old the setup is.
+- Once it has lasted, a record whose code was shown (`CLAIMED`), a waiting key device (`PENDING`) and
+  a claim of the app's own registration get the last resort in words: Android's "Clear storage" for
+  the app, only if the server no longer exists or the admin says so, and that an admin then has to
+  remove this phone on the server if the setup was finished there. No button deletes such a key: the
+  server may have made it a key device, or may still.
+- Only a claim that needs a code and never got its answer (`CLAIMING`, recorded as a code claim) can
+  be discarded on the phone: no code of it was ever shown, so it can never complete, whatever the
+  server holds. "Discard this unfinished setup" is offered for it once the silence has lasted and the
+  claim's own time is long past too (90 minutes after it was recorded, by the phone's running time). The
+  question before it says what was checked and what it means. It is the person's decision, not a
+  server answer; it is checked again by what is stored when it is confirmed, and the storage layer
+  refuses it for every other kind of record.
+- "Confirm it's you" notes the same for an active key (the probe at each open of the screen) and,
+  once the silence has lasted, names the last resort in words. Nothing there deletes the key.
+
+The signed claim and the final device-key sign-in are not interrupted by a link, Back or Cancel. The
+claim's answer counts as not known after 30 s; the screen leaves the final sign-in after 180 s
+("took too long"), and a sign-in stopped then finishes ending a session it made but did not install
+without the screen waiting for it.
+
+**Device-key sign-in on Android.** Both requests go to the server of the key record captured at the
+start, whatever server is configured. The session is installed only while that record is still the
+stored one, and the sign-in is reported as done only after the record took it; a key forgotten or
+replaced meanwhile never ends as "signed in", and only the session this sign-in installed is ended
+then, never a newer one.
+
+**Removing a signed-out key phone ("Use another account").** `key_device.remove` needs a session,
+and the phone has none. The removal makes one for itself: a device-key sign-in on the key's server
+whose tokens exist only inside that one operation, in memory. They are never written to storage,
+never become the app's sign-in, and the connection, push registration and token renewal never see
+them. With them, on requests that name their server and carry that bearer explicitly, the operation
+reads the account, asks for and answers the `key_device.remove` step-up, and deletes the key device.
+The phone counts as removed only on the contract's own answer to that request: 200 with this very key
+device, in state `revoked`; a success without it decides nothing. The server drops the phone's push
+subscription with the removal; the operation then drops what the phone itself keeps of that
+registration, without a request, only for the removed account and only while no session is current.
+However it ends (removed, refused, cancelled, its screen gone), nothing of it is stored, so there is
+nothing to clean up at the next start and an ordinary sign-in made meanwhile is not affected. Unless
+the server ended that session with the removal, the operation revokes it best effort (10 s) on the
+application's scope. If the app is killed half way, that session stays valid on the server until it
+runs out; no client holds its tokens. It is bounded at 5 minutes. An app updated from a version that
+stored such a session removes it from storage at its first start, before anything reads it: one step
+reads the left-over flag and the key record and clears the session and then the flag, each clear
+tried twice. Until that step has found everything settled (a part that cannot be read, or a clear
+that did not reach storage, keeps it open) nothing restores or reads the stored session, background
+work included, and nobody can sign in, so a flag left behind can only ever clear that same left-over.
 
 The issuing screen names the claimer as "a device calling itself '<label>'" because the label is
 self-reported. The 256-bit token is the binding secret; the 6-digit code only checks that the
@@ -747,7 +964,8 @@ registration_ticket?}` (web: cookie `__Secure-kaiku_ticket`, `Path=/auth/registr
 session. Within 30 minutes the ticket binds one passkey, one key device (setup QR, or the Android
 app's own key), or TOTP (only with a password; then the account signs in by F4 and gets
 `bootstrap_open`). A bound ticket binds nothing more. Accounts that bind nothing are deleted by the
-sweep after 30 minutes. The first admin cannot bind TOTP (403 `TOTP_UNAVAILABLE`).
+sweep after 30 minutes. The first admin cannot bind TOTP (403 `TOTP_UNAVAILABLE`). The Android app
+fixes the server before it registers and sends the ticket only there, with absolute addresses.
 
 ## 11. Security events and notices (C28)
 
@@ -913,6 +1131,13 @@ Residual risks (spec B.6, as implemented):
 13. **Hostile use of owner-rule part 2** by someone with a session and the TOTP secret or a recovery
     code while the account has no strong authenticator.
 14. **Request-notice fatigue:** at most 3 self-service starts per account per delay period.
+15. **Setup links through the custom scheme on Android.** A setup link for a server whose host is
+    not built into the app as a verified App Link (every self-hosted server, and the official one
+    while Android has not verified it yet) opens the `/setup` page, whose "Open in Kaiku" button
+    hands the code over as `kaiku://setup`. The button names the Kaiku app's package, so the browser
+    gives the code only to Kaiku. Another installed app can still register `kaiku://` and receive
+    links opened some other way. Limited by the person's confirmation of the server and the account
+    on the phone, the six-digit code the issuer must type in, and the setup code's short lifetime.
 
 Coordinator and maintainer decisions recorded in the implementation notes:
 

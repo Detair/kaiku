@@ -58,10 +58,23 @@ class SecurityNoticePresenterTest {
         val sink: AndroidSecurityNotificationSink = io.mockk.mockk()
         io.mockk.every { sink.post(any()) } answers { shown += firstArg<SecurityNotification>() }
         // The injected constructor, as the app builds it.
-        val lapsed = SecurityNoticePresenter(sink, tokens, f.repo)
+        val lapsed = SecurityNoticePresenter(sink, tokens, f.repo) { false }
         lapsed.present(SecurityWake(notice, "sign_in", "high", 1, io.wolftown.kaiku.testutil.SigFixtures.USER_ID, null))
         assertEquals(R.string.security_subject_yours, shown.last().subject)
         lapsed.present(SecurityWake(notice, "sign_in", "high", 1, "99999999-9999-4999-8999-999999999999", null))
         assertEquals(R.string.security_subject_other, shown.last().subject)
+    }
+
+    /** While the key storage cannot be read, a security notice reads neither the session nor the key store. */
+    @Test fun `a security notice reads no store while the key storage cannot be read`() {
+        val tokens: io.wolftown.kaiku.data.local.TokenStorage = io.mockk.mockk() // any access fails
+        val keys: io.wolftown.kaiku.data.keydevice.KeyDeviceRepository = io.mockk.mockk()
+        val sink: AndroidSecurityNotificationSink = io.mockk.mockk()
+        io.mockk.every { sink.post(any()) } answers { shown += firstArg<SecurityNotification>() }
+        val closed = SecurityNoticePresenter(sink, tokens, keys) { true }
+        closed.present(SecurityWake(notice, "sign_in", "high", 1, me, null))
+        assertEquals(R.string.security_subject_other, shown.last().subject)
+        io.mockk.verify { tokens wasNot io.mockk.Called }
+        io.mockk.verify { keys wasNot io.mockk.Called }
     }
 }

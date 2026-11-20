@@ -37,6 +37,141 @@ class TokenStorageTest {
     }
 
     @Test
+    fun `a session and its address are kept together or not at all`() {
+        val prefs = InMemorySharedPreferences()
+        val store = TokenStorage(prefs)
+        store.saveServerUrl("https://old.example.com")
+        prefs.failingCommits = 1
+
+        assertFalse(store.saveSession("https://new.example.com", "access-2", "refresh-2", 900, "user-2"))
+        assertEquals("https://old.example.com", store.getServerUrl())
+        assertNull(store.getAccessToken())
+        assertNull(store.getUserId())
+
+        assertTrue(store.saveSession("https://new.example.com", "access-2", "refresh-2", 900, "user-2"))
+        assertEquals("https://new.example.com", store.getServerUrl())
+        assertEquals("access-2", store.getAccessToken())
+        assertEquals("user-2", store.getUserId())
+    }
+
+    /** A session write that did not land starts no new session: work begun under the running one still counts. */
+    @Test
+    fun `a session write that fails keeps the session generation`() {
+        val prefs = InMemorySharedPreferences()
+        val store = TokenStorage(prefs)
+        store.saveTokens("access-1", "refresh-1", 900, "user-1")
+        val generation = store.getSessionGeneration()
+        prefs.failingCommits = 1
+
+        assertFalse(store.saveSession(null, "access-2", "refresh-2", 900, "user-1"))
+        assertEquals(generation, store.getSessionGeneration())
+        assertEquals("access-1", store.getAccessToken())
+
+        assertTrue(store.saveSession(null, "access-2", "refresh-2", 900, "user-1"))
+        assertTrue(store.getSessionGeneration() > generation)
+    }
+
+    /**
+     * A device sign-in over a store whose old values cannot be read: the new session is stored, and
+     * no "sign in again" notice is left behind for a session that was just made.
+     */
+    @Test
+    fun `a session stored over unreadable old values leaves no sign-in-again notice`() {
+        val prefs = ThrowingReadPreferences(InMemorySharedPreferences())
+        val store = TokenStorage(prefs)
+        store.saveTokens("access-1", "refresh-1", 900, "user-1")
+        prefs.failure = ThrowingReadPreferences.decryptFailure()
+        prefs.failures = 5 // the old values; reads work again afterwards
+
+        assertTrue(store.saveSession("https://chat.example.com", "access-2", "refresh-2", 900, "user-2"))
+
+        prefs.failure = null
+        assertEquals("access-2", store.getAccessToken())
+        assertEquals("user-2", store.getUserId())
+        assertFalse(store.consumeStorageResetNotice())
+    }
+
+    /** A value that cannot be encrypted (the key store fails) makes the write fail, not the app. */
+    @Test
+    fun `a session that cannot be encrypted is not stored and nothing escapes`() {
+        val backing = InMemorySharedPreferences()
+        var failEncrypt = false
+        val prefs = object : android.content.SharedPreferences by backing {
+            override fun edit(): android.content.SharedPreferences.Editor {
+                val e = backing.edit()
+                return object : android.content.SharedPreferences.Editor by e {
+                    override fun putString(key: String?, value: String?): android.content.SharedPreferences.Editor {
+                        if (failEncrypt) throw java.security.GeneralSecurityException("key store")
+                        e.putString(key, value); return this
+                    }
+                    override fun putLong(key: String?, value: Long): android.content.SharedPreferences.Editor {
+                        if (failEncrypt) throw java.io.IOException("key store")
+                        e.putLong(key, value); return this
+                    }
+                    override fun remove(key: String?): android.content.SharedPreferences.Editor { e.remove(key); return this }
+                }
+            }
+        }
+        val store = TokenStorage(prefs)
+        store.saveTokens("access-1", "refresh-1", 900, "user-1")
+        val generation = store.getSessionGeneration()
+        failEncrypt = true
+
+        assertFalse(store.saveSession("https://chat.example.com", "access-2", "refresh-2", 900, "user-2"))
+
+        failEncrypt = false
+        assertEquals("access-1", store.getAccessToken())
+        assertEquals(generation, store.getSessionGeneration())
+    }
+
+    /**
+     * Preferences whose next editors fail as scripted: [failures] holds, per editor opened from now
+     * on, what its first write throws (null: it works); [commitFails] makes those editors' commit
+     * report false instead.
+     */
+    private class ScriptedPreferences(private val backing: InMemorySharedPreferences = InMemorySharedPreferences()) :
+        android.content.SharedPreferences by backing {
+        val failures = ArrayDeque<Throwable?>()
+        override fun edit(): android.content.SharedPreferences.Editor {
+            val e = backing.edit()
+            val fail = failures.removeFirstOrNull()
+            return object : android.content.SharedPreferences.Editor by e {
+                private fun check() { fail?.let { throw it } }
+                override fun putString(key: String?, value: String?) = apply { check(); e.putString(key, value) }
+                override fun putLong(key: String?, value: Long) = apply { check(); e.putLong(key, value) }
+                override fun remove(key: String?) = apply { e.remove(key) }
+                override fun commit(): Boolean = e.commit()
+            }
+        }
+    }
+
+    /** A key store failure of the I/O kind at the first write makes the write fail, not the app. */
+    @Test
+    fun `a session write failing with an io error is not stored and nothing escapes`() {
+        val prefs = ScriptedPreferences()
+        val store = TokenStorage(prefs)
+        store.saveTokens("access-1", "refresh-1", 900, "user-1")
+        prefs.failures += java.io.IOException("key store")
+
+        assertFalse(store.saveSession("https://chat.example.com", "access-2", "refresh-2", 900, "user-2"))
+        assertEquals("access-1", store.getAccessToken())
+    }
+
+    /** The write fails, and so does putting the old values back (either kind of key store failure): still only false. */
+    @Test
+    fun `a failing write-back after a failed session write lets nothing escape`() {
+        for (backFailure in listOf<Throwable>(java.io.IOException("key store"), java.security.GeneralSecurityException("key store"))) {
+            val prefs = ScriptedPreferences()
+            val store = TokenStorage(prefs)
+            store.saveTokens("access-1", "refresh-1", 900, "user-1")
+            prefs.failures += java.security.GeneralSecurityException("key store") // the write
+            prefs.failures += backFailure // the write-back
+
+            assertFalse(store.saveSession("https://chat.example.com", "access-2", "refresh-2", 900, "user-2"))
+        }
+    }
+
+    @Test
     fun `conditional save writes nothing after clear`() {
         storage.clear()
 

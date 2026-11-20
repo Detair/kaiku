@@ -21,6 +21,7 @@ import androidx.fragment.app.FragmentActivity
 import androidx.navigation.compose.rememberNavController
 import dagger.hilt.android.AndroidEntryPoint
 import io.wolftown.kaiku.data.keydevice.KeyDeviceRepository
+import io.wolftown.kaiku.data.keydevice.AppEntry
 import io.wolftown.kaiku.data.keydevice.KeyDeviceState
 import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.local.TokenStorage
@@ -28,13 +29,15 @@ import io.wolftown.kaiku.data.ws.RealtimeConnectionManager
 import io.wolftown.kaiku.navigation.DeepLinks
 import io.wolftown.kaiku.navigation.PendingSetupLinks
 import io.wolftown.kaiku.navigation.SetupLinks
-import io.wolftown.kaiku.data.keydevice.KeyDevicePhase
 import io.wolftown.kaiku.navigation.PendingNavigation
 import io.wolftown.kaiku.push.AndroidNotificationPresenter
 import io.wolftown.kaiku.ui.auth.PendingOidcCallback
 import io.wolftown.kaiku.ui.auth.OidcHandler
 import io.wolftown.kaiku.ui.shared.KaikuTheme
 import io.wolftown.kaiku.ui.shared.LocalServerBaseUrl
+import io.wolftown.kaiku.data.auth.KeyStorageGate
+import io.wolftown.kaiku.ui.auth.KeyStorageUnreadable
+import io.wolftown.kaiku.ui.auth.setup.SetupOwner
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import java.time.Instant
@@ -65,6 +68,18 @@ class MainActivity : FragmentActivity() {
     @Inject
     lateinit var keyDevices: KeyDeviceRepository
 
+    @Inject
+    lateinit var keyStorage: KeyStorageGate
+
+    @Inject
+    lateinit var setupOwner: SetupOwner
+
+    @Inject
+    lateinit var wakeDeferral: io.wolftown.kaiku.push.WakeDeferral
+
+    @Inject
+    lateinit var wakeEnqueuer: io.wolftown.kaiku.push.WakeWorkEnqueuer
+
     /** A route the running app should open next (the B.4 renewal prompt). */
     private val pendingRoute = MutableStateFlow<String?>(null)
 
@@ -73,7 +88,19 @@ class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        // What the phone has saved about its key cannot be read right now: nothing is decided on it
+        // (no stored session is restored, no setup starts); the person can try again.
+        if (keyStorage.unreadable()) {
+            // A setup link that opened the app is kept (in memory) for after a successful "Try again".
+            if (savedInstanceState == null && PendingSetupLinks.keep(intent?.data?.toString())) intent.data = null
+            setContent { KeyStorageUnreadable(onRetry = { if (keyStorage.retry()) recreate() }) }
+            return
+        }
         authState.initialize(tokenStorage)
+        // Message wakes kept while the key storage could not be read go to the account signed in now.
+        wakeDeferral.release(wakeEnqueuer::enqueueHeld)
+        // A link kept while the app could not start is judged like one opened now.
+        PendingSetupLinks.releaseKept(setupOwner::offer)
         // On recreation (rotation, theme change, process restore) getIntent() is the
         // original launch intent; handling it again would replay a consumed link.
         if (savedInstanceState == null) handleIntent(intent)
@@ -91,7 +118,7 @@ class MainActivity : FragmentActivity() {
                 authState = authState,
                 appVersion = appVersion,
                 serverBaseUrl = tokenStorage::getServerUrl,
-                keyDeviceState = keyDevices.state,
+                appEntry = keyDevices.entry,
                 pendingRoute = pendingRoute,
                 onPendingRouteConsumed = { pendingRoute.value = null },
             )
@@ -115,7 +142,8 @@ class MainActivity : FragmentActivity() {
         val prompt = renewalGate.shouldPrompt(now, keyDevices.sessionCap(), keyDevices.lastRenewalPromptAt())
         if (keyDevices.current() !is KeyDeviceState.Active) return
         if (prompt) {
-            keyDevices.markRenewalPrompted(now)
+            // If the time does not reach storage the prompt comes once more at the next open; nothing else depends on it.
+            keyDevices.record.value?.let { keyDevices.markRenewalPrompted(it, now) }
             pendingRoute.value = CONFIRM_RENEW_ROUTE
         }
     }
@@ -128,6 +156,12 @@ class MainActivity : FragmentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        // While the key storage cannot be read a setup link is only kept: it is judged once the
+        // storage was read again ("Try again"), like the link that opened the app.
+        if (keyStorage.unreadable()) {
+            if (PendingSetupLinks.keep(intent.data?.toString())) intent.data = null
+            return
+        }
         handleIntent(intent)
     }
 
@@ -150,7 +184,9 @@ class MainActivity : FragmentActivity() {
         }
         // A setup link (kaiku://setup/v1 or the https App Link, L2-A15); its token stays in memory.
         SetupLinks.parse(uri.toString())?.let {
-            PendingSetupLinks.post(it)
+            // The setup owner judges it against what is stored: noted on the setup's screen, or
+            // handed to the setup screen.
+            PendingSetupLinks.deliver(it, setupOwner::offer)
             intent.data = null
             return
         }
@@ -173,27 +209,17 @@ class MainActivity : FragmentActivity() {
     }
 
     /**
-     * Determines the initial navigation destination based on auth state:
-     * - Logged in -> "home"
-     * - Server URL saved but not logged in -> "login"
-     * - No server URL -> "login" with the built-in default server saved; only when
-     *   the build has no default does the person see "server_url"
+     * The initial navigation destination: the phone's entry ([io.wolftown.kaiku.data.keydevice.appEntry]).
+     * A key device outlives its session and signs in again with its screen lock; a stored setup
+     * that has not finished resumes its wait; without a saved server the sign-in
+     * starts on the built-in default one, and only a build without a default asks for the address.
      */
     private fun resolveStartDestination(): String {
-        if (authState.isLoggedIn.value) return "home"
-        // A key device outlives its session: it signs in again with its screen lock (L2-A11);
-        // a waiting setup resumes its wait (L2-A13).
-        if (keyDevices.current() is KeyDeviceState.Lapsed) return CONFIRM_ROUTE
-        val phase = keyDevices.phase()
-        if (keyDevices.current() is KeyDeviceState.Pending || phase == KeyDevicePhase.CLAIMED || phase == KeyDevicePhase.CLAIMING) {
-            return SETUP_PENDING_ROUTE
-        }
-        if (tokenStorage.getServerUrl() == null) {
-            val default = normalizeServerAddress(BuildConfig.DEFAULT_SERVER_URL).getOrNull()
-                ?: return "server_url"
-            tokenStorage.saveServerUrl(default)
-        }
-        return "login"
+        val saved = tokenStorage.getServerUrl()
+        val default = normalizeServerAddress(BuildConfig.DEFAULT_SERVER_URL).getOrNull()
+        val entry = keyDevices.entry(hasServer = saved != null || default != null)
+        if (entry == AppEntry.SIGN_IN && saved == null && default != null) tokenStorage.saveServerUrl(default)
+        return entryRoute(entry) ?: "login"
     }
 }
 
@@ -209,7 +235,7 @@ fun KaikuApp(
     startDestination: String = "server_url",
     appVersion: String = "",
     serverBaseUrl: () -> String? = { null },
-    keyDeviceState: StateFlow<KeyDeviceState> = MutableStateFlow(KeyDeviceState.None),
+    appEntry: StateFlow<AppEntry> = MutableStateFlow(AppEntry.SIGN_IN),
     pendingRoute: StateFlow<String?> = MutableStateFlow(null),
     onPendingRouteConsumed: () -> Unit = {},
 ) {
@@ -228,7 +254,7 @@ fun KaikuApp(
                     startDestination = startDestination,
                     authState = authState,
                     appVersion = appVersion,
-                    keyDeviceState = keyDeviceState,
+                    appEntry = appEntry,
                     pendingRoute = pendingRoute,
                     onPendingRouteConsumed = onPendingRouteConsumed,
                 )

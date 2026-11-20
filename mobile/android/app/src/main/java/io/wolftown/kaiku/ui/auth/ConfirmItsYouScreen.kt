@@ -23,6 +23,7 @@ import io.wolftown.kaiku.ui.shared.KeyPrimaryButton
 import io.wolftown.kaiku.ui.shared.KeyScreen
 import io.wolftown.kaiku.ui.shared.KeySecondaryButton
 import io.wolftown.kaiku.ui.shared.KeyTitle
+import io.wolftown.kaiku.ui.shared.SecureScreen
 import io.wolftown.kaiku.ui.shared.currentFragmentActivity
 
 /**
@@ -38,6 +39,8 @@ fun ConfirmItsYouScreen(
     onLater: (() -> Unit)? = null,
     viewModel: ConfirmItsYouViewModel = hiltViewModel(),
 ) {
+    // Like every key screen: no screenshots, no recents thumbnail, no overlay taps.
+    SecureScreen()
     val ui by viewModel.ui.collectAsState()
     val activity = currentFragmentActivity()
     var askRemove by remember { mutableStateOf(false) }
@@ -62,7 +65,7 @@ fun ConfirmItsYouScreen(
         } else {
             KeyPrimaryButton(
                 text = stringResource(R.string.security_confirm_button),
-                onClick = { activity?.let(viewModel::confirm) },
+                onClick = { activity?.let { viewModel.confirm(it, stayingSignedIn = renewal) } },
                 working = ui.working,
             )
             if (renewal && onLater != null) {
@@ -70,10 +73,13 @@ fun ConfirmItsYouScreen(
             } else {
                 KeySecondaryButton(stringResource(R.string.security_confirm_other_account), onClick = { askRemove = true }, enabled = !ui.working)
             }
+            // The key's server has not answered on several occasions over a day or more.
+            if (ui.serverSilent) KeyBody(stringResource(R.string.security_server_silent_hint), secondary = true)
         }
     }
 
-    if (askRemove) {
+    // Not once the key is gone (also when that is found out while the question is open).
+    if (askRemove && !ui.keyGone) {
         AlertDialog(
             onDismissRequest = { askRemove = false },
             title = { Text(stringResource(R.string.security_confirm_other_account)) },

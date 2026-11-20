@@ -119,8 +119,10 @@ class AuthRepository @Inject constructor(
      * sign-in path: under [pendingLock], refuses while a session runs or if
      * [precondition] fails, otherwise saves the tokens, runs [onInstalled]
      * and sets LoggedIn. Two sign-ins racing while logged out (a passkey
-     * and a collected attempt) can therefore never both install. Returns
-     * whether it installed.
+     * and a collected attempt) can therefore never both install. While a
+     * setup of this phone is stored and not finished (or the key storage
+     * cannot be read) it installs nothing: that setup ends first
+     * ([KeyDevicePolicy.refusesOtherSignIn]). Returns whether it installed.
      */
     private fun installSession(
         accessToken: String,
@@ -130,7 +132,19 @@ class AuthRepository @Inject constructor(
         precondition: () -> Boolean = { true },
         onInstalled: () -> Unit = {},
     ): Boolean = synchronized(pendingLock) {
-        if (authState.session.value is AuthSession.LoggedIn || !precondition()) return false
+        // Not while a setup creates its key record for the session it checked (see SessionKeyLock).
+        synchronized(io.wolftown.kaiku.data.keydevice.SessionKeyLock) { installLocked(accessToken, refreshToken, expiresIn, userId, precondition, onInstalled) }
+    }
+
+    private fun installLocked(
+        accessToken: String,
+        refreshToken: String?,
+        expiresIn: Int,
+        userId: String,
+        precondition: () -> Boolean,
+        onInstalled: () -> Unit,
+    ): Boolean {
+        if (authState.session.value is AuthSession.LoggedIn || keyDevicePolicy.refusesOtherSignIn() || !precondition()) return false
         tokenStorage.saveTokens(
             accessToken = accessToken,
             refreshToken = refreshToken,
@@ -139,7 +153,7 @@ class AuthRepository @Inject constructor(
         )
         onInstalled()
         authState.setLoggedIn(userId)
-        true
+        return true
     }
 
     /**
@@ -370,11 +384,13 @@ class AuthRepository @Inject constructor(
         username: String,
         password: String,
         email: String?,
-        displayName: String?
+        displayName: String?,
+        /** The server the registration is made on; its ticket belongs to it alone. */
+        origin: String,
     ): Result<RegistrationTicket> {
         signedInRefusal()?.let { return Result.failure(it.exceptionOrNull()!!) }
         return try {
-            Result.success(authApi.register(username, password, email, displayName))
+            Result.success(authApi.register(username, password, email, displayName, origin))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -408,10 +424,20 @@ class AuthRepository @Inject constructor(
      * cleared); tokens are never logged.
      */
     suspend fun logout() {
-        withContext(NonCancellable) { logoutCaptured() }
+        withContext(NonCancellable) { logoutCaptured(null) }
     }
 
-    private suspend fun logoutCaptured() {
+    /**
+     * [logout], only if [installed] is still the current session: a sign-in that turned out not to
+     * stand ends the session it installed itself, never one that came after it.
+     */
+    suspend fun logoutIfCurrent(installed: AuthSession.LoggedIn) {
+        withContext(NonCancellable) { logoutCaptured(installed) }
+    }
+
+    private suspend fun logoutCaptured(only: AuthSession.LoggedIn?) {
+        // Captured and compared before anything else runs: nothing can come in between.
+        if (only != null && authState.session.value != only) return
         invalidateLogin()
         val session = authState.session.value as? AuthSession.LoggedIn
         val generation = tokenStorage.getSessionGeneration()
@@ -491,20 +517,20 @@ class AuthRepository @Inject constructor(
      * [installDeviceSession] checks again before it installs anything. The key
      * ties the app to its server (B.1, coordinator call 6): without a running
      * session the app's server becomes the key's (a reset session store loses the
-     * saved server, the key's metadata survives); with a session on another
-     * server the sign-in is refused (null).
+     * saved server, the key's metadata survives), but only once the key's signature
+     * was accepted and its session is installed ([installDeviceSession]); with a
+     * session on another server the sign-in is refused (null).
      */
     fun beginDeviceSignIn(keyOrigin: String): DeviceSignInStart? = synchronized(pendingLock) {
         val session = authState.session.value
-        if (tokenStorage.getServerUrl()?.let(KaikuPayloads::canonicalOrigin) != keyOrigin) {
-            if (session is AuthSession.LoggedIn) return null
-            tokenStorage.saveServerUrl(keyOrigin)
-        }
-        val serverUrl = tokenStorage.getServerUrl() ?: return null
+        val saved = tokenStorage.getServerUrl()
+        val sameServer = saved?.let(KaikuPayloads::canonicalOrigin) == keyOrigin
+        if (!sameServer && session is AuthSession.LoggedIn) return null
+        val serverUrl = if (sameServer) saved!! else keyOrigin
         // A sign-in of its own: an older sign-in still in flight can no longer install or
         // clear anything, and two overlapping device sign-ins never both install.
         pendingPasswordChange = null
-        DeviceSignInStart(++loginAttempt, serverUrl, session)
+        DeviceSignInStart(++loginAttempt, serverUrl, session, addressBefore = saved)
     }
 
     /**
@@ -514,8 +540,17 @@ class AuthRepository @Inject constructor(
      * session (none, or for the B.4 renewal the same one, which it replaces and
      * ends on the server with its bearer only). A session it does not install is
      * ended on the server, so a late answer never leaves a live session behind.
+     * [stillThisKey] is asked at the moment of installing, under the same lock: the session is
+     * installed only while the key it was made with is still this phone's key.
      */
-    suspend fun installDeviceSession(auth: AuthResponse, expectedUserId: String, start: DeviceSignInStart): Result<User> {
+    suspend fun installDeviceSession(
+        auth: AuthResponse,
+        expectedUserId: String,
+        start: DeviceSignInStart,
+        stillThisKey: () -> Boolean = { true },
+        /** Told the session it installed, as it was installed (before anything else could run). */
+        installedAs: (AuthSession.LoggedIn) -> Unit = {},
+    ): Result<User> {
         val serverUrl = start.serverUrl
         // True once the session is installed or already ended: until then a failure ends it.
         var settled = false
@@ -535,21 +570,31 @@ class AuthRepository @Inject constructor(
             // The previous session's teardown finishes before a new one starts.
             if (running == null) sessionTeardown.awaitIdle()
             var replacedAccess: String? = null
-            val installed = synchronized(pendingLock) {
+            var stored = true
+            // Not while a setup creates its key record for the session it checked (see SessionKeyLock).
+            val installed = synchronized(pendingLock) { synchronized(io.wolftown.kaiku.data.keydevice.SessionKeyLock) {
                 val unchanged = loginAttempt == start.attempt &&
-                    tokenStorage.getServerUrl() == serverUrl &&
-                    authState.session.value == start.session
+                    tokenStorage.getServerUrl() == start.addressBefore &&
+                    authState.session.value == start.session &&
+                    stillThisKey()
                 if (unchanged) {
                     if (running != null) replacedAccess = tokenStorage.getAccessToken()
-                    tokenStorage.saveTokens(auth.accessToken, auth.refreshToken, auth.expiresIn, user.id)
-                    authState.setLoggedIn(user.id)
+                    // The key's signature was accepted: only now does the app's address follow the
+                    // key, in the same durable write as the session; signed in only once it is stored.
+                    stored = tokenStorage.saveSession(
+                        serverUrl.takeIf { start.addressBefore != it }, auth.accessToken, auth.refreshToken, auth.expiresIn, user.id,
+                    )
+                    if (stored) {
+                        authState.setLoggedIn(user.id)
+                        (authState.session.value as? AuthSession.LoggedIn)?.let(installedAs)
+                    }
                 }
-                unchanged
-            }
+                unchanged && stored
+            } }
             settled = true
             if (!installed) {
                 endUnused(serverUrl, auth)
-                return Result.failure(IllegalStateException("Device sign-in was cancelled or superseded"))
+                return Result.failure(IllegalStateException(if (stored) "Device sign-in was cancelled or superseded" else "Device session not stored"))
             }
             // The new session is installed: ending the replaced one runs to the end even if the
             // caller is cancelled now, and never turns the installed sign-in into a failure.
@@ -585,6 +630,8 @@ class DeviceSignInStart internal constructor(
     internal val attempt: Long,
     val serverUrl: String,
     internal val session: AuthSession,
+    /** The app's saved server address when the sign-in started; it changes only at the install. */
+    internal val addressBefore: String? = serverUrl,
 ) {
     override fun toString(): String = "DeviceSignInStart(serverUrl=$serverUrl)"
 }

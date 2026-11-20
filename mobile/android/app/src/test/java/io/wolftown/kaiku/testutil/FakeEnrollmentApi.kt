@@ -26,6 +26,8 @@ class FakeEnrollmentApi {
         codeExpiresAt = "2026-11-03T12:05:00Z", claimSecret = "claim-secret")
     var lastClaim: EnrollmentClaim? = null
     var lastTicket: String? = null
+    /** The origin each registration ticket was sent to. */
+    val ticketOrigins = mutableListOf<String>()
     val statuses = ArrayDeque<ClaimStatus>()
     val statusFailures = ArrayDeque<Exception>()
     var lastOrigin: String? = null
@@ -40,43 +42,80 @@ class FakeEnrollmentApi {
     var popContext: (String) -> String = { it }
     /** The user id in the PoP prefix; null = the subject's. */
     var popPrefixUser: String? = null
+    /** Every origin a request was sent to, in order. */
+    val origins = mutableListOf<String?>()
+    /** The setup tokens of the `open` calls, in order. */
+    val openTokens = mutableListOf<String>()
+    /** Hold the next `open` / `claim` until completed (a slow network). */
+    var openGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+    var claimGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+    var popGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+    var statusGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+    /** The enrolment ids the status was asked for, in order. */
+    val statusIds = mutableListOf<String>()
+    /** Answers for the next `popChallenge` calls, in order: an exception to throw, or [GIVEN] for a challenge. */
+    val popAnswers = java.util.ArrayDeque<Exception>()
+    var popCalls = 0
+    /** `open` requests that left the phone, also those still waiting at [openGate]. */
+    var openStarts = 0
 
     companion object {
         const val SUBJECT_ID = "66666666-6666-4666-8666-666666666666"
+        /** More status questions than any test needs: a loop that never ends. */
+        const val MAX_STATUS_CALLS = 500
+        /** In [popAnswers]: the server hands out a challenge. */
+        val GIVEN = Exception("challenge given")
     }
 
+    /** Every challenge the server hands out has an id of its own; true: it hands out the first one again. */
+    var replayFirstChallenge = false
+
     fun popChallengeFor(publicKeyB64u: String, userId: String = SUBJECT_ID): ApprovalChallenge {
+        val n = if (replayFirstChallenge) 5 else 5 + (popCalls - 1).coerceAtLeast(0)
         val json = popContext("""{"enrollment_id":"55555555-5555-4555-8555-555555555555","new_key_hash":"${SigFixtures.b64u(SigFixtures.sha256(SigFixtures.unb64u(publicKeyB64u)))}","attestation_challenge":"${SigFixtures.b64u(nonce)}","subject_username":"${subject.username}"}""")
         val ctx = SigContext.fromJson(SigKind.ENROLL_POP, SigFixtures.json(json))
-        val prefix = SigFixtures.prefixFor(SigKind.ENROLL_POP, SigFixtures.challengeId(5), ctx, userId = popPrefixUser ?: userId)
-        return SigFixtures.challengeFor(SigKind.ENROLL_POP, 5, json, prefix = prefix)
+        val prefix = SigFixtures.prefixFor(SigKind.ENROLL_POP, SigFixtures.challengeId(n), ctx, userId = popPrefixUser ?: userId)
+        return SigFixtures.challengeFor(SigKind.ENROLL_POP, n, json, prefix = prefix)
     }
 
     val api = object : EnrollmentApi {
         override suspend fun issueOwn(): EnrollmentIssued { calls += "issueOwn"; return issued }
-        override suspend fun issueWithTicket(ticket: String): EnrollmentIssued { calls += "issueWithTicket"; lastTicket = ticket; return issued }
+        override suspend fun issueWithTicket(ticket: String, origin: String): EnrollmentIssued {
+            calls += "issueWithTicket"; lastTicket = ticket; ticketOrigins += origin; return issued
+        }
         override suspend fun get(id: String): Enrollment {
             calls += "get:$id"
             getFailure?.let { throw it }
             return enrollment ?: Enrollment(id, "own", EnrollmentState.ISSUED, subject)
         }
         override suspend fun cancel(id: String) { calls += "cancel:$id" }
-        override suspend fun open(setupToken: String, origin: String?): EnrollmentOpen {
-            calls += "open"; lastOrigin = origin
+        override suspend fun open(setupToken: String, origin: String): EnrollmentOpen {
+            openStarts++
+            openGate?.await()
+            calls += "open"; lastOrigin = origin; origins += origin; openTokens += setupToken
             return EnrollmentOpen(serverName, SigFixtures.b64u(nonce), "2026-11-03T12:10:00Z")
         }
-        override suspend fun popChallenge(setupToken: String, deviceId: String, publicKeyB64u: String, origin: String?): PopChallenge {
-            calls += "popChallenge"
+        override suspend fun popChallenge(setupToken: String, deviceId: String, publicKeyB64u: String, origin: String): PopChallenge {
+            popGate?.await()
+            calls += "popChallenge"; origins += origin
+            popCalls++
             popFailure?.let { throw it }
+            if (popAnswers.isNotEmpty()) popAnswers.removeFirst().let { if (it !== GIVEN) throw it }
             return PopChallenge(popChallengeFor(publicKeyB64u), subject)
         }
-        override suspend fun claim(req: EnrollmentClaim, ticket: String?, origin: String?): ClaimResult {
-            calls += "claim"; lastClaim = req; lastTicket = ticket
+        override suspend fun claim(req: EnrollmentClaim, ticket: String?, origin: String): ClaimResult {
+            claimGate?.await()
+            calls += "claim"; lastClaim = req; lastTicket = ticket; origins += origin
             claimFailure?.let { throw it }
             return claimResult
         }
-        override suspend fun status(enrollmentId: String, claimSecret: String, waitSeconds: Int, origin: String?): ClaimStatus {
-            calls += "status"
+        override suspend fun status(enrollmentId: String, claimSecret: String, waitSeconds: Int, origin: String): ClaimStatus {
+            statusGate?.await()
+            calls += "status"; origins += origin
+            statusIds += enrollmentId
+            // A wait that never ends is a failure with a message, not a test that hangs (an Error:
+            // the setup's own handling of failed requests does not swallow it).
+            if (statusIds.size > MAX_STATUS_CALLS) throw AssertionError("status asked ${statusIds.size} times: the wait never ends")
             lastStatusWait = waitSeconds
             statusFailures.pollFirst()?.let { throw it }
             // A long-poll with nothing new waits (until the test ends).

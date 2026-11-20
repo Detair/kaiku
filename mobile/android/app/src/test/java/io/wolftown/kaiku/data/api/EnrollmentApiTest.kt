@@ -37,8 +37,9 @@ class EnrollmentApiTest {
 
     @Test fun `issue with ticket uses the registration issuer and the ticket header`() = runTest {
         rec.status = HttpStatusCode.Created; rec.body = res("enrollment_issued.json")
-        api.issueWithTicket("ticket-secret")
+        api.issueWithTicket("ticket-secret", "https://chat.example.com")
         assertEquals("/auth/registration/enrollments", rec.last.path)
+        assertEquals("https://chat.example.com/auth/registration/enrollments", rec.last.url)
         assertEquals("ticket-secret", rec.last.headers["X-Kaiku-Ticket"])
     }
 
@@ -64,7 +65,7 @@ class EnrollmentApiTest {
 
         rec.status = HttpStatusCode.Created
         rec.body = """{"challenge":${res("approval_challenge_login.json")},"subject":{"user_id":"u","username":"oma","display_name":"Oma"}}"""
-        val pop = api.popChallenge("setup-token-secret", "d", "pk")
+        val pop = api.popChallenge("setup-token-secret", "d", "pk", "https://chat.example.com")
         assertEquals("/auth/enrollments/pop-challenge", rec.last.path)
         assertEquals(setOf("setup_token", "device_id", "public_key"), bodyKeys())
         assertNull(rec.last.headers["Authorization"])
@@ -74,7 +75,7 @@ class EnrollmentApiTest {
     @Test fun `claim sends every field and a ticket header when given`() = runTest {
         rec.status = HttpStatusCode.Created
         rec.body = """{"enrollment_id":"e","state":"claimed","code":"123456","code_expires_at":"2026-11-03T12:05:00Z","claim_secret":"claim-secret"}"""
-        val r = api.claim(claim)
+        val r = api.claim(claim, origin = "https://chat.example.com")
         assertEquals("/auth/enrollments/claim", rec.last.path)
         assertEquals(
             setOf("setup_token", "challenge_id", "signature", "public_key", "attestation_chain", "label", "uv_class", "api_level"),
@@ -84,7 +85,7 @@ class EnrollmentApiTest {
         assertNull(rec.last.headers["Authorization"])
         assertEquals("123456", r.code)
         rec.body = """{"enrollment_id":"e","state":"done","authenticator_state":"active","ready_at":null}"""
-        val done = api.claim(claim, ticket = "ticket-secret")
+        val done = api.claim(claim, ticket = "ticket-secret", origin = "https://chat.example.com")
         assertEquals("ticket-secret", rec.last.headers["X-Kaiku-Ticket"])
         assertEquals("done", done.state)
         assertNull(done.code)
@@ -92,7 +93,7 @@ class EnrollmentApiTest {
 
     @Test fun `status long polls with the claim secret`() = runTest {
         rec.body = """{"state":"done","authenticator_state":"pending","ready_at":"2026-11-04T12:00:00Z"}"""
-        val s = api.status("e", "claim-secret", 25)
+        val s = api.status("e", "claim-secret", 25, "https://chat.example.com")
         assertEquals("/auth/enrollments/status", rec.last.path)
         assertEquals(setOf("enrollment_id", "claim_secret", "wait"), bodyKeys())
         assertEquals(EnrollmentState.DONE, s.state)
@@ -108,5 +109,38 @@ class EnrollmentApiTest {
             assertEquals("ENROLL_CODE_WRONG", e.normalizedCode)
             assertEquals(2, e.fields.triesLeft)
         }
+    }
+
+    @Test fun `an ending state under another status than 200 is not a status answer`() = runTest {
+        rec.status = HttpStatusCode.Accepted
+        rec.body = """{"state":"expired"}"""
+        try {
+            api.status("e", "claim-secret", 0, "https://chat.example.com")
+            org.junit.Assert.fail("expected ApiException")
+        } catch (e: ApiException) {
+            assertEquals(202, e.status.value)
+            assertNull(e.code)
+        }
+    }
+
+    @Test fun `a claim answered with another success than 201 is not a claim answer`() = runTest {
+        rec.status = HttpStatusCode.OK
+        rec.body = """{"enrollment_id":"e","state":"claimed","code":"123456","claim_secret":"s"}"""
+        try {
+            api.claim(claim, origin = "https://chat.example.com")
+            org.junit.Assert.fail("expected ApiException")
+        } catch (e: ApiException) {
+            assertEquals(200, e.status.value)
+            assertNull(e.code)
+        }
+    }
+
+    /** A registration ticket goes only to the server it is named with, whatever server is configured. */
+    @Test fun `a ticket goes to the named server, not the configured one`() = runTest {
+        rec.status = HttpStatusCode.Created
+        rec.body = """{"enrollment_id":"e","state":"done","authenticator_state":"active"}"""
+        api.claim(claim, ticket = "ticket-secret", origin = "https://other.example.org")
+        assertTrue(rec.last.url.startsWith("https://other.example.org/"))
+        assertEquals("ticket-secret", rec.last.headers["X-Kaiku-Ticket"])
     }
 }

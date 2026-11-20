@@ -1,5 +1,7 @@
 package io.wolftown.kaiku.data.auth
 
+import io.wolftown.kaiku.testutil.saveClaimed
+import io.wolftown.kaiku.testutil.markActive
 import io.mockk.every
 import io.mockk.mockk
 import io.wolftown.kaiku.approval.ChallengeRejected
@@ -79,5 +81,16 @@ class OriginPinTest {
         } catch (e: ChallengeRejected) {
             assertEquals(RejectReason.ORIGIN, e.reason)
         }
+    }
+
+    @Test fun `clearing the saved server starts a new session generation and leaves the rest`() {
+        val tokens = TokenStorage(io.wolftown.kaiku.testutil.InMemorySharedPreferences())
+        tokens.saveServerUrl("https://chat.example.com")
+        tokens.saveTokens("a", "r", 900, "u1")
+        val generation = tokens.getSessionGeneration()
+        tokens.clearServerUrl()
+        assertNull(tokens.getServerUrl())
+        assertEquals("a", tokens.getAccessToken())
+        assertEquals(true, tokens.getSessionGeneration() != generation)
     }
 }

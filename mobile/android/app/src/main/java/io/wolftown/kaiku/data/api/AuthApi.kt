@@ -26,7 +26,9 @@ interface AuthApi {
         username: String,
         password: String,
         email: String? = null,
-        displayName: String? = null
+        displayName: String? = null,
+        /** The server the registration is made on (absolute). */
+        origin: String,
     ): RegistrationTicket
     suspend fun refresh(refreshToken: String): AuthResponse
     /**
@@ -103,12 +105,14 @@ class AuthApiImpl @Inject constructor(
         username: String,
         password: String,
         email: String?,
-        displayName: String?
+        displayName: String?,
+        origin: String,
     ): RegistrationTicket {
         // Pre-session: no stored bearer, no refresh on a 401; the error keeps its fields
         // (`Retry-After`, `PASSWORD_REJECTED {reason}`).
-        val response = httpClient.post("/auth/register") {
+        val response = httpClient.post(at(origin, "/auth/register")) {
             publicRoute()
+            sentOnce()
             setBody(RegisterRequest(username, password, email, displayName))
         }
         response.ensureSuccess("Registration failed")
@@ -238,6 +242,8 @@ data class ApiErrorFields(
     val reason: String? = null,
     val recoveryCodesLeft: Int? = null,
     val retryAfterSeconds: Long? = null,
+    /** The server's own time when it answered (the `Date` header); null when it sent none. */
+    val serverTime: java.time.Instant? = null,
 )
 
 open class ApiException(

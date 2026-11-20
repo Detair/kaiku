@@ -1,6 +1,10 @@
 package io.wolftown.kaiku.ui.auth.setup
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -28,20 +32,51 @@ import io.wolftown.kaiku.ui.shared.KeyScreen
  * lock and hardware key store before any scan).
  */
 @Composable
-fun SetupScanScreen(onSignedIn: () -> Unit, onBack: (() -> Unit)?, flow: SetupFlowViewModel = hiltViewModel()) {
+fun SetupScanScreen(
+    onSignedIn: () -> Unit,
+    onBack: (() -> Unit)?,
+    onWaiting: () -> Unit = {},
+    flow: SetupFlowViewModel = hiltViewModel(),
+) {
     val started by flow.startedFlow.collectAsState()
     val ready by flow.scanReady.collectAsState()
-    LaunchedEffect(Unit) { if (flow.scanReady.value == null) flow.checkBeforeScan() }
-    // Back from the screen-lock settings: check again.
-    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
-        if ((flow.scanReady.value as? UvDecision.Unsuitable)?.reason == UnsuitableReason.NO_SCREEN_LOCK) flow.checkBeforeScan()
-    }
+    // Over a stored setup that has not finished (restored, or stored by a setup run here that
+    // handed back to the scanner): its waiting screen, before any check or camera starts.
+    val waits by flow.scannerGivesWay.collectAsState()
+    // Checked anew whenever the scanner part is what this screen shows: at a visit, and again
+    // after a setup on this screen ended (an earlier result may be out of date) ...
+    LaunchedEffect(started, waits) { if (!started && !waits) flow.scannerShown() }
+    // ... and whenever the screen is in front again (back from the screen-lock settings, or after
+    // a screen above it closed).
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { if (!flow.startedFlow.value && !flow.scannerGivesWay.value) flow.scannerShown() }
     val r = ready
     when {
-        started -> SetupFlowScreen(entry = null, onSignedIn = onSignedIn, onBack = flow::reset, viewModel = flow)
+        waits && !started -> {
+            LaunchedEffect(Unit) { onWaiting() }
+            KeyScreen { CircularProgressIndicator() }
+        }
+        started -> SetupFlowScreen(link = null, onSignedIn = onSignedIn, onBack = flow::reset, viewModel = flow)
         r == null -> KeyScreen { CircularProgressIndicator() }
-        r is UvDecision.Unsuitable && r.reason == UnsuitableReason.NO_SCREEN_LOCK ->
-            ScreenLockGuide(onCheck = flow::checkBeforeScan, onCancel = { onBack?.invoke() })
+        // The guide is a column of its own content; it needs the screen frame like its neighbours.
+        r is UvDecision.Unsuitable && r.reason == UnsuitableReason.NO_SCREEN_LOCK -> {
+            // Back asks first, as on the same guide inside a setup: the person is half way through
+            // turning the screen lock on.
+            var askLeave by remember { mutableStateOf(false) }
+            BackHandler(enabled = setupBackAction(SetupUi.ScreenLockNeeded(r.reason)) == SetupBack.ASK) { askLeave = true }
+            if (askLeave) {
+                SetupLeaveDialog(
+                    atCode = false,
+                    onStay = { askLeave = false },
+                    onStop = {
+                        askLeave = false
+                        onBack?.invoke()
+                    },
+                )
+            }
+            KeyScreen {
+                ScreenLockGuide(onCheck = flow::checkBeforeScan, onCancel = { onBack?.invoke() })
+            }
+        }
         r is UvDecision.Unsuitable -> KeyScreen {
             KeyNotice(stringResource(R.string.setup_cannot_be_key), warning = true)
             if (onBack != null) KeyPrimaryButton(stringResource(R.string.common_back), onClick = onBack)

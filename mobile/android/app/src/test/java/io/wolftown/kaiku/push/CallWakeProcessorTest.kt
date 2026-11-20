@@ -545,4 +545,20 @@ class CallWakeProcessorTest {
 
         assertEquals(listOf(missed(name = null)), sink.posts)
     }
+
+    /**
+     * Call work queued while the key storage could be read may run in a process that cannot read
+     * it: it waits, without reading, refreshing or clearing the stored session.
+     */
+    @Test
+    fun `queued call work waits while the key storage cannot be read`() = kotlinx.coroutines.test.runTest {
+        val untouchable: TokenStorage = mockk() // no answers: every access throws
+        val refreshes: TokenRefresher = mockk()
+        val gated = CallWakeProcessor(untouchable, refreshes, names, store, sink, keyStorage = { true })
+        assertEquals(CallOutcome.DEFERRED, gated.process(ringing(), owner))
+        assertEquals(CallOutcome.DEFERRED, gated.process(ended(CallEndReason.NO_ANSWER), owner))
+        io.mockk.verify { untouchable wasNot io.mockk.Called }
+        io.mockk.verify { refreshes wasNot io.mockk.Called }
+        assertTrue(sink.posts.isEmpty())
+    }
 }

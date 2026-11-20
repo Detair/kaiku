@@ -10,6 +10,12 @@ import android.content.SharedPreferences
 class InMemorySharedPreferences : SharedPreferences {
     private val values = mutableMapOf<String, Any?>()
 
+    /**
+     * The next this many commits fail like Android's on a full disk: the values are taken in
+     * memory, nothing reaches the file, and the commit reports false.
+     */
+    @Volatile var failingCommits = 0
+
     @Synchronized
     override fun getAll(): MutableMap<String, *> = HashMap(values)
 
@@ -77,6 +83,10 @@ class InMemorySharedPreferences : SharedPreferences {
                 if (clearAll) values.clear()
                 removals.forEach { values.remove(it) }
                 puts.forEach { (k, v) -> if (v == null) values.remove(k) else values[k] = v }
+                if (failingCommits > 0) {
+                    failingCommits--
+                    return false
+                }
             }
             return true
         }

@@ -22,10 +22,8 @@ import androidx.credentials.exceptions.domerrors.NotAllowedError
 import androidx.credentials.exceptions.domerrors.SecurityError
 import androidx.credentials.exceptions.publickeycredential.CreatePublicKeyCredentialDomException
 import androidx.credentials.exceptions.publickeycredential.GetPublicKeyCredentialDomException
-import dagger.hilt.android.qualifiers.ApplicationContext
 import java.util.logging.Level
 import java.util.logging.Logger
-import javax.inject.Inject
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -39,6 +37,8 @@ sealed interface PasskeyOutcome {
     data object NoCredential : PasskeyOutcome
     /** The RP domain is not verified for this app (`assetlinks.json`). */
     data object NotAssociated : PasskeyOutcome
+    /** The request names another site than the configured server; Credential Manager was not asked. */
+    data object WrongServer : PasskeyOutcome
     data class Failed(val code: String) : PasskeyOutcome
 }
 
@@ -51,8 +51,12 @@ interface PasskeyCredentials {
     suspend fun signalRemoved(rpId: String, userHandle: String?, credentialId: String, remaining: List<String>?)
 }
 
-class CredentialManagerPasskeys @Inject constructor(
-    @ApplicationContext private val context: Context,
+/**
+ * Credential Manager itself. Not injectable on purpose: the app reaches it only through
+ * [ServerBoundPasskeys], which checks every request against the configured server first.
+ */
+class CredentialManagerPasskeys(
+    private val context: Context,
 ) : PasskeyCredentials {
     private val manager by lazy { CredentialManager.create(context) }
 

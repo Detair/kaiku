@@ -6,6 +6,7 @@ import io.wolftown.kaiku.data.api.MessageApi
 import io.wolftown.kaiku.data.api.UnreadApi
 import io.wolftown.kaiku.data.auth.RefreshResult
 import io.wolftown.kaiku.data.auth.TokenRefresher
+import io.wolftown.kaiku.data.keydevice.KeyStorageCheck
 import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.data.repository.ChatRepository
 import io.wolftown.kaiku.data.repository.DmRepository
@@ -31,6 +32,9 @@ enum class WakeOutcome {
     /** The wake was queued for another account or server than the signed-in one. */
     WRONG_ACCOUNT,
     RETRY,
+
+    /** The key storage could not be read: the wake is kept with its account until it can ([WakeDeferral]). */
+    DEFERRED,
 }
 
 /**
@@ -65,6 +69,8 @@ class WakeFetchProcessor @Inject constructor(
     private val active: ActiveChannelTracker,
     private val chat: ChatRepository,
     private val dms: DmRepository,
+    private val keyStorage: KeyStorageCheck = KeyStorageCheck.READABLE,
+    private val deferral: WakeDeferral? = null,
 ) {
     companion object {
         private val logger = Logger.getLogger("WakeFetchProcessor")
@@ -105,6 +111,14 @@ class WakeFetchProcessor @Inject constructor(
      * it is checked once more right before posting.
      */
     suspend fun process(signal: WakeSignal, owner: WakeOwner, isStopped: () -> Boolean = { false }): WakeOutcome {
+        // While what the phone saved about its key cannot be read, the stored session is not
+        // touched at all (not read, refreshed, cleared or recovered): the wake is kept with its
+        // account until the storage can be read, not retried against the work budget.
+        if (keyStorage.unreadable()) {
+            val held = deferral ?: return WakeOutcome.RETRY
+            held.hold(signal, owner)
+            return WakeOutcome.DEFERRED
+        }
         // Captured before the refresh: a refresh rotation keeps the generation,
         // a logout or new login changes it (TokenStorage).
         val generation = tokenStorage.getSessionGeneration()

@@ -5,6 +5,7 @@ import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
+import io.wolftown.kaiku.approval.keyId
 import io.wolftown.kaiku.data.api.AuthApi
 import io.wolftown.kaiku.data.local.AuthSession
 import io.wolftown.kaiku.data.local.AuthState
@@ -40,7 +41,15 @@ class AuthRepositoryDeviceSessionTest {
     private val tokenStorage: TokenStorage = mockk(relaxed = true) {
         every { getServerUrl() } answers { serverUrl }
         every { saveServerUrl(any()) } answers { serverUrl = firstArg() }
+        every { saveSession(any(), any(), any(), any(), any()) } answers {
+            if (saveFails) return@answers false
+            firstArg<String?>()?.let { serverUrl = it }
+            savedAccess = secondArg()
+            true
+        }
     }
+    private var saveFails = false
+    private var savedAccess: String? = null
     private val authState = AuthState(CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher()))
     private val repository = AuthRepository(authApi, tokenStorage, authState, mockk<PushRegistrar>(relaxed = true), noTeardown(authState))
     private val auth = AuthResponse(accessToken = "device-access", refreshToken = "device-refresh", expiresIn = 900, tokenType = "Bearer")
@@ -52,8 +61,25 @@ class AuthRepositoryDeviceSessionTest {
 
         assertTrue(repository.installDeviceSession(auth, "u1", start).isSuccess)
 
-        verify { tokenStorage.saveTokens("device-access", "device-refresh", 900, "u1") }
+        verify { tokenStorage.saveSession(any(), "device-access", "device-refresh", 900, "u1") }
         assertEquals("u1", (authState.session.value as AuthSession.LoggedIn).userId)
+    }
+
+    /** The address and the session are one write: when it does not land, nothing is signed in. */
+    @Test fun `a device session whose write fails is not signed in and is ended`() = runTest {
+        serverUrl = null
+        saveFails = true
+        coEvery { authApi.authenticatedGetMe("device-access", origin) } returns alice
+        val start = repository.beginDeviceSignIn(origin)!!
+
+        assertTrue(repository.installDeviceSession(auth, "u1", start).isFailure)
+
+        assertEquals(AuthSession.LoggedOut, authState.session.value)
+        assertNull(serverUrl)
+        assertNull(savedAccess)
+        verify(exactly = 0) { tokenStorage.saveTokens(any(), any(), any(), any()) }
+        verify(exactly = 0) { tokenStorage.saveServerUrl(any()) }
+        coVerify { authApi.logoutSession(origin, "device-access", "device-refresh") }
     }
 
     @Test fun `a device session landing after a logout installs nothing and is ended`() = runTest {
@@ -65,7 +91,7 @@ class AuthRepositoryDeviceSessionTest {
 
         assertTrue(repository.installDeviceSession(auth, "u1", start).isFailure)
 
-        verify(exactly = 0) { tokenStorage.saveTokens("device-access", any(), any(), any()) }
+        verify(exactly = 0) { tokenStorage.saveSession(any(), "device-access", any(), any(), any()) }
         coVerify { authApi.logoutSession(origin, "device-access", "device-refresh") }
         assertEquals(AuthSession.LoggedOut, authState.session.value)
     }
@@ -80,7 +106,7 @@ class AuthRepositoryDeviceSessionTest {
 
         assertTrue(repository.installDeviceSession(auth, "u1", start).isFailure)
 
-        verify(exactly = 0) { tokenStorage.saveTokens("device-access", any(), any(), any()) }
+        verify(exactly = 0) { tokenStorage.saveSession(any(), "device-access", any(), any(), any()) }
         coVerify { authApi.logoutSession(origin, "device-access", "device-refresh") }
         assertEquals(AuthSession.LoggedOut, authState.session.value)
     }
@@ -94,7 +120,7 @@ class AuthRepositoryDeviceSessionTest {
 
         assertTrue(repository.installDeviceSession(auth, "u1", start).isFailure)
 
-        verify(exactly = 0) { tokenStorage.saveTokens("device-access", any(), any(), any()) }
+        verify(exactly = 0) { tokenStorage.saveSession(any(), "device-access", any(), any(), any()) }
         coVerify { authApi.logoutSession(origin, "device-access", "device-refresh") }
     }
 
@@ -106,7 +132,7 @@ class AuthRepositoryDeviceSessionTest {
 
         assertTrue(repository.installDeviceSession(auth, "u1", start).exceptionOrNull() is AlreadySignedInException)
 
-        verify(exactly = 0) { tokenStorage.saveTokens("device-access", any(), any(), any()) }
+        verify(exactly = 0) { tokenStorage.saveSession(any(), "device-access", any(), any(), any()) }
         coVerify { authApi.logoutSession(origin, "device-access", "device-refresh") }
         assertEquals(running, authState.session.value)
     }
@@ -117,8 +143,26 @@ class AuthRepositoryDeviceSessionTest {
         val start = repository.beginDeviceSignIn(origin)
 
         assertNotNull(start)
-        assertEquals(origin, serverUrl)
         assertEquals(origin, start!!.serverUrl)
+        // The app's address follows the key only once its signature was accepted and the session installed.
+        assertNull(serverUrl)
+        coEvery { authApi.authenticatedGetMe("device-access", origin) } returns alice
+        assertTrue(repository.installDeviceSession(auth, "u1", start).isSuccess)
+        assertEquals(origin, serverUrl)
+    }
+
+    /**
+     * A sign-in whose signature is refused (a key the server does not hold for this phone) leaves
+     * the app's address as it was: the sign-in form later still points at the server it pointed at.
+     */
+    @Test fun `a sign-in that never installs leaves the app's address as it was`() = runTest {
+        serverUrl = "https://typed.example.net"
+        val start = repository.beginDeviceSignIn(origin)
+        assertNotNull(start)
+        assertEquals(origin, start!!.serverUrl)
+        // The signature is refused: nothing is installed, nothing written.
+        assertEquals("https://typed.example.net", serverUrl)
+        verify(exactly = 0) { tokenStorage.saveServerUrl(any()) }
     }
 
     @Test fun `a running session on another server refuses the device sign-in`() = runTest {
@@ -175,7 +219,7 @@ class AuthRepositoryDeviceSessionTest {
         started.await()
         job.cancel()
         testScheduler.advanceUntilIdle()
-        verify { tokenStorage.saveTokens("device-access", "device-refresh", 900, "u1") }
+        verify { tokenStorage.saveSession(any(), "device-access", "device-refresh", 900, "u1") }
         coVerify(exactly = 1) { authApi.logoutSession(origin, "old-access", null) }
         // The installed session itself is never ended by the cancellation.
         coVerify(exactly = 0) { authApi.logoutSession(origin, "device-access", any()) }
@@ -225,7 +269,7 @@ class AuthRepositoryDeviceSessionTest {
         assertTrue(repository.installDeviceSession(auth, "u1", start).exceptionOrNull() is IOException)
 
         coVerify(exactly = 1) { authApi.logoutSession(origin, "device-access", "device-refresh") }
-        verify(exactly = 0) { tokenStorage.saveTokens("device-access", any(), any(), any()) }
+        verify(exactly = 0) { tokenStorage.saveSession(any(), "device-access", any(), any(), any()) }
     }
 
     @Test fun `a device sign-in cancelled while its profile loads ends its session`() = runTest {
@@ -242,7 +286,37 @@ class AuthRepositoryDeviceSessionTest {
         job.join()
 
         coVerify(exactly = 1) { authApi.logoutSession(origin, "device-access", "device-refresh") }
-        verify(exactly = 0) { tokenStorage.saveTokens("device-access", any(), any(), any()) }
+        verify(exactly = 0) { tokenStorage.saveSession(any(), "device-access", any(), any(), any()) }
         assertEquals(AuthSession.LoggedOut, authState.session.value)
+    }
+
+    /**
+     * A setup creates its key record for the session it checked: a sign-in that would install a
+     * session meanwhile waits until the record is made (and is then judged with it).
+     */
+    @Test fun `a session is not installed while a key record is being created`() = runTest {
+        val f = io.wolftown.kaiku.testutil.KeyDeviceFixture(backgroundScope, active = false)
+        coEvery { authApi.authenticatedGetMe("attempt-access", origin) } returns alice
+        val finished = java.util.concurrent.CountDownLatch(1)
+        var installedDuringCreate = true
+        var install: Thread? = null
+        val record = io.wolftown.kaiku.data.keydevice.StoredKeyDevice(
+            io.wolftown.kaiku.data.keydevice.LocalKeyDevice(null, "u1", origin, io.wolftown.kaiku.approval.UvClass.PER_USE, "e1", null, "Alice"),
+            io.wolftown.kaiku.data.keydevice.KeyDevicePhase.CLAIMING,
+            keyId = f.keyStore.keyId(),
+        )
+        val created = f.repo.create(record) {
+            // The check runs; a sign-in completes on another thread right now.
+            install = Thread {
+                kotlinx.coroutines.runBlocking { repository.completeAttempt(origin, null) { attemptAuth } }
+                finished.countDown()
+            }.also { it.start() }
+            installedDuringCreate = finished.await(1, java.util.concurrent.TimeUnit.SECONDS)
+            false
+        }
+        install!!.join(10_000)
+        assertTrue(created is io.wolftown.kaiku.data.keydevice.Change.Done)
+        assertTrue("the sign-in installed while the record was being created", !installedDuringCreate)
+        assertEquals(0L, finished.count)
     }
 }

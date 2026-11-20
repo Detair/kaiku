@@ -50,6 +50,22 @@ class ChallengeVerifierTest {
         })
     }
 
+    /**
+     * A setup is bound to the server its code was accepted for, not to the app's configured one:
+     * its challenges are checked against that server, whatever the app's own address says.
+     */
+    @Test fun a_setup_checks_against_its_own_server() {
+        pinned = "https://typed.example.net"
+        val ch = challengeFor(SigKind.LOGIN, 1, V01_CONTEXT)
+        assertEquals(challengeId(1), verifier.verify(ch, SigKind.LOGIN, USER_ID, DEVICE_ID, ceremonyOrigin = ORIGIN).challengeId)
+        assertEquals(RejectReason.ORIGIN, rejected { verifier.verify(ch, SigKind.LOGIN, USER_ID, DEVICE_ID) })
+        // A challenge of another server than the setup's is refused, whatever the app's address.
+        pinned = ORIGIN
+        assertEquals(RejectReason.ORIGIN, rejected {
+            verifier.verify(ch, SigKind.LOGIN, USER_ID, DEVICE_ID, ceremonyOrigin = "https://other.example.org")
+        })
+    }
+
     @Test fun no_pinned_origin_is_refused() {
         pinned = null
         assertEquals(RejectReason.ORIGIN, rejected {

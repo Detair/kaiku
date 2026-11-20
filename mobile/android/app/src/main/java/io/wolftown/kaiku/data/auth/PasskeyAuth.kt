@@ -21,6 +21,8 @@ sealed class PasskeyFailure(val code: String) : Exception(code) {
     data object Cancelled : PasskeyFailure("PASSKEY_CANCELLED")
     data object NoCredential : PasskeyFailure("PASSKEY_NO_CREDENTIAL")
     data object NotAssociated : PasskeyFailure("PASSKEY_NOT_ASSOCIATED")
+    /** The server's request is for another site than the configured server ([RpIdBinding]); nothing was sent. */
+    data object WrongServer : PasskeyFailure("PASSKEY_WRONG_SERVER")
     /** `PASSKEY_UNKNOWN`: the credential was signalled; "removed from Kaiku". */
     data object Removed : PasskeyFailure("PASSKEY_UNKNOWN")
     /** `PASSKEY_PENDING`: never signalled unknown. */
@@ -42,6 +44,7 @@ internal suspend fun ceremony(run: suspend () -> PasskeyOutcome): JsonObject =
         PasskeyOutcome.Cancelled -> throw PasskeyFailure.Cancelled
         PasskeyOutcome.NoCredential -> throw PasskeyFailure.NoCredential
         PasskeyOutcome.NotAssociated -> throw PasskeyFailure.NotAssociated
+        PasskeyOutcome.WrongServer -> throw PasskeyFailure.WrongServer
         is PasskeyOutcome.Failed -> throw PasskeyFailure.Server(outcome.code)
     }
 

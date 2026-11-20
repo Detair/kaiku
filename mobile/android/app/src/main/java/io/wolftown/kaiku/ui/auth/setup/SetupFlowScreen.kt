@@ -1,13 +1,19 @@
 package io.wolftown.kaiku.ui.auth.setup
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
@@ -43,36 +49,48 @@ import java.time.format.FormatStyle
  */
 @Composable
 fun SetupFlowScreen(
-    entry: SetupEntry?,
+    /** A setup link waiting to be delivered (memory only); handed to the setup once, then [onLinkTaken]. */
+    link: SetupEntry?,
     onSignedIn: () -> Unit,
     onBack: (() -> Unit)?,
     viewModel: SetupFlowViewModel = hiltViewModel(),
     onRescan: (() -> Unit)? = null,
+    onLinkTaken: (SetupEntry) -> Unit = {},
 ) {
     val ui by viewModel.ui.collectAsState()
+    val linkIgnored by viewModel.linkIgnored.collectAsState()
+    val linkKept by viewModel.linkKept.collectAsState()
+    val waiting by viewModel.waiting.collectAsState()
+    val cannotAsk by viewModel.cannotAsk.collectAsState()
+    val discardable by viewModel.discardable.collectAsState()
+    val lastResort by viewModel.lastResort.collectAsState()
 
-    LaunchedEffect(entry) {
-        when {
-            // A newer link opened while this screen is up replaces the setup (unless a claim is
-            // unresolved: start() then hands over to the waiting screen).
-            entry != null -> viewModel.startIfNew(entry)
-            !viewModel.started -> viewModel.resumeWithoutEntry()
-        }
+    // Taken only once composed, so a discarded composition never loses the memory-only code.
+    LaunchedEffect(link) {
+        deliverSetupLink(link, viewModel.started, viewModel::start, onLinkTaken, viewModel::resumeWithoutEntry)
     }
     val u0 = ui
-    if (u0 is SetupUi.Pending || u0 == SetupUi.Resume) {
+    if (waiting) {
         // L2-A13: the wait (and any reconciliation) continues on the pending screen, also while
         // this screen stays open.
         SetupPendingScreen(onSignedIn = onSignedIn, onEnded = { onBack?.invoke() })
         return
     }
-    SetupFlowSteps(ui = u0, viewModel = viewModel, onSignedIn = onSignedIn, onBack = onBack, onRescan = onRescan)
+    SetupFlowSteps(
+        ui = u0, viewModel = viewModel, linkIgnored = linkIgnored, linkKept = linkKept, cannotAsk = cannotAsk, lastResort = lastResort,
+        discardable = discardable, onSignedIn = onSignedIn, onBack = onBack, onRescan = onRescan,
+    )
 }
 
 @Composable
 private fun SetupFlowSteps(
     ui: SetupUi,
     viewModel: SetupFlowViewModel,
+    linkIgnored: Boolean,
+    linkKept: Int?,
+    cannotAsk: Boolean,
+    lastResort: Boolean,
+    discardable: Boolean,
     onSignedIn: () -> Unit,
     onBack: (() -> Unit)?,
     onRescan: (() -> Unit)?,
@@ -80,6 +98,28 @@ private fun SetupFlowSteps(
     SecureScreen()
     val activity = currentFragmentActivity()
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { viewModel.recheckScreenLock() }
+    // Back never drops the setup silently. A question or the code asks first, the progress before
+    // a question is cancelled as with its button, the claim on its way, a running prompt or sign-in
+    // keep the screen; ended steps leave as usual.
+    var askLeave by remember { mutableStateOf(false) }
+    val back = setupBackAction(ui)
+    BackHandler(enabled = back != SetupBack.LEAVE) {
+        when (back) {
+            SetupBack.CANCEL -> viewModel.cancel()
+            SetupBack.ASK -> askLeave = true
+            SetupBack.STAY, SetupBack.LEAVE -> Unit
+        }
+    }
+    if (askLeave && back == SetupBack.ASK) {
+        SetupLeaveDialog(
+            atCode = ui is SetupUi.ShowCode || ui == SetupUi.WaitingForCode,
+            onStay = { askLeave = false },
+            onStop = {
+                askLeave = false
+                viewModel.cancel()
+            },
+        )
+    }
     LaunchedEffect(ui) {
         when (ui) {
             SetupUi.SigningIn -> activity?.let(viewModel::signIn)
@@ -89,8 +129,9 @@ private fun SetupFlowSteps(
     }
 
     KeyScreen {
+        SetupLinkNotice(linkIgnored, linkKept)
         when (val u = ui) {
-            SetupUi.Opening -> Progress(stringResource(R.string.approval_checking))
+            SetupUi.Opening, SetupUi.Claiming -> Progress(stringResource(R.string.approval_checking))
             is SetupUi.ConfirmServer -> {
                 KeyTitle(stringResource(R.string.setup_title))
                 KeyBody(stringResource(R.string.setup_confirm_server, u.serverName, u.host))
@@ -109,6 +150,11 @@ private fun SetupFlowSteps(
                 KeySecondaryButton(stringResource(R.string.common_cancel), onClick = viewModel::cancel)
             }
             is SetupUi.ShowCode -> SetupCode(u.code)
+            SetupUi.ClaimWaiting, is SetupUi.CodeRanOut -> {
+                KeyNotice(if (u is SetupUi.CodeRanOut) stringResource(R.string.setup_code_ran_out, u.minutes) else stringResource(R.string.setup_claim_waiting), warning = false)
+                KeyPrimaryButton(stringResource(R.string.common_try_again), onClick = viewModel::retry)
+                if (onBack != null) KeySecondaryButton(stringResource(R.string.common_back), onClick = onBack)
+            }
             SetupUi.Interrupted -> {
                 KeyNotice(stringResource(R.string.setup_interrupted), warning = true)
                 if (onRescan != null) KeyPrimaryButton(stringResource(R.string.scan_setup_title), onClick = onRescan)
@@ -121,6 +167,85 @@ private fun SetupFlowSteps(
                 onBack = onBack,
             )
         }
+        // The states of this screen have their own "Try again", or (the code) ask again by themselves.
+        UnfinishedSetupHelp(cannotAsk = cannotAsk, lastResort = lastResort, discardable = discardable, onRetry = null, onDiscard = viewModel::discard)
+    }
+}
+
+/**
+ * Under a stored setup whose server gave no answer just now: the screen says so, keeps waiting and
+ * offers "Try again" where the state above has no such button ([onRetry]). Only once that has
+ * lasted (several separate occasions over at least a day) does it say more: [discardable], for a
+ * claim that can never finish, "Discard this unfinished setup" behind a question that says what
+ * is checked and what it means; [lastResort], for every other setup, the last resort in words
+ * (no button deletes such a key).
+ */
+@Composable
+internal fun UnfinishedSetupHelp(
+    cannotAsk: Boolean,
+    lastResort: Boolean,
+    discardable: Boolean,
+    onRetry: (() -> Unit)?,
+    onDiscard: () -> Unit,
+) {
+    if (!cannotAsk) return
+    var ask by remember { mutableStateOf(false) }
+    KeyBody(stringResource(R.string.setup_cannot_ask_hint), secondary = true)
+    if (onRetry != null) KeyPrimaryButton(stringResource(R.string.common_try_again), onClick = onRetry)
+    if (discardable) {
+        KeyBody(stringResource(R.string.setup_discard_hint), secondary = true)
+        KeySecondaryButton(stringResource(R.string.setup_discard), onClick = { ask = true })
+    } else if (lastResort) {
+        KeyBody(stringResource(R.string.setup_last_resort), secondary = true)
+    }
+    if (ask && discardable) {
+        AlertDialog(
+            onDismissRequest = { ask = false },
+            title = { Text(stringResource(R.string.setup_discard_title)) },
+            text = { Text(stringResource(R.string.setup_discard_body)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    ask = false
+                    onDiscard()
+                }) { Text(stringResource(R.string.setup_discard_confirm)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { ask = false }) { Text(stringResource(R.string.setup_discard_keep)) }
+            },
+        )
+    }
+}
+
+/**
+ * What the setup screen does with the link waiting for it, each time that link changes: a link
+ * is handed to the setup once and then marked taken (one delivery, one start; the setup itself
+ * decides whether it is used). Without a link, a screen that was handed nothing looks at what the
+ * phone has stored.
+ */
+internal fun deliverSetupLink(
+    link: SetupEntry?,
+    started: Boolean,
+    start: (SetupEntry) -> Unit,
+    taken: (SetupEntry) -> Unit,
+    resumeWithoutEntry: () -> Unit,
+) {
+    if (link != null) {
+        start(link)
+        taken(link)
+    } else if (!started) {
+        resumeWithoutEntry()
+    }
+}
+
+/**
+ * What became of a setup link opened while this setup runs: kept for after a claim whose code ran
+ * out ([linkKept], about that many minutes), or not used ([linkIgnored]).
+ */
+@Composable
+internal fun SetupLinkNotice(linkIgnored: Boolean, linkKept: Int?) {
+    when {
+        linkKept != null -> KeyNotice(stringResource(R.string.setup_link_kept, linkKept), warning = false)
+        linkIgnored -> KeyNotice(stringResource(R.string.setup_link_ignored), warning = false)
     }
 }
 
@@ -138,12 +263,22 @@ internal fun SetupStatus(ui: SetupUi, onSignIn: () -> Unit, onRetry: (() -> Unit
             KeyNotice(stringResource(R.string.setup_pending_hint), warning = false)
         }
         SetupUi.SigningIn, SetupUi.Done -> Progress(stringResource(R.string.setup_signing_in))
-        SetupUi.SignInPaused -> KeyPrimaryButton(stringResource(R.string.setup_sign_in_again), onClick = onSignIn)
+        SetupUi.SignInPaused -> {
+            // The button alone did not say what is left to do.
+            KeyBody(stringResource(R.string.setup_sign_in_paused))
+            KeyPrimaryButton(stringResource(R.string.setup_sign_in_again), onClick = onSignIn)
+        }
+        SetupUi.SignInTimedOut -> {
+            KeyNotice(stringResource(R.string.security_took_too_long), warning = true)
+            KeyPrimaryButton(stringResource(R.string.setup_sign_in_again), onClick = onSignIn)
+        }
         is SetupUi.Ended -> {
             KeyNotice(if (ui.arg != null) stringResource(ui.msg, ui.arg) else stringResource(ui.msg), warning = true)
             // An unclear answer or no connection is tried again; anything else starts the setup over.
             val retryLabel = when (ui.msg) {
-                R.string.setup_claim_unsure, R.string.security_network_error, R.string.errors_rate_limited -> R.string.common_try_again
+                R.string.setup_claim_unsure, R.string.security_network_error, R.string.errors_rate_limited,
+                R.string.setup_not_this_key -> R.string.common_try_again
+                R.string.setup_stopped_after_code -> R.string.setup_leave_stay
                 else -> R.string.setup_start_again
             }
             if (ui.canRetry && onRetry != null) KeyPrimaryButton(stringResource(retryLabel), onClick = onRetry)
@@ -156,6 +291,27 @@ internal fun SetupStatus(ui: SetupUi, onSignIn: () -> Unit, onRetry: (() -> Unit
         }
         else -> Unit
     }
+}
+
+/**
+ * "Stop setting up this phone?" for Back on a live setup step, shared by the setup and the
+ * waiting screen. [atCode]: the code is shown or awaited (otherwise a question is open).
+ */
+@Composable
+internal fun SetupLeaveDialog(atCode: Boolean, onStay: () -> Unit, onStop: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onStay,
+        title = { Text(stringResource(R.string.setup_leave_title)) },
+        text = { Text(stringResource(if (atCode) R.string.setup_leave_body else R.string.setup_leave_body_question)) },
+        confirmButton = {
+            TextButton(onClick = onStay) {
+                Text(stringResource(if (atCode) R.string.setup_leave_stay else R.string.setup_leave_continue))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onStop) { Text(stringResource(R.string.setup_leave_stop)) }
+        },
+    )
 }
 
 @Composable

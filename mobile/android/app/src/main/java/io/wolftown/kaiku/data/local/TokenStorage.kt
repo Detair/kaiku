@@ -146,6 +146,17 @@ class TokenStorage internal constructor(
         return fallback
     }
 
+    /** [read], or null when the store cannot read it; never resets anything. */
+    private inline fun <T> peek(read: () -> T): T? = try {
+        read()
+    } catch (_: GeneralSecurityException) {
+        null
+    } catch (_: IOException) {
+        null
+    } catch (_: SecurityException) {
+        null
+    }
+
     private inline fun isReadable(read: () -> Unit): Boolean = try {
         read()
         true
@@ -172,6 +183,57 @@ class TokenStorage internal constructor(
         sessionGeneration++
         writeTokens(accessToken, refreshToken, expiresIn, userId)
         sessionChanged()
+    }
+
+    /**
+     * Stores a new session together with the server it belongs to ([serverUrl]; null: the saved
+     * one stays) in one durable write. True when it reached storage; false when it did not, and
+     * then nothing of it is kept (the earlier values are put back), so tokens of one server never
+     * sit beside the address of another. Starts a new session generation once it is stored.
+     */
+    @Synchronized
+    fun saveSession(serverUrl: String?, accessToken: String, refreshToken: String?, expiresIn: Int, userId: String): Boolean {
+        // What is stored now, to put back if the write fails. Read without the reset of an unreadable
+        // store: the store is about to hold a new session, and a value that cannot be read is taken
+        // as absent (it is not put back).
+        val before = listOf(KEY_SERVER_URL, KEY_ACCESS_TOKEN, KEY_REFRESH_TOKEN, KEY_USER_ID).associateWith { k ->
+            peek { prefs.getString(k, null) }
+        }
+        val expiresBefore = peek { prefs.getLong(KEY_EXPIRES_AT, 0L) } ?: 0L
+        val expiresAt = System.currentTimeMillis() + expiresIn * 1000L
+        val written = try {
+            prefs.edit()
+                .apply { if (serverUrl != null) putString(KEY_SERVER_URL, serverUrl) }
+                .putString(KEY_ACCESS_TOKEN, accessToken)
+                .apply { if (refreshToken != null) putString(KEY_REFRESH_TOKEN, refreshToken) else remove(KEY_REFRESH_TOKEN) }
+                .putLong(KEY_EXPIRES_AT, expiresAt)
+                .putString(KEY_USER_ID, userId)
+                .commit()
+        } catch (e: RuntimeException) {
+            false
+        } catch (e: GeneralSecurityException) {
+            false
+        } catch (e: IOException) {
+            false
+        }
+        if (!written) {
+            logger.warning("Failed to persist the session; nothing of it is kept")
+            try {
+                prefs.edit().apply {
+                    before.forEach { (k, v) -> if (v != null) putString(k, v) else remove(k) }
+                    if (expiresBefore != 0L) putLong(KEY_EXPIRES_AT, expiresBefore) else remove(KEY_EXPIRES_AT)
+                }.commit()
+            } catch (_: RuntimeException) {
+            } catch (_: GeneralSecurityException) {
+            } catch (_: IOException) {
+            }
+            return false
+        }
+        // A new session only once it is stored: a write that did not land leaves the running one
+        // (and work begun under it) as it was.
+        sessionGeneration++
+        sessionChanged()
+        return true
     }
 
     /**
@@ -237,6 +299,16 @@ class TokenStorage internal constructor(
         }
     }
 
+    /** Removes the saved server address (back to "none saved"). Starts a new session generation. */
+    @Synchronized
+    fun clearServerUrl() {
+        sessionGeneration++
+        val success = prefs.edit().remove(KEY_SERVER_URL).commit()
+        if (!success) {
+            logger.warning("Failed to clear server URL from storage")
+        }
+    }
+
     /** Epoch millis at which the stored access token expires, or 0 when none is stored. */
     fun getAccessTokenExpiresAtMillis(): Long = readOr(0L) { prefs.getLong(KEY_EXPIRES_AT, 0L) }
 
@@ -245,11 +317,14 @@ class TokenStorage internal constructor(
         return System.currentTimeMillis() >= expiresAt
     }
 
-    /** Removes the session tokens (logout). Starts a new session generation. */
+    /**
+     * Removes the session tokens (logout). Starts a new session generation. False when the
+     * removal did not reach storage (the tokens may still be on disk).
+     */
     @Synchronized
-    fun clear() {
+    fun clear(): Boolean {
         sessionGeneration++
-        removeTokens()
+        return removeTokens()
     }
 
     /**
@@ -282,7 +357,7 @@ class TokenStorage internal constructor(
         return true
     }
 
-    private fun removeTokens() {
+    private fun removeTokens(): Boolean {
         // Only ending a stored session voids a pending move; clearing an empty store
         // (cleanup after a failed sign-in) keeps the move for the next start (Codex r4).
         if (prefs.contains(KEY_ACCESS_TOKEN) || prefs.contains(KEY_REFRESH_TOKEN)) sessionChanged()
@@ -295,5 +370,6 @@ class TokenStorage internal constructor(
         if (!success) {
             logger.warning("Failed to clear tokens from storage")
         }
+        return success
     }
 }

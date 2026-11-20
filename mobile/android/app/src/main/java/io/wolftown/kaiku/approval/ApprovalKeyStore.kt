@@ -15,12 +15,17 @@ import java.security.GeneralSecurityException
 import java.security.PrivateKey
 import java.security.Signature
 import java.security.spec.ECGenParameterSpec
+import java.security.MessageDigest
+import java.util.Base64
 
 /** The phone's key K_approve: the key exists but Android invalidated it (screen lock removed). */
 class KeyInvalidatedException : Exception("approval key invalidated")
 
 /** No approval key on this phone. */
 class NoApprovalKeyException : Exception("no approval key")
+
+/** The alias holds another key than the one the caller asked for: nothing is signed or deleted. */
+class KeyChangedException : Exception("approval key changed")
 
 /**
  * Whether a Keystore failure is Android's permanent invalidation of the key: a
@@ -34,30 +39,81 @@ class NoApprovalKeyException : Exception("no approval key")
 internal fun isInvalidatedKeyFailure(e: Throwable): Boolean =
     generateSequence(e) { it.cause }.take(16).any { it is KeyPermanentlyInvalidatedException }
 
+/** Names a key by its public key: base64url of the SHA-256 of its SPKI. */
+object KeyId {
+    fun of(spki: ByteArray): String =
+        Base64.getUrlEncoder().withoutPadding().encodeToString(MessageDigest.getInstance("SHA-256").digest(spki))
+}
+
 /** A new key: its SPKI DER, the attestation chain (leaf first) and how it verifies its user. */
-class GeneratedKey(val spki: ByteArray, val attestationChain: List<ByteArray>, val uvClass: UvClass)
+class GeneratedKey(val spki: ByteArray, val attestationChain: List<ByteArray>, val uvClass: UvClass) {
+    val keyId: String get() = KeyId.of(spki)
+}
+
+/**
+ * Runs [make], which creates the key under the alias and reads it back. If it cannot return the
+ * key (the read-back failed after the alias was created), the alias is deleted again, so a failed
+ * generation never leaves a key nobody holds a handle for.
+ */
+internal inline fun newKeyOrNone(deleteAlias: () -> Unit, make: () -> GeneratedKey): GeneratedKey = try {
+    make()
+} catch (e: Throwable) {
+    try {
+        deleteAlias()
+    } catch (_: Exception) {
+        // The original failure is the one to report.
+    }
+    throw e
+}
 
 /**
  * The one approval key K_approve (P-256, non-exportable, hardware-backed, UV on
- * every use). [generate] refuses to replace an existing key: replacing is
- * always an explicit [delete] by the caller, never silent.
+ * every use), under one alias. Every operation that uses or removes the key names the key it
+ * expects ([KeyId]); with another key in the alias nothing
+ * happens. [generate] refuses to replace an existing key, and a new alias it cannot hand back
+ * (its certificate cannot be read) is deleted again before it fails. Implementations run every
+ * operation under one monitor, so a check and its use are never split by another caller.
  */
 interface ApprovalKeyStore {
     fun hasKey(): Boolean
     fun generate(attestationChallenge: ByteArray, d: UvDecision.Use): GeneratedKey
     fun publicKeySpki(): ByteArray?
 
-    /** How the existing key verifies its user, read from the key itself; null without a key. */
-    fun keyUvClass(): UvClass?
-    fun delete()
+    /**
+     * How the key [expectedKeyId] verifies its user, read from the key itself; null without a key.
+     * Throws [KeyChangedException] when the alias holds another key (whatever state that key is in).
+     */
+    fun keyUvClass(expectedKeyId: String): UvClass?
 
     /**
-     * A `SHA256withECDSA` [Signature] initialised for signing. Throws
-     * [KeyInvalidatedException], [NoApprovalKeyException], or for a window key
-     * outside its window `android.security.keystore.UserNotAuthenticatedException`.
+     * Deletes the key only if it is [expectedKeyId] (null: an alias whose public key cannot be
+     * read). True when that key is gone afterwards; false, and nothing deleted, with another key.
      */
-    fun signature(): Signature
+    fun delete(expectedKeyId: String?): Boolean
+
+    /**
+     * A `SHA256withECDSA` [Signature] initialised for signing with the key [expectedKeyId].
+     * Throws [KeyChangedException] when the alias holds another key, [KeyInvalidatedException],
+     * [NoApprovalKeyException], or for a window key outside its window
+     * `android.security.keystore.UserNotAuthenticatedException`.
+     */
+    fun signature(expectedKeyId: String): Signature
 }
+
+/**
+ * The private key under the alias, only if the alias holds the key [expectedKeyId]: which key it
+ * is, is read from its certificate before the key itself is looked up. Another key in the alias is
+ * therefore [KeyChangedException] whatever state it is in (an invalidated one included), never
+ * mistaken for this key being invalidated.
+ */
+internal inline fun <K : Any> keyFor(expectedKeyId: String, hasAlias: () -> Boolean, publicId: () -> String?, privateKey: () -> K?): K {
+    if (!hasAlias()) throw NoApprovalKeyException()
+    if (publicId() != expectedKeyId) throw KeyChangedException()
+    return privateKey() ?: throw NoApprovalKeyException()
+}
+
+/** The [KeyId] of the key in the alias; null without a readable one. */
+fun ApprovalKeyStore.keyId(): String? = publicKeySpki()?.let(KeyId::of)
 
 class AndroidApprovalKeyStore(private val context: Context) : ApprovalKeyStore {
 
@@ -68,30 +124,35 @@ class AndroidApprovalKeyStore(private val context: Context) : ApprovalKeyStore {
 
     private fun keyStore(): KeyStore = KeyStore.getInstance(PROVIDER).apply { load(null) }
 
+    @Synchronized
     override fun hasKey(): Boolean = keyStore().containsAlias(ALIAS)
 
+    @Synchronized
     override fun generate(attestationChallenge: ByteArray, d: UvDecision.Use): GeneratedKey {
         check(!hasKey()) { "approval key exists; delete it explicitly first" }
-        val strongBox = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P &&
-            context.packageManager.hasSystemFeature(PackageManager.FEATURE_STRONGBOX_KEYSTORE)
-        try {
-            generateKey(attestationChallenge, d, strongBox)
-        } catch (e: Exception) {
-            if (!strongBox || !isStrongBoxUnavailable(e)) throw e
-            generateKey(attestationChallenge, d, strongBox = false)
+        // No key was there, so whatever the alias holds from here on is this call's own.
+        return newKeyOrNone(deleteAlias = { keyStore().run { if (containsAlias(ALIAS)) deleteEntry(ALIAS) } }) {
+            val strongBox = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P &&
+                context.packageManager.hasSystemFeature(PackageManager.FEATURE_STRONGBOX_KEYSTORE)
+            try {
+                generatePair(attestationChallenge, d, strongBox)
+            } catch (e: Exception) {
+                if (!strongBox || !isStrongBoxUnavailable(e)) throw e
+                generatePair(attestationChallenge, d, strongBox = false)
+            }
+            val ks = keyStore()
+            val chain = ks.getCertificateChain(ALIAS)?.map { it.encoded } ?: emptyList()
+            val spki = ks.getCertificate(ALIAS)?.publicKey?.encoded
+                ?: throw java.security.KeyStoreException("no certificate for the new key")
+            GeneratedKey(spki, chain, d.uvClass)
         }
-        val ks = keyStore()
-        val chain = ks.getCertificateChain(ALIAS)?.map { it.encoded } ?: emptyList()
-        val spki = ks.getCertificate(ALIAS)?.publicKey?.encoded
-            ?: throw java.security.KeyStoreException("no certificate for the new key")
-        return GeneratedKey(spki, chain, d.uvClass)
     }
 
     private fun isStrongBoxUnavailable(e: Exception): Boolean =
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.P &&
             generateSequence<Throwable>(e) { it.cause }.any { it is StrongBoxUnavailableException }
 
-    private fun generateKey(challenge: ByteArray, d: UvDecision.Use, strongBox: Boolean) {
+    private fun generatePair(challenge: ByteArray, d: UvDecision.Use, strongBox: Boolean) {
         val p = keySpecParams(d)
         val builder = KeyGenParameterSpec.Builder(ALIAS, KeyProperties.PURPOSE_SIGN)
             .setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))
@@ -114,10 +175,13 @@ class AndroidApprovalKeyStore(private val context: Context) : ApprovalKeyStore {
         }
     }
 
+    @Synchronized
     override fun publicKeySpki(): ByteArray? = keyStore().getCertificate(ALIAS)?.publicKey?.encoded
 
-    override fun keyUvClass(): UvClass? {
-        val key = privateKey() ?: return null
+    @Synchronized
+    override fun keyUvClass(expectedKeyId: String): UvClass? {
+        if (!hasKey()) return null
+        val key = keyFor(expectedKeyId, ::hasKey, { publicKeySpki()?.let(KeyId::of) }, ::privateKey)
         val info = invalidationMapped { KeyFactory.getInstance(key.algorithm, PROVIDER).getKeySpec(key, KeyInfo::class.java) }
         val timeout = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             info.userAuthenticationValidityDurationSeconds.takeIf { it >= 0 } ?: 0
@@ -128,13 +192,20 @@ class AndroidApprovalKeyStore(private val context: Context) : ApprovalKeyStore {
         return if (timeout > 0) UvClass.WINDOW_10S else UvClass.PER_USE
     }
 
-    override fun delete() {
+    @Synchronized
+    override fun delete(expectedKeyId: String?): Boolean {
         val ks = keyStore()
-        if (ks.containsAlias(ALIAS)) ks.deleteEntry(ALIAS)
+        if (!ks.containsAlias(ALIAS)) return true
+        if (ks.getCertificate(ALIAS)?.publicKey?.encoded?.let(KeyId::of) != expectedKeyId) return false
+        ks.deleteEntry(ALIAS)
+        return true
     }
 
-    override fun signature(): Signature {
-        val key = privateKey() ?: throw NoApprovalKeyException()
+    @Synchronized
+    override fun signature(expectedKeyId: String): Signature {
+        // Checked under the same monitor that guards generating and deleting: the handle
+        // initialised below is the handle of exactly this key.
+        val key = keyFor(expectedKeyId, ::hasKey, { publicKeySpki()?.let(KeyId::of) }, ::privateKey)
         return invalidationMapped { Signature.getInstance("SHA256withECDSA").apply { initSign(key) } }
     }
 

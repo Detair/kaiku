@@ -12,7 +12,7 @@ import { errorText } from "@/i18n/errors";
 import { formatTimestamp } from "@/i18n/format";
 import { isTauri } from "@/lib/tauri/common";
 import { claimStatus, finishPasskeyClaim, startPasskeyClaim } from "@/lib/tauri/enrollments";
-import { androidIntentUrl, isAndroidBrowser, parseSetupFragment, type SetupFragment } from "@/lib/setupLink";
+import { androidIntentUrl, isAndroidBrowser, isAppMissingPage, parseSetupFragment, type SetupFragment } from "@/lib/setupLink";
 import { createPasskeyCredential } from "@/lib/tauri/passkeys";
 import { passkeyFailureText } from "@/lib/authErrors";
 import { formatCode } from "@/components/auth/CodeEntry";
@@ -40,6 +40,8 @@ const SetupLink: Component = () => {
     window.history.replaceState(null, "", window.location.pathname + window.location.search);
   }
   const token = "token" in fragment ? fragment.token : "";
+  // Back from "Open in Kaiku" on a phone without the app (the browser's fallback, no code in it).
+  const appMissing = !token && isAppMissingPage(window.location.search);
   const android = isAndroidBrowser(navigator.userAgent);
   const desktop = isTauri();
 
@@ -131,6 +133,9 @@ const SetupLink: Component = () => {
         <Switch>
           <Match when={"error" in fragment && fragment.error === "version"}>
             <p class="text-base text-text-primary">{t("auth.setup.update")}</p>
+          </Match>
+          <Match when={appMissing}>
+            <p class="text-base text-text-primary">{t("auth.setup.noApp")}</p>
           </Match>
           <Match when={!token}>
             <p class="text-base text-text-primary">{t("auth.setup.invalid")}</p>
