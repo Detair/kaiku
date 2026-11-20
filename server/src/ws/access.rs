@@ -877,8 +877,10 @@ pub enum AdminSubscription {
     Allowed,
     /// It is not; a later elevation restores delivery.
     Refused,
-    /// Not decided yet (the read failed, the socket is in backoff after a
-    /// failed one, or the epoch kept moving); the next revalidation decides.
+    /// Not decided yet: the read failed or was not made (the socket is in
+    /// backoff after a failed one, or in the cooldown without a decision,
+    /// or the pool for these reads stayed busy), or the epoch kept moving.
+    /// The socket's next revalidation decides.
     Undecided,
 }
 
