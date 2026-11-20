@@ -119,8 +119,10 @@ class AuthRepository @Inject constructor(
      * sign-in path: under [pendingLock], refuses while a session runs or if
      * [precondition] fails, otherwise saves the tokens, runs [onInstalled]
      * and sets LoggedIn. Two sign-ins racing while logged out (a passkey
-     * and a collected attempt) can therefore never both install. Returns
-     * whether it installed.
+     * and a collected attempt) can therefore never both install. While a
+     * setup of this phone is stored and not finished (or the key storage
+     * cannot be read) it installs nothing: that setup ends first
+     * ([KeyDevicePolicy.refusesOtherSignIn]). Returns whether it installed.
      */
     private fun installSession(
         accessToken: String,
@@ -130,7 +132,7 @@ class AuthRepository @Inject constructor(
         precondition: () -> Boolean = { true },
         onInstalled: () -> Unit = {},
     ): Boolean = synchronized(pendingLock) {
-        if (authState.session.value is AuthSession.LoggedIn || !precondition()) return false
+        if (authState.session.value is AuthSession.LoggedIn || keyDevicePolicy.refusesOtherSignIn() || !precondition()) return false
         tokenStorage.saveTokens(
             accessToken = accessToken,
             refreshToken = refreshToken,

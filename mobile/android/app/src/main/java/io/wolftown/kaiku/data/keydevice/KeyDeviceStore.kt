@@ -43,7 +43,10 @@ data class StoredKeyDevice(
      * null for a record written before this field existed.
      */
     val installId: String? = null,
-    /** The phone's own clock when the claim was recorded. Only [SetupDiscard] reads it. */
+    /**
+     * The phone's own clock when the claim was recorded. Read by [SetupDiscard], and by
+     * [KeyAnswers] for a claim that completes by itself.
+     */
     val since: Instant? = null,
     /**
      * The claim of this record can complete only through a code that the phone shows and someone
@@ -123,6 +126,9 @@ class PrefsKeyDeviceStore(private val prefs: SharedPreferences) : KeyDeviceStore
     @Synchronized
     override fun load(): KeyStorage = try {
         if (REQUIRED.none(prefs::contains)) {
+            // No record. A flag of an earlier version that is there but cannot be read is not
+            // "nothing stored" either: reading it throws, and the store counts as unreadable.
+            if (prefs.contains(LEGACY_REMOVAL_SIGN_IN)) prefs.getBoolean(LEGACY_REMOVAL_SIGN_IN, false)
             KeyStorage.Absent
         } else {
             // A record is there. Anything about it that cannot be read (a failed decrypt, a phase

@@ -23,19 +23,35 @@ object PendingSetupLinks {
     private val _pending = MutableStateFlow<SetupEntry?>(null)
     val pending: StateFlow<SetupEntry?> = _pending.asStateFlow()
 
+    /** A link the app was opened with while it could not start, until it can ([releaseKept]). */
+    private val kept = MutableStateFlow<SetupEntry?>(null)
+
     fun post(e: SetupEntry) {
         _pending.value = e
     }
 
     /**
+     * An opened link goes to the one setup first ([offer], the setup owner's): only a link it is
+     * to use is posted for the setup screen; any other was noted there and goes nowhere.
+     */
+    fun deliver(e: SetupEntry, offer: (SetupEntry) -> Boolean) {
+        if (offer(e)) post(e)
+    }
+
+    /**
      * The app was opened with [uri] while it could not start (what it has saved about its key
-     * cannot be read): a setup link is kept for the setup screen to take once the app does start.
+     * cannot be read): a setup link is kept, in memory, until the app does start ([releaseKept]).
      * True when [uri] was a setup link. Nothing else of the link is looked at.
      */
     fun keep(uri: String?): Boolean {
         val e = uri?.let(SetupLinks::parse) ?: return false
-        post(e)
+        kept.value = e
         return true
+    }
+
+    /** Once the app has started: the kept link is delivered like any link opened now ([deliver]). */
+    fun releaseKept(offer: (SetupEntry) -> Boolean) {
+        kept.getAndUpdate { null }?.let { deliver(it, offer) }
     }
 
     /** Takes the pending link at most once, also with two takers at the same time. */
@@ -48,5 +64,6 @@ object PendingSetupLinks {
 
     fun clear() {
         _pending.value = null
+        kept.value = null
     }
 }

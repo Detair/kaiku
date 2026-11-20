@@ -11,7 +11,6 @@ import io.wolftown.kaiku.approval.UvDecision
 import io.wolftown.kaiku.data.api.ApiException
 import io.wolftown.kaiku.data.auth.DeviceSignInResult
 import io.wolftown.kaiku.data.auth.OriginPin
-import io.wolftown.kaiku.data.keydevice.KeyDeviceRepository
 import io.wolftown.kaiku.data.local.AuthSession
 import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.local.TokenStorage
@@ -68,8 +67,8 @@ interface SetupEnvironment {
     fun signedInUserId(): String?
     /**
      * An unconfigured app adopts the setup code's server once the person confirmed it: only if,
-     * at this moment, the app is still tied to no server and holds no key record (the same rule a
-     * link is accepted under). False: nothing was written.
+     * at this moment, [ServerAddressRule] allows it (the app is still tied to no server and holds
+     * no key record, the same rule a link is accepted under). False: nothing was written.
      */
     fun adoptServer(origin: String): Boolean
     /** The saved server URL (an unconfigured app may have one typed in, without a session). */
@@ -84,12 +83,13 @@ class AndroidSetupEnvironment @Inject constructor(
     private val originPin: OriginPin,
     private val authState: AuthState,
     private val tokenStorage: TokenStorage,
-    private val keyDevices: KeyDeviceRepository,
+    private val serverAddress: ServerAddressRule,
 ) : SetupEnvironment {
     override fun pinnedOrigin() = originPin.pinned()
     override fun signedInUserId() = (authState.session.value as? AuthSession.LoggedIn)?.userId
     override fun adoptServer(origin: String): Boolean {
-        if (keyDevices.unreadable() || keyDevices.record.value != null || originPin.pinned() != null) return false
+        // Asked and written in one go: nothing can come in between.
+        if (!serverAddress.mayChange(forOwnSetup = true)) return false
         if (tokenStorage.getServerUrl()?.let(KaikuPayloads::canonicalOrigin) != origin) tokenStorage.saveServerUrl(origin)
         return true
     }

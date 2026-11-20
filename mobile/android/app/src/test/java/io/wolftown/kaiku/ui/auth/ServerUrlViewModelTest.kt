@@ -33,6 +33,9 @@ class ServerUrlViewModelTest {
     private lateinit var viewModel: ServerUrlViewModel
     private val keyStore = io.wolftown.kaiku.testutil.InMemoryKeyDeviceStore()
     private lateinit var keyDevices: io.wolftown.kaiku.data.keydevice.KeyDeviceRepository
+    /** Whether the setup of this phone holds an attempt (as the setup owner reports it). */
+    private var setupHolds = false
+    private val serverAddress by lazy { io.wolftown.kaiku.ui.auth.setup.ServerAddressRule(keyDevices, { null }) { setupHolds } }
 
     @Before
     fun setUp() {
@@ -46,7 +49,7 @@ class ServerUrlViewModelTest {
             io.wolftown.kaiku.data.local.AuthState(kotlinx.coroutines.CoroutineScope(Dispatchers.Unconfined)),
             kotlinx.coroutines.CoroutineScope(Dispatchers.Unconfined),
         )
-        viewModel = ServerUrlViewModel(tokenStorage, authRepository, serverProbe, keyDevices)
+        viewModel = ServerUrlViewModel(tokenStorage, authRepository, serverProbe, serverAddress)
     }
 
     @After
@@ -63,7 +66,7 @@ class ServerUrlViewModelTest {
     fun `starts with the stored server when there is one`() {
         every { tokenStorage.getServerUrl() } returns "https://other.example"
 
-        val vm = ServerUrlViewModel(tokenStorage, authRepository, serverProbe, keyDevices)
+        val vm = ServerUrlViewModel(tokenStorage, authRepository, serverProbe, serverAddress)
 
         assertEquals("https://other.example", vm.uiState.value.url)
     }
@@ -73,7 +76,7 @@ class ServerUrlViewModelTest {
         assertFalse(viewModel.canGoBack)
         every { tokenStorage.getServerUrl() } returns "https://other.example"
 
-        assertTrue(ServerUrlViewModel(tokenStorage, authRepository, serverProbe, keyDevices).canGoBack)
+        assertTrue(ServerUrlViewModel(tokenStorage, authRepository, serverProbe, serverAddress).canGoBack)
     }
 
     @Test
@@ -195,5 +198,87 @@ class ServerUrlViewModelTest {
         assertFalse(viewModel.uiState.value.connectSuccess)
         verify(exactly = 0) { tokenStorage.saveServerUrl(any()) }
         verify(exactly = 0) { tokenStorage.clear() }
+    }
+
+    /**
+     * Connect is tapped and the server is probed; meanwhile a setup link opens a setup. When the
+     * probe answers, nothing is written (not the address, and the stored session is not cleared),
+     * and the screen says why.
+     */
+    @Test
+    fun `a probe that answers after a setup opened writes nothing`() = runTest {
+        coEvery { serverProbe.probe(any()) } coAnswers {
+            setupHolds = true
+            ProbeResult.Ok(true)
+        }
+
+        viewModel.onUrlChanged("other.example.org")
+        viewModel.onConnectClicked()
+        advanceUntilIdle()
+
+        assertEquals(R.string.auth_server_tied_to_key, viewModel.uiState.value.error)
+        assertFalse(viewModel.uiState.value.isChecking)
+        assertFalse(viewModel.uiState.value.connectSuccess)
+        verify(exactly = 0) { tokenStorage.saveServerUrl(any()) }
+        verify(exactly = 0) { tokenStorage.clear() }
+        verify(exactly = 0) { authRepository.cancelPasswordChange() }
+    }
+
+    @Test
+    fun `nor while a setup holds an attempt`() = runTest {
+        coEvery { serverProbe.probe(any()) } returns ProbeResult.Ok(true)
+        setupHolds = true
+
+        viewModel.onUrlChanged("other.example.org")
+        viewModel.onConnectClicked()
+        advanceUntilIdle()
+
+        assertEquals(R.string.auth_server_tied_to_key, viewModel.uiState.value.error)
+        io.mockk.coVerify(exactly = 0) { serverProbe.probe(any()) }
+    }
+
+    /**
+     * One rule, asked by both writers of the address: the server-address screen and a setup adopting
+     * its link's server. Neither writes the address under a condition of its own.
+     */
+    @Test
+    fun `the server-address screen and the setup ask the one rule`() {
+        val root = generateSequence(java.io.File("").absoluteFile) { it.parentFile }
+            .map { java.io.File(it, "src/main/java/io/wolftown/kaiku") }
+            .first { it.isDirectory }
+        val screen = java.io.File(root, "ui/auth/ServerUrlScreen.kt").readText()
+            .substringAfter("class ServerUrlViewModel").substringBefore("@Composable")
+        val setup = java.io.File(root, "ui/auth/setup/SetupFlowViewModel.kt").readText()
+            .substringAfter("override fun adoptServer(").substringBefore("override fun savedServer")
+        assertEquals(2, Regex("""serverAddress\.mayChange\(\)""").findAll(screen).count())
+        assertTrue(setup.contains("serverAddress.mayChange(forOwnSetup = true)"))
+        for (src in listOf(screen, setup)) {
+            for (own in listOf("record.value", "unreadable()", "pinned()", "holdsAttempt()")) assertFalse(own, src.contains(own))
+        }
+    }
+
+    /** What the rule refuses for: each condition alone. */
+    @Test
+    fun `the rule refuses for each of its conditions alone`() {
+        var pinned: String? = null
+        val rule = io.wolftown.kaiku.ui.auth.setup.ServerAddressRule(keyDevices, { pinned }) { setupHolds }
+        assertTrue(rule.mayChange())
+        pinned = "https://chat.example.com"
+        assertFalse(rule.mayChange())
+        assertFalse(rule.mayChange(forOwnSetup = true))
+        pinned = null
+        setupHolds = true
+        assertFalse(rule.mayChange())
+        assertTrue(rule.mayChange(forOwnSetup = true))
+        setupHolds = false
+        keyStore.stored = claimedRecord()
+        keyDevices.reload()
+        assertFalse(rule.mayChange())
+        assertFalse(rule.mayChange(forOwnSetup = true))
+        keyStore.stored = null
+        keyStore.unreadable = true
+        keyDevices.reload()
+        assertFalse(rule.mayChange())
+        assertFalse(rule.mayChange(forOwnSetup = true))
     }
 }

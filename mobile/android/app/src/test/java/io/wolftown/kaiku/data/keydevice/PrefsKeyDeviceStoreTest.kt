@@ -138,4 +138,24 @@ class PrefsKeyDeviceStoreTest {
         assertTrue(s.clearLegacyRemovalMark())
         assertEquals(false, s.legacyRemovalMark())
     }
+
+    /**
+     * No record, but the flag an earlier version left behind is there and cannot be read: that is
+     * "cannot be read", not "nothing stored" (a session it marked must not be taken as an ordinary one).
+     */
+    @Test fun `a left-over flag that cannot be read makes the store unreadable, not absent`() {
+        KeystoreWrappedPreferences(backing, testValueCipher()).edit().putBoolean("removal_sign_in", true).commit()
+        val broken = object : ValueCipher {
+            override fun encrypt(plain: ByteArray, aad: ByteArray) = throw ProviderException("keystore")
+            override fun decrypt(blob: ByteArray, aad: ByteArray) = throw ProviderException("keystore")
+        }
+        val before = backing.all.toMap()
+        val damaged = PrefsKeyDeviceStore(KeystoreWrappedPreferences(backing, broken))
+        assertEquals(KeyStorage.Unreadable, damaged.load())
+        assertNull(damaged.legacyRemovalMark())
+        assertEquals(before, backing.all.toMap())
+        // Readable, it is no record (the flag has its own clean-up).
+        assertEquals(KeyStorage.Absent, store().load())
+        assertEquals(true, store().legacyRemovalMark())
+    }
 }

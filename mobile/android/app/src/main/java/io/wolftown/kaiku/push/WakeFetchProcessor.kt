@@ -6,6 +6,7 @@ import io.wolftown.kaiku.data.api.MessageApi
 import io.wolftown.kaiku.data.api.UnreadApi
 import io.wolftown.kaiku.data.auth.RefreshResult
 import io.wolftown.kaiku.data.auth.TokenRefresher
+import io.wolftown.kaiku.data.keydevice.KeyStorageCheck
 import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.data.repository.ChatRepository
 import io.wolftown.kaiku.data.repository.DmRepository
@@ -65,6 +66,7 @@ class WakeFetchProcessor @Inject constructor(
     private val active: ActiveChannelTracker,
     private val chat: ChatRepository,
     private val dms: DmRepository,
+    private val keyStorage: KeyStorageCheck = KeyStorageCheck.READABLE,
 ) {
     companion object {
         private val logger = Logger.getLogger("WakeFetchProcessor")
@@ -105,6 +107,9 @@ class WakeFetchProcessor @Inject constructor(
      * it is checked once more right before posting.
      */
     suspend fun process(signal: WakeSignal, owner: WakeOwner, isStopped: () -> Boolean = { false }): WakeOutcome {
+        // While what the phone saved about its key cannot be read, the stored session is not
+        // touched at all (not read, refreshed, cleared or recovered): the wake waits.
+        if (keyStorage.unreadable()) return WakeOutcome.RETRY
         // Captured before the refresh: a refresh rotation keeps the generation,
         // a logout or new login changes it (TokenStorage).
         val generation = tokenStorage.getSessionGeneration()

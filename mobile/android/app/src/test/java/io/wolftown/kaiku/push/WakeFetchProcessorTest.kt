@@ -811,4 +811,22 @@ class WakeFetchProcessorTest {
         verify { sink.cancelAll() }
         assertEquals(1, enqueuer.cancelAllCount)
     }
+
+    /**
+     * While what the phone saved about its key cannot be read, a wake does not touch the stored
+     * session at all: not read, refreshed, cleared or "recovered" (any access would fail here).
+     */
+    @Test
+    fun `a wake leaves the stored session alone while the key storage cannot be read`() = runTest {
+        val untouchable: TokenStorage = mockk() // no answers: every access throws
+        val refreshes: TokenRefresher = mockk()
+        val gated = WakeFetchProcessor(
+            refreshes, untouchable, messages, unreadApi, titles, ledger, sink, enqueuer, active, chat, dms,
+            keyStorage = { true },
+        )
+        assertEquals(WakeOutcome.RETRY, gated.process(WakeSignal(WakeKind.DM, ch, 1), owner))
+        io.mockk.verify { untouchable wasNot io.mockk.Called }
+        io.mockk.verify { refreshes wasNot io.mockk.Called }
+        io.mockk.verify(exactly = 0) { sink.cancelAll() }
+    }
 }

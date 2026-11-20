@@ -21,6 +21,7 @@ import io.wolftown.kaiku.data.auth.OriginPin
 import io.wolftown.kaiku.data.auth.PasskeyStepUp
 import io.wolftown.kaiku.data.auth.StepUpProvider
 import io.wolftown.kaiku.data.keydevice.KeyDevicePolicy
+import io.wolftown.kaiku.data.keydevice.KeyStorageCheck
 import io.wolftown.kaiku.data.keydevice.KeyDeviceRepository
 import io.wolftown.kaiku.data.keydevice.KeyDeviceStore
 import io.wolftown.kaiku.data.keydevice.PrefsKeyDeviceStore
@@ -68,6 +69,9 @@ object ApprovalModule {
 
     @Provides
     fun provideKeyDevicePolicy(repo: KeyDeviceRepository): KeyDevicePolicy = repo
+
+    @Provides
+    fun provideKeyStorageCheck(repo: KeyDeviceRepository): KeyStorageCheck = repo
 
     /** The C26 device id is the C19 push device id. */
     @Provides

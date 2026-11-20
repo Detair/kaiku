@@ -736,4 +736,19 @@ class PushRegistrarTest {
         assertEquals(0, fcm.unregisters)
         assertEquals(0, scheduler.cancelled)
     }
+
+    /** The registration does not read the stored session while the key storage cannot be read. */
+    @Test
+    fun `no registration pass reads the session while the key storage cannot be read`() = runTest {
+        val untouchable: TokenStorage = mockk() // no answers: every access throws
+        val registrar = PushRegistrar(
+            pushApi = api, authState = AuthState(backgroundScope), tokenStorage = untouchable, deviceIdStore = deviceIdStore,
+            platform = platform, transports = setOf(fcm, up), store = store, scheduler = scheduler, scope = backgroundScope,
+            keyStorage = { true },
+        )
+        assertEquals(RefreshOutcome.NOT_LOGGED_IN, registrar.refresh())
+        assertEquals(RefreshOutcome.NOT_LOGGED_IN, registrar.refresh(scheduleRetry = false))
+        io.mockk.verify { untouchable wasNot io.mockk.Called }
+        io.mockk.coVerify(exactly = 0) { api.getConfig() }
+    }
 }

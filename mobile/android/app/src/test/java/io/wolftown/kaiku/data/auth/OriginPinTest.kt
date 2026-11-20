@@ -92,7 +92,7 @@ class OriginPinTest {
             every { getServerUrl() } answers { serverUrl }
             every { saveServerUrl(any()) } answers { saved += firstArg<String>(); serverUrl = firstArg() }
         }
-        val env = io.wolftown.kaiku.ui.auth.setup.AndroidSetupEnvironment(OriginPin(repo, authState, tokens), authState, tokens, repo)
+        val env = io.wolftown.kaiku.ui.auth.setup.AndroidSetupEnvironment(OriginPin(repo, authState, tokens), authState, tokens, io.wolftown.kaiku.ui.auth.setup.ServerAddressRule(repo, OriginPin(repo, authState, tokens)::pinned) { false })
 
         // Signed in on a server: tied to it.
         serverUrl = "https://other.example.org"
@@ -120,7 +120,7 @@ class OriginPinTest {
         val authState = AuthState(backgroundScope)
         val repo = KeyDeviceRepository(InMemoryKeyDeviceStore(), SoftwareApprovalKeyStore(), authState, backgroundScope)
         val tokens = TokenStorage(io.wolftown.kaiku.testutil.InMemorySharedPreferences())
-        val env = io.wolftown.kaiku.ui.auth.setup.AndroidSetupEnvironment(OriginPin(repo, authState, tokens), authState, tokens, repo)
+        val env = io.wolftown.kaiku.ui.auth.setup.AndroidSetupEnvironment(OriginPin(repo, authState, tokens), authState, tokens, io.wolftown.kaiku.ui.auth.setup.ServerAddressRule(repo, OriginPin(repo, authState, tokens)::pinned) { false })
 
         // No server was saved (a build without a default one).
         val before = env.savedServer()

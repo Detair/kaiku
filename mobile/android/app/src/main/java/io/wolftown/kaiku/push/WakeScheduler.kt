@@ -8,6 +8,7 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.OutOfQuotaPolicy
 import androidx.work.WorkManager
 import dagger.hilt.android.qualifiers.ApplicationContext
+import io.wolftown.kaiku.data.keydevice.KeyStorageCheck
 import io.wolftown.kaiku.data.local.TokenStorage
 import java.util.logging.Logger
 import javax.inject.Inject
@@ -45,12 +46,15 @@ interface WakeWorkEnqueuer {
 class WorkManagerWakeEnqueuer @Inject constructor(
     @ApplicationContext private val context: Context,
     private val tokenStorage: TokenStorage,
+    private val keyStorage: KeyStorageCheck,
 ) : WakeWorkEnqueuer {
 
     private val workManager: WorkManager
         get() = WorkManager.getInstance(context)
 
     override fun enqueue(signal: WakeSignal) {
+        // The stored session is not read while what the phone saved about its key cannot be.
+        if (keyStorage.unreadable()) return
         val userId = tokenStorage.getUserId() ?: return
         val owner = WakeOwner(userId, tokenStorage.getServerUrl())
         val request = OneTimeWorkRequestBuilder<WakeFetchWorker>()
@@ -69,6 +73,7 @@ class WorkManagerWakeEnqueuer @Inject constructor(
     }
 
     override fun enqueueCall(signal: WakeSignal) {
+        if (keyStorage.unreadable()) return
         val userId = tokenStorage.getUserId() ?: return
         val owner = WakeOwner(userId, tokenStorage.getServerUrl())
         val request = OneTimeWorkRequestBuilder<CallWakeWorker>()

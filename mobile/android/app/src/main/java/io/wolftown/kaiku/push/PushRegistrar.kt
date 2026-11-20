@@ -6,6 +6,7 @@ import io.wolftown.kaiku.data.api.PushApi
 import io.wolftown.kaiku.data.api.PushRegistration
 import io.wolftown.kaiku.data.local.AuthSession
 import io.wolftown.kaiku.data.local.AuthState
+import io.wolftown.kaiku.data.keydevice.KeyStorageCheck
 import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.di.ChatCoroutineScope
 import kotlinx.coroutines.CancellationException
@@ -80,6 +81,7 @@ class PushRegistrar @Inject constructor(
     private val store: PushRegistrationStore,
     private val scheduler: PushRegistrationScheduler,
     @ChatCoroutineScope private val scope: CoroutineScope,
+    private val keyStorage: KeyStorageCheck = KeyStorageCheck.READABLE,
 ) {
     companion object {
         private val logger = Logger.getLogger("PushRegistrar")
@@ -563,6 +565,8 @@ class PushRegistrar @Inject constructor(
     }
 
     private fun currentAccount(): Account? {
+        // While what the phone saved about its key cannot be read, the stored session is not read.
+        if (keyStorage.unreadable()) return null
         val userId = tokenStorage.getUserId()?.takeIf { it.isNotBlank() } ?: return null
         if (tokenStorage.getAccessToken() == null && tokenStorage.getRefreshToken() == null) return null
         return Account(userId, tokenStorage.getServerUrl())

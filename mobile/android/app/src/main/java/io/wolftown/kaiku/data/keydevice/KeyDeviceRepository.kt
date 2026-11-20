@@ -50,8 +50,27 @@ data class LocalKeyDevice(
 fun interface KeyDevicePolicy {
     fun keepsPushOnSignOut(): Boolean
 
+    /**
+     * No sign-in other than with this phone's key may complete now: a setup of this phone is
+     * stored and not finished, or the key storage cannot be read ([appEntry]).
+     */
+    fun refusesOtherSignIn(): Boolean = false
+
     companion object {
         val NONE = KeyDevicePolicy { false }
+    }
+}
+
+/**
+ * Whether what the phone saved about its key can be read now. While it cannot, nothing reads,
+ * refreshes, clears or recovers the stored session (the start, the background work, push): a
+ * damaged or locked store is never taken as "no session" or "no key".
+ */
+fun interface KeyStorageCheck {
+    fun unreadable(): Boolean
+
+    companion object {
+        val READABLE = KeyStorageCheck { false }
     }
 }
 
@@ -111,7 +130,7 @@ class KeyDeviceRepository @Inject constructor(
     private val keyStore: ApprovalKeyStore,
     private val authState: AuthState,
     @AuthCoroutineScope scope: CoroutineScope,
-) : KeyDevicePolicy {
+) : KeyDevicePolicy, KeyStorageCheck {
 
     private companion object {
         val logger: Logger = Logger.getLogger("KeyDeviceRepository")
@@ -121,6 +140,7 @@ class KeyDeviceRepository @Inject constructor(
     @Volatile
     private var storage: KeyStorage = read()
     private val _record = MutableStateFlow((storage as? KeyStorage.Present)?.record)
+    private val _unreadable = MutableStateFlow(storage is KeyStorage.Unreadable)
 
     /**
      * The stored record as it changes (null: none, or not readable). Its value is the record at
@@ -131,18 +151,32 @@ class KeyDeviceRepository @Inject constructor(
     private fun set(s: KeyStorage) {
         storage = s
         _record.value = (s as? KeyStorage.Present)?.record
+        _unreadable.value = s is KeyStorage.Unreadable
     }
 
     private fun stored(): StoredKeyDevice? = _record.value
 
     /** The store could not be read: nothing is known about a key device, and nothing is changed. */
-    fun unreadable(): Boolean = storage is KeyStorage.Unreadable
+    override fun unreadable(): Boolean = storage is KeyStorage.Unreadable
 
     val state: StateFlow<KeyDeviceState> = combine(_record, authState.session) { s, session -> derive(s, session) }
         .stateIn(scope, SharingStarted.Eagerly, derive(stored(), authState.session.value))
 
     /** The state now, computed synchronously (navigation decisions use it). */
     fun current(): KeyDeviceState = derive(stored(), authState.session.value)
+
+    /**
+     * Where the running app belongs ([appEntry]), as it changes. The server address is a question
+     * of the start only: here a phone without a setup or key belongs to the sign-in.
+     */
+    val entry: StateFlow<AppEntry> = combine(_unreadable, _record, authState.session) { u, r, s -> appEntry(u, r, s, hasServer = true) }
+        .stateIn(scope, SharingStarted.Eagerly, appEntry(unreadable(), stored(), authState.session.value, hasServer = true))
+
+    /** Where the app opens now ([appEntry]); [hasServer]: a server address is saved or built in. */
+    fun entry(hasServer: Boolean): AppEntry = appEntry(unreadable(), stored(), authState.session.value, hasServer)
+
+    override fun refusesOtherSignIn(): Boolean =
+        appEntry(unreadable(), stored(), authState.session.value, hasServer = true).let { it == AppEntry.WAITING_SETUP || it == AppEntry.UNREADABLE }
 
     private fun derive(s: StoredKeyDevice?, session: AuthSession): KeyDeviceState = when {
         s == null -> KeyDeviceState.None

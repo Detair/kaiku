@@ -37,6 +37,7 @@ import io.wolftown.kaiku.data.keydevice.SetupDiscard
 import io.wolftown.kaiku.data.keydevice.StoredKeyDevice
 import io.wolftown.kaiku.data.keydevice.Verdict
 import io.wolftown.kaiku.data.keydevice.isNoAnswer
+import io.wolftown.kaiku.data.keydevice.setupOwnsEntry
 import io.wolftown.kaiku.di.SetupCoroutineScope
 import io.wolftown.kaiku.domain.CodeFormat
 import io.wolftown.kaiku.domain.KaikuPayloads
@@ -332,6 +333,13 @@ class SetupOwner internal constructor(
 
     private fun SetupUi.isEnd(): Boolean = this is SetupUi.Ended || this == SetupUi.Interrupted || this == SetupUi.Done
 
+    /**
+     * This object holds an attempt (a setup code it works with, ended or not, until it is cleared),
+     * or works on a stored setup, or the final sign-in runs. The app's server address is not
+     * changed meanwhile ([ServerAddressRule]).
+     */
+    fun holdsAttempt(): Boolean = attempt != null || _waiting.value || signingIn
+
     /** A setup is held: started (from a link, or found stored) and not stopped, failed or finished yet (rule 2). */
     fun held(): Boolean = signingIn || ((attempt != null || _waiting.value) && !_ui.value.isEnd())
 
@@ -380,14 +388,25 @@ class SetupOwner internal constructor(
     }
 
     /**
-     * A setup link the app was opened with. False: a setup is held, the link is not used (the
-     * screen showing that setup says so) and nothing is to be navigated. True: no setup is held;
-     * the link goes to the setup screen, which hands it to [start].
+     * A setup link the app was opened with, judged against what is stored and what this object
+     * holds, whether or not a screen has opened the setup yet (a cold start offers the link before
+     * any screen exists). False: the link is not used (the screen showing the setup says so) and
+     * nothing is to be navigated: a setup is held, or a setup of this phone is stored and not
+     * finished ([setupOwnsEntry]). True: the link goes to the setup screen, which hands it to
+     * [start]; for a stored claim whose link this process still has, that screen checks the claim
+     * with it first and starts this link only if the claim is given up ([nextLink]).
      */
     fun offer(e: SetupEntry): Boolean {
-        if (!held()) return true
-        if (!e.sameCodeAs(attempt?.entry)) _linkIgnored.value = true
-        return false
+        if (held()) {
+            if (!e.sameCodeAs(attempt?.entry)) _linkIgnored.value = true
+            return false
+        }
+        val stored = keyDevices.record.value
+        if (setupOwnsEntry(stored) && (stored == null || makerOf(stored) == null)) {
+            _linkIgnored.value = true
+            return false
+        }
+        return true
     }
 
     /** Back to the scanner after an ended or abandoned setup; an unclaimed new key goes. */

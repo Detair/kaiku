@@ -2,6 +2,7 @@ package io.wolftown.kaiku.push
 
 import io.wolftown.kaiku.data.local.AuthSession
 import io.wolftown.kaiku.data.local.AuthState
+import io.wolftown.kaiku.data.keydevice.KeyStorageCheck
 import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.di.ChatCoroutineScope
 import kotlinx.coroutines.CoroutineScope
@@ -33,6 +34,7 @@ class PushSessionObserver @Inject constructor(
     private val enqueuer: WakeWorkEnqueuer,
     private val callStore: CallNotificationStore,
     @ChatCoroutineScope private val scope: CoroutineScope,
+    private val keyStorage: KeyStorageCheck = KeyStorageCheck.READABLE,
 ) {
     companion object {
         private val logger = Logger.getLogger("PushSessionObserver")
@@ -50,7 +52,8 @@ class PushSessionObserver @Inject constructor(
                 // AuthState starts signed out in every process (also one started
                 // by a wake) until MainActivity restores it, so a first "signed
                 // out" only counts when no session is stored at all.
-                val coldStartSignedOut = first && current == null && tokenStorage.getRefreshToken() == null
+                // (Not asked while what the phone saved about its key cannot be read: nothing is cleared then.)
+                val coldStartSignedOut = first && current == null && !keyStorage.unreadable() && tokenStorage.getRefreshToken() == null
                 if (coldStartSignedOut || (previous != null && previous != current)) {
                     logger.info("session ended: clearing message notifications and wake work")
                     enqueuer.cancelAll()

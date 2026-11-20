@@ -22,7 +22,7 @@ import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
-import io.wolftown.kaiku.data.keydevice.KeyDeviceState
+import io.wolftown.kaiku.data.keydevice.AppEntry
 import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.ui.auth.ConfirmItsYouScreen
 import io.wolftown.kaiku.domain.ScanMode
@@ -68,12 +68,12 @@ fun KaikuNavGraph(
     startDestination: String,
     authState: AuthState,
     appVersion: String = "",
-    keyDeviceState: StateFlow<KeyDeviceState> = MutableStateFlow(KeyDeviceState.None),
+    appEntry: StateFlow<AppEntry> = MutableStateFlow(AppEntry.SIGN_IN),
     pendingRoute: StateFlow<String?> = MutableStateFlow(null),
     onPendingRouteConsumed: () -> Unit = {},
     pendingNavigationViewModel: PendingNavigationViewModel = hiltViewModel()
 ) {
-    val keyState by keyDeviceState.collectAsState()
+    val entry by appEntry.collectAsState()
     val nextRoute by pendingRoute.collectAsState()
     val pendingNavigation = pendingNavigationViewModel.pendingNavigation
     val pendingChannelId by pendingNavigation.channelId.collectAsState()
@@ -95,15 +95,12 @@ fun KaikuNavGraph(
         }
     }
 
-    // A key device never sees the password form: a lapsed one confirms with its screen lock
-    // (L2-A11), a pending one keeps showing when it will be ready (L2-A13).
-    LaunchedEffect(isLoggedIn, keyState, currentRoute) {
-        if (!isLoggedIn && currentRoute == "login") {
-            when (keyState) {
-                is KeyDeviceState.Lapsed -> navController.navigate(CONFIRM_ROUTE) { popUpTo(0) { inclusive = true } }
-                is KeyDeviceState.Pending -> navController.navigate(SETUP_PENDING_ROUTE) { popUpTo(0) { inclusive = true } }
-                else -> Unit
-            }
+    // While signed out the phone's entry decides at every route: a lapsed key device confirms
+    // with its screen lock (L2-A11), a stored setup that has not finished keeps its waiting screen
+    // (L2-A13) whatever led away from it (Back, a redirect, a link).
+    LaunchedEffect(isLoggedIn, entry, currentRoute) {
+        if (!isLoggedIn) {
+            signedOutRedirect(entry, currentRoute)?.let { navController.navigate(it) { popUpTo(0) { inclusive = true } } }
         }
     }
 
@@ -111,7 +108,11 @@ fun KaikuNavGraph(
     val pendingSetup by PendingSetupLinks.pending.collectAsState()
     LaunchedEffect(pendingSetup, currentRoute) {
         if (pendingSetup != null && currentRoute != null && currentRoute != SETUP_FLOW_ROUTE) {
-            navController.navigate(SETUP_FLOW_ROUTE) { launchSingleTop = true }
+            // One setup screen: the waiting screen, if it is open, gives way to it.
+            navController.navigate(SETUP_FLOW_ROUTE) {
+                popUpTo(SETUP_PENDING_ROUTE) { inclusive = true }
+                launchSingleTop = true
+            }
         }
     }
 
@@ -209,7 +210,8 @@ fun KaikuNavGraph(
                 }
 
                 composable("login") {
-                    LoginScreen(
+                    // Never shown while the phone belongs elsewhere: the redirect above moves on.
+                    if (signedOutRedirect(entry, "login") == null) LoginScreen(
                         onNavigateToRegister = {
                             navController.navigate("register")
                         },
@@ -444,6 +446,34 @@ fun KaikuNavGraph(
             )
         }
     }
+}
+
+/** The route that opens [entry]; null for [AppEntry.UNREADABLE], which has its own screen outside navigation. */
+internal fun entryRoute(entry: AppEntry): String? = when (entry) {
+    AppEntry.HOME -> "home"
+    AppEntry.CONFIRM_ITS_YOU -> CONFIRM_ROUTE
+    AppEntry.WAITING_SETUP -> SETUP_PENDING_ROUTE
+    AppEntry.SIGN_IN -> "login"
+    AppEntry.SERVER_ADDRESS -> "server_url"
+    AppEntry.UNREADABLE -> null
+}
+
+/** The routes of a setup of this phone: the scanner for setup codes, the setup screen, the waiting screen. */
+internal val SETUP_ROUTES = setOf(SCAN_SETUP_ROUTE, SETUP_FLOW_ROUTE, SETUP_PENDING_ROUTE)
+
+/** The routes of a sign-in without this phone's key, and of choosing its server. */
+internal val SIGN_IN_ROUTES = setOf("login", "register", "change_password", "server_url")
+
+/**
+ * Where a signed-out phone on [route] has to go instead, by its [entry] ([io.wolftown.kaiku.data.keydevice.appEntry]);
+ * null: it may stay. A stored setup that has not finished allows only its own routes; a lapsed key
+ * device never shows a sign-in without its key.
+ */
+internal fun signedOutRedirect(entry: AppEntry, route: String?): String? = when {
+    route == null -> null
+    entry == AppEntry.WAITING_SETUP -> if (route in SETUP_ROUTES) null else SETUP_PENDING_ROUTE
+    entry == AppEntry.CONFIRM_ITS_YOU -> if (route in SIGN_IN_ROUTES) CONFIRM_ROUTE else null
+    else -> null
 }
 
 /** L2-A11: the lapsed key device's sign-in screen. */

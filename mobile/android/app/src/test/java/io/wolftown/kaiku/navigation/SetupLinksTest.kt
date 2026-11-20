@@ -96,8 +96,41 @@ class SetupLinksTest {
         org.junit.Assert.assertFalse(PendingSetupLinks.keep("https://chat.example.com/channels/1"))
         assertNull(PendingSetupLinks.pending.value)
         org.junit.Assert.assertTrue(PendingSetupLinks.keep("https://chat.example.com/setup#v=1&t=$token"))
+        // Kept, not yet posted: it goes to the setup owner once the app has started.
+        assertNull(PendingSetupLinks.pending.value)
+        val offered = mutableListOf<SetupEntry>()
+        PendingSetupLinks.releaseKept { offered += it; true }
+        assertEquals(listOf(SetupEntry("https://chat.example.com", token, SetupEntry.Source.LINK)), offered)
         assertEquals(SetupEntry("https://chat.example.com", token, SetupEntry.Source.LINK), PendingSetupLinks.take())
         assertNull(PendingSetupLinks.take())
+        // Released once only.
+        PendingSetupLinks.releaseKept { offered += it; true }
+        assertEquals(1, offered.size)
+    }
+
+    /** A link the setup owner does not use is not posted for the setup screen. */
+    @org.junit.Test fun `an opened link is posted only when the setup owner takes it`() {
+        PendingSetupLinks.clear()
+        val e = SetupEntry("https://chat.example.com", token, SetupEntry.Source.LINK)
+        PendingSetupLinks.deliver(e) { false }
+        assertNull(PendingSetupLinks.pending.value)
+        PendingSetupLinks.deliver(e) { true }
+        assertEquals(e, PendingSetupLinks.take())
+    }
+
+    /**
+     * Every setup link the activity receives goes through the setup owner: the one opened now and
+     * the one kept while the app could not start (released once the app starts).
+     */
+    @org.junit.Test fun `the activity hands every setup link to the setup owner`() {
+        val root = generateSequence(java.io.File("").absoluteFile) { it.parentFile }
+            .map { java.io.File(it, "src/main/java/io/wolftown/kaiku") }
+            .first { it.isDirectory }
+        val activity = java.io.File(root, "ui/MainActivity.kt").readText()
+        val started = activity.substringAfter("authState.initialize(tokenStorage)").substringBefore("setContent {")
+        org.junit.Assert.assertTrue(started.contains("PendingSetupLinks.releaseKept(setupOwner::offer)"))
+        org.junit.Assert.assertTrue(activity.contains("PendingSetupLinks.deliver(it, setupOwner::offer)"))
+        org.junit.Assert.assertFalse(activity.contains("PendingSetupLinks.post("))
     }
 
     /** The screen shown while the key record cannot be read keeps the launch link before it returns. */

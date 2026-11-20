@@ -605,7 +605,8 @@ class SetupOwnerTest {
         val key = f.keyStore.keyId()
         val asked = enroll.popCalls
         serverHoldsTheClaim()
-        assertTrue(owner.offer(link))
+        // A stored setup that has not finished owns the entry: the opened link goes nowhere.
+        assertFalse(owner.offer(link))
         v.start(link)
         assertEquals(SetupUi.Resume, v.ui.value)
         assertTrue(v.linkIgnored.value)
@@ -1210,5 +1211,144 @@ class SetupOwnerTest {
         advanceTimeBy(SetupOwner.SIGN_IN_TIMEOUT_MS + 1)
         runCurrent()
         assertEquals(SetupUi.Done, v.ui.value)
+    }
+
+    // ── Where a phone with an unfinished setup belongs ───────────────────────────────────────
+
+    /** A phone whose stored setup in [phase] was made by an earlier run of the app (cold start: nothing opened yet). */
+    private fun TestScope.storedSetup(phase: KeyDevicePhase): Pair<SetupOwner, KeyDeviceFixture> {
+        val f = KeyDeviceFixture(backgroundScope, active = false)
+        f.authState.setLoggedOut()
+        coEvery { deviceSignIn.signIn(any(), any()) } returns DeviceSignInResult.Success
+        f.repo.seed(
+            io.wolftown.kaiku.data.keydevice.StoredKeyDevice(
+                LocalKeyDevice(null, SigFixtures.USER_ID, SigFixtures.ORIGIN, UvClass.PER_USE, "e1", if (phase == KeyDevicePhase.CLAIMED) "secret" else null),
+                phase,
+                readyAt = if (phase == KeyDevicePhase.PENDING) now.plusSeconds(86_400) else null,
+                keyId = f.keyStore.keyId(),
+                attemptId = "earlier",
+            ),
+        )
+        return owner(f) to f
+    }
+
+    /**
+     * Back from the three setup screens that leave as usual while a claim is stored ("not sure",
+     * still checking, stopped at the code) never reaches the sign-in form: the stored setup owns
+     * the entry, and the sign-in route sends the phone to the waiting screen.
+     */
+    @Test fun `Back from an unfinished setup never reaches the sign-in form`() = runTest {
+        val screens = mutableListOf<Pair<SetupUi, io.wolftown.kaiku.data.keydevice.AppEntry>>()
+        // Stopped with the code on screen (CLAIMED).
+        run {
+            env.pinned = SigFixtures.ORIGIN
+            val (owner, f) = phone()
+            val v = SetupFlowViewModel(owner)
+            v.start(entry)
+            v.confirmSubject(activity)
+            assertTrue(v.ui.value is SetupUi.ShowCode)
+            v.cancel()
+            assertEquals(SetupUi.Ended(R.string.setup_stopped_after_code, canRetry = true), v.ui.value)
+            assertEquals(KeyDevicePhase.CLAIMED, f.repo.phase())
+            screens += v.ui.value to f.repo.entry(hasServer = true)
+            v.onCleared()
+        }
+        // "The connection broke" after the claim (CLAIMING).
+        run {
+            val (v, f, _) = lostClaim()
+            screens += v.ui.value to f.repo.entry(hasServer = true)
+            // The claim is still being checked (CLAIMING, the server could still store it).
+            val until = f.repo.record.value!!.claimVoidAfter!!
+            enroll.popAnswers += apiError(409, "ENROLLMENT_STATE")
+            approval.failWith = noKeyDeviceAt(until.minusSeconds(60))
+            v.retry()
+            assertEquals(SetupUi.ClaimWaiting, v.ui.value)
+            screens += v.ui.value to f.repo.entry(hasServer = true)
+            v.onCleared()
+        }
+        assertEquals(3, screens.size)
+        for ((ui, where) in screens) {
+            // Back (or the screen's own Back button) leaves the setup route ...
+            assertEquals(ui.toString(), SetupBack.LEAVE, setupBackAction(ui))
+            // ... and the phone still belongs to its waiting screen: the sign-in route moves on at once.
+            assertEquals(ui.toString(), io.wolftown.kaiku.data.keydevice.AppEntry.WAITING_SETUP, where)
+            assertEquals(ui.toString(), io.wolftown.kaiku.ui.SETUP_PENDING_ROUTE, io.wolftown.kaiku.ui.signedOutRedirect(where, "login"))
+        }
+    }
+
+    /**
+     * A cold start by a setup link for another code while a setup is stored (claim sent, code
+     * shown, or waiting for its time): one setup route (the waiting screen), and the notice there.
+     */
+    @Test fun `a link opened at a cold start over a stored unfinished setup is noted on its waiting screen and not used`() = runTest {
+        for (phase in listOf(KeyDevicePhase.CLAIMING, KeyDevicePhase.CLAIMED, KeyDevicePhase.PENDING)) {
+            val (owner, f) = storedSetup(phase)
+            // The activity offers the link before any screen has opened the setup.
+            assertFalse(phase.name, owner.offer(link))
+            assertTrue(phase.name, owner.linkIgnored.value)
+            // The app opens on the waiting screen only, which shows the notice.
+            assertEquals(phase.name, io.wolftown.kaiku.ui.SETUP_PENDING_ROUTE, io.wolftown.kaiku.ui.entryRoute(f.repo.entry(hasServer = true)))
+            val waiting = SetupPendingViewModel(owner)
+            assertTrue(phase.name, waiting.linkIgnored.value)
+            assertFalse(phase.name, waiting.ui.value is SetupUi.Ended)
+            assertEquals(phase, f.repo.phase())
+            assertTrue(enroll.openTokens.isEmpty())
+            waiting.onCleared()
+        }
+    }
+
+    /** The same after "Try again" on the screen that said the key storage could not be read. */
+    @Test fun `a link kept across the unreadable screen is judged against the stored setup`() = runTest {
+        for (phase in listOf(KeyDevicePhase.CLAIMING, KeyDevicePhase.CLAIMED, KeyDevicePhase.PENDING)) {
+            val (owner, f) = storedSetup(phase)
+            io.wolftown.kaiku.navigation.PendingSetupLinks.clear()
+            f.store.unreadable = true
+            f.repo.reload()
+            // Opened while the app could not start: kept, nothing posted.
+            assertTrue(io.wolftown.kaiku.navigation.PendingSetupLinks.keep("$ORIGIN_SETUP#v=1&t=$token2"))
+            assertNull(io.wolftown.kaiku.navigation.PendingSetupLinks.pending.value)
+            // "Try again" reads the store; the kept link goes through the setup owner like any link.
+            f.store.unreadable = false
+            assertTrue(f.repo.reload())
+            io.wolftown.kaiku.navigation.PendingSetupLinks.releaseKept(owner::offer)
+            assertNull(phase.name, io.wolftown.kaiku.navigation.PendingSetupLinks.pending.value)
+            assertTrue(phase.name, owner.linkIgnored.value)
+            val waiting = SetupPendingViewModel(owner)
+            assertTrue(phase.name, waiting.linkIgnored.value)
+            assertEquals(phase, f.repo.phase())
+            waiting.onCleared()
+        }
+        // Without a stored setup the kept link is posted for the setup screen.
+        val (owner, _) = phone()
+        assertTrue(io.wolftown.kaiku.navigation.PendingSetupLinks.keep("$ORIGIN_SETUP#v=1&t=$token2"))
+        io.wolftown.kaiku.navigation.PendingSetupLinks.releaseKept(owner::offer)
+        assertEquals(token2, io.wolftown.kaiku.navigation.PendingSetupLinks.take()?.tokenB64u)
+    }
+
+    /**
+     * The server-address screen probes a server; meanwhile a setup link opens a setup that waits at
+     * its question. When the probe answers, the address may not change: the setup holds an attempt.
+     */
+    @Test fun `the server address does not change while the setup holds an attempt`() = runTest {
+        val (owner, f) = phone()
+        val rule = ServerAddressRule(f.repo, { env.pinnedOrigin() }, owner::holdsAttempt)
+        assertTrue(rule.mayChange())
+        val v = SetupFlowViewModel(owner)
+        v.start(link)
+        assertTrue(v.ui.value is SetupUi.ConfirmServer)
+        assertFalse(rule.mayChange())
+        // The setup itself may still adopt its link's server.
+        assertTrue(rule.mayChange(forOwnSetup = true))
+        v.confirmServer()
+        assertTrue(v.ui.value is SetupUi.ConfirmSubject)
+        assertFalse(rule.mayChange())
+        // Once the setup was stopped and its screen closed, the address may change again.
+        v.cancel()
+        v.onCleared()
+        assertTrue(rule.mayChange())
+    }
+
+    private companion object {
+        const val ORIGIN_SETUP = "https://chat.example.com/setup"
     }
 }

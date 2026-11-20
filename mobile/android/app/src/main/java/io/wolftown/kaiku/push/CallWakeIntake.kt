@@ -1,5 +1,6 @@
 package io.wolftown.kaiku.push
 
+import io.wolftown.kaiku.data.keydevice.KeyStorageCheck
 import io.wolftown.kaiku.data.local.TokenStorage
 import javax.inject.Inject
 
@@ -19,6 +20,7 @@ import javax.inject.Inject
 class CallWakeIntake @Inject constructor(
     private val tokenStorage: TokenStorage,
     private val store: CallNotificationStore,
+    private val keyStorage: KeyStorageCheck = KeyStorageCheck.READABLE,
 ) {
     private companion object {
         /** Compare-and-set attempts against a concurrent writer (the call work). */
@@ -31,6 +33,8 @@ class CallWakeIntake @Inject constructor(
     fun accept(signal: WakeSignal): Boolean {
         val call = signal.call ?: return false
         if (signal.kind != WakeKind.CALL) return false
+        // The stored session is not read while what the phone saved about its key cannot be.
+        if (keyStorage.unreadable()) return false
         val userId = tokenStorage.getUserId() ?: return false
         repeat(MAX_TRIES) {
             val stored = store.shown(userId, signal.channelId)
