@@ -39,8 +39,14 @@ const OUTPUT_HEADROOM_SAMPLES: usize = FRAME_SAMPLES;
 const MAX_FRAMES_PER_WAKE: usize = 3;
 
 /// Packets queued per track between the RTP reader and the mixer. The mixer
-/// drains them every 5 ms; a full queue means the mixer stalled.
-pub const PACKET_QUEUE: usize = 64;
+/// takes up to [`MAX_PACKETS_PER_WAKE`] every 5 ms; a full queue means the
+/// mixer stalled (the reader then drops new packets, counted).
+pub const PACKET_QUEUE: usize = 16;
+
+/// A packet older than this when the mixer takes it is dropped (counted as
+/// expired): after a mixer stall, late audio is not worth playing. With the
+/// jitter buffer's 600 ms span this bounds the receive backlog.
+const MAX_PACKET_AGE: Duration = Duration::from_millis(500);
 
 /// Packets taken from one track per wake at most, so a flooding peer cannot
 /// keep the mixer from mixing (16 per 5 ms is 16× a normal stream).
@@ -419,6 +425,7 @@ impl AudioMixer {
             for (id, track) in &mut tracks {
                 for _ in 0..MAX_PACKETS_PER_WAKE {
                     match track.packets.try_recv() {
+                        Ok(p) if p.arrival.elapsed() > MAX_PACKET_AGE => track.playout.expire(),
                         Ok(p) => {
                             let arrival_ms = ms_since(epoch, p.arrival);
                             track
@@ -506,6 +513,7 @@ impl AudioMixer {
                     late_dropped = b.late_dropped,
                     discarded = b.discarded,
                     rejected = snapshot.rejected,
+                    expired = snapshot.expired,
                     lost = b.lost,
                     concealed_plc = snapshot.concealed_plc,
                     recovered_fec = snapshot.recovered_fec,
@@ -1224,6 +1232,41 @@ mod tests {
         })
         .await;
         assert!(ended.is_ok(), "mixer, output or reader still alive");
+    }
+
+    /// After a mixer stall, packets that waited longer than the receive
+    /// budget are dropped and counted instead of being played late.
+    #[tokio::test]
+    async fn packets_older_than_the_receive_budget_are_not_played() {
+        let (out_tx, out_rx) = mpsc::channel(8);
+        let level = OutputLevel::new();
+        let mixer =
+            AudioMixer::with_decoder(out_tx, UserGains::default(), level.clone(), const_factory());
+        let device = fake_device(out_rx, level);
+        let tx = mixer
+            .add_track(format!("{}:microphone", Uuid::new_v4()))
+            .await
+            .packets;
+        let stale = Instant::now().checked_sub(Duration::from_secs(2)).unwrap();
+        for seq in 0..8u16 {
+            let mut p = packet(seq, 10); // value 0.01: stale audio
+            p.arrival = stale + Duration::from_millis(u64::from(seq) * 20);
+            tx.send(p).await.unwrap();
+        }
+        for seq in 8..40u16 {
+            tx.send(packet(seq, 200)).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        // Counters are published once a second while the mixer runs.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let stats = mixer.playout_stats();
+        let seen = device.await.unwrap();
+        assert!(seen.iter().any(|s| (s - 0.2).abs() < 1e-6), "{seen:?}");
+        assert!(
+            !seen.iter().any(|s| (s - 0.01).abs() < 1e-6),
+            "stale audio played"
+        );
+        assert_eq!(stats[0].1.expired, 8, "{stats:?}");
     }
 
     #[test]

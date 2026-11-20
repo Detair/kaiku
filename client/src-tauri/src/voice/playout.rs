@@ -176,6 +176,9 @@ pub struct PlayoutStats {
     /// Packets rejected before buffering: not decodable as Opus, or
     /// shorter than 10 ms (not supported).
     pub rejected: u64,
+    /// Packets that waited longer than the receive budget before they
+    /// reached the buffer (the mixer had stalled): dropped.
+    pub expired: u64,
     pub target_delay_ms: f64,
     pub level_ms: f64,
 }
@@ -191,6 +194,7 @@ pub struct TrackPlayout<D> {
     recovered_fec: u64,
     decode_errors: u64,
     rejected: u64,
+    expired: u64,
 }
 
 impl<D: FrameDecoder> TrackPlayout<D> {
@@ -206,6 +210,7 @@ impl<D: FrameDecoder> TrackPlayout<D> {
             recovered_fec: 0,
             decode_errors: 0,
             rejected: 0,
+            expired: 0,
         }
     }
 
@@ -238,6 +243,11 @@ impl<D: FrameDecoder> TrackPlayout<D> {
             self.decoder.reset();
             self.carry_len = 0;
         }
+    }
+
+    /// A packet that waited too long to be worth buffering: count it.
+    pub const fn expire(&mut self) {
+        self.expired += 1;
     }
 
     /// Fill `out` (one interleaved stereo frame) with this tick's audio.
@@ -301,8 +311,9 @@ impl<D: FrameDecoder> TrackPlayout<D> {
             recovered_fec: self.recovered_fec,
             decode_errors: self.decode_errors,
             rejected: self.rejected,
+            expired: self.expired,
             target_delay_ms: self.buffer.playout_target_ms(),
-            level_ms: self.buffer.level_ms() + self.carry_ts() as f64 / 48.0,
+            level_ms: self.buffer.level_ms() + f64::from(self.carry_ts()) / 48.0,
         }
     }
 
@@ -1100,14 +1111,15 @@ mod tests {
         let mut out = vec![0.0f32; FRAME_SAMPLES];
         for k in 0..30u32 {
             let now = u64::from(k) * 20;
-            let packet = if k < 20 {
-                speech_frame(k as usize, &mut pcm);
-                let n = celt.encode(&pcm, &mut buf).unwrap();
-                Some(buf[..n].to_vec())
-            } else if k == 20 {
-                None // lost; the next one carries LBRR, the decoder is in CELT
-            } else {
-                Some(silk_packets[with_lbrr].clone())
+            let packet = match k.cmp(&20) {
+                std::cmp::Ordering::Less => {
+                    speech_frame(k as usize, &mut pcm);
+                    let n = celt.encode(&pcm, &mut buf).unwrap();
+                    Some(buf[..n].to_vec())
+                }
+                // Lost; the next one carries LBRR, the decoder is in CELT.
+                std::cmp::Ordering::Equal => None,
+                std::cmp::Ordering::Greater => Some(silk_packets[with_lbrr].clone()),
             };
             if let Some(packet) = packet {
                 playout.push(3, k as u16, k * FRAME_TS, false, now, packet);

@@ -1242,6 +1242,8 @@ pub struct TrackPlayoutReport {
     pub discarded: u64,
     /// Not decodable as Opus, or shorter than 10 ms.
     pub rejected: u64,
+    /// Waited too long (mixer stall) and dropped before buffering.
+    pub expired: u64,
     /// Packets whose audio did not arrive in time.
     pub lost: u64,
     pub concealed_plc: u64,
@@ -1267,6 +1269,7 @@ fn playout_reports(stats: Vec<(String, PlayoutStats)>) -> Vec<TrackPlayoutReport
             late_dropped: s.buffer.late_dropped,
             discarded: s.buffer.discarded,
             rejected: s.rejected,
+            expired: s.expired,
             lost: s.buffer.lost,
             concealed_plc: s.concealed_plc,
             recovered_fec: s.recovered_fec,
@@ -1623,6 +1626,7 @@ mod tests {
         b.buffer.resets = 1;
         b.buffer.discarded = 6;
         b.rejected = 8;
+        b.expired = 4;
         b.decode_errors = 9;
         b.concealed_plc = 2;
         b.recovered_fec = 5;
@@ -1648,6 +1652,7 @@ mod tests {
         assert_eq!(json["resets"], 1);
         assert_eq!(json["discarded"], 6);
         assert_eq!(json["rejected"], 8);
+        assert_eq!(json["expired"], 4);
         assert_eq!(json["decode_errors"], 9);
         assert_eq!(json["target_delay_ms"], 60.0);
         assert_eq!(json["level_ms"], 40.0);
