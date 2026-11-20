@@ -16,6 +16,8 @@ import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.wolftown.kaiku.R
 import io.wolftown.kaiku.data.api.AuthApi
+import io.wolftown.kaiku.data.api.SecurityApi
+import io.wolftown.kaiku.domain.model.MeSecurity
 import io.wolftown.kaiku.domain.model.User
 import javax.inject.Inject
 import kotlin.coroutines.cancellation.CancellationException
@@ -30,22 +32,37 @@ import kotlinx.coroutines.launch
  */
 fun isProbation(me: User): Boolean = me.session?.assurance != "full"
 
-/** The chat-only banner's text for [me]: "Add a phone" exists only with `may_approve` on. */
-fun probationBannerText(me: User): Int =
-    if (me.mayApprove) R.string.auth_probation_banner else R.string.auth_probation_banner_ask_admin
+/**
+ * The chat-only banner's text from the security overview: "Add a phone" only when the account
+ * has a key phone and `may_approve` is on (the button exists there), "sign in with a passkey" only
+ * when it has one, otherwise the admin. Without the overview it names no way.
+ */
+fun probationBannerText(sec: MeSecurity?): Int {
+    if (sec == null) return R.string.auth_probation_banner_neutral
+    val addPhone = sec.keyDevices > 0 && sec.mayApprove
+    val passkey = sec.passkeys > 0
+    return when {
+        addPhone && passkey -> R.string.auth_probation_banner
+        addPhone -> R.string.auth_probation_banner_add_phone
+        passkey -> R.string.auth_probation_banner_passkey
+        else -> R.string.auth_probation_banner_ask_admin
+    }
+}
 
 /** Whether the home screen shows the chat-only banner (from `GET /auth/me`). */
 @HiltViewModel
-class ProbationBannerViewModel @Inject constructor(private val authApi: AuthApi) : ViewModel() {
+class ProbationBannerViewModel @Inject constructor(
+    private val authApi: AuthApi,
+    private val securityApi: SecurityApi,
+) : ViewModel() {
     private val _visible = MutableStateFlow(false)
     val visible: StateFlow<Boolean> = _visible.asStateFlow()
 
     /**
-     * The banner text: it names "Add a phone" only when the account's key phone
-     * can show it (`may_approve` on); otherwise the way that works is the admin.
-     * "Set up this PC" is for computers, so it is never named on a phone.
+     * The banner text ([probationBannerText]). "Set up this PC" is for computers, so it is never
+     * named on a phone.
      */
-    private val _text = MutableStateFlow(R.string.auth_probation_banner)
+    private val _text = MutableStateFlow(R.string.auth_probation_banner_neutral)
     val text: StateFlow<Int> = _text.asStateFlow()
 
     private var job: kotlinx.coroutines.Job? = null
@@ -60,7 +77,16 @@ class ProbationBannerViewModel @Inject constructor(private val authApi: AuthApi)
         job = viewModelScope.launch {
             try {
                 val me = authApi.getMe()
-                _text.value = probationBannerText(me)
+                if (isProbation(me)) {
+                    val sec = try {
+                        securityApi.meSecurity()
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        null
+                    }
+                    _text.value = probationBannerText(sec)
+                }
                 _visible.value = isProbation(me)
             } catch (e: CancellationException) {
                 throw e

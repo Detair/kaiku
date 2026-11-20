@@ -60,7 +60,10 @@
     <string name="auth_totp_hint">If you just used a code, wait for the next one.</string>
     <string name="auth_totp_unavailable">Authenticator codes can\'t be used for this account right now. Use your phone or ask an admin.</string>
     <string name="auth_probation_banner">Signed in for chat only on this phone. To make it your key, use \'Add a phone\' on your key phone, or sign in with a passkey.</string>
-    <string name="auth_probation_banner_ask_admin">Signed in for chat only on this phone. To make it your key, ask your admin to set it up, or sign in with a passkey if you have one.</string>
+    <string name="auth_probation_banner_ask_admin">Signed in for chat only on this phone. To make it your key, ask your admin to set it up.</string>
+    <string name="auth_probation_banner_add_phone">Signed in for chat only on this phone. To make it your key, use \'Add a phone\' on your key phone.</string>
+    <string name="auth_probation_banner_passkey">Signed in for chat only on this phone. For everything else, sign in with a passkey.</string>
+    <string name="auth_probation_banner_neutral">Signed in for chat only on this phone.</string>
 
     <!-- Account creation -->
     <string name="auth_register_heading">Create an account</string>
