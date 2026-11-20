@@ -1313,11 +1313,13 @@ class SetupOwner internal constructor(
             // Cancelled or reset while the long-poll ran: its answer changes nothing any more.
             if (!(_ui.value is SetupUi.ShowCode || _ui.value == SetupUi.WaitingForCode)) return
             val ended = when (s.state) {
-                // "Done" counts by the state of the key device it made: active or pending as said;
-                // any other word (removed meanwhile, or none) is not taken as this key's: the claim
-                // and its secret stay, and the key-device probe decides.
+                // "Done" counts by the state of the key device it made: active or pending as said.
+                // "Revoked" is the server's word that the key device was made and removed since:
+                // taken as made, the device sign-in's refusal then ends it at once by the rule for a
+                // removed key. A missing or unknown state says nothing about this key: the claim and
+                // its secret stay, and the key-device probe decides.
                 EnrollmentState.DONE -> return when (s.authenticatorState) {
-                    "active", "pending" -> onDone(a, start, s.authenticatorState, s.readyAt)
+                    "active", "pending", "revoked" -> onDone(a, start, s.authenticatorState, s.readyAt)
                     else -> askKeyDevice(a, start, null, null)
                 }
                 EnrollmentState.CANCELLED -> R.string.setup_cancelled

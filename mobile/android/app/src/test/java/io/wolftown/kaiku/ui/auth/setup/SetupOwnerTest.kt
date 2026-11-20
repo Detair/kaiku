@@ -1628,18 +1628,24 @@ class SetupOwnerTest {
         assertTrue(approval.calls.isNotEmpty())
     }
 
-    /** A key device removed again right after the confirmation: the record is not made active first. */
-    @Test fun `a 'done' whose key device was removed is not taken as active`() = runTest {
+    /**
+     * A key device made and removed again right after the confirmation: the server says so, and the
+     * setup ends at once the way a removed key does (no wait for the code's time, no probe).
+     */
+    @Test fun `a 'done' whose key device was removed ends at once as a removed key`() = runTest {
         env.pinned = SigFixtures.ORIGIN
-        val (owner, f) = phone()
+        val (owner, _) = phone()
+        coEvery { deviceSignIn.signIn(any(), any()) } returns DeviceSignInResult.Revoked
         val v = SetupFlowViewModel(owner)
         v.start(entry)
         enroll.statuses += ClaimStatus(EnrollmentState.DONE, "revoked")
-        approval.failWith = IOException("offline")
         v.confirmSubject(activity)
         runCurrent()
-        assertEquals(KeyDevicePhase.CLAIMED, f.repo.phase())
-        assertTrue(f.store.writes.none { it == "save:ACTIVE" })
+        assertEquals(SetupUi.SigningIn, v.ui.value)
+        v.signIn(activity)
+        runCurrent()
+        assertEquals(SetupUi.Ended(io.wolftown.kaiku.ui.auth.signInResultText(DeviceSignInResult.Revoked)!!, canRetry = false), v.ui.value)
+        assertTrue(approval.calls.isEmpty())
     }
 
     // ── "This phone is already a key of this account" ─────────────────────────────────────────
