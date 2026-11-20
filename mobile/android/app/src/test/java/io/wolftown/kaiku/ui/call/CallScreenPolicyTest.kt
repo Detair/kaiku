@@ -1,6 +1,9 @@
 package io.wolftown.kaiku.ui.call
 
 import org.junit.Assert.assertEquals
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
 import org.junit.Test
 
 class CallScreenPolicyTest {
@@ -33,5 +36,24 @@ class CallScreenPolicyTest {
     fun `after the call nothing stays over the lock screen once the end was shown`() {
         assertEquals(CallScreenFlags(false, false, true, false), CallScreenPolicy.of(CallUi(CallPhase.Ended)))
         assertEquals(CallScreenFlags(false, false, false, false), CallScreenPolicy.of(CallUi(CallPhase.None)))
+    }
+
+    @Test
+    fun `the call screen waits for a call that started while it was closing`() = kotlinx.coroutines.test.runTest {
+        val state = kotlinx.coroutines.flow.MutableStateFlow<io.wolftown.kaiku.data.call.CallState>(
+            io.wolftown.kaiku.data.call.CallState.Incoming("dm-1", "c-1", "anna", "Anna", 0L),
+        )
+        var over = false
+        val wait = launch { CallScreenPolicy.awaitOver(state, 300L); over = true }
+        state.value = io.wolftown.kaiku.data.call.CallState.Idle
+        advanceTimeBy(100); runCurrent()
+        // A second call rings within the close delay.
+        state.value = io.wolftown.kaiku.data.call.CallState.Incoming("dm-2", "c-2", "bob", "Bob", 0L)
+        advanceTimeBy(1_000); runCurrent()
+        org.junit.Assert.assertFalse("closed with a call on", over)
+        state.value = io.wolftown.kaiku.data.call.CallState.Idle
+        advanceTimeBy(301); runCurrent()
+        org.junit.Assert.assertTrue("stayed behind after the second call", over)
+        wait.cancel()
     }
 }

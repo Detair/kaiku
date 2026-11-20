@@ -32,7 +32,6 @@ import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.data.ws.RealtimeConnectionManager
 import io.wolftown.kaiku.ui.shared.KaikuTheme
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
@@ -187,9 +186,8 @@ class CallActivity : ComponentActivity() {
             finish()
             return
         }
-        callController.state.first { it is CallState.Idle }
-        delay(CLOSE_DELAY_MS)
-        if (callController.state.value is CallState.Idle) finish()
+        CallScreenPolicy.awaitOver(callController.state, CLOSE_DELAY_MS)
+        finish()
     }
 
     private fun openAppSettings() {

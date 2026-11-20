@@ -1,5 +1,7 @@
 package io.wolftown.kaiku.ui.call
 
+import kotlinx.coroutines.flow.first
+
 /** How the call screen treats the display and the lock screen. */
 data class CallScreenFlags(
     /** Keep the display on. */
@@ -11,6 +13,7 @@ data class CallScreenFlags(
     /** Turn the display off while something is near the sensor (the phone at the ear). */
     val proximityScreenOff: Boolean,
 )
+
 
 /**
  * The display while a call is shown: a ring turns it on and keeps it on (over
@@ -25,5 +28,18 @@ object CallScreenPolicy {
             CallScreenFlags(keepScreenOn = false, turnScreenOn = false, showWhenLocked = true, proximityScreenOff = ui.earpiece && !ui.speaker)
         CallPhase.Ended -> CallScreenFlags(keepScreenOn = false, turnScreenOn = false, showWhenLocked = true, proximityScreenOff = false)
         CallPhase.None -> CallScreenFlags(keepScreenOn = false, turnScreenOn = false, showWhenLocked = false, proximityScreenOff = false)
+    }
+
+    /**
+     * Returns once the calls shown are over: no call for [closeDelayMs] after the last one
+     * ended. A call that starts within that moment is shown, and the wait goes on until it
+     * is over too (the screen never stays behind without a call).
+     */
+    suspend fun awaitOver(state: kotlinx.coroutines.flow.StateFlow<io.wolftown.kaiku.data.call.CallState>, closeDelayMs: Long) {
+        while (true) {
+            state.first { it is io.wolftown.kaiku.data.call.CallState.Idle }
+            kotlinx.coroutines.delay(closeDelayMs)
+            if (state.value is io.wolftown.kaiku.data.call.CallState.Idle) return
+        }
     }
 }
