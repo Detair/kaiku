@@ -217,13 +217,36 @@ class SetupPendingViewModelTest {
         )) {
             val (repo, f) = repo()
             repo.saveClaimed(pendingDevice())
+            enroll.statuses.clear()
             enroll.statuses += ClaimStatus(state)
+            enroll.statuses += ClaimStatus(state) // a code that ran out is asked about twice
             val v = pendingVm(repo)
             v.check()
+            advanceTimeBy(SetupOwner.EXPIRED_RECHECK_MS + 1)
+            runCurrent()
             assertEquals(SetupUi.Ended(text, canRetry = false), v.ui.value)
             assertEquals(KeyDeviceState.None, repo.current())
             assertFalse(f.keyStore.hasKey())
         }
+    }
+
+    @Test fun `a code that ran out counts once it is said again, a confirmation stored meanwhile wins`() = runTest {
+        // The code's time is just over while the confirmation typed in time is still being stored.
+        val (repo, f) = repo()
+        repo.saveClaimed(pendingDevice())
+        enroll.statuses += ClaimStatus(EnrollmentState.EXPIRED)
+        enroll.statuses += ClaimStatus(EnrollmentState.DONE, "active")
+        val v = pendingVm(repo)
+        v.check()
+        // Said once: nothing is forgotten yet.
+        assertEquals(SetupUi.WaitingForCode, v.ui.value)
+        assertEquals(KeyDevicePhase.CLAIMED, repo.phase())
+        assertTrue(f.keyStore.hasKey())
+        advanceTimeBy(SetupOwner.EXPIRED_RECHECK_MS + 1)
+        runCurrent()
+        assertEquals(SetupUi.SigningIn, v.ui.value)
+        assertEquals(KeyDevicePhase.ACTIVE, repo.phase())
+        assertTrue(f.keyStore.hasKey())
     }
 
     @Test fun `a late ending answer for an older claim never costs the claim stored now`() = runTest {
@@ -231,7 +254,7 @@ class SetupPendingViewModelTest {
         repo.saveClaimed(pendingDevice())
         val held = kotlinx.coroutines.CompletableDeferred<Unit>()
         enroll.statusGate = held
-        enroll.statuses += ClaimStatus(EnrollmentState.EXPIRED)
+        enroll.statuses += ClaimStatus(EnrollmentState.CANCELLED)
         val v = pendingVm(repo)
         v.check()
         // While the status request is under way, the phone is set up anew: another enrolment, another key.

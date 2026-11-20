@@ -163,6 +163,8 @@ class SetupOwner internal constructor(
         private const val RETRY_MS = 2_000L
         private const val RETRY_MAX_MS = 30_000L
         private const val ASK_AGAIN_SLACK_MS = 5_000L
+        /** A code that just ran out is asked about once more after this long, see [awaitCode]. */
+        const val EXPIRED_RECHECK_MS = 2_000L
     }
 
     private val _ui = MutableStateFlow<SetupUi>(SetupUi.Opening)
@@ -928,6 +930,7 @@ class SetupOwner internal constructor(
         val secret = start.device.claimSecret ?: return show(a, SetupUi.Ended(R.string.setup_failed_generic, canRetry = false))
         val enrolment = start.device.enrollmentId
         var backoff = RETRY_MS
+        var ranOut = false
         while (_ui.value is SetupUi.ShowCode || _ui.value == SetupUi.WaitingForCode) {
             val showsCode = _ui.value is SetupUi.ShowCode
             val s = try {
@@ -962,6 +965,15 @@ class SetupOwner internal constructor(
                 EnrollmentState.FAILED -> R.string.setup_code_failed
                 else -> null
             } ?: continue
+            // "Expired" is first said the moment the code's time is over, also while a confirmation
+            // that was sent just in time is still being stored. It counts when it is said again a
+            // little later; "cancelled" and "failed" are stored states and count at once.
+            if (s.state == EnrollmentState.EXPIRED && !ranOut) {
+                ranOut = true
+                delay(EXPIRED_RECHECK_MS)
+                live(a)
+                continue
+            }
             val settled = answers.settle(start, originOf(start), Ask.ENROLMENT_STATUS, ServerAnswer(200, state = s.state.wire), askedEnrolment = enrolment)
             if (settled.forgotten) {
                 a?.key = null

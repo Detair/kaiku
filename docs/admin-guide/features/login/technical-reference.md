@@ -655,7 +655,7 @@ with a listed code, an unknown code, an unreadable body) keeps the key.
 | `POST /auth/enrollments/claim` | 400 `VALIDATION_ERROR`, 400 `SIGNATURE_INVALID`, 400 `DEVICE_UNSUITABLE`, 404 `APPROVAL_NOT_FOUND`, 410 `APPROVAL_EXPIRED` | the claim is refused for good and nothing was stored for its key: its record is forgotten |
 | `POST /auth/enrollments/claim` | 409 `ENROLLMENT_ALREADY_CLAIMED`, 404 `ENROLLMENT_TOKEN_INVALID`, 409 `APPROVAL_STATE`, 409 `ENROLLMENT_STATE` | undecided (it may be this phone's own claim, stored when its answer was lost): the key stays and the claim is checked |
 | `POST /auth/enrollments/claim` | anything else, no answer within 30 s | the key stays, the record stays `CLAIMING`; "Try again" checks the claim |
-| `POST /auth/enrollments/status` | 200 with `cancelled` / `expired` / `failed`, asked for the record's enrolment | a claim waiting for its code is forgotten |
+| `POST /auth/enrollments/status` | 200 with `cancelled` / `expired` / `failed`, asked for the record's enrolment | a claim waiting for its code is forgotten; `expired` only once it is answered again 2 s later (the status says it from the moment the code's time is over, also while a confirmation sent just in time is still being stored) |
 | `POST /auth/enrollments/status` | 404 `ENROLLMENT_TOKEN_INVALID` | the enrolment is not known any more: the key device is asked; "no key device" then forgets |
 | `POST /auth/enrollments/status` | anything else | the key stays; the wait goes on |
 
