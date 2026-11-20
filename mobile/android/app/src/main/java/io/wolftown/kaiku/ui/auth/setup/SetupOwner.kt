@@ -351,13 +351,13 @@ class SetupOwner internal constructor(
      */
     fun holdsAttempt(): Boolean = attempt != null || _waiting.value || signingIn
 
-    /** A setup is held: started (from a link, or found stored) and not stopped, failed or finished yet (rule 2). */
     /**
      * A stored setup that has not finished owns the app's entry, and no screen has opened it in
      * this process: a scanner screen restored over it gives way to the waiting screen.
      */
     fun storedSetupWaits(): Boolean = !started && !keyDevices.unreadable() && setupOwnsEntry(keyDevices.record.value)
 
+    /** A setup is held: started (from a link, or found stored) and not stopped, failed or finished yet (rule 2). */
     fun held(): Boolean = signingIn || ((attempt != null || _waiting.value) && !_ui.value.isEnd())
 
     /**

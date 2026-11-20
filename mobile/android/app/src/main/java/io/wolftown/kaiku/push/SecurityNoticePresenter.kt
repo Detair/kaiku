@@ -50,8 +50,11 @@ class SecurityNoticePresenter internal constructor(
     private val sink: SecurityNotificationSink,
     private val ownUserId: () -> String?,
 ) {
-    /** Signed out, a key phone still knows its account (it keeps its push subscription, C19 am. 3). */
-    /** While what the phone saved about its key cannot be read, neither store is read: the subject is "another account". */
+    /**
+     * Signed out, a key phone still knows its account (it keeps its push subscription, C19 am. 3).
+     * While what the phone saved about its key cannot be read, neither store is read: the subject
+     * is "another account".
+     */
     @Inject
     constructor(sink: AndroidSecurityNotificationSink, tokenStorage: TokenStorage, keyDevices: KeyDeviceRepository, keyStorage: KeyStorageCheck) :
         this(sink, ownUserId = { if (keyStorage.unreadable()) null else tokenStorage.getUserId() ?: keyDevices.local()?.userId })
