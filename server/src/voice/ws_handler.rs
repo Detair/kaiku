@@ -270,37 +270,47 @@ async fn handle_join(
         .await
         .map_err(|e| VoiceError::Internal(format!("failed to fetch user info: {e}")))?;
 
-    let room = sfu.get_or_create_room(channel_id).await;
+    // The seat goes into the room the server lists for the channel; if that
+    // room was removed as empty while the connections were set up, start
+    // once more with the listed one.
+    let mut attempt = 0;
+    let (room, peer, replaced) = loop {
+        attempt += 1;
+        let room = sfu.get_or_create_room(channel_id).await;
 
-    let peer = sfu
-        .create_peer(
-            user_id,
-            username.clone(),
-            display_name.clone(),
-            channel_id,
-            tx.clone(),
-        )
-        .await?;
+        let peer = sfu
+            .create_peer(
+                user_id,
+                username.clone(),
+                display_name.clone(),
+                channel_id,
+                tx.clone(),
+            )
+            .await?;
 
-    sfu.setup_ice_handler(&peer);
-    sfu.setup_track_handler(&peer, &room);
-    // What the owning socket's writes are fenced by: room content reaches it
-    // only while these epochs hold, or after a new check.
-    peer.set_admission(crate::ws::access::VoiceAdmission { guild_id, epochs });
-    peer.set_auth_session(auth_session);
+        sfu.setup_ice_handler(&peer);
+        sfu.setup_track_handler(&peer, &room);
+        // What the owning socket's writes are fenced by: room content reaches
+        // it only while these epochs hold, or after a new check.
+        peer.set_admission(crate::ws::access::VoiceAdmission { guild_id, epochs });
+        peer.set_auth_session(auth_session);
 
-    let replaced = match room.add_peer_with_limit(peer.clone(), user_limit).await {
-        Ok(replaced) => {
-            // Counted where the seat enters the room, so every way out
-            // (including a join rolled back below) balances it.
-            crate::observability::metrics::record_voice_session_start();
-            replaced
-        }
-        Err(e) => {
-            // Refused (room full): the new connections are not used.
-            peer.close().await;
-            sfu.cleanup_room_if_empty(channel_id).await;
-            return Err(e);
+        match sfu.add_peer_listed(&room, peer.clone(), user_limit).await {
+            Ok(replaced) => {
+                // Counted where the seat enters the room, so every way out
+                // (including a join rolled back below) balances it.
+                crate::observability::metrics::record_voice_session_start();
+                break (room, peer, replaced);
+            }
+            // The room was removed meanwhile (the peer is closed already).
+            Err(VoiceError::RoomNotFound(_)) if attempt < 2 => {}
+            Err(e) => {
+                // Refused (room full, or removed again): the new
+                // connections are not used.
+                peer.close().await;
+                sfu.cleanup_room_if_empty(channel_id).await;
+                return Err(e);
+            }
         }
     };
     if let Some(replaced) = replaced {

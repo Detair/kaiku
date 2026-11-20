@@ -1333,6 +1333,39 @@ impl SfuServer {
         rooms.get(&channel_id).cloned()
     }
 
+    /// Add `peer` to `room` only while the server still lists `room` for
+    /// its channel (decided while the room list is held, so a room removed
+    /// as empty meanwhile gets no seat). Otherwise the peer is closed and
+    /// the join gets `RoomNotFound` (the caller may start again with the
+    /// listed room).
+    pub async fn add_peer_listed(
+        &self,
+        room: &Arc<Room>,
+        peer: Arc<Peer>,
+        user_limit: Option<usize>,
+    ) -> Result<Option<ReplacedMedia>, VoiceError> {
+        // Lock order: rooms, then the room's peers (as in
+        // `cleanup_room_if_empty`).
+        let result = {
+            let rooms = self.rooms.read().await;
+            if rooms
+                .get(&room.channel_id)
+                .is_some_and(|listed| Arc::ptr_eq(listed, room))
+            {
+                Some(room.add_peer_with_limit(peer.clone(), user_limit).await)
+            } else {
+                None
+            }
+        };
+        match result {
+            Some(result) => result,
+            None => {
+                peer.close().await;
+                Err(VoiceError::RoomNotFound(room.channel_id))
+            }
+        }
+    }
+
     /// Remove a room if empty.
     pub async fn cleanup_room_if_empty(&self, channel_id: Uuid) {
         let mut rooms = self.rooms.write().await;
@@ -2566,6 +2599,38 @@ mod negotiation_tests {
             kept.iter().all(|t| t.id().starts_with("new-")),
             "{:?}",
             kept.iter().map(|t| t.id().to_owned()).collect::<Vec<_>>()
+        );
+    }
+
+    /// A join whose room was removed as empty while the join set up its
+    /// connections gets no seat in that removed room; its peer is closed.
+    #[tokio::test]
+    async fn a_join_gets_no_seat_in_a_room_that_was_removed() {
+        let (sfu, _peer, _rx, _client) = setup().await;
+        let channel = Uuid::from_u128(42);
+        let room = sfu.get_or_create_room(channel).await;
+        sfu.cleanup_room_if_empty(channel).await;
+        let (tx, _rx2) = mpsc::channel(8);
+        let joiner = sfu
+            .create_peer(Uuid::from_u128(5), "j".into(), "J".into(), channel, tx)
+            .await
+            .expect("peer");
+        let result = sfu.add_peer_listed(&room, joiner.clone(), None).await;
+        assert!(
+            matches!(result, Err(VoiceError::RoomNotFound(_))),
+            "{:?}",
+            result.as_ref().err()
+        );
+        assert_eq!(
+            room.participant_count().await,
+            0,
+            "a seat in the removed room"
+        );
+        assert!(sfu.get_room(channel).await.is_none());
+        assert_eq!(
+            joiner.publisher_pc.connection_state(),
+            RTCPeerConnectionState::Closed,
+            "the refused peer is closed"
         );
     }
 
