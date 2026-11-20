@@ -2644,30 +2644,51 @@ mod tests {
         }
     }
 
-    /// The output callback must never wait for the PCM pusher, deafened or
-    /// not: a pusher preempted mid-append would push it past its deadline.
-    /// The hand-over is lock-free; here the other stream of a device switch
-    /// holds the ring, and the callback plays silence instead of waiting.
+    /// During a device switch the replaced stream plays silence and takes
+    /// nothing: the mix belongs to the new device.
     #[test]
-    fn output_callback_never_waits_for_the_pusher() {
+    fn a_replaced_output_stream_plays_silence_and_takes_nothing() {
         let queue = PlaybackQueue::new(OutputLevel::new());
+        let old = queue.level.begin_stream();
+        let new = queue.level.begin_stream();
         queue.push(&[0.5; 960]);
-        let (done_tx, done_rx) = std::sync::mpsc::channel();
-        let q = queue.clone();
-        let busy = queue;
-        std::thread::spawn(move || {
-            // A pusher hammering the ring meanwhile.
-            for _ in 0..10_000 {
-                busy.push(&[0.25; 64]);
-            }
-        });
-        std::thread::spawn(move || {
-            let mut data = vec![1.0f32; 480];
-            fill_output(&q, q.level.active_stream(), &mut false, true, &mut data);
-            let _ = done_tx.send(data.iter().all(|s| *s == 0.0));
-        });
-        let finished = done_rx.recv_timeout(Duration::from_millis(500));
-        assert_eq!(finished, Ok(true), "callback blocked on the pusher");
+        let mut data = vec![1.0f32; 480];
+        fill_output(&queue, old, &mut false, false, &mut data);
+        assert!(data.iter().all(|s| *s == 0.0));
+        assert_eq!(queue.samples.len(), 960, "the old stream took samples");
+        fill_output(&queue, new, &mut false, false, &mut data);
+        assert!(data.iter().all(|s| (*s - 0.5).abs() < 1e-6));
+        assert_eq!(queue.samples.len(), 480);
+    }
+
+    /// After the device was absent, the next callback drops what was queued
+    /// (stale) instead of playing it.
+    #[test]
+    fn stale_audio_is_dropped_when_the_device_comes_back() {
+        let queue = PlaybackQueue::new(OutputLevel::new());
+        let stream = queue.level.begin_stream();
+        queue.level.produced(1920);
+        queue.push(&[0.5; 1920]);
+        queue.level.request_flush();
+        let mut data = vec![1.0f32; 480];
+        fill_output(&queue, stream, &mut false, false, &mut data);
+        assert!(data.iter().all(|s| *s == 0.0), "stale audio played");
+        assert_eq!(queue.samples.len(), 0);
+        assert_eq!(queue.level.queued(), 0);
+    }
+
+    /// A new stream's first callback keeps only its block plus a frame of
+    /// what was queued for a device with larger blocks.
+    #[test]
+    fn a_new_streams_first_callback_drops_the_excess() {
+        let queue = PlaybackQueue::new(OutputLevel::new());
+        let stream = queue.level.begin_stream();
+        queue.push(&vec![0.5; 40_000]);
+        let mut data = vec![0.0f32; 960];
+        let mut first = true;
+        fill_output(&queue, stream, &mut first, false, &mut data);
+        assert!(!first);
+        assert_eq!(queue.samples.len(), FRAME_SIZE * CHANNELS as usize);
     }
 
     #[test]

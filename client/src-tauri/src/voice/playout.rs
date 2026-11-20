@@ -179,6 +179,8 @@ pub struct PlayoutStats {
     /// Packets that waited longer than the receive budget before they
     /// reached the buffer (the mixer had stalled): dropped.
     pub expired: u64,
+    /// Packets the reader dropped because the queue to the mixer was full.
+    pub queue_full: u64,
     pub target_delay_ms: f64,
     pub level_ms: f64,
 }
@@ -320,6 +322,7 @@ impl<D: FrameDecoder> TrackPlayout<D> {
             decode_errors: self.decode_errors,
             rejected: self.rejected,
             expired: self.expired,
+            queue_full: 0,
             target_delay_ms: self.buffer.playout_target_ms(),
             level_ms: self.buffer.level_ms() + f64::from(self.carry_ts()) / 48.0,
         }

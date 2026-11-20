@@ -2031,4 +2031,54 @@ mod tests {
         assert!(st.underruns >= 1, "{st:?}");
         assert!(jb.target_ms() > MIN_TARGET_MS, "{}", jb.target_ms());
     }
+
+    /// A packet 60 sequence numbers ahead whose timestamp moved one frame
+    /// cannot be part of the stream (at least 10 ms per packet): discarded,
+    /// no restart, playout goes on.
+    #[test]
+    fn a_sequence_jump_with_a_near_timestamp_is_discarded() {
+        let mut jb = JitterBuffer::new();
+        let mut arrivals: Vec<_> = (0..300u32).map(|i| (u64::from(i) * 20, i, i)).collect();
+        arrivals.push((100 * 20 + 1, 160, 101));
+        arrivals.sort_unstable();
+        let out = simulate_frames(&mut jb, &arrivals, 0..300, |_, _| {});
+        let st = jb.stats();
+        assert_eq!((st.resets, st.discarded), (0, 1), "{st:?}");
+        let d = decoded(&out.concat());
+        assert!(d.windows(2).all(|w| w[1] == w[0] + 1), "{d:?}");
+    }
+
+    /// After a new source is confirmed, late packets of the replaced one are
+    /// refused: they cannot switch playout back.
+    #[test]
+    fn late_packets_of_a_replaced_source_are_refused() {
+        let mut jb = JitterBuffer::new();
+        let a = Stream::new(100, 1000);
+        let b = Stream {
+            ssrc: 0xB2,
+            seq0: 9,
+            ts0: 4_000_000,
+            tag: 2,
+        };
+        let mut carry = 0;
+        for tick in 0..100u64 {
+            a.push(&mut jb, tick as u32, tick * 20);
+            play(&mut jb, &mut carry, tick * 20);
+        }
+        let mut out = Vec::new();
+        for tick in 100..200u64 {
+            b.push(&mut jb, (tick - 100) as u32, tick * 20);
+            if tick == 110 || tick == 111 {
+                // Two delayed packets of the old source, in a row.
+                a.push(&mut jb, 98 + (tick - 110) as u32, tick * 20);
+            }
+            let acts = play(&mut jb, &mut carry, tick * 20);
+            // From the confirmation of the new source on.
+            if tick > 101 {
+                out.extend(acts);
+            }
+        }
+        assert_eq!(jb.stats().resets, 1, "{:?}", jb.stats());
+        assert!(out.iter().all(|p| !matches!(p, Playout::Decode((1, _)))));
+    }
 }

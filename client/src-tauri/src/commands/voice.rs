@@ -382,27 +382,35 @@ pub async fn join_voice(
                 let app = app_clone.clone();
                 let voice_arc = voice_arc.clone();
                 let track_id = format!("{user_id}:{source_type}");
+                // Ordered by announcement: a registration that runs late
+                // can never retire a track announced after it.
+                let instance = AudioMixer::new_instance();
 
                 tokio::spawn(async move {
-                    // Get the mixer and stats registry from voice state
+                    // The mixer and stats registry of the session that
+                    // announced the track; a later session's are not ours.
                     let state_parts = {
                         let voice_guard = voice_arc.read().await;
                         voice_guard
                             .as_ref()
+                            .filter(|v| v.session_epoch == epoch)
                             .map(|v| (v.audio_mixer.clone(), v.connection_stats.clone()))
                     };
 
                     let Some((Some(mixer), stats_registry)) = state_parts else {
                         warn!(
                             track_id = %track_id,
-                            "Audio mixer not ready, dropping remote audio track"
+                            "Audio mixer not ready or session ended, dropping remote audio track"
                         );
                         return;
                     };
 
                     // Add track to mixer (it gets its own jitter buffer and
                     // decoder there), get the packet sender
-                    let handle = mixer.add_track(track_id.clone()).await;
+                    let Some(handle) = mixer.add_instance(instance, track_id.clone()).await else {
+                        info!(track_id = %track_id, "Stale remote audio track ignored");
+                        return;
+                    };
 
                     info!(
                         track_id = %track_id,
@@ -420,28 +428,35 @@ pub async fn join_voice(
                     );
 
                     // RTP → mixer loop (decoding happens in the mixer)
-                    forward_remote_audio_track(track, handle.packets, &track_id, &stats_registry)
-                        .await;
+                    forward_remote_audio_track(
+                        track,
+                        handle.packets,
+                        &handle.queue_full,
+                        &track_id,
+                        &stats_registry,
+                    )
+                    .await;
 
                     // Track ended — remove this instance from the mixer. A
                     // replacement with the same id (participant rejoined)
                     // keeps playing; only the current instance reports the
                     // track as gone.
                     mixer.remove_track(handle.instance).await;
-                    if !mixer.release(&track_id, handle.instance) {
+                    let reported = mixer.release_with(&track_id, handle.instance, || {
+                        stats_registry.remove_track(&track_id);
+                        let _ = app.emit(
+                            "voice:remote_track_removed",
+                            serde_json::json!({
+                                "user_id": user_id,
+                                "source_type": source_type,
+                            }),
+                        );
+                    });
+                    if reported {
+                        info!(track_id = %track_id, "Remote audio track ended");
+                    } else {
                         info!(track_id = %track_id, "Replaced remote audio track ended");
-                        return;
                     }
-                    stats_registry.remove_track(&track_id);
-                    info!(track_id = %track_id, "Remote audio track ended");
-
-                    let _ = app.emit(
-                        "voice:remote_track_removed",
-                        serde_json::json!({
-                            "user_id": user_id,
-                            "source_type": source_type,
-                        }),
-                    );
                 });
             } else if voice::subscriber::is_video_track(&source_type) {
                 let count = active_video_count.clone();
@@ -1244,6 +1259,8 @@ pub struct TrackPlayoutReport {
     pub rejected: u64,
     /// Waited too long (mixer stall) and dropped before buffering.
     pub expired: u64,
+    /// Dropped by the reader because the queue to the mixer was full.
+    pub queue_full: u64,
     /// Packets whose audio did not arrive in time.
     pub lost: u64,
     pub concealed_plc: u64,
@@ -1270,6 +1287,7 @@ fn playout_reports(stats: Vec<(String, PlayoutStats)>) -> Vec<TrackPlayoutReport
             discarded: s.buffer.discarded,
             rejected: s.rejected,
             expired: s.expired,
+            queue_full: s.queue_full,
             lost: s.buffer.lost,
             concealed_plc: s.concealed_plc,
             recovered_fec: s.recovered_fec,
@@ -1462,6 +1480,7 @@ const DROPPED_LOG_EVERY: u64 = 50;
 async fn forward_remote_audio_track(
     track: Arc<TrackRemote>,
     packet_tx: mpsc::Sender<RtpIn>,
+    queue_full: &std::sync::atomic::AtomicU64,
     track_id: &str,
     stats_registry: &voice::connection_stats::ConnectionStatsRegistry,
 ) {
@@ -1512,6 +1531,7 @@ async fn forward_remote_audio_track(
                     Ok(()) => {}
                     Err(mpsc::error::TrySendError::Full(_)) => {
                         dropped += 1;
+                        queue_full.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         if dropped % DROPPED_LOG_EVERY == 1 {
                             warn!(
                                 track_id = %track_id,
@@ -1628,6 +1648,7 @@ mod tests {
         b.buffer.discarded = 6;
         b.rejected = 8;
         b.expired = 4;
+        b.queue_full = 5;
         b.decode_errors = 9;
         b.concealed_plc = 2;
         b.recovered_fec = 5;
@@ -1654,6 +1675,7 @@ mod tests {
         assert_eq!(json["discarded"], 6);
         assert_eq!(json["rejected"], 8);
         assert_eq!(json["expired"], 4);
+        assert_eq!(json["queue_full"], 5);
         assert_eq!(json["decode_errors"], 9);
         assert_eq!(json["target_delay_ms"], 60.0);
         assert_eq!(json["level_ms"], 40.0);

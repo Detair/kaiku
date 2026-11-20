@@ -146,6 +146,9 @@ static NEXT_INSTANCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU6
 pub struct TrackHandle {
     pub instance: TrackInstance,
     pub packets: mpsc::Sender<RtpIn>,
+    /// Packets the reader dropped because the queue was full (reported in
+    /// the track's playout counters).
+    pub queue_full: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// One 20 ms frame in microseconds.
@@ -388,6 +391,8 @@ struct Track {
     /// `"{user_id}:{source}"`.
     track_id: String,
     packets: mpsc::Receiver<RtpIn>,
+    /// The reader's count of packets dropped at a full queue.
+    queue_full: Arc<std::sync::atomic::AtomicU64>,
     playout: TrackPlayout<Box<dyn FrameDecoder + Send>>,
     /// Parsed from the `"{user_id}:{source}"` track id; `None` → unity gain.
     user_id: Option<Uuid>,
@@ -400,6 +405,7 @@ enum MixerCommand {
         instance: TrackInstance,
         track_id: String,
         packets: mpsc::Receiver<RtpIn>,
+        queue_full: Arc<std::sync::atomic::AtomicU64>,
     },
     RemoveTrack {
         instance: TrackInstance,
@@ -468,26 +474,57 @@ impl AudioMixer {
         self.gains.set(user_id, gain);
     }
 
+    /// A new track instance id. Taken when the track is announced, so
+    /// instances are ordered by announcement, not by registration.
+    pub fn new_instance() -> TrackInstance {
+        NEXT_INSTANCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Register a new audio track instance. Returns its instance id and the
     /// sender for its RTP packets.
     pub async fn add_track(&self, track_id: String) -> TrackHandle {
-        let instance = NEXT_INSTANCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if let Ok(mut current) = self.current.lock() {
+        let instance = Self::new_instance();
+        self.add_instance(instance, track_id)
+            .await
+            .expect("a fresh instance is the newest")
+    }
+
+    /// Register track `instance` (from [`AudioMixer::new_instance`]).
+    /// `None` when a newer instance of the same track id is registered
+    /// already: this one was announced earlier and is stale.
+    pub async fn add_instance(
+        &self,
+        instance: TrackInstance,
+        track_id: String,
+    ) -> Option<TrackHandle> {
+        {
+            let Ok(mut current) = self.current.lock() else {
+                return None;
+            };
+            if current
+                .get(&track_id)
+                .is_some_and(|newer| *newer > instance)
+            {
+                return None;
+            }
             current.insert(track_id.clone(), instance);
         }
         let (tx, packets) = mpsc::channel(PACKET_QUEUE);
+        let queue_full = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let _ = self
             .command_tx
             .send(MixerCommand::AddTrack {
                 instance,
                 track_id,
                 packets,
+                queue_full: queue_full.clone(),
             })
             .await;
-        TrackHandle {
+        Some(TrackHandle {
             instance,
             packets: tx,
-        }
+            queue_full,
+        })
     }
 
     /// End the mixer now, whatever else still holds a handle (a teardown
@@ -511,6 +548,26 @@ impl AudioMixer {
         } else {
             false
         }
+    }
+
+    /// Like [`AudioMixer::release`], running `report` (removal event, stats)
+    /// while the transition is held, so a replacement registering at the
+    /// same moment reports itself only afterwards.
+    pub fn release_with(
+        &self,
+        track_id: &str,
+        instance: TrackInstance,
+        report: impl FnOnce(),
+    ) -> bool {
+        let Ok(mut current) = self.current.lock() else {
+            return false;
+        };
+        if current.get(track_id) != Some(&instance) {
+            return false;
+        }
+        current.remove(track_id);
+        report();
+        true
     }
 
     /// Remove one track instance (drops its buffer and decoder). Another
@@ -677,7 +734,8 @@ impl AudioMixer {
             return;
         };
         for (instance, track) in tracks.iter_mut() {
-            let snapshot = track.playout.stats();
+            let mut snapshot = track.playout.stats();
+            snapshot.queue_full = track.queue_full.load(std::sync::atomic::Ordering::Relaxed);
             let id = &track.track_id;
             map.insert(*instance, (id.clone(), snapshot));
             if track.last_log.elapsed() >= LOG_INTERVAL {
@@ -692,6 +750,7 @@ impl AudioMixer {
                     discarded = b.discarded,
                     rejected = snapshot.rejected,
                     expired = snapshot.expired,
+                    queue_full = snapshot.queue_full,
                     lost = b.lost,
                     concealed_plc = snapshot.concealed_plc,
                     recovered_fec = snapshot.recovered_fec,
@@ -730,12 +789,21 @@ impl AudioMixer {
                 instance,
                 track_id,
                 packets,
+                queue_full,
             } => {
                 let Some(decoder) = factory() else {
                     // Dropping `packets` closes the reader's queue: it stops.
                     return;
                 };
                 debug!(track_id = %track_id, instance, "Mixer: added track");
+                // A newer instance of this track is here already: this
+                // registration is stale (dropping `packets` ends its reader).
+                if tracks
+                    .iter()
+                    .any(|(i, t)| t.track_id == track_id && *i > instance)
+                {
+                    return;
+                }
                 // A replacement (participant rejoined) retires its
                 // predecessor now: the old instance stops feeding the mix.
                 let retired: Vec<TrackInstance> = tracks
@@ -755,6 +823,7 @@ impl AudioMixer {
                     Track {
                         track_id,
                         packets,
+                        queue_full,
                         playout: TrackPlayout::new(decoder),
                         user_id,
                         last_log: Instant::now(),
@@ -1511,6 +1580,69 @@ mod tests {
                 assert_eq!(short, 0, "20/20/20/{big} ms at wake phase {phase}");
             }
         }
+    }
+
+    /// Two announcements of the same track race: the earlier one registers
+    /// last. It must not retire the newer instance.
+    #[tokio::test]
+    async fn a_late_registration_of_an_older_instance_never_retires_the_newer() {
+        let (out_tx, _out_rx) = mpsc::channel(8);
+        let mixer = AudioMixer::with_decoder(
+            out_tx,
+            UserGains::default(),
+            OutputLevel::new(),
+            const_factory(),
+        );
+        let id = format!("{}:microphone", Uuid::new_v4());
+        let older = AudioMixer::new_instance();
+        let newer = AudioMixer::new_instance();
+        let live = mixer.add_instance(newer, id.clone()).await.expect("newest");
+        assert!(
+            mixer.add_instance(older, id.clone()).await.is_none(),
+            "stale registration taken"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!live.packets.is_closed(), "the live instance was retired");
+        assert!(mixer.release(&id, newer));
+    }
+
+    /// Only the current instance reports the track as gone, and it does so
+    /// while holding the transition.
+    #[tokio::test]
+    async fn only_the_current_instance_reports_removal() {
+        let (out_tx, _out_rx) = mpsc::channel(8);
+        let mixer = AudioMixer::with_decoder(
+            out_tx,
+            UserGains::default(),
+            OutputLevel::new(),
+            const_factory(),
+        );
+        let old = mixer.add_track("u:microphone".into()).await;
+        let new = mixer.add_track("u:microphone".into()).await;
+        let mut reported = Vec::new();
+        assert!(!mixer.release_with("u:microphone", old.instance, || reported.push("old")));
+        assert!(mixer.release_with("u:microphone", new.instance, || reported.push("new")));
+        assert_eq!(reported, ["new"]);
+    }
+
+    /// Packets the reader could not queue show up in the track's counters.
+    #[tokio::test]
+    async fn queue_overflow_is_reported_per_track() {
+        let (out_tx, _out_rx) = mpsc::channel(64);
+        let mixer = AudioMixer::with_decoder(
+            out_tx,
+            UserGains::default(),
+            OutputLevel::new(),
+            const_factory(),
+        );
+        let handle = mixer.add_track("u:microphone".into()).await;
+        handle.packets.send(packet(0, 1)).await.unwrap();
+        handle
+            .queue_full
+            .fetch_add(3, std::sync::atomic::Ordering::Relaxed);
+        tokio::time::sleep(Duration::from_millis(1_100)).await;
+        let stats = mixer.playout_stats();
+        assert_eq!(stats[0].1.queue_full, 3, "{stats:?}");
     }
 
     #[test]
