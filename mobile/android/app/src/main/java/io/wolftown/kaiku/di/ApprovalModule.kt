@@ -101,6 +101,11 @@ object ApprovalModule {
         invalidation: io.wolftown.kaiku.data.keydevice.KeyInvalidation,
     ): DeviceSigner = DeviceSigner(keyStore, verifier, checks, invalidation::handle)
 
+    /** The removal of a signed-out phone hands push only the account it was a key of. */
+    @Provides
+    fun provideRemovedPhonePush(push: io.wolftown.kaiku.push.PushRegistrar): io.wolftown.kaiku.data.auth.RemovedPhonePush =
+        io.wolftown.kaiku.data.auth.RemovedPhonePush { userId -> push.dropAfterRemoval(userId) }
+
     @Provides
     fun provideRemovalApi(impl: io.wolftown.kaiku.data.api.RemovalApiImpl): io.wolftown.kaiku.data.api.RemovalApi = impl
 }

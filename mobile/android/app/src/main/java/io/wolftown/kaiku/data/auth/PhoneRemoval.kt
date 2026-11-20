@@ -27,6 +27,7 @@ import io.wolftown.kaiku.data.keydevice.Verdict
 import io.wolftown.kaiku.di.AuthCoroutineScope
 import io.wolftown.kaiku.domain.KaikuPayloads
 import io.wolftown.kaiku.domain.model.AuthResponse
+import io.wolftown.kaiku.domain.model.KeyDeviceStatus
 import io.wolftown.kaiku.domain.model.StepUpAction
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
@@ -35,6 +36,15 @@ import java.io.IOException
 import java.util.logging.Logger
 import javax.inject.Inject
 import kotlin.coroutines.cancellation.CancellationException
+
+/**
+ * What a phone that was removed as a key while signed out does about its push registration: only
+ * what the phone itself still keeps of it, for the account it was a key of. It gets the account's
+ * id and nothing else of the removal.
+ */
+fun interface RemovedPhonePush {
+    suspend fun drop(userId: String)
+}
 
 /** How a removal of this phone ended. */
 sealed interface RemovalResult {
@@ -70,6 +80,7 @@ class PhoneRemoval @Inject constructor(
     private val keyDevices: KeyDeviceRepository,
     private val answers: KeyAnswers,
     private val deviceIds: DeviceIdProvider,
+    private val removedPush: RemovedPhonePush,
     @AuthCoroutineScope private val appScope: CoroutineScope,
 ) {
     private companion object {
@@ -148,10 +159,23 @@ class PhoneRemoval @Inject constructor(
             api.answer(origin, s.accessToken, ch2.challengeId, Decision.APPROVE.wire, "", stepUpSignature).grant
                 ?: return RemovalResult.Failed("NO_GRANT")
             ask = Ask.KEY_DEVICE_REMOVE
-            api.removeKeyDevice(origin, s.accessToken, id)
+            val removed = api.removeKeyDevice(origin, s.accessToken, id)
+            // Only the contract's own answer counts as "removed": this very key device, now revoked.
+            // A bare success without it decides nothing (and the session is ended like after any failure).
+            if (removed.id != id || removed.state != KeyDeviceStatus.REVOKED) return RemovalResult.Failed("UNEXPECTED_ANSWER")
             // The server ended this session with the removal (the revocation's cascade).
             endedByServer = true
-            return if (answers.settle(rec, origin, ask, ServerAnswer(200)).forgotten) RemovalResult.Removed else RemovalResult.Failed("NOT_FORGOTTEN")
+            if (!answers.settle(rec, origin, ask, ServerAnswer(200)).forgotten) return RemovalResult.Failed("NOT_FORGOTTEN")
+            // The server dropped the phone's push subscription with the removal; what the phone
+            // still keeps of that registration goes too (no request, nothing of another session).
+            try {
+                removedPush.drop(userId)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                logger.warning("Push registration not dropped after the removal: ${e.javaClass.simpleName}")
+            }
+            return RemovalResult.Removed
         } catch (e: CancellationException) {
             throw e
         } catch (e: ApiException) {

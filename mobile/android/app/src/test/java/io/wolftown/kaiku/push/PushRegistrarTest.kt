@@ -679,4 +679,61 @@ class PushRegistrarTest {
         const val LABEL = "Pixel 8"
         const val DISTRIBUTOR = "io.heckel.ntfy"
     }
+
+    // ── After this phone was removed as a key while signed out ────────────────────────────────
+
+    /** Signed in, registered, then signed out with the registration kept (a key phone keeps it). */
+    private suspend fun TestScope.signedOutWithRegistration(): PushRegistrar {
+        val registrar = newRegistrar()
+        registrar.refresh()
+        assertNotNull(store.record)
+        userId = null
+        return registrar
+    }
+
+    @Test
+    fun `a removed key phone drops what it keeps of its registration, without a request`() = runTest {
+        val registrar = signedOutWithRegistration()
+
+        assertTrue(registrar.dropAfterRemoval(USER))
+        runCurrent()
+
+        assertNull(store.record)
+        assertEquals(PushStatus.Unknown, registrar.status.value)
+        assertEquals(1, fcm.unregisters)
+        coVerify(exactly = 0) { api.unregisterDevice(any(), any()) }
+    }
+
+    @Test
+    fun `while a session is current nothing of its registration is dropped`() = runTest {
+        val registrar = newRegistrar()
+        registrar.refresh()
+
+        assertEquals(false, registrar.dropAfterRemoval(USER))
+        runCurrent()
+
+        assertNotNull(store.record)
+        assertEquals(0, fcm.unregisters)
+        assertEquals(PushStatus.Active(TransportKind.FCM, null), registrar.status.value)
+        coVerify(exactly = 0) { api.unregisterDevice(any(), any()) }
+    }
+
+    @Test
+    fun `the registration of another account is not dropped`() = runTest {
+        val registrar = signedOutWithRegistration()
+
+        assertEquals(false, registrar.dropAfterRemoval("99999999-9999-4999-8999-999999999999"))
+        runCurrent()
+
+        assertNotNull(store.record)
+        assertEquals(0, fcm.unregisters)
+    }
+
+    @Test
+    fun `without a kept registration there is nothing to drop`() = runTest {
+        userId = null
+        assertEquals(false, newRegistrar().dropAfterRemoval(USER))
+        assertEquals(0, fcm.unregisters)
+        assertEquals(0, scheduler.cancelled)
+    }
 }

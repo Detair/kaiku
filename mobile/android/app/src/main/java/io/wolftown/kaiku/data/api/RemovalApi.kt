@@ -29,7 +29,8 @@ interface RemovalApi {
     suspend fun keyDevices(origin: String, access: String): List<KeyDevice>
     suspend fun stepUp(origin: String, access: String, action: String, target: String): ApprovalChallenge
     suspend fun answer(origin: String, access: String, challengeId: String, decision: String, responseB64u: String, signatureB64u: String): AnswerResult
-    suspend fun removeKeyDevice(origin: String, access: String, id: String)
+    /** The server's answer to the removal: the key device as it is afterwards. */
+    suspend fun removeKeyDevice(origin: String, access: String, id: String): KeyDevice
 }
 
 @Serializable
@@ -86,8 +87,9 @@ class RemovalApiImpl @Inject constructor(private val httpClient: HttpClient) : R
         return r.body()
     }
 
-    override suspend fun removeKeyDevice(origin: String, access: String, id: String) {
-        httpClient.delete(url(origin, "/api/approval-devices/$id")) { with(access) }
-            .ensureExactly(HttpStatusCode.OK, "remove key device failed")
+    override suspend fun removeKeyDevice(origin: String, access: String, id: String): KeyDevice {
+        val r = httpClient.delete(url(origin, "/api/approval-devices/$id")) { with(access) }
+        r.ensureExactly(HttpStatusCode.OK, "remove key device failed")
+        return r.body()
     }
 }

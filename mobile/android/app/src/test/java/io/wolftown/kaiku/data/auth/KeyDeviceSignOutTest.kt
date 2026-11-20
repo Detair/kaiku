@@ -42,9 +42,8 @@ class KeyDeviceSignOutTest {
         stepUp: DeviceStepUp,
         api: io.wolftown.kaiku.data.api.ApprovalApi,
         tokenStorage: TokenStorage = TokenStorage(InMemorySharedPreferences()).apply { saveServerUrl("https://chat.example.com") },
-        push: PushRegistrar = mockk(relaxed = true),
         removal: PhoneRemoval = mockk(),
-    ) = KeyDeviceSignOut(authRepository, repo, stepUp, api, io.wolftown.kaiku.data.keydevice.KeyAnswers(repo), tokenStorage, removal, push)
+    ) = KeyDeviceSignOut(authRepository, repo, stepUp, api, io.wolftown.kaiku.data.keydevice.KeyAnswers(repo), tokenStorage, removal)
 
     @Test fun `sign out keeps the key and sign out and remove deletes it`() = runTest {
         val keyStore = SoftwareApprovalKeyStore().apply {
@@ -60,7 +59,7 @@ class KeyDeviceSignOutTest {
         authRepository.keyDevicePolicy = repo
         val stepUp: DeviceStepUp = mockk()
         val api = FakeApprovalApi()
-        val signOut = signOut(authRepository, repo, stepUp, api, tokenStorage, pushRegistrar)
+        val signOut = signOut(authRepository, repo, stepUp, api, tokenStorage)
 
         fun signIn() {
             tokenStorage.saveTokens("a", "r", 900, "u1")
@@ -117,7 +116,7 @@ class KeyDeviceSignOutTest {
         val stepUp: DeviceStepUp = mockk()
         val api = FakeApprovalApi()
         val removal: PhoneRemoval = mockk()
-        val signOut = signOut(authRepository, repo, stepUp, api, tokenStorage, pushRegistrar, removal)
+        val signOut = signOut(authRepository, repo, stepUp, api, tokenStorage, removal)
         val grant = StepUpOutcome.Granted(StepUpGrant("key_device.remove", "kd1", "device", "t"))
 
         init {
@@ -233,14 +232,32 @@ class KeyDeviceSignOutTest {
         assertTrue(h.keyStore.hasKey())
     }
 
-    @Test fun `a signed-out phone that was removed turns its push off, any other end leaves it`() = runTest {
+    /**
+     * The removal of a signed-out phone is the removal operation's alone, its push clean-up
+     * included: nothing here signs a session out of push (a session that is current by then is
+     * not the removal's).
+     */
+    @Test fun `the removal of a signed-out phone never signs a session out of push`() = runTest {
         val h = Harness(backgroundScope)
-        coEvery { h.removal.run(activity) } returns RemovalResult.Cancelled
-        assertEquals(RemovalResult.Cancelled, h.signOut.removeSignedOutPhone(activity))
+        for (r in listOf(RemovalResult.Cancelled, RemovalResult.Removed, RemovalResult.Failed("NETWORK"))) {
+            coEvery { h.removal.run(activity) } returns r
+            assertEquals(r, h.signOut.removeSignedOutPhone(activity))
+        }
         coVerify(exactly = 0) { h.pushRegistrar.unregisterForLogout(any()) }
+        assertTrue(KeyDeviceSignOut::class.java.constructors.flatMap { it.parameterTypes.toList() }.none { it == PushRegistrar::class.java })
+    }
 
-        coEvery { h.removal.run(activity) } returns RemovalResult.Removed
-        assertEquals(RemovalResult.Removed, h.signOut.removeSignedOutPhone(activity))
-        coVerify(exactly = 1) { h.pushRegistrar.unregisterForLogout(any()) }
+    /** The contract's answer to a removal is the key device itself, now revoked; anything else decides nothing. */
+    @Test fun `only the removal's own answer for this key device forgets it`() = runTest {
+        for ((what, answer) in listOf<Pair<String, (String) -> io.wolftown.kaiku.domain.model.KeyDevice>>(
+            "another key device" to { _ -> io.wolftown.kaiku.domain.model.KeyDevice(id = "kd9", label = "Pixel 8", state = io.wolftown.kaiku.domain.model.KeyDeviceStatus.REVOKED) },
+            "still active" to { id -> io.wolftown.kaiku.domain.model.KeyDevice(id = id, label = "Pixel 8", state = io.wolftown.kaiku.domain.model.KeyDeviceStatus.ACTIVE) },
+        )) {
+            val h = Harness(backgroundScope)
+            h.api.removed = answer
+            assertEquals(what, StepUpOutcome.Failed("UNEXPECTED_ANSWER"), h.signOut.signOutAndRemovePhone(activity))
+            assertEquals(what, KeyDeviceState.Active("u1"), h.repo.current())
+            assertTrue(what, h.keyStore.hasKey())
+        }
     }
 }

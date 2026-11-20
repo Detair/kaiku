@@ -335,6 +335,39 @@ class PushRegistrar @Inject constructor(
         }
     }
 
+    /**
+     * This phone was removed as a key of [userId] while it was signed out. The server dropped the
+     * phone's push subscription with that removal, so no request is made here; what the phone
+     * itself still keeps of that registration goes (the stored registration, and the transport
+     * endpoint in the background). Nothing is touched while a session is current (the registration
+     * is then that session's), when the kept registration is another account's, or when a
+     * registration pass does not let go within [LOGOUT_LOCK_WAIT_MS]. True when it dropped something.
+     */
+    suspend fun dropAfterRemoval(userId: String): Boolean {
+        val locked = withTimeoutOrNull(LOGOUT_LOCK_WAIT_MS) {
+            mutex.lock()
+            true
+        } ?: false
+        if (!locked) return false
+        try {
+            if (currentAccount() != null) return false
+            val kept = store.load() ?: return false
+            if (kept.userId != userId) return false
+            epoch.incrementAndGet()
+            scheduler.cancel()
+            val previous = lastKind ?: kindOf(kept.provider)
+            store.clear()
+            lastKind = null
+            _status.value = PushStatus.Unknown
+            previous?.let(::transportFor)?.let { transport ->
+                pendingTransportUnregister = scope.launch { unregisterQuietly(transport) }
+            }
+            return true
+        } finally {
+            mutex.unlock()
+        }
+    }
+
     private suspend fun refreshLocked(scheduleRetry: Boolean): RefreshOutcome {
         val account = currentAccount() ?: return RefreshOutcome.NOT_LOGGED_IN
         val startEpoch = epoch.get()

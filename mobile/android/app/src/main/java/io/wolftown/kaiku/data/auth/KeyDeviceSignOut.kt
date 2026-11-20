@@ -15,9 +15,8 @@ import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.data.repository.AuthRepository
 import io.wolftown.kaiku.domain.KaikuPayloads
 import io.wolftown.kaiku.domain.model.StepUpAction
-import io.wolftown.kaiku.push.PushRegistrar
+import io.wolftown.kaiku.domain.model.KeyDeviceStatus
 import java.io.IOException
-import java.util.logging.Logger
 import javax.inject.Inject
 import kotlin.coroutines.cancellation.CancellationException
 
@@ -37,11 +36,7 @@ class KeyDeviceSignOut @Inject constructor(
     private val answers: KeyAnswers,
     private val tokenStorage: TokenStorage,
     private val removal: PhoneRemoval,
-    private val pushRegistrar: PushRegistrar,
 ) {
-    private companion object {
-        val logger: Logger = Logger.getLogger("KeyDeviceSignOut")
-    }
 
     suspend fun signOut() = authRepository.logout()
 
@@ -55,7 +50,9 @@ class KeyDeviceSignOut @Inject constructor(
         val out = stepUp.stepUp(activity, StepUpAction.KEY_DEVICE_REMOVE, id, "")
         if (out !is StepUpOutcome.Granted) return out
         val answer = try {
-            approvalApi.removeKeyDevice(id)
+            val removed = approvalApi.removeKeyDevice(id)
+            // Only the contract's own answer counts as "removed": this very key device, now revoked.
+            if (removed.id != id || removed.state != KeyDeviceStatus.REVOKED) return StepUpOutcome.Failed("UNEXPECTED_ANSWER")
             ServerAnswer(200)
         } catch (e: CancellationException) {
             throw e
@@ -81,22 +78,10 @@ class KeyDeviceSignOut @Inject constructor(
 
     /**
      * "Use another account" on a phone that is not signed in: the removal runs with a session of
-     * its own that the app never holds. Once the phone is no key any more, its push registration
-     * goes too (the server dropped its side with the removal).
+     * its own that the app never holds ([PhoneRemoval], which also drops what the phone keeps of
+     * its push registration once it is no key any more).
      */
-    suspend fun removeSignedOutPhone(activity: FragmentActivity): RemovalResult {
-        val result = removal.run(activity)
-        if (result == RemovalResult.Removed) {
-            try {
-                pushRegistrar.unregisterForLogout()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                logger.warning("Push not turned off after the removal: ${e.javaClass.simpleName}")
-            }
-        }
-        return result
-    }
+    suspend fun removeSignedOutPhone(activity: FragmentActivity): RemovalResult = removal.run(activity)
 
     /**
      * This phone's key-device id when the sign-in did not record it (`/auth/me` without

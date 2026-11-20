@@ -94,10 +94,15 @@ class PhoneRemovalTest {
             call("answer", origin, access)
             return answerResult
         }
-        override suspend fun removeKeyDevice(origin: String, access: String, id: String) { call("remove:$id", origin, access) }
+        /** What the server answers a removal that went through. */
+        var removed: (String) -> KeyDevice = { KeyDevice(id = it, label = "Pixel 8", state = KeyDeviceStatus.REVOKED) }
+        override suspend fun removeKeyDevice(origin: String, access: String, id: String): KeyDevice {
+            call("remove:$id", origin, access)
+            return removed(id)
+        }
     }
 
-    private inner class Phone(scope: TestScope, uv: UvResult? = null) {
+    private inner class Phone(scope: TestScope, uv: UvResult? = null, appInstallId: String = SigFixtures.DEVICE_ID) {
         val f = KeyDeviceFixture(scope.backgroundScope, uv).also { it.authState.setLoggedOut() } // a lapsed key phone
         val approval = FakeApprovalApi().apply { nextChallenge = SigFixtures.challengeFor(SigKind.DEVICE_LOGIN, 3, SigFixtures.V03_CONTEXT) }
         val api = FakeRemovalApi()
@@ -113,7 +118,11 @@ class PhoneRemovalTest {
         var connects = 0
         val stored = prefs.all.toMap()
         val generation = tokenStorage.getSessionGeneration()
-        val removal = PhoneRemoval(approval, api, authApi, f.signer, f.repo, f.answers, { SigFixtures.DEVICE_ID }, scope.backgroundScope)
+        /** The accounts whose kept push registration the removal asked to drop. */
+        val pushDrops = mutableListOf<String>()
+        val removal = PhoneRemoval(
+            approval, api, authApi, f.signer, f.repo, f.answers, { appInstallId }, { pushDrops += it }, scope.backgroundScope,
+        )
 
         init {
             scope.backgroundScope.launch(UnconfinedTestDispatcher(scope.testScheduler)) {
@@ -154,6 +163,56 @@ class PhoneRemovalTest {
         assertFalse(p.f.keyStore.hasKey())
         assertTrue(p.revoked.isEmpty())
         p.assertAppUntouched()
+        // What the phone kept of its push registration goes with the removal, for that account only.
+        assertEquals(listOf(SigFixtures.USER_ID), p.pushDrops)
+    }
+
+    /**
+     * The contract's answer to a removal is the key device itself, now revoked. A success that
+     * names another key device, one that is not revoked, or nothing a key device could be read
+     * from, is no answer: the phone stays a key and the removal's session is ended.
+     */
+    @Test fun `only the removal's own answer for this key device forgets it`() = runTest {
+        for ((what, answer) in listOf<Pair<String, (String) -> KeyDevice>>(
+            "another key device" to { _ -> KeyDevice(id = "12345678-1234-4234-8234-123456789012", label = "Pixel 8", state = KeyDeviceStatus.REVOKED) },
+            "still active" to { id -> KeyDevice(id = id, label = "Pixel 8", state = KeyDeviceStatus.ACTIVE) },
+            "a state nobody knows" to { id -> KeyDevice(id = id, label = "Pixel 8", state = KeyDeviceStatus.UNKNOWN) },
+        )) {
+            val p = Phone(this)
+            p.api.removed = answer
+            assertEquals(what, RemovalResult.Failed("UNEXPECTED_ANSWER"), p.removal.run(activity))
+            testScheduler.runCurrent()
+            assertNotNull(what, p.f.repo.record.value)
+            assertTrue(what, p.f.keyStore.hasKey())
+            assertTrue(what, p.f.store.writes.isEmpty())
+            assertEquals(what, 1, p.revoked.size)
+            assertTrue(what, p.pushDrops.isEmpty())
+            p.assertAppUntouched(what)
+        }
+    }
+
+    @Test fun `a removal that did not go through leaves the push registration alone`() = runTest {
+        val refused = Phone(this)
+        refused.api.failures["remove:$KEY_DEVICE"] = apiError(409, "LAST_STRONG_AUTHENTICATOR")
+        refused.removal.run(activity)
+        assertTrue(refused.pushDrops.isEmpty())
+        val cancelled = Phone(this, uv = UvResult.Cancelled)
+        cancelled.removal.run(activity)
+        assertTrue(cancelled.pushDrops.isEmpty())
+        val gone = Phone(this)
+        gone.approval.failWith = apiError(404, "KEY_DEVICE_UNKNOWN")
+        gone.removal.run(activity)
+        assertTrue(gone.pushDrops.isEmpty())
+    }
+
+    @Test fun `a failing push clean-up does not undo a removal`() = runTest {
+        val p = Phone(this)
+        val removal = PhoneRemoval(
+            p.approval, p.api, p.authApi, p.f.signer, p.f.repo, p.f.answers, { SigFixtures.DEVICE_ID },
+            { throw IllegalStateException("push") }, backgroundScope,
+        )
+        assertEquals(RemovalResult.Removed, removal.run(activity))
+        assertNull(p.f.repo.record.value)
     }
 
     @Test fun `it has no way to the stored session, the sign-in state, the connection or push`() {

@@ -70,4 +70,36 @@ class RemovalApiTest {
             assertEquals(null, e.code)
         }
     }
+
+    @Test fun `the removal's answer is the key device, read from the body`() = runTest {
+        rec.body = """{"id":"kd1","label":"Pixel 8","state":"revoked"}"""
+        val removed = api.removeKeyDevice(origin, "removal-access", "kd1")
+        assertEquals("kd1", removed.id)
+        assertEquals(io.wolftown.kaiku.domain.model.KeyDeviceStatus.REVOKED, removed.state)
+    }
+
+    @Test fun `a success without a key device in its body is no answer`() = runTest {
+        for (body in listOf("{}", "", "<html>ok</html>", """{"ok":true}""")) {
+            rec.body = body
+            val thrown = runCatching { api.removeKeyDevice(origin, "removal-access", "kd1") }.exceptionOrNull()
+            assertTrue("body '$body' was taken as an answer", thrown != null)
+        }
+    }
+
+    /**
+     * A server may answer a read with a redirect. Followed to another host, the request carries
+     * neither the removal's bearer nor the app's stored one.
+     */
+    @Test fun `a call redirected to another host carries no bearer there`() = runTest {
+        val elsewhere = "https://elsewhere.example.net"
+        val rec = ApiRecorder(bearer = "stored-access-token", extraHeaders = mapOf("Location" to "$elsewhere/auth/me"))
+        rec.respond = { r ->
+            if (r.url.startsWith(origin)) HttpStatusCode.Found to "" else HttpStatusCode.OK to """{"id":"u1","username":"alice","display_name":"Alice"}"""
+        }
+        runCatching { RemovalApiImpl(rec.client).me(origin, "removal-access") }
+        assertEquals("Bearer removal-access", rec.requests.first().headers["Authorization"])
+        val there = rec.requests.filter { it.url.startsWith(elsewhere) }
+        assertEquals(1, there.size)
+        assertEquals(null, there.single().headers["Authorization"])
+    }
 }

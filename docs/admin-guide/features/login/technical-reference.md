@@ -687,6 +687,10 @@ whose tokens exist only inside that one operation, in memory. They are never wri
 never become the app's sign-in, and the connection, push registration and token renewal never see
 them. With them, on requests that name their server and carry that bearer explicitly, the operation
 reads the account, asks for and answers the `key_device.remove` step-up, and deletes the key device.
+The phone counts as removed only on the contract's own answer to that request: 200 with this very key
+device, in state `revoked`; a success without it decides nothing. The server drops the phone's push
+subscription with the removal; the operation then drops what the phone itself keeps of that
+registration, without a request, only for the removed account and only while no session is current.
 However it ends (removed, refused, cancelled, its screen gone), nothing of it is stored, so there is
 nothing to clean up at the next start and an ordinary sign-in made meanwhile is not affected. Unless
 the server ended that session with the removal, the operation revokes it best effort (10 s) on the

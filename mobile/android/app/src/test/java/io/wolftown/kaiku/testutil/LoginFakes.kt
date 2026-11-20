@@ -143,10 +143,13 @@ class FakeApprovalApi : ApprovalApi {
 
     override suspend fun keyDevices(): List<KeyDevice> { calls += "keyDevices"; return devices }
 
+    /** What the server answers a removal that went through. */
+    var removed: (String) -> KeyDevice = { KeyDevice(id = it, label = "Pixel 8", state = KeyDeviceStatus.REVOKED) }
+
     override suspend fun removeKeyDevice(id: String): KeyDevice {
         calls += "removeKeyDevice:$id"
         failWith?.let { throw it }
-        return KeyDevice(id = id, label = "Pixel 8", state = KeyDeviceStatus.REVOKED)
+        return removed(id)
     }
 
     /** The report hangs (until cancelled or timed out). */
