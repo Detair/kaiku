@@ -1010,7 +1010,9 @@ Server → client event, sent only to the socket that owned the removed voice pe
   `/call/leave` or `/call/decline` for that call. Server guard for older clients: `POST /api/dm/{id}/call/leave`
   and `/call/decline` answer 200 with the unchanged call state, and change nothing, while the user's seat in that
   DM's voice room belongs to another login session (the user is in the call on another device). From the
-  session that holds the seat, or when the user holds no seat, they work as before.
+  session that holds the seat, or when the user holds no seat, they work as before. The guard tells devices apart by
+  their login session (the `sid` of the access token): two tabs or devices that share one login session count
+  as the same one, so an old tab of the session that holds the seat can still leave the call.
 - Client: tear down both peer connections, stop capture, clear voice state, show one line of text for the
   reason. The client must not rejoin on its own (C32) after `voice_removed`. For `session_replaced` the text
   says that the call continues on another device; a ringing UI for that call stops too.
