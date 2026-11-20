@@ -847,13 +847,14 @@ impl VoiceScope {
 /// The admin event stream on this socket: whether the client asked for it
 /// (`requested`, from `admin_subscribe` until `admin_unsubscribe` or the
 /// socket's end, like a requested channel), and whether its session is an
-/// elevated system admin's, as read at user epoch `seen`. A "not elevated"
-/// answer only clears `allowed`; the next elevation bumps the epoch and
-/// restores delivery.
+/// elevated system admin's, as read at a user epoch (`settled`). A "not
+/// elevated" answer only makes it not allowed; the next elevation bumps the
+/// epoch and restores delivery.
 ///
-/// `allowed`, `seen` and `decided` are written by a revalidation only
-/// ([`SocketAccess::apply`]); everything else only invalidates the scope or
-/// changes whether it is requested (see the module docs, The admin stream).
+/// `settled` is written by a revalidation only ([`SocketAccess::apply`],
+/// through [`settled::Settled::set`], its one writer); everything else only
+/// invalidates the scope or changes whether it is requested (see the module
+/// docs, The admin stream).
 /// The decision is kept while the stream is not requested: nothing is read
 /// or written for it then, and a new request starts from it.
 ///
@@ -863,12 +864,9 @@ impl VoiceScope {
 /// user epoch and a read of its own that the next answer depends on.
 struct AdminScope {
     requested: bool,
-    seen: u64,
     state: ScopeState,
-    allowed: bool,
-    /// [`Inner::admin_invalidations`] as of the plan of the read that wrote
-    /// `allowed` (0: no read yet).
-    decided: u64,
+    /// What the last counting revalidation found.
+    settled: settled::Settled,
     /// When an `admin_subscribe` last asked for this scope to be read, and
     /// at which user epoch: the cooldown ([`ADMIN_SUBSCRIBE_COOLDOWN`])
     /// holds only at that epoch, so a new epoch gets one read of its own.
@@ -876,6 +874,41 @@ struct AdminScope {
     /// The last `admin_subscribe`'s answer, and the user epoch it holds
     /// for.
     reply: Option<(u64, AdminSubscription)>,
+}
+
+/// The admin stream's settled decision, behind one writer.
+mod settled {
+    /// Whether the admin stream is allowed, the user epoch it was read at,
+    /// and [`super::Inner::admin_invalidations`] as of the plan of that read
+    /// (all 0/false: no read yet). The fields are private to this module:
+    /// [`Settled::set`] is the only way to write them.
+    #[derive(Debug, Default)]
+    pub(super) struct Settled {
+        allowed: bool,
+        seen: u64,
+        decided: u64,
+    }
+
+    impl Settled {
+        pub(super) const fn allowed(&self) -> bool {
+            self.allowed
+        }
+
+        pub(super) const fn seen(&self) -> u64 {
+            self.seen
+        }
+
+        pub(super) const fn decided(&self) -> u64 {
+            self.decided
+        }
+
+        /// The one writer: a revalidation's answer that counts.
+        pub(super) const fn set(&mut self, allowed: bool, seen: u64, decided: u64) {
+            self.allowed = allowed;
+            self.seen = seen;
+            self.decided = decided;
+        }
+    }
 }
 
 /// What an `admin_subscribe` needs ([`SocketAccess::request_admin`]).
@@ -1194,7 +1227,7 @@ impl SocketAccess {
     fn admin_phase(&self, admin: &AdminScope) -> Phase {
         admin
             .state
-            .phase(admin.seen == self.user_epoch.load(Ordering::SeqCst))
+            .phase(admin.settled.seen() == self.user_epoch.load(Ordering::SeqCst))
     }
 
     /// An event of `target` is dropped without a decision: every scope it
@@ -1459,7 +1492,7 @@ impl SocketAccess {
         let Some(admin) = inner.admin.as_ref().filter(|a| a.requested) else {
             return false;
         };
-        if !admin.allowed && self.admin_phase(admin) == Phase::Current {
+        if !admin.settled.allowed() && self.admin_phase(admin) == Phase::Current {
             return false;
         }
         Self::invalidate_admin(&mut inner);
@@ -1471,7 +1504,7 @@ impl SocketAccess {
     async fn decide_admin(&self) -> bool {
         self.decide(true, |inner| {
             let admin = inner.admin.as_ref().filter(|a| a.requested)?;
-            Some((Target::Admin, admin.allowed.then_some(true)))
+            Some((Target::Admin, admin.settled.allowed().then_some(true)))
         })
         .await
     }
@@ -1491,10 +1524,9 @@ impl SocketAccess {
     /// only on a decision (not subscribed, or current and not allowed).
     pub fn may_forward_admin(&self) -> bool {
         let inner = self.lock();
-        inner
-            .admin
-            .as_ref()
-            .is_some_and(|a| a.requested && (self.admin_phase(a) != Phase::Current || a.allowed))
+        inner.admin.as_ref().is_some_and(|a| {
+            a.requested && (self.admin_phase(a) != Phase::Current || a.settled.allowed())
+        })
     }
 
     /// The decision loop shared by every kind of frame.
@@ -1891,10 +1923,8 @@ impl SocketAccess {
         let epoch = self.user_epoch.load(Ordering::SeqCst);
         let admin = inner.admin.get_or_insert(AdminScope {
             requested: false,
-            seen: 0,
             state: ScopeState::Unchecked,
-            allowed: false,
-            decided: 0,
+            settled: settled::Settled::default(),
             read_asked: None,
             reply: None,
         });
@@ -1930,8 +1960,8 @@ impl SocketAccess {
         inner
             .admin
             .as_ref()
-            .filter(|admin| admin.decided >= asked)
-            .map(|admin| (admin.seen, admin.allowed))
+            .filter(|admin| admin.settled.decided() >= asked)
+            .map(|admin| (admin.settled.seen(), admin.settled.allowed()))
     }
 
     /// The client unsubscribed from admin events: the stream is no longer
@@ -1959,7 +1989,7 @@ impl SocketAccess {
         inner
             .admin
             .as_ref()
-            .is_some_and(|a| a.requested && a.allowed)
+            .is_some_and(|a| a.requested && a.settled.allowed())
     }
 
     /// Revalidate every scope that is not current — all of them after a user
@@ -2352,12 +2382,10 @@ impl SocketAccess {
                     // subscriber that they flow.
                     let dropped = admin.state.settle(true);
                     resync |= dropped && ok;
-                    if admin.allowed != ok {
+                    if admin.settled.allowed() != ok {
                         debug!(user_id = %self.user_id, elevated = ok, "Admin events revalidated");
                     }
-                    admin.seen = plan.user_now;
-                    admin.allowed = ok;
-                    admin.decided = planned;
+                    admin.settled.set(ok, plan.user_now, planned);
                 } else {
                     // Invalidated since this read was planned (an admin
                     // frame taken, a new request, the backstop): the answer
@@ -3038,7 +3066,7 @@ mod tests {
             .admin
             .as_ref()
             .filter(|admin| access.admin_phase(admin) == Phase::Current)
-            .map(|admin| admin.allowed)
+            .map(|admin| admin.settled.allowed())
     }
 
     /// One frame through the decision loop with scripted reads. Returns the
@@ -3140,7 +3168,7 @@ mod tests {
             ),
             Kind::Admin => (
                 Target::Admin,
-                inner.admin.as_ref().is_some_and(|a| a.allowed),
+                inner.admin.as_ref().is_some_and(|a| a.settled.allowed()),
                 inner.admin.as_ref().is_some_and(|a| a.requested),
             ),
         };
@@ -4618,12 +4646,22 @@ mod tests {
         assert_eq!(said(&access), (true, Some(Some(true))));
     }
 
-    /// Whether the admin stream is allowed is assigned in one place in
-    /// `ws/`, the revalidation's `apply`: every assignment of a scope's
-    /// `allowed` or `decided` in the module is listed here.
+    /// Whether the admin stream is allowed is written in one place: the
+    /// fields of [`settled::Settled`] are private to its module, so its
+    /// `set` is the one writer, and it is called once, by the
+    /// revalidation's `apply`. This scan of the code in `ws/` lists
+    /// everything else that could write the decision — a plain or compound
+    /// assignment of the whole value or of a field, a new value, a mutable
+    /// borrow (`mem::replace` and the like) — and allows only the
+    /// definition, the fresh scope's empty value, the setter's body and its
+    /// one call.
     #[test]
     fn the_admin_decision_has_one_writer() {
-        let assignment = regex::Regex::new(r"\b(\w+)\.(allowed|decided)\s*=[^=]").unwrap();
+        let op = r"(?:[-+*/%&|^]|<<|>>)?=[^=]";
+        let writes = regex::Regex::new(&format!(
+            r"\bsettled\s*{op}|\bsettled\.set\(|\bSettled\s*(?:\{{|::)|&mut\s+[\w.()]*\bsettled\b|\bself\.(?:allowed|seen|decided)\s*{op}"
+        ))
+        .unwrap();
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/ws");
         let mut found = Vec::new();
         let mut dirs = vec![dir.clone()];
@@ -4634,13 +4672,28 @@ mod tests {
                     dirs.push(path);
                 } else if path.extension().is_some_and(|e| e == "rs") {
                     let text = std::fs::read_to_string(&path).unwrap();
+                    // Code only: no comments, and not this test module.
+                    let text = text.split("\n#[cfg(test)]\nmod tests {").next().unwrap();
+                    let text: String = text
+                        .lines()
+                        .filter(|line| !line.trim_start().starts_with("//"))
+                        .collect::<Vec<_>>()
+                        .join("\n");
                     let file = path
                         .strip_prefix(&dir)
                         .unwrap()
                         .to_string_lossy()
                         .into_owned();
-                    for hit in assignment.captures_iter(&text) {
-                        found.push(format!("{file}: {}.{}", &hit[1], &hit[2]));
+                    for hit in writes.find_iter(&text) {
+                        let hit: String = hit
+                            .as_str()
+                            .chars()
+                            .filter(|c| !c.is_whitespace())
+                            .collect();
+                        found.push(format!(
+                            "{file}: {}",
+                            hit.trim_end_matches(|c: char| !"=({:".contains(c))
+                        ));
                     }
                 }
             }
@@ -4649,11 +4702,18 @@ mod tests {
         assert_eq!(
             found,
             [
-                "access.rs: admin.allowed",
-                "access.rs: admin.decided",
-                "access.rs: voice.allowed",
+                // The fresh scope's empty value.
+                "access.rs: Settled::",
+                // `struct Settled {` and `impl Settled {`.
+                "access.rs: Settled{",
+                "access.rs: Settled{",
+                // The setter's body, and its one call (`apply`).
+                "access.rs: self.allowed=",
+                "access.rs: self.decided=",
+                "access.rs: self.seen=",
+                "access.rs: settled.set(",
             ],
-            "a new writer of a scope decision"
+            "a new writer of the admin decision"
         );
     }
 
