@@ -25,7 +25,7 @@ const WebcamButton: Component = () => {
       try {
         const result = await startWebcam("medium");
         if (!result.ok) {
-          setError(result.error || "Failed to start webcam");
+          if (result.error) setError(result.error);
           setTimeout(() => setError(null), 3000);
         }
       } finally {
@@ -46,7 +46,7 @@ const WebcamButton: Component = () => {
             ? "bg-success/20 text-success hover:bg-danger/20 hover:text-danger"
             : "bg-background-secondary text-text-secondary hover:bg-background-primary hover:text-text-primary"
         } ${loading() ? "opacity-50 cursor-wait" : ""} state-disabled`}
-        title={voiceState.webcamActive ? "Stop Camera" : "Start Camera"}
+        title={voiceState.webcamActive ? t("voice.webcam.stop") : t("voice.webcam.start")}
       >
         {voiceState.webcamActive ? (
           <CameraOff class="w-5 h-5" />

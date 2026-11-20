@@ -6,14 +6,20 @@
 
 import MicTestPanel from "./MicTestPanel";
 import { t } from "@/i18n";
+import { createModalLayer, MODAL_LAYER } from "@/lib/a11y/modalLayer";
 
 interface Props {
   onClose: () => void;
 }
 
 function MicrophoneTest(props: Props) {
+  // Above every dialog already open, never under one.
+  const layer = createModalLayer(MODAL_LAYER.dialog);
   return (
-    <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+    <div
+      class="fixed inset-0 flex items-center justify-center bg-black/50"
+      style={{ "z-index": layer }}
+    >
       <div
         class="rounded-xl shadow-xl max-w-md w-full mx-4 border border-white/10"
         style={{"background-color":"var(--color-surface-layer2)"}}

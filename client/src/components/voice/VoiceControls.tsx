@@ -1,13 +1,24 @@
-import { Component, createSignal, Show, onMount, onCleanup } from "solid-js";
+import { Component, createSignal, Show, onMount, onCleanup, lazy } from "solid-js";
 import { Mic, Headphones, Settings } from "lucide-solid";
 import { voiceState, toggleMute, toggleDeafen, isPttActive } from "@/stores/voice";
-import MicrophoneTest from "./MicrophoneTest";
 import ScreenShareButton from "./ScreenShareButton";
-import ScreenShareQualityPicker from "./ScreenShareQualityPicker";
-import ScreenShareSourcePicker from "./ScreenShareSourcePicker";
 import WebcamButton from "./WebcamButton";
+import LazyDialog from "@/components/ui/LazyDialog";
 import { isTauri } from "@/lib/tauri/common";
 import { t } from "@/i18n";
+
+// Opened on demand: kept out of the startup payload.
+const MicrophoneTest = lazy(() => import("./MicrophoneTest"));
+const ScreenShareQualityPicker = lazy(() => import("./ScreenShareQualityPicker"));
+const ScreenShareSourcePicker = lazy(() => import("./ScreenShareSourcePicker"));
+
+/**
+ * The Linux desktop app has no source list: the system dialog (the
+ * xdg-desktop-portal ScreenCast) chooses the screen, on Wayland and X11.
+ */
+export function usesSystemScreenPicker(): boolean {
+  return isTauri() && /Linux/.test(navigator.userAgent) && !/Android/.test(navigator.userAgent);
+}
 
 // Shortcut labels are not translated.
 const MUTE_SHORTCUT = "Ctrl+Shift+M";
@@ -112,7 +123,7 @@ const VoiceControls: Component = () => {
         {/* Screen share button */}
         <ScreenShareButton
           onShowSourcePicker={
-            isTauri() ? () => setShowSourcePicker(true) : undefined
+            isTauri() && !usesSystemScreenPicker() ? () => setShowSourcePicker(true) : undefined
           }
           onShowQualityPicker={() => setShowQualityPicker(true)}
         />
@@ -135,26 +146,33 @@ const VoiceControls: Component = () => {
 
       {/* Microphone Test Modal */}
       <Show when={showMicTest()}>
-        <MicrophoneTest onClose={() => setShowMicTest(false)} />
+        <LazyDialog name="MicrophoneTest">
+          <MicrophoneTest onClose={() => setShowMicTest(false)} />
+        </LazyDialog>
       </Show>
 
-      {/* Native Source Picker (Tauri only) */}
+      {/* Native Source Picker (Windows/macOS desktop) */}
       <Show when={showSourcePicker()}>
-        <ScreenShareSourcePicker
-          onSelect={handleSourceSelected}
-          onClose={() => setShowSourcePicker(false)}
-        />
+        <LazyDialog name="ScreenShareSourcePicker">
+          <ScreenShareSourcePicker
+            onSelect={handleSourceSelected}
+            onClose={() => setShowSourcePicker(false)}
+          />
+        </LazyDialog>
       </Show>
 
       {/* Screen Share Quality Picker */}
       <Show when={showQualityPicker()}>
-        <ScreenShareQualityPicker
-          sourceId={selectedSourceId()}
-          onClose={() => {
-            setShowQualityPicker(false);
-            setSelectedSourceId(undefined);
-          }}
-        />
+        <LazyDialog name="ScreenShareQualityPicker">
+          <ScreenShareQualityPicker
+            sourceId={selectedSourceId()}
+            systemPicker={usesSystemScreenPicker()}
+            onClose={() => {
+              setShowQualityPicker(false);
+              setSelectedSourceId(undefined);
+            }}
+          />
+        </LazyDialog>
       </Show>
     </>
   );

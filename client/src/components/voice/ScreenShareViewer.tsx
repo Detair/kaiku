@@ -8,6 +8,7 @@ import {
   onCleanup,
 } from "solid-js";
 import { Portal } from "solid-js/web";
+import { createModalLayer, MODAL_LAYER } from "@/lib/a11y/modalLayer";
 import {
   X,
   Minimize2,
@@ -437,8 +438,9 @@ const SpotlightView: Component<{
   userId: string | null;
   streamId: string | null;
 }> = (props) => {
+  const layer = createModalLayer(MODAL_LAYER.dialog);
   return (
-    <div class="fixed inset-0 z-50 bg-black flex flex-col">
+    <div class="fixed inset-0 bg-black flex flex-col" style={{ "z-index": layer }}>
       {/* Header bar */}
       <div class="flex items-center justify-between p-4 bg-black/50">
         <div class="flex items-center gap-2">
@@ -511,10 +513,12 @@ const PipView: Component<{
   userId: string | null;
   streamId: string | null;
 }> = (props) => {
+  const layer = createModalLayer(MODAL_LAYER.dialog);
   return (
     <div
-      class="fixed z-50 bg-black rounded-lg shadow-2xl overflow-hidden"
+      class="fixed bg-black rounded-lg shadow-2xl overflow-hidden"
       style={{
+        "z-index": layer,
         right: `${viewerState.pipPosition.x}px`,
         bottom: `${viewerState.pipPosition.y}px`,
         width: `${viewerState.pipSize.width}px`,
@@ -776,8 +780,9 @@ const GridView: Component<{
     return "grid-cols-2 grid-rows-2";
   };
 
+  const layer = createModalLayer(MODAL_LAYER.dialog);
   return (
-    <div class="fixed inset-0 z-50 bg-black flex flex-col">
+    <div class="fixed inset-0 bg-black flex flex-col" style={{ "z-index": layer }}>
       {/* Grid container */}
       <div class={`flex-1 grid gap-1 p-1 ${gridClasses()}`}>
         <For each={streams()}>
