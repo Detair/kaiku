@@ -382,6 +382,36 @@ class VoiceDoorTest {
     }
 
     @Test
+    fun `a failed start of the service held for a call ends that call and leaves the voice channel on`() = rigTest { rig ->
+        rig.socket.ready()
+        rig.joinAndConnectFirst()
+        var failed = 0
+        assertTrue(rig.hold(1, onStartFailed = { failed++ }))
+        // The service, restarted for the call, could not go to the foreground.
+        rig.serviceEvents.emit(io.wolftown.kaiku.data.voice.VoiceServiceEvent.StartFailed)
+        runCurrent()
+
+        assertEquals("the call did not hear of it", 1, failed)
+        assertEquals("the voice channel was left for the call's failure", rig.channel, rig.repository.currentChannelId.value)
+        assertEquals("a voice error was shown on the voice channel", null, rig.repository.error.value)
+        assertEquals(listOf("join:${rig.channel}"), rig.joinsAndLeaves())
+    }
+
+    @Test
+    fun `the session's own disconnect does not cancel a join asked for another channel`() = rigTest { rig ->
+        rig.socket.ready()
+        rig.joinAndConnectFirst()
+        // Disconnect on the session's notification; before the session hears of it, the user
+        // taps another voice channel.
+        rig.serviceEvents.emit(io.wolftown.kaiku.data.voice.VoiceServiceEvent.Disconnect)
+        rig.repository.startJoin("ch-2")
+        runCurrent()
+
+        assertEquals("the join the user asked for was cancelled", "ch-2", rig.repository.currentChannelId.value)
+        assertEquals(listOf("join:${rig.channel}", "leave:${rig.channel}", "join:ch-2"), rig.joinsAndLeaves())
+    }
+
+    @Test
     fun `once the hold is over the notification acts on the session again`() = rigTest { rig ->
         rig.socket.ready()
         rig.joinAndConnectFirst()

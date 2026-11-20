@@ -675,21 +675,27 @@ class VoiceRepository @Inject constructor(
     }
 
     /** What a leave names: the session and the [startJoin] that are current when it is asked for. */
-    private class Leaving(val session: Session?, val join: Job?)
+    /**
+     * What a leave names: [session], the [join] it cancelled, and whether it is the leave
+     * of what is current ([current]; false for a session that was no longer the running one).
+     */
+    private class Leaving(val session: Session?, val join: Job?, val current: Boolean)
 
     /**
      * Names what a leave asked for now means, and ends it at once: the
      * session that is current (or [only] that one, if given) sends no
-     * `voice_join` and opens no connection from here on, and the running
-     * [startJoin] is cancelled. Whatever is opened or started after this is
-     * not part of this leave. [self] is the caller's job: a leave that runs
-     * inside the join's own job does not cancel itself.
+     * `voice_join` and opens no connection from here on. A leave of what is
+     * current ([only] null) also cancels the running [startJoin]; a leave of
+     * [only] touches nothing but that session (a join asked for meanwhile goes
+     * on). Whatever is opened or started after this is not part of this leave.
+     * [self] is the caller's job: a leave that runs inside the join's own job
+     * does not cancel itself.
      */
     private fun nameLeave(self: Job?, only: Session? = null): Leaving {
         val named = synchronized(sessionLock) {
             val running = live
             // Said about a session that is not the running one any more: nothing else is left for it.
-            if (only != null && running !== only) return Leaving(only, null)
+            if (only != null && running !== only) return Leaving(only, null, current = false)
             // An own leave wins, at once.
             if (running != null) {
                 live = null
@@ -698,7 +704,8 @@ class VoiceRepository @Inject constructor(
             running ?: last
         }
         named?.owner?.cancel()
-        val join = synchronized(joinLock) {
+        // Only a leave of what is current is also a leave of the join the user asked for.
+        val join = if (only != null) null else synchronized(joinLock) {
             val running = joinJob
             if (running == null || running === self) {
                 null
@@ -709,7 +716,7 @@ class VoiceRepository @Inject constructor(
             }
         }
         join?.cancel()
-        return Leaving(named, join)
+        return Leaving(named, join, current = true)
     }
 
     /**
@@ -727,7 +734,9 @@ class VoiceRepository @Inject constructor(
             // Own leave and logout: a notice of an earlier call is no longer
             // relevant. After the teardown (the door), so that a removal tearing
             // down the same session right now has set its notice by this point.
-            _endNotice.value = null
+            // A late leave of a session that was no longer current leaves the
+            // notice of what came after it.
+            if (leaving.current) _endNotice.value = null
         }
     }
 
@@ -751,8 +760,10 @@ class VoiceRepository @Inject constructor(
     }
 
     /** [leaveChannel] for [session] and no other (what its own microphone service reports). */
-    private suspend fun leaveSession(session: Session) {
-        finishLeave(nameLeave(currentCoroutineContext()[Job], only = session))
+    private suspend fun leaveSession(session: Session): Boolean {
+        val leaving = nameLeave(currentCoroutineContext()[Job], only = session)
+        finishLeave(leaving)
+        return leaving.current
     }
 
     /**
@@ -1276,12 +1287,15 @@ class VoiceRepository @Inject constructor(
                         VoiceServiceEvent.MuteToggle -> if (!holdsServiceForCall) toggleMute()
                         // This session, also if another one is current by the time the leave runs.
                         VoiceServiceEvent.Disconnect -> if (!holdsServiceForCall) leaveSession(session)
-                        VoiceServiceEvent.StartFailed -> {
+                        // While held for a call, the failed start is the call's ([holdForCall]).
+                        VoiceServiceEvent.StartFailed -> if (!holdsServiceForCall) {
+                            var wasCurrent = false
                             try {
-                                leaveSession(session)
+                                wasCurrent = leaveSession(session)
                             } finally {
-                                // The teardown clears _error, so set it afterwards.
-                                _error.value = R.string.voice_start_failed
+                                // The teardown clears _error, so set it afterwards; only for the
+                                // session that was current (not over one that came after it).
+                                if (wasCurrent) _error.value = R.string.voice_start_failed
                             }
                         }
                     }
