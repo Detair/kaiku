@@ -178,7 +178,7 @@ class TokenStorage internal constructor(
      * Stores a new session together with the server it belongs to ([serverUrl]; null: the saved
      * one stays) in one durable write. True when it reached storage; false when it did not, and
      * then nothing of it is kept (the earlier values are put back), so tokens of one server never
-     * sit beside the address of another. Starts a new session generation.
+     * sit beside the address of another. Starts a new session generation once it is stored.
      */
     @Synchronized
     fun saveSession(serverUrl: String?, accessToken: String, refreshToken: String?, expiresIn: Int, userId: String): Boolean {
@@ -186,7 +186,6 @@ class TokenStorage internal constructor(
             readOr(null) { prefs.getString(k, null) }
         }
         val expiresBefore = getAccessTokenExpiresAtMillis()
-        sessionGeneration++
         val expiresAt = System.currentTimeMillis() + expiresIn * 1000L
         val written = try {
             prefs.edit()
@@ -210,6 +209,9 @@ class TokenStorage internal constructor(
             }
             return false
         }
+        // A new session only once it is stored: a write that did not land leaves the running one
+        // (and work begun under it) as it was.
+        sessionGeneration++
         sessionChanged()
         return true
     }

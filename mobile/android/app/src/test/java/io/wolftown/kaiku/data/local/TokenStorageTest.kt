@@ -54,6 +54,23 @@ class TokenStorageTest {
         assertEquals("user-2", store.getUserId())
     }
 
+    /** A session write that did not land starts no new session: work begun under the running one still counts. */
+    @Test
+    fun `a session write that fails keeps the session generation`() {
+        val prefs = InMemorySharedPreferences()
+        val store = TokenStorage(prefs)
+        store.saveTokens("access-1", "refresh-1", 900, "user-1")
+        val generation = store.getSessionGeneration()
+        prefs.failingCommits = 1
+
+        assertFalse(store.saveSession(null, "access-2", "refresh-2", 900, "user-1"))
+        assertEquals(generation, store.getSessionGeneration())
+        assertEquals("access-1", store.getAccessToken())
+
+        assertTrue(store.saveSession(null, "access-2", "refresh-2", 900, "user-1"))
+        assertTrue(store.getSessionGeneration() > generation)
+    }
+
     @Test
     fun `conditional save writes nothing after clear`() {
         storage.clear()
