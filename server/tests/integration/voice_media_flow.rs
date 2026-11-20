@@ -705,3 +705,23 @@ async fn expiry_acts_only_on_its_own_start(pool: PgPool) {
     let late = b.next_event("webcam_stopped", Duration::from_secs(6)).await;
     assert_eq!(late["reason"], "no_media", "{late}");
 }
+
+/// A simulcast webcam (one track, three layers by rid) reaches the viewers:
+/// the server's answer carries the header extensions a simulcast sender
+/// needs to mark its layers.
+#[sqlx::test]
+async fn simulcast_webcam_reaches_viewers(pool: PgPool) {
+    let f = fixture(pool).await;
+    let (mut a, b) = two_in_call(&f).await;
+    a.send(serde_json::json!({ "type": "voice_webcam_start", "channel_id": f.voice, "quality": "medium" }));
+    a.next_event("webcam_started", WAIT).await;
+    a.add_simulcast_video("cam", &["l", "m", "h"], &["l", "m", "h"])
+        .await;
+    a.publish().await;
+    let id = format!("{}:webcam", a.user_id);
+    assert!(
+        b.wait_for_packets(&id, 5, WAIT).await,
+        "viewer did not get the simulcast webcam: {:?}",
+        b.seen_tracks()
+    );
+}

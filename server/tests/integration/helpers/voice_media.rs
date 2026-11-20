@@ -102,6 +102,21 @@ fn api() -> webrtc::api::API {
     install_crypto_provider();
     let mut media = MediaEngine::default();
     media.register_default_codecs().expect("codecs");
+    for uri in [
+        "urn:ietf:params:rtp-hdrext:sdes:mid",
+        "urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id",
+        "urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id",
+    ] {
+        media
+            .register_header_extension(
+                webrtc::rtp_transceiver::rtp_codec::RTCRtpHeaderExtensionCapability {
+                    uri: uri.to_owned(),
+                },
+                webrtc::rtp_transceiver::rtp_codec::RTPCodecType::Video,
+                None,
+            )
+            .expect("header extension");
+    }
     let registry =
         register_default_interceptors(Registry::new(), &mut media).expect("interceptors");
     APIBuilder::new()
@@ -341,6 +356,139 @@ impl SimParticipant {
             }
         }));
         track
+    }
+
+    /// Add a simulcast VP8 track (one sender, one encoding per `rid` in
+    /// `rids`) and write RTP on the layers in `sending` every 20 ms. Returns
+    /// the layer tracks by rid. The client side registers the header
+    /// extensions simulcast needs (mid, rid).
+    pub async fn add_simulcast_video(
+        &mut self,
+        id: &str,
+        rids: &[&str],
+        sending: &[&str],
+    ) -> (
+        HashMap<String, Arc<TrackLocalStaticRTP>>,
+        Arc<webrtc::rtp_transceiver::rtp_sender::RTCRtpSender>,
+    ) {
+        let codec = RTCRtpCodecCapability {
+            mime_type: MIME_TYPE_VP8.to_owned(),
+            clock_rate: 90_000,
+            ..Default::default()
+        };
+        let mut layers = HashMap::new();
+        for rid in rids {
+            layers.insert(
+                (*rid).to_owned(),
+                Arc::new(TrackLocalStaticRTP::new_with_rid(
+                    codec.clone(),
+                    id.to_owned(),
+                    (*rid).to_owned(),
+                    format!("stream-{id}"),
+                )),
+            );
+        }
+        let first = layers[rids[0]].clone();
+        let transceiver = self
+            .publisher
+            .add_transceiver_from_track(
+                first as Arc<dyn TrackLocal + Send + Sync>,
+                Some(webrtc::rtp_transceiver::RTCRtpTransceiverInit {
+                    direction: webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection::Sendonly,
+                    send_encodings: Vec::new(),
+                }),
+            )
+            .await
+            .expect("simulcast transceiver");
+        let sender = transceiver.sender().await;
+        for rid in &rids[1..] {
+            sender
+                .add_encoding(layers[*rid].clone() as Arc<dyn TrackLocal + Send + Sync>)
+                .await
+                .expect("encoding");
+        }
+        // Count key-frame requests per layer (`"{id}@{rid}"`): each layer's
+        // RTCP is read on its own.
+        for rid in rids {
+            let requests = self.keyframe_requests.clone();
+            let key = format!("{id}@{rid}");
+            let rid = (*rid).to_owned();
+            let reader = sender.clone();
+            self.tasks.push(tokio::spawn(async move {
+                use webrtc::rtcp::payload_feedbacks::full_intra_request::FullIntraRequest;
+                use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
+                while let Ok((packets, _)) = reader.read_rtcp_simulcast(&rid).await {
+                    for p in &packets {
+                        let any = p.as_any();
+                        if any.downcast_ref::<PictureLossIndication>().is_some()
+                            || any.downcast_ref::<FullIntraRequest>().is_some()
+                        {
+                            *requests.lock().unwrap().entry(key.clone()).or_insert(0) += 1;
+                        }
+                    }
+                }
+            }));
+        }
+        for rid in sending {
+            self.start_writing(layers[*rid].clone(), true);
+        }
+        (layers, sender)
+    }
+
+    /// Add an audio track that sends no media yet (a muted or silent
+    /// microphone): negotiated, but no RTP.
+    pub async fn add_silent_audio(&mut self, id: &str) -> Arc<TrackLocalStaticRTP> {
+        let track = Arc::new(TrackLocalStaticRTP::new(
+            RTCRtpCodecCapability {
+                mime_type: MIME_TYPE_OPUS.to_owned(),
+                clock_rate: 48_000,
+                channels: 2,
+                ..Default::default()
+            },
+            id.to_owned(),
+            format!("stream-{id}"),
+        ));
+        let sender = self
+            .publisher
+            .add_track(track.clone() as Arc<dyn TrackLocal + Send + Sync>)
+            .await
+            .expect("add track");
+        self.tasks.push(tokio::spawn(async move {
+            while sender.read_rtcp().await.is_ok() {}
+        }));
+        track
+    }
+
+    /// Keep writing synthetic RTP to `track` every 20 ms.
+    pub fn start_writing(&mut self, track: Arc<TrackLocalStaticRTP>, video: bool) {
+        let pt = if video { 96 } else { 111 };
+        self.tasks.push(tokio::spawn(async move {
+            let mut seq: u16 = 0;
+            let mut ts: u32 = 0;
+            let mut tick = tokio::time::interval(Duration::from_millis(20));
+            loop {
+                tick.tick().await;
+                seq = seq.wrapping_add(1);
+                ts = ts.wrapping_add(if video { 3000 } else { 960 });
+                let payload: &'static [u8] = if video {
+                    &[0x10, 0x00, 0x9d, 0x01, 0x2a, 0, 0, 0, 0]
+                } else {
+                    &[0xf8, 0xff, 0xfe]
+                };
+                let pkt = Packet {
+                    header: Header {
+                        version: 2,
+                        payload_type: pt,
+                        sequence_number: seq,
+                        timestamp: ts,
+                        marker: video,
+                        ..Default::default()
+                    },
+                    payload: bytes::Bytes::from_static(payload),
+                };
+                let _ = track.write_rtp(&pkt).await;
+            }
+        }));
     }
 
     /// Create a publisher offer (after gathering) and send it.
