@@ -1,6 +1,5 @@
 package io.wolftown.kaiku.domain
 
-import io.wolftown.kaiku.domain.model.Attachment
 import io.wolftown.kaiku.domain.model.DmConversation
 import io.wolftown.kaiku.domain.model.LastMessagePreview
 import java.time.Instant
@@ -10,26 +9,11 @@ import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 import java.util.Locale
 
-/** What a message without text carries, for the chat list preview. */
-enum class AttachmentKind { PHOTO, VIDEO, AUDIO, FILE }
-
-/** The kind of the first attachment by its MIME type, or null without attachments. */
-fun attachmentKindOf(attachments: List<Attachment>): AttachmentKind? {
-    val mime = attachments.firstOrNull()?.mimeType?.lowercase(Locale.ROOT) ?: return null
-    return when {
-        mime.startsWith("image/") -> AttachmentKind.PHOTO
-        mime.startsWith("video/") -> AttachmentKind.VIDEO
-        mime.startsWith("audio/") -> AttachmentKind.AUDIO
-        else -> AttachmentKind.FILE
-    }
-}
-
 /** The body part of a chat list preview. */
 sealed interface PreviewBody {
     data class Text(val text: String) : PreviewBody
-    data class Attached(val kind: AttachmentKind) : PreviewBody
 
-    /** A message without text whose attachment kind is unknown (the list from the server does not say). */
+    /** A message without text: "Attachment", the same live and from the server's list (which has no attachment kind). */
     data object SomeAttachment : PreviewBody
     data object Encrypted : PreviewBody
 }
@@ -45,10 +29,29 @@ sealed interface PreviewSender {
 }
 
 fun previewBody(last: LastMessagePreview): PreviewBody = when {
-    last.encrypted -> PreviewBody.Encrypted
+    last.encrypted || isEncryptedEnvelope(last.content) -> PreviewBody.Encrypted
     last.content.isNotBlank() -> PreviewBody.Text(last.content.lineSequence().first { it.isNotBlank() }.trim())
-    last.attachmentKind != null -> PreviewBody.Attached(last.attachmentKind)
     else -> PreviewBody.SomeAttachment
+}
+
+private val envelopeJson = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+
+/**
+ * Whether [content] is an end-to-end encrypted message as clients send it:
+ * a JSON object with `sender_key` and either `recipients` (one-to-one) or
+ * `megolm_ciphertext` (group). The server's conversation list has no
+ * "encrypted" flag, so the envelope is recognised by its shape, as the web
+ * client does, and its ciphertext is never shown.
+ */
+fun isEncryptedEnvelope(content: String): Boolean {
+    val text = content.trim()
+    if (!text.startsWith("{") || !text.endsWith("}")) return false
+    val obj = try {
+        envelopeJson.parseToJsonElement(text) as? kotlinx.serialization.json.JsonObject
+    } catch (_: Exception) {
+        null
+    } ?: return false
+    return "sender_key" in obj && ("recipients" in obj || "megolm_ciphertext" in obj)
 }
 
 /**

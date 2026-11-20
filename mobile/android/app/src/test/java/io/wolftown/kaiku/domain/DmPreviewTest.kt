@@ -1,6 +1,5 @@
 package io.wolftown.kaiku.domain
 
-import io.wolftown.kaiku.domain.model.Attachment
 import io.wolftown.kaiku.domain.model.DmConversation
 import io.wolftown.kaiku.domain.model.DmParticipant
 import io.wolftown.kaiku.domain.model.LastMessagePreview
@@ -13,7 +12,6 @@ import java.util.Locale
 
 class DmPreviewTest {
     private fun p(id: String, display: String) = DmParticipant(userId = id, username = id, displayName = display)
-    private fun att(mime: String) = Attachment("a", "f", mime, 1, "/u")
     private val oneToOne = DmConversation(id = "d", participants = listOf(p("me", "Fabian"), p("anna", "Anna")))
     private val group = DmConversation(id = "g", participants = listOf(p("me", "Fabian"), p("anna", "Anna"), p("bert", "Bert")))
 
@@ -36,18 +34,8 @@ class DmPreviewTest {
     @Test
     fun `bodies - text, attachment kinds, unknown attachment, encrypted`() {
         assertEquals(PreviewBody.Text("first line"), previewBody(LastMessagePreview("m", "\nfirst line\nsecond")))
-        assertEquals(PreviewBody.Attached(AttachmentKind.PHOTO), previewBody(LastMessagePreview("m", "", attachmentKind = AttachmentKind.PHOTO)))
         assertEquals(PreviewBody.SomeAttachment, previewBody(LastMessagePreview("m", "")))
         assertEquals(PreviewBody.Encrypted, previewBody(LastMessagePreview("m", "AAAA", encrypted = true)))
-    }
-
-    @Test
-    fun `attachment kind from mime type`() {
-        assertEquals(AttachmentKind.PHOTO, attachmentKindOf(listOf(att("image/jpeg"), att("video/mp4"))))
-        assertEquals(AttachmentKind.VIDEO, attachmentKindOf(listOf(att("VIDEO/mp4"))))
-        assertEquals(AttachmentKind.AUDIO, attachmentKindOf(listOf(att("audio/ogg"))))
-        assertEquals(AttachmentKind.FILE, attachmentKindOf(listOf(att("application/pdf"))))
-        assertNull(attachmentKindOf(emptyList()))
     }
 
     @Test
@@ -81,5 +69,19 @@ class DmPreviewTest {
             DmConversation(id = "none2"),
         )
         assertEquals(listOf("new-empty", "recent", "old", "none", "none2"), sortByActivity(list).map { it.id })
+    }
+
+    @Test
+    fun `an encrypted message from the server list is recognised by its envelope`() {
+        assertEquals(PreviewBody.Encrypted, previewBody(LastMessagePreview("m", """{"sender_key":"k","recipients":{"u":{"d":{"message_type":0,"ciphertext":"x"}}}}""")))
+        assertEquals(PreviewBody.Encrypted, previewBody(LastMessagePreview("m", """{"sender_key":"k","room_id":"r","megolm_ciphertext":"x"}""")))
+        // Text that merely looks like JSON stays text.
+        assertEquals(PreviewBody.Text("""{"a":1}"""), previewBody(LastMessagePreview("m", """{"a":1}""")))
+        assertEquals(PreviewBody.Text("{ hello"), previewBody(LastMessagePreview("m", "{ hello")))
+    }
+
+    @Test
+    fun `a message without text previews as an attachment from either source`() {
+        assertEquals(PreviewBody.SomeAttachment, previewBody(LastMessagePreview("m", "")))
     }
 }

@@ -22,8 +22,8 @@ class ChatsSummaryTest {
             )
         )
         assertEquals(4, s.unread)
+        // With unread messages, the newest of those.
         assertEquals("a", s.newest?.id)
-        assertNull(chatsSummary(listOf(DmConversation(id = "new"))).newest)
     }
 
     @Test
@@ -37,5 +37,17 @@ class ChatsSummaryTest {
         )
         assertEquals(1, s.unread)
         assertEquals("anna", s.newest?.id)
+    }
+
+    @Test
+    fun `without unread messages the newest conversation is shown even without messages yet`() {
+        val s = chatsSummary(
+            listOf(
+                DmConversation(id = "new"),
+                DmConversation(id = "a", lastMessage = LastMessagePreview("1", "x")),
+            )
+        )
+        assertEquals("new", s.newest?.id)
+        assertEquals("new", chatsSummary(listOf(DmConversation(id = "new"))).newest?.id)
     }
 }

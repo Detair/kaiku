@@ -5,8 +5,8 @@ import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.ws.KaikuWebSocket
 import io.wolftown.kaiku.data.ws.ServerEvent
 import io.wolftown.kaiku.di.ChatCoroutineScope
-import io.wolftown.kaiku.domain.attachmentKindOf
 import io.wolftown.kaiku.domain.model.DmConversation
+import io.wolftown.kaiku.domain.parseServerTime
 import io.wolftown.kaiku.domain.sortByActivity
 import io.wolftown.kaiku.domain.model.LastMessagePreview
 import io.wolftown.kaiku.domain.model.Message
@@ -55,6 +55,7 @@ class DmRepository @Inject constructor(
                 when (event) {
                     is ServerEvent.DmCreated -> onDmCreated(event)
                     is ServerEvent.MessageNew -> onMessageNew(event)
+                    is ServerEvent.DmRead -> onDmRead(event)
                     else -> Unit
                 }
             }
@@ -131,7 +132,10 @@ class DmRepository @Inject constructor(
             val liveOnly = current.filter {
                 it.id !in fetchedIds && (liveCreatedAt[it.id] ?: 0L) > startedAt
             }
-            val merged = sortByActivity(liveOnly + fetched)
+            // A message that arrived after the server took its snapshot keeps its preview and count.
+            val byId = current.associateBy { it.id }
+            val kept = fetched.map { server -> byId[server.id]?.let { local -> newerOf(local, server) } ?: server }
+            val merged = sortByActivity(liveOnly + kept)
             // The open DM is being read: the server's count does not apply.
             activeChannelId.value?.let { clearUnread(merged, it) } ?: merged
         }
@@ -159,9 +163,11 @@ class DmRepository @Inject constructor(
      * ended meanwhile). Throws what [DmApi.createDm] throws.
      */
     suspend fun openDirectMessage(userId: String): String {
-        existingDirectMessage(_conversations.value, userId, authState.currentUserId.value)?.let { return it.id }
         var created: Deferred<Result<String>>? = null
         val (key, request) = synchronized(epochLock) {
+            // Looked up in the same step as the shared request: a request that just
+            // published its answer and removed itself is found here, not sent again.
+            existingDirectMessage(_conversations.value, userId, authState.currentUserId.value)?.let { return it.id }
             val key = OpenKey(epoch, userId)
             key to opening.getOrPut(key) {
                 // Lazy: it cannot start before it is in the map, and sign-out can cancel it before it sends.
@@ -247,7 +253,6 @@ class DmRepository @Inject constructor(
             userId = message.author.id,
             username = message.author.username,
             createdAt = message.createdAt,
-            attachmentKind = attachmentKindOf(message.attachments),
             encrypted = message.encrypted,
         )
         val active = event.channelId == activeChannelId.value
@@ -262,7 +267,8 @@ class DmRepository @Inject constructor(
                         it
                     }
                     else -> it.copy(
-                        lastMessage = preview,
+                        // A delayed older message counts, but the newer preview stays.
+                        lastMessage = if (isOlder(preview, it.lastMessage)) it.lastMessage else preview,
                         unreadCount = when {
                             active -> 0
                             own -> it.unreadCount
@@ -280,6 +286,18 @@ class DmRepository @Inject constructor(
 
     /** Marks [channelId] read in the repository scope (leaving the screen does not stop it); failures are logged. */
     fun markReadInBackground(channelId: String) = markReadQuietly(channelId)
+
+    /**
+     * Read on another device: the count goes to zero when the read reaches
+     * the conversation's last message. A read up to an older message leaves
+     * the count (the newer messages are still unread; their number is not known).
+     */
+    private fun onDmRead(event: ServerEvent.DmRead) {
+        val readUpTo = event.lastReadMessageId ?: return
+        _conversations.update { current ->
+            current.map { if (it.id == event.channelId && it.lastMessage?.id == readUpTo) it.copy(unreadCount = 0) else it }
+        }
+    }
 
     private fun markReadQuietly(channelId: String) {
         scope.launch {
@@ -306,6 +324,21 @@ class DmRepository @Inject constructor(
 
     companion object {
         private val logger = Logger.getLogger("DmRepository")
+
+        /** Whether [incoming] is older than [shown] (both with times; otherwise not older). */
+        fun isOlder(incoming: LastMessagePreview, shown: LastMessagePreview?): Boolean {
+            val a = parseServerTime(incoming.createdAt) ?: return false
+            val b = parseServerTime(shown?.createdAt) ?: return false
+            return a.isBefore(b)
+        }
+
+        /** The server's entry, or the local one where it already has a newer last message. */
+        fun newerOf(local: DmConversation, server: DmConversation): DmConversation {
+            val localLast = local.lastMessage ?: return server
+            val serverLast = server.lastMessage
+            val localNewer = serverLast == null || isOlder(serverLast, localLast)
+            return if (localNewer) server.copy(lastMessage = localLast, unreadCount = local.unreadCount) else server
+        }
 
         /** Put [dm] first, replacing any conversation with the same id (pure, testable). */
         fun upsertAtTop(conversations: List<DmConversation>, dm: DmConversation): List<DmConversation> =

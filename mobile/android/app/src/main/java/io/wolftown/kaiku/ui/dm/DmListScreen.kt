@@ -24,7 +24,6 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import coil3.compose.AsyncImage
 import io.wolftown.kaiku.R
 import io.wolftown.kaiku.data.repository.DmRepository
-import io.wolftown.kaiku.domain.AttachmentKind
 import io.wolftown.kaiku.domain.PreviewBody
 import io.wolftown.kaiku.domain.PreviewSender
 import io.wolftown.kaiku.domain.formatListTime
@@ -242,14 +241,6 @@ internal fun conversationPreview(dm: DmConversation, currentUserId: String): Str
     val last = dm.lastMessage ?: return stringResource(R.string.dm_preview_no_messages)
     val body = when (val b = previewBody(last)) {
         is PreviewBody.Text -> b.text
-        is PreviewBody.Attached -> stringResource(
-            when (b.kind) {
-                AttachmentKind.PHOTO -> R.string.dm_preview_photo
-                AttachmentKind.VIDEO -> R.string.dm_preview_video
-                AttachmentKind.AUDIO -> R.string.dm_preview_audio
-                AttachmentKind.FILE -> R.string.dm_preview_file
-            }
-        )
         PreviewBody.SomeAttachment -> stringResource(R.string.dm_preview_attachment)
         PreviewBody.Encrypted -> stringResource(R.string.dm_preview_encrypted)
     }

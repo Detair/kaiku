@@ -728,10 +728,6 @@
     <string name="admin_new_account_servers_max">At most 10 servers at once.</string>
     <string name="admin_create_invalid">Check the username (3 to 32 lowercase letters, digits or _). If it is fine, one of the ticked servers may be gone or full.</string>
     <string name="dm_preview_own">You: %1$s</string>
-    <string name="dm_preview_photo">Photo</string>
-    <string name="dm_preview_video">Video</string>
-    <string name="dm_preview_audio">Audio</string>
-    <string name="dm_preview_file">File</string>
     <string name="dm_preview_attachment">Attachment</string>
     <string name="dm_preview_encrypted">Encrypted message</string>
     <string name="dm_preview_no_messages">No messages yet</string>
