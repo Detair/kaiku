@@ -833,4 +833,36 @@ class WebRtcManagerTest {
             }) { manager.addIceCandidate("publisher", candidate) },
         )
     }
+
+    @Test
+    fun `a signal meant for connections that were replaced is not applied to the new ones`() = runTest {
+        val pcs = mutableListOf<PeerConnection>()
+        val manager = managerWithConnections(backgroundScope, pcs)
+        manager.initialize()
+        manager.createSubscriberPeerConnection()
+        manager.createPublisherOffer()
+        val old = manager.currentGeneration
+        // The next session (or a rejoin) replaced the connections.
+        manager.closePeerConnections()
+        manager.createSubscriberPeerConnection()
+        manager.createPublisherOffer()
+        val (subscriber, publisher) = pcs[2] to pcs[3]
+        io.mockk.every { publisher.setRemoteDescription(any(), any()) } answers {
+            firstArg<org.webrtc.SdpObserver>().onSetSuccess()
+        }
+
+        manager.handleSubscriberOffer("v=0", forGeneration = old)
+        manager.handlePublisherAnswer("v=0", forGeneration = old)
+        verify(exactly = 0) { subscriber.setRemoteDescription(any(), any()) }
+        verify(exactly = 0) { publisher.setRemoteDescription(any(), any()) }
+
+        // The new connections' own signals are applied, and an old candidate is not.
+        manager.handlePublisherAnswer("v=0", forGeneration = manager.currentGeneration)
+        verify(exactly = 1) { publisher.setRemoteDescription(any(), any()) }
+        val candidate = IceCandidateData(candidate = "candidate:1 1 udp 1 10.0.0.1 9 typ host", sdpMid = "0", sdpMLineIndex = 0).toJson()
+        manager.addIceCandidate("publisher", candidate, forGeneration = old)
+        verify(exactly = 0) { publisher.addIceCandidate(any<org.webrtc.IceCandidate>()) }
+        manager.addIceCandidate("publisher", candidate, forGeneration = manager.currentGeneration)
+        verify(exactly = 1) { publisher.addIceCandidate(any<org.webrtc.IceCandidate>()) }
+    }
 }

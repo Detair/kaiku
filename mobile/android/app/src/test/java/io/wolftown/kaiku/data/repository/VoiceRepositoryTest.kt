@@ -283,7 +283,7 @@ class VoiceRepositoryTest {
         wsEvents.emit(ServerEvent.VoicePublisherAnswer(channelId = "ch-1", sdp = "v=0\r\no=answer\r\n"))
         advanceUntilIdle()
 
-        coVerify { webRtcManager.handlePublisherAnswer(match { it.startsWith("v=0") }) }
+        coVerify { webRtcManager.handlePublisherAnswer(match { it.startsWith("v=0") }, any()) }
     }
 
     @Test
@@ -295,7 +295,7 @@ class VoiceRepositoryTest {
         wsEvents.emit(ServerEvent.VoiceSubscriberOffer(channelId = "ch-1", sdp = "v=0\r\no=offer\r\n"))
         advanceUntilIdle()
 
-        coVerify { webRtcManager.handleSubscriberOffer(match { it.startsWith("v=0") }) }
+        coVerify { webRtcManager.handleSubscriberOffer(match { it.startsWith("v=0") }, any()) }
     }
 
     @Test

@@ -217,6 +217,13 @@ class VoiceRepository @Inject constructor(
         lateinit var owner: Job
 
         /**
+         * The generation of the connections this session installed last ([WebRtcManager.currentGeneration]):
+         * what the server sends this session is applied to those connections only.
+         */
+        @Volatile
+        var peerGeneration = -1L
+
+        /**
          * The authenticated socket that carried the session's last
          * `voice_join`, or null while none went out (the join is held).
          * Written under [sessionLock], in one step with the send. A state
@@ -404,6 +411,7 @@ class VoiceRepository @Inject constructor(
                 false
             } else {
                 install()
+                session.peerGeneration = webRtcManager.currentGeneration
                 true
             }
         }
@@ -1634,7 +1642,8 @@ class VoiceRepository @Inject constructor(
         val channelId = session.channelId
         when (event) {
             is ServerEvent.VoiceRoomState -> {
-                if (event.channelId == channelId) {
+                // Of this session only while it runs (not over the session after it).
+                if (event.channelId == channelId && isLive(session)) {
                     _participants.value = event.participants
                     _screenShares.value = event.screenShares
                 }
@@ -1642,19 +1651,19 @@ class VoiceRepository @Inject constructor(
 
             is ServerEvent.VoicePublisherAnswer -> {
                 if (event.channelId == channelId) {
-                    webRtcManager.handlePublisherAnswer(event.sdp)
+                    webRtcManager.handlePublisherAnswer(event.sdp, forGeneration = session.peerGeneration)
                 }
             }
 
             is ServerEvent.VoiceSubscriberOffer -> {
                 if (event.channelId == channelId) {
-                    webRtcManager.handleSubscriberOffer(event.sdp)
+                    webRtcManager.handleSubscriberOffer(event.sdp, forGeneration = session.peerGeneration)
                 }
             }
 
             is ServerEvent.VoiceIceCandidate -> {
                 if (event.channelId == channelId) {
-                    webRtcManager.addIceCandidate(event.pcType, event.candidate)
+                    webRtcManager.addIceCandidate(event.pcType, event.candidate, forGeneration = session.peerGeneration)
                 }
             }
 

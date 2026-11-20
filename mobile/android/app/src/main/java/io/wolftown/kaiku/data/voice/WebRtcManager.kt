@@ -495,13 +495,16 @@ class WebRtcManager @Inject constructor(
     // -- Signaling ------------------------------------------------------------
 
     /**
-     * Handles an SDP offer from the server for the subscriber PC.
+     * Handles an SDP offer from the server for the subscriber PC, if given only for the
+     * connections of [forGeneration] (those a session installed; see [currentGeneration]).
      *
      * Sets the remote description to the offer, then creates and sets a local
      * SDP answer. When the answer is ready, [onSubscriberAnswer] is invoked.
      */
-    fun handleSubscriberOffer(sdp: String): Unit = synchronized(disposeLock) {
+    fun handleSubscriberOffer(sdp: String, forGeneration: Long? = null): Unit = synchronized(disposeLock) {
         // Under [disposeLock]: a teardown disposes the connection after this call, not during it.
+        // A signal meant for connections that were replaced since is not applied to new ones.
+        if (forGeneration != null && forGeneration != generation) return
         val pc = subscriberPc ?: run {
             logger.warning("handleSubscriberOffer called but subscriber PC is null")
             onError?.invoke("Voice connection error: not initialized")
@@ -540,8 +543,10 @@ class WebRtcManager @Inject constructor(
      * Sets the remote description to the answer, then drains any ICE
      * candidates buffered while the answer was outstanding.
      */
-    fun handlePublisherAnswer(sdp: String): Unit = synchronized(disposeLock) {
+    fun handlePublisherAnswer(sdp: String, forGeneration: Long? = null): Unit = synchronized(disposeLock) {
         // Under [disposeLock]: a teardown disposes the connection after this call, not during it.
+        // A signal meant for connections that were replaced since is not applied to new ones.
+        if (forGeneration != null && forGeneration != generation) return
         val pc = publisherPc ?: run {
             logger.warning("handlePublisherAnswer called but publisher PC is null")
             return
@@ -590,9 +595,13 @@ class WebRtcManager @Inject constructor(
      * @param candidateJson JSON string in the format:
      *   `{"candidate":"...","sdpMLineIndex":0,"sdpMid":"..."}`
      */
-    fun addIceCandidate(pcType: String, candidateJson: String) {
+    fun addIceCandidate(pcType: String, candidateJson: String, forGeneration: Long? = null) {
         // Under [disposeLock]: a teardown disposes the connection after this call, not during it.
-        synchronized(disposeLock) { applyIceCandidate(pcType, candidateJson) }
+        // A candidate meant for connections that were replaced since is not applied to new ones.
+        synchronized(disposeLock) {
+            if (forGeneration != null && forGeneration != generation) return
+            applyIceCandidate(pcType, candidateJson)
+        }
     }
 
     /**
