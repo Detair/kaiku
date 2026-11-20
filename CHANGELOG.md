@@ -254,6 +254,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Sound of a shared screen is no longer taken for the microphone when the sharer joined muted; it ends with the share.
 - Turning the webcam on and off no longer counts against the voice join limit, so frequent toggling cannot block a reconnect.
 - A call left over from a server restart without a recorded start time is now ended at start-up.
+- Someone who comes back into a voice channel while their old connection is still being cleaned up is heard and seen by everyone again; before, people already in the channel could stay without their sound or video until someone rejoined.
+- Joining a voice channel at the moment the last person leaves it now always lands in the live channel; before, the join could end up in a channel that had just closed, with no sound.
+- The others no longer see a participant who was removed (for example by a permission change) right while joining.
+- Webcams from the web app need the web app of the same release: update the server and the web client together.
 - A DM call that was ringing while the server restarted kept ringing; it now ends at the restart, and answered calls end shortly after if nobody comes back.
 - Someone blocked by a participant could still join a DM call directly.
 - Stopping the server (for example `docker stop` or a Kubernetes rollout, which send SIGTERM) now shuts it down cleanly within a few seconds instead of waiting to be killed. Voice participants leave their rooms normally, every open connection is closed with code 1012 (service restart) so apps reconnect right away, and buffered telemetry is written before the process exits. Open connections are told first, within moments of the stop signal, and neither a slow request nor a voice room that is slow to empty delays that. The whole shutdown takes at most 5 seconds from the signal; a request still running at that point is answered with 503. Bot connections are closed the same way.
