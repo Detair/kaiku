@@ -1797,10 +1797,10 @@ mod tests {
                 _ => None,
             })
             .expect("resumed");
-        assert!(
-            resumed >= 449 - CAPACITY as u32,
-            "stale packet {resumed} after resume"
-        );
+        // The buffer resynchronised during the stall: what plays first is
+        // within its 600 ms span of the newest packet (449), not older.
+        assert!(resumed >= 449 - 30, "stale packet {resumed} after resume");
+        assert!(jb.stats().resets >= 1, "{:?}", jb.stats());
     }
 
     /// During normal playback, one packet with the next sequence number and
