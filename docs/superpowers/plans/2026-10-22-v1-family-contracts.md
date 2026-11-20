@@ -931,9 +931,9 @@ Nothing below changes an existing contract entry; a client that does not know it
   the Android tests (kept apart so the V01–V05 file still holds exactly those five).
 - **Enrolment variant** `pc_setup` (byte 3) exists only on enrolment rows; it never appears as the variant
   of an `enroll` challenge, and an `enroll` context carrying it is rejected.
-- **Phone routes** (bearer of the scanning key device, `may_approve` on, `ApprovalLogin` limit per user;
-  the status poll `GET /api/pc-setups/{attempt_id}` counts in the per-user `Read` bucket instead, so polling
-  never uses up the requests the steps need):
+- **Phone routes** (bearer of the scanning key device, `may_approve` on, the API's per-user `Write` limit and
+  `ApprovalLogin` per user; the status poll `GET /api/pc-setups/{attempt_id}` passes neither and counts only in
+  the per-user `Read` bucket, so polling never uses up the requests the steps need):
 
   | Route | Body → answer |
   |---|---|
@@ -948,8 +948,8 @@ Nothing below changes an existing contract entry; a client that does not know it
   403 `APPROVAL_NOT_ALLOWED` (`may_approve` off) or 409 `APPROVAL_STATE`, also when a poll or the sweep ended
   it first. A scan of another account's code answers 409 `PC_SETUP_OTHER_ACCOUNT` only to a scanner whose
   account may approve, and only while that code is live (its session live, its account eligible); otherwise
-  403 `APPROVAL_NOT_ALLOWED` or 404 `LOGIN_CODE_STALE`. Every route of the feature answers with
-  `Cache-Control: no-store`; a new passkey sends the `authenticators_changed` hint.
+  403 `APPROVAL_NOT_ALLOWED` or 404 `LOGIN_CODE_STALE`. Every answer that can carry the QR token or the
+  code (start, `current`, the PC's and the phone's polls, `answer`) has `Cache-Control: no-store`; a new passkey sends the `authenticators_changed` hint.
   The code is returned **only** in the approve answer and never sent again; the app keeps it in memory
   while the attempt is in `code`. The phone checks, before UV, what B.2 lists, and displays only values of
   the parsed `context`.
@@ -973,7 +973,7 @@ Nothing below changes an existing contract entry; a client that does not know it
 
   | Route | Body → answer |
   |---|---|
-  | `POST /auth/pc-setups` | – → 201 `{attempt_id, qr_payload, rotates_at}`; `qr_payload` = `kaiku://pcsetup/v1?o=<percent-encoded origin>&t=<43-char b64u token>`. A start while the session has a live attempt cancels it (reason `restarted`, with its enrolment) and creates a new one. 403 `PC_SETUP_UNAVAILABLE`; 401 `INVALID_TOKEN`; 429 `TOO_MANY_ATTEMPTS` after 10 starts of the account within 10 minutes |
+  | `POST /auth/pc-setups` | – → 201 `{attempt_id, qr_payload, rotates_at}`; `qr_payload` = `kaiku://pcsetup/v1?o=<percent-encoded origin>&t=<43-char b64u token>`. A start while the session has a live attempt cancels it (reason `restarted`, with its enrolment) and creates a new one. 403 `PC_SETUP_UNAVAILABLE`; 401 `INVALID_TOKEN`; 429 `TOO_MANY_ATTEMPTS` (with `Retry-After`) after 10 starts of the session or 30 of the account within 10 minutes |
   | `GET /auth/pc-setups/current` | → 200 status or 404; the session's live attempt after a reload. **While `waiting` it always mints a fresh token**, so a QR scanned from an earlier response may then fail with 404 `LOGIN_CODE_STALE`; the phone's message says to scan the code on the computer again |
   | `GET /auth/pc-setups/{id}?wait=0..25` | → 200 status (long-poll, returns early on a state change or a new QR); the PC polls at most once a second |
   | `DELETE /auth/pc-setups/{id}` | → cancel (`cancelled`, also voids the enrolment) |

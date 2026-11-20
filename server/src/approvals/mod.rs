@@ -47,13 +47,20 @@ pub fn pc_setups_router(state: &AppState) -> Router<AppState> {
         .route("/{id}/refuse", post(pc_setup::handlers::refuse))
         .layer(from_fn_with_state(state.clone(), rate_limit_by_user))
         .layer(from_fn(with_category(RateLimitCategory::ApprovalLogin)));
-    steps
-        .merge(pc_setup_poll_router(
-            state,
-            "/{id}",
-            get(pc_setup::handlers::phone_poll),
-        ))
-        .layer(from_fn(no_store))
+    steps.layer(from_fn(no_store))
+}
+
+/// `GET /api/pc-setups/{attempt_id}`, the phone's status poll: mounted
+/// beside the per-user `Write`-limited API routes (only behind the bearer
+/// check), in the per-user `Read` bucket, so neither of the phone's limits
+/// is used up by polling.
+pub fn pc_setup_phone_poll_router(state: &AppState) -> Router<AppState> {
+    pc_setup_poll_router(
+        state,
+        "/api/pc-setups/{id}",
+        get(pc_setup::handlers::phone_poll),
+    )
+    .layer(from_fn(no_store))
 }
 
 /// `Cache-Control: no-store`: these answers may carry a single-use secret

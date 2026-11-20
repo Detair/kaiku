@@ -80,6 +80,18 @@ impl WaitSlot {
     }
 }
 
+/// Whether a long-poll of `attempt` on that side holds its waiting place now
+/// (for tests that must wait until it does).
+#[doc(hidden)]
+#[must_use]
+pub fn long_poll_is_waiting(attempt: Uuid, pc_side: bool) -> bool {
+    WAITING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .attempts
+        .contains(&(attempt, pc_side))
+}
+
 impl Drop for WaitSlot {
     fn drop(&mut self) {
         let mut w = WAITING

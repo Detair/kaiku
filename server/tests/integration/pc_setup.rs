@@ -2564,7 +2564,8 @@ async fn ninety_seconds_of_polling(p: &Pc, id: &str, phone: bool) {
         )
         .await;
         if phone {
-            call(
+            // The phone's poll never runs into a limit the person can hit.
+            let (s, b) = call(
                 &p.app,
                 Method::GET,
                 &format!("/api/pc-setups/{id}?wait=0"),
@@ -2572,6 +2573,7 @@ async fn ninety_seconds_of_polling(p: &Pc, id: &str, phone: bool) {
                 None,
             )
             .await;
+            assert_eq!(s, 200, "{b}");
         }
     }
 }
@@ -2606,31 +2608,42 @@ async fn a_slow_person_finishes_with_the_real_rate_limiter(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn starts_per_account_are_bounded(pool: PgPool) {
+async fn starts_are_bounded_per_session_and_per_account(pool: PgPool) {
     let p = pc(&pool).await;
-    // Ten starts in the last ten minutes, from any session of the account.
+    // Ten starts of other sessions of the account do not block this one.
     for _ in 0..10 {
         let sid = probation_session(&pool, p.user).await;
-        insert_attempt(&pool, p.user, sid, "cancelled")
-            .await
-            .unwrap();
+        insert_attempt(&pool, p.user, sid, "cancelled").await.unwrap();
+    }
+    started(&p).await;
+    // Ten starts of this session within ten minutes are its limit.
+    sqlx::query("UPDATE pc_setup_attempts SET state = 'cancelled', reason = 'cancelled' WHERE session_id = $1")
+        .bind(p.sid)
+        .execute(&pool)
+        .await
+        .unwrap();
+    for _ in 0..9 {
+        insert_attempt(&pool, p.user, p.sid, "cancelled").await.unwrap();
     }
     let (s, body) = start(&p.app, &p.token).await;
-    assert_eq!(
-        (s, body["error"].as_str()),
-        (429, Some("TOO_MANY_ATTEMPTS")),
-        "{body}"
-    );
+    assert_eq!((s, body["error"].as_str()), (429, Some("TOO_MANY_ATTEMPTS")), "{body}");
     // Older starts do not count.
     sqlx::query(
         "UPDATE pc_setup_attempts SET created_at = NOW() - INTERVAL '11 minutes',
-                        expires_at = NOW() - INTERVAL '1 minute' WHERE user_id = $1",
+                expires_at = NOW() - INTERVAL '1 minute' WHERE user_id = $1",
     )
     .bind(p.user)
     .execute(&pool)
     .await
     .unwrap();
     started(&p).await;
+    // Thirty starts of the account within ten minutes are the account's ceiling.
+    for _ in 0..29 {
+        let sid = probation_session(&pool, p.user).await;
+        insert_attempt(&pool, p.user, sid, "cancelled").await.unwrap();
+    }
+    let (s, body) = start(&p.app, &p.token).await;
+    assert_eq!((s, body["error"].as_str()), (429, Some("TOO_MANY_ATTEMPTS")), "{body}");
 }
 
 #[sqlx::test]
@@ -2706,8 +2719,11 @@ async fn long_polls_hold_no_slot_without_need(pool: PgPool) {
         async move { call(&p.app, Method::GET, &uri, &p.token, None).await }
     };
     let quick = async {
-        // Let the first poll take its slot.
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        // Wait until the first poll holds its place.
+        let attempt: Uuid = id.parse().unwrap();
+        while !vc_server::approvals::pc_setup::handlers::long_poll_is_waiting(attempt, true) {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
         let t = std::time::Instant::now();
         let (s, _) = poll(25).await;
         (s, t.elapsed())
@@ -2743,7 +2759,7 @@ async fn long_polls_hold_no_slot_without_need(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn logout_of_two_sessions_never_holds_both_rows(pool: PgPool) {
+async fn logout_of_two_sessions_ends_the_bearers_own_last(pool: PgPool) {
     let p = pc(&pool).await;
     // A second session of the account, named by a refresh token.
     let other = probation_session(&pool, p.user).await;
@@ -2753,10 +2769,10 @@ async fn logout_of_two_sessions_never_holds_both_rows(pool: PgPool) {
         .execute(&pool)
         .await
         .unwrap();
-    // A transition holds the other session's row (as the phone side does).
+    // A transition holds the bearer's own session row.
     let mut holder = pool.begin().await.unwrap();
     sqlx::query("SELECT 1 FROM sessions WHERE id = $1 FOR UPDATE")
-        .bind(other)
+        .bind(p.sid)
         .execute(&mut *holder)
         .await
         .unwrap();
@@ -2769,15 +2785,18 @@ async fn logout_of_two_sessions_never_holds_both_rows(pool: PgPool) {
     );
     let check = async {
         super::helpers::wait_for_lock_waiters(&pool, 1).await;
-        // The bearer's own session is already ended: it was not held with the other.
-        let mine_ended = !session_live(&pool, p.sid).await;
+        // The other session is already ended in its own transaction; the
+        // bearer's own comes last, so a failure there leaves a request that
+        // can be sent again with the same bearer.
+        let other_ended = !session_live(&pool, other).await;
+        let mine_live = session_live(&pool, p.sid).await;
         holder.commit().await.unwrap();
-        mine_ended
+        (other_ended, mine_live)
     };
-    let ((s, _), mine_ended) = tokio::join!(logout, check);
+    let ((s, _), (other_ended, mine_live)) = tokio::join!(logout, check);
     assert_eq!(s, 200);
-    assert!(mine_ended, "each session ends in its own transaction");
-    assert!(!session_live(&pool, other).await);
+    assert!(other_ended && mine_live, "the other session first, one transaction each");
+    assert!(!session_live(&pool, p.sid).await);
 }
 
 #[sqlx::test]
@@ -3043,4 +3062,60 @@ async fn responses_with_a_token_or_code_are_not_stored(pool: PgPool) {
     )
     .await;
     assert_eq!((s, cc.as_deref()), (200, Some("no-store")), "{b}");
+}
+
+/// Hold `table`'s row `id` until `n` requests wait behind it, then release:
+/// PostgreSQL grants the row to the waiters in their order.
+async fn release_in_order(pool: &PgPool, holder: sqlx::Transaction<'_, sqlx::Postgres>, n: i64) {
+    super::helpers::wait_for_lock_waiters(pool, n).await;
+    holder.commit().await.unwrap();
+}
+
+#[sqlx::test]
+async fn a_finish_committed_before_logout_keeps_its_passkey(pool: PgPool) {
+    let p = pc(&pool).await;
+    let (id, eid) = enrolled(&p).await;
+    let body = ceremony(&p, &id).await;
+    // Hold the requesting session's row: the finish queues first, the logout second.
+    let mut holder = pool.begin().await.unwrap();
+    sqlx::query("SELECT 1 FROM sessions WHERE id = $1 FOR UPDATE")
+        .bind(p.sid)
+        .execute(&mut *holder)
+        .await
+        .unwrap();
+    let finish = passkey_finish(&p, &p.token, &id, body);
+    let logout_second = async {
+        super::helpers::wait_for_lock_waiters(&pool, 1).await;
+        logout(&p).await
+    };
+    let ((s, pk), out, ()) = tokio::join!(finish, logout_second, release_in_order(&pool, holder, 2));
+    assert_eq!(s, 201, "{pk}");
+    assert_eq!(out, 200);
+    // The logout's cascade left the finished enrolment and the passkey alone.
+    assert_eq!(enrollment_state(&pool, &eid).await, "done");
+    assert_eq!(passkeys_of(&pool, p.user).await, 1);
+    assert!(!session_live(&pool, p.sid).await);
+}
+
+#[sqlx::test]
+async fn a_finish_committed_before_device_removal_keeps_its_passkey(pool: PgPool) {
+    let p = pc(&pool).await;
+    let (id, eid) = enrolled(&p).await;
+    let body = ceremony(&p, &id).await;
+    // Hold the account row: the finish queues first, the removal second.
+    let mut holder = pool.begin().await.unwrap();
+    sqlx::query("SELECT 1 FROM users WHERE id = $1 FOR UPDATE")
+        .bind(p.user)
+        .execute(&mut *holder)
+        .await
+        .unwrap();
+    let finish = passkey_finish(&p, &p.token, &id, body);
+    let remove_second = async {
+        super::helpers::wait_for_lock_waiters(&pool, 1).await;
+        revoke_device(&p).await;
+    };
+    let ((s, pk), (), ()) = tokio::join!(finish, remove_second, release_in_order(&pool, holder, 2));
+    assert_eq!(s, 201, "{pk}");
+    assert_eq!(enrollment_state(&pool, &eid).await, "done");
+    assert_eq!(passkeys_of(&pool, p.user).await, 1);
 }

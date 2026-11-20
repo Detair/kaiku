@@ -161,7 +161,8 @@ pub struct LockedAttempt {
 
 impl LockedAttempt {
     /// Why the attempt ended, whether this lock ended it or an earlier
-    /// transition, poll or sweep did; `None` while it is live.
+    /// transition, poll or sweep did; `None` while it is live (and for a
+    /// `completed` attempt, which has no reason: callers check the state).
     #[must_use]
     pub fn end_reason(&self) -> Option<&str> {
         match self.ended_now {
@@ -614,18 +615,40 @@ pub async fn start_tx(
     if !eligible.allows_start() {
         return Err(ApprovalError::PcSetupUnavailable);
     }
-    // A bound on starts per account, counted under the account lock.
-    let recent: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM pc_setup_attempts
-          WHERE user_id = $1 AND created_at > NOW() - make_interval(mins => $2)",
+    // Bounds on starts per session and per account, counted under the
+    // account lock. `Retry-After` is when the oldest counted start leaves the
+    // window.
+    let (in_session, in_account, oldest_session, oldest_account, now): (
+        i64,
+        i64,
+        Option<DateTime<Utc>>,
+        Option<DateTime<Utc>>,
+        DateTime<Utc>,
+    ) = sqlx::query_as(
+        "SELECT COUNT(*) FILTER (WHERE session_id = $2), COUNT(*),
+                MIN(created_at) FILTER (WHERE session_id = $2), MIN(created_at),
+                clock_timestamp()
+           FROM pc_setup_attempts
+          WHERE user_id = $1 AND created_at > NOW() - make_interval(mins => $3)",
     )
     .bind(auth.id)
+    .bind(sid)
     .bind(i32::try_from(super::START_WINDOW_MINUTES).unwrap_or(10))
     .fetch_one(&mut *conn)
     .await?;
-    if recent >= super::MAX_STARTS {
+    let full = if in_session >= super::MAX_STARTS {
+        Some(oldest_session)
+    } else if in_account >= super::MAX_ACCOUNT_STARTS {
+        Some(oldest_account)
+    } else {
+        None
+    };
+    if let Some(oldest) = full {
+        let window = Duration::minutes(super::START_WINDOW_MINUTES);
+        let free_at = oldest.map_or(now + window, |t| t + window);
+        let secs = (free_at - now).num_seconds().clamp(1, window.num_seconds());
         return Err(crate::auth::AuthError::TooManyAttempts {
-            retry_after: u64::try_from(super::START_WINDOW_MINUTES * 60).unwrap_or(600),
+            retry_after: u64::try_from(secs).unwrap_or(600),
         }
         .into());
     }

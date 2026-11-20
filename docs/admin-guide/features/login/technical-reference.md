@@ -643,9 +643,10 @@ sequenceDiagram
   `authenticators_changed` hint to the account's sockets.
 - **Audit rows** `auth.pc_setup.start`, `.approve`, `.report`, `.refuse`, `.enrol` and `.complete` carry
   only the attempt id.
-- **Rate limits:** every step is in the per-user `ApprovalLogin` class (30 per minute); the two status
-  polls (`GET /auth/pc-setups/{id}`, `GET /api/pc-setups/{attempt_id}`) count in the per-user `Read`
-  class, so a slow person's polling never blocks the code entry or the passkey.
+- **Rate limits:** every step is in the per-user `ApprovalLogin` class (30 per minute; the phone's steps
+  also pass the API's per-user `Write` class); the two status polls (`GET /auth/pc-setups/{id}`,
+  `GET /api/pc-setups/{attempt_id}`) pass neither and count only in the per-user `Read` class, so a slow
+  person's polling never blocks a step.
 - **No push is involved**; both sides poll at most once a second (long-poll `?wait=` ≤ 25 s; at most 32
   attempt long-polls per server process, 4 per user and one per attempt and side; a poll without a free
   place, and every poll of an ended attempt, answers at once).
@@ -929,7 +930,8 @@ who became admin cannot confirm. `counts_from = confirmed_at + ACCOUNT_REQUEST_D
 session → challenge → attempt; the PC side (collect, TOTP step) locks the attempt's account →
 attempt; poll, cancel and the sweep touch only attempt rows. Logout and refresh do not take the
 account lock and touch only sessions, grants and enrolments; a logout that ends two sessions (bearer
-and refresh token) ends each in its own transaction, so it never holds two session rows. **"Set up this
+and refresh token) ends each in its own transaction, so it never holds two session rows, and the
+bearer's own last, so a failed step leaves a request that can be sent again. **"Set up this
 PC" (SM5):** attempts stay
 out of the session-ending cascade; every attempt transition (scan, approve, report, code entry, cancel,
 restart, finish, redeem) locks account → requesting session row → attempt → enrolment, holds the session
@@ -1083,7 +1085,7 @@ Known gaps between spec and clients (rc.3):
 | Denylist TTL | access lifetime + 60 s | `auth/revocation.rs` |
 | Login attempt / QR token / claim / collect | 600 s / 60 s / 120 s / 60 s | `auth/login_attempts/core.rs` |
 | Set up this PC: attempt (`waiting`, `claimed`) / QR token / `pc_setup` challenge / code / tries / enrolment | 10 min / 60 s / 120 s / 5 min / 3 / 10 min | `approvals/pc_setup/mod.rs` |
-| Set up this PC: starts per account / attempt rows kept | 10 per 10 min (429 `TOO_MANY_ATTEMPTS`) / 30 days | `approvals/pc_setup/mod.rs`, `db/queries.rs` |
+| Set up this PC: starts per session / per account / attempt rows kept | 10 / 30 per 10 min (429 `TOO_MANY_ATTEMPTS`, `Retry-After` until the oldest counted start leaves the window) / 30 days | `approvals/pc_setup/mod.rs`, `db/queries.rs` |
 | Long-poll wait / concurrent long-polls | ≤ 25 s / 32 | same |
 | Challenge maximum | 10 min | `approvals/core.rs` |
 | `device_login`, `device_stepup` challenge | 120 s | `approvals/device_login.rs`, `approvals/handlers.rs` |

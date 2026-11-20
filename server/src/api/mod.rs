@@ -334,6 +334,7 @@ pub fn create_router(state: AppState) -> Router {
     // Protected routes that require authentication
     let protected_routes = Router::new()
         .merge(api_routes)
+        .merge(crate::approvals::pc_setup_phone_poll_router(&state))
         .merge(governance_routes)
         .merge(discovery_join_routes)
         .merge(search_routes)

@@ -369,6 +369,9 @@ pub async fn logout(
     // Each session ends in its own transaction: logout runs without the
     // account lock, so it never holds two session rows at once (a
     // transition under the account lock may hold both in another order).
+    // The bearer's own session goes last: if an earlier step fails, the
+    // same request can be sent again.
+    session_ids.reverse();
     for sid in &session_ids {
         let mut tx = state.db.begin().await?;
         super::revocation::end_sessions_tx(

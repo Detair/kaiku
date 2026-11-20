@@ -298,6 +298,9 @@ created. It needs **no push notifications** (a server without FCM works) and no 
   `may_approve` off by default, the phone's wording and the notice with "That wasn't me". Keep
   `may_approve` off for the least experienced members, as with QR sign-in. Passkeys over hybrid remain
   the only phishing-resistant path.
+- **Limits:** a chat-only session can start at most 10 attempts within 10 minutes, an account 30. Someone
+  who signed in with the member's password could use up the account's starts for a while; the member
+  ends that session from the key phone.
 - **Desktop app:** the code is typed in the member's system browser, which must be able to create a
   passkey (Linux with Firefox needs a security key, or Chromium chosen under *Browser for passkey
   sign-in*).
