@@ -711,8 +711,9 @@ enrolment the claim was made for, of the kind the claim gets (a code for a link 
 it was, to be checked like a lost one. The key record is created under the same lock as a session
 install, after checking again that no other person and no other server is signed in; otherwise the
 new key is dropped and no claim is sent. A status `done` counts by the key device's state: `active`
-or `pending` as said; any other state, or none, leaves the claim and its secret as they are, and the
-key-device probe decides.
+or `pending` as said; `revoked` counts as made and removed since (the final sign-in is refused and ends
+the setup as a removed key); none or an unknown state leaves the claim and its secret as they are, and
+the key-device probe decides.
 
 "Already claimed" is said under the same lock, so a claim is stored by then. The phone then asks the
 key-device probe, and only a probe sent after that answer counts: active or pending → the claim had
