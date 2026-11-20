@@ -114,7 +114,7 @@
       })
         .then(function (res) {
           return res.json().catch(function () { return {}; }).then(function (body) {
-            return { status: res.status, ok: res.ok, body: body };
+            return { status: res.status, ok: res.ok, body: body, retryAfter: res.headers.get("Retry-After") };
           });
         })
         .then(function (r) {
@@ -129,6 +129,15 @@
           }
           if (r.ok && r.body.state === "failed") { done("data-failed"); return; }
           if (r.status === 400) { say("data-invalid"); return; }
+          // Throttled: no try was spent and the attempt is live; the keypad
+          // stays and takes another try after the server's wait.
+          if (r.status === 429) {
+            var wait = Math.max(1, parseInt(r.retryAfter, 10) || 30);
+            setStatus(codeForm.getAttribute("data-wait").replace("{n}", String(wait)));
+            submitBtn.disabled = true;
+            setTimeout(function () { submitBtn.disabled = false; }, wait * 1000);
+            return;
+          }
           if (r.status >= 500) { say("data-unavailable"); return; }
           done("data-expired");
         })
@@ -137,6 +146,10 @@
           say("data-unavailable");
         });
     });
+    // Only now: the markup keeps the keypad disabled until the handler above
+    // is installed, so a submit can never fall back to the browser's own.
+    input.disabled = false;
+    submitBtn.disabled = false;
     return;
   }
 

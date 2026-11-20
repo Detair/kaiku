@@ -326,6 +326,9 @@ struct Texts {
     /// `{n}`: the tries left.
     pc_code_wrong: &'static str,
     pc_code_failed: &'static str,
+    /// `{n}`: seconds until another try.
+    pc_code_wait: &'static str,
+    pc_code_noscript: &'static str,
     pc_passkey_prompt: &'static str,
     pc_create: &'static str,
     pc_failed: &'static str,
@@ -355,6 +358,8 @@ const EN: Texts = Texts {
     pc_code_invalid: "Type the 6 digits your phone shows.",
     pc_code_wrong: "That code is wrong. Tries left: {n}.",
     pc_code_failed: "Too many wrong codes. Start again in the Kaiku app.",
+    pc_code_wait: "Too many tries in a short time. Try again in {n} seconds.",
+    pc_code_noscript: "This page needs JavaScript. Turn it on, or go back to the app.",
     pc_passkey_prompt: "Create the passkey for this computer.",
     pc_create: "Create passkey",
     pc_failed: "That didn't work. Try again.",
@@ -387,6 +392,8 @@ const DE: Texts = Texts {
     pc_code_invalid: "Gib die 6 Ziffern ein, die dein Handy zeigt.",
     pc_code_wrong: "Der Code ist falsch. Verbleibende Versuche: {n}.",
     pc_code_failed: "Zu viele falsche Codes. Starte in der Kaiku-App neu.",
+    pc_code_wait: "Zu viele Versuche in kurzer Zeit. Versuch es in {n} Sekunden noch einmal.",
+    pc_code_noscript: "Diese Seite braucht JavaScript. Schalte es ein oder geh zur\u{fc}ck zur App.",
     pc_passkey_prompt: "Erstelle den Passkey f\u{fc}r diesen Computer.",
     pc_create: "Passkey erstellen",
     pc_failed: "Das hat nicht geklappt. Versuch es noch einmal.",
@@ -523,19 +530,25 @@ pub fn pc_setup_page(lang: Lang, step: &PcSetupStep, flow_id: Uuid) -> Response 
     let base = format!("/auth/passkeys/desktop/flows/{flow_id}");
     let main = match step {
         PcSetupStep::Code => format!(
+            // A posting form, disabled until ceremony.js has installed its
+            // handler: the code never lands in a URL, also without script.
             "<p>{prompt}</p>\
-             <form id=\"code-form\" novalidate data-invalid=\"{invalid}\" data-wrong=\"{wrong}\" \
-                data-failed=\"{failed}\" data-expired=\"{expired}\" \
+             <noscript><p>{noscript}</p></noscript>\
+             <form id=\"code-form\" method=\"post\" action=\"{base}/code\" novalidate \
+                data-invalid=\"{invalid}\" data-wrong=\"{wrong}\" \
+                data-failed=\"{failed}\" data-wait=\"{wait}\" data-expired=\"{expired}\" \
                 data-unavailable=\"{unavailable}\">\
              <label for=\"code\">{label}</label>\
              <input id=\"code\" name=\"code\" type=\"text\" inputmode=\"numeric\" \
                 maxlength=\"12\" autocomplete=\"one-time-code\" \
-                required>\
-             <button type=\"submit\">{submit}</button></form>",
+                required disabled>\
+             <button type=\"submit\" disabled>{submit}</button></form>",
             prompt = esc(t.pc_code_prompt),
             invalid = esc(t.pc_code_invalid),
             wrong = esc(t.pc_code_wrong),
             failed = esc(t.pc_code_failed),
+            wait = esc(t.pc_code_wait),
+            noscript = esc(t.pc_code_noscript),
             expired = esc(t.expired),
             unavailable = esc(t.unavailable),
             label = esc(t.pc_code_label),

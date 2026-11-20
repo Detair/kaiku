@@ -950,11 +950,13 @@ Nothing below changes an existing contract entry; a client that does not know it
   403 `APPROVAL_NOT_ALLOWED` (`may_approve` off) or 409 `APPROVAL_STATE`, also when a poll or the sweep ended
   it first. A scan of another account's code answers 409 `PC_SETUP_OTHER_ACCOUNT` only to a scanner whose
   account may approve, and only while that code is live (waiting or claimed, its session live, its account
-  eligible); otherwise 403 `APPROVAL_NOT_ALLOWED` or 404 `LOGIN_CODE_STALE`. A token that no longer belongs to a
-  waiting or claimed attempt answers 404 `LOGIN_CODE_STALE` before any other check. For a token of the own
-  account that resolves: the scanning device's key-device session (403 `KEY_DEVICE_REQUIRED`), then
-  `may_approve` (403 `APPROVAL_NOT_ALLOWED`), then the attempt (404 `LOGIN_CODE_STALE` when it ended in
-  between). Every answer that can carry the QR token or the
+  eligible); otherwise 403 `APPROVAL_NOT_ALLOWED` or 404 `LOGIN_CODE_STALE`. A scan checks the scanner
+  first, before the token is looked at: its key-device session (403 `KEY_DEVICE_REQUIRED`, 401
+  `INVALID_TOKEN`, 403 `ACCOUNT_BANNED`), then its account's `may_approve` (403 `APPROVAL_NOT_ALLOWED`). A
+  scanner refused there gets the same answer whether or not the token exists, and nothing is written for
+  it (an attempt it cannot claim ends through the PC's poll or the sweep). Then the token: unknown, rotated
+  or not live → 404 `LOGIN_CODE_STALE`; for the own account the attempt is re-checked under its locks (404
+  `LOGIN_CODE_STALE` when it ended in between). Every answer that can carry the QR token or the
   code (start, `current`, the PC's and the phone's polls, `answer`) has `Cache-Control: no-store`; a new passkey sends the `authenticators_changed` hint.
   The code is returned **only** in the approve answer and never sent again; the app keeps it in memory
   while the attempt is in `code`. The phone checks, before UV, what B.2 lists, and displays only values of
@@ -1014,9 +1016,17 @@ Nothing below changes an existing contract entry; a client that does not know it
   prefix and `Secure` are dropped), stored only as a keyed hash in the flow. The hash is written to the flow
   **before** the code entry is committed, so a failed commit leaves the code unspent. `options`, `finish`
   and `cancel` after the code refuse without it; a flow URL alone is worthless.
+- **Own origin only.** `…/code`, `…/options`, `…/finish` and `…/cancel` accept a request only when its
+  `Origin` is the configured public origin, or, without one (or with the `null` a form post of the page
+  sends under its `no-referrer` policy), when `Sec-Fetch-Site` is `same-origin`. Anything else → 403
+  `FORBIDDEN` before the flow is read or changed: the `SameSite=Strict` cookie also travels with requests
+  from other origins of the same site.
+- **The code form** posts (`method="post"`, `action=…/code`) and is disabled in the markup until the
+  page's script has installed its handler; without script the page shows a notice instead of a keypad, so
+  the code never lands in a URL. A 429 keeps the keypad; another try is possible after `Retry-After`.
 - **One path per attempt.** The attempt records how the right code arrived (`web` or this flow); only that
   path registers. The web `passkey/start|finish` answer 409 `APPROVAL_STATE` for an attempt whose code came
-  through a flow; a flow's `options`, `finish` and `redeem` refuse an attempt whose code did not come through
+  through a flow (`finish` before it takes the submitted ceremony); a flow's `options`, `finish` and `redeem` refuse an attempt whose code did not come through
   it. `redeem` consumes a flow only when it holds a pending result; without one nothing is changed.
 - A `pc_setup` flow lives 15 minutes (`expires_at` says so), and the right code keeps it at least the
   enrolment's 10 minutes. When the attempt can no longer register (`PASSKEY_LIMIT`, an ended attempt), the

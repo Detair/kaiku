@@ -10,7 +10,9 @@
 //! path = the flow's routes), stored only as its keyed hash in the flow
 //! record. `options`, `finish`, `cancel` and the passkey page refuse without
 //! it, and code entry works once per flow, so the authorisation belongs to
-//! the browser that typed the code, never to the URL.
+//! the browser that typed the code, never to the URL. `code`, `options`,
+//! `finish` and `cancel` also accept only the page's own origin (403
+//! otherwise, the flow untouched).
 //!
 //! `finish` only verifies the registration and keeps it in the pending
 //! result (60 s); `redeem` with the hand-off code, the verifier and the
@@ -181,6 +183,20 @@ fn has_secret(state: &AppState, headers: &HeaderMap, flow: &DesktopFlow) -> bool
     ct_eq(&typed, &stored)
 }
 
+/// Whether a state-changing request comes from the flow's own page: its
+/// `Origin` is the configured public origin, or (no `Origin`, or the `null`
+/// the page's `no-referrer` policy sends with a form post) the browser says
+/// `Sec-Fetch-Site: same-origin`. Checked before the flow is read: the
+/// `SameSite=Strict` cookie also travels with requests from other origins
+/// of the same site.
+fn from_the_page(state: &AppState, headers: &HeaderMap) -> bool {
+    let site = headers.get("sec-fetch-site").and_then(|v| v.to_str().ok());
+    match headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) {
+        Some(origin) if origin != "null" => origin == state.config.public_origin.origin,
+        _ => site == Some("same-origin"),
+    }
+}
+
 /// `Set-Cookie` for the browser secret: host-only, session lifetime (the
 /// flow lives at most 15 minutes), scoped to the flow's routes.
 fn secret_cookie(state: &AppState, flow_id: Uuid, secret: &Secret256) -> AuthResult<HeaderValue> {
@@ -283,8 +299,12 @@ struct CodeAnswer {
 pub async fn code(
     State(state): State<AppState>,
     Path(flow_id): Path<Uuid>,
+    headers: HeaderMap,
     Json(body): Json<PcSetupCodeEntry>,
 ) -> Result<Response, ApprovalError> {
+    if !from_the_page(&state, &headers) {
+        return Err(AuthError::Forbidden.into());
+    }
     let stored = load_open(&state, flow_id)
         .await?
         .ok_or(ApprovalError::NotFound)?;
@@ -371,6 +391,9 @@ pub async fn options(
     Path(flow_id): Path<Uuid>,
     headers: HeaderMap,
 ) -> Result<Json<FlowOptions>, ApprovalError> {
+    if !from_the_page(&state, &headers) {
+        return Err(AuthError::Forbidden.into());
+    }
     rp_of(&state)?;
     let stored = load_open(&state, flow_id)
         .await?
@@ -416,6 +439,9 @@ pub async fn finish(
     headers: HeaderMap,
     Form(form): Form<FinishForm>,
 ) -> Response {
+    if !from_the_page(&state, &headers) {
+        return AuthError::Forbidden.into_response();
+    }
     let lang = Lang::from_headers(&headers);
     let stored = match load_open(&state, flow_id).await {
         Ok(Some(s)) if has_secret(&state, &headers, &s.flow) => s,
@@ -527,6 +553,9 @@ pub async fn cancel(
     Path(flow_id): Path<Uuid>,
     headers: HeaderMap,
 ) -> Response {
+    if !from_the_page(&state, &headers) {
+        return AuthError::Forbidden.into_response();
+    }
     let lang = Lang::from_headers(&headers);
     let stored = match load_open(&state, flow_id).await {
         Ok(Some(s))

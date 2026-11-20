@@ -565,9 +565,14 @@ pub async fn passkey_finish(
     use crate::auth::AuthError;
     let rp = crate::auth::passkeys::rp_of(&state)?;
     // Another session's attempt is unknown before its ceremony is touched.
+    // A code typed in a desktop flow registers through that flow only: 409
+    // before the ceremony is taken (the locked check below decides again).
     {
         let mut conn = state.db.acquire().await?;
-        transition::of_session(&mut conn, &auth, id).await?;
+        let row = transition::of_session(&mut conn, &auth, id).await?;
+        if row.code_via.as_deref().is_some_and(|via| via != "web") {
+            return Err(ApprovalError::State);
+        }
     }
     let label = clean_label(body.label.as_deref())?;
     let rec = ceremony::take(&state.redis, body.ceremony_id)

@@ -622,7 +622,11 @@ sequenceDiagram
   code before any ceremony. The right code answers with a cookie `__Secure-kaiku_pcsetup` (HttpOnly,
   Secure, SameSite=Strict, path = the flow), whose keyed hash is written to the flow *before* the code
   entry commits. `options` and `finish` refuse without it, `cancel` does after the right code (before it,
-  anyone with the page may end the flow, as in F1), and a second code entry is refused. A `pc_setup` flow
+  anyone with the page may end the flow, as in F1), and a second code entry is refused. `code`,
+  `options`, `finish` and `cancel` accept only the page's own origin (`Origin`, or `Sec-Fetch-Site:
+  same-origin` when the origin is absent or `null`): 403 `FORBIDDEN` otherwise, the flow untouched. The
+  code form posts and stays disabled until the page's script handles it; without script a notice
+  replaces the keypad. A `pc_setup` flow
   lives 15 minutes (the code's 5 plus the enrolment's 10), and the right code keeps it at least the
   enrolment's 10 minutes; the pending result lives 60 s. When the attempt can no longer register (the
   passkey limit, an ended attempt), the page hands that answer to the app instead of offering a
@@ -639,25 +643,29 @@ sequenceDiagram
 - **End reasons** the PC can read: `session_ended`, `device_revoked`, `no_key_device`, `may_approve_off`,
   `account_banned`, `timeout`, `code_expired`, `restarted`, `cancelled`, `refused`, `reported`,
   `too_many_codes`, `enrollment_expired`.
-- **One clock:** every deadline of an attempt and of its challenge (QR rotation, 10 minutes, code,
-  challenge length and expiry, session and enrolment liveness) is decided on the database's clock:
-  `clock_timestamp()` read after the row locks are held (the requesting session's and the enrolment's
-  liveness, `lock_attempt`, `lock_for_answer`) or in the inserting statement (the challenge), so a wait
-  for a lock never extends a deadline. The sweeps' and polls' hints, the phone's own key-device session
-  check (shared by every challenge kind) and the other-account hint use `NOW()` of their statement. The
-  `pc_setup` challenge is stored with the earlier of the database clock plus its lifetime and the attempt's
-  stored deadline, in whole seconds, in the statement that inserts it, so it never outlives its attempt.
-  The other challenge kinds (`login`, `enroll`, `enroll_pop`, `device_login`, `device_stepup`) keep
-  their own timing on the server's clock; account locks are taken as for every other flow.
-- **Scan answers in order:** a token that no longer belongs to a waiting or claimed attempt (every end
-  drops it) answers 404 `LOGIN_CODE_STALE` before any other check. For a token that resolves: the
-  scanning device's live key-device session (403 `KEY_DEVICE_REQUIRED`, 401, 403 `ACCOUNT_BANNED`), then
-  the account's `may_approve` (403 `APPROVAL_NOT_ALLOWED`), then the attempt (404 when it ended between
-  the lookup and the lock). Another account's code counts as live while it waits or is claimed, whatever
-  its paused rotation time says.
+- **One clock:** every transition of an attempt takes its locks first (account, requesting session,
+  attempt, its enrolment; the phone's steps also the key device, its session and the challenge), then
+  reads `clock_timestamp()` once. That one value decides every liveness (both sessions, QR rotation,
+  attempt, code, challenge, enrolment) and every deadline the transition issues (a start's creation time,
+  QR rotation and 10 minutes, the code's 5 minutes, the enrolment's 10 minutes), so a wait for a lock
+  never shortens or extends a deadline. The `pc_setup` challenge is issued through its own entry into the
+  shared core: in the inserting statement, the earlier of the database clock plus 2 minutes and the
+  attempt's stored deadline, in whole seconds. The phone's key-device session check (shared by every
+  challenge kind) compares on `clock_timestamp()` too; the account lock (`lock_accounts`, including the
+  ban's expiry) is unchanged. The polls' and the sweep's hints and the other-account read use
+  `clock_timestamp()` of their statement; the locked re-check decides. The other challenge kinds
+  (`login`, `enroll`, `enroll_pop`, `device_login`, `device_stepup`) keep their own timing on the
+  server's clock.
+- **Scan answers in order:** the scanner first, before the token is looked at, read without a lock: its
+  account's ban (403 `ACCOUNT_BANNED`), its key device (403 `KEY_DEVICE_REQUIRED`), its session (401), then
+  `may_approve` (403 `APPROVAL_NOT_ALLOWED`). A refused scanner gets the same answer whether or not the
+  token exists, and nothing is written for it. Then one read of the token: unknown, rotated or not live →
+  404 `LOGIN_CODE_STALE`; another account's live code (waiting or claimed, its timers, session, account and
+  phone all good, in that same read) → 409 `PC_SETUP_OTHER_ACCOUNT`, whatever its paused rotation time
+  says. The own account's code is re-checked under the locks, in the same order.
 - **Answers:** a code typed after the 5 minutes answers 410 also when a poll or the sweep ended the
   attempt first; the phone's `answer`/`refuse`/`release` answer 404 to any caller but the claiming device
-  before anything is locked; responses carry `Cache-Control: no-store`; a new passkey sends the
+  (a session without a key device too) before anything is locked; responses carry `Cache-Control: no-store`; a new passkey sends the
   `authenticators_changed` hint to the account's sockets.
 - **Audit rows** `auth.pc_setup.start`, `.approve`, `.report`, `.refuse`, `.enrol` and `.complete` carry
   only the attempt id.
