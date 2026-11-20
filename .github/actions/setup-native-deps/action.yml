@@ -71,7 +71,12 @@ runs:
     - name: Install macOS build dependencies
       if: runner.os == 'macOS'
       shell: bash
-      run: brew install pkg-config libvpx
+      run: |
+        brew install pkg-config libvpx
+        # Link libvpx statically (Homebrew ships libvpx.a): a dynamic
+        # libvpx only exists on Macs with Homebrew. Checked after the build
+        # by scripts/check_macos_static_libvpx.sh.
+        echo "VPX_STATIC=1" >> "$GITHUB_ENV"
 
     # macOS runner images rotate Xcode versions; build-script outputs cache
     # absolute toolchain paths (e.g. -lclang_rt.osx with -L .../clang/<N>/

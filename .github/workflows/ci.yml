@@ -514,6 +514,12 @@ jobs:
         working-directory: client
         run: bun run tauri build --config src-tauri/tauri.ci.conf.json
 
+      # libvpx (screen share video) must be linked statically, or the app
+      # fails to start on Macs without Homebrew's libvpx.
+      - name: Check libvpx is linked statically (macOS)
+        if: matrix.platform == 'macos-latest'
+        run: scripts/check_macos_static_libvpx.sh
+
       # Rust unit tests of the desktop shell (session manager, native WebSocket).
       - name: Test Tauri client library (Ubuntu)
         if: matrix.platform == 'ubuntu-latest'
