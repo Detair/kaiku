@@ -2618,3 +2618,35 @@ async fn old_attempts_are_cleaned_up(pool: PgPool) {
         .unwrap();
     assert_eq!(left, vec![recent]);
 }
+
+#[sqlx::test]
+async fn a_stale_locked_value_never_advances_an_attempt(pool: PgPool) {
+    let p = pc(&pool).await;
+    let (id, code) = with_code(&p).await;
+    let ctx = vc_server::auth::ctx::AuthCtx::from(&p.app.state);
+    let mut tx = pool.begin().await.unwrap();
+    let locked =
+        vc_server::approvals::pc_setup::transition::lock_attempt(&mut tx, id.parse().unwrap())
+            .await
+            .unwrap();
+    // The row moved on after it was read (a caller holding an old value).
+    sqlx::query("UPDATE pc_setup_attempts SET state = 'cancelled', reason = 'cancelled' WHERE id = $1::uuid")
+        .bind(&id)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let out = enter_code(&mut tx, &ctx, &locked, &code, CodePath::Web).await;
+    // An internal error: `settle` rolls the whole transition back.
+    assert!(
+        matches!(out, Err(vc_server::approvals::error::ApprovalError::Database(_))),
+        "{out:?}"
+    );
+    drop(tx);
+    assert_eq!(attempt_state(&pool, &id).await.0, "code");
+    let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM enrollments WHERE subject_id = $1")
+        .bind(p.user)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 0);
+}

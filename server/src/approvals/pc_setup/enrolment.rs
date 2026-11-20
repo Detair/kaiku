@@ -27,6 +27,17 @@ use crate::auth::passkeys::MAX_ACTIVE_PASSKEYS;
 use crate::auth::AuthError;
 use crate::security_events::{record, Actor, EventType, NewSecurityEvent};
 
+/// Exactly one row changed. Under the attempt's locks the state predicate
+/// always matches; no row means the caller's value was stale, an internal
+/// error that rolls the whole transition back (never a committed refusal).
+fn one_row(r: sqlx::postgres::PgQueryResult) -> Result<(), ApprovalError> {
+    if r.rows_affected() == 1 {
+        Ok(())
+    } else {
+        Err(ApprovalError::Database(sqlx::Error::RowNotFound))
+    }
+}
+
 /// Where the right code was typed, and so the only way its passkey may be
 /// registered (spec Step 5): the code proves that whoever registers is with
 /// the person holding the phone, so registration takes the same path.
@@ -130,34 +141,39 @@ pub async fn enter_code(
             "UPDATE pc_setup_attempts
                 SET state = 'enrolled', enrollment_id = $2, code_hash = NULL,
                     code_via = $3, code_flow_id = $4
-              WHERE id = $1",
+              WHERE id = $1 AND state = 'code'",
         )
         .bind(a.id)
         .bind(enrollment_id)
         .bind(via)
         .bind(flow)
         .execute(&mut *conn)
-        .await?;
+        .await
+        .map(one_row)??;
         audit(conn, a.user_id, "auth.pc_setup.enrol", a.id).await?;
         return Ok(CodeOutcome::Enrolled { enrollment_id });
     }
     let tries = a.tries + 1;
     if tries < MAX_CODE_TRIES {
-        sqlx::query("UPDATE pc_setup_attempts SET tries = $2 WHERE id = $1")
+        sqlx::query("UPDATE pc_setup_attempts SET tries = $2 WHERE id = $1 AND state = 'code'")
             .bind(a.id)
             .bind(tries)
             .execute(&mut *conn)
-            .await?;
+            .await
+            .map(one_row)??;
         return Ok(CodeOutcome::Wrong {
             tries_left: MAX_CODE_TRIES - tries,
         });
     }
     let mut ended = a.clone();
-    sqlx::query("UPDATE pc_setup_attempts SET tries = $2, code_hash = NULL WHERE id = $1")
-        .bind(a.id)
-        .bind(tries)
-        .execute(&mut *conn)
-        .await?;
+    sqlx::query(
+        "UPDATE pc_setup_attempts SET tries = $2, code_hash = NULL WHERE id = $1 AND state = 'code'",
+    )
+    .bind(a.id)
+    .bind(tries)
+    .execute(&mut *conn)
+    .await
+    .map(one_row)??;
     end_tx(
         conn,
         &mut ended,
@@ -311,15 +327,20 @@ pub async fn complete_enrolment(
         .execute(&mut *conn)
         .await?;
     sqlx::query(
-        "UPDATE enrollments SET state = 'done', done_at = NOW(), ended_at = NOW() WHERE id = $1",
+        "UPDATE enrollments SET state = 'done', done_at = NOW(), ended_at = NOW()
+          WHERE id = $1 AND state = 'issued'",
     )
     .bind(enrollment_id)
     .execute(&mut *conn)
-    .await?;
-    sqlx::query("UPDATE pc_setup_attempts SET state = 'completed' WHERE id = $1")
-        .bind(a.id)
-        .execute(&mut *conn)
-        .await?;
+    .await
+    .map(one_row)??;
+    sqlx::query(
+        "UPDATE pc_setup_attempts SET state = 'completed' WHERE id = $1 AND state = 'enrolled'",
+    )
+    .bind(a.id)
+    .execute(&mut *conn)
+    .await
+    .map(one_row)??;
     // A strong authenticator became active (as an SM2 `done`).
     crate::auth::strong::mark_first_activity(conn, a.user_id).await?;
     crate::auth::account_requests::core::on_strong_activated(conn, ctx, a.user_id, None).await?;

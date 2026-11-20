@@ -334,6 +334,10 @@ async fn void_challenge(conn: &mut PgConnection, a: &AttemptRow) -> sqlx::Result
     Ok(())
 }
 
+// Every attempt UPDATE names the state it leaves. Under the locks of
+// [`lock_attempt`] it always matches; a caller holding an old value instead
+// gets no row, an internal error, and `settle` rolls the transition back.
+
 /// `claimed` → `waiting` (SM5 release / challenge expiry, as in SM1): the
 /// challenge is void, the claimer forgotten and the token dropped, so the
 /// PC's next poll shows a new QR.
@@ -343,7 +347,7 @@ async fn reopen_tx(conn: &mut PgConnection, a: &mut AttemptRow) -> sqlx::Result<
         "UPDATE pc_setup_attempts
             SET state = 'waiting', challenge_id = NULL, device_id = NULL,
                 qr_token_hash = NULL, qr_rotates_at = NULL
-          WHERE id = $1
+          WHERE id = $1 AND state = 'claimed'
           RETURNING *",
     )
     .bind(a.id)
@@ -372,7 +376,7 @@ pub(super) async fn end_tx(
         "UPDATE pc_setup_attempts
             SET state = $2, reason = $3, qr_token_hash = NULL, qr_rotates_at = NULL,
                 code_hash = NULL
-          WHERE id = $1
+          WHERE id = $1 AND state IN ('waiting', 'claimed', 'code', 'enrolled')
           RETURNING *",
     )
     .bind(a.id)
@@ -433,7 +437,7 @@ pub async fn rotate_tx(
     *a = sqlx::query_as(
         "UPDATE pc_setup_attempts
             SET qr_token_hash = $2, qr_rotates_at = NOW() + make_interval(secs => $3)
-          WHERE id = $1
+          WHERE id = $1 AND state = 'waiting'
           RETURNING *",
     )
     .bind(a.id)
@@ -848,7 +852,7 @@ pub async fn claim_tx(
     })?;
     locked.attempt = sqlx::query_as(
         "UPDATE pc_setup_attempts SET state = 'claimed', challenge_id = $2, device_id = $3
-          WHERE id = $1
+          WHERE id = $1 AND state = 'waiting'
           RETURNING *",
     )
     .bind(id)
@@ -1014,7 +1018,7 @@ pub async fn answer_tx(
                     SET state = 'code', code_hash = $2, tries = 0, qr_token_hash = NULL,
                         qr_rotates_at = NULL,
                         code_expires_at = NOW() + make_interval(mins => $3)
-                  WHERE id = $1
+                  WHERE id = $1 AND state = 'claimed'
                   RETURNING code_expires_at",
             )
             .bind(attempt_id)
