@@ -930,8 +930,9 @@ Media of a participant reaches others only under a source the server accepted.
   by arrival order. A video track that arrives before its announcement waits up to 3 s for it (so a start sent
   right after the track still works); without an announcement by then it is dropped: never forwarded, no
   `incoming_tracks` entry. The sender gets `voice_error` `VIDEO_SOURCE_UNANNOUNCED`.
-- Audio follows the same rule: the first audio track of a seat is its microphone (announced by `voice_join`;
-  there is exactly one). A further audio track is forwarded only as the audio of an accepted start with
+- Audio follows the same rule: the seat's microphone is the audio section that its first publisher offer
+  negotiates first (announced by `voice_join`; there is exactly one; a first offer without audio leaves the seat
+  without a microphone). Any other audio track is forwarded only as the audio of an accepted start with
   `has_audio: true`, matched the same way (arrival order, 3 s wait); otherwise it is dropped and the sender gets
   `voice_error` `AUDIO_SOURCE_UNANNOUNCED`. Changing the microphone device must replace the track on the existing
   sender (`replaceTrack`), not add a second audio track.
@@ -948,7 +949,9 @@ Media of a participant reaches others only under a source the server accepted.
 - An expiry belongs to the start it was set for: switching a webcam off and on again (or reusing a `stream_id`)
   starts a new 10 s period. A stop or expiry that races the first track wins: the track is not forwarded.
 - Key frames: a viewer's PLI or FIR for a forwarded video track is passed to the publisher as a PLI, at most once
-  per second per track across all viewers (the server also asks for one every 3 s). Viewers may send PLI/FIR
+  per second per track across all viewers (the server also asks for one every 3 s); with simulcast it goes to
+  the layer that viewer receives. Simulcast is not negotiated in v1.0 (a sender offering several encodings gets
+  one stream). Viewers may send PLI/FIR
   freely when they need a key frame (late join, decoder error).
 - Permission: `SCREEN_SHARE` is part of the @everyone default (since 2026-11-20, existing servers migrated).
   Admins can deny it per channel with an override.
