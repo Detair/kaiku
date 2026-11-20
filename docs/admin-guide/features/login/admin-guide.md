@@ -291,10 +291,11 @@ created. It needs **no push notifications** (a server without FCM works) and no 
   started the attempt. It marks no password or TOTP compromised. If the person used a password,
   TOTP or recovery code as their only proof (part 2 of the owner rule), the passkey stays and only
   the requesting session ends; remove the passkey from the key phone or the panel.
-- **Trust limit:** the passkey goes to the session that showed the QR code. A person who confirms a
-  scan with the screen lock *and* types the 6-digit code for a session they did not start gives that
-  session a full passkey: new sign-in methods, other sessions ended, and, for an admin, the admin
-  panel. It is not a proximity check. The phone asks to continue only for a computer in front of the
+- **Trust limit:** the passkey is bound to the session that showed the QR code and gives full access
+  (sign-in methods, other sessions, for an admin the admin panel). The server cannot tell where the
+  person who types the code is; it is not a proximity check. Before a passkey exists, the person at the
+  phone must confirm with the screen lock *and* type the 6-digit code on the computer in front of them.
+  The phone asks to continue only for a computer in front of the
   person, the code must be typed on that computer, the account must match, `may_approve` is off by
   default, and every passkey made this way is announced with "That wasn't me". Keep `may_approve` off
   for the least experienced members, as with QR sign-in. Passkeys over hybrid remain the only

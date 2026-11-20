@@ -608,7 +608,10 @@ sequenceDiagram
   `pc_setup`, recording the approving device and the requesting session; no setup token) and the attempt
   becomes `enrolled`; a wrong code answers 200 `{state: "code", tries_left}`; the third gives `failed` and
   `pc_setup_failed`. A code that is not 6 digits is refused (400) without spending a try; after the 5
-  minutes the answer is 410 `APPROVAL_EXPIRED`. A lost response recovers by the PC's next poll.
+  minutes the answer is 410 `APPROVAL_EXPIRED`. On the web a lost response recovers by the PC's next
+  poll. On the desktop, if the browser does not receive the answer, the browser page cannot continue:
+  "Start again" on the PC begins a new attempt, which the phone approves again; otherwise the attempt
+  ends by itself when its time runs out.
 - **One path per attempt:** the right code records how it arrived (`code_via` = `web`, or `desktop_flow`
   with the flow's id); only that path registers. The web routes refuse an attempt whose code came
   through a flow (409 `APPROVAL_STATE`), and a flow refuses an attempt whose code came another way. A
@@ -649,15 +652,15 @@ sequenceDiagram
   attempt, its enrolment; the phone's steps also the key device, its session and the challenge), then
   reads `clock_timestamp()` once. That one value decides every liveness (both sessions, QR rotation,
   attempt, code, challenge, enrolment) and every deadline the transition issues (a start's creation time,
-  QR rotation and 10 minutes, the code's 5 minutes, the enrolment's 10 minutes), so a wait for a lock
-  never shortens or extends a deadline. The `pc_setup` challenge is issued through its own entry into the
-  shared core: in the inserting statement, the earlier of the database clock plus 2 minutes and the
-  attempt's stored deadline, in whole seconds. The phone's steps lock its key device and session with the
-  checks of the shared key-device session helper and decide the session's expiry on the transition's
-  clock; the shared helper itself (every other kind) compares on `clock_timestamp()` of its statement.
-  The account lock (`lock_accounts`, including the
-  ban's expiry) is unchanged. The polls' and the sweep's hints and the other-account read use
-  `clock_timestamp()` of their statement; the locked re-check decides. The other challenge kinds
+  QR rotation and 10 minutes, the code's 5 minutes, the enrolment's 10 minutes, the scan's challenge:
+  created at that value, expiring at the earlier of it plus 2 minutes and the attempt's stored deadline,
+  in whole seconds), so a wait for a lock never shortens or extends a deadline. Steps that read their own
+  clock: a restart voids the old attempt's challenge after its clock was read (deciding nothing); the
+  unlocked reads before the locks (scanner check, other-account read, the polls' and the sweep's hints)
+  use `clock_timestamp()` of their statement and the locked re-check decides; the account lock
+  (`lock_accounts`, including the ban's expiry) is unchanged. The phone's steps use the checks of the
+  shared key-device session helper and decide the session's expiry on the transition's clock; the helper
+  itself (every other kind) compares on `clock_timestamp()` of its statement. The other challenge kinds
   (`login`, `enroll`, `enroll_pop`, `device_login`, `device_stepup`) keep their own timing on the
   server's clock.
 - **Scan answers in order:** the scanner first, before the token is looked at, read without a lock: its
@@ -1056,10 +1059,11 @@ Residual risks (spec B.6, as implemented):
 13. **Hostile use of owner-rule part 2** by someone with a session and the TOTP secret or a recovery
     code while the account has no strong authenticator.
 14. **Request-notice fatigue:** at most 3 self-service starts per account per delay period.
-15. **"Set up this PC": the passkey goes to the session that showed the code.** A person who confirms
-    a scan with the screen lock and types the 6-digit code for a session they did not start gives that
-    session a full passkey (changed sign-in methods, sessions ended, admin panel for an admin). Same
-    class as 1 with a higher impact, and not a proximity check. Limited by the code step, the account
+15. **"Set up this PC": the passkey goes to the session that showed the code.** The passkey is bound to
+    the session that showed the QR code and gives full access (sign-in methods, sessions, admin panel
+    for an admin). The server cannot tell where the person who types the code is; it is not a proximity
+    check. Before a passkey exists, the person at the phone must confirm with the screen lock and type
+    the code on the computer in front of them. Same class as 1 with a higher impact. Limited by the code step, the account
     match, `may_approve` off by default for family accounts, the phone's wording, and the notice with
     "That wasn't me", which also ends the requesting session. A report marks no credential.
 

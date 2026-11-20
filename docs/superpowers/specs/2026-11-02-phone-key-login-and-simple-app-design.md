@@ -948,8 +948,8 @@ eligible key device or TOTP), and the set-password screen says so. The `auth_met
 constraint gets a relaxed rule or a new method (builder's choice).
 
 **F5e. Set up this PC (rev 6) → full, by a new passkey sign-in.** A person at a PC whose session is
-chat-only gets a passkey on that PC without finding a phone menu or moving a link. Design, review
-history and error texts: [2026-11-06-this-pc-setup-design.md](2026-11-06-this-pc-setup-design.md). Rules:
+chat-only gets a passkey on that PC without finding a phone menu or moving a link. Design and
+error texts: [2026-11-06-this-pc-setup-design.md](2026-11-06-this-pc-setup-design.md). Rules:
 
 1. The probation banner and the empty passkey list offer **Set up this PC** (`can_set_up_this_pc` in
    `GET /api/me/security`) when the session is probation and the account has an active key device
@@ -1348,11 +1348,12 @@ these are the rules.
     rule-2 cascade; the repudiation screen warns first (B.6.6) **(rev 5)**.
 14. **Request-notice fatigue (rev 4):** a holder of request factors can start and withdraw
     requests, at most three notice threads per account per delay period (B.5).
-15. **"Set up this PC": the passkey goes to the session that showed the code (rev 6).** A person who
-    confirms a scan with the screen lock and types the 6-digit code for a session they did not start
-    gives that session a full passkey, which means changed sign-in methods, other sessions ended and,
-    on an admin account, the admin panel. It is the same class as B.6.1 with a higher impact, and not
-    a proximity check: the server cannot tell where the person who types the code stands. Limits: the
+15. **"Set up this PC": the passkey goes to the session that showed the code (rev 6).** The passkey is
+    bound to the session that showed the QR code, and it gives full access (sign-in methods, other
+    sessions, on an admin account the admin panel). The server cannot tell where the person who types
+    the code is: it is not a proximity check. Before a passkey exists, the person at the phone must
+    confirm with the screen lock and type the code on the computer in front of them. It is the same
+    class as B.6.1 with a higher impact. Limits: the
     code step (a scan alone creates nothing), the account match, `may_approve` off by default for family accounts (the
     button needs it on), the phone's wording ("Only continue if you started this on a computer in
     front of you, and nobody asked you to"), the notice to every address with "That wasn't me",

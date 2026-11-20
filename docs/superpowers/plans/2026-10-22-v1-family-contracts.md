@@ -996,7 +996,8 @@ Nothing below changes an existing contract entry; a client that does not know it
   `reason` values: `session_ended`, `device_revoked`, `no_key_device`, `may_approve_off`, `account_banned`,
   `timeout`, `code_expired`, `restarted`, `cancelled`, `refused`, `reported`, `too_many_codes`,
   `enrollment_expired`. A client that gets a state or reason it does not know shows a generic "This didn't
-  work. Start again." (C5).
+  work. Start again." (C5). `completed` means the passkey exists: both clients show success for it,
+  whatever reason comes with it.
 - The attempt and its codes are never in a URL query, a log or the audit trail; the code appears in no
   response to the PC.
 
@@ -1025,7 +1026,8 @@ Nothing below changes an existing contract entry; a client that does not know it
   `code` and `options` with 403 `FORBIDDEN`, `finish` and `cancel` with a 403 page that sends the person
   back to the app. The `SameSite=Strict` cookie also travels with requests from other origins of the same
   site. A page load that a browser marks as coming from another site (`Sec-Fetch-Site` other than `none`
-  or `same-origin`) gets the expired page and stores nothing in the flow.
+  or `same-origin`) gets the expired page at every step and stores nothing in the flow. A load without
+  `Sec-Fetch-Site` counts as the page's own.
 - **The code form** posts (`method="post"`, `action=…/code`) and is disabled in the markup until the
   page's script has installed its handler; without script the page shows a notice and the keypad stays
   disabled, so the code never lands in a URL. A 429 keeps the keypad; another try is possible after `Retry-After`.

@@ -307,8 +307,9 @@ struct CodeAnswer {
 /// It runs [`enrolment::enter_code`] under the attempt's locks, so wrong
 /// codes count on the attempt as on the PC's own route. The right code
 /// stores the keyed hash of a fresh browser secret in the flow (before the
-/// commit: if the commit fails, the attempt stays in `code` and the code
-/// works in a new flow) and sets the cookie. Once a flow has taken the
+/// commit: if the commit fails, the attempt stays in `code`, this flow
+/// refuses further entries, and the code works in a new flow once the
+/// person started one) and sets the cookie. Once a flow has taken the
 /// right code, every further entry is refused (409 `APPROVAL_STATE`).
 #[tracing::instrument(skip_all)]
 pub async fn code(

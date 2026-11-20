@@ -283,7 +283,7 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
   const [offline, setOffline] = createSignal(false);
   const [signingIn, setSigningIn] = createSignal(false);
   const [signInError, setSignInError] = createSignal<string | null>(null);
-  /** Reading the replaced attempt's end after a restart (R-70). */
+  /** Reading the replaced attempt's end after a restart. */
   const [checking, setChecking] = createSignal(false);
   const [checkFailed, setCheckFailed] = createSignal(false);
   /** Bumped by every start, restart and the unmount: older loops and answers stop. */
@@ -390,7 +390,7 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
   };
 
   /**
-   * R-70: after a restart from `code`, `enrolled` or an end the client made
+   * After a restart from `code`, `enrolled` or an end the client made
    * up, the replaced attempt's end is read before the new code is shown.
    * The server decided "finish or restart" under one lock before the start
    * answered, so this read is final: `completed` is shown (and the new

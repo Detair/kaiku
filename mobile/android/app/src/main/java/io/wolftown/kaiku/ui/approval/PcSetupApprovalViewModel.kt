@@ -341,7 +341,7 @@ class PcSetupApprovalViewModel @Inject constructor(
 
     /**
      * The end text of a status, null while the attempt is live. `completed` is success whatever its
-     * reason; another state, or an unknown reason on any other state, reads as the generic failure
+     * reason; an unknown state, or an unknown reason on any other state, reads as the generic failure
      * (C27) and ends polling.
      */
     private fun endText(s: PcSetupPhoneStatus): Int? = when {

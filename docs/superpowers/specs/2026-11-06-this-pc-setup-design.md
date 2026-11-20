@@ -1,13 +1,12 @@
 # Kaiku: "Set up this PC" (v1.0)
 
-**Status:** Draft for maintainer review, 2026-11-06. Not yet reviewed. It amends
+**Status:** Implemented. It amends
 [the phone-as-key login spec, revision 5](2026-11-02-phone-key-login-and-simple-app-design.md)
 ("the login spec"); terms such as probation, key device, `may_approve`, F1, F2, F5a, SM1, SM2 and B.7
 mean what they mean there.
 
-**Revision 4, 2026-11-06:** design review rounds 1 to 3 resolved; see the appendix. The setup token is
-gone, on the desktop the code is typed in the browser, and "I didn't start this" no longer touches
-credentials.
+**Revision 4, 2026-11-06:** the setup token is gone, on the desktop the code is typed in the browser,
+and "I didn't start this" no longer touches credentials.
 
 **Implemented 2026-11-08** (plan `docs/superpowers/plans/2026-11-06-this-pc-setup.md`). The amendments
 below are applied to the login spec as revision 6 and to C26, C27 and C29; the user guide, admin guide
@@ -15,7 +14,7 @@ and technical reference under `docs/admin-guide/features/login/` describe the bu
 
 **Decided 2026-11-06 by the maintainer:** D1 option A (code from phone to PC), D2 as recommended
 (`may_approve` default unchanged). Calls the author made after the builder check are marked
-**(call)**; reviewers should challenge them first.
+**(call)**.
 
 ## Intent
 
@@ -212,7 +211,10 @@ be with the person holding the phone.
 
 The right code moves the attempt to `enrolled` and creates an enrolment (SM2, new variant `pc_setup`)
 with a new `issuer_kind` recording both the approving key device (its `approval_devices` row id) and the
-requesting session. If that response is lost, the PC's next poll sees `enrolled` and carries on.
+requesting session. On the web, if that response is lost, the PC's next poll sees `enrolled` and
+carries on. On the desktop, if the browser does not receive that answer, the browser page cannot
+continue: "Start again" on the PC begins a new attempt, which the phone approves again; otherwise the
+attempt ends by itself when its time runs out.
 
 **There is no setup token.** The login spec's setup token is a bearer secret, safe in F5a only because
 the claimant must then pass a code back to the issuer. Here the code has already been used, so no
@@ -257,7 +259,7 @@ first, and the PC offers **Start again** at every point.
 
 ### Locking (normative)
 
-These rules extend B.7. Reviewers should check them against `server/src/approvals/cascade.rs`.
+These rules extend B.7; `server/src/approvals/cascade.rs` implements the cascades they rely on.
 
 1. Attempts stay out of the session-ending cascade. Logout and refresh hold a session row without the
    account lock, and they must keep touching only sessions, grants and enrolments. A session end or a
@@ -282,24 +284,26 @@ These rules extend B.7. Reviewers should check them against `server/src/approval
    and voids that enrolment's open ceremonies and desktop flows. Finish and redeem take the same lock.
    Either the finish wins and the PC reports completion, or the restart wins and the old finish fails.
 7. **One clock (as built).** Every transition takes all its locks first and then reads the database's
-   `clock_timestamp()` once; that one value decides every liveness it checks and every deadline it
-   issues, so a wait for a lock never shortens or extends a deadline:
+   `clock_timestamp()` once. That one value decides every liveness it checks (both sessions included)
+   and every deadline it issues (the scan's challenge included: its creation time and expiry are that
+   value and the earlier of that value plus 2 minutes and the attempt's stored deadline, in whole
+   seconds), so a wait for a lock never shortens or extends a deadline:
 
    | Transition | Locks, in order, before the clock | Decided and issued on that clock |
    |---|---|---|
    | start | account, requesting session, the session's live attempt (and its enrolment) | session liveness, start bounds, the old attempt's lazy end; creation time, QR rotation, 10 minutes |
    | PC poll, cancel, code entry, passkey | account, requesting session, attempt, its enrolment | liveness, QR rotation, code and enrolment expiry; the enrolment's creation and 10 minutes |
-   | scan | account, requesting session, attempt; key device, its session | both sessions, QR rotation, attempt; the challenge (below) |
+   | scan | account, requesting session, attempt; key device, its session | both sessions, QR rotation, attempt; the challenge's creation and expiry |
    | answer, refuse, release | account, requesting session, attempt; key device, its session; challenge | both sessions, attempt, challenge; the code's 5 minutes |
 
-   The `pc_setup` challenge is issued through its own entry into the shared challenge core: its stored
-   expiry is the earlier of the database clock plus 2 minutes and the attempt's stored deadline, in whole
-   seconds, computed in the statement that inserts it. The phone's steps read its key device and session
-   under their locks with the checks of the shared key-device session helper, but take the session's
-   expiry from that locking read and decide it on the transition's clock. The shared helper itself, used
-   by every other kind, compares on `clock_timestamp()` of its statement (a tightening). The account lock (`lock_accounts`, the ban's
-   expiry included) is as before this feature. The other challenge kinds keep their timing on the
-   server's clock, unchanged by this feature.
+   Where a step reads its own clock instead: a restart voids the old attempt's challenge after its clock
+   was read (that write decides nothing); the unlocked reads before the locks (the scanner check, the
+   one read of another account's code, the polls' and the sweep's hints) use `clock_timestamp()` of
+   their own statement, and the locked re-check decides; the account lock (`lock_accounts`, the ban's
+   expiry included) is as before this feature. The phone's steps use the checks of the shared
+   key-device session helper but decide the session's expiry on the transition's clock; the helper
+   itself, used by every other kind, compares on `clock_timestamp()` of its statement (a tightening).
+   The other challenge kinds keep their timing on the server's clock, unchanged by this feature.
 
 ### Step 6: signing in
 
@@ -361,10 +365,11 @@ To be applied with this feature, as revision 6:
 - **B.7:** add SM5 and the locking rules above.
 - **C29:** add the desktop flow purpose.
 - **F5:** add **F5e**, pointing to this document.
-- **B.6:** add a trust limit: the passkey goes to the session that showed the QR code, so a person who
-  confirms a scan and types the code for a session they did not start gives that session a full
-  passkey. Limited by the account match, `may_approve` off by default for family accounts, the phone's
-  wording and the notices with "That wasn't me". Same class as B.6.1 with a higher impact.
+- **B.6:** add a trust limit: the passkey is bound to the session that showed the QR code; the server
+  cannot tell where the person who types the code is. Before a passkey exists, the person at the phone
+  must confirm with the screen lock and type the code on the computer in front of them. Limited by the
+  account match, `may_approve` off by default for family accounts, the phone's wording and the notices
+  with "That wasn't me". Same class as B.6.1 with a higher impact.
 - **Open question 5:** record the answer. Admin work on a PC still needs a passkey, and this flow is a
   way to get one, not an exception.
 
@@ -455,7 +460,7 @@ without FCM.
 - `client/src/components/auth/ProbationBanner.tsx`, `server/src/auth/passkeys/desktop.rs`,
   `server/src/approvals/cascade.rs`, `server/src/approvals/enrollments/`, `mobile/android/app/src/main/java/io/wolftown/kaiku/ui/scan/`.
 
-## Design decisions from review
+## Design decisions
 
 - No setup token after the code: registration is bound to the requesting session, or to the desktop flow's redeem.
 - After the right code, only the browser that typed it may run the ceremony: the code entry sets a browser secret that `options` and `finish` require.
@@ -470,6 +475,6 @@ without FCM.
 - The answer on the phone is its own, with no name, so a person with two accounts is not stuck.
 - The passkey in the browser works from the desktop app because F1 runs in the same system browser.
 - B.2's 10 minutes bind challenges; the only challenge here lives 2 minutes.
-- A lost code-entry response is recovered by the poll, which sees `enrolled`; there is no secret to re-send.
+- On the web, a lost code-entry response is recovered by the poll, which sees `enrolled`. On the desktop the browser page cannot continue without that answer; "Start again" begins a new attempt, which the phone approves again.
 - The code stays in memory while the app lives, so a phone lock does not lose it.
 - Challenge expiry, eligibility at start, phone polling and readable reasons are specified.

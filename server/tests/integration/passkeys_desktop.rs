@@ -2074,7 +2074,7 @@ async fn restart_voids_the_desktop_flow(pool: PgPool) {
 
 #[sqlx::test]
 async fn ceremony_retry_after_cancel_keeps_browser_secret(pool: PgPool) {
-    // Review Focus 4: a cancelled or failed ceremony is retried in the same
+    // A cancelled or failed ceremony is retried in the same
     // browser with the same cookie (the code is spent, it cannot be typed
     // again).
     let p = desktop_pc(&pool).await;
@@ -2485,7 +2485,7 @@ async fn the_code_form_posts_and_waits_for_its_script(pool: PgPool) {
     assert!(handler < enabled, "handler first");
 }
 
-// Only the page's own origin changes a flow (R-67).
+// Only the page's own origin changes a flow.
 
 const OTHER_SITE: Sender = Sender {
     origin: Some("https://other.example.com"),
@@ -2641,7 +2641,7 @@ async fn a_web_finish_of_a_flow_code_is_refused_and_takes_nothing(pool: PgPool) 
     assert!(hidden(&h.body, "code").is_some(), "{}", h.body);
 }
 
-// The page's own posts carry its origin; a refusal stays a page (R-67).
+// The page's own posts carry its origin; a refusal stays a page.
 
 #[sqlx::test]
 async fn the_flow_page_sends_its_origin_and_the_hand_off_no_referrer(pool: PgPool) {

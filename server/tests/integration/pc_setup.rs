@@ -3516,7 +3516,7 @@ async fn a_phone_session_that_lapsed_behind_a_plain_lock_refuses_the_scan(pool: 
 }
 
 // ============================================================================
-// Round 7: generic routes, token shape, web finish order
+// Generic routes, token shape, web finish order
 // ============================================================================
 
 #[sqlx::test]

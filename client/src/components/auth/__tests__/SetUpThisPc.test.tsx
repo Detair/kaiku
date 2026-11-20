@@ -492,7 +492,7 @@ describe("answers belong to their attempt", () => {
     fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
     await waitFor(() => expect(pc.enterPcSetupCode).toHaveBeenCalledWith(OLD, "123456"));
     pc.startPcSetup.mockResolvedValue({ attempt_id: NEW, qr_payload: "kaiku://pcsetup/v1?o=x&t=z", rotates_at: "" });
-    // The old attempt's end is read before the new code shows (R-70).
+    // The old attempt's end is read before the new code shows.
     pc.pollPcSetup.mockReset();
     pc.pollPcSetup.mockImplementation((id: string, wait: number) =>
       id === OLD && wait === 0 ? Promise.resolve(status("cancelled", "restarted")) : never(),
@@ -848,7 +848,7 @@ describe("an end the client made up gives way to the server's", () => {
   });
 });
 
-describe("R-70: a new code only once the earlier attempt's end is known", () => {
+describe("a new code only once the earlier attempt's end is known", () => {
   const NEW = "00000000-0000-4000-8000-000000000002";
   const QR = { name: "Code to scan with the Kaiku app on your phone" };
 
@@ -918,7 +918,7 @@ describe("R-70: a new code only once the earlier attempt's end is known", () => 
   });
 });
 
-describe("R-72: only the server's own not-found ends an attempt", () => {
+describe("only the server's own not-found ends an attempt", () => {
   it("a 404 without the contract's code does not hide a later finish", async () => {
     let refuse: (e: unknown) => void = () => undefined;
     pc.pollPcSetup.mockReset();
@@ -942,7 +942,7 @@ describe("R-72: only the server's own not-found ends an attempt", () => {
   });
 });
 
-describe("R-71: completed means the passkey exists", () => {
+describe("completed means the passkey exists", () => {
   it("completed with a reason the client does not know is still success", async () => {
     await openAt("completed", "brand_new");
     expect(await screen.findByRole("button", { name: "Sign in with your passkey" })).toBeTruthy();
