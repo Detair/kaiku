@@ -122,6 +122,25 @@ class AdminUserViewModelTest {
         assertEquals(R.string.admin_create_invalid, v.ui.value.message)
     }
 
+    @Test fun `a second new account starts from a fresh server list, not the previous selection`() = runTest {
+        coEvery { guilds.getGuilds() } returns listOf(Guild("g1", "Family"), Guild("g2", "Games"))
+        coEvery { admin.createUser(any(), any(), any(), any()) } returns AdminUserSummary("u2", "oma", "Oma")
+        val v = AdminUsersViewModel(admin, stepUp, guilds)
+        v.startNewAccount()
+        v.toggleServer("g1")
+        v.createUser("oma", "Oma", null)
+
+        // The next form; its server list fails to load.
+        coEvery { guilds.getGuilds() } throws java.io.IOException("offline")
+        v.startNewAccount()
+        assertTrue(v.ui.value.serversFailed)
+        assertEquals(emptyList<Guild>(), v.ui.value.servers)
+        assertEquals(emptySet<String>(), v.ui.value.selectedServers)
+        coEvery { admin.createUser(any(), any(), any(), any()) } returns AdminUserSummary("u3", "opa", "Opa")
+        v.createUser("opa", "Opa", null)
+        coVerify { admin.createUser("opa", "Opa", null, emptyList()) }
+    }
+
     @Test fun `servers that fail to load still allow an account without one`() = runTest {
         coEvery { guilds.getGuilds() } throws java.io.IOException("offline")
         coEvery { admin.createUser(any(), any(), any(), any()) } returns AdminUserSummary("u2", "oma", "Oma")

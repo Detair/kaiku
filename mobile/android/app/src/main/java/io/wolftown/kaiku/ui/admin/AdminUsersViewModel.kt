@@ -110,7 +110,8 @@ class AdminUsersViewModel @Inject constructor(
      * the account can still be created, without a server.
      */
     fun startNewAccount() {
-        _ui.update { it.copy(newAccount = true) }
+        // A fresh form: nothing selected for an earlier account carries over, also if the list fails.
+        _ui.update { it.copy(newAccount = true, servers = emptyList(), selectedServers = emptySet(), serversNotice = null) }
         loadServers()
     }
 
