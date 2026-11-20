@@ -87,6 +87,11 @@ sealed interface CallState {
         val voice: Boolean = false,
         val voiceId: Long = 0L,
         val muted: Boolean = false,
+        /**
+         * Who joined (true) or left (false) while the answer was on its way to the server and
+         * back: the server's list in that answer may be older than these events.
+         */
+        val changed: Map<String, Boolean> = emptyMap(),
     ) : CallState
 
     /** In the call since [sinceMs]; [others] are the other participants known to be in it. */
@@ -294,6 +299,8 @@ data class CallModel(
     val left: List<String> = emptyList(),
     /** The last voice id handed out; every call gets its own. */
     val voiceSeq: Long = 0L,
+    /** How recently ended calls ended, by call id (for a start whose answer comes after its call's end). */
+    val endedWhy: Map<String, CallEndReason> = emptyMap(),
 )
 
 /** One transition: the next model and what to do. */
@@ -343,9 +350,10 @@ object CallMachine {
         var busy = model.busy
         var left = model.left
         var voiceSeq = model.voiceSeq
+        var endedWhy = model.endedWhy
 
-        fun to(next: CallState): CallStep = CallStep(CallModel(next, ended, busy, left, voiceSeq), effects.toList())
-        fun same(): CallStep = CallStep(CallModel(state, ended, busy, left, voiceSeq), effects.toList())
+        fun to(next: CallState): CallStep = CallStep(CallModel(next, ended, busy, left, voiceSeq, endedWhy), effects.toList())
+        fun same(): CallStep = CallStep(CallModel(state, ended, busy, left, voiceSeq, endedWhy), effects.toList())
 
         fun rememberEnded(channelId: String, callId: String?) {
             if (callId.isNullOrEmpty()) return
@@ -423,6 +431,13 @@ object CallMachine {
         fun startOk(e: CallEvent.StartOk): CallStep {
             val s = state as? CallState.Outgoing
             if (s != null && s.channelId == e.channelId && s.startedAtMs == e.startedAtMs) {
+                // The call ended on the server before this answer got here (declined or cancelled
+                // at once; its end could not be matched while the id was unknown): it is over,
+                // no voice is joined for it and nothing is left to leave.
+                if (s.callId == null && isEnded(e.channelId, e.callId)) {
+                    effects += CallEffect.LeaveVoice(s.channelId, s.voiceId)
+                    return endedState(s.channelId, endedWhy[e.callId] ?: CallEndReason.Ended)
+                }
                 // The id may already be known (a resync or the other side's answer came first).
                 return to(learnOutgoingId(s, e.callId))
             }
@@ -538,9 +553,11 @@ object CallMachine {
             if (s != null && s.channelId == e.channelId && s.callId == e.callId) {
                 if (s.voice) return same()
                 effects += CallEffect.JoinVoice(s.channelId, s.callId, s.voiceId)
-                // The server's list is the truth about who is in the call.
-                val others = if (e.participants.isEmpty()) s.others else e.participants - me
-                return to(s.copy(others = others, voice = true))
+                // The server's list is the truth about who was in the call when it answered.
+                // Whoever joined or left while that answer was on its way is newer than it.
+                val listed = if (e.participants.isEmpty()) s.others else e.participants - me
+                val others = listed - s.changed.filterValues { !it }.keys + s.changed.filterValues { it }.keys
+                return to(s.copy(others = others, voice = true, changed = emptyMap()))
             }
             // An answer accepted for a call no longer shown here (hung up before it came):
             // leave it, unless a newer call of that conversation is shown (the old one is over).
@@ -702,14 +719,17 @@ object CallMachine {
                     return to(outgoingConnected(state, e.callId.ifEmpty { null }, e.nowMs, setOf(e.userId)))
                 }
                 is CallState.Connecting -> if (matches(e.channelId, state.channelId, state.callId, e.callId) && e.userId != me) {
-                    return to(state.copy(others = state.others + e.userId))
+                    val changed = if (state.voice) state.changed else state.changed + (e.userId to true)
+                    return to(state.copy(others = state.others + e.userId, changed = changed))
                 }
                 is CallState.Connected -> if (matches(e.channelId, state.channelId, state.callId, e.callId) && e.userId != me) {
                     return to(state.copy(others = state.others + e.userId))
                 }
                 else -> Unit
             }
-            if (e.userId == me) dropBusy(e.channelId, e.callId)
+            // A ring that was not rung here because a call was on: once anyone answered it (this
+            // user elsewhere, or someone else in a group call) it is no unanswered call any more.
+            if (e.userId == me || e.callId.isNotEmpty()) dropBusy(e.channelId, e.callId)
             return same()
         }
 
@@ -722,7 +742,8 @@ object CallMachine {
             val joining = state as? CallState.Connecting
             if (joining != null && matches(e.channelId, joining.channelId, joining.callId, e.callId) && e.userId != me) {
                 // Still joining: remembered; the join ends the call if nobody is left (voiceJoined).
-                return to(joining.copy(others = joining.others - e.userId))
+                val changed = if (joining.voice) joining.changed else joining.changed + (e.userId to false)
+                return to(joining.copy(others = joining.others - e.userId, changed = changed))
             }
             val s = state as? CallState.Connected ?: return same()
             if (!matches(e.channelId, s.channelId, s.callId, e.callId) || e.userId == me) return same()
@@ -754,8 +775,13 @@ object CallMachine {
             val reason = serverReason(e.reason)
             val unanswered = reason == CallEndReason.NoAnswer || reason == CallEndReason.Cancelled
             val knownEnded = isEnded(e.channelId, e.callId)
-            // Whatever is shown: that call is over and never rings again.
+            // Whatever is shown: that call is over and never rings again. How it ended is kept
+            // for a start of this user whose answer (with that id) is still on its way.
             rememberEnded(e.channelId, e.callId)
+            if (e.callId.isNotEmpty()) {
+                val kept = ended.values.flatten().toSet()
+                endedWhy = (endedWhy + (e.callId to reason)).filterKeys { it in kept }
+            }
             var wasBusy = false
             busy[e.channelId]?.let { ring ->
                 if (e.callId.isEmpty() || ring.callId == e.callId) {

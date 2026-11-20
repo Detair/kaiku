@@ -989,4 +989,86 @@ class CallMachineTest {
         send(CallEvent.MuteToggled(voice))
         assertEquals(false, (model.state as CallState.Connected).muted)
     }
+
+    // -- An end that arrives before the start's answer ---------------------------------------
+
+    @Test
+    fun `a call declined before the start's answer arrived never joins voice`() {
+        send(Start(dm, 0L))
+        // The other side declines at once: the end names an id this phone does not know yet.
+        assertTrue(send(ServerEnded(dm, "c-1", "all_declined")) is CallState.Outgoing)
+        // The start's answer arrives with that very id.
+        assertEquals(CallState.Ended(dm, CallEndReason.Declined), send(StartOk(dm, "c-1", 0L)))
+        assertTrue("voice joined for a call that is over: $effects", effects.none { it is JoinVoice })
+        assertTrue("left a call that is over: $effects", effects.none { it is RestLeave })
+        // The microphone service held since the tap is given up.
+        assertEquals(listOf(LeaveVoice(dm, voice), ArmEndedTimer), effects)
+    }
+
+    @Test
+    fun `the end of another call of that conversation does not end a start that is still out`() {
+        send(Start(dm, 0L))
+        send(ServerEnded(dm, "c-0", "cancelled")) // an older call's end, late
+        assertEquals(CallState.Outgoing(dm, "c-1", 0L, voice = true), send(StartOk(dm, "c-1", 0L)))
+        assertEquals(listOf(JoinVoice(dm, "c-1", voice)), effects)
+    }
+
+    // -- Participants changing while the answer is on its way ---------------------------------
+
+    @Test
+    fun `someone leaving while the answer is on its way is not put back by the answer's older list`() {
+        incoming()
+        send(accept())
+        // Anna leaves after the server accepted the answer; her leave gets here first.
+        send(ParticipantLeft(dm, "c-1", "anna"))
+        send(JoinOk(dm, "c-1", setOf("anna", me)))
+        assertEquals(emptySet<String>(), (model.state as CallState.Connecting).others)
+        // Alone in the call once voice is up: over, and left on the server.
+        assertEquals(CallState.Ended(dm, CallEndReason.Ended), send(VoiceJoined(dm, 1L, voice)))
+        assertEquals(listOf(LeaveVoice(dm, voice), RestLeave(dm), ArmEndedTimer), effects)
+    }
+
+    @Test
+    fun `someone joining while the answer is on its way is kept over the answer's older list`() {
+        incoming()
+        send(accept())
+        send(ParticipantJoined(dm, "c-1", "carl", 1L))
+        send(JoinOk(dm, "c-1", setOf("anna", me)))
+        assertEquals(setOf("anna", "carl"), (model.state as CallState.Connecting).others)
+    }
+
+    @Test
+    fun `the answer's list still corrects what was only assumed before answering`() {
+        incoming()
+        send(accept())
+        // The caller had left a group call before this phone answered; only the list says so.
+        send(JoinOk(dm, "c-1", setOf("carl", me)))
+        assertEquals(setOf("carl"), (model.state as CallState.Connecting).others)
+        // After the answer, events apply directly.
+        send(ParticipantLeft(dm, "c-1", "carl"))
+        assertEquals(emptySet<String>(), (model.state as CallState.Connecting).others)
+    }
+
+    // -- A busy ring someone else answers ------------------------------------------------------
+
+    @Test
+    fun `a busy group call that someone else answers is not a missed call`() {
+        connectedAsCallee()
+        send(Rang("dm-2", "c-7", "bob", "Bob", 0L)) // a group call rings while this call is on
+        send(ParticipantJoined("dm-2", "c-7", "carl", 1L)) // Carl answers it
+        send(CallEvent.BusyCap("dm-2", "c-7"))
+        assertTrue("missed although it was answered: $effects", effects.none { it is Missed })
+        // Its later end is none either.
+        send(ServerEnded("dm-2", "c-7", "last_left"))
+        assertTrue(effects.none { it is Missed })
+    }
+
+    @Test
+    fun `a busy ring nobody answers is still missed after its 100 s`() {
+        connectedAsCallee()
+        send(Rang("dm-2", "c-7", "bob", "Bob", 0L))
+        send(ParticipantJoined("dm-2", "c-8", "carl", 1L)) // another call's event
+        send(CallEvent.BusyCap("dm-2", "c-7"))
+        assertEquals(listOf(Missed("dm-2", "c-7", "bob", "Bob")), effects)
+    }
 }
