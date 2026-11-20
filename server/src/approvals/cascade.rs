@@ -9,6 +9,10 @@
 //! answerable only from its requesting session (re-read live under the account lock), and an
 //! `enroll`/`enroll_pop` effect re-checks its enrolment's state under the lock. Paths that end
 //! sessions without the account lock (logout, refresh) therefore never lock challenge rows.
+//!
+//! "Set up this PC" attempts stay out of both cascades (spec Locking 1): only their enrolment
+//! rides them (`issuer_session_id`, `issuer_device_id`). A stale attempt is expired by its next
+//! transition under the account lock (`pc_setup::transition::lock_attempt`) or by the sweep.
 
 use sqlx::PgConnection;
 use uuid::Uuid;

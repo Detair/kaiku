@@ -61,6 +61,41 @@ class FakeApprovalApi : ApprovalApi {
     }
 
     override suspend fun deny(challengeId: String) { denyGate?.await(); calls += "deny:$challengeId" }
+
+    // --- Set up this PC (phone side) ---
+    var pcAnswer = io.wolftown.kaiku.domain.model.PcSetupAnswer("77777777-7777-4777-8777-777777777777", "123456", "2026-11-03T12:07:00Z")
+    var pcAnswerFailure: Exception? = null
+    var pcLastAnswer: Triple<String, String, String>? = null
+    var pcRefuseFailure: Exception? = null
+    /** Scripted poll answers, consumed in order; the last one repeats. An Exception is thrown. */
+    val pcStatuses = ArrayDeque<Any>()
+    var pcStatusCalls = 0
+    private var pcLastStatus: Any = io.wolftown.kaiku.domain.model.PcSetupPhoneStatus("code")
+
+    override suspend fun claimPcSetup(tokenB64u: String) = challenge("claimPc")
+    override suspend fun answerPcSetup(challengeId: String, decision: String, responseB64u: String, signatureB64u: String): io.wolftown.kaiku.domain.model.PcSetupAnswer {
+        answerGate?.await()
+        calls += "answerPc:$challengeId:$decision"
+        pcLastAnswer = Triple(decision, responseB64u, signatureB64u)
+        pcAnswerFailure?.let { throw it }
+        return pcAnswer
+    }
+    override suspend fun refusePcSetup(challengeId: String) {
+        calls += "refusePc:$challengeId"
+        pcRefuseFailure?.let { throw it }
+    }
+    var pcStatusWaits = mutableListOf<Int>()
+    override suspend fun pcSetupStatus(attemptId: String, waitSeconds: Int): io.wolftown.kaiku.domain.model.PcSetupPhoneStatus {
+        pcStatusCalls++
+        pcStatusWaits += waitSeconds
+        pcStatusTimes += pcClock()
+        if (pcStatuses.isNotEmpty()) pcLastStatus = pcStatuses.removeFirst()
+        val s = pcLastStatus
+        if (s is Exception) throw s
+        return s as io.wolftown.kaiku.domain.model.PcSetupPhoneStatus
+    }
+    val pcStatusTimes = mutableListOf<Long>()
+    var pcClock: () -> Long = { 0L }
     override suspend fun release(challengeId: String) { calls += "release:$challengeId" }
     /** The origin the last device-login challenge was sent to (null: the configured server). */
     var deviceLoginOrigin: String? = null

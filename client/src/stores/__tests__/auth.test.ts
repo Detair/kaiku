@@ -4,6 +4,8 @@ import { HttpError } from "@/lib/tauri/common";
 
 vi.mock("@/lib/tauri", () => ({
   getCurrentUser: vi.fn(),
+  // The server's setup state (public `GET /api/setup/status`).
+  isServerSetupComplete: vi.fn(() => Promise.resolve(true)),
   passwordLogin: vi.fn(),
   collectAttempt: vi.fn(),
   register: vi.fn(),
@@ -74,6 +76,7 @@ import {
   clearError,
   updateUser,
   clearSetupRequired,
+  setupStatusKnown,
   isAuthenticated,
   currentUser,
   abandonRestore,
@@ -208,6 +211,76 @@ describe("auth store", () => {
       expect(wsConnect).toHaveBeenCalled();
       expect(initPreferences).toHaveBeenCalled();
       expect(initIdleDetection).toHaveBeenCalled();
+    });
+
+    it("a reload before the server setup is finished brings the setup wizard back", async () => {
+      vi.mocked(tauri.getCurrentUser).mockResolvedValue({ user: createUser(), error_reason: null });
+      vi.mocked(tauri.isServerSetupComplete).mockResolvedValue(false);
+
+      await initAuth();
+      await vi.waitFor(() => expect(authState.setupRequired).toBe(true));
+      expect(tauri.isServerSetupComplete).toHaveBeenCalledOnce();
+    });
+
+    it("a reload after the setup, or without an answer, shows no setup wizard", async () => {
+      vi.mocked(tauri.getCurrentUser).mockResolvedValue({ user: createUser(), error_reason: null });
+      vi.mocked(tauri.isServerSetupComplete).mockResolvedValue(true);
+      await initAuth();
+      await tick();
+      expect(authState.setupRequired).toBe(false);
+
+      setAuthState({ user: null, isInitialized: false });
+      vi.mocked(tauri.isServerSetupComplete).mockRejectedValueOnce(new Error("offline"));
+      await initAuth();
+      await tick();
+      expect(authState.user).not.toBeNull();
+      expect(authState.setupRequired).toBe(false);
+    });
+
+    it("a setup check that failed is not a check: the tour waits and it is asked again", async () => {
+      vi.mocked(tauri.getCurrentUser).mockResolvedValue({ user: createUser(), error_reason: null });
+      vi.mocked(tauri.isServerSetupComplete)
+        .mockRejectedValueOnce(new Error("offline"))
+        .mockResolvedValueOnce(false);
+      await initAuth();
+      await tick();
+      expect(setupStatusKnown()).toBe(false);
+      await vi.waitFor(() => expect(setupStatusKnown()).toBe(true), { timeout: 5_000 });
+      expect(tauri.isServerSetupComplete).toHaveBeenCalledTimes(2);
+      expect(authState.setupRequired).toBe(true);
+    });
+
+    it("the setup status is not known until a restored session has asked", async () => {
+      let answer!: (complete: boolean) => void;
+      vi.mocked(tauri.getCurrentUser).mockResolvedValue({ user: createUser(), error_reason: null });
+      vi.mocked(tauri.isServerSetupComplete).mockImplementation(
+        () => new Promise<boolean>((resolve) => (answer = resolve)),
+      );
+      await initAuth();
+      // The first-run tour must not start over a wizard that is about to show.
+      expect(setupStatusKnown()).toBe(false);
+      answer(false);
+      await vi.waitFor(() => expect(setupStatusKnown()).toBe(true));
+      expect(authState.setupRequired).toBe(true);
+    });
+
+    it("a late setup answer never reaches the next account", async () => {
+      let answer!: (complete: boolean) => void;
+      vi.mocked(tauri.getCurrentUser).mockResolvedValue({ user: createUser(), error_reason: null });
+      vi.mocked(tauri.isServerSetupComplete).mockImplementation(
+        () => new Promise<boolean>((resolve) => (answer = resolve)),
+      );
+      await initAuth();
+      setAuthState({ user: createUser({ id: "user-2" }) });
+      answer(false);
+      await tick();
+      expect(authState.setupRequired).toBe(false);
+    });
+
+    it("no session asks nothing about the setup", async () => {
+      vi.mocked(tauri.getCurrentUser).mockResolvedValue({ user: null, error_reason: null });
+      await initAuth();
+      expect(tauri.isServerSetupComplete).not.toHaveBeenCalled();
     });
 
     it("initAuth restores serverUrl from the stored server address", async () => {

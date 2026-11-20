@@ -17,6 +17,7 @@ vi.mock("@/lib/tauri/passkeys", async (orig) => ({
 
 import ProbationBanner from "../ProbationBanner";
 import { setAuthState, isProbation, sessionInfo } from "@/stores/auth";
+import { resetMeSecurity } from "@/stores/security";
 import type { User } from "@/lib/types";
 
 function user(session: unknown): User {
@@ -43,7 +44,7 @@ const probation = {
   key_device_id: null,
 };
 
-function security(passkeys: number) {
+function security(passkeys: number, canSetUp = false) {
   return {
     session: { assurance: "probation", auth_methods: ["qr"] },
     password: null,
@@ -52,6 +53,7 @@ function security(passkeys: number) {
     key_devices: 1,
     passkeys,
     may_approve: true,
+    can_set_up_this_pc: canSetUp,
     bootstrap_open: false,
     recovery_contact: null,
     open_request: null,
@@ -77,11 +79,36 @@ describe("ProbationBanner", () => {
     setAuthState({ user: user(probation) });
     render(() => <ProbationBanner />);
     expect(
-      screen.getByText(
+      await screen.findByText(
         "Signed in for chat only. To change sign-in settings or do admin work, sign in with a passkey.",
       ),
     ).toBeTruthy();
     await waitFor(() => expect(screen.getByRole("button", { name: "Sign in with a passkey" })).toBeTruthy());
+  });
+
+  it("names no way to sign in until the overview confirms one", async () => {
+    const passkeyText =
+      "Signed in for chat only. To change sign-in settings or do admin work, sign in with a passkey.";
+    resetMeSecurity();
+    // Pending.
+    let answer: (v: unknown) => void = () => undefined;
+    getMeSecurity.mockImplementation(() => new Promise((r) => (answer = r)));
+    setAuthState({ user: user(probation) });
+    render(() => <ProbationBanner />);
+    expect(screen.queryByText(passkeyText)).toBeNull();
+    expect(screen.getByRole("region").textContent).toContain("Signed in for chat only.");
+    answer(security(1));
+    expect(await screen.findByText(passkeyText)).toBeTruthy();
+    cleanup();
+    resetMeSecurity();
+    // Failed.
+    getMeSecurity.mockReset();
+    getMeSecurity.mockRejectedValue(new Error("offline"));
+    render(() => <ProbationBanner />);
+    await waitFor(() => expect(getMeSecurity).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.queryByText(passkeyText)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Sign in with a passkey" })).toBeNull();
   });
 
   it("is a row above the page, not an overlay on the channel header", () => {
@@ -101,11 +128,31 @@ describe("ProbationBanner", () => {
     expect(screen.queryByRole("button", { name: "Sign in with a passkey" })).toBeNull();
   });
 
-  it("without a passkey it says where to add one", async () => {
+  it("without a passkey or an eligible phone it says to ask the admin", async () => {
     getMeSecurity.mockResolvedValue(security(0));
     setAuthState({ user: user(probation) });
     render(() => <ProbationBanner />);
-    await waitFor(() => expect(screen.getByText(/Add a phone → Share link/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("Your phone can't confirm this yet. Ask your admin.")).toBeTruthy());
+    expect(screen.queryByRole("button", { name: "Sign in with a passkey" })).toBeNull();
+    // The banner text no longer sends the person to a button it does not show.
+    expect(
+      screen.getByText("Signed in for chat only. Changing sign-in settings and admin work need a passkey on this computer."),
+    ).toBeTruthy();
+    expect(screen.queryByText(/sign in with a passkey\./)).toBeNull();
+  });
+
+  it("without a passkey but with an eligible phone the text points to Set up this PC", async () => {
+    getMeSecurity.mockResolvedValue(security(0, true));
+    setAuthState({ user: user(probation) });
+    render(() => <ProbationBanner />);
+    await waitFor(() =>
+      expect(
+        screen.getByText(
+          "Signed in for chat only. To change sign-in settings or do admin work on this computer, choose Set up this PC to get a passkey here.",
+        ),
+      ).toBeTruthy(),
+    );
+    expect(screen.getByRole("button", { name: "Set up this PC" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Sign in with a passkey" })).toBeNull();
   });
 

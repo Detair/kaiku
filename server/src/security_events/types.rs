@@ -56,11 +56,15 @@ pub enum EventType {
     /// `may_approve` turned on or off (admin or CLI).
     MayApproveChanged,
     BootstrapReminder,
+    /// "I didn't start this" on a "Set up this PC" approval (high).
+    PcSetupReported,
+    /// Three wrong codes ended a "Set up this PC" attempt (account only).
+    PcSetupFailed,
 }
 
 impl EventType {
     /// Every type, in C28 order.
-    pub const ALL: [Self; 39] = [
+    pub const ALL: [Self; 41] = [
         Self::SignIn,
         Self::SignInNotFinished,
         Self::SecondFactorFailed,
@@ -100,6 +104,8 @@ impl EventType {
         Self::ThrottleReset,
         Self::MayApproveChanged,
         Self::BootstrapReminder,
+        Self::PcSetupReported,
+        Self::PcSetupFailed,
     ];
 
     /// The C28 `event_type` name.
@@ -145,6 +151,8 @@ impl EventType {
             Self::ThrottleReset => "throttle_reset",
             Self::MayApproveChanged => "may_approve_changed",
             Self::BootstrapReminder => "bootstrap_reminder",
+            Self::PcSetupReported => "pc_setup_reported",
+            Self::PcSetupFailed => "pc_setup_failed",
         }
     }
 
@@ -179,7 +187,8 @@ impl EventType {
             | Self::AdminRoleRemoved
             | Self::SessionsEnded
             | Self::FactorRestored
-            | Self::MayApproveChanged => Severity::High,
+            | Self::MayApproveChanged
+            | Self::PcSetupReported => Severity::High,
             Self::SignIn
             | Self::SignInNotFinished
             | Self::SecondFactorFailed
@@ -200,7 +209,8 @@ impl EventType {
             | Self::SessionEndedReuse
             | Self::SessionEndedLimit
             | Self::ThrottleReset
-            | Self::BootstrapReminder => Severity::Normal,
+            | Self::BootstrapReminder
+            | Self::PcSetupFailed => Severity::Normal,
         }
     }
 }

@@ -83,6 +83,7 @@ async fn page(router: &axum::Router, path: &str, lang: Option<&str>) -> Resp {
 async fn form(router: &axum::Router, path: &str, fields: &[(&str, &str)]) -> Resp {
     let body = serde_urlencoded::to_string(fields).unwrap();
     let req = peer_request(Method::POST, path)
+        .header("Origin", TEST_ORIGIN)
         .header("Content-Type", "application/x-www-form-urlencoded")
         .body(Body::from(body))
         .unwrap();
@@ -1514,4 +1515,1291 @@ async fn a_valkey_error_when_ending_a_flow_hands_back_nothing(pool: PgPool) {
         h.body
     );
     assert!(!h.body.contains("127.0.0.1"), "{}", h.body);
+}
+
+// ============================================================================
+// "Set up this PC" through the desktop flow (spec Step 5, desktop part)
+// ============================================================================
+
+use super::helpers::approvals::KeyDeviceFixture;
+use super::helpers::create_probation_session_with_token;
+use super::helpers::login::login_config;
+use super::helpers::passkeys::test_passkey_rp;
+use crate::pc_setup::{
+    attempt_state, contains_code, enrollment_state, passkey_start, passkeys_of, with_code, wrong,
+    Pc,
+};
+
+/// The cookie's name and path prefix (spec Step 5, browser secret).
+const PCSETUP_COOKIE: &str = "__Secure-kaiku_pcsetup";
+
+/// A user with a key phone and a probation session; cookies are `Secure`.
+async fn desktop_pc(pool: &PgPool) -> Pc {
+    let mut config = login_config();
+    config.passkeys = Some(std::sync::Arc::new(test_passkey_rp()));
+    config.cookie_secure = true;
+    let app = TestApp::with_pool_and_config(pool.clone(), config).await;
+    let (user, _) = create_test_user(pool).await;
+    let dev = KeyDeviceFixture::insert(pool, &app.config, user, "active").await;
+    let (sid, token) = create_probation_session_with_token(pool, &app.config, user).await;
+    // The desktop app's session: only such a session starts a `pc_setup` flow.
+    set_client_class(pool, sid, "desktop").await;
+    Pc {
+        app,
+        user,
+        sid,
+        token,
+        dev,
+    }
+}
+
+async fn set_client_class(pool: &PgPool, sid: Uuid, class: &str) {
+    sqlx::query("UPDATE sessions SET client_class = $2 WHERE id = $1")
+        .bind(sid)
+        .bind(class)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+fn pc_setup_body(attempt_id: &str) -> Value {
+    json!({
+        "purpose": "pc_setup",
+        "attempt_id": attempt_id,
+        "loopback_port": PORT,
+        "callback_path": CALLBACK_PATH,
+        "client_challenge": challenge(VERIFIER),
+    })
+}
+
+/// Start a `pc_setup` flow for attempt `id` with the PC's bearer.
+async fn pc_flow(p: &Pc, id: &str) -> Flow {
+    let r = api(
+        &p.app.router,
+        "/auth/passkeys/desktop/flows",
+        pc_setup_body(id),
+        true,
+        Some(&p.token),
+    )
+    .await;
+    assert_eq!(r.status, 201, "{}", r.body);
+    let flow_id = r.json()["flow_id"].as_str().unwrap().to_string();
+    let path = format!("/auth/passkeys/desktop/flows/{flow_id}");
+    assert_eq!(
+        r.json()["url"].as_str(),
+        Some(format!("{TEST_ORIGIN}{path}").as_str()),
+        "the flow's page lives under the cookie's path"
+    );
+    Flow { id: flow_id, path }
+}
+
+/// A browser request from the flow's own page: `cookie` is the
+/// `name=value` pair the browser holds.
+async fn browser(
+    router: &axum::Router,
+    method: Method,
+    path: &str,
+    body: Option<Body>,
+    content_type: Option<&str>,
+    cookie: Option<&str>,
+) -> Resp {
+    let from = Sender {
+        origin: Some(TEST_ORIGIN),
+        site: None,
+    };
+    browser_from(router, from, method, path, body, content_type, cookie).await
+}
+
+/// Where a browser request comes from: its `Origin` and `Sec-Fetch-Site`.
+#[derive(Clone, Copy, Debug)]
+struct Sender {
+    origin: Option<&'static str>,
+    site: Option<&'static str>,
+}
+
+async fn browser_from(
+    router: &axum::Router,
+    from: Sender,
+    method: Method,
+    path: &str,
+    body: Option<Body>,
+    content_type: Option<&str>,
+    cookie: Option<&str>,
+) -> Resp {
+    let mut req = peer_request(method, path);
+    if let Some(o) = from.origin {
+        req = req.header("Origin", o);
+    }
+    if let Some(s) = from.site {
+        req = req.header("Sec-Fetch-Site", s);
+    }
+    if let Some(ct) = content_type {
+        req = req.header("Content-Type", ct);
+    }
+    if let Some(c) = cookie {
+        req = req.header("Cookie", c);
+    }
+    send(router, req.body(body.unwrap_or_else(Body::empty)).unwrap()).await
+}
+
+async fn type_code(p: &Pc, flow: &Flow, code: &str, cookie: Option<&str>) -> Resp {
+    browser(
+        &p.app.router,
+        Method::POST,
+        &format!("{}/code", flow.path),
+        Some(Body::from(json!({ "code": code }).to_string())),
+        Some("application/json"),
+        cookie,
+    )
+    .await
+}
+
+async fn pc_options(p: &Pc, flow: &Flow, cookie: Option<&str>) -> Resp {
+    browser(
+        &p.app.router,
+        Method::POST,
+        &format!("{}/options", flow.path),
+        Some(Body::from("{}")),
+        Some("application/json"),
+        cookie,
+    )
+    .await
+}
+
+async fn pc_finish(p: &Pc, path: &str, fields: &[(&str, &str)], cookie: Option<&str>) -> Resp {
+    browser(
+        &p.app.router,
+        Method::POST,
+        &format!("{path}/finish"),
+        Some(Body::from(serde_urlencoded::to_string(fields).unwrap())),
+        Some("application/x-www-form-urlencoded"),
+        cookie,
+    )
+    .await
+}
+
+/// The `name=value` pair of the browser-secret cookie in `r`.
+fn pcsetup_cookie(r: &Resp) -> String {
+    let set = r
+        .headers
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .find(|c| c.starts_with(PCSETUP_COOKIE))
+        .unwrap_or_else(|| panic!("no browser secret cookie: {:?}", r.headers));
+    set.split(';').next().unwrap().to_string()
+}
+
+/// Type the right code: the browser's cookie.
+async fn right_code(p: &Pc, flow: &Flow, code: &str) -> String {
+    let r = type_code(p, flow, code, None).await;
+    assert_eq!(
+        (r.status, r.json()["state"].as_str()),
+        (200, Some("enrolled")),
+        "{}",
+        r.body
+    );
+    pcsetup_cookie(&r)
+}
+
+/// A soft registration of `options`' ceremony: the `finish` form fields.
+fn registered(opts: &Resp) -> (String, String) {
+    assert_eq!(opts.status, 200, "{}", opts.body);
+    assert_eq!(opts.json()["ceremony"], "create");
+    let cred = SoftAuthenticator::new().register(TEST_ORIGIN, &opts.json()["options"]);
+    (
+        cred.to_string(),
+        opts.json()["ceremony_id"].as_str().unwrap().to_string(),
+    )
+}
+
+/// A fresh attempt (a restart) up to the hand-off:
+/// `(attempt id, flow, hand-off code, phone code)`.
+async fn handed_off(p: &Pc) -> (String, Flow, String, String) {
+    let (id, code) = with_code(p).await;
+    let flow = pc_flow(p, &id).await;
+    let cookie = right_code(p, &flow, &code).await;
+    let (cred, ceremony_id) = registered(&pc_options(p, &flow, Some(&cookie)).await);
+    let h = pc_finish(
+        p,
+        &flow.path,
+        &[("credential", &cred), ("ceremony_id", &ceremony_id)],
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(h.status, 200, "{}", h.body);
+    let handoff = hidden(&h.body, "code").expect("hand-off code");
+    (id, flow, handoff, code)
+}
+
+async fn pc_redeem(p: &Pc, flow: &Flow, code: &str, verifier: &str, bearer: Option<&str>) -> Resp {
+    redeem(&p.app.router, &flow.id, code, verifier, bearer).await
+}
+
+#[sqlx::test]
+async fn desktop_flow_needs_the_starting_session(pool: PgPool) {
+    let p = desktop_pc(&pool).await;
+    let (id, _) = with_code(&p).await;
+    let router = &p.app.router;
+    let flows = "/auth/passkeys/desktop/flows";
+    // No bearer → 401.
+    let r = api(router, flows, pc_setup_body(&id), true, None).await;
+    assert_eq!(r.status, 401, "{}", r.body);
+    // Another session of the same account does not see the attempt.
+    let (_, other) = create_probation_session_with_token(&pool, &p.app.config, p.user).await;
+    let r = api(router, flows, pc_setup_body(&id), true, Some(&other)).await;
+    assert_eq!(r.status, 404, "{}", r.body);
+    // An unknown attempt, and none at all.
+    let r = api(
+        router,
+        flows,
+        pc_setup_body(&Uuid::new_v4().to_string()),
+        true,
+        Some(&p.token),
+    )
+    .await;
+    assert_eq!(r.status, 404, "{}", r.body);
+    let mut body = pc_setup_body(&id);
+    body.as_object_mut().unwrap().remove("attempt_id");
+    let r = api(router, flows, body, true, Some(&p.token)).await;
+    assert_eq!(r.status, 400, "{}", r.body);
+    // Not from a browser.
+    let r = api(router, flows, pc_setup_body(&id), false, Some(&p.token)).await;
+    assert_eq!(r.json()["error"], "CLIENT_OUTDATED", "{}", r.body);
+    // The requesting session starts it.
+    pc_flow(&p, &id).await;
+}
+
+#[sqlx::test]
+async fn desktop_flow_options_refused_before_the_right_code(pool: PgPool) {
+    let p = desktop_pc(&pool).await;
+    let (id, _) = with_code(&p).await;
+    let flow = pc_flow(&p, &id).await;
+    // The page asks for the code first.
+    let pg = page(&p.app.router, &flow.path, None).await;
+    assert_eq!(pg.status, 200, "{}", pg.body);
+    assert!(pg.body.contains("id=\"code-form\""), "{}", pg.body);
+    assert!(!pg.body.contains("id=\"start\""), "{}", pg.body);
+    // No ceremony before the code, on the flow's routes or F1's.
+    let o = pc_options(&p, &flow, None).await;
+    assert_eq!(
+        (o.status, o.json()["error"].as_str()),
+        (400, Some("PASSKEY_CEREMONY_INVALID")),
+        "{}",
+        o.body
+    );
+    let legacy = format!("/auth/passkeys/desktop/{}", flow.id);
+    let o = api(
+        &p.app.router,
+        &format!("{legacy}/options"),
+        json!({}),
+        false,
+        None,
+    )
+    .await;
+    assert_eq!(o.status, 400, "{}", o.body);
+    assert_eq!(page(&p.app.router, &legacy, None).await.status, 404);
+    // A made-up cookie does not help either.
+    let fake = format!("{PCSETUP_COOKIE}={}", "A".repeat(43));
+    assert_eq!(pc_options(&p, &flow, Some(&fake)).await.status, 400);
+    assert_eq!(attempt_state(&pool, &id).await.0, "code");
+}
+
+#[sqlx::test]
+async fn set_cookie_has_the_exact_attributes(pool: PgPool) {
+    let p = desktop_pc(&pool).await;
+    let (id, code) = with_code(&p).await;
+    let flow = pc_flow(&p, &id).await;
+    let r = type_code(&p, &flow, &code, None).await;
+    assert_eq!(r.status, 200, "{}", r.body);
+    let cookies: Vec<&str> = r
+        .headers
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .collect();
+    assert_eq!(cookies.len(), 1, "{cookies:?}");
+    let (pair, attrs) = cookies[0].split_once("; ").unwrap();
+    let value = pair.strip_prefix(&format!("{PCSETUP_COOKIE}=")).unwrap();
+    assert_eq!(
+        attrs,
+        format!(
+            "HttpOnly; Secure; SameSite=Strict; Path=/auth/passkeys/desktop/flows/{}",
+            flow.id
+        )
+    );
+    // A fresh 256-bit value, b64u, stored only as its keyed hash.
+    assert_eq!(
+        vc_server::approvals::secrets::b64u_decode(value).map(|b| b.len()),
+        Some(32)
+    );
+    let raw: String = {
+        use fred::interfaces::KeysInterface;
+        p.app
+            .state
+            .redis
+            .get(format!("passkey:flow:{}", flow.id))
+            .await
+            .unwrap()
+    };
+    assert!(!raw.contains(value), "{raw}");
+    assert!(raw.contains("browser_secret_hash"), "{raw}");
+    // The response body carries no secret and no enrolment id.
+    assert_eq!(r.json(), json!({"state": "enrolled"}));
+}
+
+#[sqlx::test]
+async fn only_the_browser_that_typed_the_code_continues_the_flow(pool: PgPool) {
+    let p = desktop_pc(&pool).await;
+    let (id, code) = with_code(&p).await;
+    let flow = pc_flow(&p, &id).await;
+    let cookie = right_code(&p, &flow, &code).await;
+    // The legitimate browser runs its ceremony.
+    let opts = pc_options(&p, &flow, Some(&cookie)).await;
+    let (cred, ceremony_id) = registered(&opts);
+    // Without the cookie (or with another) there is no ceremony.
+    assert_eq!(pc_options(&p, &flow, None).await.status, 400);
+    let fake = format!("{PCSETUP_COOKIE}={}", "A".repeat(43));
+    assert_eq!(pc_options(&p, &flow, Some(&fake)).await.status, 400);
+    // Its finish of the live ceremony is refused and consumes nothing,
+    // on the flow's routes and on F1's.
+    let fields = [
+        ("credential", cred.as_str()),
+        ("ceremony_id", ceremony_id.as_str()),
+    ];
+    for (path, c) in [
+        (flow.path.clone(), None),
+        (flow.path.clone(), Some(fake.as_str())),
+        (format!("/auth/passkeys/desktop/{}", flow.id), None),
+    ] {
+        let r = pc_finish(&p, &path, &fields, c).await;
+        assert_ne!(r.status, 200, "{}", r.body);
+        assert!(hidden(&r.body, "code").is_none(), "{}", r.body);
+        assert!(hidden(&r.body, "error").is_none(), "{}", r.body);
+    }
+    // A second code entry is refused, also with the right code.
+    for c in [code.clone(), wrong(&code)] {
+        let r = type_code(&p, &flow, &c, None).await;
+        assert_eq!(r.status, 409, "{}", r.body);
+        assert!(r.headers.get("set-cookie").is_none());
+    }
+    // The page without the cookie is no use.
+    assert_eq!(page(&p.app.router, &flow.path, None).await.status, 404);
+    // F1's cancel does not reach this flow; the flow's needs the cookie.
+    let c = form(
+        &p.app.router,
+        &format!("/auth/passkeys/desktop/{}/cancel", flow.id),
+        &[],
+    )
+    .await;
+    assert!(hidden(&c.body, "error").is_none(), "{}", c.body);
+    let c = form(&p.app.router, &format!("{}/cancel", flow.path), &[]).await;
+    assert!(hidden(&c.body, "error").is_none(), "{}", c.body);
+    // The legitimate browser still finishes.
+    let h = pc_finish(&p, &flow.path, &fields, Some(&cookie)).await;
+    assert_eq!(h.status, 200, "{}", h.body);
+    let handoff = hidden(&h.body, "code").expect("hand-off code");
+    let r = pc_redeem(&p, &flow, &handoff, VERIFIER, Some(&p.token)).await;
+    assert_eq!(r.status, 200, "{}", r.body);
+}
+
+#[sqlx::test]
+async fn a_flow_without_the_phones_code_hands_back_nothing(pool: PgPool) {
+    // Without the phone's code there is no ceremony, so the flow hands
+    // nothing back to the app.
+    let p = desktop_pc(&pool).await;
+    let (id, code) = with_code(&p).await;
+    let flow = pc_flow(&p, &id).await;
+    let mut tries = Vec::new();
+    for _ in 0..3 {
+        assert_eq!(pc_options(&p, &flow, None).await.status, 400);
+        let r = type_code(&p, &flow, &wrong(&code), None).await;
+        assert_eq!(r.status, 200, "{}", r.body);
+        assert!(r.headers.get("set-cookie").is_none());
+        tries.push(r.json()["state"].as_str().unwrap().to_string());
+        let f = pc_finish(&p, &flow.path, &[("credential", "{}")], None).await;
+        assert!(hidden(&f.body, "code").is_none(), "{}", f.body);
+    }
+    assert_eq!(tries, ["code", "code", "failed"]);
+    // The attempt ended and shows it; the right code is now useless.
+    assert_eq!(
+        attempt_state(&pool, &id).await,
+        ("failed".into(), Some("too_many_codes".into()))
+    );
+    assert_ne!(type_code(&p, &flow, &code, None).await.status, 200);
+    // Nothing to redeem: the flow never held a result.
+    let r = pc_redeem(&p, &flow, "made-up", VERIFIER, Some(&p.token)).await;
+    assert_invalid(&r);
+    assert_eq!(passkeys_of(&pool, p.user).await, 0);
+}
+
+#[sqlx::test]
+async fn wrong_codes_in_the_browser_count_on_the_attempt(pool: PgPool) {
+    let p = desktop_pc(&pool).await;
+    let (id, code) = with_code(&p).await;
+    let flow = pc_flow(&p, &id).await;
+    let r = type_code(&p, &flow, &wrong(&code), None).await;
+    assert_eq!(
+        r.json(),
+        json!({"state": "code", "tries_left": 2}),
+        "{}",
+        r.body
+    );
+    // A malformed code spends no try.
+    let r = type_code(&p, &flow, "12ab", None).await;
+    assert_eq!(r.status, 400, "{}", r.body);
+    let r = type_code(&p, &flow, &wrong(&code), None).await;
+    assert_eq!(
+        r.json(),
+        json!({"state": "code", "tries_left": 1}),
+        "{}",
+        r.body
+    );
+    let tries: i16 = sqlx::query_scalar("SELECT tries FROM pc_setup_attempts WHERE id = $1::uuid")
+        .bind(&id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(tries, 2);
+    // The PC's own route shares the counter: its wrong code is the third.
+    let (s, body) = crate::pc_setup::enter(&p, &p.token, &id, &wrong(&code)).await;
+    assert_eq!((s, body["state"].as_str()), (200, Some("failed")), "{body}");
+    let failed: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM security_events WHERE subject_id = $1 AND event_type = 'pc_setup_failed'",
+    )
+    .bind(p.user)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(failed, 1);
+    assert_eq!(type_code(&p, &flow, &code, None).await.status, 409);
+}
+
+#[sqlx::test]
+async fn nothing_is_stored_before_redeem(pool: PgPool) {
+    let p = desktop_pc(&pool).await;
+    let (id, flow, handoff, _) = handed_off(&p).await;
+    // After `finish`: no passkey row, the enrolment and the attempt open.
+    let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM passkeys WHERE user_id = $1")
+        .bind(p.user)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(rows, 0);
+    let enrollment: String =
+        sqlx::query_scalar("SELECT enrollment_id::text FROM pc_setup_attempts WHERE id = $1::uuid")
+            .bind(&id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(enrollment_state(&pool, &enrollment).await, "issued");
+    assert_eq!(attempt_state(&pool, &id).await.0, "enrolled");
+    let ttl = flow_ttl(&p.app, &flow).await;
+    assert!(
+        (1..=60).contains(&ttl),
+        "the pending result lives 60 s: {ttl}"
+    );
+    // `redeem` completes it.
+    let r = pc_redeem(&p, &flow, &handoff, VERIFIER, Some(&p.token)).await;
+    assert_eq!(r.status, 200, "{}", r.body);
+    assert_eq!(passkeys_of(&pool, p.user).await, 1);
+    assert_eq!(enrollment_state(&pool, &enrollment).await, "done");
+    assert_eq!(attempt_state(&pool, &id).await.0, "completed");
+    // Named after the browser that made it, never just "Passkey".
+    assert_eq!(r.json()["passkey"]["label"], "Web browser", "{}", r.body);
+}
+
+#[sqlx::test]
+async fn desktop_redeem_needs_code_verifier_and_the_starting_session(pool: PgPool) {
+    let p = desktop_pc(&pool).await;
+    let (_, other) = create_probation_session_with_token(&pool, &p.app.config, p.user).await;
+    let other_verifier = "another-verifier-of-at-least-forty-three-characters-0123";
+    // Each refusal spends the flow: every case runs on a fresh attempt.
+    for case in ["no bearer", "other session", "wrong code", "wrong verifier"] {
+        let (id, flow, handoff, _) = handed_off(&p).await;
+        let r = match case {
+            "no bearer" => pc_redeem(&p, &flow, &handoff, VERIFIER, None).await,
+            "other session" => pc_redeem(&p, &flow, &handoff, VERIFIER, Some(&other)).await,
+            "wrong code" => {
+                pc_redeem(&p, &flow, "x".repeat(43).as_str(), VERIFIER, Some(&p.token)).await
+            }
+            _ => pc_redeem(&p, &flow, &handoff, other_verifier, Some(&p.token)).await,
+        };
+        assert_invalid(&r);
+        assert_eq!(passkeys_of(&pool, p.user).await, 0, "{case}");
+        assert_eq!(attempt_state(&pool, &id).await.0, "enrolled", "{case}");
+        // The flow is spent: the right redemption now fails too.
+        assert_invalid(&pc_redeem(&p, &flow, &handoff, VERIFIER, Some(&p.token)).await);
+    }
+    let (id, flow, handoff, _) = handed_off(&p).await;
+    let r = pc_redeem(&p, &flow, &handoff, VERIFIER, Some(&p.token)).await;
+    assert_eq!(r.status, 200, "{}", r.body);
+    let body = r.json();
+    assert_eq!(body["purpose"], "pc_setup");
+    assert_eq!(body["user_id"], p.user.to_string());
+    assert_eq!(body["passkey"]["state"], "active", "{body}");
+    for token in ["access_token", "refresh_token", "grant"] {
+        assert!(body.get(token).is_none(), "{body}");
+    }
+    assert_eq!(attempt_state(&pool, &id).await.0, "completed");
+    let via: String = sqlx::query_scalar(
+        "SELECT details->>'via' FROM security_events
+          WHERE subject_id = $1 AND event_type = 'authenticator_added'",
+    )
+    .bind(p.user)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(via, "pc_setup");
+}
+
+#[sqlx::test]
+async fn restart_voids_the_desktop_flow(pool: PgPool) {
+    // A restart voids open desktop flows: redeem is refused.
+    let p = desktop_pc(&pool).await;
+    let (id, flow, handoff, _) = handed_off(&p).await;
+    let r = TestApp::request(Method::POST, "/auth/pc-setups")
+        .header("Authorization", format!("Bearer {}", p.token))
+        .header("Content-Type", "application/json")
+        .body(Body::from("{}"))
+        .unwrap();
+    assert_eq!(p.app.oneshot(r).await.status(), 201);
+    assert_eq!(
+        attempt_state(&pool, &id).await,
+        ("cancelled".into(), Some("restarted".into()))
+    );
+    assert_invalid(&pc_redeem(&p, &flow, &handoff, VERIFIER, Some(&p.token)).await);
+    assert_eq!(passkeys_of(&pool, p.user).await, 0);
+}
+
+#[sqlx::test]
+async fn ceremony_retry_after_cancel_keeps_browser_secret(pool: PgPool) {
+    // A cancelled or failed ceremony is retried in the same
+    // browser with the same cookie (the code is spent, it cannot be typed
+    // again).
+    let p = desktop_pc(&pool).await;
+    let (id, code) = with_code(&p).await;
+    let flow = pc_flow(&p, &id).await;
+    let cookie = right_code(&p, &flow, &code).await;
+    // The page now offers the passkey step to this browser.
+    let pg = browser(
+        &p.app.router,
+        Method::GET,
+        &flow.path,
+        None,
+        None,
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(pg.status, 200, "{}", pg.body);
+    assert!(pg.body.contains("id=\"start\""), "{}", pg.body);
+    assert!(!pg.body.contains("id=\"code-form\""), "{}", pg.body);
+    // The user cancels the browser's dialog: the retry gets a new ceremony.
+    let first = pc_options(&p, &flow, Some(&cookie)).await;
+    let (_, first_id) = registered(&first);
+    let second = pc_options(&p, &flow, Some(&cookie)).await;
+    let (_, second_id) = registered(&second);
+    assert_ne!(first_id, second_id);
+    // The old ceremony cannot finish any more.
+    let stale = pc_finish(
+        &p,
+        &flow.path,
+        &[("credential", "{}"), ("ceremony_id", &first_id)],
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(stale.status, 400, "{}", stale.body);
+    // A failed ceremony keeps the flow: the page offers a retry, no hand-off.
+    let failed = pc_finish(
+        &p,
+        &flow.path,
+        &[
+            ("credential", "{\"id\":\"garbage\"}"),
+            ("ceremony_id", &second_id),
+        ],
+        Some(&cookie),
+    )
+    .await;
+    assert!(hidden(&failed.body, "code").is_none(), "{}", failed.body);
+    assert!(hidden(&failed.body, "error").is_none(), "{}", failed.body);
+    // A 303 to the flow's page, so the page's base path stays the flow's
+    // and a reload never re-posts the spent finish.
+    assert_eq!(failed.status, 303, "{}", failed.body);
+    let location = failed.header("location").unwrap().to_string();
+    assert_eq!(location, format!("{}?failed", flow.path));
+    let again = browser(
+        &p.app.router,
+        Method::GET,
+        &location,
+        None,
+        None,
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(again.status, 200, "{}", again.body);
+    assert!(again.body.contains("id=\"start\""), "{}", again.body);
+    assert!(
+        again.body.contains("That didn&#39;t work"),
+        "{}",
+        again.body
+    );
+    assert!(
+        again
+            .body
+            .contains(&format!("action=\"{}/finish\"", flow.path)),
+        "{}",
+        again.body
+    );
+    // Without the cookie the redirect target is no use.
+    assert_eq!(page(&p.app.router, &location, None).await.status, 404);
+    // The retry works with the same cookie.
+    let (cred, third_id) = registered(&pc_options(&p, &flow, Some(&cookie)).await);
+    let h = pc_finish(
+        &p,
+        &flow.path,
+        &[("credential", &cred), ("ceremony_id", &third_id)],
+        Some(&cookie),
+    )
+    .await;
+    let handoff = hidden(&h.body, "code").expect("hand-off code");
+    assert_eq!(
+        pc_redeem(&p, &flow, &handoff, VERIFIER, Some(&p.token))
+            .await
+            .status,
+        200
+    );
+}
+
+#[sqlx::test]
+async fn phone_code_never_appears_in_the_rendered_pages(pool: PgPool) {
+    let p = desktop_pc(&pool).await;
+    let (id, code) = with_code(&p).await;
+    let flow = pc_flow(&p, &id).await;
+    let mut seen = vec![page(&p.app.router, &flow.path, Some("de")).await];
+    seen.push(page(&p.app.router, &flow.path, None).await);
+    let entry = type_code(&p, &flow, &code, None).await;
+    let cookie = pcsetup_cookie(&entry);
+    seen.push(entry);
+    seen.push(
+        browser(
+            &p.app.router,
+            Method::GET,
+            &flow.path,
+            None,
+            None,
+            Some(&cookie),
+        )
+        .await,
+    );
+    let opts = pc_options(&p, &flow, Some(&cookie)).await;
+    let (cred, ceremony_id) = registered(&opts);
+    seen.push(opts);
+    let h = pc_finish(
+        &p,
+        &flow.path,
+        &[("credential", &cred), ("ceremony_id", &ceremony_id)],
+        Some(&cookie),
+    )
+    .await;
+    assert!(hidden(&h.body, "code").is_some(), "{}", h.body);
+    seen.push(h);
+    for r in &seen {
+        assert!(!contains_code(&r.body, &code), "{}", r.body);
+        for v in r.headers.values() {
+            assert!(!contains_code(v.to_str().unwrap_or(""), &code));
+        }
+    }
+    // The keypad page names what it is for and keeps the strict CSP.
+    let pg = &seen[1];
+    assert!(pg.body.contains("ceremony.js"), "{}", pg.body);
+    assert!(pg
+        .header("content-security-policy")
+        .unwrap()
+        .contains("script-src 'self'"));
+    assert!(seen[0].body.contains("lang=\"de\""));
+}
+
+/// The pending result's credential id (b64u) from the stored flow.
+async fn pending_cred_id(p: &Pc, flow: &Flow) -> Vec<u8> {
+    use fred::interfaces::KeysInterface;
+    let raw: String = p
+        .app
+        .state
+        .redis
+        .get(format!("passkey:flow:{}", flow.id))
+        .await
+        .unwrap();
+    let v: Value = serde_json::from_str(&raw).unwrap();
+    let id = v["result"]["outcome"]["PcSetup"]["verified"]["passkey"]["cred"]["cred_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("credential id in {v}"));
+    vc_server::approvals::secrets::b64u_decode(id).unwrap()
+}
+
+#[sqlx::test]
+async fn desktop_redeem_keeps_passkey_errors_readable(pool: PgPool) {
+    // The passkey limit and a known credential at redeem answer 409
+    // with their own code; the attempt stays `enrolled` and readable.
+    let p = desktop_pc(&pool).await;
+    let (id, flow, handoff, _) = handed_off(&p).await;
+    for _ in 0..vc_server::auth::passkeys::MAX_ACTIVE_PASSKEYS {
+        seed_passkey(&p.app, p.user, PasskeyState::Active).await;
+    }
+    let r = pc_redeem(&p, &flow, &handoff, VERIFIER, Some(&p.token)).await;
+    assert_eq!(
+        (r.status, r.json()["error"].as_str()),
+        (409, Some("PASSKEY_LIMIT")),
+        "{}",
+        r.body
+    );
+    assert_eq!(attempt_state(&pool, &id).await, ("enrolled".into(), None));
+    let (s, poll) = crate::pc_setup::call(
+        &p.app,
+        Method::GET,
+        &format!("/auth/pc-setups/{id}?wait=0"),
+        &p.token,
+        None,
+    )
+    .await;
+    assert_eq!(
+        (s, poll["state"].as_str()),
+        (200, Some("enrolled")),
+        "{poll}"
+    );
+
+    // A known credential: another account already holds it.
+    let q = desktop_pc(&pool).await;
+    let (id, flow, handoff, _) = handed_off(&q).await;
+    let cred_id = pending_cred_id(&q, &flow).await;
+    let (other, _) = create_test_user(&pool).await;
+    let (_, row) = seed_passkey(&q.app, other, PasskeyState::Active).await;
+    sqlx::query("UPDATE passkeys SET credential_id = $2 WHERE id = $1")
+        .bind(row.id)
+        .bind(&cred_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let r = pc_redeem(&q, &flow, &handoff, VERIFIER, Some(&q.token)).await;
+    assert_eq!(
+        (r.status, r.json()["error"].as_str()),
+        (409, Some("PASSKEY_ALREADY_REGISTERED")),
+        "{}",
+        r.body
+    );
+    assert_eq!(attempt_state(&pool, &id).await, ("enrolled".into(), None));
+    assert_eq!(passkeys_of(&pool, q.user).await, 0);
+}
+
+// One path per attempt: the code and the passkey take the same way.
+
+#[sqlx::test]
+async fn a_code_typed_in_a_flow_registers_through_that_flow_only(pool: PgPool) {
+    let p = desktop_pc(&pool).await;
+    let (id, code) = with_code(&p).await;
+    let flow = pc_flow(&p, &id).await;
+    right_code(&p, &flow, &code).await;
+    // The requesting session's web routes refuse the attempt.
+    let (s, body) = passkey_start(&p, &p.token, &id).await;
+    assert_eq!(
+        (s, body["error"].as_str()),
+        (409, Some("APPROVAL_STATE")),
+        "{body}"
+    );
+    assert_eq!(passkeys_of(&pool, p.user).await, 0);
+    assert_eq!(attempt_state(&pool, &id).await.0, "enrolled");
+}
+
+#[sqlx::test]
+async fn a_code_typed_on_the_web_cannot_be_used_by_a_flow(pool: PgPool) {
+    let p = desktop_pc(&pool).await;
+    let (id, code) = with_code(&p).await;
+    let flow = pc_flow(&p, &id).await;
+    let (s, body) = crate::pc_setup::enter(&p, &p.token, &id, &code).await;
+    assert_eq!(
+        (s, body["state"].as_str()),
+        (200, Some("enrolled")),
+        "{body}"
+    );
+    // The flow never gets a browser secret, so it has no ceremony to run.
+    assert_eq!(type_code(&p, &flow, &code, None).await.status, 409);
+    assert_eq!(pc_options(&p, &flow, None).await.status, 400);
+    let path: (Option<String>, Option<Uuid>) =
+        sqlx::query_as("SELECT code_via, code_flow_id FROM pc_setup_attempts WHERE id = $1::uuid")
+            .bind(&id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(path, (Some("web".into()), None));
+}
+
+#[sqlx::test]
+async fn a_session_of_another_client_cannot_start_a_pc_setup_flow(pool: PgPool) {
+    let p = desktop_pc(&pool).await;
+    let (id, _) = with_code(&p).await;
+    for class in ["web", "android"] {
+        set_client_class(&pool, p.sid, class).await;
+        // The desktop header alone is not enough.
+        let r = api(
+            &p.app.router,
+            "/auth/passkeys/desktop/flows",
+            pc_setup_body(&id),
+            true,
+            Some(&p.token),
+        )
+        .await;
+        assert_eq!(
+            (r.status, r.json()["error"].as_str()),
+            (403, Some("FORBIDDEN")),
+            "{}",
+            r.body
+        );
+    }
+}
+
+#[sqlx::test]
+async fn a_redeem_without_a_pending_result_consumes_nothing(pool: PgPool) {
+    let p = desktop_pc(&pool).await;
+    let (id, code) = with_code(&p).await;
+    let flow = pc_flow(&p, &id).await;
+    let cookie = right_code(&p, &flow, &code).await;
+    // Someone who saw the flow URL redeems before any result exists.
+    assert_invalid(&pc_redeem(&p, &flow, "x", VERIFIER, None).await);
+    // The browser that typed the code still runs its ceremony.
+    assert_eq!(pc_options(&p, &flow, Some(&cookie)).await.status, 200);
+}
+
+// A refusal reaches the app; the page offers only what can work.
+
+#[sqlx::test]
+async fn a_passkey_limit_in_the_browser_reaches_the_app(pool: PgPool) {
+    let p = desktop_pc(&pool).await;
+    let (id, code) = with_code(&p).await;
+    let flow = pc_flow(&p, &id).await;
+    let cookie = right_code(&p, &flow, &code).await;
+    for _ in 0..vc_server::auth::passkeys::MAX_ACTIVE_PASSKEYS {
+        seed_passkey(&p.app, p.user, PasskeyState::Active).await;
+    }
+    // The options call is refused; the flow stays for the page to hand it on.
+    let r = pc_options(&p, &flow, Some(&cookie)).await;
+    assert_eq!(
+        (r.status, r.json()["error"].as_str()),
+        (409, Some("PASSKEY_LIMIT")),
+        "{}",
+        r.body
+    );
+    // The page, reloaded, hands the refusal to the app's loopback listener.
+    let page = browser(
+        &p.app.router,
+        Method::GET,
+        &flow.path,
+        None,
+        None,
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(
+        hidden(&page.body, "error").as_deref(),
+        Some("PASSKEY_LIMIT"),
+        "{}",
+        page.body
+    );
+}
+
+#[sqlx::test]
+async fn the_right_code_keeps_the_flow_for_the_enrolments_time(pool: PgPool) {
+    use fred::interfaces::KeysInterface;
+    let p = desktop_pc(&pool).await;
+    let (id, code) = with_code(&p).await;
+    let flow = pc_flow(&p, &id).await;
+    // Most of the flow's time went by before the code was typed.
+    let () = p
+        .app
+        .state
+        .redis
+        .expire(format!("passkey:flow:{}", flow.id), 60, None)
+        .await
+        .unwrap();
+    right_code(&p, &flow, &code).await;
+    let ttl = flow_ttl(&p.app, &flow).await;
+    assert!(ttl > 590, "the flow lives as long as the enrolment: {ttl}");
+}
+
+#[sqlx::test]
+async fn the_code_field_accepts_a_pasted_code_with_spaces(pool: PgPool) {
+    let p = desktop_pc(&pool).await;
+    let (id, _) = with_code(&p).await;
+    let flow = pc_flow(&p, &id).await;
+    let page = browser(&p.app.router, Method::GET, &flow.path, None, None, None).await;
+    assert_eq!(page.status, 200);
+    assert!(
+        !page.body.contains("maxlength=\"6\""),
+        "a pasted \"123 456\" must not be cut"
+    );
+    assert!(
+        !page.body.contains("pattern="),
+        "the page's own check gives the message"
+    );
+    assert!(page.body.contains("novalidate"));
+}
+
+// The code never travels in a URL, also without script (C27).
+
+#[sqlx::test]
+async fn the_code_form_posts_and_waits_for_its_script(pool: PgPool) {
+    let p = desktop_pc(&pool).await;
+    let (id, _) = with_code(&p).await;
+    let flow = pc_flow(&p, &id).await;
+    let pg = page(&p.app.router, &flow.path, None).await;
+    assert_eq!(pg.status, 200, "{}", pg.body);
+    let form = pg
+        .body
+        .split("<form id=\"code-form\"")
+        .nth(1)
+        .and_then(|f| f.split("</form>").next())
+        .expect("code form");
+    let head = form.split('>').next().unwrap();
+    assert!(head.contains("method=\"post\""), "{head}");
+    assert!(
+        head.contains(&format!("action=\"{}/code\"", flow.path)),
+        "{head}"
+    );
+    for tag in ["<input", "<button"] {
+        let el = form
+            .split(tag)
+            .nth(1)
+            .and_then(|e| e.split('>').next())
+            .unwrap();
+        assert!(el.contains(" disabled"), "{tag} must start disabled: {el}");
+    }
+    assert!(pg.body.contains("<noscript>"), "{}", pg.body);
+    // The script enables the keypad only after its submit handler is installed.
+    let js = page(&p.app.router, "/auth/passkeys/assets/ceremony.js", None).await;
+    let handler = js
+        .body
+        .find("addEventListener(\"submit\"")
+        .expect("submit handler");
+    let enabled = js
+        .body
+        .find("input.disabled = false")
+        .expect("keypad enabled");
+    assert!(handler < enabled, "handler first");
+}
+
+// Only the page's own origin changes a flow.
+
+const OTHER_SITE: Sender = Sender {
+    origin: Some("https://other.example.com"),
+    site: Some("cross-site"),
+};
+const SIBLING: Sender = Sender {
+    origin: Some("null"),
+    site: Some("same-site"),
+};
+const UNKNOWN: Sender = Sender {
+    origin: None,
+    site: None,
+};
+
+#[sqlx::test]
+async fn the_flow_routes_accept_only_the_pages_own_origin(pool: PgPool) {
+    let p = desktop_pc(&pool).await;
+    let (id, code) = with_code(&p).await;
+    let flow = pc_flow(&p, &id).await;
+    let r = &p.app.router;
+    let json_body = |v: Value| Some(Body::from(v.to_string()));
+    let code_path = format!("{}/code", flow.path);
+    let cancel_path = format!("{}/cancel", flow.path);
+    // Before the code: no entry and no cancel from elsewhere.
+    for from in [OTHER_SITE, SIBLING, UNKNOWN] {
+        let t = browser_from(
+            r,
+            from,
+            Method::POST,
+            &code_path,
+            json_body(json!({"code": wrong(&code)})),
+            Some("application/json"),
+            None,
+        )
+        .await;
+        assert_eq!(t.status, 403, "{from:?}: {}", t.body);
+        let c = browser_from(
+            r,
+            from,
+            Method::POST,
+            &cancel_path,
+            None,
+            Some("application/x-www-form-urlencoded"),
+            None,
+        )
+        .await;
+        assert_eq!(c.status, 403, "{from:?}: {}", c.body);
+        assert!(hidden(&c.body, "error").is_none(), "{}", c.body);
+    }
+    let tries: i16 = sqlx::query_scalar("SELECT tries FROM pc_setup_attempts WHERE id = $1::uuid")
+        .bind(&id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(tries, 0, "no try was spent");
+    let cookie = right_code(&p, &flow, &code).await;
+    // After it: the browser's cookie alone is not enough.
+    let opts = pc_options(&p, &flow, Some(&cookie)).await;
+    let (cred, ceremony_id) = registered(&opts);
+    let fields = [
+        ("credential", cred.as_str()),
+        ("ceremony_id", ceremony_id.as_str()),
+    ];
+    let form_body = || Some(Body::from(serde_urlencoded::to_string(fields).unwrap()));
+    for from in [OTHER_SITE, SIBLING, UNKNOWN] {
+        let o = browser_from(
+            r,
+            from,
+            Method::POST,
+            &format!("{}/options", flow.path),
+            json_body(json!({})),
+            Some("application/json"),
+            Some(&cookie),
+        )
+        .await;
+        assert_eq!(o.status, 403, "{from:?}: {}", o.body);
+        let f = browser_from(
+            r,
+            from,
+            Method::POST,
+            &format!("{}/finish", flow.path),
+            form_body(),
+            Some("application/x-www-form-urlencoded"),
+            Some(&cookie),
+        )
+        .await;
+        assert_eq!(f.status, 403, "{from:?}: {}", f.body);
+        assert!(hidden(&f.body, "code").is_none(), "{}", f.body);
+        let c = browser_from(
+            r,
+            from,
+            Method::POST,
+            &cancel_path,
+            None,
+            Some("application/x-www-form-urlencoded"),
+            Some(&cookie),
+        )
+        .await;
+        assert_eq!(c.status, 403, "{from:?}: {}", c.body);
+        assert!(hidden(&c.body, "error").is_none(), "{}", c.body);
+    }
+    // The flow is untouched: the page's own form post (its origin hidden by
+    // the page's referrer policy) finishes it.
+    let own_form = Sender {
+        origin: Some("null"),
+        site: Some("same-origin"),
+    };
+    let h = browser_from(
+        r,
+        own_form,
+        Method::POST,
+        &format!("{}/finish", flow.path),
+        form_body(),
+        Some("application/x-www-form-urlencoded"),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(h.status, 200, "{}", h.body);
+    let handoff = hidden(&h.body, "code").expect("hand-off code");
+    let rd = pc_redeem(&p, &flow, &handoff, VERIFIER, Some(&p.token)).await;
+    assert_eq!(rd.status, 200, "{}", rd.body);
+}
+
+// One path per attempt: the web route refuses before it takes a ceremony.
+
+#[sqlx::test]
+async fn a_web_finish_of_a_flow_code_is_refused_and_takes_nothing(pool: PgPool) {
+    let p = desktop_pc(&pool).await;
+    let (id, code) = with_code(&p).await;
+    let flow = pc_flow(&p, &id).await;
+    let cookie = right_code(&p, &flow, &code).await;
+    let (cred, ceremony_id) = registered(&pc_options(&p, &flow, Some(&cookie)).await);
+    let body = json!({
+        "ceremony_id": ceremony_id,
+        "credential": serde_json::from_str::<Value>(&cred).unwrap(),
+        "label": "Work PC",
+    });
+    let (s, b) = crate::pc_setup::passkey_finish(&p, &p.token, &id, body).await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (409, Some("APPROVAL_STATE")),
+        "{b}"
+    );
+    // The browser's ceremony is still there.
+    let h = pc_finish(
+        &p,
+        &flow.path,
+        &[("credential", &cred), ("ceremony_id", &ceremony_id)],
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(h.status, 200, "{}", h.body);
+    assert!(hidden(&h.body, "code").is_some(), "{}", h.body);
+}
+
+// The page's own posts carry its origin; a refusal stays a page.
+
+#[sqlx::test]
+async fn the_flow_page_sends_its_origin_and_the_hand_off_no_referrer(pool: PgPool) {
+    let p = desktop_pc(&pool).await;
+    let (id, code) = with_code(&p).await;
+    let flow = pc_flow(&p, &id).await;
+    // Same-origin posts from the page carry the real Origin; nothing is sent
+    // to another origin.
+    let pg = page(&p.app.router, &flow.path, None).await;
+    assert_eq!(
+        pg.headers
+            .get("referrer-policy")
+            .and_then(|v| v.to_str().ok()),
+        Some("same-origin")
+    );
+    let cookie = right_code(&p, &flow, &code).await;
+    let (cred, ceremony_id) = registered(&pc_options(&p, &flow, Some(&cookie)).await);
+    let h = pc_finish(
+        &p,
+        &flow.path,
+        &[("credential", &cred), ("ceremony_id", &ceremony_id)],
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(h.status, 200, "{}", h.body);
+    // The hand-off posts to 127.0.0.1 without any referrer.
+    assert!(h.body.contains("http://127.0.0.1:"), "{}", h.body);
+    assert_eq!(
+        h.headers
+            .get("referrer-policy")
+            .and_then(|v| v.to_str().ok()),
+        Some("no-referrer")
+    );
+}
+
+#[sqlx::test]
+async fn a_refused_finish_or_cancel_is_a_page_that_sends_back_to_the_app(pool: PgPool) {
+    let p = desktop_pc(&pool).await;
+    let (id, code) = with_code(&p).await;
+    let flow = pc_flow(&p, &id).await;
+    let cookie = right_code(&p, &flow, &code).await;
+    let r = &p.app.router;
+    for route in ["finish", "cancel"] {
+        let x = browser_from(
+            r,
+            UNKNOWN,
+            Method::POST,
+            &format!("{}/{route}", flow.path),
+            None,
+            Some("application/x-www-form-urlencoded"),
+            Some(&cookie),
+        )
+        .await;
+        assert_eq!(x.status, 403, "{route}: {}", x.body);
+        let ct = x
+            .headers
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(ct.starts_with("text/html"), "{route}: {ct}");
+        assert!(
+            x.body.contains("Go back to the Kaiku app"),
+            "{route}: {}",
+            x.body
+        );
+    }
+}
+
+#[sqlx::test]
+async fn only_the_browsers_own_navigation_hands_a_refusal_to_the_app(pool: PgPool) {
+    let p = desktop_pc(&pool).await;
+    let (id, code) = with_code(&p).await;
+    let flow = pc_flow(&p, &id).await;
+    let cookie = right_code(&p, &flow, &code).await;
+    // The attempt ends: the flow can no longer register.
+    let (s, _) = crate::pc_setup::call(
+        &p.app,
+        Method::DELETE,
+        &format!("/auth/pc-setups/{id}"),
+        &p.token,
+        None,
+    )
+    .await;
+    assert_eq!(s, 204);
+    let r = &p.app.router;
+    let sibling = Sender {
+        origin: None,
+        site: Some("same-site"),
+    };
+    let g = browser_from(
+        r,
+        sibling,
+        Method::GET,
+        &flow.path,
+        None,
+        None,
+        Some(&cookie),
+    )
+    .await;
+    assert!(hidden(&g.body, "error").is_none(), "{}", g.body);
+    // The person's own navigation still hands the refusal to the app.
+    let own = Sender {
+        origin: None,
+        site: Some("none"),
+    };
+    let g = browser_from(r, own, Method::GET, &flow.path, None, None, Some(&cookie)).await;
+    assert!(hidden(&g.body, "error").is_some(), "{}", g.body);
+}
+
+#[sqlx::test]
+async fn a_page_load_marked_from_another_site_gets_the_expired_page_at_every_step(pool: PgPool) {
+    let p = desktop_pc(&pool).await;
+    let (id, code) = with_code(&p).await;
+    let flow = pc_flow(&p, &id).await;
+    let r = &p.app.router;
+    let get = |site: &'static str, cookie: Option<String>| {
+        let path = flow.path.clone();
+        async move {
+            browser_from(
+                r,
+                Sender {
+                    origin: None,
+                    site: Some(site),
+                },
+                Method::GET,
+                &path,
+                None,
+                None,
+                cookie.as_deref(),
+            )
+            .await
+        }
+    };
+    // Before the code.
+    let g = get("cross-site", None).await;
+    assert_eq!(g.status, 404, "{}", g.body);
+    assert!(!g.body.contains("id=\"code-form\""), "{}", g.body);
+    // The app's own opening still shows the keypad.
+    let g = get("none", None).await;
+    assert!(g.body.contains("id=\"code-form\""), "{}", g.body);
+    let cookie = right_code(&p, &flow, &code).await;
+    // After the code, with the browser's cookie.
+    let g = get("same-site", Some(cookie.clone())).await;
+    assert_eq!(g.status, 404, "{}", g.body);
+    assert!(!g.body.contains("id=\"start\""), "{}", g.body);
+    // The page's own reload (and the redirect after a failed finish) still works.
+    let g = get("same-origin", Some(cookie.clone())).await;
+    assert!(g.body.contains("id=\"start\""), "{}", g.body);
+    // And without the header (a browser that sends none).
+    let g = browser_from(
+        r,
+        UNKNOWN,
+        Method::GET,
+        &flow.path,
+        None,
+        None,
+        Some(&cookie),
+    )
+    .await;
+    assert!(g.body.contains("id=\"start\""), "{}", g.body);
 }

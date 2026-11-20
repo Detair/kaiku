@@ -86,4 +86,32 @@ class ScanViewModelTest {
         v.onCode(setupCode)
         assertEquals(ScanUi.OpenSetup(ScanPayload.Setup("https://chat.example.com", token)), v.ui.value)
     }
+
+    private val pcCode = "kaiku://pcsetup/v1?o=https%3A%2F%2Fchat.example.com&t=$token"
+
+    @Test fun `own pc setup code opens the pc setup approval`() {
+        val v = vm()
+        v.onCode(pcCode)
+        assertEquals(ScanUi.OpenPcSetup(ScanPayload.PcSetup("https://chat.example.com", token)), v.ui.value)
+    }
+
+    @Test fun `pc setup code is refused without a key device or with may approve off`() {
+        isKey = false
+        val v = vm()
+        v.onCode(pcCode)
+        assertEquals(ScanUi.Refused(R.string.scan_not_a_key), v.ui.value)
+        isKey = true; mayApprove = false
+        val w = vm()
+        w.onCode(pcCode)
+        assertEquals(ScanUi.Refused(R.string.scan_may_approve_off), w.ui.value)
+    }
+
+    @Test fun `pc setup code is refused in setup only mode and for another server`() {
+        val v = vm(ScanMode.SETUP_ONLY)
+        v.onCode(pcCode)
+        assertEquals(ScanUi.Refused(R.string.scan_pc_setup_code_in_setup), v.ui.value)
+        val w = vm()
+        w.onCode("kaiku://pcsetup/v1?o=https%3A%2F%2Fevil.example.com&t=$token")
+        assertEquals(ScanUi.Refused(R.string.scan_other_server), w.ui.value)
+    }
 }

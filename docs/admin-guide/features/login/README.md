@@ -11,7 +11,7 @@ read-only chat with **Kaiku**, and recovery always waits and can be cancelled.
 
 | Document | For | What it covers |
 |---|---|---|
-| [User guide](user-guide.md) | family members | key phones, signing in on a PC, chat-only versus full, phones and passkeys on every OS, notices and "That wasn't me", the recovery contact, recovery, signing out |
+| [User guide](user-guide.md) | family members | key phones, signing in on a PC, chat-only versus full, "Set up this PC", phones and passkeys on every OS, notices and "That wasn't me", the recovery contact, recovery, signing out |
 | [Admin guide](admin-guide.md) | operators and admins | the day-1 upgrade, configuration (`PUBLIC_URL`, Android certificates, `assetlinks.json`), phone setup and `may_approve`, admin mode, factor states, removing devices, delays and cancellers, the security log, every `kaiku-admin` command, limits, troubleshooting, release checklist |
 | [Technical reference](technical-reference.md) | reviewers, client authors | assurance classes, the session check, refresh rotation, the `kaiku-sig-v1` signature format, attestation, every sign-in flow as a sequence, step-up grants, the state machines, lock order, counters, notices, residual risks, error codes |
 
@@ -39,7 +39,7 @@ Task-oriented pages in the operations section:
 
 ## Sources
 
-The design spec (revision 5) and the contracts C26–C29 live on the design branch
+The design spec (revision 6, which adds "Set up this PC") and the contracts C26–C29 live on the design branch
 (`docs/superpowers/specs/2026-11-02-phone-key-login-and-simple-app-design.md`,
 `docs/superpowers/plans/2026-10-22-v1-family-contracts.md`). The implementation notes with every
 deviation are in [`docs/superpowers/plans/notes/`](../../../superpowers/plans/notes/)

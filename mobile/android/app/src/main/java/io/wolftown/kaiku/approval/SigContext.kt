@@ -13,7 +13,8 @@ enum class SigKind(val byte: Int, val wire: String) {
     ENROLL(2, "enroll"),
     DEVICE_LOGIN(3, "device_login"),
     DEVICE_STEPUP(4, "device_stepup"),
-    ENROLL_POP(5, "enroll_pop");
+    ENROLL_POP(5, "enroll_pop"),
+    PC_SETUP(6, "pc_setup");
 
     companion object {
         /** Null for every byte v1.0 does not know, including the reserved 0x10–0x1F agent kinds. */
@@ -76,6 +77,13 @@ sealed interface SigContext {
                     action = r.string("action"),
                     target = r.string("target"),
                     targetLabel = r.string("target_label"),
+                )
+                SigKind.PC_SETUP -> PcSetupContext(
+                    attemptId = r.uuid("attempt_id"),
+                    sidHash = r.hash("sid_hash"),
+                    clientDescription = r.string("client_description"),
+                    sessionCreatedAt = r.long("session_created_at"),
+                    place = r.string("place"),
                 )
                 SigKind.ENROLL_POP -> EnrollPopContext(
                     enrollmentId = r.uuid("enrollment_id"),
@@ -151,6 +159,27 @@ data class EnrollPopContext(
         .uuid(enrollmentId).raw(newKeyHash).raw(attestationChallenge).str(subjectUsername).bytes()
 
     override fun equals(other: Any?) = other is EnrollPopContext && canonical().contentEquals(other.canonical())
+    override fun hashCode() = canonical().contentHashCode()
+}
+
+/**
+ * "Set up this PC" (kind 6): what the PC's session looked like when it started.
+ * `sid_hash` = SHA-256 over the 16 raw sid bytes; the other fields come from
+ * the session row, never from the request.
+ */
+data class PcSetupContext(
+    val attemptId: String,
+    val sidHash: ByteArray,
+    val clientDescription: String,
+    /** Unix seconds when the PC's session was created. */
+    val sessionCreatedAt: Long,
+    val place: String,
+) : SigContext {
+    override val kind get() = SigKind.PC_SETUP
+    override fun canonical(): ByteArray = Canon()
+        .uuid(attemptId).raw(sidHash).str(clientDescription).i64(sessionCreatedAt).str(place).bytes()
+
+    override fun equals(other: Any?) = other is PcSetupContext && canonical().contentEquals(other.canonical())
     override fun hashCode() = canonical().contentHashCode()
 }
 

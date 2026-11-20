@@ -11,7 +11,9 @@
  * - setup_required flag is true in auth response
  */
 
-import { Component, createSignal, createEffect, Show } from "solid-js";
+import { Component, createResource, createSignal, createEffect, Match, Show, Switch } from "solid-js";
+import { t } from "@/i18n";
+import { checkAdminStatus } from "@/lib/tauri/admin";
 import { codeIs } from "@/lib/errorCode";
 import { authState, clearSetupRequired } from "@/stores/auth";
 import { AlertCircle, CheckCircle, Server } from "lucide-solid";
@@ -162,7 +164,7 @@ async function completeSetup(config: SetupConfig): Promise<void> {
   }
 }
 
-const SetupWizard: Component = () => {
+const SetupForm: Component = () => {
   // Form state
   const [serverName, setServerName] = createSignal("");
   const [registrationPolicy, setRegistrationPolicy] = createSignal<
@@ -409,6 +411,84 @@ const SetupWizard: Component = () => {
           </div>
       </Modal>
     </Show>
+  );
+};
+
+/**
+ * A user who is not a system admin cannot complete the setup (the server
+ * answers 403), so they get a closable notice instead of the wizard.
+ */
+const SetupPendingNotice: Component = () => (
+  <Modal
+    onClose={() => clearSetupRequired()}
+    labelledBy="setup-pending-title"
+    class="bg-surface-layer2 rounded-xl p-6 w-[28rem] max-w-full shadow-2xl border border-white/10 space-y-4"
+    testId="setup-pending"
+  >
+    <h2 id="setup-pending-title" class="text-lg font-semibold text-text-primary">
+      {t("onboarding.serverSetupPending.title")}
+    </h2>
+    <p class="text-base text-text-primary">{t("onboarding.serverSetupPending.text")}</p>
+    <div class="flex justify-end">
+      <button type="button" class="btn-primary min-h-11 text-base" onClick={() => clearSetupRequired()}>
+        {t("common.close")}
+      </button>
+    </div>
+  </Modal>
+);
+
+/**
+ * The admin status could not be read: say so, with Retry and Close, never
+ * the form (only an admin can send it) and never the text for non-admins.
+ */
+const SetupCheckFailed: Component<{ onRetry: () => void }> = (props) => (
+  <Modal
+    onClose={() => clearSetupRequired()}
+    labelledBy="setup-check-failed-title"
+    class="bg-surface-layer2 rounded-xl p-6 w-[28rem] max-w-full shadow-2xl border border-white/10 space-y-4"
+    testId="setup-check-failed"
+  >
+    <h2 id="setup-check-failed-title" class="text-lg font-semibold text-text-primary">
+      {t("onboarding.serverSetupCheckFailed.text")}
+    </h2>
+    <div class="flex justify-end gap-2">
+      <button
+        type="button"
+        class="min-h-11 px-3 rounded-lg text-base text-text-primary hover:bg-white/10"
+        onClick={() => clearSetupRequired()}
+      >
+        {t("common.close")}
+      </button>
+      <button type="button" class="btn-primary min-h-11 text-base" onClick={() => props.onRetry()}>
+        {t("common.retry")}
+      </button>
+    </div>
+  </Modal>
+);
+
+const SetupWizard: Component = () => {
+  const [admin, { refetch }] = createResource(async (): Promise<"admin" | "member" | "unknown"> => {
+    try {
+      const isAdmin: unknown = (await checkAdminStatus()).is_admin;
+      // Only a real yes or no counts; anything else is "could not check".
+      if (typeof isAdmin !== "boolean") return "unknown";
+      return isAdmin ? "admin" : "member";
+    } catch {
+      return "unknown";
+    }
+  });
+  return (
+    <Switch>
+      <Match when={admin() === "admin"}>
+        <SetupForm />
+      </Match>
+      <Match when={admin() === "member"}>
+        <SetupPendingNotice />
+      </Match>
+      <Match when={admin() === "unknown"}>
+        <SetupCheckFailed onRetry={() => void refetch()} />
+      </Match>
+    </Switch>
   );
 };
 

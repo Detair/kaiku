@@ -8,6 +8,10 @@
 //! `step_up`), which re-checks the account, the passkey and the session.
 //! The code is stored only as a keyed hash and is never rendered, logged,
 //! or put in an address bar, a redirect or an API body.
+//!
+//! The `pc_setup` purpose ("Set up this PC") registers a passkey instead;
+//! its page, code entry and ceremony live in [`super::desktop_pc_setup`],
+//! under `/auth/passkeys/desktop/flows/{flow_id}`.
 
 use std::net::SocketAddr;
 
@@ -25,7 +29,8 @@ use super::desktop_page::{
     LoopbackTarget, PageHeading,
 };
 use super::queries::{self, PasskeyState};
-use super::{failure, login, rp_of, step_up};
+use super::rp::VerifiedRegistration;
+use super::{desktop_pc_setup, failure, login, rp_of, step_up};
 use crate::api::AppState;
 use crate::approvals::secrets::{b64u_decode, ct_eq, keyed_hash, SecretPurpose};
 use crate::auth::client_class::ClientClass;
@@ -38,6 +43,9 @@ use crate::auth::{AuthError, AuthResult, AuthUser};
 
 /// A flow lives at most 10 minutes.
 pub const DESKTOP_FLOW_TTL_SECS: i64 = 600;
+/// A `pc_setup` flow: the code's 5 minutes plus the enrolment's 10, so the
+/// browser can create the passkey for as long as the enrolment lives.
+pub const PC_SETUP_FLOW_TTL_SECS: i64 = 900;
 /// A verified result waits at most 60 s for its redemption.
 pub const PENDING_RESULT_TTL_SECS: i64 = 60;
 
@@ -56,12 +64,29 @@ pub enum FlowPurpose {
         /// `StepUpTarget::canonical()`.
         target: String,
     },
+    /// "Set up this PC" (spec Step 5): register a passkey for the attempt
+    /// of the requesting session `session_id`.
+    PcSetup {
+        user_id: Uuid,
+        session_id: Uuid,
+        attempt_id: Uuid,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FlowOutcome {
-    SignIn { user_id: Uuid, passkey_id: Uuid },
-    StepUp { passkey_id: Uuid },
+    SignIn {
+        user_id: Uuid,
+        passkey_id: Uuid,
+    },
+    StepUp {
+        passkey_id: Uuid,
+    },
+    /// A verified registration, stored only by `redeem`.
+    PcSetup {
+        verified: Box<VerifiedRegistration>,
+        label: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,6 +105,11 @@ pub struct DesktopFlow {
     pub ceremony_id: Option<Uuid>,
     pub result: Option<PendingResult>,
     pub created_at: i64,
+    /// `pc_setup` only, after the right code: `keyed_hash(..,
+    /// SecretPurpose::PcSetupBrowser, secret)` of the browser's cookie.
+    /// Absent from the stored JSON of every other flow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser_secret_hash: Option<[u8; 32]>,
 }
 
 fn key(flow_id: Uuid) -> String {
@@ -92,12 +122,12 @@ fn unavailable(e: &fred::error::Error) -> AuthError {
 }
 
 /// A flow as stored, with the exact stored JSON for compare-and-set.
-struct Stored {
-    raw: String,
-    flow: DesktopFlow,
+pub(super) struct Stored {
+    pub(super) raw: String,
+    pub(super) flow: DesktopFlow,
 }
 
-async fn load(state: &AppState, flow_id: Uuid) -> AuthResult<Option<Stored>> {
+pub(super) async fn load(state: &AppState, flow_id: Uuid) -> AuthResult<Option<Stored>> {
     let raw: Option<String> = state
         .redis
         .get(key(flow_id))
@@ -110,19 +140,28 @@ async fn load(state: &AppState, flow_id: Uuid) -> AuthResult<Option<Stored>> {
     }))
 }
 
-async fn take(state: &AppState, flow_id: Uuid) -> AuthResult<Option<DesktopFlow>> {
-    let raw: Option<String> = state
-        .redis
-        .getdel(key(flow_id))
-        .await
-        .map_err(|e| unavailable(&e))?;
-    Ok(raw.and_then(|r| serde_json::from_str(&r).ok()))
+/// Take a flow for `redeem`, only if it holds a pending result (one
+/// compare-and-set): a flow without one is left as it is, so knowing its
+/// URL cannot end a flow after the browser step began. With a result the
+/// flow is consumed by any redeem, right or wrong (C29 step 5).
+async fn take_result(state: &AppState, flow_id: Uuid) -> AuthResult<Option<DesktopFlow>> {
+    let Some(stored) = load(state, flow_id).await? else {
+        return Ok(None);
+    };
+    if stored.flow.result.is_none() {
+        return Ok(None);
+    }
+    if !cas(state, flow_id, &stored.raw, None, None).await? {
+        return Ok(None);
+    }
+    Ok(Some(stored.flow))
 }
 
 /// Compare-and-set on the flow key in one script: only if the stored JSON is
 /// still `expected`. `ttl_ms = None` keeps the TTL (never extends or
 /// shortens it); `Some(ms)` sets exactly `ms` (the pending result's 60 s of
-/// C29 step 4, also near the flow's end); `new = None` deletes.
+/// C29 step 4, also near the flow's end; a `pc_setup` flow's enrolment time
+/// after the right code); `new = None` deletes.
 const FLOW_CAS: &str = r"
 local cur = redis.call('GET', KEYS[1])
 if (not cur) or cur ~= ARGV[1] then return 0 end
@@ -136,7 +175,7 @@ end
 return 1
 ";
 
-async fn cas(
+pub(super) async fn cas(
     state: &AppState,
     flow_id: Uuid,
     expected: &str,
@@ -176,7 +215,7 @@ fn require_desktop(headers: &HeaderMap) -> AuthResult<()> {
 /// `POST /auth/passkeys/desktop/flows`. `Debug` leaves out the callback path.
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct DesktopFlowRequest {
-    /// `sign_in` or `step_up`.
+    /// `sign_in`, `step_up` or `pc_setup`.
     pub purpose: String,
     #[serde(default)]
     pub action: Option<String>,
@@ -188,6 +227,9 @@ pub struct DesktopFlowRequest {
     /// `sign_in` only: the user name typed in the app, `null` for none.
     #[serde(default)]
     pub username: Option<String>,
+    /// `pc_setup` only: the requesting session's attempt.
+    #[serde(default)]
+    pub attempt_id: Option<Uuid>,
 }
 
 impl std::fmt::Debug for DesktopFlowRequest {
@@ -195,6 +237,7 @@ impl std::fmt::Debug for DesktopFlowRequest {
         f.debug_struct("DesktopFlowRequest")
             .field("purpose", &self.purpose)
             .field("action", &self.action)
+            .field("attempt_id", &self.attempt_id)
             .field("loopback_port", &self.loopback_port)
             .finish_non_exhaustive()
     }
@@ -208,7 +251,8 @@ pub struct DesktopFlowStarted {
 }
 
 /// Start a desktop flow (C29 step 2): `sign_in` is public, `step_up` needs
-/// the bearer of a full session and validates like `step-up/start`.
+/// the bearer of a full session and validates like `step-up/start`,
+/// `pc_setup` the bearer of the session whose attempt waits for its code.
 #[utoipa::path(
     post,
     path = "/auth/passkeys/desktop/flows",
@@ -217,8 +261,9 @@ pub struct DesktopFlowStarted {
     responses(
         (status = 201, body = DesktopFlowStarted),
         (status = 400, description = "CLIENT_OUTDATED or VALIDATION_ERROR"),
-        (status = 401, description = "step_up without a bearer"),
+        (status = 401, description = "step_up or pc_setup without a bearer"),
         (status = 403, description = "FULL_SESSION_REQUIRED, or NOT_ADMIN for an admin.* action"),
+        (status = 404, description = "pc_setup: not an attempt of this session"),
     ),
     security(()),
 )]
@@ -287,7 +332,30 @@ pub async fn start(
                 target: target.canonical(),
             }
         }
-        _ => return Err(invalid("purpose must be sign_in or step_up")),
+        "pc_setup" => {
+            let Some(Extension(auth)) = auth else {
+                return Err(AuthError::MissingAuthHeader);
+            };
+            if body.username.is_some()
+                || body.action.is_some()
+                || body.target.as_deref().is_some_and(|t| !t.is_empty())
+            {
+                return Err(invalid("pc_setup takes only an attempt_id"));
+            }
+            let attempt_id = body
+                .attempt_id
+                .ok_or_else(|| invalid("pc_setup needs an attempt_id"))?;
+            desktop_pc_setup::purpose(&state, &auth, attempt_id).await?
+        }
+        _ => return Err(invalid("purpose must be sign_in, step_up or pc_setup")),
+    };
+    let ttl_secs = match purpose {
+        FlowPurpose::PcSetup { .. } => PC_SETUP_FLOW_TTL_SECS,
+        _ => DESKTOP_FLOW_TTL_SECS,
+    };
+    let page_path = match purpose {
+        FlowPurpose::PcSetup { .. } => "/auth/passkeys/desktop/flows",
+        _ => "/auth/passkeys/desktop",
     };
     let now = chrono::Utc::now();
     let flow = DesktopFlow {
@@ -300,6 +368,7 @@ pub async fn start(
         ceremony_id: None,
         result: None,
         created_at: now.timestamp(),
+        browser_secret_hash: None,
     };
     let flow_id = Uuid::new_v4();
     let json = serde_json::to_string(&flow).map_err(|e| AuthError::Internal(e.to_string()))?;
@@ -308,7 +377,7 @@ pub async fn start(
         .set(
             key(flow_id),
             json,
-            Some(fred::types::Expiration::EX(DESKTOP_FLOW_TTL_SECS)),
+            Some(fred::types::Expiration::EX(ttl_secs)),
             Some(fred::types::SetOptions::NX),
             false,
         )
@@ -321,11 +390,8 @@ pub async fn start(
         StatusCode::CREATED,
         Json(DesktopFlowStarted {
             flow_id,
-            url: format!(
-                "{}/auth/passkeys/desktop/{flow_id}",
-                state.config.public_origin.origin
-            ),
-            expires_at: now + chrono::Duration::seconds(DESKTOP_FLOW_TTL_SECS),
+            url: format!("{}{page_path}/{flow_id}", state.config.public_origin.origin),
+            expires_at: now + chrono::Duration::seconds(ttl_secs),
         }),
     ))
 }
@@ -423,7 +489,9 @@ pub async fn page(
         return expired_page(lang);
     };
     let flow = match load(&state, flow_id).await {
-        Ok(Some(s)) if s.flow.result.is_none() => s.flow,
+        // A `pc_setup` flow has its own page under `/flows/` (the cookie's
+        // path).
+        Ok(Some(s)) if s.flow.result.is_none() && !is_pc_setup(&s.flow) => s.flow,
         Ok(_) => return expired_page(lang),
         Err(e) => return e.into_response(),
     };
@@ -431,6 +499,10 @@ pub async fn page(
         Ok(h) => ceremony_page(lang, &h, flow_id),
         Err(e) => e.into_response(),
     }
+}
+
+const fn is_pc_setup(flow: &DesktopFlow) -> bool {
+    matches!(flow.purpose, FlowPurpose::PcSetup { .. })
 }
 
 #[derive(Debug, Serialize)]
@@ -453,10 +525,9 @@ pub async fn options(
     let rp = rp_of(&state)?;
     let stored = load(&state, flow_id)
         .await?
-        .filter(|s| s.flow.result.is_none())
+        .filter(|s| s.flow.result.is_none() && !is_pc_setup(&s.flow))
         .ok_or(AuthError::PasskeyCeremonyInvalid)?;
-    let mut flow = stored.flow.clone();
-    let (rcr, record) = match &flow.purpose {
+    let (rcr, record) = match &stored.flow.purpose {
         FlowPurpose::SignIn { .. } => {
             let (rcr, st) = rp.start_sign_in().map_err(failure)?;
             (
@@ -503,12 +574,31 @@ pub async fn options(
                 },
             )
         }
+        FlowPurpose::PcSetup { .. } => return Err(AuthError::PasskeyCeremonyInvalid),
     };
     let options = rcr.map_err(|e| AuthError::Internal(e.to_string()))?;
+    let ceremony_id = install_ceremony(&state, flow_id, &stored, &record).await?;
+    Ok(Json(FlowOptions {
+        ceremony: "get",
+        ceremony_id,
+        options,
+    }))
+}
+
+/// Store `record` as the flow's current ceremony (compare-and-set, the TTL
+/// kept) and drop the previous one: a reload gets fresh options and the
+/// previous ceremony can no longer finish.
+pub(super) async fn install_ceremony(
+    state: &AppState,
+    flow_id: Uuid,
+    stored: &Stored,
+    record: &CeremonyRecord,
+) -> AuthResult<Uuid> {
+    let mut flow = stored.flow.clone();
     let ceremony_id = ceremony::new_ceremony_id();
-    ceremony::put_new(&state.redis, ceremony_id, &record).await?;
+    ceremony::put_new(&state.redis, ceremony_id, record).await?;
     let old = flow.ceremony_id.replace(ceremony_id);
-    if !cas(&state, flow_id, &stored.raw, Some(&flow), None).await? {
+    if !cas(state, flow_id, &stored.raw, Some(&flow), None).await? {
         // The flow changed meanwhile (a finish, a cancel, another reload).
         let _ = ceremony::take(&state.redis, ceremony_id).await;
         return Err(AuthError::PasskeyCeremonyInvalid);
@@ -516,11 +606,7 @@ pub async fn options(
     if let Some(old) = old {
         let _ = ceremony::take(&state.redis, old).await;
     }
-    Ok(Json(FlowOptions {
-        ceremony: "get",
-        ceremony_id,
-        options,
-    }))
+    Ok(ceremony_id)
 }
 
 #[derive(Debug, Deserialize)]
@@ -545,6 +631,18 @@ async fn fail(
     stored: &Stored,
     e: &AuthError,
 ) -> Response {
+    let (_, code) = e.status_and_code();
+    fail_with(state, lang, flow_id, stored, code).await
+}
+
+/// [`fail`] with the hand-off's error code.
+pub(super) async fn fail_with(
+    state: &AppState,
+    lang: Lang,
+    flow_id: Uuid,
+    stored: &Stored,
+    code: &str,
+) -> Response {
     match cas(state, flow_id, &stored.raw, None, None).await {
         Ok(true) => {}
         Ok(false) => return stale_page(lang),
@@ -554,8 +652,7 @@ async fn fail(
             return unavailable_page(lang);
         }
     }
-    let (_, code) = e.status_and_code();
-    tracing::info!(code, "desktop passkey finish refused");
+    tracing::info!(code, "desktop passkey flow refused");
     handoff_page(&stored.flow.loopback, flow_id, HandoffField::Error(code))
 }
 
@@ -574,7 +671,9 @@ pub async fn finish(
         Ok(None) => return expired_page(lang),
         Err(e) => return e.into_response(),
     };
-    if stored.flow.result.is_some() {
+    // A `pc_setup` flow finishes only on its own route, with its cookie:
+    // nothing is taken here.
+    if stored.flow.result.is_some() || is_pc_setup(&stored.flow) {
         return stale_page(lang);
     }
     // The ceremony the page ran; an old page (no field) means the current
@@ -598,7 +697,7 @@ pub async fn finish(
         CeremonyKind::SignIn { flow_id: f } | CeremonyKind::StepUp { flow_id: f, .. } => {
             *f == Some(flow_id)
         }
-        CeremonyKind::Register { .. } => false,
+        CeremonyKind::Register { .. } | CeremonyKind::PcSetup { .. } => false,
     };
     if !bound {
         // The flow named a ceremony that is not its own: it cannot go on.
@@ -683,11 +782,21 @@ pub async fn cancel(
 ) -> Response {
     let lang = Lang::from_headers(&headers);
     let stored = match load(&state, flow_id).await {
-        Ok(Some(s)) if s.flow.result.is_none() => s,
+        Ok(Some(s)) if s.flow.result.is_none() && !is_pc_setup(&s.flow) => s,
         Ok(_) => return expired_page(lang),
         Err(e) => return e.into_response(),
     };
-    match cas(&state, flow_id, &stored.raw, None, None).await {
+    cancel_flow(&state, lang, flow_id, &stored).await
+}
+
+/// End a flow without a result and hand back `PASSKEY_CANCELLED`.
+pub(super) async fn cancel_flow(
+    state: &AppState,
+    lang: Lang,
+    flow_id: Uuid,
+    stored: &Stored,
+) -> Response {
+    match cas(state, flow_id, &stored.raw, None, None).await {
         Ok(true) => {
             if let Some(c) = stored.flow.ceremony_id {
                 let _ = ceremony::take(&state.redis, c).await;
@@ -754,8 +863,9 @@ pub struct DesktopStepUpRedeemed {
     tag = "passkeys",
     request_body = DesktopRedeemRequest,
     responses(
-        (status = 200, description = "sign_in: AuthResponse + purpose + user_id (refresh in the body); step_up: {purpose, user_id, grant}"),
+        (status = 200, description = "sign_in: AuthResponse + purpose + user_id (refresh in the body); step_up: {purpose, user_id, grant}; pc_setup: {purpose, user_id, passkey} (no tokens)"),
         (status = 400, description = "PASSKEY_HANDOFF_INVALID or CLIENT_OUTDATED"),
+        (status = 409, description = "pc_setup: PASSKEY_LIMIT or PASSKEY_ALREADY_REGISTERED"),
     ),
     security(()),
 )]
@@ -769,7 +879,7 @@ pub async fn redeem(
 ) -> AuthResult<Response> {
     require_desktop(&headers)?;
     rp_of(&state)?;
-    let flow = take(&state, body.flow_id).await?;
+    let flow = take_result(&state, body.flow_id).await?;
     let auth = auth.map(|Extension(a)| a);
     let result = redeem_inner(&state, addr, &headers, auth.as_ref(), flow, &body).await;
     if let Err(e) = &result {
@@ -777,7 +887,12 @@ pub async fn redeem(
         tracing::info!(code, "desktop passkey redemption refused");
     }
     result.map_err(|e| match e {
-        AuthError::ServiceUnavailable | AuthError::Database(_) => e,
+        // The last two come only from `pc_setup` (the PC shows the passkey
+        // error text).
+        AuthError::ServiceUnavailable
+        | AuthError::Database(_)
+        | AuthError::PasskeyLimit
+        | AuthError::PasskeyAlreadyRegistered => e,
         _ => AuthError::PasskeyHandoffInvalid,
     })
 }
@@ -853,6 +968,29 @@ async fn redeem_inner(
             })
             .into_response())
         }
+        (
+            FlowPurpose::PcSetup {
+                user_id,
+                session_id,
+                attempt_id,
+            },
+            FlowOutcome::PcSetup { verified, label },
+        ) => {
+            let auth = auth.ok_or(AuthError::PasskeyHandoffInvalid)?;
+            if auth.id != user_id || auth.session_id != Some(session_id) {
+                return Err(AuthError::PasskeyHandoffInvalid);
+            }
+            desktop_pc_setup::redeem(
+                state,
+                body.flow_id,
+                user_id,
+                session_id,
+                attempt_id,
+                &verified,
+                &label,
+            )
+            .await
+        }
         _ => Err(AuthError::PasskeyHandoffInvalid),
     }
 }
@@ -876,6 +1014,7 @@ mod tests {
             ceremony_id: None,
             result: None,
             created_at: 0,
+            browser_secret_hash: None,
         };
         let request = DesktopFlowRequest {
             purpose: "sign_in".into(),
@@ -885,6 +1024,7 @@ mod tests {
             callback_path: PATH.into(),
             client_challenge: "c".repeat(43),
             username: None,
+            attempt_id: None,
         };
         let redeemed = DesktopSignInRedeemed {
             purpose: "sign_in",

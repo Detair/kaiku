@@ -266,6 +266,7 @@ async fn issued_by(
     let row: Option<super::EnrollmentRow> = sqlx::query_as(
         "SELECT e.* FROM enrollments e
           WHERE e.id = $1
+            AND e.variant <> 'pc_setup'
             AND (EXISTS (SELECT 1 FROM approval_devices d
                           WHERE d.id = e.issuer_device_id AND d.user_id = $2)
                  OR EXISTS (SELECT 1 FROM sessions s

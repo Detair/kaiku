@@ -178,7 +178,7 @@ unchanged, so the firewall forwards the same UDP port numbers 1:1.
 
 ## Login contracts C26–C29 (v1.0, frozen 2026-11-03)
 
-Spec: `docs/superpowers/specs/2026-11-02-phone-key-login-and-simple-app-design.md`, **revision 5**
+Spec: `docs/superpowers/specs/2026-11-02-phone-key-login-and-simple-app-design.md`, **revision 5**; revision 6 adds "Set up this PC" (see the amendments at the end of this file)
 (frozen, `d6ca7109`). Section labels (B.x, Fx, SMx, CCx, Kx) point there and carry the rationale;
 where this file and the spec disagree on behaviour, the spec wins and this file is corrected. The package cut
 (coordinator working notes, 2026-11-03, §1) is used only where the spec is silent; the spec drops its
@@ -908,3 +908,148 @@ not sign in someone else by mistake. Additive; absent means no check.
 **C27 amendment (2026-11-03, L1b review round 2; behaviour, no new code):**
 - A TOTP step on a QR login attempt answers 403 `TOTP_UNAVAILABLE`, as listed for the TOTP step; it no longer answers 409 `LOGIN_ATTEMPT_NOT_READY`.
 - The bootstrap request start answers the neutral 401 while its per-account TOTP counter is delayed, so a correct password is not revealed. The recovery start still answers 429 with `Retry-After` before consumption. Only a holder of a valid recovery code can reach that answer, so it reveals nothing.
+
+## "Set up this PC" amendments to C26, C27 and C29 (2026-11-08; additive)
+
+Spec: `docs/superpowers/specs/2026-11-06-this-pc-setup-design.md`; login spec revision 6 (F5e, SM5, B.6.15).
+Nothing below changes an existing contract entry; a client that does not know it ignores it (C5).
+
+### C26 additions
+
+- **Kind** `pc_setup`, byte **0x06**, no variants, an approval (approve or report; "No" is the unsigned
+  refuse). `response` = the 32 scanned QR token bytes (the `kaiku://pcsetup/v1` token, not an F2 token).
+  TTL 2 min from the scan. `requester_kind` = `pc_setup_attempt`. A v1.0 device that does not know byte
+  0x06 refuses it as any unknown kind.
+- **Canonical context C** (field order binding): `attempt_id ‖ sid_hash ‖ lp(client_description) ‖
+  i64(session_created_at) ‖ lp(place)`. JSON `context` names: `attempt_id`, `sid_hash` (b64u),
+  `client_description`, `session_created_at` (Unix seconds), `place`. `sid_hash` = SHA-256 over the 16 raw
+  bytes of the requesting session's `sid` (never the `sid` itself, which authorises the PC's routes).
+  `client_description`, `session_created_at` and `place` come from the stored session row, never from the
+  request that started the attempt; `client_description` is built only from the User-Agent stored when the
+  session was created (none: the fixed description of its client class); `place` = `""` without a local
+  GeoIP database.
+- **Golden vectors** P01 (approve) and P02 (report), same format and test key as V01–V05, in
+  `mobile/android/app/src/test/resources/contract/pc_setup_sig_vectors.json`, read by the server's golden tests and
+  the Android tests (kept apart so the V01–V05 file still holds exactly those five).
+- **Enrolment variant** `pc_setup` (byte 3) exists only on enrolment rows; it never appears as the variant
+  of an `enroll` challenge, and an `enroll` context carrying it is rejected.
+- **Phone routes** (bearer of the scanning key device, `may_approve` on, the API's per-user `Write` limit and
+  `ApprovalLogin` per user; the status poll `GET /api/pc-setups/{attempt_id}` passes neither and counts only in
+  the per-user `Read` bucket, so polling never uses up the requests the steps need):
+
+  | Route | Body → answer |
+  |---|---|
+  | `POST /api/pc-setups/claim` | `{token}` (b64u of the 32 QR bytes) → 201 `ApprovalChallenge` (`pc_setup`). 404 `LOGIN_CODE_STALE` rotated, unknown or not live; 409 `PC_SETUP_OTHER_ACCOUNT` (no account name); 409 `LOGIN_ATTEMPT_CLAIMED`; 403 `KEY_DEVICE_REQUIRED` / `APPROVAL_NOT_ALLOWED` |
+  | `POST /api/pc-setups/{challenge_id}/answer` | `{response, signature, decision: "approve"\|"report"}` (`response` = the scanned token, b64u) → approve: 200 `{attempt_id, code, code_expires_at}`; report: 200 `{attempt_id}` (ends the requesting session, marks no credential). 400 `SIGNATURE_INVALID` / `APPROVAL_RESPONSE_MISMATCH` / `VALIDATION_ERROR`; 409 `APPROVAL_STATE`; 410 `APPROVAL_EXPIRED` |
+  | `POST /api/pc-setups/{challenge_id}/refuse` | – → 204 (unsigned "No"; the attempt ends as `refused`) |
+  | `POST /api/approvals/{challenge_id}/release` | – → 204 (dispatches to the `pc_setup` challenge; the attempt returns to `waiting`) |
+  | `GET /api/pc-setups/{attempt_id}?wait=0..25` | → 200 `{state, reason\|null}` (the phone's poll while it shows the code; at most once a second, long-poll) |
+
+  `answer`, `refuse` and `release` answer 404 `APPROVAL_NOT_FOUND` to any caller but the device the
+  challenge was issued to, before anything is locked or changed; for that device an ended attempt answers
+  403 `APPROVAL_NOT_ALLOWED` (`may_approve` off) or 409 `APPROVAL_STATE`, also when a poll or the sweep ended
+  it first. A scan of another account's code answers 409 `PC_SETUP_OTHER_ACCOUNT` only to a scanner whose
+  account may approve, and only while that code is live (waiting or claimed, its session live, its account
+  eligible); otherwise 403 `APPROVAL_NOT_ALLOWED` or 404 `LOGIN_CODE_STALE`. A scan checks the scanner
+  first, before the token is looked at, in this order: its account's ban (403 `ACCOUNT_BANNED`), its key
+  device active (403 `KEY_DEVICE_REQUIRED`), its session live (401 `INVALID_TOKEN`), that session bound to
+  the device (403 `KEY_DEVICE_REQUIRED`), then its account's `may_approve` (403 `APPROVAL_NOT_ALLOWED`). A
+  scanner refused there gets the same answer whether or not the token exists, and nothing is written for
+  it (an attempt it cannot claim ends through the PC's poll or the sweep). Then the token: unknown, rotated
+  or not live → 404 `LOGIN_CODE_STALE`; for the own account the attempt is re-checked under its locks (404
+  `LOGIN_CODE_STALE` when it ended in between). Every answer that can carry the QR token or the
+  code (start, `current`, the PC's and the phone's polls, `answer`) has `Cache-Control: no-store`; a new passkey sends the `authenticators_changed` hint.
+  The code is returned **only** in the approve answer and never sent again; the app keeps it in memory
+  while the attempt is in `code`. The phone checks, before UV, what B.2 lists, and displays only values of
+  the parsed `context`.
+- **Security event types** (C28): `pc_setup_reported` (high; "I didn't start this"; coalesced under B.5) and
+  `pc_setup_failed` (normal; three wrong codes; to the account only). The existing `authenticator_added`
+  event carries `via: "pc_setup"`, `attempt_id`, `requesting_sid`, `client_description` (the PC) and
+  `approving_device_id` / `approving_device_label` (the phone), which the notice text names; its
+  "That wasn't me" revokes the passkey, ends its sessions and ends the requesting session, and marks no
+  credential. Via part 2 of the owner action rule the passkey is kept (part 2 never revokes an
+  authenticator) and the requesting session still ends.
+- **Error codes**: 403 `PC_SETUP_UNAVAILABLE` (a full session, or no active key device with
+  `may_approve` on; an ended session gets 401 `INVALID_TOKEN`) and 409 `PC_SETUP_OTHER_ACCOUNT`. Others reuse existing codes.
+
+### C27 additions
+
+- `GET /api/me/security` gains `can_set_up_this_pc: bool` (a probation session of an account with an active
+  key device and `may_approve` on). Clients ignore it when absent.
+- **PC routes** (bearer of the requesting probation session, `ApprovalLogin` per user, except the status
+  poll `GET /auth/pc-setups/{id}` in the per-user `Read` bucket; another session of
+  the same account, or an unknown id, gets 404 `APPROVAL_NOT_FOUND` on every attempt route):
+
+  | Route | Body → answer |
+  |---|---|
+  | `POST /auth/pc-setups` | – → 201 `{attempt_id, qr_payload, rotates_at}`; `qr_payload` = `kaiku://pcsetup/v1?o=<percent-encoded origin>&t=<43-char b64u token>`. A start while the session has a live attempt cancels it (reason `restarted`, with its enrolment) and creates a new one. 403 `PC_SETUP_UNAVAILABLE`; 401 `INVALID_TOKEN`; 429 `TOO_MANY_ATTEMPTS` (with `Retry-After`) after 10 starts of the session or 30 of the account within 10 minutes |
+  | `GET /auth/pc-setups/current` | → 200 status or 404; the session's live attempt after a reload. **While `waiting` it always mints a fresh token**, so a QR scanned from an earlier response may then fail with 404 `LOGIN_CODE_STALE`; the phone's message says to scan the code on the computer again |
+  | `GET /auth/pc-setups/{id}?wait=0..25` | → 200 status (long-poll, returns early on a state change or a new QR); the PC polls at most once a second |
+  | `DELETE /auth/pc-setups/{id}` | → cancel (`cancelled`, also voids the enrolment) |
+  | `POST /auth/pc-setups/{id}/code` | `{code}` (6 digits) → 200 `{state: "enrolled", enrollment_id}`, `{state: "code", tries_left}` (wrong) or `{state: "failed", tries_left: 0}` (third wrong code). 400 `VALIDATION_ERROR` (not 6 digits, no try spent); 409 `APPROVAL_STATE`; 410 `APPROVAL_EXPIRED` |
+  | `POST /auth/pc-setups/{id}/passkey/start` | – → `{ceremony_id, options}` (`enrolled` only; 409 `PASSKEY_LIMIT`) |
+  | `POST /auth/pc-setups/{id}/passkey/finish` | `{ceremony_id, credential, label\|null}` → 201 `Passkey` (`active`; attempt `completed`). 409 `PASSKEY_LIMIT` / `PASSKEY_ALREADY_REGISTERED` (the attempt stays readable) |
+
+- **Status** = `{attempt_id, state, reason\|null, qr_payload?, rotates_at?, enrollment_id?}`. `state` is one of
+  `waiting`, `claimed`, `code`, `enrolled`, `completed`, `refused`, `reported`, `failed`, `cancelled`,
+  `expired` (SM5). `qr_payload` and `rotates_at` are present only in a response that minted a token.
+  `reason` values: `session_ended`, `device_revoked`, `no_key_device`, `may_approve_off`, `account_banned`,
+  `timeout`, `code_expired`, `restarted`, `cancelled`, `refused`, `reported`, `too_many_codes`,
+  `enrollment_expired`. A client that gets a state or reason it does not know shows a generic "This didn't
+  work. Start again." (C5). `completed` means the passkey exists: both clients show success for it,
+  whatever reason comes with it.
+- The attempt and its codes are never in a URL query, a log or the audit trail; the code appears in no
+  response to the PC.
+
+### C29 additions
+
+- **Desktop purpose `pc_setup`** (F1 desktop flow; registration in the system browser, the first desktop
+  registration). `POST /auth/passkeys/desktop/flows` takes `{purpose: "pc_setup", attempt_id, loopback_port,
+  callback_path, client_challenge}` with `X-Kaiku-Client: desktop` and the requesting session's bearer; the
+  attempt must be the session's (404 otherwise), the session's stored client class must be `desktop` (403
+  `FORBIDDEN` otherwise; the header alone is not enough) and the attempt in `code` (400). The answer is 201 `{flow_id, url, expires_at}`
+  with `url` = `{PUBLIC_URL}/auth/passkeys/desktop/flows/{flow_id}` (not `/desktop/{flow_id}`).
+- **Routes**, all under `/auth/passkeys/desktop/flows/{flow_id}` so that they share the cookie's path: `GET`
+  the page (asks for the code first), `POST …/code {code}` (answers `{state, tries_left?}`; wrong entries
+  count on the attempt; works once per flow), `POST …/options`, `POST …/finish` (form field `credential`)
+  and `POST …/cancel`. The F1 routes `/auth/passkeys/desktop/{flow_id}/…` refuse `pc_setup` flows.
+- **Browser secret.** The right code sets a fresh 256-bit cookie `__Secure-kaiku_pcsetup` (`HttpOnly`,
+  `Secure`, `SameSite=Strict`, `Path=/auth/passkeys/desktop/flows/{flow_id}`; without `COOKIE_SECURE` the
+  prefix and `Secure` are dropped), stored only as a keyed hash in the flow. The hash is written to the flow
+  **before** the code entry is committed, so a failed commit leaves the code unspent. `options`, `finish`
+  and `cancel` after the code refuse without it; a flow URL alone is worthless.
+- **Own origin only.** `…/code`, `…/options`, `…/finish` and `…/cancel` accept a request only when its
+  `Origin` is the configured public origin, or, without one (or with `null`), when `Sec-Fetch-Site` is
+  `same-origin`. The flow's page is served with `Referrer-Policy: same-origin`, so its own posts carry
+  its origin; requests to other origins (the loopback hand-off included) carry no referrer, and the
+  hand-off page itself keeps `no-referrer`. Anything else is refused before the flow is read or changed:
+  `code` and `options` with 403 `FORBIDDEN`, `finish` and `cancel` with a 403 page that sends the person
+  back to the app. The `SameSite=Strict` cookie also travels with requests from other origins of the same
+  site. A page load that a browser marks as coming from another origin (`Sec-Fetch-Site` other than `none`
+  or `same-origin`) gets the expired page at every step and stores nothing in the flow. A load without
+  `Sec-Fetch-Site` counts as the page's own.
+- **The code form** posts (`method="post"`, `action=…/code`) and is disabled in the markup until the
+  page's script has installed its handler; without script the page shows a notice and the keypad stays
+  disabled, so the code never lands in a URL. A 429 keeps the keypad; another try is possible after `Retry-After`.
+- **One path per attempt.** The attempt records how the right code arrived (`web` or this flow); only that
+  path registers. The web `passkey/start|finish` answer 409 `APPROVAL_STATE` for an attempt whose code came
+  through a flow (`finish` before it takes the submitted ceremony); a flow's `options`, `finish` and `redeem` refuse an attempt whose code did not come through
+  it. `redeem` consumes a flow only when it holds a pending result; without one nothing is changed.
+- A `pc_setup` flow lives 15 minutes (`expires_at` says so), and the right code keeps it at least the
+  enrolment's 10 minutes. When the attempt can no longer register (`PASSKEY_LIMIT`, an ended attempt), the
+  flow's page hands that code to the app (step 4's hand-off with `error`) instead of offering a ceremony.
+- A failed finish keeps the flow so the same browser can retry (the code is spent); the page redirects (303)
+  back to the flow's page instead of re-posting.
+- **Hand-off.** Steps 4 and 5 (hand-off page, loopback POST) are unchanged. `finish` only verifies the
+  registration and keeps it as the pending result (60 s). `POST /auth/passkeys/desktop/redeem {flow_id, code,
+  verifier}` with the starting session's bearer then stores the passkey under the Locking rules (SM5) and
+  answers 200 `{purpose: "pc_setup", user_id, passkey}` with **no tokens**; the app then runs `sign_in`
+  (F1). Redeem answers 409 `PASSKEY_LIMIT` or `PASSKEY_ALREADY_REGISTERED` as the web route does, and 400
+  `PASSKEY_HANDOFF_INVALID` for everything else. A restart or any end of the attempt voids the flow by
+  refusal at `finish` and `redeem`, not by deleting it.
+- **App behaviour.** On `code` the app starts the flow and opens the browser only after an explicit
+  button press, so a resumed app never opens a browser unprompted. If the poll says `code` but the flow is
+  dead, the app starts a new flow; after `PASSKEY_CANCELLED` it offers Start again (the attempt stays
+  `enrolled`).
+- The sentence "registration never runs from the desktop app" in the F1 rev 4 text above now reads: sign-in
+  and step-up never register; `pc_setup` does, in the system browser, never in the webview.

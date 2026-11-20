@@ -270,11 +270,12 @@ pub async fn issue_session_tx(
         .collect();
     sqlx::query(
         "INSERT INTO sessions (id, user_id, token_hash, expires_at, ip_address, user_agent,
+                               created_user_agent,
                                assurance, auth_methods, auth_time, client_class,
                                authenticator_type, authenticator_id, absolute_expires_at,
                                last_used_at, created_at, refresh_generation, refresh_jti,
                                refresh_issued_at)
-         VALUES ($1, $2, $3, $4, $5::inet, $6, $7, $8, $9, $10, $11, $12, $13, $9, $9, 0, $14,
+         VALUES ($1, $2, $3, $4, $5::inet, $6, $6, $7, $8, $9, $10, $11, $12, $13, $9, $9, 0, $14,
                  to_timestamp($15))",
     )
     .bind(session_id)

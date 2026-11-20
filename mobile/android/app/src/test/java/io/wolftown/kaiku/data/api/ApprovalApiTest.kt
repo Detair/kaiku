@@ -116,4 +116,27 @@ class ApprovalApiTest {
         assertEquals("/auth/device-login/challenge", rec.last.path)
         assertNull(rec.last.headers["Authorization"])
     }
+
+    @Test fun `pc setup claim answer refuse and status use the pc setup routes`() = runTest {
+        rec.status = HttpStatusCode.Created; rec.body = challenge
+        api.claimPcSetup("tok")
+        assertEquals("/api/pc-setups/claim", rec.last.path)
+        assertEquals(setOf("token"), bodyKeys().keys)
+        rec.status = HttpStatusCode.OK
+        rec.body = """{"attempt_id":"77777777-7777-4777-8777-777777777777","code":"123456","code_expires_at":"2026-11-03T12:07:00Z"}"""
+        val r = api.answerPcSetup("c1", "approve", "tok", "MEUCIQ")
+        assertEquals("/api/pc-setups/c1/answer", rec.last.path)
+        assertEquals(setOf("decision", "response", "signature"), bodyKeys().keys)
+        assertEquals("123456", r.code)
+        assertEquals("PcSetupAnswer(attemptId=77777777-7777-4777-8777-777777777777)", r.toString())
+        rec.status = HttpStatusCode.NoContent; rec.body = ""
+        api.refusePcSetup("c1")
+        assertEquals("/api/pc-setups/c1/refuse", rec.last.path)
+        rec.status = HttpStatusCode.OK; rec.body = """{"state":"code","reason":null}"""
+        assertEquals("code", api.pcSetupStatus("a1", LongPoll.WAIT_SECONDS).state)
+        assertEquals(HttpMethod.Get, rec.last.method)
+        assertEquals("/api/pc-setups/a1", rec.last.path)
+        // A long-poll, as C26 says: the server answers early on any change.
+        assertTrue(rec.last.url, rec.last.url.endsWith("/api/pc-setups/a1?wait=${LongPoll.WAIT_SECONDS}"))
+    }
 }

@@ -273,6 +273,40 @@ Change it in the member's security panel (step-up `admin.may_approve`) or with
 `kaiku-admin may-approve <username> on|off`. It is re-checked when the phone claims and when it
 approves.
 
+### Set up this PC
+
+Members who are signed in on a PC for chat only can get a passkey for that PC from their own key
+phone with **Set up this PC** (spec F5e): the PC shows a QR code, the phone scans it and confirms with
+the screen lock, and the phone shows a 6-digit code that the member types where the passkey is
+created. It needs **no push notifications** (a server without FCM works) and no admin action.
+
+- **Who sees the button:** a chat-only session of an account with an active key phone whose
+  `may_approve` is on. For accounts you set up, `may_approve` is off by default, so you turn it on
+  (above) for a relative who needs this. Without it the member is told to ask you.
+- **What you get:** a normal active passkey. Notices go to every address of the account (devices,
+  recovery contact, admins) and name both the PC and the approving phone. The security log shows
+  `authenticator_added` with `via: pc_setup`; "I didn't start this" on the phone is logged as
+  `pc_setup_reported` (high), three wrong codes as `pc_setup_failed` (account only).
+- **"That wasn't me"** on that notice revokes the passkey, ends its sessions and the session that
+  started the attempt. It marks no password or TOTP compromised. If the person used a password,
+  TOTP or recovery code as their only proof (part 2 of the owner rule), the passkey stays and only
+  the requesting session ends; remove the passkey from the key phone or the panel.
+- **Trust limit:** the passkey is bound to the session that showed the QR code and gives full access
+  (sign-in methods, other sessions, for an admin the admin panel). The server cannot tell where the
+  person who types the code is; it is not a proximity check. Before a passkey exists, the person at the
+  phone must confirm with the screen lock *and* type the 6-digit code on the computer in front of them.
+  The phone asks to continue only for a computer in front of the
+  person, the code must be typed on that computer, the account must match, `may_approve` is off by
+  default, and every passkey made this way is announced with "That wasn't me". Keep `may_approve` off
+  for the least experienced members, as with QR sign-in. Passkeys over hybrid remain the only
+  cross-device path with a proximity guarantee.
+- **Limits:** a chat-only session can start at most 10 attempts within 10 minutes, an account 30. Someone
+  who signed in with the member's password could use up the account's starts for a while; the member
+  ends that session from the key phone.
+- **Desktop app:** the code is typed in the member's system browser, which must be able to create a
+  passkey (Linux with Firefox needs a security key, or Chromium chosen under *Browser for passkey
+  sign-in*).
+
 ## 5. Admin mode and confirmations
 
 - **On the Android key phone:** Settings → Admin → **Open admin mode**, confirm with the screen
@@ -601,7 +635,9 @@ real client address behind your proxy.
 | `ACCOUNT_BANNED` (403) | Banned account; shown even after a correct password with a second step | Unban if appropriate. |
 | `TOTP_UNAVAILABLE` (403) | TOTP not set, `throttled` or `compromised`, or a TOTP step on a QR attempt | Allow it again (throttled) or let the owner renew it; `kaiku-admin factor reset … totp`. |
 | `INVALID_MFA` (401) | Wrong or reused TOTP code | Wait for the next code. |
-| `LOGIN_CODE_STALE` (404) | The scanned QR token is no longer current | Scan again. |
+| `LOGIN_CODE_STALE` (404) | The scanned QR token is no longer current (also for "Set up this PC", which rotates every 60 s) | Scan again. |
+| `PC_SETUP_UNAVAILABLE` (403) | "Set up this PC" needs a chat-only session and an active key phone with `may_approve` on | Turn `may_approve` on, or use another way to a passkey. |
+| `PC_SETUP_OTHER_ACCOUNT` (409) | The phone's account is not the account signed in on the PC | Use the right phone or account. |
 | `LOGIN_ATTEMPT_CLAIMED` / `LOGIN_ATTEMPT_OTHER_ACCOUNT` (409) | Another phone is confirming; the code belongs to another account | – |
 | `LOGIN_ATTEMPT_ENDED` (410, `state`) | The attempt expired, was denied, reported or cancelled, or its first factor changed | Start again. |
 | `SESSION_REUSED` (401) | A refresh token was used twice; the session ended for safety (notice) | Sign in again; if frequent, see [technical reference](technical-reference.md#4-sessions-refresh-rotation-and-caps). |

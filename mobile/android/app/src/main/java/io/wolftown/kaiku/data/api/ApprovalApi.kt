@@ -11,6 +11,8 @@ import io.wolftown.kaiku.domain.model.ApprovalChallenge
 import io.wolftown.kaiku.domain.model.AuthResponse
 import io.wolftown.kaiku.domain.model.KeyDevice
 import io.wolftown.kaiku.domain.model.KeyDeviceList
+import io.wolftown.kaiku.domain.model.PcSetupAnswer
+import io.wolftown.kaiku.domain.model.PcSetupPhoneStatus
 import kotlinx.serialization.Serializable
 import javax.inject.Inject
 
@@ -21,6 +23,13 @@ interface ApprovalApi {
     suspend fun enrollmentChallenge(enrollmentId: String): ApprovalChallenge
     suspend fun answer(challengeId: String, decision: String, responseB64u: String, signatureB64u: String): AnswerResult
     suspend fun deny(challengeId: String)
+
+    // "Set up this PC": the key phone's side (C27 pc_setup routes).
+    suspend fun claimPcSetup(tokenB64u: String): ApprovalChallenge
+    suspend fun answerPcSetup(challengeId: String, decision: String, responseB64u: String, signatureB64u: String): PcSetupAnswer
+    suspend fun refusePcSetup(challengeId: String)
+    /** The scanning phone's long-poll (`wait` 0..25 s; the server answers early on a change). */
+    suspend fun pcSetupStatus(attemptId: String, waitSeconds: Int): PcSetupPhoneStatus
     suspend fun release(challengeId: String)
     /** [origin]: the key's own server (absolute URL), never another configured one; null = configured. */
     suspend fun deviceLoginChallenge(userId: String, deviceId: String, origin: String? = null): ApprovalChallenge
@@ -86,6 +95,35 @@ class ApprovalApiImpl @Inject constructor(private val httpClient: HttpClient) : 
 
     override suspend fun deny(challengeId: String) {
         httpClient.post("/api/approvals/$challengeId/deny").ensureSuccess("deny failed")
+    }
+
+    override suspend fun claimPcSetup(tokenB64u: String): ApprovalChallenge {
+        val r = httpClient.post("/api/pc-setups/claim") { setBody(ClaimRequest(tokenB64u)) }
+        r.ensureSuccess("pc setup claim failed")
+        return r.body()
+    }
+
+    override suspend fun answerPcSetup(
+        challengeId: String,
+        decision: String,
+        responseB64u: String,
+        signatureB64u: String,
+    ): PcSetupAnswer {
+        val r = httpClient.post("/api/pc-setups/$challengeId/answer") {
+            setBody(AnswerRequest(decision, responseB64u, signatureB64u))
+        }
+        r.ensureSuccess("pc setup answer failed")
+        return r.body()
+    }
+
+    override suspend fun refusePcSetup(challengeId: String) {
+        httpClient.post("/api/pc-setups/$challengeId/refuse").ensureSuccess("pc setup refuse failed")
+    }
+
+    override suspend fun pcSetupStatus(attemptId: String, waitSeconds: Int): PcSetupPhoneStatus {
+        val r = httpClient.get("/api/pc-setups/$attemptId?wait=$waitSeconds")
+        r.ensureSuccess("pc setup status failed")
+        return r.body()
     }
 
     override suspend fun release(challengeId: String) {

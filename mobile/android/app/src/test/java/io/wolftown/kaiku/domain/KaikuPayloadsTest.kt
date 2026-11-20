@@ -79,4 +79,21 @@ class KaikuPayloadsTest {
         assertEquals(ScanPayload.NotKaiku, KaikuPayloads.parse("https://chat.example.com/setup/#v=1&t=$token"))
         assertEquals(ScanPayload.Setup("https://chat.example.com", token), KaikuPayloads.parse("https://chat.example.com/setup#v=1&t=$token"))
     }
+
+    @Test fun `pc setup code parses with origin and token`() {
+        assertEquals(
+            ScanPayload.PcSetup("https://chat.example.com", token),
+            KaikuPayloads.parse("kaiku://pcsetup/v1?o=https%3A%2F%2Fchat.example.com&t=$token"),
+        )
+        assertEquals(ScanPayload.NeedsUpdate, KaikuPayloads.parse("kaiku://pcsetup/v2?o=https%3A%2F%2Fchat.example.com&t=$token"))
+        assertEquals(ScanPayload.NotKaiku, KaikuPayloads.parse("kaiku://pcsetup/v1?o=https%3A%2F%2Fchat.example.com&t=${token.dropLast(1)}"))
+        assertEquals(ScanPayload.NotKaiku, KaikuPayloads.parse("kaiku://pcsetup/v1?o=http%3A%2F%2Fchat.example.com&t=$token"))
+    }
+
+    @Test fun `pc setup payload hides the token and is pinned`() {
+        val p = ScanPayload.PcSetup("https://chat.example.com", token)
+        assertEquals("PcSetup(origin=https://chat.example.com)", p.toString())
+        assertEquals(p, KaikuPayloads.pin(p, "https://chat.example.com"))
+        assertEquals(ScanPayload.OtherServer(p.origin), KaikuPayloads.pin(p, "https://other.example.org"))
+    }
 }

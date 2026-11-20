@@ -69,6 +69,13 @@ describe("security prompts", () => {
     expect(screen.queryByRole("region")).toBeNull();
   });
 
+  it("in a chat-only session the add-passkey prompt does not hide the next one", async () => {
+    signInAs("probation");
+    await load(["add_passkey", "name_recovery_contact"]);
+    render(() => <SecurityPromptBanner />);
+    expect(screen.getByText("Choose a recovery contact: someone who can stop a fake request on your account.")).toBeTruthy();
+  });
+
   it("snooze hides a prompt for seven days", async () => {
     await load(["add_passkey", "name_recovery_contact"]);
     vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-11-03T12:00:00Z"));

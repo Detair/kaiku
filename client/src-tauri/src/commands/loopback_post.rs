@@ -21,6 +21,11 @@ use super::oidc_loopback::{Acceptor, CallbackTimeout};
 
 /// The listener never waits longer than a flow lives (10 minutes).
 pub const FLOW_LISTEN_MAX: Duration = Duration::from_mins(10);
+/// "Set up this PC": the server's flow lives up to 15 minutes (the code's 5
+/// plus the enrolment's 10; after the right code at least the enrolment's
+/// 10); the app waits up to the flow's `expires_at` from its start, so a
+/// flow that ended earlier simply never hands back.
+pub const PC_SETUP_LISTEN_MAX: Duration = Duration::from_mins(15);
 /// Request line, headers and body together.
 pub const MAX_REQUEST_BYTES: usize = 8 * 1024;
 /// Connections served at the same time (each bounded by its read deadline).
@@ -204,9 +209,9 @@ async fn reply(stream: &mut TcpStream, ok: bool) {
     let _ = stream.flush().await;
 }
 
-/// Wait for the flow's hand-off POST until `deadline` (capped at
-/// [`FLOW_LISTEN_MAX`]). Up to [`MAX_CONNECTIONS`] connections are served at
-/// once; a slow or idle one is dropped after `read_deadline`.
+/// Wait for the flow's hand-off POST until `deadline` (the caller bounds it
+/// by its purpose: [`FLOW_LISTEN_MAX`] or [`PC_SETUP_LISTEN_MAX`]). Up to [`MAX_CONNECTIONS`]
+/// connections are served at once; a slow or idle one is dropped after `read_deadline`.
 pub async fn wait_for_post(
     listener: &(impl Acceptor + Sync),
     cb: &LoopbackCallback,
@@ -214,7 +219,6 @@ pub async fn wait_for_post(
     deadline: Instant,
     read_deadline: Duration,
 ) -> Result<HandBack, CallbackTimeout> {
-    let deadline = deadline.min(Instant::now() + FLOW_LISTEN_MAX);
     // Each connection is served on its own task (bounded), so an idle or slow
     // one never delays the browser's POST (each still has `read_deadline`).
     let accept = async {
@@ -474,6 +478,22 @@ mod tests {
             task.await.unwrap(),
             Ok(HandBack::Error("PASSKEY_USER_MISMATCH".into()))
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_listener_honours_a_deadline_past_ten_minutes() {
+        let (listener, cb) = bind().await.unwrap();
+        let task = spawn_wait(listener, cb, Duration::from_mins(15));
+        // Let the listener start (and take its deadline) first.
+        for _ in 0..20 {
+            tokio::task::yield_now().await;
+        }
+        tokio::time::advance(Duration::from_mins(11)).await;
+        for _ in 0..20 {
+            tokio::task::yield_now().await;
+        }
+        assert!(!task.is_finished(), "still listening after 11 minutes");
+        task.abort();
     }
 
     #[tokio::test]
