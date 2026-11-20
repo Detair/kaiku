@@ -204,10 +204,12 @@ async fn lock_session(
 ) -> sqlx::Result<Option<RequestingSession>> {
     sqlx::query_as(
         "SELECT id,
-                ended_at IS NULL AND expires_at > NOW() AND absolute_expires_at > NOW() AS live,
+                ended_at IS NULL AND expires_at > clock_timestamp()
+                    AND absolute_expires_at > clock_timestamp() AS live,
                 assurance, client_class,
-                -- The User-Agent of the session's creation: a refresh cannot change it.
-                COALESCE(created_user_agent, user_agent) AS user_agent,
+                -- The User-Agent of the session's creation only: a refresh cannot
+                -- change it, and a session created without one keeps none.
+                created_user_agent AS user_agent,
                 city, country, created_at
            FROM sessions WHERE id = $1 AND user_id = $2
             FOR UPDATE",
@@ -313,7 +315,7 @@ async fn stale_cause(conn: &mut PgConnection, l: &LockedAttempt) -> sqlx::Result
         AttemptState::Enrolled => {
             let live: bool = sqlx::query_scalar(
                 "SELECT EXISTS (SELECT 1 FROM enrollments
-                                 WHERE id = $1 AND state = 'issued' AND expires_at > NOW())",
+                                 WHERE id = $1 AND state = 'issued' AND expires_at > clock_timestamp())",
             )
             .bind(a.enrollment_id)
             .fetch_one(&mut *conn)
@@ -336,7 +338,7 @@ async fn refresh(conn: &mut PgConnection, l: &mut LockedAttempt) -> Result<(), A
     if l.attempt.state() == AttemptState::Claimed {
         let live: bool = sqlx::query_scalar(
             "SELECT EXISTS (SELECT 1 FROM approvals
-                             WHERE id = $1 AND state = 'issued' AND expires_at > NOW())",
+                             WHERE id = $1 AND state = 'issued' AND expires_at > clock_timestamp())",
         )
         .bind(l.attempt.challenge_id)
         .fetch_one(&mut *conn)
@@ -834,8 +836,8 @@ pub async fn claim_tx(
     let hash = token_hash(ctx, token);
     let seen: Option<(Uuid, Uuid, bool)> = sqlx::query_as(
         "SELECT id, user_id,
-                state IN ('waiting', 'claimed') AND expires_at > NOW()
-                    AND qr_rotates_at > NOW()
+                state IN ('waiting', 'claimed') AND expires_at > clock_timestamp()
+                    AND (state = 'claimed' OR qr_rotates_at > clock_timestamp())
            FROM pc_setup_attempts WHERE qr_token_hash = $1",
     )
     .bind(hash.to_vec())
@@ -872,10 +874,17 @@ pub async fn claim_tx(
         });
     }
     let mut locked = lock_attempt(conn, id).await?;
-    if locked.ended_now == Some(EndCause::MayApproveOff) {
+    // The caller's live key-device session first (a revoked device, an
+    // ended session, a banned account get their own answers), then the
+    // account's setting, then the attempt's state, also when a poll or the
+    // sweep ended it before this request.
+    let dev = key_device_session(conn, auth).await?;
+    if !locked.account.may_approve || locked.end_reason() == Some(EndCause::MayApproveOff.as_str()) {
         return Err(ApprovalError::NotAllowed);
     }
-    let dev = key_device_session(conn, auth).await?;
+    if locked.end_reason().is_some() {
+        return Err(ApprovalError::LoginCodeStale);
+    }
     let a = &locked.attempt;
     let current = a.qr_token_hash.as_deref().is_some_and(|h| ct_eq(h, &hash));
     if a.state() == AttemptState::Claimed && current {

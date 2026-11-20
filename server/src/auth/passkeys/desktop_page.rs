@@ -329,6 +329,7 @@ struct Texts {
     pc_passkey_prompt: &'static str,
     pc_create: &'static str,
     pc_failed: &'static str,
+    pc_already: &'static str,
 }
 
 const EN: Texts = Texts {
@@ -357,6 +358,7 @@ const EN: Texts = Texts {
     pc_passkey_prompt: "Create the passkey for this computer.",
     pc_create: "Create passkey",
     pc_failed: "That didn't work. Try again.",
+    pc_already: "This passkey is already added to your account. Use another one, or go back to the app.",
 };
 
 const DE: Texts = Texts {
@@ -387,6 +389,7 @@ const DE: Texts = Texts {
     pc_passkey_prompt: "Erstelle den Passkey f\u{fc}r diesen Computer.",
     pc_create: "Passkey erstellen",
     pc_failed: "Das hat nicht geklappt. Versuch es noch einmal.",
+    pc_already: "Dieser Passkey ist schon bei deinem Konto. Nimm einen anderen oder geh zurück zur App.",
 };
 
 const fn texts(lang: Lang) -> &'static Texts {
@@ -520,12 +523,12 @@ pub fn pc_setup_page(lang: Lang, step: &PcSetupStep, flow_id: Uuid) -> Response 
     let main = match step {
         PcSetupStep::Code => format!(
             "<p>{prompt}</p>\
-             <form id=\"code-form\" data-invalid=\"{invalid}\" data-wrong=\"{wrong}\" \
+             <form id=\"code-form\" novalidate data-invalid=\"{invalid}\" data-wrong=\"{wrong}\" \
                 data-failed=\"{failed}\" data-expired=\"{expired}\" \
                 data-unavailable=\"{unavailable}\">\
              <label for=\"code\">{label}</label>\
              <input id=\"code\" name=\"code\" type=\"text\" inputmode=\"numeric\" \
-                pattern=\"[0-9]{{6}}\" maxlength=\"6\" autocomplete=\"one-time-code\" \
+                maxlength=\"12\" autocomplete=\"one-time-code\" \
                 required>\
              <button type=\"submit\">{submit}</button></form>",
             prompt = esc(t.pc_code_prompt),
@@ -540,7 +543,7 @@ pub fn pc_setup_page(lang: Lang, step: &PcSetupStep, flow_id: Uuid) -> Response 
         PcSetupStep::Passkey { failed } => format!(
             "<p>{prompt}</p>\
              <button id=\"start\" type=\"button\" data-ceremony=\"create\" \
-                data-retry=\"{retry}\">{start}</button>\
+                data-retry=\"{retry}\" data-already=\"{already}\">{start}</button>\
              <form id=\"finish\" method=\"post\" action=\"{base}/finish\" hidden>\
              <input type=\"hidden\" name=\"credential\" value=\"\">\
              <input type=\"hidden\" name=\"ceremony_id\" value=\"\"></form>",
@@ -550,6 +553,7 @@ pub fn pc_setup_page(lang: Lang, step: &PcSetupStep, flow_id: Uuid) -> Response 
                 t.pc_passkey_prompt
             }),
             retry = esc(t.retry),
+            already = esc(t.pc_already),
             start = esc(if *failed { t.retry } else { t.pc_create }),
         ),
     };

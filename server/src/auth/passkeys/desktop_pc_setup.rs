@@ -246,6 +246,15 @@ pub async fn page(
     if stored.flow.browser_secret_hash.is_none() {
         pc_setup_page(lang, &PcSetupStep::Code, flow_id)
     } else if has_secret(&state, &headers, &stored.flow) {
+        // An attempt that can no longer register (the passkey limit, an
+        // ended attempt) hands its refusal to the app instead of offering a
+        // ceremony that cannot work.
+        match registration_open(&state, flow_id, &stored.flow).await {
+            Err(e) if is_refusal(&e) => {
+                return fail_with(&state, lang, flow_id, &stored, refusal_code(&e)).await;
+            }
+            _ => {}
+        }
         let failed = query.as_deref() == Some("failed");
         pc_setup_page(lang, &PcSetupStep::Passkey { failed }, flow_id)
     } else {
@@ -308,7 +317,11 @@ pub async fn code(
             ));
             // The flow changed meanwhile (a cancel, another entry): roll
             // back, the code stays unspent.
-            if !cas(&state, flow_id, &stored.raw, Some(&flow), None).await? {
+            // The flow lives as long as the enrolment the code opened.
+            let ttl_ms = super::desktop::PENDING_RESULT_TTL_SECS.max(
+                crate::approvals::pc_setup::ENROLLMENT_MINUTES * 60,
+            ) * 1000;
+            if !cas(&state, flow_id, &stored.raw, Some(&flow), Some(ttl_ms)).await? {
                 return Err(ApprovalError::State);
             }
             tx.commit().await?;
@@ -364,12 +377,8 @@ pub async fn options(
         .ok_or(AuthError::PasskeyCeremonyInvalid)?;
     let (user_id, session_id, attempt_id) =
         ids(&stored.flow).ok_or(AuthError::PasskeyCeremonyInvalid)?;
-    if let Err(e) = registration_open(&state, flow_id, &stored.flow).await {
-        if is_refusal(&e) {
-            cas(&state, flow_id, &stored.raw, None, None).await?;
-        }
-        return Err(e);
-    }
+    // A refusal keeps the flow: the page reloads and hands it to the app.
+    registration_open(&state, flow_id, &stored.flow).await?;
     let (ccr, st) = options_for(&state, user_id).await?;
     let record = CeremonyRecord {
         kind: CeremonyKind::PcSetup {

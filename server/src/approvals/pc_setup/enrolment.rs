@@ -207,7 +207,7 @@ async fn lock_enrolment(
     let live: Option<Uuid> = sqlx::query_scalar(
         "SELECT id FROM enrollments
           WHERE id = $1 AND variant = 'pc_setup' AND subject_id = $2 AND issuer_session_id = $3
-            AND state = 'issued' AND expires_at > NOW()
+            AND state = 'issued' AND expires_at > clock_timestamp()
             FOR UPDATE",
     )
     .bind(id)

@@ -177,7 +177,11 @@ pub async fn issue(
     }
     let mut nonce = [0u8; 32];
     OsRng.fill_bytes(&mut nonce);
-    let now = Utc::now();
+    // The database's clock: every expiry of a challenge is compared with it
+    // (`NOW()`, `clock_timestamp()` in the sweeps and transitions).
+    let now: DateTime<Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
+        .fetch_one(&mut *conn)
+        .await?;
     // Whole seconds: the signed `expires_at` is an i64 of Unix seconds.
     let expires_at =
         DateTime::from_timestamp((now + new.ttl).timestamp(), 0).unwrap_or(now + new.ttl);
@@ -243,7 +247,12 @@ pub async fn lock_for_answer(
     if row.state == "expired" {
         return Err(ApprovalError::Expired);
     }
-    if matches!(row.state.as_str(), "issued" | "approved") && row.expires_at <= Utc::now() {
+    // Past due on the database's clock, read after the row lock.
+    let past_due: bool = sqlx::query_scalar("SELECT $1 <= clock_timestamp()")
+        .bind(row.expires_at)
+        .fetch_one(&mut *conn)
+        .await?;
+    if matches!(row.state.as_str(), "issued" | "approved") && past_due {
         sqlx::query("UPDATE approvals SET state = 'expired' WHERE id = $1")
             .bind(id)
             .execute(&mut *conn)

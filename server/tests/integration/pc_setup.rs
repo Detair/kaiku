@@ -1117,7 +1117,7 @@ async fn context_comes_from_the_session_row_not_the_request(pool: PgPool) {
     let p = pc(&pool).await;
     let created: chrono::DateTime<chrono::Utc> = sqlx::query_scalar(
         "UPDATE sessions
-            SET user_agent = 'Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0',
+            SET created_user_agent = 'Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0',
                 city = 'Berlin', country = 'Germany',
                 created_at = NOW() - INTERVAL '3 days'
           WHERE id = $1
@@ -1174,6 +1174,25 @@ async fn a_refresh_cannot_change_the_description_the_phone_signs(pool: PgPool) {
         !desc.contains("Safari") && !desc.contains("macOS"),
         "{desc}"
     );
+}
+
+#[sqlx::test]
+async fn a_session_created_without_a_client_never_gets_one_later(pool: PgPool) {
+    let p = pc(&pool).await;
+    // Created without a User-Agent; a later refresh sent one.
+    sqlx::query(
+        "UPDATE sessions
+            SET created_user_agent = NULL,
+                user_agent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15'
+          WHERE id = $1",
+    )
+    .bind(p.sid)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let (_, c, _) = claimed(&p).await;
+    // The fixed description of its client class, nothing the holder sent later.
+    assert_eq!(c["context"]["client_description"], "Web browser");
 }
 
 #[sqlx::test]
@@ -3136,4 +3155,37 @@ async fn a_finish_committed_before_device_removal_keeps_its_passkey(pool: PgPool
     assert_eq!(s, 201, "{pk}");
     assert_eq!(enrollment_state(&pool, &eid).await, "done");
     assert_eq!(passkeys_of(&pool, p.user).await, 1);
+}
+
+#[sqlx::test]
+async fn a_scan_checks_the_scanning_device_before_the_account_setting(pool: PgPool) {
+    let p = pc(&pool).await;
+    let a = started(&p).await;
+    let (token, _) = qr_token(&a["qr_payload"]);
+    // The phone was removed and the account may no longer confirm.
+    set_may_approve(&pool, p.user, false).await;
+    sqlx::query(
+        "UPDATE approval_devices SET state = 'revoked', revoked_at = NOW(), revoke_reason = 'owner' WHERE id = $1",
+    )
+    .bind(p.dev.row_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let (s, b) = claim(&p.app, &p.dev, &token).await;
+    assert_eq!((s, b["error"].as_str()), (403, Some("KEY_DEVICE_REQUIRED")), "{b}");
+}
+
+#[sqlx::test]
+async fn another_account_sees_a_claimed_code_as_its_own_answer(pool: PgPool) {
+    let p = pc(&pool).await;
+    let (id, _, bytes) = claimed(&p).await;
+    // The QR stays on screen while claimed; its rotation time passes.
+    sqlx::query("UPDATE pc_setup_attempts SET qr_rotates_at = NOW() - INTERVAL '5 seconds' WHERE id = $1::uuid")
+        .bind(&id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let q = pc(&pool).await;
+    let (s, b) = claim(&q.app, &q.dev, &b64u_encode(&bytes)).await;
+    assert_eq!((s, b["error"].as_str()), (409, Some("PC_SETUP_OTHER_ACCOUNT")), "{b}");
 }

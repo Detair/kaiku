@@ -147,7 +147,12 @@
       .then(function (res) {
         // An ended flow: show the server's "expired" page once (no loop:
         // the server ends a flow that cannot continue).
-        if (res.status === 400 || res.status === 404) { location.reload(); throw new Error("options"); }
+        // A refusal (the flow ended, the attempt ended, the passkey limit): the
+        // reloaded page shows it or hands it to the app; a retry here cannot work.
+        if (res.status === 400 || res.status === 404 || res.status === 409 || res.status === 410) {
+          location.reload();
+          throw new Error("options");
+        }
         if (!res.ok) throw new Error("retry");
         return res.json();
       })
@@ -166,6 +171,11 @@
         if (err && err.message === "options") return;
         startBtn.disabled = false;
         startBtn.textContent = startBtn.getAttribute("data-retry");
+        // The authenticator already holds a passkey of this account.
+        if (err && err.name === "InvalidStateError" && startBtn.getAttribute("data-already")) {
+          setStatus(startBtn.getAttribute("data-already"));
+          return;
+        }
         setStatus(statusEl.getAttribute("data-cancelled"));
       });
   }

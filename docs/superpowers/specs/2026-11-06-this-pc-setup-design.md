@@ -273,6 +273,9 @@ These rules extend B.7. Reviewers should check them against `server/src/approval
 6. **Start again** runs under the account lock: it cancels the previous attempt and its `issued` enrolment
    and voids that enrolment's open ceremonies and desktop flows. Finish and redeem take the same lock.
    Either the finish wins and the PC reports completion, or the restart wins and the old finish fails.
+7. **One clock (as built).** Every expiry of an attempt, its challenge, its enrolment and the requesting
+   session is decided on the database's clock: `clock_timestamp()` read after the locks are held
+   (attempt transitions, the challenge's issue and answer), so a wait for a lock never extends a deadline.
 
 ### Step 6: signing in
 

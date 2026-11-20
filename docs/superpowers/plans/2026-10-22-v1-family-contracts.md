@@ -925,7 +925,9 @@ Nothing below changes an existing contract entry; a client that does not know it
   `client_description`, `session_created_at` (Unix seconds), `place`. `sid_hash` = SHA-256 over the 16 raw
   bytes of the requesting session's `sid` (never the `sid` itself, which authorises the PC's routes).
   `client_description`, `session_created_at` and `place` come from the stored session row, never from the
-  request that started the attempt; `place` = `""` without a local GeoIP database.
+  request that started the attempt; `client_description` is built only from the User-Agent stored when the
+  session was created (none: the fixed description of its client class); `place` = `""` without a local
+  GeoIP database.
 - **Golden vectors** P01 (approve) and P02 (report), same format and test key as V01–V05, in
   `mobile/android/app/src/test/resources/contract/pc_setup_sig_vectors.json`, read by the server's golden tests and
   the Android tests (kept apart so the V01–V05 file still holds exactly those five).
@@ -947,8 +949,10 @@ Nothing below changes an existing contract entry; a client that does not know it
   challenge was issued to, before anything is locked or changed; for that device an ended attempt answers
   403 `APPROVAL_NOT_ALLOWED` (`may_approve` off) or 409 `APPROVAL_STATE`, also when a poll or the sweep ended
   it first. A scan of another account's code answers 409 `PC_SETUP_OTHER_ACCOUNT` only to a scanner whose
-  account may approve, and only while that code is live (its session live, its account eligible); otherwise
-  403 `APPROVAL_NOT_ALLOWED` or 404 `LOGIN_CODE_STALE`. Every answer that can carry the QR token or the
+  account may approve, and only while that code is live (waiting or claimed, its session live, its account
+  eligible); otherwise 403 `APPROVAL_NOT_ALLOWED` or 404 `LOGIN_CODE_STALE`. A scan of the own account's code
+  checks the scanning device's key-device session first (403 `KEY_DEVICE_REQUIRED`), then `may_approve`
+  (403 `APPROVAL_NOT_ALLOWED`), then the attempt (404 `LOGIN_CODE_STALE` when it ended). Every answer that can carry the QR token or the
   code (start, `current`, the PC's and the phone's polls, `answer`) has `Cache-Control: no-store`; a new passkey sends the `authenticators_changed` hint.
   The code is returned **only** in the approve answer and never sent again; the app keeps it in memory
   while the attempt is in `code`. The phone checks, before UV, what B.2 lists, and displays only values of
@@ -1012,6 +1016,9 @@ Nothing below changes an existing contract entry; a client that does not know it
   path registers. The web `passkey/start|finish` answer 409 `APPROVAL_STATE` for an attempt whose code came
   through a flow; a flow's `options`, `finish` and `redeem` refuse an attempt whose code did not come through
   it. `redeem` consumes a flow only when it holds a pending result; without one nothing is changed.
+- A `pc_setup` flow lives 15 minutes (`expires_at` says so), and the right code keeps it at least the
+  enrolment's 10 minutes. When the attempt can no longer register (`PASSKEY_LIMIT`, an ended attempt), the
+  flow's page hands that code to the app (step 4's hand-off with `error`) instead of offering a ceremony.
 - A failed finish keeps the flow so the same browser can retry (the code is spent); the page redirects (303)
   back to the flow's page instead of re-posting.
 - **Hand-off.** Steps 4 and 5 (hand-off page, loopback POST) are unchanged. `finish` only verifies the

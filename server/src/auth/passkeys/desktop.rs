@@ -43,6 +43,9 @@ use crate::auth::{AuthError, AuthResult, AuthUser};
 
 /// A flow lives at most 10 minutes.
 pub const DESKTOP_FLOW_TTL_SECS: i64 = 600;
+/// A `pc_setup` flow: the code's 5 minutes plus the enrolment's 10, so the
+/// browser can create the passkey for as long as the enrolment lives.
+pub const PC_SETUP_FLOW_TTL_SECS: i64 = 900;
 /// A verified result waits at most 60 s for its redemption.
 pub const PENDING_RESULT_TTL_SECS: i64 = 60;
 
@@ -345,6 +348,10 @@ pub async fn start(
         }
         _ => return Err(invalid("purpose must be sign_in, step_up or pc_setup")),
     };
+    let ttl_secs = match purpose {
+        FlowPurpose::PcSetup { .. } => PC_SETUP_FLOW_TTL_SECS,
+        _ => DESKTOP_FLOW_TTL_SECS,
+    };
     let page_path = match purpose {
         FlowPurpose::PcSetup { .. } => "/auth/passkeys/desktop/flows",
         _ => "/auth/passkeys/desktop",
@@ -369,7 +376,7 @@ pub async fn start(
         .set(
             key(flow_id),
             json,
-            Some(fred::types::Expiration::EX(DESKTOP_FLOW_TTL_SECS)),
+            Some(fred::types::Expiration::EX(ttl_secs)),
             Some(fred::types::SetOptions::NX),
             false,
         )
@@ -383,7 +390,7 @@ pub async fn start(
         Json(DesktopFlowStarted {
             flow_id,
             url: format!("{}{page_path}/{flow_id}", state.config.public_origin.origin),
-            expires_at: now + chrono::Duration::seconds(DESKTOP_FLOW_TTL_SECS),
+            expires_at: now + chrono::Duration::seconds(ttl_secs),
         }),
     ))
 }

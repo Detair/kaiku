@@ -596,8 +596,9 @@ sequenceDiagram
   attempt expires with `may_approve_off`). The challenge is the `pc_setup` kind (0x06, C26) with
   `requester_kind = pc_setup_attempt`; the context shows the client description, the session's creation
   time and the place from the stored session row, and a `sid_hash`. The description is built from the
-  User-Agent stored when the session was created (`sessions.created_user_agent`); a refresh updates
-  `user_agent` but not this value.
+  User-Agent stored when the session was created (`sessions.created_user_agent`) and nothing else; a
+  refresh updates `user_agent` but not this value, and a session created without one shows the fixed
+  description of its client class (for example "Web browser").
 - **Answer:** `approve` returns the code to the phone only (never to the PC, never again); `report` ends
   the attempt and the requesting session, marks no credential and records `pc_setup_reported`.
   **No** is `POST /api/pc-setups/{cid}/refuse` (unsigned). The phone polls
@@ -621,8 +622,11 @@ sequenceDiagram
   code before any ceremony. The right code answers with a cookie `__Secure-kaiku_pcsetup` (HttpOnly,
   Secure, SameSite=Strict, path = the flow), whose keyed hash is written to the flow *before* the code
   entry commits. `options` and `finish` refuse without it, `cancel` does after the right code (before it,
-  anyone with the page may end the flow, as in F1), and a second code entry is refused. The flow lives
-  10 minutes, the pending result 60 s.
+  anyone with the page may end the flow, as in F1), and a second code entry is refused. A `pc_setup` flow
+  lives 15 minutes (the code's 5 plus the enrolment's 10), and the right code keeps it at least the
+  enrolment's 10 minutes; the pending result lives 60 s. When the attempt can no longer register (the
+  passkey limit, an ended attempt), the page hands that answer to the app instead of offering a
+  ceremony.
   `finish` verifies the registration and keeps it as the pending result; nothing takes effect before
   `redeem` (hand-off code, verifier, the starting session's bearer), which stores the passkey and
   returns no tokens. `redeem` consumes a flow only when it holds a pending result; a redeem before the
@@ -635,8 +639,16 @@ sequenceDiagram
 - **End reasons** the PC can read: `session_ended`, `device_revoked`, `no_key_device`, `may_approve_off`,
   `account_banned`, `timeout`, `code_expired`, `restarted`, `cancelled`, `refused`, `reported`,
   `too_many_codes`, `enrollment_expired`.
-- **One clock:** every deadline of an attempt (QR rotation, 10 minutes, code, challenge length) is
-  compared with the database's clock, read under the locks; the rows are written with it too.
+- **One clock:** every deadline of an attempt and of its challenge (QR rotation, 10 minutes, code,
+  challenge length and expiry, session and enrolment liveness) is decided on the database's clock:
+  `clock_timestamp()` read after the locks (`lock_attempt`, `lock_for_answer`, the challenge's issue
+  time), so a wait for a lock never extends a deadline; the sweeps' and polls' hints use `NOW()` of their
+  own statement.
+- **Scan answers in order:** the scanning device's live key-device session first (403
+  `KEY_DEVICE_REQUIRED`, 401, 403 `ACCOUNT_BANNED`), then the account's `may_approve` (403
+  `APPROVAL_NOT_ALLOWED`), then the attempt (404 `LOGIN_CODE_STALE` when it ended, also when a poll or the
+  sweep ended it first). Another account's code counts as live while it waits or is claimed, whatever
+  its paused rotation time says.
 - **Answers:** a code typed after the 5 minutes answers 410 also when a poll or the sweep ended the
   attempt first; the phone's `answer`/`refuse`/`release` answer 404 to any caller but the claiming device
   before anything is locked; responses carry `Cache-Control: no-store`; a new passkey sends the
