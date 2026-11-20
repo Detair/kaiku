@@ -13,6 +13,7 @@ use thiserror::Error;
 mod devices;
 pub mod format;
 mod handle;
+pub mod ring;
 
 pub use handle::{AudioErrorEvent, AudioErrorKind, AudioHandle, AUDIO_ERROR_EVENT};
 

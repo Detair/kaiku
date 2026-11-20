@@ -2108,21 +2108,43 @@ impl CaptureProcessor {
 /// Samples waiting for the output device, and the level the mixer paces by.
 #[derive(Clone)]
 struct PlaybackQueue {
-    samples: Arc<std::sync::Mutex<std::collections::VecDeque<f32>>>,
+    samples: Arc<super::ring::SampleRing>,
     level: OutputLevel,
 }
 
 impl PlaybackQueue {
     fn new(level: OutputLevel) -> Self {
-        // Allocated once: the pusher appends a frame and trims while holding
-        // the lock the output callback takes, so it must never reallocate.
-        let capacity = super::MAX_QUEUE_SAMPLES + FRAME_SIZE * CHANNELS as usize;
         Self {
-            samples: Arc::new(std::sync::Mutex::new(
-                std::collections::VecDeque::with_capacity(capacity),
+            samples: Arc::new(super::ring::SampleRing::with_capacity(
+                super::MAX_QUEUE_SAMPLES,
             )),
             level,
         }
+    }
+
+    /// Producer side (one thread): append, and account for what did not
+    /// fit (never in steady state; the cap is above what the mixer queues).
+    fn push(&self, samples: &[f32]) {
+        let written = self.samples.push(samples);
+        if written < samples.len() {
+            self.level.consumed(samples.len() - written);
+        }
+    }
+}
+
+/// The output callback's work (real-time thread): take queued samples,
+/// silence them when deafened (still taking them, so the device keeps pacing
+/// the mixer and no stale audio piles up), zero-fill the rest, and account
+/// for what was consumed. No allocation, no logging.
+fn fill_output(queue: &PlaybackQueue, deaf: bool, data: &mut [f32]) {
+    queue.level.note_request(data.len());
+    match queue.samples.pop_into(data, deaf) {
+        Some(taken) => {
+            data[taken..].fill(0.0);
+            queue.level.consumed(taken);
+        }
+        // The other stream of a device switch is reading: play silence.
+        None => data.fill(0.0),
     }
 }
 
@@ -2159,9 +2181,7 @@ fn run_playback_task(
                             .map(|&s| f32::from(s) / 32768.0)
                             .collect();
 
-                        if let Ok(mut buffer) = playback_buffer_clone.samples.lock() {
-                            buffer.extend(samples_f32);
-                        }
+                        playback_buffer_clone.push(&samples_f32);
                     }
                     Err(e) => {
                         error!("Opus decode error: {}", e);
@@ -2277,24 +2297,7 @@ fn build_buffer_output_stream(
     let stream = match device.build_output_stream(
         &config,
         move |data: &mut [f32], _| {
-            // Real-time thread: atomics, no allocation, no logging. The
-            // mutex is the pre-existing hand-over from the pusher thread
-            // (held only for a copy on both sides).
-            queue.level.note_request(data.len());
-            // Deafened still takes the samples (and plays silence), so the
-            // device keeps pacing the mixer and no stale audio piles up.
-            let deaf = deafened.load(Ordering::Relaxed);
-            if let Ok(mut buffer) = queue.samples.lock() {
-                let available = buffer.len().min(data.len());
-                for (out, sample) in data.iter_mut().zip(buffer.drain(..available)) {
-                    *out = if deaf { 0.0 } else { sample };
-                }
-                data[available..].fill(0.0);
-                drop(buffer);
-                queue.level.consumed(available);
-            } else {
-                data.fill(0.0);
-            }
+            fill_output(&queue, deafened.load(Ordering::Relaxed), data);
         },
         stream_error_callback(reporter.clone()),
         None,
@@ -2387,17 +2390,9 @@ fn run_pcm_playback_task(
     let playback_buffer_clone = playback_buffer.clone();
     std::thread::spawn(move || {
         while let Some(pcm_f32) = input_rx.blocking_recv() {
-            if let Ok(mut buffer) = playback_buffer_clone.samples.lock() {
-                buffer.extend(pcm_f32);
-
-                // Safety cap above anything the mixer queues (largest
-                // followed device block + two frames).
-                let excess = super::queue_excess(buffer.len());
-                if excess > 0 {
-                    buffer.drain(..excess);
-                    playback_buffer_clone.level.consumed(excess);
-                }
-            }
+            // The ring's capacity is the safety cap (above anything the
+            // mixer queues); the frame is freed here, outside any lock.
+            playback_buffer_clone.push(&pcm_f32);
         }
     });
 
@@ -2504,6 +2499,32 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+
+    /// The output callback must never wait for the PCM pusher, deafened or
+    /// not: a pusher preempted mid-append would push it past its deadline.
+    /// The hand-over is lock-free; here the other stream of a device switch
+    /// holds the ring, and the callback plays silence instead of waiting.
+    #[test]
+    fn output_callback_never_waits_for_the_pusher() {
+        let queue = PlaybackQueue::new(OutputLevel::new());
+        queue.push(&[0.5; 960]);
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let q = queue.clone();
+        let busy = queue.clone();
+        std::thread::spawn(move || {
+            // A pusher hammering the ring meanwhile.
+            for _ in 0..10_000 {
+                busy.push(&[0.25; 64]);
+            }
+        });
+        std::thread::spawn(move || {
+            let mut data = vec![1.0f32; 480];
+            fill_output(&q, true, &mut data);
+            let _ = done_tx.send(data.iter().all(|s| *s == 0.0));
+        });
+        let finished = done_rx.recv_timeout(Duration::from_millis(500));
+        assert_eq!(finished, Ok(true), "callback blocked on the pusher");
+    }
 
     #[test]
     fn gated_frames_are_counted_for_the_next_packet() {
