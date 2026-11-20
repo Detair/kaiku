@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release note structure source: `docs/project/RELEASE_NOTES_TEMPLATE.md`
 
 ### Added
+- When the server asks for a newer app version, Kaiku shows a calm update hint (reload in the browser, update check in the desktop app). It never blocks use.
 - "I lost my phone / forgot my password" on the sign-in page: a recovery code plus your password, authenticator code or a fresh single sign-on starts a recovery that completes after the waiting period unless someone cancels it; it can name all your key phones as lost. At most three starts per waiting period.
 - "That wasn't me" on a security notice ends the sign-in or removes the device it names and blocks the password or code that was used. Without a key phone or passkey, it needs a session from before the event and an authenticator or recovery code.
 - Delayed account changes: securing an account ("Secure my account") or a recovery waits 24 hours (configurable up to 72), tells the account's phones, its recovery contact and the admins, and can be cancelled by any of them. The device that started it can only withdraw it.
@@ -97,6 +98,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Server and channel settings: rename and delete a channel, rename or delete your server (owner), leave a server (everyone else). Each asks first and names what it removes.
 
 ### Changed
+- The screen share button stops the share while you are sharing (one share per person). The quality choice is Saver, Normal or Sharp (for games) without technical values or a Premium badge, and the screen share windows open above other dialogs.
 - The sign-in page puts passkey and phone first; the password field opens with "Sign in with a password".
 - **Breaking:** new accounts start by adding a passkey or a key phone (or an authenticator app) within 30 minutes; a password is optional, and registering no longer signs you in. Accounts that add nothing within 30 minutes are removed. The first admin of a new server adds a passkey or a key phone.
 - **Breaking for older apps:** after your password (or single sign-on), Kaiku asks you to confirm on your phone by scanning a code, or for your authenticator code if you have no key phone. Sessions created this way are limited to chat and calls. A wrong password, an unknown user name and an account without a second step all get the same answer. The desktop app receives single sign-on results through a page that hands a one-time code to the app.
@@ -221,6 +223,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Android: signing the phone in by scanning a QR code from the desktop without any confirmation. The phone's scanner now only reads Kaiku sign-in and setup codes of its own server.
 
 ### Fixed
+- Screen sharing and the camera start only after the server accepted them: a share that is not allowed or over the limit stops with a clear message instead of running unseen, and a start without an answer within 5 seconds is stopped too.
+- Stopping a screen share with the browser's own "Stop sharing" bar (or by closing the shared window) now ends it for everyone and frees the slot; the next share works right away.
+- Desktop app: a second screen share in the same call arrives, a camera turned on after a share is no longer shown as a share, and viewers who join late see the picture within about a second.
+- Desktop app: a screen share tile that opens late or after a layout change shows the stream; watching a 1080p share uses far less CPU.
+- Desktop app on Linux: screen sharing works (Wayland and X11). The system dialog chooses the screen or window; closing it or a missing portal shows a short note.
+- Cancelling the browser's screen picker no longer says the microphone is blocked; blocked screen or camera access says so in its own words.
+- The role editor shows "Share Screen" (on for everyone by default, can be turned off per channel) instead of a wrong "Manage Emojis" entry, offers the forum, announcement and event permissions, and shows a role's permissions correctly when it is opened.
+- The voice bar keeps mute and deafen while reconnecting, and its channel name leads back to the channel from Home or another server. On desktop, a share in the voice panel opens the channel view with that share in focus.
 - Voice no longer goes silent after a short connection hiccup: you keep hearing everyone, and the voice panel shows "Reconnecting..." until the connection is back. This works in the browser and in the desktop app.
 - Voice reconnects by itself after a short connection loss (network change, sleep, server restart): it rejoins the channel with your latest mute and deafen settings; screen share and camera stay off until you start them again. While it reconnects you stay in the channel, see who is there and can mute or leave. After three failed tries, or when the connection stays away for a minute, the microphone is released and the voice panel offers "Rejoin". Leaving or being removed while it reconnects always wins.
 - A call you answered or declined on another device stops ringing on this one right away, and a declined one is not shown as missed.

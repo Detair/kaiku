@@ -296,7 +296,7 @@ firebase-messaging pulls in Google Play services client libraries (e.g. `play-se
 
 - **License:** MIT (licence file kept in each directory)
 - **Location:** `third_party/libspa-sys/`, `third_party/pipewire-sys/` (upstream pipewire-rs commit `93138d01`, version 0.8.0 on bindgen 0.72; see their README.md)
-- **Note:** Linux only (screen capture via scap → pipewire 0.8). Were already transitive dependencies before vendoring.
+- **Note:** Linux only. Screen capture reads the xdg-desktop-portal ScreenCast stream with the `pipewire` 0.8 crate (MIT, direct dependency of the desktop client since 2026-11-20; the portal itself is reached over `zbus`, already a dependency). Were already transitive dependencies (via scap) before vendoring.
 
 ### openh264
 
