@@ -375,6 +375,17 @@ impl Room {
         shares.insert(info.stream_id, info);
     }
 
+    /// Add a screen share session unless its `stream_id` is taken (check
+    /// and insert under one lock). Returns whether it was added.
+    pub async fn try_add_screen_share(&self, info: ScreenShareInfo) -> bool {
+        let mut shares = self.screen_shares.write().await;
+        if shares.contains_key(&info.stream_id) {
+            return false;
+        }
+        shares.insert(info.stream_id, info);
+        true
+    }
+
     /// Remove a single screen share session by `stream_id`.
     pub async fn remove_screen_share(&self, stream_id: Uuid) -> Option<ScreenShareInfo> {
         let mut shares = self.screen_shares.write().await;

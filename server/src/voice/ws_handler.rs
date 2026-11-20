@@ -29,7 +29,8 @@ fn map_permission_error(e: crate::permissions::PermissionError, context: &str) -
     match e {
         crate::permissions::PermissionError::DatabaseError(msg) => {
             error!(error = %msg, "Database error during {context}");
-            VoiceError::Signaling(format!("Permission check failed: {msg}"))
+            // Detail stays in the log; the client gets a generic error.
+            VoiceError::Internal(format!("permission check failed during {context}: {msg}"))
         }
         _ => VoiceError::Unauthorized,
     }
@@ -92,10 +93,13 @@ pub async fn handle_voice_event_for_session(
                 event_class = class.as_scope(),
                 "voice_rate_limit_drop",
             );
-            // A share start is a request the client waits for (C30): answer
-            // it instead of dropping it silently.
-            if matches!(event, ClientEvent::VoiceScreenShareStart { .. }) {
-                return Err(VoiceError::RateLimited("screen_share_start"));
+            // A share or webcam start is a request the client waits for
+            // (C30): answer it instead of dropping it silently.
+            if matches!(
+                event,
+                ClientEvent::VoiceScreenShareStart { .. } | ClientEvent::VoiceWebcamStart { .. }
+            ) {
+                return Err(VoiceError::RateLimited("media_start"));
             }
             return Ok(());
         }
@@ -222,7 +226,7 @@ async fn handle_join(
     // again once the peer is in the room.
     let channel = crate::db::find_channel_by_id(pool, channel_id)
         .await
-        .map_err(|e| VoiceError::Signaling(format!("Failed to load channel: {e}")))?;
+        .map_err(|e| VoiceError::Internal(format!("failed to load channel: {e}")))?;
     let guild_id = channel.as_ref().and_then(|c| c.guild_id);
     // The channel's member limit (unset or 0: none). Nobody bypasses it.
     let user_limit = channel
@@ -252,7 +256,7 @@ async fn handle_join(
 
     let (username, display_name) = queries::find_user_username_display_name(pool, user_id)
         .await
-        .map_err(|e| VoiceError::Signaling(format!("Failed to fetch user info: {e}")))?;
+        .map_err(|e| VoiceError::Internal(format!("failed to fetch user info: {e}")))?;
 
     let room = sfu.get_or_create_room(channel_id).await;
 
@@ -273,7 +277,16 @@ async fn handle_join(
     peer.set_admission(crate::ws::access::VoiceAdmission { guild_id, epochs });
     peer.set_auth_session(auth_session);
 
-    if let Some(replaced) = room.add_peer_with_limit(peer.clone(), user_limit).await? {
+    let replaced = match room.add_peer_with_limit(peer.clone(), user_limit).await {
+        Ok(replaced) => replaced,
+        Err(e) => {
+            // Refused (room full): the new connections are not used.
+            peer.close().await;
+            sfu.cleanup_room_if_empty(channel_id).await;
+            return Err(e);
+        }
+    };
+    if let Some(replaced) = replaced {
         retire_replaced_peer(pool, &room, guild_id, tx, replaced, screen_share_limiter).await;
     }
 
@@ -476,7 +489,8 @@ async fn ensure_no_block_in_dm(
         .await
         .map_err(|e| {
             warn!(channel_id = %channel_id, error = %e, "DM participant lookup failed on voice join");
-            VoiceError::JoinRefused
+            // Still refused, but not reported as a block.
+            VoiceError::Internal("DM participant lookup failed".to_string())
         })?
         .into_iter()
         .map(|p| p.user_id)
@@ -487,7 +501,7 @@ async fn ensure_no_block_in_dm(
         Ok(_) => Err(VoiceError::JoinRefused),
         Err(e) => {
             warn!(user_id = %user_id, error = %e, "Block lookup failed on voice join");
-            Err(VoiceError::JoinRefused)
+            Err(VoiceError::Internal("block lookup failed".to_string()))
         }
     }
 }
@@ -930,17 +944,6 @@ async fn handle_screen_share_start(
         });
     }
 
-    // Queue pending track sources so setup_track_handler can identify them
-    peer.push_pending_source(TrackSource::ScreenVideo(stream_id))
-        .await;
-    if params.has_audio {
-        peer.push_pending_source(TrackSource::ScreenAudio(stream_id))
-            .await;
-    }
-
-    // In the dual-PC model, the client adds tracks to the publisher PC
-    // and sends a new offer. No server-side transceiver allocation needed.
-
     // Get username for the info
     let username = peer.username.clone();
 
@@ -954,8 +957,22 @@ async fn handle_screen_share_start(
         params.quality,
     );
 
-    // Add to room's screen shares
-    room.add_screen_share(info.clone()).await;
+    // Add to the room's screen shares; a concurrent start with the same
+    // `stream_id` that won the race keeps its entry, and this one gives its
+    // slot back.
+    if !room.try_add_screen_share(info.clone()).await {
+        limiter.stop(params.channel_id).await;
+        return Err(VoiceError::DuplicateStreamId);
+    }
+
+    // Queue pending track sources so setup_track_handler can identify them
+    // (only once the share is live; a track never binds to a dead share).
+    peer.push_pending_source(TrackSource::ScreenVideo(stream_id))
+        .await;
+    if params.has_audio {
+        peer.push_pending_source(TrackSource::ScreenAudio(stream_id))
+            .await;
+    }
 
     // Broadcast to room (including the sharer, so they get confirmation)
     room.broadcast_all(ServerEvent::ScreenShareStarted {
