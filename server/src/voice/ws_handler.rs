@@ -1201,10 +1201,8 @@ async fn handle_webcam_start(
 ) -> Result<(), VoiceError> {
     info!(user_id = %user_id, channel_id = %channel_id, quality = ?quality, "User starting webcam");
 
-    // Rate limit check
-    sfu.check_rate_limit(user_id).await?;
-
-    // Check if user has VIEW_CHANNEL permission
+    // Check if user has VIEW_CHANNEL permission (the start's rate limit is
+    // the per-seat toggle bucket; it does not use the join limit).
     crate::permissions::require_channel_access(pool, user_id, channel_id)
         .await
         .map_err(|e| map_permission_error(e, "webcam start"))?;
