@@ -43,11 +43,15 @@ class CallViewModel @Inject constructor(
         controller.state,
         voice.linkState,
         audio.currentRoute,
+        voice.current,
         ticks,
-    ) { _, link, route, now ->
+    ) { _, link, route, session, now ->
         // The call and the account it is for, read together: the controls name exactly this call.
         val shown = controller.shown()
-        CallUiMapper.map(shown.state, link, route, now, directory::titleOf).copy(call = shown.ref())
+        // The voice session that has the sound is this call's own (a call session of its conversation).
+        val callHasAudio = session != null && session.hasAudio && session.callTag != null &&
+            session.channelId == shown.state.channelId
+        CallUiMapper.map(shown.state, link, route, now, directory::titleOf, callHasAudio).copy(call = shown.ref())
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), CallUi(CallPhase.None))
 
     private val _micNeeded = MutableStateFlow(false)

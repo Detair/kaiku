@@ -28,8 +28,9 @@ data class CallUi(
     /** The call these controls are for: a tap acts on this call and on no other. */
     val call: CallRef? = null,
     /**
-     * Speaker can be switched: the call's own voice session has the audio. Before that the
-     * route belongs to whatever else is on, and the call's session sets its own when it opens.
+     * Speaker can be switched: the call's own voice session has the phone's sound (also while
+     * ringing out). Before that the route belongs to whatever else is on, and the call's
+     * session sets its own when it takes the sound.
      */
     val speakerEnabled: Boolean = false,
 )
@@ -42,6 +43,8 @@ object CallUiMapper {
         route: AudioRoute,
         nowMs: Long,
         titleOf: (String) -> String?,
+        /** The call's own voice session has the phone's sound. */
+        callHasAudio: Boolean = false,
     ): CallUi {
         // The call's own mute: what the switch shows is what this call's microphone does (or
         // will do once it is on), whatever another voice session is doing meanwhile.
@@ -55,7 +58,7 @@ object CallUiMapper {
         val earpiece = route == AudioRoute.Earpiece
         return mapWithoutRoute(state, link, muted, speaker, nowMs, titleOf).let {
             if (it.phase == CallPhase.None || it.phase == CallPhase.Ringing || it.phase == CallPhase.Ended) it else it.copy(earpiece = earpiece)
-        }.copy(speakerEnabled = state is CallState.Connected)
+        }.copy(speakerEnabled = callHasAudio && state.usesVoice())
     }
 
     private fun mapWithoutRoute(
@@ -123,3 +126,7 @@ object CallUiMapper {
         return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%d:%02d".format(m, s)
     }
 }
+
+/** A state in which the call has (or is getting) a voice session of its own. */
+private fun CallState.usesVoice(): Boolean =
+    this is CallState.Outgoing || this is CallState.Connecting || this is CallState.Connected

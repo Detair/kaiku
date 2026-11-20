@@ -256,7 +256,10 @@ class VoiceRepository @Inject constructor(
         @Volatile
         var removedReason: VoiceRemovedReason? = null
 
-        val info get() = VoiceSessionInfo(number, channelId, call?.tag)
+        val info get() = VoiceSessionInfo(number, channelId, call?.tag, hasAudio)
+
+        /** The session has taken the phone's sound (after its first join's audio focus). Under [sessionLock]. */
+        var hasAudio = false
     }
 
     private val sessionLock = Any()
@@ -1281,6 +1284,13 @@ class VoiceRepository @Inject constructor(
 
             // A DM call starts on the earpiece (held to the ear), a voice channel on the speaker.
             audioRouteManager.requestAudioFocus(preferEarpiece = session.call != null)
+            // From here on the session has the sound (the call screen's Speaker follows this).
+            synchronized(sessionLock) {
+                if (live === session) {
+                    session.hasAudio = true
+                    _current.value = session.info
+                }
+            }
 
             session.firstJoin.complete(Unit)
             return true
