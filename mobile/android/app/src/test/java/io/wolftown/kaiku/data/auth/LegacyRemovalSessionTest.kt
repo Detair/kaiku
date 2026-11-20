@@ -267,4 +267,39 @@ class LegacyRemovalSessionTest {
         assertFalse(settled.forgotten)
         assertTrue(keys.hasKey())
     }
+    /**
+     * The first start cannot write that the record's install id is lost (a failing disk): the app
+     * stays closed ("Try again"), nothing that needs the stored session (push registration) runs,
+     * so no id is made that a later start could take for the key's.
+     */
+    @Test fun `a binding that did not reach storage keeps the app closed and costs no key`() = runTest {
+        store.stored = StoredKeyDevice(device, KeyDevicePhase.ACTIVE, keyId = null)
+        val keys = keyStore()
+        val repo = KeyDeviceRepository(store, keys, AuthState(backgroundScope), backgroundScope)
+        var kept: String? = null
+        val ids = object : io.wolftown.kaiku.approval.DeviceIdProvider {
+            override fun id(): String = (kept ?: "made-by-push").also { kept = it }
+            override fun storedId(): String? = kept
+        }
+        store.failWrites = true
+        val gate = KeyStorageGate(repo, LegacyRemovalSession(store, tokenStorage, authApi, backgroundScope), ids)
+        assertFalse(gate.start())
+        assertTrue(gate.unreadable())
+        // Push registration reads the stored session only through the gate (as PushRegistrar does).
+        if (!gate.unreadable()) ids.id()
+        assertNull(kept)
+        // The disk works again; the app is started anew.
+        store.failWrites = false
+        val next = KeyStorageGate(repo, LegacyRemovalSession(store, tokenStorage, authApi, backgroundScope), ids)
+        assertTrue(next.start())
+        val rec = repo.record.value!!
+        assertTrue(rec.installIdLost)
+        if (!next.unreadable()) ids.id()
+        next.start()
+        assertNull(repo.record.value!!.installId)
+        val answers = io.wolftown.kaiku.data.keydevice.KeyAnswers(repo)
+        val settled = answers.settle(repo.record.value!!, "https://chat.example.com", io.wolftown.kaiku.data.keydevice.Ask.DEVICE_LOGIN, io.wolftown.kaiku.data.keydevice.ServerAnswer(404, "KEY_DEVICE_UNKNOWN"))
+        assertFalse(settled.forgotten)
+        assertTrue(keys.hasKey())
+    }
 }

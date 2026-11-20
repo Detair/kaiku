@@ -93,11 +93,12 @@ class KeyStorageGate @Inject constructor(
 
     /** At the start of every process, before anything reads the stored session. True when readable. */
     fun start(): Boolean {
-        settled = legacy.endIfLeft()
-        if (unreadable()) return false
-        // Here, where every process starts and before anything (push) can make an install id.
-        bindInstallId()
-        return true
+        val left = legacy.endIfLeft()
+        // Here, where every process starts and before anything (push) can make an install id. A
+        // binding that did not reach storage keeps everything closed: an id made meanwhile would
+        // otherwise be taken for the key's at the next start.
+        settled = left && !keyDevices.unreadable() && bindInstallId()
+        return !unreadable()
     }
 
     /**
@@ -108,10 +109,12 @@ class KeyStorageGate @Inject constructor(
      * answer about "this install" then forgets that key. Nothing is read or made for a phone
      * without a record.
      */
-    fun bindInstallId() {
-        val rec = keyDevices.record.value ?: return
-        if (rec.installId != null || rec.installIdLost) return
-        if (!keyDevices.bindInstallId(deviceIds.storedId()).done) logger.warning("Install id not recorded with the key record; the next start tries again")
+    fun bindInstallId(): Boolean {
+        val rec = keyDevices.record.value ?: return true
+        if (rec.installId != null || rec.installIdLost) return true
+        if (keyDevices.bindInstallId(deviceIds.storedId()).done) return true
+        logger.warning("Install id not recorded with the key record; the app stays closed until it is")
+        return false
     }
 
     private companion object {
