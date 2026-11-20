@@ -17,7 +17,11 @@ class FakeSessions(user: String? = "me") {
     @Volatile
     var stored: String? = null
 
-    val generation = SessionGeneration({ session }, { stored })
+    /** Runs on every read of the account state (to act at the exact moment something checks it). */
+    @Volatile
+    var onRead: () -> Unit = {}
+
+    val generation = SessionGeneration({ onRead(); session }, { stored })
 
     val sessionId: Long? get() = (session as? AuthSession.LoggedIn)?.sessionId
 

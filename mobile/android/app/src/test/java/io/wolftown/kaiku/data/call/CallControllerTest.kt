@@ -19,6 +19,8 @@ import io.wolftown.kaiku.data.ws.ServerEvent
 import io.wolftown.kaiku.data.ws.VoiceRemovedReason
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
+import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.TestScope
@@ -645,6 +647,90 @@ class CallControllerTest {
         assertEquals("a request after the sign-out: ${r.api.requests}", sent, r.api.requests.size)
         assertEquals(listOf("stopAll"), r.notifier.log.drop(posted))
         assertEquals(0, r.controller.busyLanes())
+    }
+
+    /** Coroutines below [this] that are still running. */
+    private fun kotlinx.coroutines.Job.running(): Int = children.sumOf { (if (it.isActive) 1 else 0) + it.running() }
+
+    @Test
+    fun `the sign-out cancels the call's request that is out, and nothing of its owner runs on`() = runTest {
+        val r = rig()
+        runCurrent()
+        val before = backgroundScope.coroutineContext[kotlinx.coroutines.Job]!!.running()
+        r.api.hold = true
+        r.startCall()
+        runCurrent()
+        assertEquals(listOf("start"), r.api.requests)
+        assertTrue("the call has work running", backgroundScope.coroutineContext[kotlinx.coroutines.Job]!!.running() > before)
+
+        r.signOut()
+        runCurrent()
+        // The request's coroutine was cancelled by the sign-out itself, not dropped at its answer.
+        assertEquals("the request that was out is not cancelled", listOf("start"), r.api.cancelled)
+        assertEquals(
+            "coroutines of the ended session's call still run",
+            before, backgroundScope.coroutineContext[kotlinx.coroutines.Job]!!.running(),
+        )
+        // Its ring cap does not fire either.
+        val posted = r.notifier.log.toList()
+        advanceTimeBy(2 * CallMachine.RING_CAP_MS); runCurrent()
+        assertEquals(posted, r.notifier.log)
+        assertEquals(listOf("start"), r.api.requests)
+    }
+
+    @Test
+    fun `a session ending on another thread while the call owner carries out a step stops the rest of it`() {
+        // The owner on its own thread; the session-end hook on this one, in the middle of a step.
+        val actor = java.util.concurrent.Executors.newSingleThreadExecutor()
+        val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + actor.asCoroutineDispatcher())
+        try {
+            val sessions = FakeSessions("me")
+            val api = FakeCallApi()
+            val notifier = FakeCallNotifier()
+            val inEffect = java.util.concurrent.CountDownLatch(1)
+            val hookDone = java.util.concurrent.CountDownLatch(1)
+            val voice: VoiceRepository = mockk(relaxed = true) {
+                every { callEnds } returns MutableSharedFlow()
+                every { currentChannelId } returns MutableStateFlow(null)
+                // The microphone service, the first effect of the step: the session ends right here.
+                every { holdForCall(any(), any(), any(), any(), any()) } answers {
+                    inEffect.countDown()
+                    hookDone.await(5, java.util.concurrent.TimeUnit.SECONDS)
+                    true
+                }
+            }
+            val controller = CallController(
+                api = api,
+                voice = voice,
+                webSocket = mockk(relaxed = true) { every { events } returns MutableSharedFlow() },
+                sessions = sessions.generation,
+                notifier = notifier,
+                directory = object : CallDirectory {
+                    override fun nameOf(channelId: String, userId: String): String? = null
+                    override fun titleOf(channelId: String): String? = null
+                },
+                clock = { 0L },
+                voiceScope = scope,
+                wallClock = { WALL },
+            )
+            controller.submit(CallInput.Start("me", dm))
+            assertTrue("the owner never reached the step", inEffect.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            // The hook, as the token store runs it: the advance, then the calls' part.
+            sessions.generation.advance()
+            controller.endForSignOut()
+            sessions.session = io.wolftown.kaiku.data.local.AuthSession.LoggedOut
+            hookDone.countDown()
+            // Let the owner's thread finish whatever it still does.
+            kotlinx.coroutines.runBlocking(actor.asCoroutineDispatcher()) {}
+            kotlinx.coroutines.runBlocking(actor.asCoroutineDispatcher()) {}
+
+            assertEquals("a request of the ended session went out", emptyList<String>(), api.requests)
+            assertEquals(CallState.Idle, controller.state.value)
+            assertEquals(listOf("stopAll"), notifier.log)
+        } finally {
+            scope.cancel()
+            actor.shutdownNow()
+        }
     }
 
     @Test

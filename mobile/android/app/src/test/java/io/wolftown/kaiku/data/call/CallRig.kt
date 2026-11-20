@@ -58,12 +58,21 @@ internal class FakeCallApi : CallApi {
         sessions += session
     }
 
+    /** Requests that were out and whose caller was cancelled before the answer came. */
+    val cancelled = mutableListOf<String>()
+
     /** The request is out; its answer comes when the test lets it. */
     private suspend fun answer() {
         if (!hold) return
+        val what = calls.last()
         val mine = kotlinx.coroutines.CompletableDeferred<Unit>()
         waiting += mine
-        mine.await()
+        try {
+            mine.await()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            cancelled += what
+            throw e
+        }
     }
 
     override suspend fun get(channelId: String, session: Long): CallStateDto? {

@@ -89,6 +89,30 @@ class VoiceDoorTest {
     }
 
     @Test
+    fun `what voice shows never names a session of a signed-in session that ended`() = rigTest { rig ->
+        // Every value the screens would see, as it is set.
+        val seen = java.util.Collections.synchronizedList(mutableListOf<String?>())
+        backgroundScope.launch(kotlinx.coroutines.test.UnconfinedTestDispatcher(testScheduler)) {
+            rig.repository.currentChannelId.collect { seen += it }
+        }
+        backgroundScope.launch(kotlinx.coroutines.test.UnconfinedTestDispatcher(testScheduler)) {
+            rig.repository.current.collect { seen += it?.channelId?.let { id -> "current:$id" } }
+        }
+        rig.socket.ready()
+        rig.joinAndConnectFirst()
+        // A join of this account is on its way through the door; the session ends while the
+        // door closes the voice channel for it.
+        rig.at("close") { rig.signOut() }
+        launch(start = CoroutineStart.UNDISPATCHED) { runCatching { rig.repository.joinChannel("ch-2") } }
+        runCurrent()
+        rig.awaitRelease()
+        runCurrent()
+
+        assertFalse("the ended session's join was shown as current: $seen", "ch-2" in seen || "current:ch-2" in seen)
+        assertEquals(null, rig.repository.currentChannelId.value)
+    }
+
+    @Test
     fun `no voice session is opened while nobody is signed in or the session is being signed out`() = rigTest { rig ->
         rig.socket.ready()
         // The sign-out has started; the tokens are still stored.

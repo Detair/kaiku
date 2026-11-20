@@ -1448,6 +1448,37 @@ class VoiceRepositoryTest {
     }
 
     @Test
+    fun `a first join that waited longer than 60 s by the instant of its send sends no voice_join`() = runTest {
+        var real = 0L
+        val rig = VoiceRig(this, clock = { real })
+        try {
+            // The first join waits for a socket.
+            rig.repository.startJoin(rig.channel)
+            runCurrent()
+            assertTrue(rig.joins().isEmpty())
+            // The socket comes after 59 s. Everything before the send still sees time left; the
+            // phone sleeps through the last instant before the frame goes out.
+            real += 59_000
+            rig.at("socket:ready") {
+                var armed = true
+                rig.sessions.onRead = {
+                    if (armed) {
+                        armed = false
+                        real += 2_000
+                    }
+                }
+            }
+            rig.socket.ready()
+            runCurrent()
+
+            assertEquals("a first voice_join went out after more than 60 s without one: ${rig.log}", emptyList<Long>(), rig.joins())
+        } finally {
+            rig.sessions.onRead = {}
+            rig.close()
+        }
+    }
+
+    @Test
     fun `a call join cancelled while it leaves the previous channel opens nothing`() = runTest {
         recordWebRtcAndSocket()
         repository.joinChannel("ch-1") // a guild voice channel
