@@ -1921,7 +1921,7 @@ impl SocketAccess {
         let now = Instant::now();
         let backing_off = Self::in_backoff(&inner);
         let epoch = self.user_epoch.load(Ordering::SeqCst);
-        let admin = inner.admin.get_or_insert(AdminScope {
+        let admin = inner.admin.get_or_insert_with(|| AdminScope {
             requested: false,
             state: ScopeState::Unchecked,
             settled: settled::Settled::default(),
