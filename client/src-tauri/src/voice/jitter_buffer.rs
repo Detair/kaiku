@@ -116,6 +116,10 @@ const MAX_SEQ_AHEAD: i64 = 1000;
 /// wall clock explain (1 s); beyond that it does not belong to the stream.
 const TS_JUMP_SLACK: i64 = 48_000;
 
+/// A forward timestamp jump may exceed the arrival gap by this much (network
+/// jitter after a pause) before it needs confirmation.
+const JUMP_TOLERANCE_MS: i64 = 120;
+
 /// Packets that agree with a discarded one restart the stream when they
 /// follow it within this many sequence numbers.
 const RESTART_CONFIRM_SEQ: i64 = 3;
@@ -337,6 +341,15 @@ impl<P: Clone> JitterBuffer<P> {
         } else {
             None
         };
+        // A forward timestamp jump must be explained by the time that
+        // passed (a pause); otherwise it only counts once a second packet
+        // confirms the new timeline.
+        let fits = fits.filter(|&(eseq, ets)| {
+            let seq_gap = eseq - high.seq;
+            seq_gap <= 0
+                || (ets - high.ts - seq_gap * high.dur) / TS_PER_MS
+                    <= since_last as i64 + JUMP_TOLERANCE_MS
+        });
         let Some((eseq, ets)) = fits else {
             // Not part of this stream. A restart only counts when the next
             // packet agrees with this one.
@@ -1724,6 +1737,25 @@ mod tests {
         assert!(
             resumed >= 449 - CAPACITY as u32,
             "stale packet {resumed} after resume"
+        );
+    }
+
+    /// During normal playback, one packet with the next sequence number and
+    /// a timestamp 800 ms ahead (within the generic allowance, beyond the
+    /// span) must not flush the buffer before a second packet confirms it.
+    #[test]
+    fn an_unexplained_timestamp_jump_needs_confirmation() {
+        let mut jb = JitterBuffer::new();
+        let mut arrivals: Vec<_> = (0..300u32).map(|i| (u64::from(i) * 20, i, i)).collect();
+        arrivals[100].2 += 40; // 800 ms ahead, arriving on time
+        let out = simulate_frames(&mut jb, &arrivals, 0..300, |_, _| {});
+        let st = jb.stats();
+        assert_eq!(st.resets, 0, "{st:?}");
+        assert_eq!(st.discarded, 1, "{st:?}");
+        let d = decoded(&out.concat());
+        assert!(
+            d.contains(&99) && d.contains(&101) && d.contains(&290),
+            "{d:?}"
         );
     }
 }

@@ -267,6 +267,12 @@ impl<D: FrameDecoder> TrackPlayout<D> {
         true
     }
 
+    /// Packets held in the jitter buffer.
+    #[cfg(test)]
+    pub fn buffered(&self) -> usize {
+        self.buffer.buffered()
+    }
+
     pub fn stats(&self) -> PlayoutStats {
         PlayoutStats {
             buffer: self.buffer.stats(),

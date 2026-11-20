@@ -155,13 +155,20 @@ const FRAME_US: u64 = 20_000;
 /// (one extra frame when below, one skipped when a frame above). Device
 /// clock drift thus becomes an occasional extra or skipped tick, which the
 /// jitter buffer absorbs like sender drift. Rendering never runs more than
-/// one device block plus three frames ahead of the device (no device: three
-/// frames).
+/// one device block plus three frames ahead of the device. Before the
+/// first callback that block is not known yet, so for up to a second the
+/// largest supported block is assumed (the first callback of a 400 ms
+/// device then finds its block); when no callback comes for a second
+/// (device stalled or gone), rendering stops three frames ahead.
 #[derive(Debug, Default)]
 pub struct Pacer {
     credit_us: u64,
     seen_callbacks: u64,
+    since_callback_us: u64,
 }
+
+/// Without a device callback for this long, the device counts as absent.
+const DEVICE_ABSENT_US: u64 = 1_000_000;
 
 impl Pacer {
     /// Frames to render now, `elapsed_us` after the previous wake, with
@@ -178,8 +185,10 @@ impl Pacer {
         self.credit_us = (self.credit_us + elapsed_us).min(cap);
         let mut due = (self.credit_us / FRAME_US) as usize;
         self.credit_us %= FRAME_US;
+        self.since_callback_us = self.since_callback_us.saturating_add(elapsed_us);
         if callbacks != self.seen_callbacks {
             self.seen_callbacks = callbacks;
+            self.since_callback_us = 0;
             // The device has just taken its block: the queue's low point.
             if queued < OUTPUT_HEADROOM_SAMPLES {
                 due += (OUTPUT_HEADROOM_SAMPLES - queued).div_ceil(FRAME_SAMPLES);
@@ -187,7 +196,14 @@ impl Pacer {
                 due = due.saturating_sub(1);
             }
         }
-        let bound = request + 3 * FRAME_SAMPLES;
+        let block = if self.since_callback_us >= DEVICE_ABSENT_US {
+            0
+        } else if callbacks == 0 {
+            crate::audio::MAX_REQUEST_SAMPLES
+        } else {
+            request
+        };
+        let bound = block + 3 * FRAME_SAMPLES;
         while due > 0 && queued + due * FRAME_SAMPLES > bound {
             due -= 1;
         }
@@ -738,17 +754,25 @@ mod tests {
         for seq in 0..5u16 {
             tx.send(packet(seq, 1)).await.unwrap();
         }
-        // No device consumes anything: at most one block + headroom.
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        // No device consumes anything: after a second without a callback
+        // the mixer stops rendering.
+        tokio::time::sleep(Duration::from_millis(1_300)).await;
         let mut produced = 0;
         while out_rx.try_recv().is_ok() {
             produced += 1;
         }
-        // Without a device: at most three frames ahead.
-        assert_eq!(produced, 3);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let mut later = 0;
+        while out_rx.try_recv().is_ok() {
+            later += 1;
+        }
+        assert!(produced <= 55, "{produced}");
+        assert_eq!(later, 0, "kept rendering without a device");
         assert_eq!(level.queued(), produced * FRAME_SAMPLES);
-        // The device plays it: the mixer follows.
-        level.consumed(FRAME_SAMPLES);
+        // A device appears and plays it all: the mixer follows.
+        let stream = level.begin_stream();
+        level.consumed(produced * FRAME_SAMPLES);
+        level.callback_done(stream);
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(out_rx.try_recv().is_ok());
     }
@@ -1090,11 +1114,15 @@ mod tests {
     #[test]
     fn pacer_renders_evenly_and_meets_the_device_at_its_low_point() {
         let mut pacer = Pacer::default();
-        // No device yet: one frame per 20 ms, at most three frames ahead.
+        // No callback yet: one frame per 20 ms, evenly.
         assert_eq!(pacer.frames(20_000, 0, 0, 0), 1);
         assert_eq!(pacer.frames(10_000, FRAME_SAMPLES, 0, 0), 0);
         assert_eq!(pacer.frames(10_000, FRAME_SAMPLES, 0, 0), 1);
-        assert_eq!(pacer.frames(60_000, 3 * FRAME_SAMPLES, 0, 0), 0);
+        // Still none after a second: the device counts as absent, at most
+        // three frames ahead.
+        assert_eq!(pacer.frames(1_000_000, 3 * FRAME_SAMPLES, 0, 0), 0);
+        assert_eq!(pacer.frames(20_000, 2 * FRAME_SAMPLES, 0, 0), 1);
+        assert_eq!(pacer.frames(20_000, 3 * FRAME_SAMPLES, 0, 0), 0);
         // A 100 ms device took its first block and left the queue empty:
         // one frame to reach the headroom, plus the even pace.
         let block = 100 * 96;

@@ -1966,6 +1966,7 @@ const SPEECH_HOLD_MS: u128 = 300;
 /// Per-frame capture processing on 48 kHz mono 20 ms frames: `RNNoise` on
 /// each 480-sample (10 ms) half for VAD probability + denoising, VAD gating,
 /// Opus encoding. All buffers are allocated once, before the stream starts.
+#[allow(clippy::struct_excessive_bools)] // independent flags of the capture state
 struct CaptureProcessor {
     encoder: Encoder,
     denoiser: Box<nnnoiseless::DenoiseState<'static>>,
