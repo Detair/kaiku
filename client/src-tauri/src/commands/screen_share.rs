@@ -3,8 +3,8 @@
 //! A native screen share runs in two steps (contract C30):
 //!
 //! 1. `prepare_screen_share` checks the source (Windows/macOS) or lets the system dialog choose it
-//!    (Linux: xdg-desktop-portal ScreenCast). Nothing is sent; the frontend announces the share to
-//!    the server.
+//!    (Linux: xdg-desktop-portal `ScreenCast`). Nothing is sent; the frontend announces the share
+//!    to the server.
 //! 2. After the server accepted it (`screen_share_started`), `start_screen_share` adds a fresh
 //!    video sender, starts capture → encode → RTP and renegotiates the publisher connection.
 //!
@@ -41,7 +41,7 @@ pub struct LocalCaptureEnded {
 pub enum ShareSource {
     /// A `scap` target (Windows, macOS).
     Native { source_id: String },
-    /// A ScreenCast portal session (Linux); its stream closes when dropped.
+    /// A `ScreenCast` portal session (Linux); its stream closes when dropped.
     #[cfg(target_os = "linux")]
     Portal(crate::capture::portal::PortalStream),
 }
@@ -170,7 +170,7 @@ pub async fn enumerate_capture_sources() -> Result<Vec<CaptureSource>, String> {
 
 /// Send a publisher offer now if no other offer of ours is out (else the
 /// answer handler sends one right after the outstanding answer).
-pub(crate) async fn renegotiate(
+pub async fn renegotiate(
     voice: &mut VoiceState,
     ws: &RwLock<Option<WebSocketManager>>,
 ) -> Result<(), String> {
@@ -181,7 +181,7 @@ pub(crate) async fn renegotiate(
 }
 
 /// Create and send a publisher offer (renegotiation).
-pub(crate) async fn send_publisher_offer(
+pub async fn send_publisher_offer(
     voice: &mut VoiceState,
     ws: &RwLock<Option<WebSocketManager>>,
 ) -> Result<(), String> {

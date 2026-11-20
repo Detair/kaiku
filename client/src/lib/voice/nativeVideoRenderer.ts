@@ -3,9 +3,9 @@
  * WebGL2 with a YUV→RGB fragment shader (BT.601, the libvpx VP8 default).
  *
  * The decoder side lives in `src-tauri/src/voice/{video_decoder,frame_buffer}.rs`
- * which serializes `DecodedFrame` over a Tauri `Channel<T>` with `serde_bytes`
- * on the planes. That delivers `Uint8Array` (not `number[]`) on the JS side,
- * which `texImage2D` accepts directly without copies.
+ * and sends each frame over a Tauri channel as raw bytes (an `ArrayBuffer`,
+ * see `parseNativeFrame`), never as JSON. The planes are views into that
+ * buffer, which `texImage2D` accepts without copies.
  *
  * Field naming is `snake_case` to match the Rust serde defaults
  * (see CLAUDE.md "Naming Convention: snake_case for Serialized Data").
@@ -21,6 +21,36 @@ export interface DecodedFrame {
   y_stride: number;
   uv_stride: number;
   pts_ms: number;
+}
+
+/** Header of a raw frame (see `voice/frame_buffer.rs`). */
+const FRAME_HEADER_LEN = 40;
+const FRAME_MAGIC = 0x3146564b; // "KVF1" little endian
+
+/**
+ * Read one raw frame: 40-byte little-endian header (magic, width, height,
+ * y_stride, uv_stride, y/u/v lengths, pts) followed by the planes. Returns
+ * null for anything malformed.
+ */
+export function parseNativeFrame(buffer: ArrayBuffer, streamId: string): DecodedFrame | null {
+  if (buffer.byteLength < FRAME_HEADER_LEN) return null;
+  const view = new DataView(buffer);
+  if (view.getUint32(0, true) !== FRAME_MAGIC) return null;
+  const yLen = view.getUint32(20, true);
+  const uLen = view.getUint32(24, true);
+  const vLen = view.getUint32(28, true);
+  if (FRAME_HEADER_LEN + yLen + uLen + vLen > buffer.byteLength) return null;
+  return {
+    stream_id: streamId,
+    width: view.getUint32(4, true),
+    height: view.getUint32(8, true),
+    y_stride: view.getUint32(12, true),
+    uv_stride: view.getUint32(16, true),
+    y_plane: new Uint8Array(buffer, FRAME_HEADER_LEN, yLen),
+    u_plane: new Uint8Array(buffer, FRAME_HEADER_LEN + yLen, uLen),
+    v_plane: new Uint8Array(buffer, FRAME_HEADER_LEN + yLen + uLen, vLen),
+    pts_ms: Number(view.getBigUint64(32, true)),
+  };
 }
 
 const VERTEX_SHADER = `#version 300 es

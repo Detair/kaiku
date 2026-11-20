@@ -487,6 +487,16 @@ pub async fn join_voice(
                 }
 
                 // Count already incremented by fetch_update — proceed with decode.
+                // A view that opens late asks the sender for a key frame.
+                let keyframe_voice = voice_arc.clone();
+                let request_keyframe: Arc<dyn Fn(u32) + Send + Sync> = Arc::new(move |ssrc| {
+                    let voice = keyframe_voice.clone();
+                    tokio::spawn(async move {
+                        if let Some(v) = voice.read().await.as_ref() {
+                            v.webrtc.request_subscriber_keyframe(ssrc).await;
+                        }
+                    });
+                });
                 let handle = voice::video_decoder::spawn_video_decode_task(
                     track,
                     user_id,
@@ -495,6 +505,7 @@ pub async fn join_voice(
                     app_clone.clone(),
                     count,
                     video_frame_sinks.clone(),
+                    request_keyframe,
                 );
 
                 // Store handle for cleanup on leave_voice
@@ -845,10 +856,9 @@ impl NativeSession for VoiceState {
             self.active_video_count.store(0, Ordering::Relaxed);
         }
 
-        // Drop any pending frame sinks (subscriptions whose track never arrived).
-        // Dropping the FrameBuffer closes its watch channel, which causes the
-        // emitter task in spawn_frame_emitter to exit cleanly.
-        self.video_frame_sinks.lock().await.clear();
+        // Drop every view. Dropping a FrameBuffer closes its watch channel,
+        // which ends its emitter task.
+        self.video_frame_sinks.clear();
 
         // Stop audio and drop mixer
         bounded_step("audio", self.audio.stop_all()).await;
@@ -1259,39 +1269,45 @@ pub async fn get_voice_channel(state: State<'_, AppState>) -> Result<Option<Stri
     }
 }
 
-/// Subscribe to decoded video frames for a given stream.
+/// Subscribe a view (a video tile) to the decoded frames of `stream_id`.
 ///
-/// Called by the frontend (Solid.js) when mounting a screen-share / webcam
-/// tile. Registers a `FrameBuffer` under `stream_id` in `VoiceState` and
-/// spawns an emitter task that forwards decoded frames to the provided
-/// Tauri `Channel<DecodedFrame>`.
-///
-/// The video decode task (see `spawn_video_decode_task`) looks up the
-/// matching `FrameBuffer` by `stream_id` when the remote track arrives and
-/// hands it to a `Vp8VideoDecoder` instance. If the track has already
-/// arrived without a sink, the decode task drains packets until either a
-/// sink is registered or the lookup deadline passes.
+/// Frames arrive on `on_frame` as raw bytes (`ArrayBuffer`, layout in
+/// `voice/frame_buffer.rs`), at most 30 per second. The decode task looks
+/// the views up for every packet, so this works before the track arrives,
+/// after it, and again after a re-mount. Returns the subscription id for
+/// [`unsubscribe_video_frames`].
 #[command]
 pub async fn subscribe_video_frames(
     stream_id: String,
-    on_frame: tauri::ipc::Channel<crate::voice::video_decoder::DecodedFrame>,
+    on_frame: tauri::ipc::Channel<tauri::ipc::Response>,
     state: State<'_, AppState>,
-) -> Result<(), String> {
+) -> Result<u64, String> {
     use crate::voice::frame_buffer::{spawn_frame_emitter, FrameBuffer};
-
-    let (frame_buffer, frame_rx) = FrameBuffer::new();
-    spawn_frame_emitter(on_frame, frame_rx);
 
     let voice_guard = state.voice.read().await;
     let voice = voice_guard
         .as_ref()
         .ok_or_else(|| "Voice state not initialized".to_string())?;
-    voice
-        .video_frame_sinks
-        .lock()
-        .await
-        .insert(stream_id.clone(), frame_buffer);
-    info!(stream_id = %stream_id, "Registered video frame subscription");
+    let (frame_buffer, frame_rx) = FrameBuffer::new();
+    spawn_frame_emitter(on_frame, frame_rx);
+    let id = voice.video_frame_sinks.subscribe(&stream_id, frame_buffer);
+    info!(stream_id = %stream_id, subscription = id, "Registered video frame subscription");
+    Ok(id)
+}
+
+/// Remove a view registered by [`subscribe_video_frames`] (tile unmounted).
+#[command]
+pub async fn unsubscribe_video_frames(
+    stream_id: String,
+    subscription_id: u64,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let voice_guard = state.voice.read().await;
+    if let Some(voice) = voice_guard.as_ref() {
+        voice
+            .video_frame_sinks
+            .unsubscribe(&stream_id, subscription_id);
+    }
     Ok(())
 }
 

@@ -1,6 +1,6 @@
-//! Screen capture on Linux through the xdg-desktop-portal ScreenCast
+//! Screen capture on Linux through the xdg-desktop-portal `ScreenCast`
 //! interface (Wayland and X11 alike): the system dialog chooses the screen
-//! or window, the portal hands back a PipeWire remote and node.
+//! or window, the portal hands back a `PipeWire` remote and node.
 //!
 //! `scap` cannot be used here: it lists no sources on Linux and its portal
 //! code panics on a cancelled dialog or a missing portal (the release build
@@ -21,7 +21,7 @@ use tracing::info;
 /// Why no screen could be opened.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum PortalError {
-    /// No portal (or no ScreenCast interface, or no session bus).
+    /// No portal (or no `ScreenCast` interface, or no session bus).
     #[error("PORTAL_UNAVAILABLE: {0}")]
     Unavailable(String),
     /// The user closed the dialog.
@@ -42,7 +42,7 @@ impl PortalError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PortalValue {
     Str(String),
-    /// `streams`: (PipeWire node id, source type 1 = monitor, 2 = window).
+    /// `streams`: (`PipeWire` node id, source type 1 = monitor, 2 = window).
     Streams(Vec<(u32, u32)>),
 }
 
@@ -101,7 +101,7 @@ fn check_code(code: u32) -> Result<(), PortalError> {
     }
 }
 
-/// CreateSession → SelectSources → Start → OpenPipeWireRemote.
+/// `CreateSession` → `SelectSources` → Start → `OpenPipeWireRemote`.
 pub fn run_flow<B: PortalBus>(bus: &mut B) -> Result<FlowResult, PortalError> {
     let (code, results) = bus.request(PortalCall::CreateSession).map_err(map_bus)?;
     check_code(code)?;
@@ -142,7 +142,7 @@ pub fn run_flow<B: PortalBus>(bus: &mut B) -> Result<FlowResult, PortalError> {
     })
 }
 
-/// An open ScreenCast session: the PipeWire remote and node. Dropping it
+/// An open `ScreenCast` session: the `PipeWire` remote and node. Dropping it
 /// closes the session (the portal ends it with the D-Bus connection).
 pub struct PortalStream {
     pub fd: OwnedFd,
@@ -164,12 +164,12 @@ impl PortalStream {
 }
 
 /// How the app opens the portal (a seam: tests pass a fake).
-pub trait ScreenCastPortal: Clone + Send + 'static {
+pub trait ScreenCastPortal: Clone + Send + Sync + 'static {
     fn open(&self) -> Result<PortalStream, PortalError>;
 }
 
 /// The longest the dialog may stay open.
-const DIALOG_TIMEOUT: Duration = Duration::from_secs(300);
+const DIALOG_TIMEOUT: Duration = Duration::from_mins(5);
 
 /// Run the portal off the async runtime; the dialog may take minutes.
 pub async fn open_screencast<P: ScreenCastPortal>(portal: &P) -> Result<PortalStream, PortalError> {

@@ -1,4 +1,4 @@
-//! Frames of a ScreenCast portal session, read from PipeWire (Linux).
+//! Frames of a `ScreenCast` portal session, read from `PipeWire` (Linux).
 //!
 //! Uses the safe `pipewire` API only (the workspace forbids `unsafe`). The
 //! capture thread converts each buffer to I420 and `try_send`s it (dropped
@@ -28,8 +28,8 @@ use super::portal::PortalStream;
 use super::I420Frame;
 use crate::video::QualityParams;
 
-/// Our converter's layout for a negotiated PipeWire format.
-pub fn layout_for(format: VideoFormat) -> Option<PixelLayout> {
+/// Our converter's layout for a negotiated `PipeWire` format.
+pub const fn layout_for(format: VideoFormat) -> Option<PixelLayout> {
     match format {
         VideoFormat::BGRx | VideoFormat::BGRA => Some(PixelLayout::BGRA),
         VideoFormat::RGBx | VideoFormat::RGBA => Some(PixelLayout::RGBX),
@@ -39,7 +39,7 @@ pub fn layout_for(format: VideoFormat) -> Option<PixelLayout> {
     }
 }
 
-/// The pixel bytes of one buffer: `chunk_offset`/`chunk_size` as PipeWire
+/// The pixel bytes of one buffer: `chunk_offset`/`chunk_size` as `PipeWire`
 /// reports them, clamped to the mapped data.
 pub fn chunk_bytes(data: &[u8], chunk_offset: u32, chunk_size: u32) -> &[u8] {
     let start = (chunk_offset as usize).min(data.len());
@@ -51,7 +51,7 @@ pub fn chunk_bytes(data: &[u8], chunk_offset: u32, chunk_size: u32) -> &[u8] {
     &data[start..end]
 }
 
-/// Row stride: PipeWire's when it gives one, else inferred from the size.
+/// Row stride: `PipeWire`'s when it gives one, else inferred from the size.
 pub fn row_stride(
     bytes: &[u8],
     width: u32,

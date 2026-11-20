@@ -321,7 +321,7 @@ mod tests {
         gate.request();
         gate.request();
         assert!(!gate.take_due(t0 + Duration::from_millis(500)));
-        assert!(gate.take_due(t0 + Duration::from_millis(1000)));
+        assert!(gate.take_due(t0 + Duration::from_secs(1)));
         assert!(!gate.take_due(t0 + Duration::from_millis(1500)));
     }
 

@@ -17,7 +17,6 @@ mod video;
 mod voice;
 mod webrtc;
 
-use std::collections::HashMap;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
@@ -178,6 +177,7 @@ pub fn run() {
             commands::voice::voice_connection_stats,
             commands::voice::voice_probe,
             commands::voice::subscribe_video_frames,
+            commands::voice::unsubscribe_video_frames,
             // Tray commands
             commands::tray::tray_set_unread,
             commands::tray::set_tray_voice_state,
@@ -323,12 +323,9 @@ pub struct VoiceState {
     pub video_tasks: Arc<tokio::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
     /// Number of currently active video decode streams.
     pub active_video_count: Arc<AtomicUsize>,
-    /// Per-stream `FrameBuffer` handles registered by `subscribe_video_frames`
-    /// (called from the frontend when mounting a video tile). The video decode
-    /// task removes the matching entry by `stream_id` when the track arrives
-    /// and uses it to construct a `Vp8VideoDecoder`.
-    pub video_frame_sinks:
-        Arc<tokio::sync::Mutex<HashMap<String, voice::frame_buffer::FrameBuffer>>>,
+    /// Open views of decoded video per stream (`subscribe_video_frames` /
+    /// `unsubscribe_video_frames`), looked up by the decode tasks per packet.
+    pub video_frame_sinks: voice::frame_buffer::FrameSinks,
     /// Per-track receive jitter estimates, fed by audio decode tasks and read
     /// by the `voice_connection_stats` command.
     pub connection_stats: voice::connection_stats::ConnectionStatsRegistry,
@@ -353,7 +350,7 @@ impl VoiceState {
             audio_mixer: None,
             video_tasks: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             active_video_count: Arc::new(AtomicUsize::new(0)),
-            video_frame_sinks: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            video_frame_sinks: voice::frame_buffer::FrameSinks::default(),
             connection_stats: voice::connection_stats::ConnectionStatsRegistry::new(),
             user_gains: voice::audio_mixer::UserGains::default(),
         })

@@ -2,9 +2,9 @@
  * TauriVideoFrame — Renders video frames received from the Rust backend.
  *
  * In Tauri mode there are no browser MediaStreamTrack objects. Instead, the
- * Rust backend (after PR D's VP8 decoder) emits decoded I420 frames over a
- * Tauri `Channel<DecodedFrame>` returned from the `subscribe_video_frames`
- * command. This component creates the channel, subscribes for the requested
+ * Rust backend decodes VP8 and sends each I420 frame as raw bytes over a
+ * Tauri channel given to `subscribe_video_frames` (undone by
+ * `unsubscribe_video_frames` on unmount). This component subscribes for the
  * `stream_id`, and uploads each frame into a `<canvas>` via WebGL2 using
  * `NativeYuvRenderer`.
  *
@@ -15,10 +15,7 @@
  */
 
 import { Component, Show, onMount, onCleanup, createSignal } from "solid-js";
-import {
-  NativeYuvRenderer,
-  type DecodedFrame,
-} from "@/lib/voice/nativeVideoRenderer";
+import { NativeYuvRenderer, parseNativeFrame } from "@/lib/voice/nativeVideoRenderer";
 import { isTauri } from "@/lib/tauri/common";
 
 interface TauriVideoFrameProps {
@@ -31,6 +28,11 @@ const TauriVideoFrame: Component<TauriVideoFrameProps> = (props) => {
   const [hasFrames, setHasFrames] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
   let renderer: NativeYuvRenderer | null = null;
+  let disposed = false;
+  let subscription: {
+    invoke: (cmd: string, args: Record<string, unknown>) => Promise<unknown>;
+    id: number;
+  } | null = null;
 
   // Phase 1 only decodes remote screen shares server-side. The Rust
   // `video_frame_sinks` map uses the screen share's UUID as the key (see
@@ -52,13 +54,12 @@ const TauriVideoFrame: Component<TauriVideoFrameProps> = (props) => {
 
     try {
       const { invoke, Channel } = await import("@tauri-apps/api/core");
-      const channel = new Channel<DecodedFrame>();
-
-      channel.onmessage = (frame) => {
-        // Defensive: the subscriber pipeline is keyed by stream_id but a
-        // future change could fan multiple streams through one channel.
-        if (frame.stream_id !== props.streamId) return;
-        if (!renderer) return;
+      // Raw bytes per frame (no JSON), parsed into views of one buffer.
+      const channel = new Channel<ArrayBuffer>();
+      channel.onmessage = (raw) => {
+        if (!renderer || !(raw instanceof ArrayBuffer)) return;
+        const frame = parseNativeFrame(raw, props.streamId);
+        if (!frame) return;
         try {
           renderer.renderFrame(frame);
           if (!hasFrames()) setHasFrames(true);
@@ -68,10 +69,15 @@ const TauriVideoFrame: Component<TauriVideoFrameProps> = (props) => {
         }
       };
 
-      await invoke("subscribe_video_frames", {
+      const id = await invoke<number>("subscribe_video_frames", {
         streamId: props.streamId,
         onFrame: channel,
       });
+      if (disposed) {
+        void invoke("unsubscribe_video_frames", { streamId: props.streamId, subscriptionId: id });
+      } else {
+        subscription = { invoke, id };
+      }
     } catch (err) {
       console.error("[TauriVideoFrame] subscribe failed:", err);
       setError(err instanceof Error ? err.message : String(err));
@@ -79,10 +85,18 @@ const TauriVideoFrame: Component<TauriVideoFrameProps> = (props) => {
   });
 
   onCleanup(() => {
+    disposed = true;
     renderer?.dispose();
     renderer = null;
-    // The Tauri Channel itself is GC'd along with this component; the Rust
-    // sender side drops once the frontend stops draining (best-effort).
+    // The view goes: the decoder stops sending to it (and stops decoding
+    // when no view of the stream is left).
+    if (subscription) {
+      void subscription.invoke("unsubscribe_video_frames", {
+        streamId: props.streamId,
+        subscriptionId: subscription.id,
+      });
+      subscription = null;
+    }
   });
 
   return (
