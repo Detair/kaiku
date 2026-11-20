@@ -301,9 +301,8 @@ These rules extend B.7; `server/src/approvals/cascade.rs` implements the cascade
    one read of another account's code, the polls' and the sweep's hints) use `clock_timestamp()` of
    their own statement, and the locked re-check decides; the account lock (`lock_accounts`, the ban's
    expiry included) is as before this feature. The phone's steps use the checks of the shared
-   key-device session helper but decide the session's expiry on the transition's clock; the helper
-   itself, used by every other kind, compares on `clock_timestamp()` of its statement (a tightening).
-   The other challenge kinds keep their timing on the server's clock, unchanged by this feature.
+   key-device session helper but decide the session's expiry on the transition's clock. The other
+   challenge kinds keep their timing on the server's clock, unchanged by this feature.
 
 ### Step 6: signing in
 

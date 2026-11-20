@@ -253,7 +253,7 @@ pub async fn key_device_session(
     let session: Option<(String, Option<String>, Option<Uuid>)> = sqlx::query_as(
         "SELECT assurance, authenticator_type, authenticator_id FROM sessions
           WHERE id = $1 AND user_id = $2 AND ended_at IS NULL
-            AND expires_at > clock_timestamp() AND absolute_expires_at > clock_timestamp()
+            AND expires_at > NOW() AND absolute_expires_at > NOW()
           FOR UPDATE",
     )
     .bind(sid)

@@ -659,8 +659,8 @@ sequenceDiagram
   unlocked reads before the locks (scanner check, other-account read, the polls' and the sweep's hints)
   use `clock_timestamp()` of their statement and the locked re-check decides; the account lock
   (`lock_accounts`, including the ban's expiry) is unchanged. The phone's steps use the checks of the
-  shared key-device session helper and decide the session's expiry on the transition's clock; the helper
-  itself (every other kind) compares on `clock_timestamp()` of its statement. The other challenge kinds
+  shared key-device session helper and decide the session's expiry on the transition's clock. The other
+  challenge kinds
   (`login`, `enroll`, `enroll_pop`, `device_login`, `device_stepup`) keep their own timing on the
   server's clock.
 - **Scan answers in order:** the scanner first, before the token is looked at, read without a lock: its
