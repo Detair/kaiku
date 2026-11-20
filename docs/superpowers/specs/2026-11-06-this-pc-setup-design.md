@@ -292,8 +292,10 @@ These rules extend B.7. Reviewers should check them against `server/src/approval
 
    The `pc_setup` challenge is issued through its own entry into the shared challenge core: its stored
    expiry is the earlier of the database clock plus 2 minutes and the attempt's stored deadline, in whole
-   seconds, computed in the statement that inserts it. The shared key-device session check compares on
-   `clock_timestamp()` (a tightening for every kind). The account lock (`lock_accounts`, the ban's
+   seconds, computed in the statement that inserts it. The phone's steps read its key device and session
+   under their locks with the checks of the shared key-device session helper, but take the session's
+   expiry from that locking read and decide it on the transition's clock. The shared helper itself, used
+   by every other kind, compares on `clock_timestamp()` of its statement (a tightening). The account lock (`lock_accounts`, the ban's
    expiry included) is as before this feature. The other challenge kinds keep their timing on the
    server's clock, unchanged by this feature.
 

@@ -3482,3 +3482,35 @@ async fn sessions_from_before_the_upgrade_keep_no_creation_description(pool: PgP
             .unwrap();
     assert_eq!(created, None);
 }
+
+#[sqlx::test]
+async fn a_phone_session_that_lapsed_behind_a_plain_lock_refuses_the_scan(pool: PgPool) {
+    let p = pc(&pool).await;
+    let a = started(&p).await;
+    let (token, _) = qr_token(&a["qr_payload"]);
+    let phone_sid = p.dev.session_id.unwrap();
+    sqlx::query(
+        "UPDATE sessions SET expires_at = clock_timestamp() + INTERVAL '1.5 seconds' WHERE id = $1",
+    )
+    .bind(phone_sid)
+    .execute(&pool)
+    .await
+    .unwrap();
+    // Another step of the same phone holds its session row without changing it.
+    let holder = hold(
+        &pool,
+        "SELECT 1 FROM sessions WHERE id = $1 FOR UPDATE",
+        phone_sid,
+    )
+    .await;
+    let ((s, b), _) = tokio::join!(
+        claim(&p.app, &p.dev, &token),
+        release_after_wait(&pool, holder)
+    );
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (401, Some("INVALID_TOKEN")),
+        "{b}"
+    );
+    assert_eq!(attempt_state(&pool, &id_of(&a)).await.0, "waiting");
+}

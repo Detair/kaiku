@@ -8,7 +8,8 @@
 //! the phone is an active key device. A stale attempt moves to `expired` with
 //! a reason the PC can read and never advances, even before the sweep. The
 //! phone's transitions then lock their key device and session
-//! (`key_device_session`) and the challenge. Session-ending paths without the
+//! (`lock_phone`, the checks of `key_device_session` on the transition's
+//! clock) and the challenge. Session-ending paths without the
 //! account lock (logout, refresh) never touch attempts or challenges, so none
 //! of this can form a cycle with them.
 //!
@@ -26,9 +27,7 @@ use crate::approvals::core::{
     check_for_answer_at, issue_until, lock_challenge_row, set_state, verify, ChallengeRow,
     ChallengeState, NewChallenge, Requester,
 };
-use crate::approvals::devices::{
-    key_device_session, require_key_device_snapshot, KeyDeviceSession,
-};
+use crate::approvals::devices::{require_key_device_snapshot, KeyDeviceRow, KeyDeviceSession};
 use crate::approvals::error::ApprovalError;
 use crate::approvals::secrets::{ct_eq, keyed_hash, random_digits, Secret256, SecretPurpose};
 use crate::approvals::signing::{Decision, Kind};
@@ -933,6 +932,81 @@ pub(super) fn describe(s: &RequestingSession) -> (String, String) {
     (description, place)
 }
 
+/// The phone's key device and session under their locks, its liveness
+/// left to the transition's one clock ([`PhoneLocks::live_at`]).
+struct PhoneLocks {
+    dev: KeyDeviceSession,
+    expires_at: DateTime<Utc>,
+    absolute_expires_at: DateTime<Utc>,
+}
+
+impl PhoneLocks {
+    /// The session is live at `now`, else 401 `INVALID_TOKEN`.
+    fn live_at(self, now: DateTime<Utc>) -> Result<KeyDeviceSession, ApprovalError> {
+        if self.expires_at > now && self.absolute_expires_at > now {
+            Ok(self.dev)
+        } else {
+            Err(crate::auth::AuthError::InvalidToken.into())
+        }
+    }
+}
+
+/// The checks of `key_device_session` for `pc_setup`, with the session's
+/// expiry read by the locking statement and compared later, on the
+/// transition's clock (the shared helper, used by every other kind, stays
+/// as it is). Account lock (a no-op here), a banned account → 403, the
+/// device row (`active`, the caller's, else 403 `KEY_DEVICE_REQUIRED`), the
+/// session row (missing or ended → 401, not a full session of that device
+/// → 403 `KEY_DEVICE_REQUIRED`).
+async fn lock_phone(conn: &mut PgConnection, auth: &AuthUser) -> Result<PhoneLocks, ApprovalError> {
+    let a = require_key_device_snapshot(auth)?;
+    let sid = auth.session_id.ok_or(ApprovalError::KeyDeviceRequired)?;
+    let locked = lock_accounts(conn, &[auth.id]).await?;
+    if locked.get(&auth.id).is_some_and(|acct| acct.banned) {
+        return Err(ApprovalError::AccountBanned);
+    }
+    let device: KeyDeviceRow =
+        sqlx::query_as("SELECT * FROM approval_devices WHERE id = $1 FOR UPDATE")
+            .bind(a.id)
+            .fetch_optional(&mut *conn)
+            .await?
+            .filter(|d: &KeyDeviceRow| d.user_id == auth.id && d.is_active())
+            .ok_or(ApprovalError::KeyDeviceRequired)?;
+    #[allow(clippy::type_complexity)]
+    let session: Option<(
+        String,
+        Option<String>,
+        Option<Uuid>,
+        DateTime<Utc>,
+        DateTime<Utc>,
+    )> = sqlx::query_as(
+        "SELECT assurance, authenticator_type, authenticator_id, expires_at, absolute_expires_at
+               FROM sessions WHERE id = $1 AND user_id = $2 AND ended_at IS NULL
+                FOR UPDATE",
+    )
+    .bind(sid)
+    .bind(auth.id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some((assurance, kind, authenticator_id, expires_at, absolute_expires_at)) = session else {
+        return Err(crate::auth::AuthError::InvalidToken.into());
+    };
+    if assurance != "full"
+        || kind.as_deref() != Some(crate::auth::strong::AuthenticatorKind::KeyDevice.as_str())
+        || authenticator_id != Some(device.id)
+    {
+        return Err(ApprovalError::KeyDeviceRequired);
+    }
+    Ok(PhoneLocks {
+        dev: KeyDeviceSession {
+            auth: auth.clone(),
+            device,
+        },
+        expires_at,
+        absolute_expires_at,
+    })
+}
+
 /// The scanning device, read without a lock before the token is looked at
 /// (C26 order): not banned (403 `ACCOUNT_BANNED`), an active key device (403
 /// `KEY_DEVICE_REQUIRED`), its session live (401 `INVALID_TOKEN`) and bound to
@@ -1029,11 +1103,12 @@ pub async fn claim_tx(
     // Every lock (the attempt's, then the phone's device and session), then
     // the one clock.
     let rows = lock_attempt_rows(conn, id).await?;
-    let dev = key_device_session(conn, auth).await?;
+    let phone = lock_phone(conn, auth).await?;
+    let now = read_clock(conn).await?;
+    let dev = phone.live_at(now)?;
     if !rows.account.may_approve {
         return Err(ApprovalError::NotAllowed);
     }
-    let now = read_clock(conn).await?;
     let mut locked = rows.settle(conn, now).await?;
     // The attempt's state, also when a poll or the sweep ended it before
     // this request.
@@ -1149,10 +1224,10 @@ pub async fn lock_for_phone(
     // Every lock (attempt, key device and its session, challenge), then the
     // one clock.
     let rows = lock_attempt_rows(conn, attempt_id).await?;
-    let dev = match key_device_session(conn, auth).await {
-        Ok(dev) => dev,
-        // The device's own refusal; the attempt still gets its lazy
-        // transitions (a revoked phone ends it), on the clock read now.
+    // The device's own refusal still gives the attempt its lazy transitions
+    // (a revoked phone ends it), on the clock read then.
+    let phone = match lock_phone(conn, auth).await {
+        Ok(phone) => phone,
         Err(e) if !matches!(e, ApprovalError::Database(_)) => {
             let now = read_clock(conn).await?;
             rows.settle(conn, now).await?;
@@ -1160,9 +1235,21 @@ pub async fn lock_for_phone(
         }
         Err(e) => return Err(e),
     };
-    let challenge =
-        lock_challenge_row(conn, challenge_id, dev.device.user_id, dev.device.device_id).await?;
+    let challenge = lock_challenge_row(
+        conn,
+        challenge_id,
+        phone.dev.device.user_id,
+        phone.dev.device.device_id,
+    )
+    .await?;
     let now = read_clock(conn).await?;
+    let dev = match phone.live_at(now) {
+        Ok(dev) => dev,
+        Err(e) => {
+            rows.settle(conn, now).await?;
+            return Err(e);
+        }
+    };
     let locked = rows.settle(conn, now).await?;
     // The caller's live key-device session first (a banned account, a
     // revoked device, an ended session got their own answers), then the

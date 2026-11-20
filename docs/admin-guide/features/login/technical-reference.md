@@ -652,8 +652,10 @@ sequenceDiagram
   QR rotation and 10 minutes, the code's 5 minutes, the enrolment's 10 minutes), so a wait for a lock
   never shortens or extends a deadline. The `pc_setup` challenge is issued through its own entry into the
   shared core: in the inserting statement, the earlier of the database clock plus 2 minutes and the
-  attempt's stored deadline, in whole seconds. The phone's key-device session check (shared by every
-  challenge kind) compares on `clock_timestamp()` too; the account lock (`lock_accounts`, including the
+  attempt's stored deadline, in whole seconds. The phone's steps lock its key device and session with the
+  checks of the shared key-device session helper and decide the session's expiry on the transition's
+  clock; the shared helper itself (every other kind) compares on `clock_timestamp()` of its statement.
+  The account lock (`lock_accounts`, including the
   ban's expiry) is unchanged. The polls' and the sweep's hints and the other-account read use
   `clock_timestamp()` of their statement; the locked re-check decides. The other challenge kinds
   (`login`, `enroll`, `enroll_pop`, `device_login`, `device_stepup`) keep their own timing on the
