@@ -1173,54 +1173,106 @@ pub struct MinClientVersions {
     pub android: Option<String>,
 }
 
-/// `TURN_SERVER`: one URL or several separated by commas. Each must be a
-/// `turn:` or `turns:` URL; anything else stops the start with an error.
+/// `TURN_SERVER`: one URL or several separated by commas, each a TURN URI
+/// as in RFC 7065: `turn:` or `turns:`, a host (name, IPv4 or `[IPv6]`), an
+/// optional port 1–65535 and an optional `?transport=udp|tcp`. Anything
+/// else (including a list of only separators) stops the start with an
+/// error, because browsers refuse to create a connection with it.
 fn parse_turn_servers(raw: Option<&str>) -> Result<Vec<String>> {
-    let Some(raw) = raw else {
+    let Some(raw) = raw.filter(|r| !r.trim().is_empty()) else {
         return Ok(Vec::new());
     };
-    raw.split(',')
+    let urls: Vec<String> = raw
+        .split(',')
         .map(str::trim)
         .filter(|url| !url.is_empty())
         .map(|url| {
-            let lower = url.to_ascii_lowercase();
-            let rest = lower
-                .strip_prefix("turn:")
-                .or_else(|| lower.strip_prefix("turns:"));
-            // A host must follow the scheme (before any `?transport=…`).
-            let host = rest.map(|r| r.split('?').next().unwrap_or_default());
             anyhow::ensure!(
-                host.is_some_and(|h| !h.is_empty() && !h.starts_with(':')),
-                "TURN_SERVER entry {url:?} is not a turn: or turns: URL \
-                 (list several URLs separated by commas)"
+                is_turn_uri(url),
+                "TURN_SERVER entry {url:?} is not a valid turn: or turns: URL \
+                 (host[:port][?transport=udp|tcp]; list several URLs separated by commas)"
             );
             Ok(url.to_owned())
         })
-        .collect()
+        .collect::<Result<_>>()?;
+    anyhow::ensure!(!urls.is_empty(), "TURN_SERVER contains no URL");
+    Ok(urls)
 }
 
-/// A minimum client version: `MAJOR.MINOR.PATCH` with an optional
-/// pre-release (`1.0.0`, `1.0.0-rc.6`). Unset or empty: `None`.
+/// RFC 7065 `turnURI` (scheme, host, port, transport) without user info.
+fn is_turn_uri(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    let Some(rest) = lower
+        .strip_prefix("turn:")
+        .or_else(|| lower.strip_prefix("turns:"))
+    else {
+        return false;
+    };
+    let (authority, query) = match rest.split_once('?') {
+        Some((a, q)) => (a, Some(q)),
+        None => (rest, None),
+    };
+    if let Some(query) = query {
+        if !matches!(query, "transport=udp" | "transport=tcp") {
+            return false;
+        }
+    }
+    let (host, port, bracketed) = if let Some(v6) = authority.strip_prefix('[') {
+        let Some((addr, after)) = v6.split_once(']') else {
+            return false;
+        };
+        if addr.parse::<std::net::Ipv6Addr>().is_err() {
+            return false;
+        }
+        match after {
+            "" => (addr, None, true),
+            p => match p.strip_prefix(':') {
+                Some(port) => (addr, Some(port), true),
+                None => return false,
+            },
+        }
+    } else {
+        match authority.rsplit_once(':') {
+            Some((h, p)) => (h, Some(p), false),
+            None => (authority, None, false),
+        }
+    };
+    let host_ok = bracketed
+        || !host.is_empty()
+            && host
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-'));
+    let port_ok = port.is_none_or(|p| p.parse::<u16>().is_ok_and(|n| n > 0) && !p.starts_with('+'));
+    host_ok && port_ok
+}
+
+/// A minimum client version in SemVer 2.0 syntax without build metadata:
+/// `MAJOR.MINOR.PATCH` (numbers without leading zeros) with an optional
+/// pre-release of dot-separated identifiers (`[0-9A-Za-z-]`, numeric ones
+/// without leading zeros), e.g. `1.0.0`, `1.0.0-rc.6`, `1.0.0-beta-1`.
+/// Unset or empty: `None`.
 fn parse_min_client_version(name: &str, raw: Option<&str>) -> Result<Option<String>> {
     let Some(raw) = raw.map(str::trim).filter(|v| !v.is_empty()) else {
         return Ok(None);
+    };
+    let numeric = |n: &str| {
+        !n.is_empty()
+            && n.bytes().all(|b| b.is_ascii_digit())
+            && (n.len() == 1 || !n.starts_with('0'))
+            && n.parse::<u64>().is_ok()
     };
     let (core, pre) = match raw.split_once('-') {
         Some((core, pre)) => (core, Some(pre)),
         None => (raw, None),
     };
     let numbers: Vec<&str> = core.split('.').collect();
-    // Numbers without leading zeros (semantic versioning).
-    let core_ok = numbers.len() == 3
-        && numbers.iter().all(|n| {
-            !n.is_empty()
-                && n.bytes().all(|b| b.is_ascii_digit())
-                && (n.len() == 1 || !n.starts_with('0'))
-        });
+    let core_ok = numbers.len() == 3 && numbers.iter().all(|n| numeric(n));
     let pre_ok = pre.is_none_or(|p| {
-        !p.is_empty()
-            && p.split('.')
-                .all(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric()))
+        p.split('.').all(|id| {
+            !id.is_empty()
+                && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                && (!id.bytes().all(|b| b.is_ascii_digit()) || numeric(id))
+        })
     });
     anyhow::ensure!(
         core_ok && pre_ok,
@@ -1263,11 +1315,20 @@ mod client_facing_voice_config_tests {
             "turn:?transport=tcp",
             "turns::443",
             "https://t.example.test",
+            "turn://t.example.test:3478",
+            "turn:t.example.test:99999",
+            "turn:t.example.test:3478?transport=sctp",
+            "turn:t example.test",
         ] {
             let err = parse_turn_servers(Some(bad)).unwrap_err().to_string();
             assert!(err.contains("TURN_SERVER"), "{bad}: {err}");
         }
         assert!(parse_turn_servers(Some("turn:ok.example.test,stun:x")).is_err());
+        assert!(parse_turn_servers(Some(" , ")).is_err(), "only separators");
+        assert_eq!(
+            parse_turn_servers(Some("turn:[2001:db8::1]:3478?transport=udp")).unwrap(),
+            ["turn:[2001:db8::1]:3478?transport=udp"]
+        );
     }
 
     #[test]
@@ -1276,6 +1337,14 @@ mod client_facing_voice_config_tests {
         assert_eq!(p(None).unwrap(), None);
         assert_eq!(p(Some("")).unwrap(), None);
         assert_eq!(p(Some("1.0.0")).unwrap().as_deref(), Some("1.0.0"));
+        assert_eq!(
+            p(Some("1.0.0-beta-1")).unwrap().as_deref(),
+            Some("1.0.0-beta-1")
+        );
+        assert_eq!(
+            p(Some("1.0.0-rc.0.x-y")).unwrap().as_deref(),
+            Some("1.0.0-rc.0.x-y")
+        );
         assert_eq!(
             p(Some("1.0.0-rc.6")).unwrap().as_deref(),
             Some("1.0.0-rc.6")
@@ -1289,6 +1358,8 @@ mod client_facing_voice_config_tests {
             "latest",
             "01.0.0",
             "1.00.0",
+            "1.0.0-rc.01",
+            "99999999999999999999.0.0",
         ] {
             let err = p(Some(bad)).unwrap_err().to_string();
             assert!(err.contains("MIN_CLIENT_VERSION_WEB"), "{bad}: {err}");
