@@ -574,7 +574,12 @@ impl<P: Clone> JitterBuffer<P> {
         // average spans the same number of packets whatever their length.
         let alpha =
             LEVEL_EMA_ALPHA * f64::from(FRAME_TS) / self.last_dur.max(i64::from(FRAME_TS)) as f64;
-        self.level_ema = (level - self.level_ema).mul_add(alpha, self.level_ema);
+        // While the buffer runs empty the level says nothing about drift:
+        // the gap turns out lost (and is credited) or late (an underrun,
+        // which restarts the average). Only a playing buffer is averaged.
+        if matches!(self.phase, Phase::Playing { .. }) {
+            self.level_ema = (level - self.level_ema).mul_add(alpha, self.level_ema);
+        }
         self.insert_due = false;
         self.drop = DropState::None;
         if matches!(self.phase, Phase::Playing { .. }) && self.cooldown == 0 {

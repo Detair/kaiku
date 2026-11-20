@@ -173,6 +173,9 @@ enum Blocks {
     Wander,
 }
 
+/// One case in this many is steady (see [`generate`]).
+const STEADY_EVERY: u64 = 4;
+
 #[derive(Debug)]
 struct Case {
     seed: u64,
@@ -188,6 +191,8 @@ struct Case {
     odd_packets: usize,
     /// Packet-duration changes (the long-packet reserve then moves).
     dur_changes: usize,
+    /// The packet duration at the end (the only one in steady cases).
+    last_dur_ms: u64,
     end_ms: u64,
 }
 
@@ -221,7 +226,20 @@ fn generate(seed: u64) -> Case {
     let dup_pct = rng.pick(&[0, 0, 3]);
     let drift = rng.pick(&[0.0, 0.0, 0.001, -0.001]);
     let honest = rng.chance(50);
-    let calm = rng.chance(40); // no pauses, outliers, restarts, odd packets
+    // No pauses, outliers, restarts, odd packets.
+    let calm = rng.chance(40);
+    // Every fourth case is steady: a clean stream of one packet duration
+    // (losses and any device blocks allowed), where no drift adjustment
+    // beyond what block changes, a settling target and losses explain may
+    // happen (see `Observed::block_budget`). Drawn
+    // after the other choices, so the other cases stay as they were.
+    let steady = seed.is_multiple_of(STEADY_EVERY);
+    let (stall, jitter_ms, drift) = if steady {
+        (None, 0, 0.0)
+    } else {
+        (stall, jitter_ms, drift)
+    };
+    let calm = calm || steady;
     let durations = [10u64, 20, 20, 20, 40, 60, 120];
     let mut dur_ms = rng.pick(&durations);
     let (mut ssrc, mut epoch) = (rng.next() as u32, 0u8);
@@ -254,6 +272,7 @@ fn generate(seed: u64) -> Case {
         }
         if rng.chance(1) {
             let new = rng.pick(&durations);
+            let new = if steady { dur_ms } else { new };
             if new != dur_ms {
                 dur_changes += 1;
             }
@@ -372,6 +391,7 @@ fn generate(seed: u64) -> Case {
         pauses,
         odd_packets,
         dur_changes,
+        last_dur_ms: dur_ms,
         end_ms,
     }
 }
@@ -386,6 +406,11 @@ struct Observed {
     resets: u64,
     /// Resynchronisations while the device stalled (packets kept coming).
     stall_resets: u64,
+    /// Drift adjustments a clean stream of one packet duration may make
+    /// after the warm-up: per change of the device's block (draining a
+    /// reserve that shrank by `d` ms takes `d / 20` skips, plus one), per
+    /// 20 ms the target still moves, and per ten lost packets.
+    block_budget: u64,
 }
 
 impl Observed {
@@ -429,6 +454,7 @@ fn run(case: &Case) -> Observed {
     let mut timeline: Vec<Option<u32>> = Vec::new();
     // Where the warm-up ends: timeline position and counters.
     let mut warm: Option<(usize, super::jitter_buffer::BufferStats)> = None;
+    let mut warm_target = 0.0f64;
     // The mixer's 5 ms wakes sit at any phase relative to the device.
     let wake_phase = case.seed % 5;
     for t in 0..case.end_ms {
@@ -436,6 +462,7 @@ fn run(case: &Case) -> Observed {
         // of long packets settles its reserve within about six seconds.
         if t == 6_000 {
             warm = Some((timeline.len(), playout.stats().buffer));
+            warm_target = playout.stats().target_delay_ms;
         }
         while next < case.arrivals.len() && case.arrivals[next].at_ms <= t {
             let a = &case.arrivals[next];
@@ -631,11 +658,15 @@ fn run(case: &Case) -> Observed {
                     }
                 }
                 Blocks::Wander => {
-                    if t % 2_000 < block_ms {
+                    let new = if t % 2_000 < block_ms {
                         rng.pick(&[10, 20, 40, 100, 200, 300, 400])
                     } else {
                         block_ms
+                    };
+                    if new != block_ms && t >= 6_000 {
+                        obs.block_budget += new.abs_diff(block_ms) / 20 + 1;
                     }
+                    new
                 }
             };
         }
@@ -666,6 +697,14 @@ fn run(case: &Case) -> Observed {
     let (warm_at, warm_stats) = warm.unwrap_or_default();
     stats.drift_inserts -= warm_stats.drift_inserts;
     stats.drift_drops -= warm_stats.drift_drops;
+    // A target still settling after the warm-up (a start-up underrun
+    // decays at 2 ms/s) moves the level by a frame per 20 ms it moves.
+    let settle = (playout.stats().target_delay_ms - warm_target).abs() / 20.0;
+    obs.block_budget += settle.ceil() as u64;
+    // A lost packet drains the level by up to a packet before its successor
+    // shows the loss; frequent losses pull the average down by that much.
+    // One adjustment per ten losses (loss-free cases allow none).
+    obs.block_budget += (stats.lost - warm_stats.lost) / 10;
     check_replacement(case, &log.borrow(), &timeline[warm_at..], stats, &mut obs);
     obs
 }
@@ -709,11 +748,12 @@ fn check_replacement(
         return;
     }
     // A clean stream needs no drift adjustment, unless the packet duration
-    // changes (the long-packet reserve moves).
-    if case.dur_changes == 0 && stats.drift_inserts + stats.drift_drops > 0 {
+    // changes (the long-packet reserve moves) or the device's blocks change
+    // after the warm-up (the pacer drains a shrinking reserve by skips).
+    if case.dur_changes == 0 && stats.drift_inserts + stats.drift_drops > obs.block_budget {
         obs.fail(format!(
-            "P3: {} inserts, {} drops on a clean stream",
-            stats.drift_inserts, stats.drift_drops
+            "P3: {} inserts, {} drops on a clean stream (block changes, target and losses explain {})",
+            stats.drift_inserts, stats.drift_drops, obs.block_budget
         ));
     }
     // Replacement between two packets' audio on the output equals the gap,
@@ -804,12 +844,17 @@ fn receive_path_keeps_its_contract_for_generated_streams() {
         .and_then(|v| v.parse().ok())
         .map_or(1..=400u64, |s: u64| s..=s);
     let mut failures = Vec::new();
+    let (mut cases, mut steady) = (0u64, 0u64);
     for seed in seeds {
         let case = generate(seed);
+        cases += 1;
+        if case.clean() && case.dur_changes == 0 {
+            steady += 1;
+        }
         let obs = run(&case);
         let tag = format!(
-            "seed {seed}: {:?}, stall {:?}, jitter {} ms, loss {} %, {} pauses, {} restarts, {} odd",
-            case.blocks, case.stall, case.jitter_ms, case.loss_pct, case.pauses, case.restarts, case.odd_packets
+            "seed {seed}: {:?}, stall {:?}, jitter {} ms, loss {} %, {} pauses, {} restarts, {} odd, {} ms packets",
+            case.blocks, case.stall, case.jitter_ms, case.loss_pct, case.pauses, case.restarts, case.odd_packets, case.last_dur_ms
         );
         let mut violations = obs.violations;
         let allowed = case.restarts as u64 + obs.stall_resets;
@@ -819,6 +864,17 @@ fn receive_path_keeps_its_contract_for_generated_streams() {
         for v in violations {
             failures.push(format!("{v} [{tag}]"));
         }
+    }
+    // The no-adjustment property must keep applying to a real share of the
+    // cases, never only to a lucky few.
+    if std::env::var("PROP_DEBUG").is_ok() {
+        eprintln!("{steady} of {cases} cases clean with one packet duration");
+    }
+    if cases >= STEADY_EVERY {
+        assert!(
+            steady * STEADY_EVERY >= cases,
+            "only {steady} of {cases} cases are clean with one packet duration"
+        );
     }
     assert!(
         failures.is_empty(),
