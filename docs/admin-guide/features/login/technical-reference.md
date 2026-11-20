@@ -703,18 +703,34 @@ clock (the answer's `Date`) is past the time the record carries (the claim chall
 itself ("Try again" asks at once). The probe identifies account and install, not the key; there is no
 public route to ask whether a given public key is the one claimed for an enrolment.
 
-**A setup whose server cannot be asked.** A stored unfinished setup is given up only on its server's
-word, so a server that is gone for good, cannot be reached from this phone, or answers without a
-usable `Date` would leave it stored and every other link unused. Whenever the last question about
-such a setup got no usable answer, its screen says so and names the last resort ("Clear storage").
-Once the setup's own time is also long past by the phone's clock (90 minutes after the claim was
-recorded; for a waiting key device 24 hours after its ready time; for a record without a time, counted
-from the first failed question), the screen offers "Discard this unfinished setup". It asks first and
-says what it means: the phone deletes the key it made, this cannot be undone, and if the setup did
-finish on the server an admin has to remove this phone there and send a new code. This is the
-person's decision, not a server answer: it is checked again when confirmed (still the stored record,
-still not an active key, its time still past), it is withdrawn as soon as the server answers again,
-and an active key can never be discarded this way.
+**A setup whose server cannot be asked.** A stored setup is given up only on its server's word, so a
+server that is gone for good, cannot be reached from this phone, or answers without a usable `Date`
+would leave it stored and every other link unused. What the phone does about that is graded, and
+never rests on one failed request:
+
+- A question that gets no answer of the server itself (no connection, a timeout, a 5xx, 429, a page
+  that is not the server's, or "no key device" without a `Date` for a claim that is counted by it) is
+  said on the screen ("Kaiku could not ask the server about this setup …", with "Try again") and noted
+  with the key record: when the first such question failed, and on how many separate occasions since
+  (failed questions less than an hour apart are one occasion). Any answer of the server itself, a
+  refusal included, deletes the note.
+- The silence counts as lasting only after at least three separate occasions, the latest at least
+  24 hours after the first. A phone opened once without a connection, or while the server restarts,
+  shows nothing more than the first line, however old the setup is.
+- Once it has lasted, a record whose code was shown (`CLAIMED`), a waiting key device (`PENDING`) and
+  a claim of the app's own registration get the last resort in words: Android's "Clear storage" for
+  the app, only if the server no longer exists or the admin says so, and that an admin then has to
+  remove this phone on the server if the setup was finished there. No button deletes such a key: the
+  server may have made it a key device, or may still.
+- Only a claim that needs a code and never got its answer (`CLAIMING`, recorded as a code claim) can
+  be discarded on the phone: no code of it was ever shown, so it can never complete, whatever the
+  server holds. "Discard this unfinished setup" is offered for it once the silence has lasted and the
+  claim's own time is long past too (90 minutes after it was recorded, by the phone's clock). The
+  question before it says what was checked and what it means. It is the person's decision, not a
+  server answer; it is checked again by what is stored when it is confirmed, and the storage layer
+  refuses it for every other kind of record.
+- "Confirm it's you" notes the same for an active key (the probe at each open of the screen) and,
+  once the silence has lasted, names the last resort in words. Nothing there deletes the key.
 
 The signed claim and the final device-key sign-in are not interrupted by a link, Back or Cancel. The
 claim's answer counts as not known after 30 s; the screen leaves the final sign-in after 180 s

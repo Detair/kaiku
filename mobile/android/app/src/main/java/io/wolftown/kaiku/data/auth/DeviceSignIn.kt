@@ -137,6 +137,8 @@ class DeviceSignIn @Inject constructor(
                             sessionCap = cap,
                             // The server just took this id for the key device: it is the record's from now on.
                             installId = it.installId ?: deviceId,
+                            // The server answered: nothing is noted against it any more.
+                            unanswered = null,
                         )
                     }
                     when (taken) {

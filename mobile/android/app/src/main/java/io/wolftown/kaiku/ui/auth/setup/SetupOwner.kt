@@ -36,6 +36,7 @@ import io.wolftown.kaiku.data.keydevice.ServerKeyState
 import io.wolftown.kaiku.data.keydevice.SetupDiscard
 import io.wolftown.kaiku.data.keydevice.StoredKeyDevice
 import io.wolftown.kaiku.data.keydevice.Verdict
+import io.wolftown.kaiku.data.keydevice.isNoAnswer
 import io.wolftown.kaiku.di.SetupCoroutineScope
 import io.wolftown.kaiku.domain.CodeFormat
 import io.wolftown.kaiku.domain.KaikuPayloads
@@ -145,15 +146,24 @@ import kotlin.coroutines.cancellation.CancellationException
  *    SetupOwnerTest: `the screen leaves the final sign-in at its limit, whatever the sign-in still
  *    has to finish`, `a sign-in that got through just as the limit hit counts as signed in`,
  *    `the last screen closing while the claim is on its way leaves the claim to be checked`]
- * 8. A way out. A stored unfinished setup is never given up without its server's word, except by
- *    the person: when the last question about it got no usable answer ([cannotAsk]) and its own
- *    time is long past by the phone's clock ([discardable], [SetupDiscard]), the screen offers to
- *    discard it and asks first. [discard] checks all of that again, forgets only that very record,
- *    and never an active key. [SetupOwnerTest: `an unfinished setup whose server cannot be asked
- *    may be discarded once its own time is long past`, `discarding is withdrawn as soon as the
- *    server answers again`, `discarding is checked again when it is asked for`, `a waiting key
- *    device may be discarded only a day after it should have been ready`; SetupDiscardTest;
- *    KeyDeviceRepositoryTest: `a person's decision never forgets an active key`]
+ * 8. A way out, as the last step. A stored unfinished setup is never given up without its
+ *    server's word. A question that got no answer of the server is said on the screen
+ *    ([cannotAsk]) and noted with the record ([ServerSilence]); one such question, however old
+ *    the setup, shows nothing more. Only when the silence has lasted (several separate occasions
+ *    over at least a day) does the screen name the last resort in words ([lastResort]), and for
+ *    the one kind of setup that can never finish (a claim that needs a code and never got its
+ *    answer, its own time long past) offer to discard it ([discardable], [SetupDiscard]).
+ *    [discard] checks all of that again by what is stored and forgets only that very record; a
+ *    record whose code was shown, a waiting key device and an active key are never discarded.
+ *    [SetupOwnerTest: `a waiting key device opened offline long after its ready time is never
+ *    offered to be discarded`, `a claim whose code was shown is never offered to be discarded`,
+ *    `a lost code claim may be discarded only after its server stayed silent on several occasions
+ *    over a day`, `an answer of the server in between starts the count of silent occasions again`,
+ *    `one failed question says only that the server could not be asked`, `the last resort is named
+ *    in words once the silence has lasted, and taken back by the next answer`, `a lost claim of
+ *    the app's own registration is never offered to be discarded`, `discarding is checked again
+ *    when it is asked for`; ServerSilenceTest; SetupDiscardTest; KeyDeviceRepositoryTest: the
+ *    three `a person's decision …` tests]
  */
 @Singleton
 class SetupOwner internal constructor(
@@ -171,7 +181,7 @@ class SetupOwner internal constructor(
     private val scope: CoroutineScope,
     /** The suitability probe and key generation (StrongBox, attestation) take seconds: never on Main. */
     private val keyDispatcher: CoroutineDispatcher,
-    /** The phone's own clock (only for when an unfinished setup may be discarded). */
+    /** The phone's own clock (only for when a claim was recorded, see [SetupDiscard]). */
     private val clock: () -> Instant = Instant::now,
 ) {
 
@@ -282,20 +292,35 @@ class SetupOwner internal constructor(
     val cannotAsk: StateFlow<Boolean> = _cannotAsk.asStateFlow()
 
     private val _discardable = MutableStateFlow(false)
-    /** [cannotAsk], and the setup's own time is long past: the person may discard it ([discard]). */
+    /**
+     * [cannotAsk], for a claim that can never finish, whose own time is long past and whose server
+     * has stayed silent for long: the person may discard it ([discard], [SetupDiscard]).
+     */
     val discardable: StateFlow<Boolean> = _discardable.asStateFlow()
+
+    private val _lastResort = MutableStateFlow(false)
+    /**
+     * [cannotAsk], and the server has stayed silent for long ([ServerSilence.lasting]), for a setup
+     * that is never discarded here (its code was shown, or it waits for its time): the screen names
+     * the last resort in words.
+     */
+    val lastResort: StateFlow<Boolean> = _lastResort.asStateFlow()
 
     private val _scanReady = MutableStateFlow<UvDecision?>(null)
     /** C26 "Suitability": the screen lock and a hardware key store, checked before any scan. */
     val scanReady: StateFlow<UvDecision?> = _scanReady.asStateFlow()
 
+    private var scanCheck: Job? = null
+
     /**
-     * Runs the suitability check before the scanner opens (again after the screen-lock settings).
-     * [fresh]: the scanner screen was entered; what an earlier visit found no longer counts.
+     * Runs the suitability check for the scanner: whenever the scanner is shown (a visit, back
+     * from a setup that ended, back in front), and after the screen-lock settings. [fresh]: a new
+     * visit of the screen; what an earlier visit found is not shown meanwhile. One check at a time.
      */
     fun checkBeforeScan(fresh: Boolean = false) {
         if (fresh) _scanReady.value = null
-        scope.launch { _scanReady.value = withContext(keyDispatcher) { suitability.check() } }
+        if (scanCheck?.isActive == true) return
+        scanCheck = scope.launch { _scanReady.value = withContext(keyDispatcher) { suitability.check() } }
     }
 
     /** For hosts that switch between the scanner and this flow (SetupScanScreen). */
@@ -527,7 +552,7 @@ class SetupOwner internal constructor(
             if (st !is ServerKeyState.Gone) return@step show(a, SetupUi.Ended(R.string.setup_already_key, canRetry = false))
             if (keyDevices.record.value != null) {
                 if (keyDevices.current() !is KeyDeviceState.Lapsed ||
-                    !answers.settle(rec, originOf(rec), Ask.DEVICE_LOGIN_CHALLENGE, st.answer).forgotten
+                    !answers.settle(rec, originOf(rec), st).forgotten
                 ) {
                     return@step show(a, SetupUi.Ended(R.string.setup_already_key, canRetry = false))
                 }
@@ -857,6 +882,8 @@ class SetupOwner internal constructor(
                 // The server will list the key device under this install id.
                 installId = a.installId,
                 since = clock(),
+                // A setup link or a scanned code: the claim completes only through the code it gets.
+                codeClaim = a.entry.ticket == null,
             ),
         )
         val rec = (created as? Change.Done)?.record
@@ -970,6 +997,7 @@ class SetupOwner internal constructor(
                 val kept = answers.settle(rec, a.origin, Ask.CLAIM_CHECK, ServerAnswer.of(x)) as? KeyAnswers.Settled.Kept
                 unknown = kept?.unknown
                 taken = kept?.taken
+                if (!x.isNoAnswer()) heard(rec)
                 if (about == null) about = x
             } catch (x: Exception) {
                 live(a)
@@ -1008,8 +1036,9 @@ class SetupOwner internal constructor(
             when (st) {
                 ServerKeyState.Active -> return onDone(a, rec, "active", null, null)
                 is ServerKeyState.Pending -> return pending(a, rec, st.readyAt)
-                ServerKeyState.Unknown -> {
-                    couldNotAsk(rec)
+                ServerKeyState.Unknown, ServerKeyState.Refused -> {
+                    // No answer of the server itself is noted; a refusal is an answer (the server is there).
+                    if (st == ServerKeyState.Unknown) couldNotAsk(rec) else heard(rec)
                     if (_ui.value !is SetupUi.Pending) {
                         // On the setup screen: "the connection broke, try again"; on the waiting screen: "no connection".
                         val msg = if (a != null) R.string.setup_claim_unsure else R.string.security_network_error
@@ -1018,9 +1047,7 @@ class SetupOwner internal constructor(
                     return
                 }
                 is ServerKeyState.Gone -> {
-                    val settled = answers.settle(
-                        rec, originOf(rec), Ask.DEVICE_LOGIN_CHALLENGE, st.answer, unknown = unknown, taken = taken, askedAt = st.askedAt,
-                    )
+                    val settled = answers.settle(rec, originOf(rec), st, unknown = unknown, taken = taken)
                     if (settled.forgotten) {
                         a?.key = null
                         a?.rec = null
@@ -1037,6 +1064,7 @@ class SetupOwner internal constructor(
                         couldNotAsk(rec)
                         return show(a, SetupUi.Ended(R.string.setup_claim_unsure, canRetry = true))
                     }
+                    heard(rec)
                     show(a, SetupUi.ClaimWaiting)
                     delay(again.toMillis() + ASK_AGAIN_SLACK_MS)
                     live(a)
@@ -1046,36 +1074,46 @@ class SetupOwner internal constructor(
     }
 
     /**
-     * An ask of the stored unfinished setup's server gave nothing usable. The screen then names the
-     * last resort, and offers to discard the setup once its own time is long past ([SetupDiscard]).
+     * A question about the stored unfinished setup got no answer of its server. The screen says so
+     * and keeps waiting. It is noted with the record ([ServerSilence]); only once that silence has
+     * lasted (several separate occasions over at least a day) does the screen say more: for a
+     * claim that can never finish it offers to discard it ([SetupDiscard]), for every other
+     * setup it names the last resort in words.
      */
     private fun couldNotAsk(rec: StoredKeyDevice) {
         if (rec.phase == KeyDevicePhase.ACTIVE || keyDevices.record.value?.sameAs(rec) != true) return
-        val now = clock()
-        val noted = discards.noteCouldNotAsk(rec, now)
+        val noted = discards.silence.noteUnanswered(rec)
         stuckOn = noted
         _cannotAsk.value = true
-        _discardable.value = discards.offered(noted, now)
+        val offered = discards.offered(noted)
+        _discardable.value = offered
+        _lastResort.value = !offered && discards.silence.lasting(noted)
     }
 
-    /** A new question is on its way (or the setup changed): what the last one could not learn no longer counts. */
+    /** The server of [rec] answered, whatever it said: nothing is noted against it any more. */
+    private fun heard(rec: StoredKeyDevice) {
+        discards.silence.noteAnswered(rec)
+        asking()
+    }
+
+    /** A new question is on its way (or the setup changed): what the screen said about the last one goes. */
     private fun asking() {
         stuckOn = null
         _cannotAsk.value = false
         _discardable.value = false
+        _lastResort.value = false
     }
 
     /**
-     * "Discard this unfinished setup", confirmed by the person: only for the stored record whose
-     * server could not be asked just now, only once its own time is long past by the phone's clock
-     * (both checked again here), never for an active key. The record and its key are forgotten
-     * through [SetupDiscard]; the setup is over and a new link starts.
+     * "Discard this unfinished setup", confirmed by the person: only for the stored claim that can
+     * never finish, whose server could not be asked just now and has stayed silent for long, and
+     * whose own time is long past (all checked again here, by what is stored). The record and its
+     * key are forgotten through [SetupDiscard]; the setup is over and a new link starts.
      */
     fun discard() {
         val rec = stuckOn ?: return
         if (claimInFlight || signingIn || !_discardable.value) return
-        val now = keyDevices.record.value?.takeIf { it sameAs rec } ?: return
-        if (!discards.discard(now, clock()).done) return
+        if (!discards.discard(rec).done) return
         stop()
         attempt = null
         claimKeeper = null
@@ -1114,10 +1152,11 @@ class SetupOwner internal constructor(
                     // An enrolment the server no longer knows (a finished one is swept 30 days after it
                     // ended): the key device decides whether the setup is over.
                     if (settled.verdict == Verdict.ENROLMENT_UNKNOWN) {
+                        heard(start)
                         return askKeyDevice(a, start, (settled as? KeyAnswers.Settled.Kept)?.unknown, null, if (showsCode) x else null)
                     }
                 }
-                couldNotAsk(start)
+                if (x.isNoAnswer()) couldNotAsk(start) else heard(start)
                 // Without the code on screen the next check asks again; with it, this one does.
                 if (!showsCode) return
                 val retryAfterMs = (x as? ApiException)?.fields?.retryAfterSeconds?.times(1000)
@@ -1127,7 +1166,7 @@ class SetupOwner internal constructor(
                 continue
             }
             live(a)
-            asking()
+            heard(start)
             // Cancelled or reset while the long-poll ran: its answer changes nothing any more.
             if (!(_ui.value is SetupUi.ShowCode || _ui.value == SetupUi.WaitingForCode)) return
             val ended = when (s.state) {
@@ -1168,7 +1207,7 @@ class SetupOwner internal constructor(
         // Active on the server: kept as an active key, so a restart before the sign-in below opens
         // "Confirm it's you" instead of losing the setup. No claim secret is needed any more.
         val next = keyDevices.update(rec) {
-            it.copy(device = base.copy(claimSecret = null), phase = KeyDevicePhase.ACTIVE, readyAt = null, claimVoidAfter = null)
+            it.copy(device = base.copy(claimSecret = null), phase = KeyDevicePhase.ACTIVE, readyAt = null, claimVoidAfter = null, unanswered = null)
         }
         if (next !is Change.Done) return notRecorded(a, next)
         a?.rec = next.record
@@ -1177,7 +1216,9 @@ class SetupOwner internal constructor(
 
     private suspend fun pending(a: Attempt?, rec: StoredKeyDevice, readyAt: java.time.Instant, device: LocalKeyDevice = rec.device) {
         live(a)
-        val next = keyDevices.update(rec) { it.copy(device = device, phase = KeyDevicePhase.PENDING, readyAt = readyAt, claimVoidAfter = null) }
+        val next = keyDevices.update(rec) {
+            it.copy(device = device, phase = KeyDevicePhase.PENDING, readyAt = readyAt, claimVoidAfter = null, unanswered = null)
+        }
         if (next !is Change.Done) return notRecorded(a, next)
         a?.rec = next.record
         _waiting.value = true

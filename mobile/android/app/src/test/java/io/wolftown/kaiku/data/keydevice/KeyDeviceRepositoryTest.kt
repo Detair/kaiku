@@ -288,30 +288,50 @@ class KeyDeviceRepositoryTest {
 
     // ── The person's own decision ─────────────────────────────────────────────────────────────
 
-    @Test fun `a person's decision never forgets an active key`() = runTest {
-        val authState = AuthState(backgroundScope)
-        val repo = repo(authState)
-        repo.saveClaimed(device)
-        repo.markActive("u1", "kd1")
-        val active = repo.record.value!!
-        assertEquals(Change.Mismatch, repo.forget(active, Forget.DISCARDED_BY_PERSON))
-        assertEquals(KeyDevicePhase.ACTIVE, repo.phase())
-        assertTrue(keyStore.hasKey())
-        assertFalse(store.writes.contains("clear"))
+    @Test fun `a person's decision never forgets an active key, a waiting one, or a record whose code was shown`() = runTest {
+        for (phase in listOf(KeyDevicePhase.ACTIVE, KeyDevicePhase.PENDING, KeyDevicePhase.CLAIMED)) {
+            store.stored = null
+            val repo = repo()
+            val first = (repo.create(claiming().copy(codeClaim = true)) as Change.Done).record!!
+            val rec = (repo.replace(first, first.copy(phase = phase)) as Change.Done).record!!
+            assertEquals(phase.name, Change.Mismatch, repo.forget(rec, Forget.DISCARDED_BY_PERSON))
+            assertEquals(phase.name, phase, repo.phase())
+            assertTrue(phase.name, keyStore.hasKey())
+            assertFalse(phase.name, store.writes.contains("clear"))
+        }
     }
 
-    @Test fun `a person's decision forgets an unfinished setup only if it is the stored one`() = runTest {
-        for (phase in listOf(KeyDevicePhase.CLAIMING, KeyDevicePhase.CLAIMED, KeyDevicePhase.PENDING)) {
-            store.stored = null
-            if (!keyStore.hasKey()) keyStore.generate(ByteArray(32), use)
-            val repo = repo()
-            val rec = (repo.create(claiming()) as Change.Done).record!!
-            val now = if (phase == KeyDevicePhase.CLAIMING) rec else (repo.replace(rec, rec.copy(phase = phase)) as Change.Done).record!!
-            assertEquals(phase.name, Change.Mismatch, repo.forget(now.copy(attemptId = "another"), Forget.DISCARDED_BY_PERSON))
-            assertTrue(phase.name, keyStore.hasKey())
-            assertTrue(phase.name, repo.forget(now, Forget.DISCARDED_BY_PERSON).done)
-            assertNull(phase.name, repo.record.value)
-            assertFalse(phase.name, keyStore.hasKey())
-        }
+    @Test fun `a person's decision never forgets a claim that completes by itself`() = runTest {
+        val repo = repo()
+        // The app's own registration, or a record that does not say which kind of claim it is.
+        val rec = (repo.create(claiming()) as Change.Done).record!!
+        assertFalse(rec.codeClaim)
+        assertEquals(Change.Mismatch, repo.forget(rec, Forget.DISCARDED_BY_PERSON))
+        assertEquals(KeyDevicePhase.CLAIMING, repo.phase())
+        assertTrue(keyStore.hasKey())
+        // A server answer still can (the answer table decides that, not this rule).
+        assertTrue(repo.forget(rec, Forget.SERVER_ANSWER).done)
+    }
+
+    @Test fun `a person's decision forgets a claim that needs a code and has no answer, only if it is the stored one`() = runTest {
+        val repo = repo()
+        val rec = (repo.create(claiming().copy(codeClaim = true)) as Change.Done).record!!
+        assertEquals(Change.Mismatch, repo.forget(rec.copy(attemptId = "another"), Forget.DISCARDED_BY_PERSON))
+        assertTrue(keyStore.hasKey())
+        assertTrue(repo.forget(rec, Forget.DISCARDED_BY_PERSON).done)
+        assertNull(repo.record.value)
+        assertFalse(keyStore.hasKey())
+    }
+
+    @Test fun `what is noted about the server's silence is kept beside the record and does not change which record it is`() = runTest {
+        val repo = repo()
+        val rec = (repo.create(claiming()) as Change.Done).record!!
+        val t = Instant.parse("2026-11-20T09:00:00Z")
+        val noted = (repo.update(rec) { it.copy(unanswered = Unanswered(t, t, 1)) } as Change.Done).record!!
+        assertTrue(noted sameAs rec)
+        assertEquals(Unanswered(t, t, 1), store.stored!!.unanswered)
+        // The holder of the older copy still names the stored record.
+        assertTrue(repo.update(rec) { it.copy(unanswered = null) }.done)
+        assertNull(store.stored!!.unanswered)
     }
 }

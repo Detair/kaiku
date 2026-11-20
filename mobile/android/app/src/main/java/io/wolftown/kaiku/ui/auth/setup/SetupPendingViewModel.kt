@@ -26,6 +26,7 @@ class SetupPendingViewModel @Inject constructor(private val owner: SetupOwner) :
     val linkIgnored: StateFlow<Boolean> = owner.linkIgnored
     val cannotAsk: StateFlow<Boolean> = owner.cannotAsk
     val discardable: StateFlow<Boolean> = owner.discardable
+    val lastResort: StateFlow<Boolean> = owner.lastResort
 
     fun check() = owner.check()
     fun discard() = owner.discard()

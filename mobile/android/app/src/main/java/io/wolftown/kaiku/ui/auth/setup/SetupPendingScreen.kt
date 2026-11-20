@@ -43,6 +43,7 @@ fun SetupPendingScreen(
     val linkIgnored by viewModel.linkIgnored.collectAsState()
     val cannotAsk by viewModel.cannotAsk.collectAsState()
     val discardable by viewModel.discardable.collectAsState()
+    val lastResort by viewModel.lastResort.collectAsState()
     val activity = currentFragmentActivity()
 
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { viewModel.check() }
@@ -94,10 +95,14 @@ fun SetupPendingScreen(
             SetupUi.ClaimWaiting -> {
                 KeyNotice(stringResource(R.string.setup_claim_waiting), warning = false)
                 KeyPrimaryButton(stringResource(R.string.common_try_again), onClick = viewModel::check)
-                KeyBody(stringResource(R.string.security_clear_storage_hint), secondary = true)
             }
             else -> SetupStatus(ui = ui, onSignIn = { activity?.let(viewModel::signIn) }, onRetry = viewModel::check, onBack = onEnded)
         }
-        UnfinishedSetupHelp(cannotAsk = cannotAsk, discardable = discardable, onDiscard = viewModel::discard)
+        UnfinishedSetupHelp(
+            cannotAsk = cannotAsk, lastResort = lastResort, discardable = discardable,
+            // "Waiting for the code" and "ready at …" have no button of their own to ask again.
+            onRetry = if (ui == SetupUi.WaitingForCode || ui is SetupUi.Pending) viewModel::check else null,
+            onDiscard = viewModel::discard,
+        )
     }
 }

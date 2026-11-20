@@ -18,6 +18,7 @@ import io.wolftown.kaiku.data.keydevice.KeyAnswers
 import io.wolftown.kaiku.data.keydevice.KeyDeviceProbe
 import io.wolftown.kaiku.data.keydevice.KeyDeviceRepository
 import io.wolftown.kaiku.data.keydevice.ServerKeyState
+import io.wolftown.kaiku.data.keydevice.ServerSilence
 import io.wolftown.kaiku.data.keydevice.KeyDeviceState
 import io.wolftown.kaiku.domain.KaikuPayloads
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -40,6 +41,11 @@ data class ConfirmItsYouUi(
     val keyGone: Boolean = false,
     val readyAt: Instant? = null,
     val done: ConfirmDone? = null,
+    /**
+     * The key's server has stayed silent for long ([ServerSilence.lasting]: several separate
+     * occasions over at least a day): the screen names the last resort, in words only.
+     */
+    val serverSilent: Boolean = false,
 )
 
 /** What "Confirm it's you" says after a device sign-in that did not succeed. */
@@ -94,6 +100,7 @@ class ConfirmItsYouViewModel @Inject constructor(
     sessionEndLog: SessionEndLog,
     probe: KeyDeviceProbe,
     private val answers: KeyAnswers,
+    private val silence: ServerSilence,
 ) : ViewModel() {
 
     companion object {
@@ -125,11 +132,21 @@ class ConfirmItsYouViewModel @Inject constructor(
         val rec = keyDevices.record.value
         if (rec != null && keyDevices.current() is KeyDeviceState.Lapsed) {
             viewModelScope.launch {
-                val st = probe.probe(rec)
-                if (st is ServerKeyState.Gone && !_ui.value.working && keyDevices.current() is KeyDeviceState.Lapsed &&
-                    answers.settle(rec, KaikuPayloads.canonicalOrigin(rec.device.origin), Ask.DEVICE_LOGIN_CHALLENGE, st.answer, askedAt = st.askedAt).forgotten
-                ) {
-                    _ui.update { it.copy(error = R.string.security_device_revoked, keyGone = true) }
+                when (val st = probe.probe(rec)) {
+                    is ServerKeyState.Gone ->
+                        if (!_ui.value.working && keyDevices.current() is KeyDeviceState.Lapsed &&
+                            answers.settle(rec, KaikuPayloads.canonicalOrigin(rec.device.origin), st).forgotten
+                        ) {
+                            _ui.update { it.copy(error = R.string.security_device_revoked, keyGone = true) }
+                        }
+                    // No answer of the server itself. Noted with the key; once that has lasted, the
+                    // screen names the last resort (nothing here deletes the key).
+                    ServerKeyState.Unknown -> {
+                        val noted = silence.noteUnanswered(rec)
+                        if (silence.lasting(noted)) _ui.update { it.copy(serverSilent = true) }
+                    }
+                    // The server is there (also when it refuses): nothing is noted any more.
+                    ServerKeyState.Active, is ServerKeyState.Pending, ServerKeyState.Refused -> silence.noteAnswered(rec)
                 }
             }
         }

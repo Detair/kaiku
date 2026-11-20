@@ -22,6 +22,8 @@ class PrefsKeyDeviceStoreTest {
         device, KeyDevicePhase.CLAIMING, keyId = "key-1", attemptId = "attempt-1",
         claimVoidAfter = Instant.parse("2026-11-20T10:20:00Z"),
         installId = "22222222-2222-4222-8222-222222222222", since = Instant.parse("2026-11-20T10:00:00Z"),
+        codeClaim = true,
+        unanswered = Unanswered(Instant.parse("2026-11-20T11:00:00Z"), Instant.parse("2026-11-21T12:00:00Z"), 3),
     )
 
     private fun store() = PrefsKeyDeviceStore(KeystoreWrappedPreferences(backing, testValueCipher()))
@@ -42,6 +44,33 @@ class PrefsKeyDeviceStoreTest {
         val plain = StoredKeyDevice(device, KeyDevicePhase.ACTIVE, keyId = "key-1")
         store().save(plain)
         assertEquals(KeyStorage.Present(plain), store().load())
+    }
+
+    @Test fun `the kind of claim and the notes about a silent server read back, and go with the record`() {
+        store().save(record)
+        val back = (store().load() as KeyStorage.Present).record
+        assertTrue(back.codeClaim)
+        assertEquals(Unanswered(Instant.parse("2026-11-20T11:00:00Z"), Instant.parse("2026-11-21T12:00:00Z"), 3), back.unanswered)
+        // A record of an earlier version says neither.
+        store().save(StoredKeyDevice(device, KeyDevicePhase.CLAIMING, keyId = "key-1"))
+        val older = (store().load() as KeyStorage.Present).record
+        assertFalse(older.codeClaim)
+        assertNull(older.unanswered)
+        // Cleared with the record: nothing of it is left for a later one.
+        store().save(record)
+        assertTrue(store().clear())
+        assertEquals(KeyStorage.Absent, store().load())
+        store().save(StoredKeyDevice(device, KeyDevicePhase.CLAIMING, keyId = "key-1"))
+        assertNull((store().load() as KeyStorage.Present).record.unanswered)
+    }
+
+    @Test fun `notes about a silent server that are not whole make the record unreadable, not different`() {
+        store().save(record)
+        KeystoreWrappedPreferences(backing, testValueCipher()).edit().remove("unanswered_occasions").commit()
+        assertEquals(KeyStorage.Unreadable, store().load())
+        store().save(record)
+        KeystoreWrappedPreferences(backing, testValueCipher()).edit().putString("unanswered_last", "yesterday").commit()
+        assertEquals(KeyStorage.Unreadable, store().load())
     }
 
     @Test fun `a record of an earlier version reads back without a key id`() {

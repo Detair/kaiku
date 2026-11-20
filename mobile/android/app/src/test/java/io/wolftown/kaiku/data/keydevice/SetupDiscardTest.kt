@@ -14,92 +14,124 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.time.Duration
 import java.time.Instant
 
 /**
- * The person's way out of a setup that never finished: offered only long after the setup's own
- * time, never for an active key, and it forgets only the record it was offered for.
+ * The person may discard one kind of setup only: a claim that needs a code and never got its
+ * answer. And only as the last step: its own time long past, its server silent for long.
  */
 class SetupDiscardTest {
 
     private val t0: Instant = Instant.parse("2026-11-20T09:00:00Z")
+    private var now: Instant = t0
     private val keyStore = SoftwareApprovalKeyStore().apply { generate(ByteArray(32), UvPolicy.choose(30, true, true) as UvDecision.Use) }
     private val store = InMemoryKeyDeviceStore()
     private val device = LocalKeyDevice(null, "u1", "https://chat.example.com", UvClass.PER_USE, "e1", null)
+    /** Silent on three occasions over more than a day. */
+    private val silentForLong = Unanswered(t0, t0.plus(Duration.ofHours(25)), 3)
 
     private fun TestScope.phone(rec: StoredKeyDevice): Pair<SetupDiscard, KeyDeviceRepository> {
         store.stored = rec.copy(keyId = keyStore.keyId())
         val repo = KeyDeviceRepository(store, keyStore, AuthState(backgroundScope), backgroundScope)
-        return SetupDiscard(repo) to repo
+        return SetupDiscard(repo, ServerSilence(repo) { now }) to repo
     }
 
-    @Test fun `a claim may be discarded 90 minutes after it was made, not before`() = runTest {
-        for (phase in listOf(KeyDevicePhase.CLAIMING, KeyDevicePhase.CLAIMED)) {
-            val (d, repo) = phone(StoredKeyDevice(device, phase, since = t0))
-            val rec = repo.record.value!!
-            assertEquals(t0.plus(SetupDiscard.CLAIM_AFTER), d.due(rec))
-            assertFalse(d.offered(rec, t0))
-            assertFalse(d.offered(rec, t0.plus(SetupDiscard.CLAIM_AFTER)))
-            assertEquals(Change.Mismatch, d.discard(rec, t0.plus(SetupDiscard.CLAIM_AFTER)))
-            assertTrue(keyStore.hasKey())
-            assertTrue(d.offered(rec, t0.plus(SetupDiscard.CLAIM_AFTER).plusSeconds(1)))
-        }
-    }
+    private fun lostCodeClaim(unanswered: Unanswered? = silentForLong) =
+        StoredKeyDevice(device, KeyDevicePhase.CLAIMING, since = t0, codeClaim = true, unanswered = unanswered, attemptId = "a1")
 
-    @Test fun `a waiting key device may be discarded a day after it should have been ready`() = runTest {
-        val readyAt = t0.plusSeconds(24 * 3600)
-        val (d, repo) = phone(StoredKeyDevice(device, KeyDevicePhase.PENDING, readyAt = readyAt, since = t0))
+    @Test fun `a claim that needs a code and never got its answer may be discarded once all of it holds`() = runTest {
+        now = t0.plus(Duration.ofHours(26))
+        val (d, repo) = phone(lostCodeClaim())
         val rec = repo.record.value!!
-        assertEquals(readyAt.plus(SetupDiscard.PENDING_AFTER), d.due(rec))
-        assertFalse(d.offered(rec, readyAt.plusSeconds(3600)))
-        assertTrue(d.offered(rec, readyAt.plus(SetupDiscard.PENDING_AFTER).plusSeconds(1)))
-    }
-
-    @Test fun `an active key is never offered and never discarded`() = runTest {
-        val (d, repo) = phone(StoredKeyDevice(device.copy(keyDeviceId = "kd1"), KeyDevicePhase.ACTIVE, since = t0))
-        val rec = repo.record.value!!
-        val farLater = t0.plusSeconds(10L * 365 * 24 * 3600)
-        assertNull(d.due(rec))
-        assertFalse(d.offered(rec, farLater))
-        assertEquals(Change.Mismatch, d.discard(rec, farLater))
-        assertEquals(rec, d.noteCouldNotAsk(rec, farLater))
-        assertEquals(KeyDevicePhase.ACTIVE, repo.phase())
-        assertTrue(keyStore.hasKey())
-        assertTrue(store.writes.isEmpty())
-    }
-
-    @Test fun `a record without a time gets one when its server first cannot be asked, and only then`() = runTest {
-        val (d, repo) = phone(StoredKeyDevice(device, KeyDevicePhase.CLAIMED))
-        val rec = repo.record.value!!
-        assertNull(d.due(rec))
-        assertFalse(d.offered(rec, t0.plusSeconds(10L * 365 * 24 * 3600)))
-        val noted = d.noteCouldNotAsk(rec, t0)
-        assertEquals(t0, noted.since)
-        assertEquals(t0, store.stored!!.since)
-        // The next time it cannot be asked does not move the time.
-        assertEquals(t0, d.noteCouldNotAsk(noted, t0.plusSeconds(3600)).since)
-        assertEquals(t0, store.stored!!.since)
-        assertTrue(d.offered(noted, t0.plus(SetupDiscard.CLAIM_AFTER).plusSeconds(1)))
-    }
-
-    @Test fun `discarding forgets the record and its key, only if it is still the stored one`() = runTest {
-        val (d, repo) = phone(StoredKeyDevice(device, KeyDevicePhase.CLAIMED, since = t0, attemptId = "a1"))
-        val rec = repo.record.value!!
-        val late = t0.plus(SetupDiscard.CLAIM_AFTER).plusSeconds(1)
-        assertEquals(Change.Mismatch, d.discard(rec.copy(attemptId = "a2"), late))
-        assertTrue(keyStore.hasKey())
-        assertEquals(Change.Done(null), d.discard(rec, late))
+        assertTrue(d.canNeverFinish(rec))
+        assertTrue(d.offered(rec))
+        assertEquals(Change.Done(null), d.discard(rec))
         assertNull(repo.record.value)
         assertFalse(keyStore.hasKey())
         assertEquals(listOf("clear"), store.writes)
     }
 
-    @Test fun `while the store cannot be read nothing is discarded`() = runTest {
-        val (d, repo) = phone(StoredKeyDevice(device, KeyDevicePhase.CLAIMED, since = t0))
-        val rec = repo.record.value!!
+    @Test fun `a record whose code was shown, a waiting key device and an active key are never discarded`() = runTest {
+        now = t0.plus(Duration.ofDays(400))
+        for (rec in listOf(
+            StoredKeyDevice(device.copy(claimSecret = "s"), KeyDevicePhase.CLAIMED, since = t0, codeClaim = true, unanswered = silentForLong),
+            StoredKeyDevice(device, KeyDevicePhase.PENDING, readyAt = t0, since = t0, codeClaim = true, unanswered = silentForLong),
+            StoredKeyDevice(device.copy(keyDeviceId = "kd1"), KeyDevicePhase.ACTIVE, since = t0, codeClaim = true, unanswered = silentForLong),
+        )) {
+            val (d, repo) = phone(rec)
+            val stored = repo.record.value!!
+            assertFalse(rec.phase.name, d.canNeverFinish(stored))
+            assertFalse(rec.phase.name, d.offered(stored))
+            assertEquals(rec.phase.name, Change.Mismatch, d.discard(stored))
+            assertEquals(rec.phase.name, rec.phase, repo.phase())
+            assertTrue(rec.phase.name, keyStore.hasKey())
+            assertTrue(rec.phase.name, store.writes.isEmpty())
+        }
+    }
+
+    /** The app's own registration: its claim completes by itself, so the server may hold this key. */
+    @Test fun `a claim that completes by itself is never discarded, nor one that does not say what it is`() = runTest {
+        now = t0.plus(Duration.ofDays(400))
+        for (rec in listOf(
+            lostCodeClaim().copy(codeClaim = false),
+            // Written before records said which kind of claim they are.
+            StoredKeyDevice(device, KeyDevicePhase.CLAIMING, unanswered = silentForLong),
+        )) {
+            val (d, repo) = phone(rec)
+            val stored = repo.record.value!!
+            assertFalse(d.canNeverFinish(stored))
+            assertFalse(d.offered(stored))
+            assertEquals(Change.Mismatch, d.discard(stored))
+            assertTrue(keyStore.hasKey())
+        }
+    }
+
+    @Test fun `it is not offered while the server's silence has not lasted`() = runTest {
+        now = t0.plus(Duration.ofDays(400))
+        for (u in listOf(
+            null,
+            Unanswered(t0, t0, 1),
+            // Many occasions within a day.
+            Unanswered(t0, t0.plus(Duration.ofHours(23)), 20),
+            // Two occasions, far apart.
+            Unanswered(t0, t0.plus(Duration.ofDays(300)), 2),
+        )) {
+            val (d, repo) = phone(lostCodeClaim(u))
+            val stored = repo.record.value!!
+            assertFalse(u.toString(), d.offered(stored))
+            assertEquals(u.toString(), Change.Mismatch, d.discard(stored))
+            assertTrue(u.toString(), keyStore.hasKey())
+        }
+    }
+
+    @Test fun `it is not offered before the claim's own time is long past`() = runTest {
+        // The notes say "silent for long" (the phone's clock was moved about), the claim is 90 minutes old at most.
+        val (d, repo) = phone(lostCodeClaim())
+        val stored = repo.record.value!!
+        now = t0.plus(SetupDiscard.CLAIM_AFTER)
+        assertFalse(d.offered(stored))
+        assertEquals(Change.Mismatch, d.discard(stored))
+        now = t0.plus(SetupDiscard.CLAIM_AFTER).plusSeconds(1)
+        assertTrue(d.offered(stored))
+        // A claim that does not say when it was made is not offered at all.
+        val (d2, repo2) = phone(lostCodeClaim().copy(since = null))
+        assertFalse(d2.offered(repo2.record.value!!))
+    }
+
+    @Test fun `discarding goes by what is stored, not by what the caller holds`() = runTest {
+        now = t0.plus(Duration.ofHours(26))
+        // Stored: the server has answered meanwhile (no note). The caller still holds the older copy.
+        val (d, repo) = phone(lostCodeClaim(unanswered = null))
+        val stale = repo.record.value!!.copy(unanswered = silentForLong)
+        assertEquals(Change.Mismatch, d.discard(stale))
+        assertTrue(keyStore.hasKey())
+        // Another record than the stored one.
+        assertEquals(Change.Mismatch, d.discard(stale.copy(attemptId = "a2")))
+        // The store cannot be read.
         store.unreadable = true
         repo.reload()
-        assertEquals(Change.Unreadable, d.discard(rec, t0.plus(SetupDiscard.CLAIM_AFTER).plusSeconds(1)))
+        assertEquals(Change.Unreadable, d.discard(stale))
         assertTrue(keyStore.hasKey())
     }
 }

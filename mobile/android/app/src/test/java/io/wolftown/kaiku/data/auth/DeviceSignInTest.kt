@@ -102,6 +102,15 @@ class DeviceSignInTest {
         assertEquals(SigFixtures.DEVICE_ID, repo.record.value!!.installId)
     }
 
+    @Test fun `a sign-in that worked takes back what was noted about a silent server`() = runTest {
+        val (signIn, repo) = setUp()
+        val t = Instant.parse("2026-11-20T09:00:00Z")
+        repo.update(repo.record.value!!) { it.copy(unanswered = io.wolftown.kaiku.data.keydevice.Unanswered(t, t.plusSeconds(90_000), 3)) }
+        assertEquals(DeviceSignInResult.Success, signIn.signIn(activity))
+        assertEquals(null, repo.record.value!!.unanswered)
+        assertEquals(null, store.stored!!.unanswered)
+    }
+
     @Test fun `a sign-in that worked records the install id it was made under`() = runTest {
         val (signIn, repo) = setUp()
         assertEquals(null, repo.record.value!!.installId)

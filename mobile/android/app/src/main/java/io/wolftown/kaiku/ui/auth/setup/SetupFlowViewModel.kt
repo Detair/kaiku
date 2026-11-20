@@ -117,16 +117,20 @@ class SetupFlowViewModel @Inject constructor(private val owner: SetupOwner) : Vi
     val scanReady: StateFlow<UvDecision?> = owner.scanReady
     val cannotAsk: StateFlow<Boolean> = owner.cannotAsk
     val discardable: StateFlow<Boolean> = owner.discardable
+    val lastResort: StateFlow<Boolean> = owner.lastResort
     val startedFlow: StateFlow<Boolean> = owner.startedFlow
     val started: Boolean get() = owner.started
 
-    private var scannerEntered = false
+    private var scannerShownBefore = false
 
-    /** The scanner screen is shown: what the phone can do is checked anew, once per visit (a rotation is not a visit). */
-    fun enterScanner() {
-        if (scannerEntered) return
-        scannerEntered = true
-        owner.checkBeforeScan(fresh = true)
+    /**
+     * The scanner part of the screen is shown: at a visit, again after a setup on it ended, and
+     * each time the screen comes back to the front. What the phone can do is checked anew every
+     * time; only at the first time of a visit is the result of an earlier visit not shown meanwhile.
+     */
+    fun scannerShown() {
+        owner.checkBeforeScan(fresh = !scannerShownBefore)
+        scannerShownBefore = true
     }
 
     fun checkBeforeScan() = owner.checkBeforeScan()

@@ -73,6 +73,8 @@ fun ConfirmItsYouScreen(
             } else {
                 KeySecondaryButton(stringResource(R.string.security_confirm_other_account), onClick = { askRemove = true }, enabled = !ui.working)
             }
+            // The key's server has not answered on several occasions over a day or more.
+            if (ui.serverSilent) KeyBody(stringResource(R.string.security_server_silent_hint), secondary = true)
         }
     }
 

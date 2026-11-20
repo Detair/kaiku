@@ -371,24 +371,40 @@ class SetupFlowViewModelTest {
         assertEquals(1, enroll.calls.count { it == "claim" })
     }
 
-    /** A screen lock set up meanwhile, or a check that failed once, must not stick to later visits of the scanner. */
-    @Test fun `the scanner checks what the phone can do anew at every visit, once`() = runTest {
+    /** A screen lock set up or removed meanwhile, or a check that failed once, must not stick to the scanner. */
+    @Test fun `the scanner checks what the phone can do anew whenever it is shown`() = runTest {
         val f = KeyDeviceFixture(backgroundScope, active = false)
         val owner = owner(f)
-        decision = UvDecision.Unsuitable(io.wolftown.kaiku.approval.UnsuitableReason.NO_SCREEN_LOCK)
+        val noLock = UvDecision.Unsuitable(io.wolftown.kaiku.approval.UnsuitableReason.NO_SCREEN_LOCK)
+        val fine = UvPolicy.choose(30, true, true)
+        decision = noLock
         val first = SetupFlowViewModel(owner)
-        first.enterScanner()
-        assertEquals(decision, first.scanReady.value)
-        // The same visit again (a rotation): not asked again.
-        first.enterScanner()
+        first.scannerShown()
+        assertEquals(noLock, first.scanReady.value)
         assertEquals(1, suitabilityChecks)
-        first.onCleared()
-        // A later visit: the person has set a screen lock meanwhile.
-        decision = UvPolicy.choose(30, true, true)
-        val second = SetupFlowViewModel(owner)
-        second.enterScanner()
+        // Shown again within the same visit (the screen is in front again, or a setup on it ended).
+        decision = fine
+        first.scannerShown()
         assertEquals(2, suitabilityChecks)
-        assertEquals(decision, second.scanReady.value)
+        assertEquals(fine, first.scanReady.value)
+        // Meanwhile the earlier result stays on the screen, and one check runs at a time.
+        decision = noLock
+        holdKeyWork = true
+        first.scannerShown()
+        first.scannerShown()
+        assertEquals(fine, first.scanReady.value)
+        releaseKeyWork()
+        assertEquals(3, suitabilityChecks)
+        assertEquals(noLock, first.scanReady.value)
+        first.onCleared()
+        // A later visit: what the earlier visit found is not shown while the new result is found out.
+        decision = fine
+        val second = SetupFlowViewModel(owner)
+        second.scannerShown()
+        assertNull(second.scanReady.value)
+        releaseKeyWork()
+        assertEquals(4, suitabilityChecks)
+        assertEquals(fine, second.scanReady.value)
     }
 
     /** The code on the screen and the link in the mail are one and the same setup code. */

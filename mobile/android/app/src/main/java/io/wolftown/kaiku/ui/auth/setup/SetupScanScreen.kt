@@ -35,12 +35,12 @@ import io.wolftown.kaiku.ui.shared.KeyScreen
 fun SetupScanScreen(onSignedIn: () -> Unit, onBack: (() -> Unit)?, flow: SetupFlowViewModel = hiltViewModel()) {
     val started by flow.startedFlow.collectAsState()
     val ready by flow.scanReady.collectAsState()
-    // Checked anew at every visit of this screen: a result from an earlier visit may be out of date.
-    LaunchedEffect(Unit) { flow.enterScanner() }
-    // Back from the screen-lock settings: check again.
-    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
-        if ((flow.scanReady.value as? UvDecision.Unsuitable)?.reason == UnsuitableReason.NO_SCREEN_LOCK) flow.checkBeforeScan()
-    }
+    // Checked anew whenever the scanner part is what this screen shows: at a visit, and again
+    // after a setup on this screen ended (an earlier result may be out of date) ...
+    LaunchedEffect(started) { if (!started) flow.scannerShown() }
+    // ... and whenever the screen is in front again (back from the screen-lock settings, or after
+    // a screen above it closed).
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { if (!flow.startedFlow.value) flow.scannerShown() }
     val r = ready
     when {
         started -> SetupFlowScreen(link = null, onSignedIn = onSignedIn, onBack = flow::reset, viewModel = flow)

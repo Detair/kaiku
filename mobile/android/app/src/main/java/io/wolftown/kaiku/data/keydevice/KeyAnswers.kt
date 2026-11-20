@@ -61,9 +61,11 @@ data class ServerAnswer(val status: Int, val code: String? = null, val state: St
 
 /**
  * The order in which questions were asked and answers taken, in this process: a number that only
- * grows. One answer can then be required to belong to a question asked after another answer.
+ * grows. One answer can then be required to belong to a question asked after another answer. A
+ * number from here is not a stamp by itself: the probe's is a [ProbeSent], the claim check's is
+ * inside its proof.
  */
-object AskOrder {
+internal object AskOrder {
     private val n = java.util.concurrent.atomic.AtomicLong()
     fun next(): Long = n.incrementAndGet()
 }
@@ -179,9 +181,8 @@ class KeyAnswers @Inject constructor(private val keyDevices: KeyDeviceRepository
      * record is still the stored one ([KeyDeviceRepository.forget]):
      * - [Verdict.KEY_GONE]: an active or pending key device. A claim (`CLAIMING`, `CLAIMED`) only
      *   with [unknown] (the server no longer knows its enrolment); a claim whose answer never came
-     *   (`CLAIMING`) also with [taken] when this answer is the key-device probe's and was asked
-     *   ([askedAt]) after the claim check's answer, or once the server's own clock is past the time
-     *   the claim could still be stored;
+     *   (`CLAIMING`) also through the probe's own form of this function (below), or once the
+     *   server's own clock is past the time the claim could still be stored;
      * - [Verdict.REMOVED]: an active key device;
      * - [Verdict.CLAIM_REFUSED], [Verdict.CLAIM_VOID]: a claim whose answer was not known (`CLAIMING`);
      * - [Verdict.ENROLMENT_ENDED]: a claim waiting for its code (`CLAIMED`) of that very enrolment.
@@ -193,9 +194,31 @@ class KeyAnswers @Inject constructor(private val keyDevices: KeyDeviceRepository
         answer: ServerAnswer,
         askedEnrolment: String? = null,
         unknown: EnrolmentUnknown? = null,
+    ): Settled = decide(expected, askedOrigin, ask, answer, askedEnrolment, unknown, null, null)
+
+    /**
+     * The key-device probe said "no key device" about [expected]: [gone] is the probe's own result
+     * and carries when its question was sent. Only here can [taken] count: for a claim whose
+     * answer never came (`CLAIMING`), when the claim check said "already claimed" about that very
+     * record and this probe was sent after that answer.
+     */
+    fun settle(
+        expected: StoredKeyDevice,
+        askedOrigin: String?,
+        gone: ServerKeyState.Gone,
+        unknown: EnrolmentUnknown? = null,
         taken: ClaimTaken? = null,
-        /** [AskOrder] when the request of [answer] was sent (the key-device probe records it). */
-        askedAt: Long? = null,
+    ): Settled = decide(expected, askedOrigin, Ask.DEVICE_LOGIN_CHALLENGE, gone.answer, null, unknown, taken, gone.sent)
+
+    private fun decide(
+        expected: StoredKeyDevice,
+        askedOrigin: String?,
+        ask: Ask,
+        answer: ServerAnswer,
+        askedEnrolment: String?,
+        unknown: EnrolmentUnknown?,
+        taken: ClaimTaken?,
+        sent: ProbeSent?,
     ): Settled {
         val own = KaikuPayloads.canonicalOrigin(expected.device.origin)
         if (askedOrigin == null || own == null || askedOrigin != own || !own.startsWith("https://")) return Settled.Kept(Verdict.KEEP)
@@ -205,7 +228,7 @@ class KeyAnswers @Inject constructor(private val keyDevices: KeyDeviceRepository
         // The claim's answer never came (the stored phase says so), its enrolment is claimed all
         // the same, and a probe asked after that answer finds no key device.
         val claimLost = phase == KeyDevicePhase.CLAIMING && ask == Ask.DEVICE_LOGIN_CHALLENGE &&
-            taken is TakenFor && taken.about sameAs expected && askedAt != null && askedAt > taken.at
+            taken is TakenFor && taken.about sameAs expected && sent != null && sent.isAfter(taken.at)
         return when (v) {
             Verdict.KEY_GONE -> when {
                 phase == KeyDevicePhase.ACTIVE || phase == KeyDevicePhase.PENDING || proven || claimLost -> drop(expected, v)

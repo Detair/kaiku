@@ -227,6 +227,12 @@ class KeyAnswersTest {
     private val claimed = ServerAnswer(409, "ENROLLMENT_ALREADY_CLAIMED")
     private val noKeyDevice = ServerAnswer(404, "KEY_DEVICE_UNKNOWN")
 
+    /** What the key-device probe itself returns for "no key device" when it is asked now. */
+    private suspend fun probeNow(rec: StoredKeyDevice, answer: ServerAnswer = noKeyDevice): ServerKeyState.Gone {
+        val api = io.wolftown.kaiku.testutil.FakeApprovalApi().apply { failWith = io.wolftown.kaiku.testutil.apiError(answer.status, answer.code!!) }
+        return KeyDeviceProbe(api) { "22222222-2222-4222-8222-222222222222" }.probe(rec) as ServerKeyState.Gone
+    }
+
     /**
      * The claim's answer never came (the stored phase says so: no code of it was ever shown), the
      * enrolment says under its lock that it is claimed, and the key device, asked after that
@@ -234,7 +240,7 @@ class KeyAnswersTest {
      * without a server time.
      */
     @Test fun `a claim without an answer is given up at once when its enrolment is claimed and a later probe finds no key device`() = runTest {
-        for (probe in listOf(noKeyDevice, ServerAnswer(403, "KEY_DEVICE_REVOKED"))) {
+        for (answer in listOf(noKeyDevice, ServerAnswer(403, "KEY_DEVICE_REVOKED"))) {
             val (p, rec) = phone(KeyDevicePhase.CLAIMING, voidAfter = Instant.parse("2026-11-20T10:20:00Z"))
             val check = p.answers.settle(rec, origin, Ask.CLAIM_CHECK, claimed) as KeyAnswers.Settled.Kept
             assertEquals(Verdict.CLAIM_TAKEN, check.verdict)
@@ -242,11 +248,8 @@ class KeyAnswersTest {
             // The claim check alone forgets nothing.
             assertNotNull(p.repo.record.value)
             assertTrue(p.keyStore.hasKey())
-            val asked = AskOrder.next() // the probe is sent now
-            assertEquals(
-                KeyAnswers.Settled.Forgotten(Verdict.KEY_GONE),
-                p.answers.settle(rec, origin, Ask.DEVICE_LOGIN_CHALLENGE, probe, taken = check.taken, askedAt = asked),
-            )
+            val probe = probeNow(rec, answer) // sent now, after the enrolment answered
+            assertEquals(KeyAnswers.Settled.Forgotten(Verdict.KEY_GONE), p.answers.settle(rec, origin, probe, taken = check.taken))
             assertNull(p.repo.record.value)
             assertFalse(p.keyStore.hasKey())
         }
@@ -255,21 +258,21 @@ class KeyAnswersTest {
     @Test fun `the probe must have been asked after the claim check answered`() = runTest {
         val (p, rec) = phone(KeyDevicePhase.CLAIMING)
         // Sent before the enrolment answered: a claim completing in between would not show in it.
-        val early = AskOrder.next()
+        val early = probeNow(rec)
         val check = p.answers.settle(rec, origin, Ask.CLAIM_CHECK, claimed) as KeyAnswers.Settled.Kept
-        assertFalse(p.answers.settle(rec, origin, Ask.DEVICE_LOGIN_CHALLENGE, noKeyDevice, taken = check.taken, askedAt = early).forgotten)
-        // An answer that does not say when it was asked.
-        assertFalse(p.answers.settle(rec, origin, Ask.DEVICE_LOGIN_CHALLENGE, noKeyDevice, taken = check.taken).forgotten)
+        assertFalse(p.answers.settle(rec, origin, early, taken = check.taken).forgotten)
+        // "No key device" that did not come from the probe says nothing about when it was asked.
+        assertFalse(p.answers.settle(rec, origin, ServerKeyState.Gone(noKeyDevice), taken = check.taken).forgotten)
         assertNotNull(p.repo.record.value)
         assertTrue(p.keyStore.hasKey())
         // The same proof with a probe sent afterwards counts.
-        assertTrue(p.answers.settle(rec, origin, Ask.DEVICE_LOGIN_CHALLENGE, noKeyDevice, taken = check.taken, askedAt = AskOrder.next()).forgotten)
+        assertTrue(p.answers.settle(rec, origin, probeNow(rec), taken = check.taken).forgotten)
     }
 
     @Test fun `without the claim check's 'already claimed' no key device alone gives up nothing`() = runTest {
         val (p, rec) = phone(KeyDevicePhase.CLAIMING)
         // No proof at all.
-        assertFalse(p.answers.settle(rec, origin, Ask.DEVICE_LOGIN_CHALLENGE, noKeyDevice, askedAt = AskOrder.next()).forgotten)
+        assertFalse(p.answers.settle(rec, origin, probeNow(rec)).forgotten)
         // Every other answer of the claim check gives no proof.
         for (other in listOf(
             ServerAnswer(409, "ENROLLMENT_STATE"), ServerAnswer(400, "ENROLLMENT_DEVICE_IN_USE"), ServerAnswer(500, "INTERNAL_ERROR"),
@@ -290,16 +293,20 @@ class KeyAnswersTest {
     @Test fun `with that proof only the probe's own 'no key device' gives the claim up`() = runTest {
         val (p, rec) = phone(KeyDevicePhase.CLAIMING)
         val proof = (p.answers.settle(rec, origin, Ask.CLAIM_CHECK, claimed) as KeyAnswers.Settled.Kept).taken
+        val probe = probeNow(rec)
+        // The probe's result with any other answer in it.
         for (other in listOf(
             ServerAnswer(409, "KEY_DEVICE_PENDING"), ServerAnswer(403, "ACCOUNT_BANNED"), ServerAnswer(500, "INTERNAL_ERROR"),
             ServerAnswer(404), ServerAnswer(503, "KEY_DEVICE_UNKNOWN"), ServerAnswer(404, "KEY_DEVICE_REVOKED"), ServerAnswer(201),
         )) {
-            assertFalse(other.toString(), p.answers.settle(rec, origin, Ask.DEVICE_LOGIN_CHALLENGE, other, taken = proof, askedAt = AskOrder.next()).forgotten)
+            assertFalse(other.toString(), p.answers.settle(rec, origin, probe.copy(answer = other), taken = proof).forgotten)
         }
-        // "No key device" from another request than the probe, or from another server.
-        assertFalse(p.answers.settle(rec, origin, Ask.DEVICE_LOGIN, noKeyDevice, taken = proof, askedAt = AskOrder.next()).forgotten)
-        assertFalse(p.answers.settle(rec, origin, Ask.KEY_DEVICE_REMOVE, noKeyDevice, taken = proof, askedAt = AskOrder.next()).forgotten)
-        assertFalse(p.answers.settle(rec, "https://other.example.com", Ask.DEVICE_LOGIN_CHALLENGE, noKeyDevice, taken = proof, askedAt = AskOrder.next()).forgotten)
+        // "No key device" as the answer to another request cannot carry the proof at all.
+        assertFalse(p.answers.settle(rec, origin, Ask.DEVICE_LOGIN, noKeyDevice).forgotten)
+        assertFalse(p.answers.settle(rec, origin, Ask.DEVICE_LOGIN_CHALLENGE, noKeyDevice).forgotten)
+        assertFalse(p.answers.settle(rec, origin, Ask.KEY_DEVICE_REMOVE, noKeyDevice).forgotten)
+        // The probe's answer from another server.
+        assertFalse(p.answers.settle(rec, "https://other.example.com", probe, taken = proof).forgotten)
         assertNotNull(p.repo.record.value)
         assertTrue(p.keyStore.hasKey())
     }
@@ -312,8 +319,8 @@ class KeyAnswersTest {
         val (q, claiming) = phone(KeyDevicePhase.CLAIMING)
         val proof = (q.answers.settle(claiming, origin, Ask.CLAIM_CHECK, claimed) as KeyAnswers.Settled.Kept).taken
         val received = (q.repo.replace(claiming, claiming.copy(device = claiming.device.copy(claimSecret = "s"), phase = KeyDevicePhase.CLAIMED)) as Change.Done).record!!
-        assertFalse(q.answers.settle(received, origin, Ask.DEVICE_LOGIN_CHALLENGE, noKeyDevice, taken = proof, askedAt = AskOrder.next()).forgotten)
-        assertFalse(q.answers.settle(claiming, origin, Ask.DEVICE_LOGIN_CHALLENGE, noKeyDevice, taken = proof, askedAt = AskOrder.next()).forgotten)
+        assertFalse(q.answers.settle(received, origin, probeNow(received), taken = proof).forgotten)
+        assertFalse(q.answers.settle(claiming, origin, probeNow(claiming), taken = proof).forgotten)
         assertEquals(KeyDevicePhase.CLAIMED, q.repo.phase())
         assertTrue(q.keyStore.hasKey())
     }
@@ -323,7 +330,7 @@ class KeyAnswersTest {
         val proof = (p1.answers.settle(rec1, origin, Ask.CLAIM_CHECK, claimed) as KeyAnswers.Settled.Kept).taken
         val (p2, rec2) = phone(KeyDevicePhase.CLAIMING)
         val other = rec2.copy(attemptId = "a2").also { p2.repo.seedForTest(it) }
-        assertFalse(p2.answers.settle(other, origin, Ask.DEVICE_LOGIN_CHALLENGE, noKeyDevice, taken = proof, askedAt = AskOrder.next()).forgotten)
+        assertFalse(p2.answers.settle(other, origin, probeNow(other), taken = proof).forgotten)
         assertNotNull(p2.repo.record.value)
     }
 

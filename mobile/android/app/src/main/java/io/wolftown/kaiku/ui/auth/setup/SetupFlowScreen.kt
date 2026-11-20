@@ -62,6 +62,7 @@ fun SetupFlowScreen(
     val waiting by viewModel.waiting.collectAsState()
     val cannotAsk by viewModel.cannotAsk.collectAsState()
     val discardable by viewModel.discardable.collectAsState()
+    val lastResort by viewModel.lastResort.collectAsState()
 
     // Taken only once composed, so a discarded composition never loses the memory-only code.
     LaunchedEffect(link) {
@@ -75,8 +76,8 @@ fun SetupFlowScreen(
         return
     }
     SetupFlowSteps(
-        ui = u0, viewModel = viewModel, linkIgnored = linkIgnored, cannotAsk = cannotAsk, discardable = discardable,
-        onSignedIn = onSignedIn, onBack = onBack, onRescan = onRescan,
+        ui = u0, viewModel = viewModel, linkIgnored = linkIgnored, cannotAsk = cannotAsk, lastResort = lastResort,
+        discardable = discardable, onSignedIn = onSignedIn, onBack = onBack, onRescan = onRescan,
     )
 }
 
@@ -86,6 +87,7 @@ private fun SetupFlowSteps(
     viewModel: SetupFlowViewModel,
     linkIgnored: Boolean,
     cannotAsk: Boolean,
+    lastResort: Boolean,
     discardable: Boolean,
     onSignedIn: () -> Unit,
     onBack: (() -> Unit)?,
@@ -150,7 +152,6 @@ private fun SetupFlowSteps(
                 KeyNotice(stringResource(R.string.setup_claim_waiting), warning = false)
                 KeyPrimaryButton(stringResource(R.string.common_try_again), onClick = viewModel::retry)
                 if (onBack != null) KeySecondaryButton(stringResource(R.string.common_back), onClick = onBack)
-                KeyBody(stringResource(R.string.security_clear_storage_hint), secondary = true)
             }
             SetupUi.Interrupted -> {
                 KeyNotice(stringResource(R.string.setup_interrupted), warning = true)
@@ -164,22 +165,37 @@ private fun SetupFlowSteps(
                 onBack = onBack,
             )
         }
-        UnfinishedSetupHelp(cannotAsk = cannotAsk, discardable = discardable, onDiscard = viewModel::discard)
+        // The states of this screen have their own "Try again", or (the code) ask again by themselves.
+        UnfinishedSetupHelp(cannotAsk = cannotAsk, lastResort = lastResort, discardable = discardable, onRetry = null, onDiscard = viewModel::discard)
     }
 }
 
 /**
- * Under a stored setup whose server could not be asked: the last resort in plain words, and, once
- * the setup's own time is long past, "Discard this unfinished setup" behind a question that says
- * what it means.
+ * Under a stored setup whose server gave no answer just now: the screen says so, keeps waiting and
+ * offers "Try again" where the state above has no such button ([onRetry]). Only once that has
+ * lasted (several separate occasions over at least a day) does it say more: [discardable], for a
+ * claim that can never finish, "Discard this unfinished setup" behind a question that says what
+ * is checked and what it means; [lastResort], for every other setup, the last resort in words
+ * (no button deletes such a key).
  */
 @Composable
-internal fun UnfinishedSetupHelp(cannotAsk: Boolean, discardable: Boolean, onDiscard: () -> Unit) {
+internal fun UnfinishedSetupHelp(
+    cannotAsk: Boolean,
+    lastResort: Boolean,
+    discardable: Boolean,
+    onRetry: (() -> Unit)?,
+    onDiscard: () -> Unit,
+) {
     if (!cannotAsk) return
     var ask by remember { mutableStateOf(false) }
     KeyBody(stringResource(R.string.setup_cannot_ask_hint), secondary = true)
-    if (discardable) KeySecondaryButton(stringResource(R.string.setup_discard), onClick = { ask = true })
-    KeyBody(stringResource(R.string.security_clear_storage_hint), secondary = true)
+    if (onRetry != null) KeyPrimaryButton(stringResource(R.string.common_try_again), onClick = onRetry)
+    if (discardable) {
+        KeyBody(stringResource(R.string.setup_discard_hint), secondary = true)
+        KeySecondaryButton(stringResource(R.string.setup_discard), onClick = { ask = true })
+    } else if (lastResort) {
+        KeyBody(stringResource(R.string.setup_last_resort), secondary = true)
+    }
     if (ask && discardable) {
         AlertDialog(
             onDismissRequest = { ask = false },

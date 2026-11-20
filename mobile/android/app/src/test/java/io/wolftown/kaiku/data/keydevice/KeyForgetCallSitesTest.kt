@@ -21,7 +21,7 @@ class KeyForgetCallSitesTest {
         .map { it.relativeTo(root).path }
         .toSet()
 
-    @Test fun `a record is forgotten only for a server answer, an invalidated key, or the person's decision about an unfinished setup`() {
+    @Test fun `a record is forgotten only for a server answer, an invalidated key, or the person's decision about a setup that can never finish`() {
         // Who calls it (it is defined in the repository).
         assertEquals(
             setOf("data/keydevice/KeyAnswers.kt", "data/keydevice/KeyInvalidation.kt", "data/keydevice/SetupDiscard.kt"),
@@ -37,6 +37,8 @@ class KeyForgetCallSitesTest {
             filesWith(Regex("""Forget\.DISCARDED_BY_PERSON""")),
         )
         assertEquals(setOf("ui/auth/setup/SetupOwner.kt"), filesWith(Regex("""discards\.discard\(""")))
+        // Nothing but that one screen action leads there: "Confirm it's you" only reads the notes.
+        assertEquals(setOf("data/keydevice/SetupDiscard.kt"), filesWith(Regex("""fun discard\(expected""")))
         assertEquals(
             setOf("ui/auth/setup/SetupFlowViewModel.kt", "ui/auth/setup/SetupPendingViewModel.kt"),
             filesWith(Regex("""owner\.discard\(""")),
@@ -86,7 +88,7 @@ class KeyForgetCallSitesTest {
                 "data/keydevice/KeyAnswers.kt",
                 "data/auth/DeviceSignIn.kt",
                 "data/auth/KeyDeviceSignOut.kt",
-                "data/keydevice/SetupDiscard.kt",
+                "data/keydevice/ServerSilence.kt",
                 "data/auth/LegacyRemovalSession.kt",
                 "ui/auth/setup/SetupOwner.kt",
                 "ui/MainActivity.kt",

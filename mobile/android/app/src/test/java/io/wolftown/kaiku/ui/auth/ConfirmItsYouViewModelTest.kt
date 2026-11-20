@@ -51,7 +51,63 @@ class ConfirmItsYouViewModelTest {
     @Before fun setUp() = Dispatchers.setMain(UnconfinedTestDispatcher())
     @After fun tearDown() = Dispatchers.resetMain()
 
-    private fun vm(f: KeyDeviceFixture) = ConfirmItsYouViewModel(deviceSignIn, f.repo, signOut, SessionEndLog(), probe, f.answers)
+    /** The phone's own clock. */
+    private var now: Instant = Instant.parse("2026-11-20T09:00:00Z")
+
+    private fun vm(f: KeyDeviceFixture) = ConfirmItsYouViewModel(
+        deviceSignIn, f.repo, signOut, SessionEndLog(), probe, f.answers, io.wolftown.kaiku.data.keydevice.ServerSilence(f.repo) { now },
+    )
+
+    /**
+     * An active key whose server is gone for good can do nothing on this screen: once the server
+     * has not answered on several separate occasions over at least a day, the screen names the last
+     * resort in words. One open without a connection says nothing of the kind, and nothing here
+     * ever deletes the key.
+     */
+    @Test fun `a server that stays silent for long is named with the last resort, and the key stays`() = runTest {
+        coEvery { probe.probe(any()) } returns ServerKeyState.Unknown
+        val f = lapsedFixture()
+        // Opened once without a connection, long after the last sign-in.
+        now = now.plusSeconds(60L * 24 * 3600)
+        assertEquals(false, vm(f).ui.value.serverSilent)
+        // Again the same evening, and the next morning.
+        now = now.plusSeconds(600)
+        assertEquals(false, vm(f).ui.value.serverSilent)
+        now = now.plusSeconds(12 * 3600)
+        assertEquals(false, vm(f).ui.value.serverSilent)
+        // A third occasion, more than a day after the first.
+        now = now.plusSeconds(13 * 3600)
+        val v = vm(f)
+        assertTrue(v.ui.value.serverSilent)
+        assertEquals(false, v.ui.value.keyGone)
+        assertNull(v.ui.value.error)
+        assertNotNull(f.repo.local())
+        assertTrue(f.keyStore.hasKey())
+        assertEquals(3, f.repo.record.value!!.unanswered!!.occasions)
+    }
+
+    @Test fun `any answer of the server takes the note back, a refusal too`() = runTest {
+        val f = lapsedFixture()
+        for (answer in listOf(ServerKeyState.Active, ServerKeyState.Refused, ServerKeyState.Pending(Instant.parse("2026-12-01T08:00:00Z")))) {
+            coEvery { probe.probe(any()) } returns ServerKeyState.Unknown
+            for (hours in listOf(0L, 12, 13)) {
+                now = now.plusSeconds(hours * 3600)
+                vm(f)
+            }
+            assertTrue(answer.toString(), vm(f).ui.value.serverSilent)
+            coEvery { probe.probe(any()) } returns answer
+            assertEquals(answer.toString(), false, vm(f).ui.value.serverSilent)
+            assertNull(answer.toString(), f.repo.record.value!!.unanswered)
+            // Silent once more: one occasion, counted anew.
+            coEvery { probe.probe(any()) } returns ServerKeyState.Unknown
+            now = now.plusSeconds(2 * 3600)
+            assertEquals(answer.toString(), false, vm(f).ui.value.serverSilent)
+            assertEquals(answer.toString(), 1, f.repo.record.value!!.unanswered!!.occasions)
+            now = now.plusSeconds(3600)
+            f.repo.update(f.repo.record.value!!) { it.copy(unanswered = null) }
+        }
+        assertTrue(f.keyStore.hasKey())
+    }
 
     private fun TestScope.lapsedFixture(): KeyDeviceFixture =
         KeyDeviceFixture(backgroundScope).also { it.authState.setLoggedOut() } // an active key without its session: lapsed
@@ -241,6 +297,7 @@ class ConfirmItsYouViewModelTest {
             ServerKeyState.Active,
             ServerKeyState.Unknown,
             ServerKeyState.Pending(Instant.parse("2026-11-20T08:00:00Z")),
+            ServerKeyState.Refused,
             // "Gone" in words only: not one of the server's two answers.
             ServerKeyState.Gone(ServerAnswer(500, "KEY_DEVICE_UNKNOWN")),
         )) {

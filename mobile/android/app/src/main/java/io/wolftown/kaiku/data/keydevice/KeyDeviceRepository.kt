@@ -75,7 +75,7 @@ enum class Forget {
     SERVER_ANSWER,
     /** Android invalidated this key (screen lock removed), found by a signature with it. */
     KEY_INVALIDATED,
-    /** The person discarded an unfinished setup whose server could not be asked for a long time ([SetupDiscard]). */
+    /** The person discarded a setup that can never finish and whose server stayed silent for long ([SetupDiscard]). */
     DISCARDED_BY_PERSON,
 }
 
@@ -279,15 +279,16 @@ class KeyDeviceRepository @Inject constructor(
      * cleared durably first (a clear that fails deletes nothing); then the key goes if the alias
      * holds this record's key. Three callers exist: [KeyAnswers.settle] for a server answer,
      * [KeyInvalidation] for a key Android invalidated, and [SetupDiscard] for the person's own
-     * decision about an unfinished setup.
+     * decision about a setup that can never finish.
      */
     @Synchronized
     fun forget(expected: StoredKeyDevice, why: Forget): Change {
         if (storage is KeyStorage.Unreadable) return Change.Unreadable
         val now = stored()
         if (now == null || !(now sameAs expected)) return Change.Mismatch
-        // A person's decision ends an unfinished setup only, never an active key.
-        if (why == Forget.DISCARDED_BY_PERSON && now.phase == KeyDevicePhase.ACTIVE) return Change.Mismatch
+        // A person's decision ends only a setup that can never finish: a claim that needs a code and
+        // never got its answer. Never a record whose code was shown, a waiting or an active key.
+        if (why == Forget.DISCARDED_BY_PERSON && !(now.phase == KeyDevicePhase.CLAIMING && now.codeClaim)) return Change.Mismatch
         if (!store.clear()) return Change.WriteFailed
         set(KeyStorage.Absent)
         logger.info("Key device forgotten: $why")

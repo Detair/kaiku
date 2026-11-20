@@ -806,53 +806,51 @@ class SetupOwnerTest {
         return Triple(SetupPendingViewModel(later), f, later)
     }
 
-    @Test fun `an unfinished setup whose server cannot be asked may be discarded once its own time is long past`() = runTest {
-        val (waiting, f, owner) = waitingForCode()
-        assertEquals(now, f.repo.record.value!!.since)
+    /** One question without an answer: the screen says so and keeps waiting. Nothing more, however old the setup. */
+    @Test fun `one failed question says only that the server could not be asked`() = runTest {
+        val (waiting, f, _) = waitingForCode()
+        now = now.plusSeconds(30L * 24 * 3600)
         enroll.statusFailures += IOException("no route to host")
         waiting.check()
-        // The screen says the server could not be asked; discarding is not offered yet.
+        assertEquals(SetupUi.WaitingForCode, waiting.ui.value)
         assertTrue(waiting.cannotAsk.value)
+        assertFalse(waiting.lastResort.value)
         assertFalse(waiting.discardable.value)
-        waiting.discard()
-        assertEquals(KeyDevicePhase.CLAIMED, f.repo.phase())
-        assertTrue(f.keyStore.hasKey())
-
-        now = now.plus(SetupDiscard.CLAIM_AFTER).plusSeconds(1)
-        enroll.statusFailures += IOException("no route to host")
+        assertEquals(1, f.repo.record.value!!.unanswered!!.occasions)
+        // A server fault and "too many requests" are no answer either; a refusal of the server is one.
+        for (x in listOf(apiError(502, "BAD_GATEWAY"), apiError(429, "TOO_MANY_ATTEMPTS"))) {
+            enroll.statusFailures += x
+            waiting.check()
+            assertTrue(x.code, waiting.cannotAsk.value)
+        }
+        enroll.statusFailures += apiError(403, "ACCOUNT_BANNED")
         waiting.check()
-        assertTrue(waiting.cannotAsk.value)
-        assertTrue(waiting.discardable.value)
-        // Offering it changes nothing by itself.
-        assertEquals(KeyDevicePhase.CLAIMED, f.repo.phase())
-
-        waiting.discard()
-        assertEquals(SetupUi.Ended(R.string.setup_discarded, canRetry = false), waiting.ui.value)
-        assertNull(f.repo.local())
-        assertFalse(f.keyStore.hasKey())
-        assertEquals("clear", f.store.writes.last())
         assertFalse(waiting.cannotAsk.value)
-        assertFalse(waiting.discardable.value)
-        // A new link starts a setup.
-        assertFalse(owner.held())
-        assertTrue(owner.offer(link))
+        assertNull(f.repo.record.value!!.unanswered)
     }
 
-    @Test fun `discarding is withdrawn as soon as the server answers again`() = runTest {
+    @Test fun `the last resort is named in words once the silence has lasted, and taken back by the next answer`() = runTest {
         val (waiting, f, _) = waitingForCode()
-        now = now.plus(SetupDiscard.CLAIM_AFTER).plusSeconds(1)
-        enroll.statusFailures += IOException("no route to host")
-        waiting.check()
-        assertTrue(waiting.discardable.value)
+        val key = f.keyStore.keyId()
+        // Three occasions over a day and more.
+        for (hours in listOf(2L, 10, 27)) {
+            assertFalse(waiting.lastResort.value)
+            now = now.plusSeconds(hours * 3600)
+            enroll.statusFailures += IOException("no route to host")
+            waiting.check()
+            assertTrue(waiting.cannotAsk.value)
+        }
+        assertTrue(waiting.lastResort.value)
+        assertFalse(waiting.discardable.value)
         // The server is back: the claim still waits for its code.
         enroll.statuses += ClaimStatus(EnrollmentState.CLAIMED)
         waiting.check()
         runCurrent()
         assertFalse(waiting.cannotAsk.value)
-        assertFalse(waiting.discardable.value)
-        waiting.discard()
+        assertFalse(waiting.lastResort.value)
+        assertNull(f.repo.record.value!!.unanswered)
         assertEquals(KeyDevicePhase.CLAIMED, f.repo.phase())
-        assertTrue(f.keyStore.hasKey())
+        assertEquals(key, f.keyStore.keyId())
     }
 
     @Test fun `with the code on screen a failed question is noted, and the next answer takes the note back`() = runTest {
@@ -873,88 +871,101 @@ class SetupOwnerTest {
         assertFalse(v.cannotAsk.value)
     }
 
+    /** Silent on three occasions over more than a day, the last question just now. */
+    private fun silentForLong(waiting: SetupPendingViewModel) {
+        approval.failWith = IOException("offline")
+        for (hours in listOf(3L, 9, 28)) {
+            now = now.plusSeconds(hours * 3600)
+            waiting.check()
+        }
+    }
+
     @Test fun `discarding is checked again when it is asked for`() = runTest {
-        val (waiting, f, _) = waitingForCode()
-        now = now.plus(SetupDiscard.CLAIM_AFTER).plusSeconds(1)
-        enroll.statusFailures += IOException("no route to host")
-        waiting.check()
+        val (first, f, _) = lostClaim()
+        first.onCleared()
+        val waiting = SetupPendingViewModel(owner(f))
+        silentForLong(waiting)
         assertTrue(waiting.discardable.value)
-        // The phone's clock was put back meanwhile: the setup's own time is not past any more.
-        now = now.minus(SetupDiscard.CLAIM_AFTER)
-        waiting.discard()
-        assertEquals(KeyDevicePhase.CLAIMED, f.repo.phase())
-        assertTrue(f.keyStore.hasKey())
-        // The stored record is another one by now (the setup went on elsewhere): it is not the one offered.
-        now = now.plus(SetupDiscard.CLAIM_AFTER)
+        // The server answered meanwhile, noted by another part of the app: the offer on the screen is stale.
         val rec = f.repo.record.value!!
-        f.repo.update(rec) { it.copy(phase = KeyDevicePhase.PENDING, readyAt = now.plusSeconds(3600)) }
+        f.repo.update(rec) { it.copy(unanswered = null) }
+        waiting.discard()
+        assertEquals(KeyDevicePhase.CLAIMING, f.repo.phase())
+        assertTrue(f.keyStore.hasKey())
+        // The stored record is another one by now (the claim turned out to have made a waiting key device).
+        silentForLong(waiting)
+        assertTrue(waiting.discardable.value)
+        f.repo.update(f.repo.record.value!!) { it.copy(phase = KeyDevicePhase.PENDING, readyAt = now.plusSeconds(3600)) }
         waiting.discard()
         assertEquals(KeyDevicePhase.PENDING, f.repo.phase())
         assertTrue(f.keyStore.hasKey())
     }
 
-    @Test fun `a waiting key device may be discarded only a day after it should have been ready`() = runTest {
+    /** The app's own registration: its claim completes by itself, so the server may hold this key. */
+    @Test fun `a lost claim of the app's own registration is never offered to be discarded`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        enroll.claimGate = CompletableDeferred()
+        val (first, f) = phone()
+        val v = SetupFlowViewModel(first)
+        v.start(SetupEntry(SigFixtures.ORIGIN, token, SetupEntry.Source.TICKET, ticket = "ticket-secret"))
+        v.confirmSubject(activity)
+        advanceTimeBy(SetupOwner.CLAIM_TIMEOUT_MS + 1)
+        runCurrent()
+        assertEquals(KeyDevicePhase.CLAIMING, f.repo.phase())
+        assertFalse(f.repo.record.value!!.codeClaim)
+        v.onCleared()
+        val waiting = SetupPendingViewModel(owner(f))
+        silentForLong(waiting)
+        assertTrue(waiting.cannotAsk.value)
+        assertFalse(waiting.discardable.value)
+        assertTrue(waiting.lastResort.value)
+        waiting.discard()
+        assertEquals(KeyDevicePhase.CLAIMING, f.repo.phase())
+        assertTrue(f.keyStore.hasKey())
+    }
+
+    @Test fun `a claim stored by a build that did not say which kind it is is never offered to be discarded`() = runTest {
         env.pinned = SigFixtures.ORIGIN
         val (owner, f) = phone()
         f.keyStore.generate(ByteArray(32), use)
-        val readyAt = now.plusSeconds(24 * 3600)
         f.repo.seed(
             io.wolftown.kaiku.data.keydevice.StoredKeyDevice(
                 LocalKeyDevice(null, FakeEnrollmentApi.SUBJECT_ID, SigFixtures.ORIGIN, UvClass.PER_USE, "e1", null, "Oma"),
-                KeyDevicePhase.PENDING, readyAt = readyAt, keyId = f.keyStore.keyId(), installId = SigFixtures.DEVICE_ID,
+                KeyDevicePhase.CLAIMING, keyId = f.keyStore.keyId(),
             ),
         )
         val waiting = SetupPendingViewModel(owner)
-        approval.failWith = IOException("no route to host")
-        for (at in listOf(now, readyAt.plusSeconds(1), readyAt.plus(SetupDiscard.PENDING_AFTER))) {
-            now = at
-            waiting.check()
-            assertTrue(waiting.cannotAsk.value)
-            assertFalse(at.toString(), waiting.discardable.value)
-        }
-        now = readyAt.plus(SetupDiscard.PENDING_AFTER).plusSeconds(1)
-        waiting.check()
-        assertTrue(waiting.discardable.value)
-        waiting.discard()
-        assertNull(f.repo.local())
-        assertFalse(f.keyStore.hasKey())
-    }
-
-    @Test fun `a setup stored without its time counts from when its server first could not be asked`() = runTest {
-        env.pinned = SigFixtures.ORIGIN
-        val (owner, f) = phone()
-        f.keyStore.generate(ByteArray(32), use)
-        f.repo.saveClaimed(LocalKeyDevice(null, FakeEnrollmentApi.SUBJECT_ID, SigFixtures.ORIGIN, UvClass.PER_USE, "e1", "claim-secret", "Oma"))
-        val waiting = SetupPendingViewModel(owner)
-        // Long after whenever it was made, by any clock: without a time of its own nothing is offered yet.
-        now = now.plusSeconds(30L * 24 * 3600)
-        enroll.statusFailures += IOException("no route to host")
-        waiting.check()
-        assertTrue(waiting.cannotAsk.value)
+        silentForLong(waiting)
         assertFalse(waiting.discardable.value)
-        assertEquals(now, f.repo.record.value!!.since)
-        now = now.plus(SetupDiscard.CLAIM_AFTER).plusSeconds(1)
-        enroll.statusFailures += IOException("no route to host")
-        waiting.check()
-        assertTrue(waiting.discardable.value)
+        assertTrue(waiting.lastResort.value)
+        waiting.discard()
+        assertEquals(KeyDevicePhase.CLAIMING, f.repo.phase())
     }
 
-    @Test fun `a lost claim whose server gives no time may be discarded after its own time`() = runTest {
+    /** "No key device" without the server's time cannot be counted by: it is not an answer the phone can use. */
+    @Test fun `a lost code claim whose server gives no time counts as not answered`() = runTest {
         val (first, f, _) = lostClaim()
+        assertTrue(f.repo.record.value!!.codeClaim)
         first.onCleared()
         val waiting = SetupPendingViewModel(owner(f))
-        // "No key device", and no server time to count the claim's own time by: nothing can be decided.
         approval.failWith = noKeyDeviceAt(null)
+        now = now.plusSeconds(3 * 3600)
         waiting.check()
         assertEquals(SetupUi.Ended(R.string.setup_claim_unsure, canRetry = true), waiting.ui.value)
         assertTrue(waiting.cannotAsk.value)
         assertFalse(waiting.discardable.value)
-        now = now.plus(SetupDiscard.CLAIM_AFTER).plusSeconds(1)
-        waiting.check()
+        assertFalse(waiting.lastResort.value)
+        for (hours in listOf(6L, 20)) {
+            now = now.plusSeconds(hours * 3600)
+            waiting.check()
+        }
         assertTrue(waiting.discardable.value)
+        assertFalse(waiting.lastResort.value)
         waiting.discard()
         assertEquals(SetupUi.Ended(R.string.setup_discarded, canRetry = false), waiting.ui.value)
         assertNull(f.repo.local())
+        assertFalse(f.keyStore.hasKey())
+        assertFalse(waiting.cannotAsk.value)
     }
 
     // ── The server ────────────────────────────────────────────────────────────────────────────
@@ -1020,6 +1031,165 @@ class SetupOwnerTest {
         advanceTimeBy(10_000)
         runCurrent()
         assertTrue(revoked)
+    }
+
+    // ── Discarding is the last step, and only for a setup that can never finish ───────────────
+
+    /**
+     * An existing account's phone waits for its ready time and is first opened two days later,
+     * without a connection. By then the server has most likely made it a key: nothing on the
+     * screen deletes that key, however long and however often the server cannot be asked.
+     */
+    @Test fun `a waiting key device opened offline long after its ready time is never offered to be discarded`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        val (owner, f) = phone()
+        f.keyStore.generate(ByteArray(32), use)
+        val key = f.keyStore.keyId()
+        val readyAt = now.plusSeconds(24 * 3600)
+        // As a setup from an admin's link leaves it: claimed with a code, confirmed, waiting for its time.
+        f.repo.seed(
+            io.wolftown.kaiku.data.keydevice.StoredKeyDevice(
+                LocalKeyDevice(null, FakeEnrollmentApi.SUBJECT_ID, SigFixtures.ORIGIN, UvClass.PER_USE, "e1", null, "Oma"),
+                KeyDevicePhase.PENDING, readyAt = readyAt, keyId = key, installId = SigFixtures.DEVICE_ID,
+                since = now, codeClaim = true,
+            ),
+        )
+        now = readyAt.plusSeconds(26 * 3600)
+        approval.failWith = IOException("offline")
+        val waiting = SetupPendingViewModel(owner)
+        waiting.check()
+        // The screen says the server could not be asked, keeps the ready time, and offers nothing else.
+        assertEquals(SetupUi.Pending(readyAt), waiting.ui.value)
+        assertTrue(waiting.cannotAsk.value)
+        assertFalse(waiting.discardable.value)
+        assertFalse(waiting.lastResort.value)
+        waiting.discard()
+        assertEquals(KeyDevicePhase.PENDING, f.repo.phase())
+        assertEquals(key, f.keyStore.keyId())
+        repeat(8) {
+            now = now.plusSeconds(8 * 3600)
+            waiting.check()
+            assertTrue(waiting.cannotAsk.value)
+            assertFalse(waiting.discardable.value)
+            waiting.discard()
+        }
+        // After days of silence the last resort is named, in words; still no action deletes the key.
+        assertTrue(waiting.lastResort.value)
+        assertEquals(KeyDevicePhase.PENDING, f.repo.phase())
+        assertEquals(key, f.keyStore.keyId())
+        assertFalse(f.store.writes.contains("clear"))
+        // The server is back: the phone is a key, as the server says.
+        approval.failWith = null
+        approval.nextChallenge = activeChallenge
+        waiting.check()
+        assertEquals(SetupUi.SigningIn, waiting.ui.value)
+        assertEquals(KeyDevicePhase.ACTIVE, f.repo.phase())
+        assertEquals(key, f.keyStore.keyId())
+        assertFalse(waiting.cannotAsk.value)
+        assertFalse(waiting.lastResort.value)
+        assertNull(f.repo.record.value!!.unanswered)
+    }
+
+    /** A code that was shown may have been confirmed while the app was closed. */
+    @Test fun `a claim whose code was shown is never offered to be discarded`() = runTest {
+        val (waiting, f, _) = waitingForCode()
+        val key = f.keyStore.keyId()
+        repeat(8) {
+            now = now.plusSeconds(8 * 3600)
+            enroll.statusFailures += IOException("no route to host")
+            waiting.check()
+            assertTrue(waiting.cannotAsk.value)
+            assertFalse(waiting.discardable.value)
+            waiting.discard()
+        }
+        assertTrue(waiting.lastResort.value)
+        assertEquals(KeyDevicePhase.CLAIMED, f.repo.phase())
+        assertEquals(key, f.keyStore.keyId())
+    }
+
+    /**
+     * A claim that needs a code and never got its answer can never finish (its code was never
+     * shown). Even so the offer comes only once its server stayed silent on several separate
+     * occasions over at least a day; one failed question, however late, offers nothing.
+     */
+    @Test fun `a lost code claim may be discarded only after its server stayed silent on several occasions over a day`() = runTest {
+        val (first, f, _) = lostClaim()
+        first.onCleared()
+        val waiting = SetupPendingViewModel(owner(f)) // after a restart: the link is gone
+        val key = f.keyStore.keyId()
+        approval.failWith = IOException("offline")
+        // One failed question, hours after the claim's own time.
+        now = now.plusSeconds(3 * 3600)
+        val firstFailure = now
+        waiting.check()
+        assertTrue(waiting.cannotAsk.value)
+        assertFalse(waiting.discardable.value)
+        waiting.discard()
+        assertEquals(KeyDevicePhase.CLAIMING, f.repo.phase())
+        // Asked again a few minutes later: the same occasion.
+        now = now.plusSeconds(600)
+        waiting.check()
+        assertFalse(waiting.discardable.value)
+        // A second and a third occasion, but less than a day since the first.
+        now = firstFailure.plusSeconds(6 * 3600)
+        waiting.check()
+        assertFalse(waiting.discardable.value)
+        now = firstFailure.plusSeconds(12 * 3600)
+        waiting.check()
+        assertFalse(waiting.discardable.value)
+        waiting.discard()
+        assertEquals(KeyDevicePhase.CLAIMING, f.repo.phase())
+        assertEquals(key, f.keyStore.keyId())
+        // More than a day after the first failed question, still silent: now it is offered.
+        assertFalse(waiting.lastResort.value)
+        now = firstFailure.plusSeconds(24 * 3600 + 60)
+        waiting.check()
+        assertTrue(waiting.cannotAsk.value)
+        assertTrue(waiting.discardable.value)
+        assertFalse(waiting.lastResort.value)
+        // Offering it changes nothing by itself.
+        assertEquals(KeyDevicePhase.CLAIMING, f.repo.phase())
+        assertEquals(key, f.keyStore.keyId())
+        waiting.discard()
+        assertEquals(SetupUi.Ended(R.string.setup_discarded, canRetry = false), waiting.ui.value)
+        assertNull(f.repo.local())
+        assertFalse(f.keyStore.hasKey())
+    }
+
+    @Test fun `an answer of the server in between starts the count of silent occasions again`() = runTest {
+        val (first, f, _) = lostClaim()
+        first.onCleared()
+        val until = f.repo.record.value!!.claimVoidAfter!!
+        val waiting = SetupPendingViewModel(owner(f))
+        val t0 = now
+        approval.failWith = IOException("offline")
+        now = t0.plusSeconds(3 * 3600)
+        waiting.check()
+        now = t0.plusSeconds(9 * 3600)
+        waiting.check()
+        assertFalse(waiting.discardable.value)
+        // The server answers ("no key device yet", by its own clock still within the claim's time).
+        approval.failWith = noKeyDeviceAt(until.minusSeconds(60))
+        now = t0.plusSeconds(10 * 3600)
+        waiting.check()
+        assertEquals(SetupUi.ClaimWaiting, waiting.ui.value)
+        assertFalse(waiting.cannotAsk.value)
+        // Silent again, a day and more after the very first failed question: the count started anew.
+        approval.failWith = IOException("offline")
+        now = t0.plusSeconds(28 * 3600)
+        waiting.check()
+        assertTrue(waiting.cannotAsk.value)
+        assertFalse(waiting.discardable.value)
+        now = t0.plusSeconds(34 * 3600)
+        waiting.check()
+        assertFalse(waiting.discardable.value)
+        waiting.discard()
+        assertEquals(KeyDevicePhase.CLAIMING, f.repo.phase())
+        assertTrue(f.keyStore.hasKey())
+        // Three occasions over a day, counted from the first one after that answer.
+        now = t0.plusSeconds(53 * 3600)
+        waiting.check()
+        assertTrue(waiting.discardable.value)
     }
 
     /** The session was installed, and the sign-in was still finishing when the screen's limit hit: it is a sign-in. */
