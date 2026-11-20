@@ -261,9 +261,35 @@ pub(crate) async fn request_keyframe(peer: &Peer, ssrcs: &[u32]) -> Result<(), w
     peer.publisher_pc.write_rtcp(&packets).await.map(|_| ())
 }
 
-/// Number of media sections (`m=` lines) in a session description.
-fn count_media_sections(sdp: &str) -> usize {
-    sdp.lines().filter(|l| l.starts_with("m=")).count()
+/// The direction of each media section of a session description, in order
+/// (`sendrecv` when a section names none).
+fn section_directions(sdp: &str) -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = Vec::new();
+    for line in sdp.lines() {
+        if line.starts_with("m=") {
+            out.push("sendrecv");
+        } else if let Some(last) = out.last_mut() {
+            for dir in ["sendrecv", "sendonly", "recvonly", "inactive"] {
+                if line.strip_prefix("a=") == Some(dir) {
+                    *last = dir;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Whether an answer with `answer` section directions can answer an offer
+/// with `offer` directions (same sections, each direction allowed by
+/// JSEP). An answer to an earlier offer fails this once a section changed.
+fn answer_fits(offer: &[&str], answer: &[&str]) -> bool {
+    offer.len() == answer.len()
+        && offer.iter().zip(answer).all(|(o, a)| match *o {
+            "sendonly" => matches!(*a, "recvonly" | "inactive"),
+            "recvonly" => matches!(*a, "sendonly" | "inactive"),
+            "inactive" => *a == "inactive",
+            _ => true,
+        })
 }
 
 /// How long a subscriber offer may wait for its answer before a new change
@@ -1644,7 +1670,7 @@ impl SfuServer {
     /// Handle a subscriber answer from the client. If tracks changed while
     /// the answered offer was outstanding, the next offer goes out now.
     pub async fn handle_subscriber_answer(peer: &Arc<Peer>, sdp: String) -> Result<(), VoiceError> {
-        let media_sections = count_media_sections(&sdp);
+        let answer_directions = section_directions(&sdp);
         let answer =
             RTCSessionDescription::answer(sdp).map_err(|e| VoiceError::Signaling(e.to_string()))?;
         let (next, applied) = {
@@ -1654,13 +1680,14 @@ impl SfuServer {
                 debug!(user_id = %peer.user_id, "Ignoring a subscriber answer without an open offer");
                 return Ok(());
             }
-            let open_sections = peer
+            let open_directions = peer
                 .subscriber_pc
                 .pending_local_description()
                 .await
-                .map(|d| count_media_sections(&d.sdp));
-            if open_sections.is_some_and(|n| n != media_sections) {
-                // Answers an older offer than the open one.
+                .map(|d| section_directions(&d.sdp));
+            if open_directions.is_some_and(|offer| !answer_fits(&offer, &answer_directions)) {
+                // Answers an older offer than the open one (another number of
+                // sections, or a section whose direction changed since).
                 debug!(user_id = %peer.user_id, "Ignoring an answer to a superseded subscriber offer");
                 return Ok(());
             }
@@ -1670,7 +1697,15 @@ impl SfuServer {
             // A change waited for this answer, or the answer did not fit:
             // offer (again) now.
             let next = if state.again || applied.is_err() {
-                Some(Self::open_offer(peer, &mut state).await?)
+                match Self::open_offer(peer, &mut state).await {
+                    Ok(next) => Some(next),
+                    Err(e) => {
+                        // Not lost: try again shortly.
+                        state.again = true;
+                        Self::retry_offer_later(peer);
+                        return Err(e);
+                    }
+                }
             } else {
                 None
             };
@@ -1760,6 +1795,9 @@ impl SfuServer {
                     Err(e) => {
                         debug!(user_id = %peer.user_id, error = %e, "Repeating an unanswered offer failed");
                         state.awaiting_answer_since = None;
+                        // The change it carried is not lost: try again shortly.
+                        state.again = true;
+                        Self::retry_offer_later(&peer);
                         return;
                     }
                 }
@@ -2325,6 +2363,48 @@ mod negotiation_tests {
         tokio::time::sleep(SUBSCRIBER_ANSWER_TIMEOUT + Duration::from_secs(1)).await;
         let next = offer_sdp(rx.try_recv().expect("the change was offered"));
         assert_eq!(next.matches("m=audio").count(), 2, "{next}");
+        peer.close().await;
+    }
+
+    /// An answer to an older offer with the same number of media sections
+    /// (a track was removed in between, so a section changed direction) is
+    /// ignored too.
+    #[tokio::test]
+    async fn answer_to_an_offer_before_a_removal_is_ignored() {
+        let (_sfu, peer, mut rx, client) = setup().await;
+        peer.add_outgoing_track(
+            Uuid::from_u128(3),
+            TrackSource::Microphone,
+            audio_track("u3"),
+        )
+        .await
+        .expect("track");
+        SfuServer::renegotiate(&peer).await.expect("offer");
+        let first = offer_sdp(rx.try_recv().expect("offer sent"));
+        let stale = answer_for(&client, first).await;
+
+        assert!(
+            peer.remove_outgoing_track(Uuid::from_u128(3), TrackSource::Microphone)
+                .await
+        );
+        peer.negotiation.lock().await.awaiting_answer_since =
+            Some(tokio::time::Instant::now() - SUBSCRIBER_ANSWER_TIMEOUT);
+        SfuServer::renegotiate(&peer).await.expect("re-offer");
+        let second = offer_sdp(rx.try_recv().expect("re-offer sent"));
+        assert_eq!(second.matches("m=audio").count(), 1, "{second}");
+
+        SfuServer::handle_subscriber_answer(&peer, stale)
+            .await
+            .expect("stale answer ignored");
+        assert!(
+            peer.negotiation
+                .lock()
+                .await
+                .awaiting_answer_since
+                .is_some(),
+            "an answer to the earlier offer was taken for the open one"
+        );
+        let _ = client.close().await;
         peer.close().await;
     }
 
