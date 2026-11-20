@@ -182,6 +182,19 @@ class PcSetupApprovalViewModelTest {
         v.viewModelScope.coroutineContext[kotlinx.coroutines.Job]!!.cancel()
     }
 
+    @Test fun `the leave question goes away when the code is no longer needed`() = runTest {
+        val (v, _) = vm()
+        v.start(payload)
+        v.approve(activity)
+        assertFalse(v.requestBack())
+        assertTrue(v.leaveAsked.value)
+        api.pcStatuses.add(PcSetupPhoneStatus("enrolled"))
+        advanceTimeBy(1_100)
+        assertEquals(PcSetupUi.Entered, v.ui.value)
+        assertFalse(v.leaveAsked.value)
+        v.viewModelScope.coroutineContext[kotlinx.coroutines.Job]!!.cancel()
+    }
+
     @Test fun `code survives lifecycle stop`() = runTest {
         val (v, _) = vm()
         v.start(payload)

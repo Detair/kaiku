@@ -290,11 +290,15 @@ class PcSetupApprovalViewModel @Inject constructor(
     private fun apply(s: PcSetupPhoneStatus): Boolean {
         val end = endText(s)
         if (end != null) {
+            _leaveAsked.value = false
             _ui.value = PcSetupUi.Finished(end, ok = s.state == "completed")
             return true
         }
         // The right code was typed: the phone no longer holds it.
-        if (s.state == "enrolled") _ui.value = PcSetupUi.Entered
+        if (s.state == "enrolled") {
+            _leaveAsked.value = false
+            _ui.value = PcSetupUi.Entered
+        }
         return false
     }
 

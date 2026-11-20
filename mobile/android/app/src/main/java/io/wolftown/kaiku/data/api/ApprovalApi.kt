@@ -28,7 +28,6 @@ interface ApprovalApi {
     suspend fun claimPcSetup(tokenB64u: String): ApprovalChallenge
     suspend fun answerPcSetup(challengeId: String, decision: String, responseB64u: String, signatureB64u: String): PcSetupAnswer
     suspend fun refusePcSetup(challengeId: String)
-    /** The scanning phone's view of its attempt (no long-poll: the app asks at most once a second). */
     /** The scanning phone's long-poll (`wait` 0..25 s; the server answers early on a change). */
     suspend fun pcSetupStatus(attemptId: String, waitSeconds: Int): PcSetupPhoneStatus
     suspend fun release(challengeId: String)
