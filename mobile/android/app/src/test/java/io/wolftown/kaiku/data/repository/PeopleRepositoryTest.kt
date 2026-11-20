@@ -61,11 +61,16 @@ class PeopleRepositoryTest {
     }
 
     @Test
-    fun `a failed block list hides nobody, a loaded one hides the blocked`() = runTest {
+    fun `a failed block list offers nobody, a loaded one hides the blocked`() = runTest {
         coEvery { guildApi.getGuilds() } returns listOf(Guild("g1", "Family"))
         coEvery { guildApi.getMembers("g1") } returns listOf(member("anna"), member("troll"))
         coEvery { dmApi.getBlocked() } throws IOException("x")
-        assertEquals(listOf("anna", "troll"), repo.load().people.map { it.userId })
+        // Never offer someone who may be blocked: the whole list fails, with Retry.
+        try {
+            repo.load()
+            org.junit.Assert.fail("expected PeopleUnavailableException")
+        } catch (_: PeopleUnavailableException) {
+        }
 
         coEvery { dmApi.getBlocked() } returns setOf("troll")
         assertEquals(listOf("anna"), repo.load().people.map { it.userId })

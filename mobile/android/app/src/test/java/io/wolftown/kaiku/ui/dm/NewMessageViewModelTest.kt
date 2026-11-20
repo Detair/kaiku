@@ -142,4 +142,19 @@ class NewMessageViewModelTest {
         assertEquals("ber", restored.ui.value.query)
         assertEquals(listOf(bert), restored.ui.value.shown)
     }
+
+    @Test
+    fun `a failed reload drops the people of the earlier load`() = runTest(dispatcher) {
+        coEvery { people.load() } returns People(listOf(anna, bert), failedServers = 0)
+        val vm = NewMessageViewModel(people, dms)
+        advanceUntilIdle()
+        assertEquals(2, vm.ui.value.people.size)
+
+        // The user left a server meanwhile; the reload fails: nobody unconfirmed stays tappable.
+        coEvery { people.load() } throws PeopleUnavailableException(IOException())
+        vm.load()
+        advanceUntilIdle()
+        assertEquals(emptyList<Person>(), vm.ui.value.people)
+        assertEquals(true, vm.ui.value.loadError != null)
+    }
 }

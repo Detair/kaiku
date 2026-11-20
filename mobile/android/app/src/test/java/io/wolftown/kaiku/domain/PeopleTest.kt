@@ -24,20 +24,20 @@ class PeopleTest {
     }
 
     @Test
-    fun `a nickname is shown first and the account name is kept for search`() {
+    fun `the account's display name is shown and a server nickname is kept for search`() {
         val people = messageCandidates(listOf(listOf(m("o", "oma", "Gertrud", nick = "Oma"))), me = null, blocked = emptySet())
 
-        val oma = people.single()
-        assertEquals("Oma", oma.name)
-        assertEquals("Gertrud", oma.realName)
-        assertTrue(oma.matches("gert"))
+        val gertrud = people.single()
+        assertEquals("Gertrud", gertrud.name)
+        assertTrue(gertrud.matches("oma"))
+        assertTrue(gertrud.matches("gert"))
     }
 
     @Test
     fun `without a display name the login name is shown`() {
         val p = messageCandidates(listOf(listOf(m("o", "oma"))), me = null, blocked = emptySet()).single()
         assertEquals("oma", p.name)
-        assertNull(p.realName)
+        assertNull(p.nickname)
     }
 
     @Test

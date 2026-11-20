@@ -78,7 +78,8 @@ class NewMessageViewModel @Inject constructor(
                 throw e
             } catch (e: Exception) {
                 logger.warning("people load failed (${e::class.simpleName})")
-                _ui.update { it.copy(loading = false, loadError = DmErrorText.load(e)) }
+                // Nobody unconfirmed stays tappable (someone may have left a server meanwhile).
+                _ui.update { it.copy(loading = false, people = emptyList(), failedServers = 0, loadError = DmErrorText.load(e)) }
             }
         }
     }

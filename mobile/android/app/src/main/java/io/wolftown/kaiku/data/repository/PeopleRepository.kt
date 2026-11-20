@@ -34,11 +34,11 @@ class PeopleRepository @Inject constructor(
     /**
      * Member lists load in parallel. One server failing only counts in
      * [People.failedServers]; all of them failing throws
-     * [PeopleUnavailableException]. The block list is best effort: without it
-     * nobody is hidden and the server still refuses a blocked pair.
+     * [PeopleUnavailableException]. So does a block list that cannot be
+     * loaded: nobody who may be blocked is ever offered.
      */
     suspend fun load(): People = coroutineScope {
-        val blocked = async { loadBlockedQuietly() }
+        val blocked = async { loadBlocked() }
         val guilds = guildApi.getGuilds()
         val lists = guilds.map { g -> async { loadMembers(g.id) } }.awaitAll()
         val loaded = lists.mapNotNull { it.getOrNull() }
@@ -60,13 +60,13 @@ class PeopleRepository @Inject constructor(
         Result.failure(e)
     }
 
-    private suspend fun loadBlockedQuietly(): Set<String> = try {
+    private suspend fun loadBlocked(): Set<String> = try {
         dmApi.getBlocked()
     } catch (e: CancellationException) {
         throw e
     } catch (e: Exception) {
         logger.warning("block list failed (${e::class.simpleName})")
-        emptySet()
+        throw PeopleUnavailableException(e)
     }
 
     private companion object {

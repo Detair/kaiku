@@ -7,20 +7,21 @@ import java.util.Locale
 
 /**
  * Someone the user can start a conversation with ("New message").
- * [name] is what is shown first; [realName] is the account's display name
- * when [name] is a server nickname; [username] is the login name.
+ * [name] is the account's display name (shown first); [nickname] is a
+ * server nickname that differs from it (searchable, not shown); [username]
+ * is the login name.
  */
 data class Person(
     val userId: String,
     val name: String,
     val username: String,
     val avatarUrl: String?,
-    val realName: String? = null,
+    val nickname: String? = null,
 )
 
 /**
  * Everyone on the user's servers, once: de-duplicated by user id (the first
- * server's nickname wins), without the user themself and without people
+ * server's nickname is kept for search), without the user themself and without people
  * in [blocked]. Sorted by shown name, as the people in [locale] sort.
  */
 fun messageCandidates(
@@ -40,10 +41,10 @@ fun messageCandidates(
             val nickname = m.nickname?.takeIf { it.isNotBlank() }
             people += Person(
                 userId = m.userId,
-                name = nickname ?: accountName,
+                name = accountName,
                 username = m.username,
                 avatarUrl = m.avatarUrl,
-                realName = accountName.takeIf { nickname != null && it != nickname },
+                nickname = nickname?.takeIf { it != accountName },
             )
         }
     }
@@ -51,11 +52,11 @@ fun messageCandidates(
     return people.sortedWith { a, b -> collator.compare(a.name, b.name).takeIf { it != 0 } ?: a.username.compareTo(b.username) }
 }
 
-/** Whether [person] matches the search [query]: shown name, real name or login name; case and accents ignored. */
+/** Whether [person] matches the search [query]: display name, nickname or login name; case and accents ignored. */
 fun Person.matches(query: String): Boolean {
     val q = searchKey(query.trim())
     if (q.isEmpty()) return true
-    return searchKey(name).contains(q) || searchKey(username).contains(q) || (realName?.let { searchKey(it).contains(q) } ?: false)
+    return searchKey(name).contains(q) || searchKey(username).contains(q) || (nickname?.let { searchKey(it).contains(q) } ?: false)
 }
 
 private val marks = Regex("\\p{Mn}+")
