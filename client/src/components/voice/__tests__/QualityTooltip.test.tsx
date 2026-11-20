@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { render, cleanup } from "@solidjs/testing-library";
+import { render, cleanup, screen } from "@solidjs/testing-library";
 import QualityTooltip from "../QualityTooltip";
 import MicrophoneTest from "../MicrophoneTest";
 
@@ -14,7 +14,8 @@ describe("voice text", () => {
   });
 
   it("microphone test close button has an accessible name", () => {
-    const { getByLabelText } = render(() => <MicrophoneTest onClose={() => {}} />);
-    expect(getByLabelText("Close")).toBeTruthy();
+    // The dialog frame renders in a portal, outside the render container.
+    render(() => <MicrophoneTest onClose={() => {}} />);
+    expect(screen.getByLabelText("Close")).toBeTruthy();
   });
 });

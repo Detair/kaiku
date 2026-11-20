@@ -170,6 +170,12 @@ function heldSession(): VoiceSessionHandle | null {
   return voiceOwner.sessionOf(channelWish);
 }
 
+/** The own screen self-preview goes with the session (no `ended` fires). */
+function removeOwnScreenPreview(): void {
+  const me = currentUser()?.id;
+  if (me) void import("@/stores/screenShareViewer").then((v) => v.removeTracksOfUser(me));
+}
+
 /** The held channel session (screen share / webcam flow). */
 export function currentChannelSession(): VoiceSessionHandle | null {
   return heldSession();
@@ -584,9 +590,7 @@ function installAdapterHandlers(adapter: VoiceAdapter): void {
     onLocalMediaEnded: (kind, streamId) => {
       // The browser's own "Stop sharing" bar, a closed window, a revoked
       // permission: the same stop as the button.
-      void import("./mediaPublish")
-        .then(({ mediaPublisher }) => mediaPublisher())
-        .then((publisher) => publisher.captureEnded(kind, streamId));
+      void publisher().then((p) => p?.captureEnded(kind, streamId));
     },
     onWebcamTrack: (userId, track) => {
       console.log("[Voice] Webcam track received:", userId);
@@ -691,6 +695,7 @@ function channelHooks(channelId: string): VoiceHooks {
       // (screen share and webcam are not restarted, C32).
       removeRemoteAudioElements();
       import("@/stores/webcamViewer").then(({ clearAll }) => clearAll());
+      removeOwnScreenPreview();
       setVoiceState({ screenSharing: false, webcamActive: false });
     },
     rejoined: async (adapter, _session, mine) => {
@@ -800,6 +805,7 @@ export async function leaveVoice(): Promise<void> {
 function resetVoiceSession(): void {
   // Clear webcam viewer tracks
   import("@/stores/webcamViewer").then(({ clearAll }) => clearAll());
+  removeOwnScreenPreview();
 
   setVoiceState({
     state: "disconnected",
@@ -1163,20 +1169,33 @@ export function setSpeaking(speaking: boolean): void {
 // any track is sent (C30), and every way a share ends runs one stop. The
 // flow lives in `mediaPublish.ts` (loaded on first use, not at start-up).
 
+/** The publish flow, loaded on first use; null when its chunk cannot load. */
+async function publisher() {
+  try {
+    const { mediaPublisher } = await import("./mediaPublish");
+    return await mediaPublisher();
+  } catch (err) {
+    console.error("[Voice] Screen share code could not be loaded:", err);
+    return null;
+  }
+}
+
+/** Text when the publish flow's chunk could not load (after a deploy, offline). */
+const notLoaded = () => ({ ok: false, error: t("common.loadFailed") });
+
 /** Start sharing the screen (`sourceId`: native capture source, desktop only). */
 export async function startScreenShare(
   quality?: ScreenShareQuality,
   sourceId?: string,
 ): Promise<{ ok: boolean; error?: string; note?: string }> {
-  const { mediaPublisher } = await import("./mediaPublish");
-  return (await mediaPublisher()).startScreenShare(quality, sourceId);
+  const p = await publisher();
+  return p ? p.startScreenShare(quality, sourceId) : notLoaded();
 }
 
 /** Stop one own screen share, or all of them. */
 export async function stopScreenShare(streamId?: string): Promise<void> {
   if (!voiceState.screenSharing) return;
-  const { mediaPublisher } = await import("./mediaPublish");
-  await (await mediaPublisher()).stopScreenShare(streamId);
+  await (await publisher())?.stopScreenShare(streamId);
 }
 
 /** Start the camera. */
@@ -1184,15 +1203,19 @@ export async function startWebcam(
   quality?: ScreenShareQuality,
   deviceId?: string,
 ): Promise<{ ok: boolean; error?: string; note?: string }> {
-  const { mediaPublisher } = await import("./mediaPublish");
-  return (await mediaPublisher()).startWebcam(quality, deviceId);
+  const p = await publisher();
+  return p ? p.startWebcam(quality, deviceId) : notLoaded();
 }
 
 /** Stop the camera. */
 export async function stopWebcam(): Promise<void> {
   if (!voiceState.webcamActive) return;
-  const { mediaPublisher } = await import("./mediaPublish");
-  await (await mediaPublisher()).stopWebcam();
+  await (await publisher())?.stopWebcam();
+}
+
+/** The dialog of a running start was closed: abort that start. */
+export async function cancelMediaStart(): Promise<void> {
+  (await publisher())?.cancelStart();
 }
 
 /**

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 
-const { voiceState, setVoiceState, startScreenShare, stopScreenShare } = await vi.hoisted(
+const { voiceState, setVoiceState, startScreenShare, stopScreenShare, cancelMediaStart } = await vi.hoisted(
   async () => {
     const { createStore } = await import("solid-js/store");
     const [voiceState, setVoiceState] = createStore({ state: "connected", screenSharing: false });
@@ -10,6 +10,7 @@ const { voiceState, setVoiceState, startScreenShare, stopScreenShare } = await v
       setVoiceState,
       startScreenShare: vi.fn(),
       stopScreenShare: vi.fn().mockResolvedValue(undefined),
+      cancelMediaStart: vi.fn().mockResolvedValue(undefined),
     };
   },
 );
@@ -18,6 +19,7 @@ vi.mock("@/stores/voice", () => ({
   voiceState,
   startScreenShare: (...a: unknown[]) => startScreenShare(...a),
   stopScreenShare: (...a: unknown[]) => stopScreenShare(...a),
+  cancelMediaStart: (...a: unknown[]) => cancelMediaStart(...a),
 }));
 
 import ScreenShareQualityPicker from "../ScreenShareQualityPicker";
@@ -70,6 +72,25 @@ describe("ScreenShareQualityPicker", () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
+  it("Cancel while the start runs aborts the start", async () => {
+    startScreenShare.mockReturnValue(new Promise(() => {}));
+    const onClose = vi.fn();
+    render(() => <ScreenShareQualityPicker onClose={onClose} />);
+    fireEvent.click(screen.getByTestId("screen-share-start"));
+    await waitFor(() => expect(screen.getByTestId("screen-share-start").textContent).toBe("Starting…"));
+    fireEvent.click(screen.getByText("Cancel"));
+    expect(cancelMediaStart).toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("Cancel before starting does not touch any start", () => {
+    const onClose = vi.fn();
+    render(() => <ScreenShareQualityPicker onClose={onClose} />);
+    fireEvent.click(screen.getByText("Cancel"));
+    expect(cancelMediaStart).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalled();
+  });
+
   it("opens above a dialog that is already open", () => {
     render(() => {
       const layer = createModalLayer(MODAL_LAYER.dialog);
@@ -97,6 +118,8 @@ describe("ScreenShareButton", () => {
     render(() => <ScreenShareButton onShowQualityPicker={onShowQualityPicker} />);
     const button = screen.getByTestId("screen-share-toggle");
     expect(button.getAttribute("aria-label")).toBe("Stop sharing");
+    // The label says it; no "pressed" on top of "Stop sharing".
+    expect(button.hasAttribute("aria-pressed")).toBe(false);
     fireEvent.click(button);
     await waitFor(() => expect(stopScreenShare).toHaveBeenCalled());
     expect(onShowQualityPicker).not.toHaveBeenCalled();

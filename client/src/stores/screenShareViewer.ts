@@ -101,6 +101,16 @@ export function addAvailableTrack(
 }
 
 /**
+ * Remove every track of `userId` (the own self-preview when the voice
+ * session ends: a stopped local track fires no `ended`).
+ */
+export function removeTracksOfUser(userId: string): void {
+  for (const [streamId, info] of viewerState.availableTracks) {
+    if (info.userId === userId) removeAvailableTrack(streamId);
+  }
+}
+
+/**
  * Remove a screen share track (stream stopped).
  * If it was the primary view, auto-switch to next available stream.
  */

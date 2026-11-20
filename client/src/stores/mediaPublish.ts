@@ -47,6 +47,8 @@ export interface MediaContext {
   channelId: () => string | null;
   myUserId: () => string | null;
   myName: () => string;
+  /** The WebSocket is connected (a stop can be sent). */
+  socketUp: () => boolean;
   sendScreenStart: (
     channelId: string,
     streamId: string,
@@ -79,6 +81,10 @@ interface InFlight {
   kind: MediaKind;
   streamId: string | null;
   channelId: string | null;
+  /** The session the start belongs to. */
+  session: VoiceSessionHandle | null;
+  /** Sent: from now on (and only now) an ack or refusal can answer it. */
+  armed: boolean;
   settle: (answer: Answer) => void;
 }
 
@@ -89,23 +95,33 @@ interface Live {
   announced: boolean;
 }
 
-/** Codes that are never the answer to a start. */
-const NOT_A_START_ANSWER = new Set([
-  "VIDEO_SOURCE_UNANNOUNCED",
-  "CHANNEL_FULL",
-  "JOIN_REFUSED",
-  "ALREADY_JOINED",
-  "NOT_IN_CHANNEL",
-  "ICE_FAILED",
+/**
+ * Codes that refuse a start (contract C30), plus what the server's start
+ * handlers return before their own checks (`ROOM_NOT_FOUND`, `UNAUTHORIZED`)
+ * and rc.5's single `VOICE_ERROR`. Everything else is not an answer to a
+ * start (a start without an answer times out).
+ */
+const START_REFUSAL_CODES = new Set([
+  "SCREEN_SHARE_FORBIDDEN",
+  "SCREEN_SHARE_LIMIT",
+  "RATE_LIMITED",
+  "PARTICIPANT_NOT_FOUND",
+  "DUPLICATE_STREAM_ID",
+  "SIGNALING_ERROR",
+  "ROOM_NOT_FOUND",
+  "UNAUTHORIZED",
+  "VOICE_ERROR",
 ]);
 
+/** A dropped track (C30): never the refusal of a start. */
+const TRACK_DROPPED_CODES = new Set(["VIDEO_SOURCE_UNANNOUNCED", "AUDIO_SOURCE_UNANNOUNCED"]);
+
 /**
- * Whether a `voice_error` answers the start in flight. Unknown codes count
- * as a refusal (C30: handled as a generic refusal); a rate limit of another
- * request (`voice_stats`, `voice_join`) does not.
+ * Whether a `voice_error` answers the (sent) start in flight. A rate limit
+ * of another request (`voice_stats`, `voice_join`) does not.
  */
 export function isStartRefusal(code: string, message: string): boolean {
-  if (NOT_A_START_ANSWER.has(code)) return false;
+  if (!START_REFUSAL_CODES.has(code)) return false;
   if (/voice_stats|voice_join/.test(message)) return false;
   return true;
 }
@@ -152,8 +168,26 @@ export function createMediaPublisher(ctx: MediaContext) {
   const screens = new Map<string, Live>();
   let webcam: Live | null = null;
 
+  /** Whether `session` is the held one and still connected (for starting). */
   const held = (session: VoiceSessionHandle | null): boolean =>
     session !== null && isSameSession(session, ctx.session()) && ctx.connected();
+
+  /**
+   * Whether a stop for something of `session` must go out now: the same
+   * session, in any voice state ("reconnecting" too), with the socket up.
+   * Without a socket nothing is owed: the server removes the peer and its
+   * shares and webcam when the socket closes, and the client rejoins with
+   * a new session.
+   */
+  const mayStop = (session: VoiceSessionHandle | null): boolean =>
+    session !== null && isSameSession(session, ctx.session()) && ctx.socketUp();
+
+  /**
+   * Starts that ended on our side after they were sent (timeout, capture
+   * ended, cancelled): a late acceptance is answered with a stop.
+   */
+  const abandonedScreens = new Set<string>();
+  let abandonedWebcam = false;
 
   /** Drop what belongs to an ended session (its adapter already released it). */
   function prune(): void {
@@ -162,6 +196,10 @@ export function createMediaPublisher(ctx: MediaContext) {
       if (!isSameSession(live.session, current)) screens.delete(id);
     }
     if (webcam && !isSameSession(webcam.session, current)) webcam = null;
+    // A start of an ended session is over: it must not block the next one.
+    if (inFlight && !isSameSession(inFlight.session, current)) {
+      inFlight.settle({ kind: "aborted" });
+    }
   }
 
   function syncFlags(): void {
@@ -190,11 +228,20 @@ export function createMediaPublisher(ctx: MediaContext) {
         resolve(a);
       };
     });
-    inFlight = { kind, streamId, channelId: ctx.channelId(), settle };
+    const entry: InFlight = {
+      kind,
+      streamId,
+      channelId: ctx.channelId(),
+      session: ctx.session(),
+      armed: false,
+      settle,
+    };
+    inFlight = entry;
     return {
       answer,
       abort: () => settle({ kind: "aborted" }),
       arm: () => {
+        entry.armed = true;
         timer ??= setTimeout(() => settle({ kind: "timeout" }), MEDIA_START_TIMEOUT_MS);
       },
     };
@@ -202,29 +249,43 @@ export function createMediaPublisher(ctx: MediaContext) {
 
   function handleAnswer(answer: MediaAnswer): void {
     if (answer.type === "voice_error") {
-      if (answer.code === "VIDEO_SOURCE_UNANNOUNCED") {
-        void handleUnannounced();
+      if (TRACK_DROPPED_CODES.has(answer.code)) {
+        void handleUnannounced(answer.code === "AUDIO_SOURCE_UNANNOUNCED" ? "screen" : null);
         return;
       }
-      if (inFlight && isStartRefusal(answer.code, answer.message)) {
+      // Only a start that was sent can be refused (R-2).
+      if (inFlight?.armed && isStartRefusal(answer.code, answer.message)) {
         inFlight.settle({ kind: "refused", code: answer.code, message: answer.message });
       }
       return;
     }
-    if (!inFlight || answer.channel_id !== inFlight.channelId) return;
-    if (
-      answer.type === "screen_share_started" &&
-      inFlight.kind === "screen" &&
-      answer.stream_id === inFlight.streamId
-    ) {
-      inFlight.settle({ kind: "accepted" });
-    } else if (
-      answer.type === "webcam_started" &&
-      inFlight.kind === "webcam" &&
-      answer.user_id === ctx.myUserId()
-    ) {
-      inFlight.settle({ kind: "accepted" });
+    if (answer.channel_id !== ctx.channelId() && answer.channel_id !== inFlight?.channelId) return;
+    const mine =
+      answer.type === "screen_share_started" ||
+      (answer.type === "webcam_started" && answer.user_id === ctx.myUserId());
+    if (!mine) return;
+    if (inFlight?.armed && answer.channel_id === inFlight.channelId) {
+      if (answer.type === "screen_share_started" && inFlight.kind === "screen" && answer.stream_id === inFlight.streamId) {
+        inFlight.settle({ kind: "accepted" });
+        return;
+      }
+      if (answer.type === "webcam_started" && inFlight.kind === "webcam") {
+        inFlight.settle({ kind: "accepted" });
+        return;
+      }
     }
+    // An acceptance of a start we no longer want: take it back.
+    if (answer.type === "screen_share_started" && abandonedScreens.delete(answer.stream_id)) {
+      if (mayStop(ctx.session())) void ctx.sendScreenStop(answer.channel_id, answer.stream_id).catch(() => {});
+    } else if (answer.type === "webcam_started" && abandonedWebcam && !webcam) {
+      abandonedWebcam = false;
+      if (mayStop(ctx.session())) void ctx.sendWebcamStop(answer.channel_id).catch(() => {});
+    }
+  }
+
+  /** The user closed the dialog while the start was running: abort it. */
+  function cancelStart(): void {
+    inFlight?.settle({ kind: "aborted" });
   }
 
   /** Common checks before a start. */
@@ -268,6 +329,9 @@ export function createMediaPublisher(ctx: MediaContext) {
       return { ok: false, error: ctx.t("voice.error.notConnected") };
     }
 
+    // Armed as the message goes out: the answer may arrive before the send
+    // call returns.
+    wait.arm();
     try {
       await ctx.sendScreenStart(
         channelId,
@@ -282,15 +346,15 @@ export function createMediaPublisher(ctx: MediaContext) {
       await adapter.stopScreenShare(streamId);
       return { ok: false, error: ctx.t("voice.error.notifyFailed") };
     }
-    wait.arm();
 
     const answer = await wait.answer;
     if (answer.kind !== "accepted") {
       await adapter.stopScreenShare(streamId);
       // No answer, or the capture ended while waiting: the server may still
       // accept the start; a stop right after it frees that slot.
-      if ((answer.kind === "timeout" || answer.kind === "aborted") && held(session)) {
-        void ctx.sendScreenStop(channelId, streamId).catch(() => {});
+      if (answer.kind === "timeout" || answer.kind === "aborted") {
+        abandonedScreens.add(streamId);
+        if (mayStop(session)) void ctx.sendScreenStop(channelId, streamId).catch(() => {});
       }
       if (answer.kind === "refused") {
         return { ok: false, error: ctx.t(refusalKey("screen", answer.code, answer.message)) };
@@ -302,7 +366,10 @@ export function createMediaPublisher(ctx: MediaContext) {
     }
 
     if (!held(session)) {
+      // Accepted, but the call ended or is reconnecting: the server holds
+      // the announcement, so it is taken back (R-1).
       await adapter.stopScreenShare(streamId);
+      if (mayStop(session)) void ctx.sendScreenStop(channelId, streamId).catch(() => {});
       return { ok: false, error: ctx.t("voice.error.notConnected") };
     }
     const published = await adapter.publishScreenShare(streamId);
@@ -336,7 +403,7 @@ export function createMediaPublisher(ctx: MediaContext) {
       const result = await adapter.stopScreenShare(id);
       if (!result.ok) console.warn("[MediaPublish] Adapter stop:", result.error);
       ctx.removePreview(id);
-      if (live?.announced && channelId && held(live.session)) {
+      if (live?.announced && channelId && mayStop(live.session)) {
         try {
           await ctx.sendScreenStop(channelId, id);
         } catch (err) {
@@ -372,6 +439,7 @@ export function createMediaPublisher(ctx: MediaContext) {
       await adapter.stopWebcam();
       return { ok: false, error: ctx.t("voice.error.notConnected") };
     }
+    wait.arm();
     try {
       await ctx.sendWebcamStart(channelId, quality);
     } catch (err) {
@@ -380,12 +448,12 @@ export function createMediaPublisher(ctx: MediaContext) {
       await adapter.stopWebcam();
       return { ok: false, error: ctx.t("voice.error.notifyFailed") };
     }
-    wait.arm();
     const answer = await wait.answer;
     if (answer.kind !== "accepted") {
       await adapter.stopWebcam();
-      if ((answer.kind === "timeout" || answer.kind === "aborted") && held(session)) {
-        void ctx.sendWebcamStop(channelId).catch(() => {});
+      if (answer.kind === "timeout" || answer.kind === "aborted") {
+        abandonedWebcam = true;
+        if (mayStop(session)) void ctx.sendWebcamStop(channelId).catch(() => {});
       }
       if (answer.kind === "refused") {
         return { ok: false, error: ctx.t(refusalKey("webcam", answer.code, answer.message)) };
@@ -397,6 +465,7 @@ export function createMediaPublisher(ctx: MediaContext) {
     }
     if (!held(session)) {
       await adapter.stopWebcam();
+      if (mayStop(session)) void ctx.sendWebcamStop(channelId).catch(() => {});
       return { ok: false, error: ctx.t("voice.error.notConnected") };
     }
     const published = await adapter.publishWebcam();
@@ -407,6 +476,7 @@ export function createMediaPublisher(ctx: MediaContext) {
       return key ? { ok: false, error: ctx.t(key) } : { ok: false };
     }
     webcam = { session: session!, publishedAt: Date.now(), announced: true };
+    abandonedWebcam = false;
     syncFlags();
     return { ok: true };
   }
@@ -420,7 +490,7 @@ export function createMediaPublisher(ctx: MediaContext) {
     const adapter = await ctx.adapter();
     const result = await adapter.stopWebcam();
     if (!result.ok) console.warn("[MediaPublish] Adapter webcam stop:", result.error);
-    if (channelId && held(live.session)) {
+    if (channelId && mayStop(live.session)) {
       try {
         await ctx.sendWebcamStop(channelId);
       } catch (err) {
@@ -447,13 +517,13 @@ export function createMediaPublisher(ctx: MediaContext) {
    * The server dropped a video track it had no announcement for. The error
    * names no stream: the most recently published own video is the one.
    */
-  async function handleUnannounced(): Promise<void> {
+  async function handleUnannounced(only: MediaKind | null): Promise<void> {
     prune();
     let newest: { kind: MediaKind; id: string | null; at: number } | null = null;
     for (const [id, live] of screens) {
       if (!newest || live.publishedAt >= newest.at) newest = { kind: "screen", id, at: live.publishedAt };
     }
-    if (webcam && (!newest || webcam.publishedAt >= newest.at)) {
+    if (only !== "screen" && webcam && (!newest || webcam.publishedAt >= newest.at)) {
       newest = { kind: "webcam", id: null, at: webcam.publishedAt };
     }
     if (!newest) return;
@@ -469,6 +539,7 @@ export function createMediaPublisher(ctx: MediaContext) {
     stopWebcam,
     captureEnded,
     handleAnswer,
+    cancelStart,
     /** Whether a start is waiting (tests, UI). */
     isStarting: () => inFlight !== null,
   };

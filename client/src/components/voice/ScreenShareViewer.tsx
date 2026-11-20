@@ -513,7 +513,8 @@ const PipView: Component<{
   userId: string | null;
   streamId: string | null;
 }> = (props) => {
-  const layer = createModalLayer(MODAL_LAYER.dialog);
+  // Not modal: a fixed layer under every dialog.
+  const layer = MODAL_LAYER.floating;
   return (
     <div
       class="fixed bg-black rounded-lg shadow-2xl overflow-hidden"

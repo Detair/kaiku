@@ -46,7 +46,6 @@ const ScreenShareButton: Component<ScreenShareButtonProps> = (props) => {
         type="button"
         data-testid="screen-share-toggle"
         aria-label={label()}
-        aria-pressed={voiceState.screenSharing}
         onClick={handleClick}
         disabled={voiceState.state !== "connected" || stopping()}
         class={`p-2 rounded-full transition-colors ${

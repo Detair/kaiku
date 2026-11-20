@@ -1,6 +1,6 @@
 import { Component, createSignal, For, Show } from "solid-js";
 import DialogShell from "@/components/auth/DialogShell";
-import { startScreenShare } from "@/stores/voice";
+import { startScreenShare, cancelMediaStart } from "@/stores/voice";
 import type { ScreenShareQuality } from "@/lib/webrtc/types";
 import { t, type MessageKey } from "@/i18n";
 
@@ -33,6 +33,12 @@ const ScreenShareQualityPicker: Component<ScreenShareQualityPickerProps> = (prop
   const [error, setError] = createSignal<string | null>(null);
   const [note, setNote] = createSignal<string | null>(null);
 
+  /** Closing while a start runs aborts it (no share after Cancel). */
+  const close = () => {
+    if (loading()) void cancelMediaStart();
+    props.onClose();
+  };
+
   const handleStart = async () => {
     setError(null);
     setNote(null);
@@ -57,7 +63,7 @@ const ScreenShareQualityPicker: Component<ScreenShareQualityPickerProps> = (prop
   return (
     <DialogShell
       title={t("voice.screenShare.dialogTitle")}
-      onClose={props.onClose}
+      onClose={close}
       testId="screen-share-quality"
     >
       <fieldset class="space-y-2">
@@ -115,7 +121,7 @@ const ScreenShareQualityPicker: Component<ScreenShareQualityPickerProps> = (prop
       <div class="flex justify-end gap-2 pt-2">
         <button
           type="button"
-          onClick={props.onClose}
+          onClick={close}
           class="px-4 py-2 text-sm text-text-secondary hover:text-text-primary transition-colors"
         >
           {t("common.cancel")}

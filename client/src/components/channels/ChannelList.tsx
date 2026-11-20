@@ -53,7 +53,6 @@ import { showToast } from "@/components/ui/Toast";
 import CategoryHeader from "./CategoryHeader";
 import ChannelItem from "./ChannelItem";
 import LazyDialog from "@/components/ui/LazyDialog";
-import MicrophoneTest from "../voice/MicrophoneTest";
 import VoiceParticipants from "../voice/VoiceParticipants";
 import flokiHappy from "@/assets/emotes/floki_emote_1.webp";
 import {
@@ -70,6 +69,7 @@ import { t } from "@/i18n";
 // Open on demand: each loads with its first use, off the startup payload.
 const CreateChannelModal = lazy(() => import("./CreateChannelModal"));
 const ChannelSettingsModal = lazy(() => import("./ChannelSettingsModal"));
+const MicrophoneTest = lazy(() => import("../voice/MicrophoneTest"));
 
 interface ChannelListProps {
   /** Called after a navigation action (e.g. channel selected). Used to close the mobile drawer. */
@@ -714,7 +714,9 @@ const ChannelList: Component<ChannelListProps> = (props) => {
 
       {/* Microphone Test Modal */}
       <Show when={showMicTest()}>
-        <MicrophoneTest onClose={() => setShowMicTest(false)} />
+        <LazyDialog name="MicrophoneTest">
+          <MicrophoneTest onClose={() => setShowMicTest(false)} />
+        </LazyDialog>
       </Show>
 
       {/* Create Channel Modal */}

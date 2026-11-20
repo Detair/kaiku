@@ -8,6 +8,7 @@ import { createVoiceAdapter } from "@/lib/webrtc";
 import * as tauri from "@/lib/tauri";
 import { currentUser } from "@/stores/auth";
 import { showToast } from "@/components/ui/Toast";
+import { isConnected as socketConnected } from "@/stores/websocket";
 import { voiceState, setVoiceState, currentChannelSession } from "./voice";
 import type { MediaContext } from "./mediaPublish";
 
@@ -20,6 +21,7 @@ export async function voiceMediaContext(): Promise<MediaContext> {
     channelId: () => voiceState.channelId,
     myUserId: () => currentUser()?.id ?? null,
     myName: () => currentUser()?.display_name || currentUser()?.username || "You",
+    socketUp: socketConnected,
     sendScreenStart: tauri.wsScreenShareStart,
     sendScreenStop: tauri.wsScreenShareStop,
     sendWebcamStart: tauri.wsWebcamStart,

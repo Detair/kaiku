@@ -34,4 +34,23 @@ describe("parseNativeFrame", () => {
     expect(parseNativeFrame(wrongMagic, "s")).toBeNull();
     expect(parseNativeFrame(rawFrame(4, 4, 0).slice(0, 50), "s")).toBeNull();
   });
+
+  it("rejects frames whose planes cannot hold their rows", () => {
+    const tamper = (at: number, value: number) => {
+      const buf = rawFrame(4, 2, 0);
+      new DataView(buf).setUint32(at, value, true);
+      return parseNativeFrame(buf, "s");
+    };
+    expect(tamper(12, 3)).toBeNull(); // y_stride < width
+    expect(tamper(16, 1)).toBeNull(); // uv_stride < width/2
+    expect(tamper(8, 3)).toBeNull(); // height 3: y plane too short for 4×3
+    expect(tamper(4, 0)).toBeNull(); // zero width
+    // Random headers never throw.
+    for (let i = 0; i < 200; i++) {
+      const buf = rawFrame(4, 2, 0);
+      const v = new DataView(buf);
+      v.setUint32(4 + 4 * (i % 7), (i * 2654435761) >>> 0, true);
+      expect(() => parseNativeFrame(buf, "s")).not.toThrow();
+    }
+  });
 });

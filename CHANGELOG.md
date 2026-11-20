@@ -98,6 +98,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Server and channel settings: rename and delete a channel, rename or delete your server (owner), leave a server (everyone else). Each asks first and names what it removes.
 
 ### Changed
+- The Emojis tab in the server settings is shown only to members who may manage the server (the permission the server checks to edit or delete emojis).
 - The screen share button stops the share while you are sharing (one share per person). The quality choice is Saver, Normal or Sharp (for games) without technical values or a Premium badge, and the screen share windows open above other dialogs.
 - The sign-in page puts passkey and phone first; the password field opens with "Sign in with a password".
 - **Breaking:** new accounts start by adding a passkey or a key phone (or an authenticator app) within 30 minutes; a password is optional, and registering no longer signs you in. Accounts that add nothing within 30 minutes are removed. The first admin of a new server adds a passkey or a key phone.
@@ -225,7 +226,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Screen sharing and the camera start only after the server accepted them: a share that is not allowed or over the limit stops with a clear message instead of running unseen, and a start without an answer within 5 seconds is stopped too.
 - Stopping a screen share with the browser's own "Stop sharing" bar (or by closing the shared window) now ends it for everyone and frees the slot; the next share works right away.
-- Desktop app: a second screen share in the same call arrives, a camera turned on after a share is no longer shown as a share, and viewers who join late see the picture within about a second.
+- Desktop app: a second screen share in the same call arrives, a camera turned on after a share is no longer shown as a share, and the sender makes a fresh key picture at least every 3 seconds, so viewers who join late see the picture within a few seconds.
 - Desktop app: a screen share tile that opens late or after a layout change shows the stream; watching a 1080p share uses far less CPU.
 - Desktop app on Linux: screen sharing works (Wayland and X11). The system dialog chooses the screen or window; closing it or a missing portal shows a short note.
 - Cancelling the browser's screen picker no longer says the microphone is blocked; blocked screen or camera access says so in its own words.

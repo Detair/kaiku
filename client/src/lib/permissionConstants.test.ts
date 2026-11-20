@@ -111,3 +111,12 @@ describe("permission table matches the server", () => {
     expect(CHANNEL_OVERRIDE_PERMISSION_KEYS).toContain("SCREEN_SHARE");
   });
 });
+
+describe("permission bits stay inside 32-bit integer math", () => {
+  it("no bit above 30 (mask operations use JS int32)", () => {
+    for (const [name, bit] of Object.entries(PermissionBits)) {
+      expect(bit, name).toBeGreaterThan(0);
+      expect(bit, name).toBeLessThanOrEqual(1 << 30);
+    }
+  });
+});

@@ -40,12 +40,23 @@ export function parseNativeFrame(buffer: ArrayBuffer, streamId: string): Decoded
   const uLen = view.getUint32(24, true);
   const vLen = view.getUint32(28, true);
   if (FRAME_HEADER_LEN + yLen + uLen + vLen > buffer.byteLength) return null;
+  const width = view.getUint32(4, true);
+  const height = view.getUint32(8, true);
+  const yStride = view.getUint32(12, true);
+  const uvStride = view.getUint32(16, true);
+  const chromaWidth = Math.ceil(width / 2);
+  const chromaHeight = Math.ceil(height / 2);
+  // Planes must hold their rows, or the upload would fail on every frame.
+  if (width === 0 || height === 0 || yStride < width || uvStride < chromaWidth) return null;
+  if (yLen < yStride * height || uLen < uvStride * chromaHeight || vLen < uvStride * chromaHeight) {
+    return null;
+  }
   return {
     stream_id: streamId,
-    width: view.getUint32(4, true),
-    height: view.getUint32(8, true),
-    y_stride: view.getUint32(12, true),
-    uv_stride: view.getUint32(16, true),
+    width,
+    height,
+    y_stride: yStride,
+    uv_stride: uvStride,
     y_plane: new Uint8Array(buffer, FRAME_HEADER_LEN, yLen),
     u_plane: new Uint8Array(buffer, FRAME_HEADER_LEN + yLen, uLen),
     v_plane: new Uint8Array(buffer, FRAME_HEADER_LEN + yLen + uLen, vLen),
