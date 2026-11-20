@@ -2376,6 +2376,27 @@ mod negotiation_tests {
         peer.close().await;
     }
 
+    /// A track waiting for its announcement on a seat that is retired stops
+    /// waiting at once (no grace period, nothing bound).
+    #[tokio::test]
+    async fn retiring_a_seat_ends_its_wait_for_an_announcement() {
+        let (_sfu, peer, _rx, _client) = setup().await;
+        let waiting = {
+            let peer = peer.clone();
+            tokio::spawn(async move {
+                let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+                peer.take_source_until(true, deadline).await
+            })
+        };
+        tokio::task::yield_now().await;
+        peer.retire();
+        let got = tokio::time::timeout(std::time::Duration::from_secs(2), waiting)
+            .await
+            .expect("the wait ended with the seat")
+            .expect("join");
+        assert!(got.is_none(), "a retired seat bound {got:?}");
+    }
+
     /// An answer to an older offer with the same number of media sections
     /// (a track was removed in between, so a section changed direction) is
     /// ignored too.
