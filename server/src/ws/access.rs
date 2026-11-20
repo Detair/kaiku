@@ -96,15 +96,21 @@
 //!    a read the request itself asked for — never on what a frame's read wrote. A refusal stands
 //!    for its user epoch: asking again is answered without a read. A request that would read a
 //!    "yes" again (for a fresh answer; frames are read anyway) does so at most once per
-//!    [`ADMIN_SUBSCRIBE_COOLDOWN`] and socket; meanwhile the socket's earlier answer at the same
-//!    user epoch stands, and without one it is "not decided yet". So within the cooldown an
-//!    elevation that ran out keeps its earlier "yes": nothing is written on it, every frame is read
-//!    on its own. The reads it asks for run in a pool of their own
+//!    [`ADMIN_SUBSCRIBE_COOLDOWN`], socket and user epoch; meanwhile, at that epoch, the socket's
+//!    earlier answer stands, and without one it is "not decided yet". A new user epoch gets one
+//!    read of its own, also within the cooldown. So within the cooldown an elevation that ran out
+//!    without an epoch moving keeps its earlier "yes": nothing is written on it, every frame is
+//!    read on its own. The reads it asks for run in a pool of their own
 //!    ([`ADMIN_SUBSCRIBE_CONCURRENCY`]) and never take one of the permits other revalidations wait
-//!    for. It takes its socket's revalidation gate first and a permit of that pool second, under
-//!    one deadline for both waits, and lets go of the gate when the deadline passes: no task holds
-//!    a permit while it waits for a gate. Meanwhile frames queued on that socket wait behind it (at
-//!    most the deadline). After the deadline it answers "not decided yet".
+//!    for. It takes its socket's revalidation gate first, without a deadline (a frame's read under
+//!    way is waited for, so the answer is the same with and without it, only later), and a permit
+//!    of that pool second, for at most [`ADMIN_SUBSCRIBE_WAIT`]; then it lets go of the gate and
+//!    answers "not decided yet". No task holds a permit while it waits for a gate. Per attempt a
+//!    subscribe takes at most: the wait for the gate (its holder is bounded by its own read's
+//!    [`REFRESH_TIMEOUT`] plus its wait for a permit of the other revalidations, so seconds while
+//!    the database is saturated), the wait for the pool permit, and its own read
+//!    ([`REFRESH_TIMEOUT`]); up to [`DECISION_REVALIDATIONS`] attempts while the epoch keeps
+//!    moving. Frames queued on that socket wait behind it meanwhile.
 //!
 //! # Revalidation cost
 //!
@@ -219,17 +225,19 @@ static REVALIDATION_PERMITS: tokio::sync::Semaphore =
 /// for. One more database connection at most.
 pub const ADMIN_SUBSCRIBE_CONCURRENCY: usize = 1;
 
-/// Longest an `admin_subscribe` waits for its socket's revalidation gate
-/// and a permit of that pool together (one deadline for both). After it the
-/// request is answered "not decided yet"; frames decide on their own reads.
+/// Longest an `admin_subscribe` waits for a permit of that pool, per
+/// attempt (the wait for its socket's revalidation gate before it has no
+/// deadline). After it the request is answered "not decided yet"; frames
+/// decide on their own reads.
 const ADMIN_SUBSCRIBE_WAIT: Duration = Duration::from_secs(1);
 
 /// How soon after an `admin_subscribe` had the admin stream read, the next
 /// one on the same socket may do so again.
 ///
-/// Until then it is answered as the socket was answered before at the same
-/// user epoch (every admin frame is read on its own anyway), or "not
-/// decided yet" without such an answer.
+/// Until then, at the same user epoch, it is answered as the socket was
+/// answered before (every admin frame is read on its own anyway), or "not
+/// decided yet" without such an answer. A new user epoch gets one read of
+/// its own.
 pub const ADMIN_SUBSCRIBE_COOLDOWN: Duration = Duration::from_secs(10);
 
 /// The pool the reads of one socket's `admin_subscribe` run in.
@@ -920,8 +928,8 @@ enum AdminRequest {
     /// A read: an answer planned at or after this invalidation count
     /// answers it.
     Read(u64),
-    /// Not decided, and no read now (cooldown, or the socket is in
-    /// backoff).
+    /// Not decided, and no read now (cooldown at this user epoch, or the
+    /// socket is in backoff).
     Later,
 }
 
@@ -934,11 +942,11 @@ pub enum AdminSubscription {
     /// It is not; a later elevation restores delivery.
     Refused,
     /// Not decided yet: the read failed or was not made (the socket is in
-    /// backoff after a failed one, or in the cooldown without an earlier
-    /// answer at this user epoch, or the socket's revalidation or the pool
-    /// for these reads stayed busy past the deadline), or the epoch kept
-    /// moving. Given on purpose in those cases: it does not take what a
-    /// frame's read settled meanwhile. Frames decide on their own reads.
+    /// backoff after a failed one, or in the cooldown at this user epoch
+    /// without an earlier answer, or the pool for these reads stayed busy
+    /// past [`ADMIN_SUBSCRIBE_WAIT`]), or the epoch kept moving. Given on
+    /// purpose in those cases: it does not take what a frame's read settled
+    /// meanwhile. Frames decide on their own reads.
     Undecided,
     /// The read it asked for failed, and the socket's access checks have
     /// been failing for [`FAILURE_CLOSE_AFTER`]: the socket ends, as on its
@@ -1911,8 +1919,9 @@ impl SocketAccess {
     ///
     /// The socket's own earlier answer at the current user epoch does if it
     /// was a refusal (it stands for its epoch), or within the cooldown.
-    /// Otherwise the scope is to be read: not now while the cooldown or a
-    /// backoff runs ("not decided yet"), else by a read asked for here —
+    /// Otherwise the scope is to be read: not now while the cooldown at
+    /// this user epoch or a backoff runs ("not decided yet"), else by a
+    /// read asked for here (once per epoch also within the cooldown) —
     /// the scope is invalidated, so that an answer planned earlier does not
     /// count (a failing scope stays failing, drops kept). What frames'
     /// reads settled is not looked at.
