@@ -213,7 +213,7 @@ class PcSetupApprovalViewModel @Inject constructor(
                             _ui.value = PcSetupUi.Error(R.string.pc_setup_failed, rescan = false)
                         } else {
                             _ui.value = PcSetupUi.Code(code)
-                            startCodeTimer(answer.codeExpiresAt)
+                            startCodeTimer()
                             startPolling(ctx.attemptId)
                         }
                     }
@@ -328,23 +328,16 @@ class PcSetupApprovalViewModel @Inject constructor(
     }
 
     /**
-     * The code's time: until the expiry the server stated (if any), else the code's lifetime, measured
-     * on this phone's own elapsed time since the code was shown. Only a screen whose polling stopped
+     * The code's time: its lifetime of 5 minutes on this phone's own elapsed time since the code was
+     * received (never the phone's wall clock, which may be off). Only a screen whose polling stopped
      * ends by it; a polling screen ends with what the server reports.
      */
-    private fun startCodeTimer(expiresAt: String?) {
-        val lifetime = CODE_LIFETIME_MS
-        val stated = expiresAt
-            ?.let { runCatching { java.time.Instant.parse(it) }.getOrNull() }
-            ?.let { java.time.Duration.between(java.time.Instant.now(), it).toMillis() }
-        // A stated expiry that this phone's clock puts in the past or beyond the lifetime (a clock
-        // that is off) is not trusted: the lifetime counts then.
-        val wait = stated?.takeIf { it in 1..lifetime } ?: lifetime
+    private fun startCodeTimer() {
         codeTimer?.cancel()
         pollStopped = false
         codeOver = false
         codeTimer = viewModelScope.launch {
-            delay(wait)
+            delay(CODE_LIFETIME_MS)
             codeOver = true
             endIfCodeOver()
         }

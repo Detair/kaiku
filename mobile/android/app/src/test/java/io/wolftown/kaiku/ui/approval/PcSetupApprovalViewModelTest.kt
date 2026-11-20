@@ -431,6 +431,31 @@ class PcSetupApprovalViewModelTest {
         v.viewModelScope.coroutineContext[kotlinx.coroutines.Job]!!.cancel()
     }
 
+    @Test fun `the code's time ends the screen even when the stated expiry lies earlier on this phone's clock`() = runTest {
+        // A phone clock that runs ahead: the stated expiry looks 1 minute away.
+        api.pcAnswer = api.pcAnswer.copy(codeExpiresAt = java.time.Instant.now().plusSeconds(60).toString())
+        val (v, _) = vm()
+        v.start(payload)
+        v.approve(activity)
+        api.pcStatuses.add(io.wolftown.kaiku.data.api.ApiException(io.ktor.http.HttpStatusCode.NotFound, "Not Found"))
+        advanceTimeBy(4 * 60_000L)
+        assertEquals(PcSetupUi.Code("123456"), v.ui.value)
+        advanceTimeBy(61_000L)
+        assertEquals(PcSetupUi.Finished(R.string.pc_setup_code_expired, ok = false), v.ui.value)
+        v.viewModelScope.coroutineContext[kotlinx.coroutines.Job]!!.cancel()
+    }
+
+    @Test fun `while polling continues the code's time does not end the screen`() = runTest {
+        val (v, _) = vm()
+        v.start(payload)
+        v.approve(activity)
+        // The server keeps answering `code` (the fake repeats its last answer).
+        api.pcStatuses.add(PcSetupPhoneStatus("code"))
+        advanceTimeBy(6 * 60_000L)
+        assertEquals(PcSetupUi.Code("123456"), v.ui.value)
+        v.viewModelScope.coroutineContext[kotlinx.coroutines.Job]!!.cancel()
+    }
+
     @Test fun `completed is success whatever reason comes with it`() = runTest {
         val (v, _) = vm()
         v.start(payload)
