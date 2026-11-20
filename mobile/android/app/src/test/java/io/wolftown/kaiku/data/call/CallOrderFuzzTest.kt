@@ -134,7 +134,7 @@ class CallOrderFuzzTest {
                 Step(StartOk(dm, "c-1", 0L)),
                 Step(ParticipantJoined(dm, "c-1", "anna", 1L)),
                 Step(Resynced(dm, ringingByMe("c-1"), 1L)),
-                Step(CallEvent.HangUp),
+                Step(CallEvent.HangUp(dm, null)),
             ),
         ) { model, world, order -> assertEnded(model, world, order, serverHasMe = true) }
         assertEquals(24, runs)
@@ -145,10 +145,10 @@ class CallOrderFuzzTest {
         val runs = fuzz(
             prefix = listOf(Rang(dm, "c-1", "anna", "Anna", 0L)),
             steps = listOf(
-                Step(Accept(dm)),
+                Step(Accept(dm, "c-1")),
                 Step(JoinOk(dm, "c-1", setOf("anna", me)), after = setOf(0)),
                 Step(ParticipantJoined(dm, "c-1", me, 1L), after = setOf(0)), // the echo of this device's join
-                Step(VoiceJoined(dm, 2L, "c-1"), after = setOf(1)),
+                Step(VoiceJoined(dm, 2L, 1L), after = setOf(1)),
             ),
         ) { model, world, order ->
             assertInCallWithVoice(model, world, order)
@@ -162,10 +162,10 @@ class CallOrderFuzzTest {
         val runs = fuzz(
             prefix = listOf(Rang(dm, "c-1", "anna", "Anna", 0L)),
             steps = listOf(
-                Step(Accept(dm)),
+                Step(Accept(dm, "c-1")),
                 Step(JoinOk(dm, "c-1", setOf("anna", me)), after = setOf(0)),
-                Step(CallEvent.HangUp, after = setOf(0)),
-                Step(VoiceJoined(dm, 2L, "c-1"), after = setOf(1)),
+                Step(CallEvent.HangUp(dm, null), after = setOf(0)),
+                Step(VoiceJoined(dm, 2L, 1L), after = setOf(1)),
             ),
         ) { model, world, order -> assertEnded(model, world, order, serverHasMe = true) }
         assertTrue(runs > 1)
@@ -193,10 +193,10 @@ class CallOrderFuzzTest {
             prefix = listOf(Rang(dm, "c-1", "anna", "Anna", 0L)),
             steps = listOf(
                 Step(ParticipantJoined(dm, "c-1", "carl", 1L)),
-                Step(Accept(dm), after = setOf(0)),
+                Step(Accept(dm, "c-1"), after = setOf(0)),
                 Step(JoinOk(dm, "c-1", setOf("anna", "carl", me)), after = setOf(1)),
                 Step(ParticipantLeft(dm, "c-1", "anna"), after = setOf(2)),
-                Step(VoiceJoined(dm, 2L, "c-1"), after = setOf(2)),
+                Step(VoiceJoined(dm, 2L, 1L), after = setOf(2)),
             ),
         ) { model, world, order ->
             assertInCallWithVoice(model, world, order)
@@ -208,14 +208,14 @@ class CallOrderFuzzTest {
     fun `takeover on another device - ended here without telling the server`() {
         val connected = listOf(
             Rang(dm, "c-1", "anna", "Anna", 0L),
-            Accept(dm),
+            Accept(dm, "c-1"),
             JoinOk(dm, "c-1", setOf("anna", me)),
-            VoiceJoined(dm, 1L, "c-1"),
+            VoiceJoined(dm, 1L, 1L),
         )
         fuzz(
             prefix = connected,
             steps = listOf(
-                Step(VoiceEnded(dm, VoiceEnd.Removed(VoiceRemovedReason.SessionReplaced))),
+                Step(VoiceEnded(1L, VoiceEnd.Removed(VoiceRemovedReason.SessionReplaced))),
                 Step(ParticipantJoined(dm, "c-1", me, 2L)), // the other device's join
             ),
         ) { model, world, order ->
@@ -227,8 +227,8 @@ class CallOrderFuzzTest {
     @Test
     fun `the server ending the call races the hang-up - at most one leave`() {
         fuzz(
-            prefix = listOf(Rang(dm, "c-1", "anna", "Anna", 0L), Accept(dm), JoinOk(dm, "c-1", setOf("anna", me)), VoiceJoined(dm, 1L, "c-1")),
-            steps = listOf(Step(CallEvent.HangUp), Step(ServerEnded(dm, "c-1", "last_left"))),
+            prefix = listOf(Rang(dm, "c-1", "anna", "Anna", 0L), Accept(dm, "c-1"), JoinOk(dm, "c-1", setOf("anna", me)), VoiceJoined(dm, 1L, 1L)),
+            steps = listOf(Step(CallEvent.HangUp(dm, null)), Step(ServerEnded(dm, "c-1", "last_left"))),
         ) { model, world, order ->
             assertTrue(!world.voiceOn)
             if (world.leaves > 1) fail("two leaves after $order: ${world.log}")

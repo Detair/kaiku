@@ -2,21 +2,26 @@ package io.wolftown.kaiku.push
 
 import io.wolftown.kaiku.data.auth.RefreshResult
 import io.wolftown.kaiku.data.auth.TokenRefresher
+import io.wolftown.kaiku.data.call.CallDoor
+import io.wolftown.kaiku.data.call.CallInput
+import io.wolftown.kaiku.data.call.CallRef
 import io.wolftown.kaiku.data.local.TokenStorage
 import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 
 /** Result of handling one call wake. */
 enum class CallOutcome {
+    /** A ringing wake was handed to the call owner (which rings, or keeps it as a busy ring). */
     INCOMING,
+
+    /** An unanswered end was handed to the call owner (a missed call). */
     MISSED,
+
+    /** Another end was handed to the call owner (the ring is removed). */
     CANCELLED,
 
     /** Unknown state or reason, another call than the shown one, a duplicate, or the work was stopped. */
     IGNORED,
-
-    /** The notification was ready, but notifications are disabled. */
-    NOTIFICATIONS_OFF,
     NOT_LOGGED_IN,
 
     /** The wake was queued for another account or server than the signed-in one. */
@@ -27,24 +32,25 @@ enum class CallOutcome {
 }
 
 /**
- * Handles a DM call wake (C20 addendum): `ringing` posts a heads-up "is
- * calling you" notification, `ended` turns it into a missed call
- * (`no_answer`, `cancelled`) or removes it (`all_declined`, `last_left`).
- * Only the channel's current call ([CallNotificationStore], set by
- * [CallWakeIntake]) is acted on; an ended with no call stored still shows a
- * missed call ([CallRules]). Never fetches messages; the caller's name is looked up in the DM
- * participants, with a generic text when that fails. A DM that is definitely
- * not the user's ([CallerLookup.NotMember]) posts nothing.
+ * Handles a DM call wake (C20 addendum). It decides nothing about the call
+ * itself: after its own checks (the account and session the wake was queued
+ * for, the channel's current call in [CallNotificationStore] as set by
+ * [CallWakeIntake], the wake's age, membership and the caller's name) it
+ * hands the wake to the call owner ([CallDoor]), the same owner the socket's
+ * call events go to. So a ring that comes by push follows the same rules as
+ * one from the socket: not rung while another call is on, ended 100 s after
+ * this wake was received, a missed call if it ends unanswered, one ring and
+ * one missed call however many ways it arrived.
  *
- * Bound to the account and session the wake was queued for, like
- * [WakeFetchProcessor]: without that session nothing is posted.
+ * Never fetches messages; a DM that is definitely not the user's
+ * ([CallerLookup.NotMember]) hands over nothing.
  */
 class CallWakeProcessor @Inject constructor(
     private val tokenStorage: TokenStorage,
     private val refresher: TokenRefresher,
     private val names: NotificationTitleResolver,
     private val store: CallNotificationStore,
-    private val sink: CallNotificationSink,
+    private val door: CallDoor,
 ) {
     companion object {
         /** The access token must stay valid at least this long for the name lookup. */
@@ -53,7 +59,7 @@ class CallWakeProcessor @Inject constructor(
         /** A ringing call does not wait longer than this for the caller's name. */
         const val NAME_TIMEOUT_MS = 5_000L
 
-        /** A ringing wake received longer ago than the ring timeout no longer posts. */
+        /** A ringing wake received longer ago than the ring timeout no longer rings. */
         const val RING_MAX_AGE_MS = 45_000L
     }
 
@@ -61,7 +67,7 @@ class CallWakeProcessor @Inject constructor(
 
     private data class Account(val userId: String, val generation: Long)
 
-    /** [isStopped] reports that the work was stopped (replaced by a newer wake); checked right before posting. */
+    /** [isStopped] reports that the work was stopped (replaced by a newer wake); checked right before the hand-over. */
     suspend fun process(signal: WakeSignal, owner: WakeOwner, isStopped: () -> Boolean = { false }): CallOutcome {
         val call = signal.call
         if (signal.kind != WakeKind.CALL || call == null) return CallOutcome.IGNORED
@@ -95,9 +101,11 @@ class CallWakeProcessor @Inject constructor(
             CallerLookup.Unknown -> null
             CallerLookup.NotMember -> return notMember(account, channelId, stored)
         }
-        return post(account, channelId, call, CallKind.INCOMING, name, stored.atMs, isStopped) {
-            isRinging(store.shown(account.userId, channelId), call)
-        }
+        if (!isCurrent(account)) return CallOutcome.NOT_LOGGED_IN
+        if (isStopped() || !isRinging(store.shown(account.userId, channelId), call)) return CallOutcome.IGNORED
+        // The ring's time is this wake's receipt, as the intake recorded it.
+        val ring = CallInput.PushRing(CallRef(account.userId, channelId, call.callId), call.callerId, name, stored.atMs)
+        return if (door.fromPush(ring)) CallOutcome.INCOMING else CallOutcome.NOT_LOGGED_IN
     }
 
     private suspend fun ended(
@@ -108,32 +116,30 @@ class CallWakeProcessor @Inject constructor(
     ): CallOutcome {
         val stored = store.shown(account.userId, channelId)
         if (!CallRules.endedApplies(stored, call, now())) return CallOutcome.IGNORED
-        return when (call.reason) {
-            CallEndReason.NO_ANSWER, CallEndReason.CANCELLED -> {
-                val name = when (val lookup = lookupCaller(channelId, call.callerId)) {
-                    is CallerLookup.Found -> lookup.name
-                    CallerLookup.Unknown -> null
-                    CallerLookup.NotMember -> return notMember(account, channelId, stored)
-                }
-                post(account, channelId, call, CallKind.MISSED, name, ringingSinceMs = null, isStopped) {
-                    // Atomic against the intake: record the missed call only over the entry checked here.
-                    endIfStillApplies(account, channelId, call, CallPhase.MISSED)
-                }
-            }
-            CallEndReason.ALL_DECLINED, CallEndReason.LAST_LEFT -> {
-                if (!isCurrent(account)) return CallOutcome.NOT_LOGGED_IN
-                if (isStopped()) return CallOutcome.IGNORED
-                // Tombstone: a duplicate or reordered ringing of this call is not accepted again.
-                if (!endIfStillApplies(account, channelId, call, CallPhase.ENDED)) return CallOutcome.IGNORED
-                sink.cancelCall(channelId)
-                CallOutcome.CANCELLED
-            }
-            CallEndReason.UNKNOWN, null -> CallOutcome.IGNORED
+        val (reason, unanswered) = when (call.reason) {
+            CallEndReason.NO_ANSWER -> "no_answer" to true
+            CallEndReason.CANCELLED -> "cancelled" to true
+            CallEndReason.ALL_DECLINED -> "all_declined" to false
+            CallEndReason.LAST_LEFT -> "last_left" to false
+            CallEndReason.UNKNOWN, null -> return CallOutcome.IGNORED
         }
+        // A missed call names the caller.
+        val name = if (!unanswered) null else when (val lookup = lookupCaller(channelId, call.callerId)) {
+            is CallerLookup.Found -> lookup.name
+            CallerLookup.Unknown -> null
+            CallerLookup.NotMember -> return notMember(account, channelId, stored)
+        }
+        if (!isCurrent(account)) return CallOutcome.NOT_LOGGED_IN
+        if (isStopped() || !CallRules.endedApplies(store.shown(account.userId, channelId), call, now())) {
+            return CallOutcome.IGNORED
+        }
+        val end = CallInput.PushEnded(CallRef(account.userId, channelId, call.callId), call.callerId, name, reason)
+        if (!door.fromPush(end)) return CallOutcome.NOT_LOGGED_IN
+        return if (unanswered) CallOutcome.MISSED else CallOutcome.CANCELLED
     }
 
     /**
-     * The DM is not the user's: nothing is posted, and what the intake
+     * The DM is not the user's: nothing is handed over, and what the intake
      * recorded for this channel ([stored], if still unchanged) is removed.
      */
     private fun notMember(account: Account, channelId: String, stored: ShownCall?): CallOutcome {
@@ -141,50 +147,8 @@ class CallWakeProcessor @Inject constructor(
         return CallOutcome.NOT_MEMBER
     }
 
-    /** Moves the channel's call to [phase] if the ended still applies, with a compare-and-set. */
-    private fun endIfStillApplies(account: Account, channelId: String, call: CallInfo, phase: CallPhase): Boolean {
-        val stored = store.shown(account.userId, channelId)
-        val nowMs = now()
-        if (!CallRules.endedApplies(stored, call, nowMs)) return false
-        return store.setShownIf(account.userId, channelId, stored, ShownCall(call.callId, phase, nowMs))
-    }
-
     private fun isRinging(stored: ShownCall?, call: CallInfo): Boolean =
         stored != null && stored.callId == call.callId && stored.phase == CallPhase.RINGING
-
-    /**
-     * Posts [kind] for [call] after the final checks in the presenter's
-     * critical section ([commit] re-reads the store and records a missed call).
-     */
-    private fun post(
-        account: Account,
-        channelId: String,
-        call: CallInfo,
-        kind: CallKind,
-        name: String?,
-        ringingSinceMs: Long?,
-        isStopped: () -> Boolean,
-        commit: () -> Boolean,
-    ): CallOutcome {
-        if (!isCurrent(account)) return CallOutcome.NOT_LOGGED_IN
-        var refused = CallOutcome.IGNORED
-        val result = sink.showCall {
-            when {
-                isStopped() -> null
-                !isCurrent(account) -> null.also { refused = CallOutcome.NOT_LOGGED_IN }
-                !commit() -> null
-                else -> CallNotification(
-                    account.userId, channelId, call.callId, kind, name, ringingSinceMs,
-                    callerId = call.callerId.takeIf { kind == CallKind.INCOMING },
-                )
-            }
-        }
-        return when (result) {
-            ShowResult.REFUSED -> refused
-            ShowResult.DISABLED -> CallOutcome.NOTIFICATIONS_OFF
-            ShowResult.POSTED -> if (kind == CallKind.MISSED) CallOutcome.MISSED else CallOutcome.INCOMING
-        }
-    }
 
     /** Membership and caller name; [CallerLookup.Unknown] (generic text) when it cannot be looked up quickly. */
     private suspend fun lookupCaller(channelId: String, callerId: String): CallerLookup {

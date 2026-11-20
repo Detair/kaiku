@@ -3,6 +3,7 @@ package io.wolftown.kaiku.ui.call
 import androidx.annotation.StringRes
 import io.wolftown.kaiku.R
 import io.wolftown.kaiku.data.call.CallEndReason
+import io.wolftown.kaiku.data.call.CallRef
 import io.wolftown.kaiku.data.call.CallState
 import io.wolftown.kaiku.data.voice.AudioRoute
 import io.wolftown.kaiku.data.voice.VoiceLinkState
@@ -24,6 +25,8 @@ data class CallUi(
     val speaker: Boolean = false,
     /** The sound goes to the earpiece (the phone is held to the ear). */
     val earpiece: Boolean = false,
+    /** The call these controls are for: a tap acts on this call and on no other. */
+    val call: CallRef? = null,
 )
 
 /** Pure mapping from the call, the voice link and the audio route to [CallUi]. */

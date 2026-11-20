@@ -27,4 +27,48 @@ class CallIntentsTest {
         assertNull(parsed.ring)
         assertEquals(CallIntents.ACTION_SHOW, parsed.action)
     }
+
+    // -- What a notification's broadcast means ------------------------------------------
+
+    private val ring = CallIntents.Ring("me", "dm-1", "c-1", "anna", "Anna", receivedAtMs = 1_000_000L)
+
+    @Test
+    fun `the ring carries the time it was received and names its call`() {
+        val extras = mapOf(
+            CallIntents.EXTRA_USER_ID to "me",
+            CallIntents.EXTRA_CHANNEL_ID to "dm-1",
+            CallIntents.EXTRA_CALL_ID to "c-1",
+            CallIntents.EXTRA_CALLER_ID to "anna",
+            CallIntents.EXTRA_RECEIVED_AT to "1000000",
+        )
+        val parsed = CallIntents.parse(extras::get).ring!!
+        assertEquals(1_000_000L, parsed.receivedAtMs)
+        assertEquals(io.wolftown.kaiku.data.call.CallRef("me", "dm-1", "c-1"), parsed.ref())
+    }
+
+    @Test
+    fun `decline declines exactly the notification's call for its account`() {
+        assertEquals(
+            io.wolftown.kaiku.data.call.CallInput.Decline(io.wolftown.kaiku.data.call.CallRef("me", "dm-1", "c-1")),
+            CallIntents.inputOf(CallIntents.ACTION_DECLINE, ring, nowMs = 1_005_000L),
+        )
+    }
+
+    @Test
+    fun `a ring notification that goes away after its 100 s is the ring's end`() {
+        assertEquals(
+            io.wolftown.kaiku.data.call.CallInput.RingExpired(io.wolftown.kaiku.data.call.CallRef("me", "dm-1", "c-1"), "Anna"),
+            CallIntents.inputOf(CallIntents.ACTION_RING_GONE, ring, nowMs = 1_100_000L),
+        )
+    }
+
+    @Test
+    fun `a ring notification swiped away early changes nothing`() {
+        assertNull(CallIntents.inputOf(CallIntents.ACTION_RING_GONE, ring, nowMs = 1_020_000L))
+    }
+
+    @Test
+    fun `an unknown broadcast is nothing`() {
+        assertNull(CallIntents.inputOf("something.else", ring, nowMs = 1_100_000L))
+    }
 }

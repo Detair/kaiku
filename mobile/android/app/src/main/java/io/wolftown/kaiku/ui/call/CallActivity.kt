@@ -24,6 +24,8 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dagger.hilt.android.AndroidEntryPoint
 import io.wolftown.kaiku.data.call.CallController
+import io.wolftown.kaiku.data.call.CallInput
+import io.wolftown.kaiku.data.call.CallRef
 import io.wolftown.kaiku.data.call.CallState
 import io.wolftown.kaiku.data.call.signedInUserId
 import io.wolftown.kaiku.data.local.AuthState
@@ -59,13 +61,10 @@ class CallActivity : ComponentActivity() {
 
     private val viewModel: CallViewModel by viewModels()
 
-    /** The DM of the ring an Accept is waiting for (permission, unlock). */
-    private var acceptFor: String? = null
-
+    // The ring an Accept is waiting for (permission, unlock) is kept by the view model, with
+    // its account, conversation and call: the answer is for that call only.
     private val micPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        val channelId = acceptFor
-        acceptFor = null
-        viewModel.accept(granted, channelId)
+        viewModel.permissionResult(granted)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -84,14 +83,14 @@ class CallActivity : ComponentActivity() {
                     CallScreen(
                         ui = ui,
                         micNeeded = micNeeded,
-                        onAccept = { requestAccept(null) },
-                        onDecline = viewModel::decline,
-                        onHangUp = viewModel::hangUp,
+                        onAccept = { requestAccept(ui.call) },
+                        onDecline = { viewModel.decline(ui.call) },
+                        onHangUp = { viewModel.hangUp(ui.call) },
                         onToggleMute = viewModel::toggleMute,
                         onToggleSpeaker = viewModel::toggleSpeaker,
                         onOpenSettings = ::openAppSettings,
                         onClose = {
-                            viewModel.dismissEnded()
+                            viewModel.dismissEnded(ui.call)
                             finish()
                         },
                     )
@@ -130,25 +129,30 @@ class CallActivity : ComponentActivity() {
     private fun handle(intent: Intent?) {
         intent ?: return
         val parsed = CallIntents.parse(intent::getStringExtra)
-        // A notification of another (or no) signed-in account is never acted on.
+        // A notification of another (or no) signed-in account is never acted on (the call
+        // owner drops it as well).
         val ring = parsed.ring?.takeIf { it.userId == authState.signedInUserId() }
-        ring?.let { callController.onRingNotification(it.channelId, it.callId, it.callerId, it.callerName) }
+        ring?.let {
+            callController.submit(CallInput.RingNotification(it.ref(), it.callerId, it.callerName, it.receivedAtMs))
+        }
         if (parsed.action == CallIntents.ACTION_ACCEPT) {
             // Consumed: a recreation must not answer again.
             intent.putExtra(CallIntents.EXTRA_ACTION, CallIntents.ACTION_SHOW)
-            if (ring != null || parsed.ring == null) requestAccept(ring?.channelId)
+            // The notification's own call; without one in the intent, the call shown now.
+            requestAccept(ring?.ref() ?: callController.shown().ref().takeIf { parsed.ring == null })
         }
     }
 
-    /** Accept, asking to unlock and for the microphone first if it is not granted. */
-    private fun requestAccept(channelId: String?) {
+    /** Accept of [call], asking to unlock and for the microphone first if it is not granted. */
+    private fun requestAccept(call: CallRef?) {
+        call ?: return
         val granted = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED
         if (granted) {
-            viewModel.accept(true, channelId)
+            viewModel.accept(call, true)
             return
         }
-        acceptFor = channelId
+        viewModel.acceptNeedsPermission(call)
         val keyguard = getSystemService(KeyguardManager::class.java)
         if (keyguard != null && keyguard.isKeyguardLocked) {
             // The permission dialog needs an unlocked phone.
@@ -158,11 +162,11 @@ class CallActivity : ComponentActivity() {
                 }
 
                 override fun onDismissCancelled() {
-                    viewModel.accept(false, channelId)
+                    viewModel.permissionResult(false)
                 }
 
                 override fun onDismissError() {
-                    viewModel.accept(false, channelId)
+                    viewModel.permissionResult(false)
                 }
             })
         } else {

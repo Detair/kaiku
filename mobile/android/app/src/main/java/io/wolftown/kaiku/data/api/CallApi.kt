@@ -26,14 +26,22 @@ data class CallStateDto(
     val participants: List<String> = emptyList(),
 )
 
-/** The DM call endpoints (`/api/dm/{id}/call[...]`). Errors are [ApiException] with the server's `code`. */
+/**
+ * The DM call endpoints (`/api/dm/{id}/call[...]`). Errors are [ApiException] with the server's `code`.
+ *
+ * Every request is for the signed-in session [session]
+ * (`AuthSession.LoggedIn.sessionId`): if another session, or none, is
+ * current when it is about to be sent, it is not sent and
+ * [SessionChangedException] is thrown ([KaikuHttpClient.RequiredSessionId]).
+ * A call request never leaves with another account's token.
+ */
 interface CallApi {
     /** The DM's current call, or null when there is none. */
-    suspend fun get(channelId: String): CallStateDto?
-    suspend fun start(channelId: String): CallStateDto
-    suspend fun join(channelId: String): CallStateDto
-    suspend fun decline(channelId: String): CallStateDto
-    suspend fun leave(channelId: String): CallStateDto
+    suspend fun get(channelId: String, session: Long): CallStateDto?
+    suspend fun start(channelId: String, session: Long): CallStateDto
+    suspend fun join(channelId: String, session: Long): CallStateDto
+    suspend fun decline(channelId: String, session: Long): CallStateDto
+    suspend fun leave(channelId: String, session: Long): CallStateDto
 
     companion object {
         /** 409: the other side's call already exists (glare); its ring wins. */
@@ -55,19 +63,23 @@ class CallApiImpl @Inject constructor(
     private val httpClient: HttpClient,
 ) : CallApi {
 
-    override suspend fun get(channelId: String): CallStateDto? {
-        val text = httpClient.get("/api/dm/$channelId/call").checked("get call failed").bodyAsText()
+    override suspend fun get(channelId: String, session: Long): CallStateDto? {
+        val text = httpClient.get("/api/dm/$channelId/call") {
+            attributes.put(KaikuHttpClient.RequiredSessionId, session)
+        }.checked("get call failed").bodyAsText()
         if (text.isBlank() || text.trim() == "null") return null
         return KaikuJson.decodeFromString(CallStateDto.serializer(), text)
     }
 
-    override suspend fun start(channelId: String) = action(channelId, "start")
-    override suspend fun join(channelId: String) = action(channelId, "join")
-    override suspend fun decline(channelId: String) = action(channelId, "decline")
-    override suspend fun leave(channelId: String) = action(channelId, "leave")
+    override suspend fun start(channelId: String, session: Long) = action(channelId, "start", session)
+    override suspend fun join(channelId: String, session: Long) = action(channelId, "join", session)
+    override suspend fun decline(channelId: String, session: Long) = action(channelId, "decline", session)
+    override suspend fun leave(channelId: String, session: Long) = action(channelId, "leave", session)
 
-    private suspend fun action(channelId: String, what: String): CallStateDto {
-        val response = httpClient.post("/api/dm/$channelId/call/$what").checked("call $what failed")
+    private suspend fun action(channelId: String, what: String, session: Long): CallStateDto {
+        val response = httpClient.post("/api/dm/$channelId/call/$what") {
+            attributes.put(KaikuHttpClient.RequiredSessionId, session)
+        }.checked("call $what failed")
         return KaikuJson.decodeFromString(CallStateDto.serializer(), response.bodyAsText())
     }
 

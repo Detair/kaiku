@@ -54,6 +54,8 @@ sealed interface CallState {
         val startedAtMs: Long,
         /** The voice join of this call was asked for (once, when its id became known). */
         val voice: Boolean = false,
+        /** This call's name for its voice session; what the voice layer says about it carries it. */
+        val voiceId: Long = 0L,
     ) : CallState
 
     /** The call rings this user. [callerName] is the best known name (null: unknown). */
@@ -67,6 +69,11 @@ sealed interface CallState {
         val joined: Set<String> = emptySet(),
         /** The caller left (a group call that others keep going) while it rang here. */
         val callerLeft: Boolean = false,
+        /**
+         * The server said so (socket or push). False for a ring known only from its
+         * notification: it is checked with the server before anything is done for it.
+         */
+        val verified: Boolean = true,
     ) : CallState
 
     /** Answered here: the join and the voice connection are being set up. */
@@ -76,6 +83,7 @@ sealed interface CallState {
         val others: Set<String> = emptySet(),
         /** The server accepted the answer and the voice join was asked for. */
         val voice: Boolean = false,
+        val voiceId: Long = 0L,
     ) : CallState
 
     /** In the call since [sinceMs]; [others] are the other participants known to be in it. */
@@ -84,6 +92,7 @@ sealed interface CallState {
         val callId: String?,
         val sinceMs: Long,
         val others: Set<String> = emptySet(),
+        val voiceId: Long = 0L,
     ) : CallState
 
     /** Shown briefly with its [reason], then [Idle]. For new calls it counts as idle. */
@@ -132,7 +141,10 @@ sealed interface CallEvent {
     data class StartOk(val channelId: String, val callId: String, val startedAtMs: Long) : CallEvent
     data class StartFailed(val channelId: String, val glare: Boolean, val blocked: Boolean, val startedAtMs: Long) : CallEvent
 
-    /** `incoming_call`, or a ring known from a push wake / its notification. */
+    /**
+     * A ring: `incoming_call`, a push wake ([nowMs] is then the time the wake was
+     * received) or, with [fromNotification], a screen opened from its notification.
+     */
     data class Rang(
         val channelId: String,
         val callId: String,
@@ -143,35 +155,54 @@ sealed interface CallEvent {
         val fromNotification: Boolean = false,
     ) : CallEvent
 
-    data class Accept(val channelId: String) : CallEvent
+    /** Accept of the ring [callId]; another ring in that conversation is not answered by it. */
+    data class Accept(val channelId: String, val callId: String) : CallEvent
     /** The answer was accepted; [participants] are those the server has in the call. */
     data class JoinOk(val channelId: String, val callId: String, val participants: Set<String> = emptySet()) : CallEvent
 
     /** [gone]: the server says the call is over (404). */
     data class JoinFailed(val channelId: String, val callId: String, val gone: Boolean) : CallEvent
-    /** The voice join of call [callId] (null: an outgoing call before its id) is set up. */
-    data class VoiceJoined(val channelId: String, val nowMs: Long, val callId: String?) : CallEvent
-    data class VoiceJoinFailed(val channelId: String, val callId: String?) : CallEvent
+    /** The voice session [voiceId] is set up. */
+    data class VoiceJoined(val channelId: String, val nowMs: Long, val voiceId: Long) : CallEvent
+    data class VoiceJoinFailed(val channelId: String, val voiceId: Long) : CallEvent
 
     /** A new authenticated socket: the shown call is checked with the server (resync). */
     data object SocketReady : CallEvent
 
     /** The 100 s cap of a ring that was not rung because a call was on. */
     data class BusyCap(val channelId: String, val callId: String) : CallEvent
-    data class Decline(val channelId: String) : CallEvent
-    data object HangUp : CallEvent
+    /** Decline of the ring [callId] (the screen, or its notification's action). */
+    data class Decline(val channelId: String, val callId: String) : CallEvent
+
+    /** Hang up the shown call; [callId] is null while an outgoing call has no id yet. */
+    data class HangUp(val channelId: String, val callId: String?) : CallEvent
 
     data class ParticipantJoined(val channelId: String, val callId: String, val userId: String, val nowMs: Long) : CallEvent
     data class ParticipantLeft(val channelId: String, val callId: String, val userId: String) : CallEvent
     data class Declined(val channelId: String, val callId: String, val userId: String) : CallEvent
 
-    /** `call_ended`; [reason] is the wire name. */
-    data class ServerEnded(val channelId: String, val callId: String, val reason: String) : CallEvent
+    /**
+     * `call_ended`; [reason] is the wire name. [rungHere]: it came as a push wake, which only
+     * goes to someone the call rang for, so an unanswered end is a missed call also when this
+     * process never saw the ring ([callerId] and [callerName] say whose).
+     */
+    data class ServerEnded(
+        val channelId: String,
+        val callId: String,
+        val reason: String,
+        val rungHere: Boolean = false,
+        val callerId: String? = null,
+        val callerName: String? = null,
+    ) : CallEvent
+
+    /** The ring notification of [callId] timed out (100 s after the ring was received). */
+    data class RingExpired(val channelId: String, val callId: String, val callerName: String?) : CallEvent
 
     /** The 100 s ring cap of the ring that started at [startedAtMs]. */
     data class RingCap(val channelId: String, val startedAtMs: Long) : CallEvent
 
-    data class VoiceEnded(val channelId: String, val why: VoiceEnd) : CallEvent
+    /** The voice session [voiceId] ended by itself. */
+    data class VoiceEnded(val voiceId: Long, val why: VoiceEnd) : CallEvent
 
     /** The call resync (or the rejoin gate's look): [answer] null = no call. */
     data class Resynced(
@@ -182,20 +213,18 @@ sealed interface CallEvent {
         val askedFor: CallState? = null,
     ) : CallEvent
 
-    /** Sign-out, session expiry or another signed-in user. */
-    data object SignedOut : CallEvent
-
-    /** The ended line has been shown long enough. */
-    data object EndedShown : CallEvent
+    /** The ended line has been shown long enough ([channelId] null), or was dismissed for that conversation. */
+    data class EndedShown(val channelId: String? = null) : CallEvent
 }
 
 /** What the controller does for a transition. */
 sealed interface CallEffect {
     data class RestStart(val channelId: String, val startedAtMs: Long) : CallEffect
-    data class RestJoin(val channelId: String, val callId: String) : CallEffect
-    data class RestDecline(val channelId: String) : CallEffect
+    /** [verify]: ask the server first whether [callId] is still the conversation's ringing call. */
+    data class RestJoin(val channelId: String, val callId: String, val verify: Boolean = false) : CallEffect
+    data class RestDecline(val channelId: String, val callId: String, val verify: Boolean = false) : CallEffect
     data class RestLeave(val channelId: String) : CallEffect
-    data class JoinVoice(val channelId: String, val callId: String?) : CallEffect
+    data class JoinVoice(val channelId: String, val callId: String?, val voiceId: Long) : CallEffect
 
     /** Ask the server about the shown call, for [askedFor]. */
     data class Resync(val channelId: String, val askedFor: CallState) : CallEffect
@@ -203,8 +232,8 @@ sealed interface CallEffect {
     /** Arm the cap of a busy ring. */
     data class ArmBusyCap(val channelId: String, val callId: String, val startedAtMs: Long) : CallEffect
 
-    /** Leave voice if it is still in [channelId] (never a guild channel the user moved to). */
-    data class LeaveVoice(val channelId: String) : CallEffect
+    /** End the voice session [voiceId] (and only that one). */
+    data class LeaveVoice(val channelId: String, val voiceId: Long) : CallEffect
 
     /** Post the incoming-call notification (ringtone, full-screen where allowed). */
     data class Ring(
@@ -219,14 +248,14 @@ sealed interface CallEffect {
     /** Post a missed call for [callId]. */
     data class Missed(val channelId: String, val callId: String, val callerId: String, val callerName: String?) : CallEffect
 
+    /** Post a missed call for [callId] if its ring notification is the last thing shown for it. */
+    data class MissedIfRinging(val channelId: String, val callId: String, val callerName: String?) : CallEffect
+
     /** Arm the 100 s ring cap; a later arm replaces it. */
     data class ArmRingCap(val channelId: String, val startedAtMs: Long) : CallEffect
 
     /** Arm the timer that turns [CallState.Ended] into [CallState.Idle]. */
     data object ArmEndedTimer : CallEffect
-
-    /** Cancel every ring notification this process posted (sign-out). */
-    data object StopAllRings : CallEffect
 }
 
 /** A ring this user did not get rung for because a call was already on (busy, like the web). */
@@ -242,6 +271,8 @@ data class CallModel(
     val busy: Map<String, BusyRing> = emptyMap(),
     /** Calls this device already told the server it left (a leave goes out once per call). */
     val left: List<String> = emptyList(),
+    /** The last voice id handed out; every call gets its own. */
+    val voiceSeq: Long = 0L,
 )
 
 /** One transition: the next model and what to do. */
@@ -263,9 +294,6 @@ object CallMachine {
     const val ENDED_SHOWN_MS = 3_000L
 
     fun reduce(model: CallModel, event: CallEvent, me: String?): CallStep {
-        if (event is CallEvent.SignedOut) {
-            return CallStep(CallModel(), listOf(CallEffect.StopAllRings))
-        }
         if (me == null) return CallStep(model)
         return Reducer(model, me).apply(event)
     }
@@ -293,9 +321,10 @@ object CallMachine {
         var ended = model.ended
         var busy = model.busy
         var left = model.left
+        var voiceSeq = model.voiceSeq
 
-        fun to(next: CallState): CallStep = CallStep(CallModel(next, ended, busy, left), effects.toList())
-        fun same(): CallStep = CallStep(CallModel(state, ended, busy, left), effects.toList())
+        fun to(next: CallState): CallStep = CallStep(CallModel(next, ended, busy, left, voiceSeq), effects.toList())
+        fun same(): CallStep = CallStep(CallModel(state, ended, busy, left, voiceSeq), effects.toList())
 
         fun rememberEnded(channelId: String, callId: String?) {
             if (callId.isNullOrEmpty()) return
@@ -339,7 +368,7 @@ object CallMachine {
             is CallEvent.VoiceJoined -> voiceJoined(event)
             is CallEvent.VoiceJoinFailed -> voiceJoinFailed(event)
             is CallEvent.Decline -> decline(event)
-            CallEvent.HangUp -> hangUp()
+            is CallEvent.HangUp -> hangUp(event)
             is CallEvent.ParticipantJoined -> participantJoined(event)
             is CallEvent.ParticipantLeft -> participantLeft(event)
             is CallEvent.Declined -> declined(event)
@@ -347,17 +376,22 @@ object CallMachine {
             is CallEvent.RingCap -> ringCap(event)
             is CallEvent.VoiceEnded -> voiceEnded(event)
             is CallEvent.Resynced -> resynced(event)
-            CallEvent.EndedShown -> if (state is CallState.Ended) to(CallState.Idle) else same()
+            is CallEvent.EndedShown ->
+                if (state is CallState.Ended && (event.channelId == null || event.channelId == state.channelId)) {
+                    to(CallState.Idle)
+                } else {
+                    same()
+                }
             CallEvent.SocketReady -> socketReady()
             is CallEvent.BusyCap -> busyCap(e = event)
-            CallEvent.SignedOut -> to(CallState.Idle)
+            is CallEvent.RingExpired -> ringExpired(event)
         }
 
         fun start(e: CallEvent.Start): CallStep {
             if (!idle) return same()
             effects += CallEffect.RestStart(e.channelId, e.nowMs)
             effects += CallEffect.ArmRingCap(e.channelId, e.nowMs)
-            return to(CallState.Outgoing(e.channelId, null, e.nowMs))
+            return to(CallState.Outgoing(e.channelId, null, e.nowMs, voiceId = ++voiceSeq))
         }
 
         fun startOk(e: CallEvent.StartOk): CallStep {
@@ -386,15 +420,15 @@ object CallMachine {
 
         /** [s] with its id known; the voice join is asked for once, when the id becomes known. */
         fun learnOutgoingId(s: CallState.Outgoing, callId: String): CallState.Outgoing {
-            if (!s.voice) effects += CallEffect.JoinVoice(s.channelId, callId)
+            if (!s.voice) effects += CallEffect.JoinVoice(s.channelId, callId, s.voiceId)
             return s.copy(callId = s.callId ?: callId, voice = true)
         }
 
         /** The caller's call connected: its voice join is asked for if it was not yet. */
         fun outgoingConnected(s: CallState.Outgoing, callId: String?, nowMs: Long, others: Set<String>): CallState.Connected {
             val id = s.callId ?: callId
-            if (!s.voice) effects += CallEffect.JoinVoice(s.channelId, id)
-            return CallState.Connected(s.channelId, id, nowMs, others)
+            if (!s.voice) effects += CallEffect.JoinVoice(s.channelId, id, s.voiceId)
+            return CallState.Connected(s.channelId, id, nowMs, others, s.voiceId)
         }
 
         fun startFailed(e: CallEvent.StartFailed): CallStep {
@@ -407,22 +441,37 @@ object CallMachine {
 
         fun rang(e: CallEvent.Rang): CallStep {
             if (e.callerId == me || isEnded(e.channelId, e.callId)) return same()
-            val incoming = CallState.Incoming(e.channelId, e.callId, e.callerId, e.callerName, e.nowMs)
-            // A notification that is already up is not posted (and does not alert) again.
+            val incoming = CallState.Incoming(
+                e.channelId, e.callId, e.callerId, e.callerName, e.nowMs, verified = !e.fromNotification,
+            )
+            // A notification that is already up is not posted (and does not alert) again. What it
+            // says is not known from the server: it is asked at once.
             fun ring() {
-                if (!e.fromNotification) effects += CallEffect.Ring(e.channelId, e.callId, e.callerId, e.callerName)
+                if (e.fromNotification) {
+                    effects += CallEffect.Resync(e.channelId, incoming)
+                } else {
+                    effects += CallEffect.Ring(e.channelId, e.callId, e.callerId, e.callerName)
+                }
                 effects += CallEffect.ArmRingCap(e.channelId, e.nowMs)
                 // A ring that was busy before is the shown one now.
                 if (busy[e.channelId]?.callId == e.callId) busy = busy - e.channelId
             }
             when (state) {
                 is CallState.Incoming -> if (state.channelId == e.channelId && state.callId == e.callId) {
-                    // A repeat (socket and push both): keep the first, learn a missing name.
+                    // A repeat (socket and push both): keep the first, learn a missing name. The
+                    // server saying so makes a ring known from its notification a verified one.
+                    val verified = state.verified || !e.fromNotification
                     if (state.callerName == null && e.callerName != null) {
                         effects += CallEffect.Ring(e.channelId, e.callId, e.callerId, e.callerName)
-                        return to(state.copy(callerName = e.callerName))
+                        return to(state.copy(callerName = e.callerName, verified = verified))
                     }
-                    return same()
+                    return if (verified != state.verified) to(state.copy(verified = verified)) else same()
+                } else if (state.channelId == e.channelId) {
+                    // Another call rings in the same conversation. A conversation has one call at a
+                    // time, so the one shown is over (its end did not get here): the new one rings.
+                    rememberEnded(state.channelId, state.callId)
+                    ring()
+                    return to(incoming)
                 }
                 // Glare: our start has no id yet, their call rings for the same DM: theirs wins.
                 is CallState.Outgoing -> if (state.channelId == e.channelId && state.callId == null) {
@@ -445,20 +494,21 @@ object CallMachine {
 
         fun accept(e: CallEvent.Accept): CallStep {
             val s = state as? CallState.Incoming ?: return same()
-            if (s.channelId != e.channelId) return same()
+            // Only the ring that was accepted: another call ringing there now is not answered.
+            if (s.channelId != e.channelId || s.callId != e.callId) return same()
             effects += CallEffect.StopRing(s.channelId, s.callId)
-            effects += CallEffect.RestJoin(s.channelId, s.callId)
+            effects += CallEffect.RestJoin(s.channelId, s.callId, verify = !s.verified)
             // Everyone seen answering while it rang is in the call too (group calls), and the
             // caller unless they left meanwhile.
             val others = if (s.callerLeft) s.joined else s.joined + s.callerId
-            return to(CallState.Connecting(s.channelId, s.callId, others))
+            return to(CallState.Connecting(s.channelId, s.callId, others, voiceId = ++voiceSeq))
         }
 
         fun joinOk(e: CallEvent.JoinOk): CallStep {
             val s = state as? CallState.Connecting
             if (s != null && s.channelId == e.channelId && s.callId == e.callId) {
                 if (s.voice) return same()
-                effects += CallEffect.JoinVoice(s.channelId, s.callId)
+                effects += CallEffect.JoinVoice(s.channelId, s.callId, s.voiceId)
                 // The server's list is the truth about who is in the call.
                 val others = if (e.participants.isEmpty()) s.others else e.participants - me
                 return to(s.copy(others = others, voice = true))
@@ -481,10 +531,10 @@ object CallMachine {
 
         fun voiceJoined(e: CallEvent.VoiceJoined): CallStep {
             val s = state as? CallState.Connecting ?: return same()
-            if (s.channelId != e.channelId || e.callId != s.callId) return same()
+            if (s.channelId != e.channelId || e.voiceId != s.voiceId) return same()
             // Everyone else left while this phone was still joining: the call is over here.
-            if (s.others.isEmpty()) return leaveCall(s.channelId, s.callId, CallEndReason.Ended)
-            return to(CallState.Connected(s.channelId, s.callId, e.nowMs, s.others))
+            if (s.others.isEmpty()) return leaveCall(s.channelId, s.callId, s.voiceId, CallEndReason.Ended)
+            return to(CallState.Connected(s.channelId, s.callId, e.nowMs, s.others, s.voiceId))
         }
 
         fun voiceJoinFailed(e: CallEvent.VoiceJoinFailed): CallStep {
@@ -495,41 +545,69 @@ object CallMachine {
                 is CallState.Connected -> state.channelId to state.callId
                 else -> return same()
             }
-            if (channelId != e.channelId || e.callId != callId) return same()
+            if (channelId != e.channelId || e.voiceId != shownVoiceId()) return same()
             leave(channelId, callId)
             rememberEnded(channelId, callId)
             return endedState(channelId, CallEndReason.Failed)
         }
 
         fun decline(e: CallEvent.Decline): CallStep {
-            val s = state as? CallState.Incoming ?: return same()
-            if (s.channelId != e.channelId) return same()
-            effects += CallEffect.StopRing(s.channelId, s.callId)
-            effects += CallEffect.RestDecline(s.channelId)
-            rememberEnded(s.channelId, s.callId)
-            return to(CallState.Idle)
+            val s = state as? CallState.Incoming
+            if (s != null && s.channelId == e.channelId) {
+                // Another call rings there now: the declined one is over, and this one is not it.
+                if (s.callId != e.callId) return same()
+                effects += CallEffect.StopRing(s.channelId, s.callId)
+                effects += CallEffect.RestDecline(s.channelId, s.callId, verify = !s.verified)
+                rememberEnded(s.channelId, s.callId)
+                return to(CallState.Idle)
+            }
+            // Not the shown ring. A conversation has one call at a time: if a call of it is shown
+            // here, or the declined one is known to be over, there is nothing to decline.
+            if (state.channelId == e.channelId && !idle) return same()
+            if (e.callId.isEmpty() || isEnded(e.channelId, e.callId)) return same()
+            // A ring this owner does not show (its notification outlived the process that
+            // posted it): the server is asked whether it is still that call before declining.
+            if (busy[e.channelId]?.callId == e.callId) busy = busy - e.channelId
+            effects += CallEffect.StopRing(e.channelId, e.callId)
+            effects += CallEffect.RestDecline(e.channelId, e.callId, verify = true)
+            rememberEnded(e.channelId, e.callId)
+            return same()
         }
 
-        fun hangUp(): CallStep = when (state) {
-            is CallState.Outgoing -> {
-                // The server cancels a ringing call on the caller's leave. Before the start
-                // answered, the leave waits for its answer (a leave now would miss the call).
-                effects += CallEffect.LeaveVoice(state.channelId)
-                if (state.callId != null) leave(state.channelId, state.callId)
-                rememberEnded(state.channelId, state.callId)
-                endedState(state.channelId, CallEndReason.Left)
+        /** The voice id of the shown call, if it has one. */
+        fun shownVoiceId(): Long? = when (state) {
+            is CallState.Outgoing -> state.voiceId
+            is CallState.Connecting -> state.voiceId
+            is CallState.Connected -> state.voiceId
+            else -> null
+        }
+
+        fun hangUp(e: CallEvent.HangUp): CallStep {
+            // Only the call the button was shown for.
+            if (state.channelId != e.channelId) return same()
+            val shown = shownCallId()
+            if (e.callId != null && shown != null && shown != e.callId) return same()
+            return when (state) {
+                is CallState.Outgoing -> {
+                    // The server cancels a ringing call on the caller's leave. Before the start
+                    // answered, the leave waits for its answer (a leave now would miss the call).
+                    effects += CallEffect.LeaveVoice(state.channelId, state.voiceId)
+                    if (state.callId != null) leave(state.channelId, state.callId)
+                    rememberEnded(state.channelId, state.callId)
+                    endedState(state.channelId, CallEndReason.Left)
+                }
+                is CallState.Connecting -> if (state.voice) {
+                    leaveCall(state.channelId, state.callId, state.voiceId, CallEndReason.Left)
+                } else {
+                    // The answer is not accepted yet: a leave now would reach the server before the
+                    // join. The join's late acceptance is left instead (see joinOk).
+                    effects += CallEffect.LeaveVoice(state.channelId, state.voiceId)
+                    rememberEnded(state.channelId, state.callId)
+                    endedState(state.channelId, CallEndReason.Left)
+                }
+                is CallState.Connected -> leaveCall(state.channelId, state.callId, state.voiceId, CallEndReason.Left)
+                else -> same()
             }
-            is CallState.Connecting -> if (state.voice) {
-                leaveCall(state.channelId, state.callId, CallEndReason.Left)
-            } else {
-                // The answer is not accepted yet: a leave now would reach the server before the
-                // join. The join's late acceptance is left instead (see joinOk).
-                effects += CallEffect.LeaveVoice(state.channelId)
-                rememberEnded(state.channelId, state.callId)
-                endedState(state.channelId, CallEndReason.Left)
-            }
-            is CallState.Connected -> leaveCall(state.channelId, state.callId, CallEndReason.Left)
-            else -> same()
         }
 
         /** Tells the server this user leaves the call [callId] (once per call id). */
@@ -539,8 +617,8 @@ object CallMachine {
             effects += CallEffect.RestLeave(channelId)
         }
 
-        fun leaveCall(channelId: String, callId: String?, reason: CallEndReason): CallStep {
-            effects += CallEffect.LeaveVoice(channelId)
+        fun leaveCall(channelId: String, callId: String?, voiceId: Long, reason: CallEndReason): CallStep {
+            effects += CallEffect.LeaveVoice(channelId, voiceId)
             leave(channelId, callId)
             rememberEnded(channelId, callId)
             return endedState(channelId, reason)
@@ -590,7 +668,7 @@ object CallMachine {
             if (e.userId !in s.others) return same()
             val others = s.others - e.userId
             // The last other person left: this user is alone, the call is over.
-            if (others.isEmpty()) return leaveCall(s.channelId, s.callId, CallEndReason.Ended)
+            if (others.isEmpty()) return leaveCall(s.channelId, s.callId, s.voiceId, CallEndReason.Ended)
             return to(s.copy(others = others))
         }
 
@@ -612,19 +690,39 @@ object CallMachine {
         }
 
         fun serverEnded(e: CallEvent.ServerEnded): CallStep {
-            // Whatever is shown: that call is over and never rings again.
-            rememberEnded(e.channelId, e.callId)
             val reason = serverReason(e.reason)
             val unanswered = reason == CallEndReason.NoAnswer || reason == CallEndReason.Cancelled
+            val knownEnded = isEnded(e.channelId, e.callId)
+            // Whatever is shown: that call is over and never rings again.
+            rememberEnded(e.channelId, e.callId)
+            var wasBusy = false
             busy[e.channelId]?.let { ring ->
                 if (e.callId.isEmpty() || ring.callId == e.callId) {
+                    wasBusy = true
                     busy = busy - e.channelId
                     if (unanswered) effects += CallEffect.Missed(e.channelId, ring.callId, ring.callerId, ring.callerName)
                 }
             }
+            val shown = when (state) {
+                is CallState.Incoming -> matches(e.channelId, state.channelId, state.callId, e.callId)
+                is CallState.Outgoing -> matches(e.channelId, state.channelId, state.callId, e.callId)
+                is CallState.Connecting -> matches(e.channelId, state.channelId, state.callId, e.callId)
+                is CallState.Connected -> matches(e.channelId, state.channelId, state.callId, e.callId)
+                else -> false
+            }
+            if (!shown) {
+                // A ring this owner never saw or no longer shows (its notification may still be
+                // up from an earlier process): the wake says it rang here.
+                if (e.rungHere && !wasBusy && !knownEnded && e.callId.isNotEmpty()) {
+                    effects += CallEffect.StopRing(e.channelId, e.callId)
+                    if (unanswered) {
+                        effects += CallEffect.Missed(e.channelId, e.callId, e.callerId.orEmpty(), e.callerName)
+                    }
+                }
+                return same()
+            }
             return when (state) {
                 is CallState.Incoming -> {
-                    if (!matches(e.channelId, state.channelId, state.callId, e.callId)) return same()
                     effects += CallEffect.StopRing(state.channelId, state.callId)
                     if (unanswered) {
                         effects += CallEffect.Missed(state.channelId, state.callId, state.callerId, state.callerName)
@@ -633,28 +731,42 @@ object CallMachine {
                     to(CallState.Idle)
                 }
                 is CallState.Outgoing -> {
-                    if (!matches(e.channelId, state.channelId, state.callId, e.callId)) return same()
-                    effects += CallEffect.LeaveVoice(state.channelId)
+                    effects += CallEffect.LeaveVoice(state.channelId, state.voiceId)
                     rememberEnded(state.channelId, state.callId ?: e.callId)
                     endedState(state.channelId, reason)
                 }
                 is CallState.Connecting -> {
-                    if (!matches(e.channelId, state.channelId, state.callId, e.callId)) return same()
-                    effects += CallEffect.LeaveVoice(state.channelId)
+                    effects += CallEffect.LeaveVoice(state.channelId, state.voiceId)
                     rememberEnded(state.channelId, state.callId)
                     endedState(state.channelId, if (reason == CallEndReason.Cancelled) CallEndReason.Gone else CallEndReason.Ended)
                 }
                 is CallState.Connected -> {
-                    if (!matches(e.channelId, state.channelId, state.callId, e.callId)) return same()
-                    effects += CallEffect.LeaveVoice(state.channelId)
+                    effects += CallEffect.LeaveVoice(state.channelId, state.voiceId)
                     rememberEnded(state.channelId, state.callId)
                     endedState(state.channelId, CallEndReason.Ended)
                 }
-                else -> {
-                    rememberEnded(e.channelId, e.callId)
-                    same()
-                }
+                else -> same()
             }
+        }
+
+        /**
+         * The ring's notification timed out. For the shown ring that is the ring cap; for a
+         * ring this owner does not show, the missed call is posted only if nothing else was
+         * said about that call since (the notifier knows).
+         */
+        fun ringExpired(e: CallEvent.RingExpired): CallStep {
+            val s = state as? CallState.Incoming
+            if (s != null && s.channelId == e.channelId && s.callId == e.callId) {
+                effects += CallEffect.StopRing(s.channelId, s.callId)
+                effects += CallEffect.Missed(s.channelId, s.callId, s.callerId, s.callerName)
+                rememberEnded(s.channelId, s.callId)
+                return to(CallState.Idle)
+            }
+            if (e.callId.isEmpty() || isEnded(e.channelId, e.callId)) return same()
+            if (state.channelId == e.channelId && !idle) return same()
+            effects += CallEffect.MissedIfRinging(e.channelId, e.callId, e.callerName)
+            rememberEnded(e.channelId, e.callId)
+            return same()
         }
 
         fun ringCap(e: CallEvent.RingCap): CallStep = when (state) {
@@ -666,7 +778,7 @@ object CallMachine {
                 to(CallState.Idle)
             } else same()
             is CallState.Outgoing -> if (state.channelId == e.channelId && state.startedAtMs == e.startedAtMs) {
-                effects += CallEffect.LeaveVoice(state.channelId)
+                effects += CallEffect.LeaveVoice(state.channelId, state.voiceId)
                 // Before the start answered, its answer is left when it comes (see startOk).
                 if (state.callId != null) leave(state.channelId, state.callId)
                 rememberEnded(state.channelId, state.callId)
@@ -682,7 +794,9 @@ object CallMachine {
                 is CallState.Connected -> state.channelId to state.callId
                 else -> return same()
             }
-            if (channelId != e.channelId) return same()
+            // Only this call's own voice session: the end of an earlier call's session (also one
+            // in the same conversation) says nothing about this call.
+            if (shownVoiceId() != e.voiceId) return same()
             rememberEnded(channelId, callId)
             return when (val why = e.why) {
                 // The gate's answer follows as a resync; the call is simply over here.
@@ -742,7 +856,8 @@ object CallMachine {
                             rememberEnded(state.channelId, state.callId)
                             to(CallState.Idle)
                         }
-                        else -> same()
+                        // Still ringing, says the server: a ring known from its notification is verified.
+                        else -> if (state.verified) same() else to(state.copy(verified = true))
                     }
                 }
                 is CallState.Outgoing -> {
@@ -757,7 +872,7 @@ object CallMachine {
                         if (!ours) return same()
                     }
                     val sameCall = answer != null && (state.callId == null || answer.callId == state.callId)
-                    if (!sameCall) return silentEnd(state.channelId, state.callId)
+                    if (!sameCall) return silentEnd(state.channelId, state.callId, state.voiceId)
                     if (answer!!.active) {
                         return to(outgoingConnected(state, answer.callId, e.nowMs, answer.participants - me))
                     }
@@ -771,7 +886,7 @@ object CallMachine {
                     if (answer != null && answer.callId == callId && answer.ringing) return same()
                     val stillIn = answer != null && (callId == null || answer.callId == callId) &&
                         answer.active && me in answer.participants
-                    if (!stillIn) return silentEnd(e.channelId, callId)
+                    if (!stillIn) return silentEnd(e.channelId, callId, shownVoiceId() ?: 0L)
                     if (state is CallState.Connected) return to(state.copy(others = answer!!.participants - me))
                     return same()
                 }
@@ -780,8 +895,8 @@ object CallMachine {
         }
 
         /** "No call" clears the local state silently. */
-        fun silentEnd(channelId: String, callId: String?): CallStep {
-            effects += CallEffect.LeaveVoice(channelId)
+        fun silentEnd(channelId: String, callId: String?, voiceId: Long): CallStep {
+            effects += CallEffect.LeaveVoice(channelId, voiceId)
             rememberEnded(channelId, callId)
             return to(CallState.Idle)
         }

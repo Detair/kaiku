@@ -22,7 +22,9 @@ import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.wolftown.kaiku.R
 import io.wolftown.kaiku.data.call.CallController
+import io.wolftown.kaiku.data.call.CallInput
 import io.wolftown.kaiku.data.call.CallState
+import io.wolftown.kaiku.data.call.signedInUserId
 import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.repository.DmRepository
 import io.wolftown.kaiku.domain.model.DmConversation
@@ -63,7 +65,7 @@ object DmCallButtons {
 class DmCallViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     dmRepository: DmRepository,
-    authState: AuthState,
+    private val authState: AuthState,
     private val callController: CallController,
 ) : ViewModel() {
     private val channelId: String = savedStateHandle["channelId"]!!
@@ -78,7 +80,8 @@ class DmCallViewModel @Inject constructor(
 
     /** Starts the call (the microphone permission is granted). */
     fun start() {
-        if (button.value == DmCallButton.Start) callController.startCall(channelId)
+        val account = authState.signedInUserId() ?: return
+        if (button.value == DmCallButton.Start) callController.submit(CallInput.Start(account, channelId))
     }
 }
 

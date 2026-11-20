@@ -31,12 +31,36 @@ class CallWakeProcessorTest {
     private val names: NotificationTitleResolver = mockk()
     private val store = PrefsCallNotificationStore(InMemorySharedPreferences()) { clock }
     private val sink = FakeCallSink()
-    private val processor = CallWakeProcessor(tokenStorage, refresher, names, store, sink).also { it.now = { clock } }
-    private val intake = CallWakeIntake(tokenStorage, store).also { it.now = { clock } }
 
     private var generation = 1L
     private var refreshToken: String? = "refresh"
     private var userId: String? = "me"
+
+    // The call owner behind the door, as in a process a push woke up: nobody restored the
+    // session, the stored account counts. Its actor runs in place (unconfined).
+    private val sessions = io.wolftown.kaiku.data.session.SessionGeneration(
+        { io.wolftown.kaiku.data.local.AuthSession.LoggedOut },
+        { userId?.takeIf { refreshToken != null } },
+    )
+    private val callScope = kotlinx.coroutines.CoroutineScope(
+        kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.test.UnconfinedTestDispatcher()
+    )
+    private val calls = io.wolftown.kaiku.data.call.CallController(
+        api = mockk(relaxed = true),
+        voice = mockk(relaxed = true) { every { callEnds } returns kotlinx.coroutines.flow.MutableSharedFlow() },
+        webSocket = mockk(relaxed = true) { every { events } returns kotlinx.coroutines.flow.MutableSharedFlow() },
+        sessions = sessions,
+        notifier = SocketCallNotifier(sink, store) { clock },
+        directory = object : io.wolftown.kaiku.data.call.CallDirectory {
+            override fun nameOf(channelId: String, userId: String): String? = null
+            override fun titleOf(channelId: String): String? = null
+        },
+        clock = { clock },
+        voiceScope = callScope,
+        wallClock = { clock },
+    )
+    private val processor = CallWakeProcessor(tokenStorage, refresher, names, store, calls).also { it.now = { clock } }
+    private val intake = CallWakeIntake(tokenStorage, store).also { it.now = { clock } }
 
     /** Records call notifications per channel the way the system shows them (same key = replaced). */
     class FakeCallSink : CallNotificationSink {
@@ -58,6 +82,13 @@ class CallWakeProcessorTest {
         override fun cancelCall(channelId: String) {
             cancelled += channelId
             shown.remove(channelId)
+        }
+
+        var cancelledAll = 0
+
+        override fun cancelAllCalls() {
+            cancelledAll++
+            shown.clear()
         }
     }
 
@@ -102,7 +133,6 @@ class CallWakeProcessorTest {
 
         assertEquals(missed(), sink.shown[ch])
         assertEquals(1, sink.shown.size)
-        assertTrue(sink.cancelled.isEmpty())
         assertEquals(CallPhase.MISSED, store.shown("me", ch)?.phase)
     }
 
@@ -320,7 +350,8 @@ class CallWakeProcessorTest {
     fun `logout right before posting posts nothing`() = runTest {
         sink.beforePost = { refreshToken = null }
 
-        assertEquals(CallOutcome.NOT_LOGGED_IN, ring())
+        // Handed to the call owner, whose post is checked in one step with the posting.
+        ring()
 
         assertTrue(sink.posts.isEmpty())
     }
@@ -369,7 +400,8 @@ class CallWakeProcessorTest {
     fun `disabled notifications keep the accepted call for its end`() = runTest {
         sink.disabled = true
 
-        assertEquals(CallOutcome.NOTIFICATIONS_OFF, ring())
+        // The call owner knows the ring all the same (the call screen shows it while the app is open).
+        assertEquals(CallOutcome.INCOMING, ring())
 
         assertEquals(CallPhase.RINGING, store.shown("me", ch)?.phase)
     }
@@ -491,7 +523,7 @@ class CallWakeProcessorTest {
         // A new call rings while the missed call of the old one is about to be posted.
         sink.beforePost = { intake.accept(ringing(callB)) }
 
-        assertEquals(CallOutcome.IGNORED, processor.process(ended(CallEndReason.NO_ANSWER, callA), owner))
+        processor.process(ended(CallEndReason.NO_ANSWER, callA), owner)
 
         assertEquals(ShownCall(callB, CallPhase.RINGING, clock), store.shown("me", ch))
         assertEquals(1, sink.posts.size)

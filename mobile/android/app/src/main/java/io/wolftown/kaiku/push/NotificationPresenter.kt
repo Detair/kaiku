@@ -187,7 +187,7 @@ class AndroidNotificationPresenter internal constructor(
     private fun buildIncomingCall(n: CallNotification, callerId: String, plan: CallPostPlan): Notification {
         val text = CallNotificationText.of(n)
         val content = if (text.name != null) context.getString(text.res, text.name) else context.getString(text.res)
-        val ring = CallIntents.Ring(n.userId, n.channelId, n.callId, callerId, n.callerName)
+        val ring = CallIntents.Ring(n.userId, n.channelId, n.callId, callerId, n.callerName, n.ringingSinceMs)
         val requestBase = "ring-${n.channelId}".hashCode()
         val show = PendingIntent.getActivity(
             context, requestBase, CallIntents.screen(context, ring, CallIntents.ACTION_SHOW),
@@ -199,6 +199,12 @@ class AndroidNotificationPresenter internal constructor(
         )
         val decline = PendingIntent.getBroadcast(
             context, requestBase + 2, CallIntents.decline(context, ring),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        // The system sends it when the notification times out (not when the app removes it):
+        // the ring's end reaches the call owner also when this process was asleep meanwhile.
+        val gone = PendingIntent.getBroadcast(
+            context, requestBase + 3, CallIntents.ringGone(context, ring),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val manager = manager
@@ -217,6 +223,7 @@ class AndroidNotificationPresenter internal constructor(
             .setOnlyAlertOnce(plan.onlyAlertOnce)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setContentIntent(show)
+            .setDeleteIntent(gone)
             .setWhen(System.currentTimeMillis())
             .addExtras(Bundle().apply { putString(EXTRA_USER_ID, n.userId) })
         plan.timeoutMs?.let { builder.setTimeoutAfter(it) }

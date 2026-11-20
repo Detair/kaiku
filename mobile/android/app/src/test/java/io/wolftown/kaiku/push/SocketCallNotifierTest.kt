@@ -11,16 +11,17 @@ import org.junit.Test
 /** Socket rings and the push path share one store: one alert, one missed call per call. */
 class SocketCallNotifierTest {
     private var now = 1_000L
-    private var user: String? = "me"
+    private val sessions = io.wolftown.kaiku.data.session.FakeSessions("me")
+    private val me get() = sessions.generation.enter()!!
     private val sink = CallWakeProcessorTest.FakeCallSink()
     private val store = PrefsCallNotificationStore(InMemorySharedPreferences()) { now }
-    private val notifier = SocketCallNotifier(sink, store, { user }, { now })
+    private val notifier = SocketCallNotifier(sink, store) { now }
 
     @Test
     fun `a ring posts once and a repeat keeps its start`() {
-        notifier.ring("dm-1", "c-1", "anna", "Anna")
+        notifier.ring(me, "dm-1", "c-1", "anna", "Anna")
         now += 5_000
-        notifier.ring("dm-1", "c-1", "anna", "Anna")
+        notifier.ring(me, "dm-1", "c-1", "anna", "Anna")
 
         assertEquals(2, sink.posts.size)
         assertEquals(1_000L, sink.posts.last().ringingSinceMs)
@@ -30,24 +31,24 @@ class SocketCallNotifierTest {
 
     @Test
     fun `a stopped ring leaves a tombstone so a late push does not ring again`() {
-        notifier.ring("dm-1", "c-1", "anna", "Anna")
-        notifier.stopRing("dm-1", "c-1")
+        notifier.ring(me, "dm-1", "c-1", "anna", "Anna")
+        notifier.stopRing(me, "dm-1", "c-1")
 
         assertEquals(listOf("dm-1"), sink.cancelled)
         assertEquals(CallPhase.ENDED, store.shown("me", "dm-1")?.phase)
         val intake = CallWakeIntake(mockk<TokenStorage> { every { getUserId() } returns "me" }, store)
         val lateRing = WakeSignal(WakeKind.CALL, "dm-1", count = 0, call = CallInfo("c-1", "anna", CallState.RINGING))
         assertEquals(false, intake.accept(lateRing))
-        notifier.ring("dm-1", "c-1", "anna", "Anna")
+        notifier.ring(me, "dm-1", "c-1", "anna", "Anna")
         assertEquals(1, sink.posts.size)
     }
 
     @Test
     fun `a missed call is posted once, also after a stop, and ignores the push's ended`() {
-        notifier.ring("dm-1", "c-1", "anna", "Anna")
-        notifier.stopRing("dm-1", "c-1")
-        notifier.missed("dm-1", "c-1", "Anna")
-        notifier.missed("dm-1", "c-1", "Anna")
+        notifier.ring(me, "dm-1", "c-1", "anna", "Anna")
+        notifier.stopRing(me, "dm-1", "c-1")
+        notifier.missed(me, "dm-1", "c-1", "Anna")
+        notifier.missed(me, "dm-1", "c-1", "Anna")
 
         assertEquals(listOf(CallKind.INCOMING, CallKind.MISSED), sink.posts.map { it.kind })
         val ended = CallInfo("c-1", "anna", CallState.ENDED, CallEndReason.NO_ANSWER)
@@ -56,16 +57,46 @@ class SocketCallNotifierTest {
 
     @Test
     fun `stopping an older call leaves a newer ring alone`() {
-        notifier.ring("dm-1", "c-2", "anna", "Anna")
-        notifier.stopRing("dm-1", "c-1")
+        notifier.ring(me, "dm-1", "c-2", "anna", "Anna")
+        notifier.stopRing(me, "dm-1", "c-1")
         assertTrue(sink.cancelled.isEmpty())
     }
 
     @Test
-    fun `nothing rings or is missed while nobody is signed in`() {
-        user = null
-        notifier.ring("dm-1", "c-1", "anna", "Anna")
-        notifier.missed("dm-1", "c-1", "Anna")
-        assertTrue(sink.posts.isEmpty())
+    fun `nothing is posted for a session that is over, and what it posted is removed`() {
+        val old = me
+        notifier.ring(old, "dm-1", "c-1", "anna", "Anna")
+        // The sign-out hook: the generation advances, then every ring goes.
+        sessions.generation.advance()
+        notifier.stopAll()
+        assertEquals(1, sink.cancelledAll)
+
+        notifier.ring(old, "dm-1", "c-2", "anna", "Anna")
+        notifier.missed(old, "dm-1", "c-1", "Anna")
+        notifier.missedIfRinging(old, "dm-1", "c-1", "Anna")
+        notifier.stopRing(old, "dm-1", "c-1")
+        assertEquals("only the ring from before the sign-out was ever posted", 1, sink.posts.size)
+        assertTrue(sink.cancelled.isEmpty())
+    }
+
+    @Test
+    fun `a ring whose notification timed out is missed only if nothing else was said about it`() {
+        notifier.ring(me, "dm-1", "c-1", "anna", "Anna")
+        notifier.missedIfRinging(me, "dm-1", "c-1", "Anna")
+        assertEquals(listOf(CallKind.INCOMING, CallKind.MISSED), sink.posts.map { it.kind })
+
+        // Declined (or ended) before its notification went away: not a missed call.
+        notifier.ring(me, "dm-2", "c-7", "bob", "Bob")
+        notifier.stopRing(me, "dm-2", "c-7")
+        notifier.missedIfRinging(me, "dm-2", "c-7", "Bob")
+        assertEquals(1, sink.posts.count { it.kind == CallKind.MISSED })
+    }
+
+    @Test
+    fun `a ring that came by push keeps the time it was received`() {
+        // The push intake recorded the ring when its wake arrived.
+        store.setShown("me", "dm-1", ShownCall("c-1", CallPhase.RINGING, 400L))
+        notifier.ring(me, "dm-1", "c-1", "anna", "Anna")
+        assertEquals(400L, sink.posts.single().ringingSinceMs)
     }
 }
