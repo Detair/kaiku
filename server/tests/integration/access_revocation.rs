@@ -1479,8 +1479,10 @@ async fn admin_request(
 /// without a socket around the access state (other tests publish on the
 /// shared admin channel). Not elevated: `ADMIN_NOT_ELEVATED` with its
 /// message, read once however often the client asks; the request is kept
-/// and delivery starts with the elevation, without a new request. Elevated:
-/// no reply, and admin events are written. A check that cannot be made:
+/// and delivery starts with the elevation, without a new request; asked
+/// again within the cooldown at the new user epoch, the socket has no
+/// answer of its own yet (`SERVICE_UNAVAILABLE`). Elevated: no reply, and
+/// admin events are written. A check that cannot be made:
 /// `SERVICE_UNAVAILABLE`; the request is kept and the retry decides it.
 /// `admin_unsubscribe` ends the request.
 #[sqlx::test]
@@ -1504,8 +1506,8 @@ async fn admin_subscribe_answers_and_keeps_the_request(pool: PgPool) {
     assert!(access.admin_subscribed() && !access.admin_allowed());
     assert!(!access.admit_admin().await);
     assert_eq!(access_reads(admin).0, 1);
-    // Asking again, also after an unsubscribe, is answered the same from
-    // that decision.
+    // Asking again, also after an unsubscribe, is answered the same: the
+    // socket's refusal stands for its user epoch.
     for _ in 0..3 {
         let again = admin_request(&app, &access, admin, "admin_subscribe").await;
         assert_eq!(again, not_elevated);
@@ -1535,7 +1537,20 @@ async fn admin_subscribe_answers_and_keeps_the_request(pool: PgPool) {
         "no delivery after the elevation"
     );
 
-    // Elevated: no reply.
+    // Within the cooldown of its first request this socket has no answer
+    // of its own at the new user epoch: not decided yet (the frames above
+    // were decided by their own reads; the answer does not take theirs).
+    assert_eq!(
+        admin_request(&app, &access, admin, "admin_subscribe").await,
+        Some((
+            "SERVICE_UNAVAILABLE".to_string(),
+            "Admin access could not be checked yet; events follow once it is".to_string()
+        ))
+    );
+    assert!(access.admit_admin().await);
+
+    // Elevated, on another socket of the session: no reply.
+    let access = SocketAccess::for_session(admin, Some(sid), app.state.db.clone());
     assert_eq!(
         admin_request(&app, &access, admin, "admin_subscribe").await,
         None
