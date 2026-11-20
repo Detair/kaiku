@@ -33,6 +33,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
@@ -84,6 +85,9 @@ class SetupOwnerTest {
     private val use = UvPolicy.choose(30, true, true) as UvDecision.Use
     private val activeChallenge = SigFixtures.challengeFor(SigKind.DEVICE_LOGIN, 3, SigFixtures.V03_CONTEXT)
 
+    /** The scopes of the owners this test made: ended after it, so nothing of one test runs into the next. */
+    private val ownerScopes = mutableListOf<kotlinx.coroutines.CoroutineScope>()
+
     /** The app-wide link holder is cleared around every test: a test that fails half way leaves nothing to the next. */
     @Before fun setUp() {
         io.wolftown.kaiku.navigation.PendingSetupLinks.clear()
@@ -91,6 +95,8 @@ class SetupOwnerTest {
     }
 
     @After fun tearDown() {
+        ownerScopes.forEach { it.cancel() }
+        ownerScopes.clear()
         Dispatchers.resetMain()
         io.wolftown.kaiku.navigation.PendingSetupLinks.clear()
     }
@@ -107,7 +113,10 @@ class SetupOwnerTest {
 
     /** A setup owner on the phone [f]: the app as it runs now, or (a second one) after a restart. */
     private fun owner(f: KeyDeviceFixture): SetupOwner =
-        setupOwner(enroll.api, f.repo, f.signer, deviceSignIn, probe, env, clock = { now }, boot = boot, installId = { appInstallId })
+        setupOwner(
+            enroll.api, f.repo, f.signer, deviceSignIn, probe, env, clock = { now }, boot = boot, installId = { appInstallId },
+            scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.Main.immediate).also { ownerScopes += it },
+        )
 
     private fun noKeyDeviceAt(t: Instant?) = apiError(404, "KEY_DEVICE_UNKNOWN", ApiErrorFields(serverTime = t))
 
