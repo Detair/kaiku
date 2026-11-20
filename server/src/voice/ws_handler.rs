@@ -988,7 +988,12 @@ async fn handle_screen_share_start(
     // Registered in one step with the check that this is still the user's
     // current seat: a seat replaced or gone during the checks above adds
     // nothing and gives its slot back.
+    // Registered, queued and numbered under the seat's media lock, the lock
+    // its end and its expiry take: an expiry decides about exactly the start
+    // it was armed for.
+    let media = peer.media.lock().await;
     if let Err(e) = room.try_add_screen_share_for(&peer, info.clone()).await {
+        drop(media);
         limiter.stop(params.channel_id).await;
         return Err(e);
     }
@@ -1002,6 +1007,7 @@ async fn handle_screen_share_start(
             .await;
     }
     let announcement = peer.announce(TrackSource::ScreenVideo(stream_id));
+    drop(media);
     expire_unused_announcement(
         room.clone(),
         peer.clone(),
@@ -1068,6 +1074,7 @@ async fn handle_screen_share_stop(
         stream_id,
         screen_share_limiter,
         "user_stopped",
+        None,
     )
     .await
 }
@@ -1101,15 +1108,33 @@ fn expire_unused_announcement(
         }
         let ended = match source {
             TrackSource::ScreenVideo(stream_id) => {
-                end_screen_share(&room, &peer, stream_id, limiter.as_ref(), "no_media").await
+                end_screen_share(
+                    &room,
+                    &peer,
+                    stream_id,
+                    limiter.as_ref(),
+                    "no_media",
+                    Some(announcement),
+                )
+                .await
             }
-            TrackSource::Webcam => end_webcam(&room, &peer, "no_media").await,
+            TrackSource::Webcam => end_webcam(&room, &peer, "no_media", Some(announcement)).await,
             TrackSource::Microphone | TrackSource::ScreenAudio(_) => Ok(()),
         };
         if let Err(e) = ended {
             debug!(user_id = %peer.user_id, error = %e, "Expiring an unused announcement failed");
         }
     });
+}
+
+/// Whether the start that armed expiry `announcement` of `source` is still
+/// the latest one and still has no track. Checked under the seat's media
+/// lock, which a start, a track binding and an end also take, so the answer
+/// holds while the expiry ends it.
+async fn still_unused(peer: &super::peer::Peer, source: TrackSource, announcement: u64) -> bool {
+    !peer.is_retired()
+        && peer.is_current_announcement(source, announcement)
+        && !peer.incoming_tracks.read().await.contains_key(&source)
 }
 
 /// End the screen share `stream_id` of `peer`: drop its queued
@@ -1124,6 +1149,7 @@ async fn end_screen_share(
     stream_id: Uuid,
     screen_share_limiter: Option<&ScreenShareLimiter>,
     reason: &str,
+    expiry: Option<u64>,
 ) -> Result<(), VoiceError> {
     crate::ws::test_hooks::voice_step(peer.user_id, "end_share").await;
     let user_id = peer.user_id;
@@ -1131,6 +1157,11 @@ async fn end_screen_share(
     // Serialized with a track being bound to this share (see `sfu.rs`): a
     // track never starts forwarding for a share that has ended.
     let _media = peer.media.lock().await;
+    if let Some(n) = expiry {
+        if !still_unused(peer, TrackSource::ScreenVideo(stream_id), n).await {
+            return Ok(());
+        }
+    }
     // An announcement this stop ends must never bind a later track.
     peer.remove_pending_sources(|s| s.stream_id() == Some(stream_id))
         .await;
@@ -1271,12 +1302,15 @@ async fn handle_webcam_start(
     // Register the webcam first (a track only binds to a live webcam), in
     // one step with the check that this is still the user's current seat:
     // a seat that was replaced meanwhile adds nothing.
+    // Under the seat's media lock, as for a share (see there).
     let info = WebcamInfo::new(user_id, username.clone(), quality);
+    let media = peer.media.lock().await;
     room.add_webcam_for(&peer, info).await?;
 
     // Queue pending track source so setup_track_handler identifies it as Webcam
     peer.push_pending_source(TrackSource::Webcam).await;
     let announcement = peer.announce(TrackSource::Webcam);
+    drop(media);
     expire_unused_announcement(
         room.clone(),
         peer.clone(),
@@ -1329,7 +1363,7 @@ async fn handle_webcam_stop(
         .await
         .ok_or(VoiceError::RoomNotFound(channel_id))?;
     let peer = owned_peer(&room, user_id, tx).await?;
-    end_webcam(&room, &peer, "user_stopped").await
+    end_webcam(&room, &peer, "user_stopped", None).await
 }
 
 /// End the webcam of `peer`: drop its queued announcement, remove it from
@@ -1341,12 +1375,18 @@ async fn end_webcam(
     room: &Room,
     peer: &Arc<super::peer::Peer>,
     reason: &str,
+    expiry: Option<u64>,
 ) -> Result<(), VoiceError> {
     crate::ws::test_hooks::voice_step(peer.user_id, "end_webcam").await;
     let user_id = peer.user_id;
     let channel_id = room.channel_id;
     // Serialized with a track being bound to the webcam (see `sfu.rs`).
     let _media = peer.media.lock().await;
+    if let Some(n) = expiry {
+        if !still_unused(peer, TrackSource::Webcam, n).await {
+            return Ok(());
+        }
+    }
     // A webcam announcement this stop ends must never bind a later track.
     peer.remove_pending_sources(|s| *s == TrackSource::Webcam)
         .await;

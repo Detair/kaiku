@@ -343,3 +343,31 @@ async fn a_seat_removed_before_its_announcement_is_not_announced(pool: PgPool) {
 
     expect_no_ws_event(&mut r.viewer, "voice_user_joined", QUIET).await;
 }
+
+/// Expiry: the ten-second timer of a start whose track never came, past its
+/// checks when the same seat stops and starts the webcam again, ends only
+/// the start it was armed for: the new webcam stays.
+#[sqlx::test]
+async fn expiry_ends_only_the_start_it_was_armed_for(pool: PgPool) {
+    let mut r = room(pool).await;
+    let mut seat = joined(&r.server, &r.token, r.voice).await;
+    next_ws_event(&mut r.viewer, "voice_user_joined", WAIT).await;
+    let pause = pause_voice_step(r.user, "end_webcam");
+    send(&mut seat, webcam_start(r.voice)).await;
+    next_ws_event(&mut seat, "webcam_started", WAIT).await;
+    next_ws_event(&mut r.viewer, "webcam_started", WAIT).await;
+
+    Room::reached(&pause).await; // the expiry, about 10 s later
+    send(
+        &mut seat,
+        serde_json::json!({ "type": "voice_webcam_stop", "channel_id": r.voice }),
+    )
+    .await;
+    next_ws_event(&mut r.viewer, "webcam_stopped", WAIT).await;
+    send(&mut seat, webcam_start(r.voice)).await;
+    next_ws_event(&mut seat, "webcam_started", WAIT).await;
+    next_ws_event(&mut r.viewer, "webcam_started", WAIT).await;
+    pause.release.notify_one();
+
+    r.assert_new_webcam_kept().await;
+}
