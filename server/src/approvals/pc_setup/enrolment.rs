@@ -38,9 +38,10 @@ fn one_row(r: sqlx::postgres::PgQueryResult) -> Result<(), ApprovalError> {
     }
 }
 
-/// Where the right code was typed, and so the only way its passkey may be
-/// registered (spec Step 5): the code proves that whoever registers is with
-/// the person holding the phone, so registration takes the same path.
+/// Where the right code was typed: the only way its passkey may be registered.
+///
+/// Spec Step 5: the code proves that whoever registers is with the person
+/// holding the phone, so registration takes the same path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodePath {
     /// The requesting session's own route (the page of the browser client).
@@ -227,10 +228,11 @@ async fn passkey_room(conn: &mut PgConnection, user_id: Uuid) -> Result<(), Appr
     Ok(())
 }
 
-/// The checks of `passkey/start` under the locks: the attempt is
-/// `enrolled` through `path` (the code was typed the way the passkey is now
-/// registered), its enrolment live and the account has room. Returns the
-/// enrolment id the ceremony is bound to.
+/// The checks of `passkey/start` under the locks; returns the enrolment id.
+///
+/// The attempt is `enrolled` through `path` (the code was typed the way the
+/// passkey is now registered), its enrolment live and the account has room.
+/// The ceremony is bound to the returned enrolment.
 pub async fn registration_open(
     conn: &mut PgConnection,
     locked: &LockedAttempt,
