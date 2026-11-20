@@ -1482,17 +1482,28 @@ impl SfuServer {
                     if source_type.is_video() {
                         let peer_weak = Arc::downgrade(&peer);
                         let primary_ssrc = track.ssrc();
+                        // The source is live while its incoming track is
+                        // still this one: a source ended and started again
+                        // has a new track (and its own request task).
+                        let own_track = Arc::downgrade(&track);
                         tokio::spawn(async move {
                             let mut interval = tokio::time::interval(std::time::Duration::from_secs(3));
-                            let mut seen = false;
+                            let mut first = true;
                             loop {
                                 interval.tick().await;
                                 let Some(peer) = peer_weak.upgrade() else { break };
-                                let live = peer.incoming_tracks.read().await.contains_key(&source_type);
-                                if peer.is_retired() || (seen && !live) {
+                                let live = peer
+                                    .incoming_tracks
+                                    .read()
+                                    .await
+                                    .get(&source_type)
+                                    .is_some_and(|t| std::ptr::eq(Arc::as_ptr(t), own_track.as_ptr()));
+                                // Only the immediate first tick may come before
+                                // the track is stored.
+                                if peer.is_retired() || (!live && !first) {
                                     break;
                                 }
-                                seen |= live;
+                                first = false;
                                 let mut ssrcs: Vec<u32> = peer
                                     .simulcast_ssrcs(source_type)
                                     .into_iter()
