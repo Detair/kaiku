@@ -306,9 +306,9 @@ class CallMachineTest {
         // Nothing is claimed yet: the server is asked how the call ended for this user.
         assertEquals(listOf(SilenceRing(dm, "c-1"), AskRing(dm, "c-1")), effects)
         assertTrue(effects.none { it is RestDecline || it is RestLeave })
-        // Gone, and never answered: missed.
+        // Gone: no end reason, no claim.
         send(RingChecked(dm, "c-1", answer = null, asked = true))
-        assertEquals(listOf(Missed(dm, "c-1", "anna", "Anna")), effects)
+        assertEquals(emptyList<CallEffect>(), effects)
     }
 
     // -- Busy ----------------------------------------------------------------------
@@ -418,10 +418,12 @@ class CallMachineTest {
     ) = CallSnapshot(callId, ringing, active, startedBy, participants, declinedBy)
 
     @Test
-    fun `a ring that vanished while offline is missed`() {
+    fun `a ring that vanished while offline claims nothing until its end says`() {
         incoming()
         assertEquals(CallState.Idle, send(Resynced(dm, null, 0L)))
-        assertEquals(listOf(StopRing(dm, "c-1"), Missed(dm, "c-1", "anna", "Anna")), effects)
+        assertEquals(listOf(SilenceRing(dm, "c-1")), effects)
+        send(ServerEnded(dm, "c-1", "cancelled", rungHere = true, callerId = "anna"))
+        assertEquals(listOf(Missed(dm, "c-1", "anna", "Anna")), effects)
     }
 
     @Test
@@ -901,7 +903,7 @@ class CallMachineTest {
         assertEquals(CallState.Idle, send(CallEvent.RingExpired(dm, "c-1", "Anna")))
         assertEquals(listOf(SilenceRing(dm, "c-1"), AskRing(dm, "c-1")), effects)
         send(RingChecked(dm, "c-1", answer = null, asked = true))
-        assertEquals(listOf(Missed(dm, "c-1", "anna", "Anna")), effects)
+        assertEquals(emptyList<CallEffect>(), effects)
     }
 
     @Test
@@ -914,7 +916,10 @@ class CallMachineTest {
         send(CallEvent.RingExpired(dm, "c-1", "Anna"))
         assertEquals(listOf(AskRing(dm, "c-1")), effects)
         send(RingChecked(dm, "c-1", answer = null, asked = true))
-        assertEquals(listOf(CallEffect.MissedIfRinging(dm, "c-1", "Anna")), effects)
+        assertEquals(emptyList<CallEffect>(), effects)
+        // Its end says nobody answered: missed.
+        send(ServerEnded(dm, "c-1", "no_answer", rungHere = true, callerId = "anna"))
+        assertEquals(listOf(Missed(dm, "c-1", "", "Anna")), effects)
     }
 
     @Test
@@ -1123,7 +1128,7 @@ class CallMachineTest {
         assertTrue(model.state is CallState.Outgoing)
     }
 
-    // -- A missed call is claimed only on knowledge ------------------------------------------
+    // -- Missed or not: the end's reason, and what this phone knows of its own user ----------
 
     private fun ringOver() {
         incoming()
@@ -1135,64 +1140,80 @@ class CallMachineTest {
         CallSnapshot(callId, ringing = ringing, active = active, startedBy = "anna", participants = participants, declinedBy = declinedBy)
 
     @Test
+    fun `the decision - nobody answered is missed unless this user is known to have handled it, no reason claims nothing`() {
+        assertTrue(CallMachine.missedOnEnd(CallEndReason.NoAnswer, handledHere = false))
+        assertTrue(CallMachine.missedOnEnd(CallEndReason.Cancelled, handledHere = false))
+        assertFalse(CallMachine.missedOnEnd(CallEndReason.NoAnswer, handledHere = true))
+        assertFalse(CallMachine.missedOnEnd(CallEndReason.Cancelled, handledHere = true))
+        assertFalse(CallMachine.missedOnEnd(CallEndReason.Declined, handledHere = false))
+        assertFalse(CallMachine.missedOnEnd(CallEndReason.Ended, handledHere = false))
+        assertFalse("no end reason is no knowledge", CallMachine.missedOnEnd(null, handledHere = false))
+    }
+
+    @Test
+    fun `accepted - a group ring still shown here ends as missed when nobody answered, whatever happened on another device`() {
+        incoming()
+        // Declined on the desktop; this phone heard nothing of it. The end says nobody answered.
+        send(ServerEnded(dm, "c-1", "no_answer", rungHere = true, callerId = "anna"))
+        assertEquals(listOf(StopRing(dm, "c-1"), Missed(dm, "c-1", "anna", "Anna")), effects)
+    }
+
+    @Test
     fun `a ring over here that the server shows as answered by this user is no missed call`() {
         ringOver()
         send(RingChecked(dm, "c-1", answer(active = true, participants = setOf("anna", me)), asked = true))
         assertEquals(listOf(StopRing(dm, "c-1")), effects)
-    }
-
-    @Test
-    fun `a ring over here that the server shows as declined by this user is no missed call`() {
-        ringOver()
-        send(RingChecked(dm, "c-1", answer(ringing = true, declinedBy = setOf(me)), asked = true))
-        assertEquals(listOf(StopRing(dm, "c-1")), effects)
-    }
-
-    @Test
-    fun `a ring over here whose call is still ringing for this user is missed`() {
-        ringOver()
-        send(RingChecked(dm, "c-1", answer(ringing = true), asked = true))
-        assertEquals(listOf(Missed(dm, "c-1", "anna", "Anna")), effects)
-    }
-
-    @Test
-    fun `a ring over here whose server shows another call is missed`() {
-        ringOver()
-        send(RingChecked(dm, "c-1", answer(ringing = true, callId = "c-2"), asked = true))
-        assertEquals(listOf(Missed(dm, "c-1", "anna", "Anna")), effects)
-    }
-
-    @Test
-    fun `a ring over here while the server cannot be asked claims nothing until an end can tell`() {
-        ringOver()
-        send(RingChecked(dm, "c-1", answer = null, asked = false))
-        assertEquals(emptyList<CallEffect>(), effects)
-        // A wake that cannot tell (a group: this user may have declined it elsewhere): nothing.
-        send(ServerEnded(dm, "c-1", "no_answer", rungHere = true, callerId = "anna", complete = false))
-        assertEquals(listOf(StopRing(dm, "c-1")), effects)
-        assertTrue(model.openRings.isEmpty())
-    }
-
-    @Test
-    fun `a ring over here is missed when its end can tell nobody answered or declined it`() {
-        ringOver()
-        send(RingChecked(dm, "c-1", answer = null, asked = false))
-        // A one-to-one call: a decline by this user would have ended it as all_declined.
-        send(ServerEnded(dm, "c-1", "no_answer", rungHere = true, callerId = "anna", complete = true))
-        assertEquals(listOf(Missed(dm, "c-1", "anna", "Anna")), effects)
-        // Said once.
-        send(ServerEnded(dm, "c-1", "no_answer", rungHere = true, callerId = "anna", complete = true))
+        // Its end later changes nothing.
+        send(ServerEnded(dm, "c-1", "last_left", rungHere = true, callerId = "anna"))
         assertTrue(effects.none { it is Missed })
     }
 
     @Test
-    fun `an answered or declined end of a ring over here is no missed call`() {
-        for (reason in listOf("all_declined", "last_left")) {
+    fun `a ring over here that the server shows as declined by this user is no missed call, also when nobody else answered`() {
+        ringOver()
+        send(RingChecked(dm, "c-1", answer(ringing = true, declinedBy = setOf(me)), asked = true))
+        assertEquals(listOf(StopRing(dm, "c-1")), effects)
+        send(ServerEnded(dm, "c-1", "no_answer", rungHere = true, callerId = "anna"))
+        assertTrue("a call this user declined shows as missed: $effects", effects.none { it is Missed })
+    }
+
+    @Test
+    fun `a ring over here that the server no longer has claims nothing until its end says`() {
+        for ((reason, missed) in listOf("no_answer" to true, "cancelled" to true, "last_left" to false, "all_declined" to false)) {
             model = CallModel()
             ringOver()
-            send(ServerEnded(dm, "c-1", reason, rungHere = true, callerId = "anna", complete = true))
-            assertEquals(reason, listOf(StopRing(dm, "c-1")), effects)
+            send(RingChecked(dm, "c-1", answer = null, asked = true))
+            assertEquals(reason, emptyList<CallEffect>(), effects)
+            send(ServerEnded(dm, "c-1", reason, rungHere = true, callerId = "anna"))
+            assertEquals(
+                reason,
+                if (missed) listOf(Missed(dm, "c-1", "anna", "Anna")) else listOf(StopRing(dm, "c-1")),
+                effects,
+            )
         }
+    }
+
+    @Test
+    fun `a ring over here whose call still rings, or rings on as another call, or is active without this user, claims nothing`() {
+        for (said in listOf(answer(ringing = true), answer(ringing = true, callId = "c-2"), answer(active = true, participants = setOf("anna", "bob")))) {
+            model = CallModel()
+            ringOver()
+            send(RingChecked(dm, "c-1", said, asked = true))
+            assertEquals("$said", emptyList<CallEffect>(), effects)
+            assertEquals(1, model.openRings.size)
+        }
+    }
+
+    @Test
+    fun `a ring over here while the server cannot be asked is decided by its end`() {
+        ringOver()
+        send(RingChecked(dm, "c-1", answer = null, asked = false))
+        assertEquals(emptyList<CallEffect>(), effects)
+        send(ServerEnded(dm, "c-1", "no_answer", rungHere = true, callerId = "anna"))
+        assertEquals(listOf(Missed(dm, "c-1", "anna", "Anna")), effects)
+        // Said once.
+        send(ServerEnded(dm, "c-1", "no_answer", rungHere = true, callerId = "anna"))
+        assertTrue(effects.none { it is Missed })
     }
 
     @Test
@@ -1200,13 +1221,15 @@ class CallMachineTest {
         ringOver()
         send(ParticipantJoined(dm, "c-1", me, 1L))
         assertEquals(listOf(StopRing(dm, "c-1")), effects)
-        send(RingChecked(dm, "c-1", answer = null, asked = true))
-        assertEquals("the late answer finds nothing open", emptyList<CallEffect>(), effects)
+        send(ServerEnded(dm, "c-1", "no_answer", rungHere = true, callerId = "anna"))
+        assertTrue(effects.none { it is Missed })
 
         model = CallModel()
         ringOver()
         send(Declined(dm, "c-1", me))
         assertEquals(listOf(StopRing(dm, "c-1")), effects)
+        send(ServerEnded(dm, "c-1", "cancelled", rungHere = true, callerId = "anna"))
+        assertTrue(effects.none { it is Missed })
     }
 
     @Test
@@ -1226,16 +1249,11 @@ class CallMachineTest {
     }
 
     @Test
-    fun `a wake of a call whose ring is over here without this owner seeing it is missed only if it can tell`() {
-        // An earlier process showed the ring, its 100 s passed, and that process is gone.
-        send(ServerEnded(dm, "c-1", "no_answer", rungHere = true, callerId = "anna", complete = false, ringOver = true))
+    fun `a wake of a call this owner never showed is missed when nobody answered, group or not`() {
+        send(ServerEnded(dm, "c-1", "no_answer", rungHere = true, callerId = "anna"))
+        assertEquals(listOf(StopRing(dm, "c-1"), Missed(dm, "c-1", "anna", null)), effects)
+        model = CallModel()
+        send(ServerEnded(dm, "c-1", "last_left", rungHere = true, callerId = "anna"))
         assertEquals(listOf(StopRing(dm, "c-1")), effects)
-        model = CallModel()
-        send(ServerEnded(dm, "c-1", "no_answer", rungHere = true, callerId = "anna", complete = true, ringOver = true))
-        assertEquals(listOf(StopRing(dm, "c-1"), Missed(dm, "c-1", "anna", null)), effects)
-        // Still within its ring here (the process that rang it is gone): missed as before.
-        model = CallModel()
-        send(ServerEnded(dm, "c-1", "no_answer", rungHere = true, callerId = "anna", complete = false, ringOver = false))
-        assertEquals(listOf(StopRing(dm, "c-1"), Missed(dm, "c-1", "anna", null)), effects)
     }
 }

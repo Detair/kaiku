@@ -13,11 +13,8 @@ import javax.inject.Inject
 
 /** Whether a DM belongs to the signed-in user, and the caller's name in it. */
 sealed interface CallerLookup {
-    /**
-     * The DM is the user's; [name] is null when the caller has no usable name in it.
-     * [direct]: it is a one-to-one conversation (the caller and this user).
-     */
-    data class Found(val name: String?, val direct: Boolean = false) : CallerLookup
+    /** The DM is the user's; [name] is null when the caller has no usable name in it. */
+    data class Found(val name: String?) : CallerLookup
 
     /** The loaded DM list does not have the channel, or the server answered 403/404: not the user's DM. */
     data object NotMember : CallerLookup
@@ -42,11 +39,11 @@ class NotificationTitleResolver @Inject constructor(
      * REST, which also decides membership ([CallerLookup.NotMember]).
      */
     suspend fun lookupCaller(channelId: String, callerId: String): CallerLookup {
-        val cached = dmRepository.conversations.value.find { it.id == channelId }
-        participantName(cached, callerId)?.let { return CallerLookup.Found(it, isDirect(cached, callerId)) }
+        participantName(dmRepository.conversations.value.find { it.id == channelId }, callerId)
+            ?.let { return CallerLookup.Found(it) }
         return try {
             val dm = dmApi.getDms().find { it.id == channelId } ?: return CallerLookup.NotMember
-            CallerLookup.Found(participantName(dm, callerId), isDirect(dm, callerId))
+            CallerLookup.Found(participantName(dm, callerId))
         } catch (e: CancellationException) {
             throw e
         } catch (e: ApiException) {
@@ -59,10 +56,6 @@ class NotificationTitleResolver @Inject constructor(
             CallerLookup.Unknown
         }
     }
-
-    /** Two people, one of them the caller: the other one is this user (the list is theirs). */
-    private fun isDirect(dm: DmConversation?, callerId: String): Boolean =
-        dm != null && dm.participants.size == 2 && dm.participants.any { it.userId == callerId }
 
     private fun participantName(dm: DmConversation?, userId: String): String? {
         val participant = dm?.participants?.find { it.userId == userId } ?: return null

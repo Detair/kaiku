@@ -618,36 +618,23 @@ class CallWakeProcessorTest {
     }
 
     @Test
-    fun `a late end of a group call whose ring is over here, rung by a process that is gone, claims nothing`() = runTest {
+    fun `a late end whose ring is over here, rung by a process that is gone, is missed when nobody answered`() = runTest {
         ring()
         // The ring's 100 s pass in a process that is then gone; the end comes late.
         clock += 120_000
-        coEvery { names.lookupCaller(ch, bob) } returns CallerLookup.Found("Bob", direct = false)
         intake.accept(ended(CallEndReason.NO_ANSWER))
         freshProcessor().process(ended(CallEndReason.NO_ANSWER), owner)
 
-        assertTrue("a missed call claimed without knowing: ${sink.posts}", sink.posts.none { it.kind == CallKind.MISSED })
+        assertEquals(missed(), sink.posts.last())
     }
 
     @Test
-    fun `a late one-to-one end whose ring is over here, rung by a process that is gone, is a missed call`() = runTest {
+    fun `a late end that says somebody answered, rung by a process that is gone, shows nothing`() = runTest {
         ring()
         clock += 120_000
-        coEvery { names.lookupCaller(ch, bob) } returns CallerLookup.Found("Bob", direct = true)
-        intake.accept(ended(CallEndReason.NO_ANSWER))
-        freshProcessor().process(ended(CallEndReason.NO_ANSWER), owner)
+        intake.accept(ended(CallEndReason.LAST_LEFT))
+        freshProcessor().process(ended(CallEndReason.LAST_LEFT), owner)
 
-        assertEquals(missed(), sink.posts.last())
-    }
-
-    @Test
-    fun `a group call's end within its ring, rung by a process that is gone, is a missed call as before`() = runTest {
-        ring()
-        clock += 30_000
-        coEvery { names.lookupCaller(ch, bob) } returns CallerLookup.Found("Bob", direct = false)
-        intake.accept(ended(CallEndReason.NO_ANSWER))
-        freshProcessor().process(ended(CallEndReason.NO_ANSWER), owner)
-
-        assertEquals(missed(), sink.posts.last())
+        assertTrue(sink.posts.none { it.kind == CallKind.MISSED })
     }
 }

@@ -20,7 +20,4 @@ class DmCallDirectory @Inject constructor(
         val dm = dms.conversations.value.firstOrNull { it.id == channelId } ?: return null
         return DmRepository.conversationTitle(dm, me).takeIf { it.isNotBlank() }
     }
-
-    override fun isDirect(channelId: String): Boolean? =
-        dms.conversations.value.firstOrNull { it.id == channelId }?.let { it.participants.size == 2 }
 }

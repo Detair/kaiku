@@ -207,9 +207,6 @@ internal class CallRig(
     val socket: KaikuWebSocket = mockk(relaxed = true) { every { events } returns this@CallRig.events }
     val sessions = if (restored) FakeSessions("me") else FakeSessions(user = null).also { it.stored = "me" }
 
-    /** Whether the cached chat list says the conversation is one-to-one (null: it does not have it). */
-    var direct: Boolean? = null
-
     val controller = CallController(
         api = api,
         voice = voice,
@@ -219,7 +216,6 @@ internal class CallRig(
         directory = object : CallDirectory {
             override fun nameOf(channelId: String, userId: String) = if (userId == "anna") "Anna" else null
             override fun titleOf(channelId: String) = "Anna"
-            override fun isDirect(channelId: String) = direct
         },
         clock = { test.currentTime + slept },
         voiceScope = test.backgroundScope,
@@ -255,16 +251,8 @@ internal class CallRig(
         controller.fromPush(CallInput.PushRing(CallRef(account, channel, callId), "anna", "Anna", wallNow() - receivedAgoMs))
 
     /** An `ended` push wake. */
-    suspend fun pushEnded(
-        callId: String = "c-1",
-        reason: String = "no_answer",
-        channel: String = dm,
-        direct: Boolean? = null,
-        /** When this phone received the call's ring, as recorded (null: it never rang here). */
-        ringReceivedAgoMs: Long? = null,
-    ) = controller.fromPush(
-        CallInput.PushEnded(CallRef("me", channel, callId), "anna", "Anna", reason, direct, ringReceivedAgoMs?.let { wallNow() - it }),
-    )
+    suspend fun pushEnded(callId: String = "c-1", reason: String = "no_answer", channel: String = dm) =
+        controller.fromPush(CallInput.PushEnded(CallRef("me", channel, callId), "anna", "Anna", reason))
 
     /** The ring notification of [callId] timed out. */
     fun ringExpired(callId: String = "c-1") =

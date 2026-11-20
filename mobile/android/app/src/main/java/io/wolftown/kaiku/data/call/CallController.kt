@@ -68,9 +68,6 @@ interface CallDirectory {
 
     /** The DM's title as the chat list shows it (the other person, or the group), or null. */
     fun titleOf(channelId: String): String?
-
-    /** Whether the DM is a one-to-one conversation (two people), or null when it is not known here. */
-    fun isDirect(channelId: String): Boolean? = null
 }
 
 /**
@@ -140,19 +137,12 @@ sealed interface CallInput {
         override val account get() = call.account
     }
 
-    /**
-     * An `ended` push wake with the wire [reason]. [direct]: the conversation is one-to-one
-     * (this user is the only one the call rang), as far as the push path found out; null:
-     * it did not. [ringReceivedAtMs]: when this phone received the ring of that call (wall
-     * clock), as recorded; null: no ring of it is recorded.
-     */
+    /** An `ended` push wake with the wire [reason]. */
     data class PushEnded(
         val call: CallRef,
         val callerId: String,
         val callerName: String?,
         val reason: String,
-        val direct: Boolean? = null,
-        val ringReceivedAtMs: Long? = null,
     ) : CallInput {
         override val account get() = call.account
     }
@@ -552,11 +542,6 @@ class CallController internal constructor(
                 CallEvent.ServerEnded(
                     input.call.channelId, known(callId), input.reason,
                     rungHere = true, callerId = input.callerId, callerName = input.callerName,
-                    // A wake says nothing about this user's own decline on another device. Only
-                    // where they are the only one rung does "unanswered" rule it out.
-                    complete = input.direct ?: directory.isDirect(input.call.channelId) ?: false,
-                    // Its ring was received here and its 100 s from that receipt are over.
-                    ringOver = input.ringReceivedAtMs?.let { wallClock() - it >= CallMachine.RING_CAP_MS } ?: false,
                 )
             }
         }
