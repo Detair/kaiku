@@ -163,26 +163,31 @@ class PhoneRemovalTest {
         }
     }
 
+    private val points = listOf("challenge", "prompt-1", "sign-in", "me", "stepUp", "prompt-2", "answer", "remove")
+
+    /** Makes the removal of [p] wait at [point] until the returned gate is completed. */
+    private fun holdAt(p: Phone, point: String): CompletableDeferred<Unit> {
+        val held = CompletableDeferred<Unit>()
+        when (point) {
+            "challenge" -> p.approval.challengeGate = held
+            "prompt-1" -> p.f.verifier.gate = held
+            "sign-in" -> p.approval.deviceLoginGate = held
+            "prompt-2" -> p.api.onCall = { if (it.startsWith("stepUp")) p.f.verifier.gate = held }
+            "me" -> p.api.gates["me"] = held
+            "stepUp" -> p.api.gates["stepUp:key_device.remove:$KEY_DEVICE"] = held
+            "answer" -> p.api.gates["answer"] = held
+            else -> p.api.gates["remove:$KEY_DEVICE"] = held
+        }
+        return held
+    }
+
+    private val removalSession = Triple(SigFixtures.ORIGIN, REMOVAL_ACCESS as String?, REMOVAL_REFRESH as String?)
+
     /** Every point at which the removal waits: stopped there, nothing is on disk and nothing else changed. */
     @Test fun `stopped at any step it leaves nothing behind`() = runTest {
-        val points = listOf("challenge", "prompt-1", "sign-in", "me", "stepUp", "prompt-2", "answer", "remove")
         for (point in points) {
             val p = Phone(this)
-            val held = CompletableDeferred<Unit>()
-            when (point) {
-                "challenge" -> p.approval.challengeGate = held
-                "prompt-1" -> p.f.verifier.gate = held
-                "sign-in" -> p.approval.deviceLoginGate = held
-                "prompt-2" -> p.api.onCall = { if (it.startsWith("stepUp")) p.f.verifier.gate = held }
-                else -> p.api.gates[p.api.let { _ ->
-                    when (point) {
-                        "me" -> "me"
-                        "stepUp" -> "stepUp:key_device.remove:$KEY_DEVICE"
-                        "answer" -> "answer"
-                        else -> "remove:$KEY_DEVICE"
-                    }
-                }] = held
-            }
+            holdAt(p, point)
             val job = launch { p.removal.run(activity) }
             testScheduler.runCurrent()
             assertTrue(point, job.isActive)
@@ -192,7 +197,6 @@ class PhoneRemovalTest {
 
             job.cancel() // the screen went away
             testScheduler.runCurrent()
-            testScheduler.advanceUntilIdle()
 
             p.assertAppUntouched("stopped at $point")
             assertNotNull(point, p.f.repo.record.value)
@@ -200,7 +204,34 @@ class PhoneRemovalTest {
             assertTrue(point, p.f.store.writes.isEmpty())
             // A session it had obtained is ended on its server, with its own tokens, off the screen's scope.
             val hadSession = points.indexOf(point) > points.indexOf("sign-in")
-            assertEquals(point, if (hadSession) listOf(Triple(SigFixtures.ORIGIN, REMOVAL_ACCESS as String?, REMOVAL_REFRESH as String?)) else emptyList(), p.revoked)
+            assertEquals(point, if (hadSession) listOf(removalSession) else emptyList(), p.revoked)
+        }
+    }
+
+    /** At every such point: an ordinary sign-in made meanwhile is the app's session afterwards, untouched. */
+    @Test fun `an ordinary sign-in made while the removal waits is not touched by the removal ending`() = runTest {
+        for (point in points) for (end in listOf("stopped", "finished")) {
+            val p = Phone(this)
+            val held = holdAt(p, point)
+            val job = launch { p.removal.run(activity) }
+            testScheduler.runCurrent()
+            // Meanwhile the person signs in the ordinary way (on this phone, with this account).
+            p.tokenStorage.saveTokens("ordinary-access", "ordinary-refresh", 900, SigFixtures.USER_ID)
+            p.f.authState.setLoggedIn(SigFixtures.USER_ID)
+            val ordinary = p.f.authState.session.value
+            val generation = p.tokenStorage.getSessionGeneration()
+
+            if (end == "stopped") job.cancel() else held.complete(Unit)
+            testScheduler.runCurrent()
+
+            val why = "$point, $end"
+            assertEquals(why, "ordinary-access", p.tokenStorage.getAccessToken())
+            assertEquals(why, "ordinary-refresh", p.tokenStorage.getRefreshToken())
+            assertEquals(why, generation, p.tokenStorage.getSessionGeneration())
+            assertEquals(why, ordinary, p.f.authState.session.value)
+            assertEquals(why, 1, p.connects)
+            // The removal ended no session but its own.
+            assertTrue(why, p.revoked.all { it == removalSession })
         }
     }
 
@@ -225,27 +256,6 @@ class PhoneRemovalTest {
         assertEquals(1, p.revoked.size)
         p.assertAppUntouched()
         assertNotNull(p.f.repo.record.value)
-    }
-
-    @Test fun `an ordinary sign-in made meanwhile is not touched by the removal ending`() = runTest {
-        val p = Phone(this)
-        val held = CompletableDeferred<Unit>().also { p.api.gates["me"] = it }
-        val job = launch { p.removal.run(activity) }
-        testScheduler.runCurrent()
-        // Meanwhile the person signs in the ordinary way (on this phone, with this account).
-        p.tokenStorage.saveTokens("ordinary-access", "ordinary-refresh", 900, SigFixtures.USER_ID)
-        p.f.authState.setLoggedIn(SigFixtures.USER_ID)
-        val ordinary = p.f.authState.session.value
-
-        job.cancel()
-        testScheduler.runCurrent()
-
-        assertEquals("ordinary-access", p.tokenStorage.getAccessToken())
-        assertEquals("ordinary-refresh", p.tokenStorage.getRefreshToken())
-        assertEquals(ordinary, p.f.authState.session.value)
-        // Only the removal's own session was ended.
-        assertEquals(listOf(Triple(SigFixtures.ORIGIN, REMOVAL_ACCESS as String?, REMOVAL_REFRESH as String?)), p.revoked)
-        assertTrue(held.isActive)
     }
 
     @Test fun `the only key of the account is kept, and the session made for the removal is ended`() = runTest {

@@ -61,16 +61,9 @@ fun SetupFlowScreen(
     val linkIgnored by viewModel.linkIgnored.collectAsState()
     val waiting by viewModel.waiting.collectAsState()
 
+    // Taken only once composed, so a discarded composition never loses the memory-only code.
     LaunchedEffect(link) {
-        if (link != null) {
-            // One delivery, one call: the setup starts only when none is held (the same link again
-            // changes nothing, another one is noted on the screen). Taken only once composed, so a
-            // discarded composition never loses the memory-only code.
-            viewModel.start(link)
-            onLinkTaken(link)
-        } else if (!viewModel.started) {
-            viewModel.resumeWithoutEntry()
-        }
+        deliverSetupLink(link, viewModel.started, viewModel::start, onLinkTaken, viewModel::resumeWithoutEntry)
     }
     val u0 = ui
     if (waiting) {
@@ -163,6 +156,27 @@ private fun SetupFlowSteps(
                 onBack = onBack,
             )
         }
+    }
+}
+
+/**
+ * What the setup screen does with the link waiting for it, each time that link changes: a link
+ * is handed to the setup once and then marked taken (one delivery, one start; the setup itself
+ * decides whether it is used). Without a link, a screen that was handed nothing looks at what the
+ * phone has stored.
+ */
+internal fun deliverSetupLink(
+    link: SetupEntry?,
+    started: Boolean,
+    start: (SetupEntry) -> Unit,
+    taken: (SetupEntry) -> Unit,
+    resumeWithoutEntry: () -> Unit,
+) {
+    if (link != null) {
+        start(link)
+        taken(link)
+    } else if (!started) {
+        resumeWithoutEntry()
     }
 }
 

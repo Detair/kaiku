@@ -31,6 +31,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
@@ -179,6 +180,39 @@ class SetupOwnerTest {
         assertEquals(listOf(token2), enroll.openTokens)
         assertTrue(setupScreen.ui.value is SetupUi.ConfirmSubject)
         assertFalse(setupScreen.waiting.value)
+    }
+
+    /**
+     * The link waits in one place until the setup screen takes it. The screen's effect runs once
+     * per value of that place: with the link, and again when taking it emptied the place.
+     */
+    @Test fun `one delivery of a link is one start`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        val (owner, _) = phone()
+        val screen = SetupFlowViewModel(owner)
+        val pending = kotlinx.coroutines.flow.MutableStateFlow<SetupEntry?>(null)
+        val starts = mutableListOf<SetupEntry>()
+        val effect = backgroundScope.launch(Dispatchers.Main) {
+            pending.collect { link ->
+                deliverSetupLink(link, screen.started, { starts += it; screen.start(it) }, { pending.compareAndSet(it, null) }, screen::resumeWithoutEntry)
+            }
+        }
+        // Restored without a link: it looks at what is stored, once.
+        assertEquals(SetupUi.Interrupted, screen.ui.value)
+        // A setup that fails at once (the link's server cannot be reached) ...
+        enroll.openGate = CompletableDeferred<Unit>().also { it.completeExceptionally(IOException("offline")) }
+        pending.value = link
+        runCurrent()
+        // ... is started once, not once more by the emptied place.
+        assertEquals(listOf(link), starts)
+        assertEquals(1, enroll.openStarts)
+        assertNull(pending.value)
+        // The same link opened again is a new delivery.
+        pending.value = link
+        runCurrent()
+        assertEquals(listOf(link, link), starts)
+        assertEquals(2, enroll.openStarts)
+        effect.cancel()
     }
 
     @Test fun `when the last screen closes an unclaimed key goes and the next screen starts clean`() = runTest {
