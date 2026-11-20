@@ -36,8 +36,10 @@ class FakePc {
   removeTrack(sender: unknown) {
     this.removed.push(sender);
   }
-  addTransceiver(t: unknown) {
+  inits: RTCRtpTransceiverInit[] = [];
+  addTransceiver(t: unknown, init: RTCRtpTransceiverInit = {}) {
     this.transceivers.push(t);
+    this.inits.push(init);
     return { sender: { track: t } };
   }
   close() {
@@ -171,6 +173,17 @@ describe("BrowserVoiceAdapter capture then publish", () => {
       ok: false,
       error: expect.objectContaining({ type: "permission_denied" }),
     });
+  });
+
+  it("webcam is sent as one stream (no layers) with the tier's bitrate", async () => {
+    const { adapter, publisher } = await joined();
+    gum.mockResolvedValueOnce(streamOf(fakeTrack("video")));
+    await adapter.captureWebcam({ quality: "high" });
+    await adapter.publishWebcam();
+    const encodings = publisher.inits[0].sendEncodings ?? [];
+    expect(encodings).toHaveLength(1);
+    expect(encodings[0].rid).toBeUndefined();
+    expect(encodings[0]).toMatchObject({ maxBitrate: 4_000_000, maxFramerate: 30 });
   });
 
   it("webcam: capture adds nothing, publish adds the transceiver, ended is reported", async () => {

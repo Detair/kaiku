@@ -22,7 +22,7 @@ import { buildConnectionMetrics, deltaLossPercent } from "./types";
 import { VOICE_JOIN_CANCELLED, type VoiceSessionHandle } from "./voiceSession";
 import * as Sentry from "@sentry/browser";
 
-/** Bitrate for the highest simulcast layer, keyed by screen-share quality. */
+/** Bitrate of a sent video, keyed by quality tier. */
 const QUALITY_BITRATES: Record<ScreenShareQuality, number> = {
   low: 1_000_000, // 480p
   medium: 2_500_000, // 720p
@@ -31,16 +31,18 @@ const QUALITY_BITRATES: Record<ScreenShareQuality, number> = {
 };
 
 
-/** Build 3-layer simulcast encodings (high / medium / low). */
-function simulcastEncodings(
-  highBitrate: number,
-  highFramerate: number = 30,
-): RTCRtpEncodingParameters[] {
-  return [
-    { rid: "h", maxBitrate: highBitrate, scaleResolutionDownBy: 1.0, maxFramerate: highFramerate },
-    { rid: "m", maxBitrate: 800_000, scaleResolutionDownBy: 2.0, maxFramerate: Math.min(24, highFramerate) },
-    { rid: "l", maxBitrate: 200_000, scaleResolutionDownBy: 4.0, maxFramerate: 15 },
-  ];
+/**
+ * The camera is sent as one stream (no layers): the server does not
+ * forward simulcast layers yet. Simulcast returns with its layer forwarding.
+ */
+function webcamEncodings(bitrate: number, framerate: number = 30): RTCRtpEncodingParameters[] {
+  return [{ maxBitrate: bitrate, scaleResolutionDownBy: 1.0, maxFramerate: framerate }];
+}
+
+/** A published video, as the owner names it (`streamId` null: the camera). */
+interface SentVideo {
+  kind: "screen" | "webcam";
+  streamId: string | null;
 }
 
 /** A screen capture; senders are set once it is published. */
@@ -186,6 +188,10 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
   // Negotiation lock to prevent concurrent offers on the publisher PC
   private isNegotiating = false;
   private pendingNegotiation = false;
+  /** Published videos no offer has carried yet. */
+  private unsentVideos: SentVideo[] = [];
+  /** Published videos the outstanding offer carries (ended if its answer is refused). */
+  private videosInOffer: SentVideo[] = [];
 
   constructor() {
     console.log("[BrowserVoiceAdapter] Initialized");
@@ -613,6 +619,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
 
       // Release negotiation lock
       this.isNegotiating = false;
+      this.videosInOffer = [];
 
       // Drain pending negotiation
       if (this.pendingNegotiation) {
@@ -622,7 +629,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
 
       return { ok: true, value: undefined };
     } catch (err) {
-      this.isNegotiating = false;
+      await this.withdrawRefusedOffer(state);
       return {
         ok: false,
         error: {
@@ -632,6 +639,43 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
         },
       };
     }
+  }
+
+  /**
+   * The server's answer could not be applied: withdraw the local offer so
+   * the connection is usable again, end the videos that offer carried
+   * through the owner's stop path (`not_sent`: the server is told, the
+   * person sees why), then send what is still queued.
+   */
+  private async withdrawRefusedOffer(state: PcState): Promise<void> {
+    if (state.pc.signalingState === "have-local-offer") {
+      try {
+        await state.pc.setLocalDescription({ type: "rollback" });
+      } catch (err) {
+        console.warn("[BrowserVoiceAdapter] Publisher offer could not be withdrawn:", err);
+      }
+    }
+    this.isNegotiating = false;
+    const failed = this.videosInOffer;
+    this.videosInOffer = [];
+    for (const video of failed) {
+      const stillSent =
+        video.kind === "webcam"
+          ? this.webcamSender !== null
+          : !!(video.streamId && this.screenShares.get(video.streamId)?.videoSender);
+      if (stillSent) this.eventHandlers.onLocalMediaEnded?.(video.kind, video.streamId, "not_sent");
+    }
+    if (this.pendingNegotiation && this.publisherState === state) {
+      this.pendingNegotiation = false;
+      state.pc.dispatchEvent(new Event("negotiationneeded"));
+    }
+  }
+
+  /** A video left the connection: no offer reports it any more. */
+  private forgetSentVideo(kind: SentVideo["kind"], streamId: string | null): void {
+    const other = (v: SentVideo) => v.kind !== kind || v.streamId !== streamId;
+    this.unsentVideos = this.unsentVideos.filter(other);
+    this.videosInOffer = this.videosInOffer.filter(other);
   }
 
   async handleSubscriberOffer(
@@ -1300,6 +1344,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     entry.videoSender = publisher.pc.addTrack(videoTrack, entry.stream);
     const audioTrack = entry.stream.getAudioTracks()[0];
     if (audioTrack) entry.audioSender = publisher.pc.addTrack(audioTrack, entry.stream);
+    this.unsentVideos.push({ kind: "screen", streamId });
     return { ok: true, value: undefined };
   }
 
@@ -1314,6 +1359,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
       return { ok: false, error: { type: "unknown", message: "No such screen share" } };
     }
     this.screenShares.delete(targetId);
+    this.forgetSentVideo("screen", targetId);
     const publisher = this.publisherState;
     if (publisher && publisher.pc.signalingState !== "closed") {
       if (share.videoSender) publisher.pc.removeTrack(share.videoSender);
@@ -1383,7 +1429,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     return { ok: true, value: undefined };
   }
 
-  /** Add the captured camera to the publisher connection (simulcast). */
+  /** Add the captured camera to the publisher connection (one stream). */
   async publishWebcam(): Promise<VoiceResult<void>> {
     const publisher = this.publisherState;
     const stream = this.webcamStream;
@@ -1397,9 +1443,10 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     const transceiver = publisher.pc.addTransceiver(videoTrack, {
       direction: "sendonly",
       streams: [stream],
-      sendEncodings: simulcastEncodings(QUALITY_BITRATES[this.webcamQuality]),
+      sendEncodings: webcamEncodings(QUALITY_BITRATES[this.webcamQuality]),
     });
     this.webcamSender = transceiver.sender;
+    this.unsentVideos.push({ kind: "webcam", streamId: null });
     return { ok: true, value: undefined };
   }
 
@@ -1569,6 +1616,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     // Clear state
     this.webcamStream = null;
     this.webcamSender = null;
+    this.forgetSentVideo("webcam", null);
   }
 
   private setupPublisherPC(session: BrowserSession) {
@@ -1592,6 +1640,8 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
       try {
         const offer = await current.pc.createOffer();
         await current.pc.setLocalDescription(offer);
+        // What this offer carries (ended if its answer is refused).
+        this.videosInOffer.push(...this.unsentVideos.splice(0));
 
         const { wsSend } = await import("@/lib/tauri");
         await wsSend({
@@ -1912,6 +1962,8 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     // Reset negotiation lock
     this.isNegotiating = false;
     this.pendingNegotiation = false;
+    this.unsentVideos = [];
+    this.videosInOffer = [];
 
     // Stop mic test if running
     this.stopMicTest();
