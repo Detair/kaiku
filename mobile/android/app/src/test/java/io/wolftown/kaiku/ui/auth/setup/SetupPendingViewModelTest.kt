@@ -300,7 +300,7 @@ class SetupPendingViewModelTest {
 
     @Test fun `a claim that never landed is dropped at app start once its time has passed`() = runTest {
         val (repo, f) = repo()
-        repo.seed(StoredKeyDevice(pendingDevice().copy(claimSecret = null), KeyDevicePhase.CLAIMING, claimVoidAfter = claimTime))
+        repo.seed(StoredKeyDevice(pendingDevice().copy(claimSecret = null), KeyDevicePhase.CLAIMING, claimVoidAfter = claimTime, codeClaim = true))
         approval.failWith = noKeyDeviceAt(claimTime.plusSeconds(1))
 
         val v = pendingVm(repo)
@@ -335,7 +335,7 @@ class SetupPendingViewModelTest {
 
     @Test fun `a kept claim that never became a key is dropped by the next ask after its time`() = runTest {
         val (repo, f) = repo()
-        repo.seed(StoredKeyDevice(pendingDevice().copy(claimSecret = null), KeyDevicePhase.CLAIMING, claimVoidAfter = claimTime))
+        repo.seed(StoredKeyDevice(pendingDevice().copy(claimSecret = null), KeyDevicePhase.CLAIMING, claimVoidAfter = claimTime, codeClaim = true))
         approval.failWith = noKeyDeviceAt(claimTime.minusSeconds(60))
         val v = pendingVm(repo)
         v.check()

@@ -92,7 +92,14 @@ internal object AskOrder {
  * - an enrolment status counts only as `200` with an ending state, asked for the record's own
  *   enrolment (the answer is bound to the id and secret that were sent).
  */
-class KeyAnswers @Inject constructor(private val keyDevices: KeyDeviceRepository) {
+class KeyAnswers internal constructor(
+    private val keyDevices: KeyDeviceRepository,
+    /** The phone's own clock (only for how long ago a claim was recorded, see [afterItsTime]). */
+    private val clock: () -> Instant,
+) {
+
+    @Inject
+    constructor(keyDevices: KeyDeviceRepository) : this(keyDevices, Instant::now)
 
     /** One line of the table: [code] for a refusal, [state] for an enrolment status, neither for a plain success. */
     data class Row(val ask: Ask, val status: Int, val code: String?, val state: String?, val verdict: Verdict)
@@ -257,6 +264,11 @@ class KeyAnswers @Inject constructor(private val keyDevices: KeyDeviceRepository
      * A claim whose answer never came, with only the key-device probe left to ask (the link is
      * gone with the process): "no key device" forgets it once nothing can turn it into one any
      * more, by the server's own clock. A record without that time gets one from this answer.
+     *
+     * A claim that completes by itself (the app's own registration: no code) could still be
+     * stored by its server just after a restart, whatever time the answer's `Date` names (a proxy
+     * in front of the server may set it): for such a claim the phone's own clock must also say
+     * that the claim's longest life has passed since it was recorded ([ownTimeLeft]).
      */
     private fun afterItsTime(expected: StoredKeyDevice, serverTime: Instant?, v: Verdict): Settled {
         val now = serverTime ?: return Settled.Kept(v)
@@ -266,7 +278,28 @@ class KeyAnswers @Inject constructor(private val keyDevices: KeyDeviceRepository
             val noted = keyDevices.update(expected) { it.copy(claimVoidAfter = now.plus(CLAIM_VOID_UNKNOWN)) }.done
             return Settled.Kept(v, askAgainIn = if (noted) CLAIM_VOID_UNKNOWN else null)
         }
-        return if (now.isAfter(until)) drop(expected, v) else Settled.Kept(v, askAgainIn = Duration.between(now, until))
+        if (!now.isAfter(until)) return Settled.Kept(v, askAgainIn = Duration.between(now, until))
+        if (expected.phase == KeyDevicePhase.CLAIMING && !expected.codeClaim) {
+            val left = ownTimeLeft(expected) ?: return Settled.Kept(v)
+            if (!left.isZero) return Settled.Kept(v, askAgainIn = left)
+        }
+        return drop(expected, v)
+    }
+
+    /**
+     * How long, by the phone's own clock, until [CLAIM_VOID_UNKNOWN] (a challenge's longest life
+     * and the margin) has passed since the claim was recorded; zero once it has. A record without
+     * that time, or with one the clock has not reached yet (it was set back), counts from now: the
+     * time is noted and the whole span is left (null when the note did not reach storage).
+     */
+    private fun ownTimeLeft(expected: StoredKeyDevice): Duration? {
+        val phoneNow = clock()
+        val since = expected.since
+        if (since == null || since.isAfter(phoneNow)) {
+            return if (keyDevices.update(expected) { it.copy(since = phoneNow) }.done) CLAIM_VOID_UNKNOWN else null
+        }
+        val passed = Duration.between(since, phoneNow)
+        return if (passed >= CLAIM_VOID_UNKNOWN) Duration.ZERO else CLAIM_VOID_UNKNOWN.minus(passed)
     }
 
     private fun drop(expected: StoredKeyDevice, v: Verdict): Settled =

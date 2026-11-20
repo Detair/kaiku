@@ -31,16 +31,25 @@ class KeyAnswersTest {
 
     private class Phone(val repo: KeyDeviceRepository, val keyStore: SoftwareApprovalKeyStore, val answers: KeyAnswers)
 
-    private fun TestScope.phone(phase: KeyDevicePhase, secret: String? = null, voidAfter: Instant? = null): Pair<Phone, StoredKeyDevice> {
+    /** The phone's own clock. */
+    private var phoneNow: Instant = Instant.parse("2026-11-20T10:00:00Z")
+
+    private fun TestScope.phone(
+        phase: KeyDevicePhase,
+        secret: String? = null,
+        voidAfter: Instant? = null,
+        codeClaim: Boolean = false,
+        since: Instant? = null,
+    ): Pair<Phone, StoredKeyDevice> {
         val keyStore = SoftwareApprovalKeyStore().apply { generate(ByteArray(32), use) }
         val store = InMemoryKeyDeviceStore()
         val rec = StoredKeyDevice(
             LocalKeyDevice(if (phase == KeyDevicePhase.ACTIVE) "kd1" else null, "u1", origin, UvClass.PER_USE, "e1", secret),
-            phase, keyId = keyStore.keyId(), attemptId = "a1", claimVoidAfter = voidAfter,
+            phase, keyId = keyStore.keyId(), attemptId = "a1", claimVoidAfter = voidAfter, codeClaim = codeClaim, since = since,
         )
         store.stored = rec
         val repo = KeyDeviceRepository(store, keyStore, AuthState(backgroundScope), backgroundScope)
-        return Phone(repo, keyStore, KeyAnswers(repo)) to rec
+        return Phone(repo, keyStore, KeyAnswers(repo) { phoneNow }) to rec
     }
 
     /** `ApprovalError` and the `AuthError`s these routes can end in, as (status, code). */
@@ -337,7 +346,8 @@ class KeyAnswersTest {
     @Test fun `a claim without an answer is given up only after its time, by the server's clock`() = runTest {
         val until = Instant.parse("2026-11-20T10:20:00Z")
         val goneAt = { t: Instant? -> ServerAnswer(404, "KEY_DEVICE_UNKNOWN", serverTime = t) }
-        val (p, rec) = phone(KeyDevicePhase.CLAIMING, voidAfter = until)
+        // A claim of a link: it can only complete through its code, which never came.
+        val (p, rec) = phone(KeyDevicePhase.CLAIMING, voidAfter = until, codeClaim = true)
         // No server time: nothing is known about how late it is.
         assertEquals(KeyAnswers.Settled.Kept(Verdict.KEY_GONE), p.answers.settle(rec, origin, Ask.DEVICE_LOGIN_CHALLENGE, goneAt(null)))
         // Within the time the claim could still be stored: kept, with how long to wait.
@@ -357,7 +367,54 @@ class KeyAnswersTest {
         val now = p.repo.record.value!!
         assertEquals(t.plus(Duration.ofMinutes(20)), now.claimVoidAfter)
         assertFalse(p.answers.settle(now, origin, Ask.DEVICE_LOGIN_CHALLENGE, ServerAnswer(404, "KEY_DEVICE_UNKNOWN", serverTime = t.plusSeconds(600))).forgotten)
-        assertTrue(p.answers.settle(now, origin, Ask.DEVICE_LOGIN_CHALLENGE, ServerAnswer(404, "KEY_DEVICE_UNKNOWN", serverTime = t.plusSeconds(1201))).forgotten)
+        // Such a record does not say its kind: it could complete by itself, so the phone's own
+        // time since it was first seen has to pass as well (it is noted now).
+        assertEquals(
+            KeyAnswers.Settled.Kept(Verdict.KEY_GONE, askAgainIn = Duration.ofMinutes(20)),
+            p.answers.settle(now, origin, Ask.DEVICE_LOGIN_CHALLENGE, ServerAnswer(404, "KEY_DEVICE_UNKNOWN", serverTime = t.plusSeconds(1201))),
+        )
+        assertEquals(phoneNow, p.repo.record.value!!.since)
+        phoneNow = phoneNow.plus(Duration.ofMinutes(20))
+        assertTrue(p.answers.settle(p.repo.record.value!!, origin, Ask.DEVICE_LOGIN_CHALLENGE, ServerAnswer(404, "KEY_DEVICE_UNKNOWN", serverTime = t.plusSeconds(1201))).forgotten)
+    }
+
+    /**
+     * A claim of the app's own registration completes by itself on the server. Right after a
+     * restart, an answer whose `Date` says its time is long over (a clock in front of the server
+     * may run ahead) does not give it up: the phone's own clock has to say so as well.
+     */
+    @Test fun `a claim that completes by itself is given up only when the phone's own time agrees`() = runTest {
+        val until = Instant.parse("2026-11-20T10:20:00Z")
+        val recorded = phoneNow
+        val (p, rec) = phone(KeyDevicePhase.CLAIMING, voidAfter = until, codeClaim = false, since = recorded)
+        val farAhead = ServerAnswer(404, "KEY_DEVICE_UNKNOWN", serverTime = until.plus(Duration.ofHours(2)))
+        // Two minutes after it was recorded, by the phone's clock.
+        phoneNow = recorded.plus(Duration.ofMinutes(2))
+        val early = p.answers.settle(rec, origin, Ask.DEVICE_LOGIN_CHALLENGE, farAhead)
+        assertEquals(KeyAnswers.Settled.Kept(Verdict.KEY_GONE, askAgainIn = Duration.ofMinutes(18)), early)
+        assertTrue(p.keyStore.hasKey())
+        assertEquals(rec, p.repo.record.value)
+        // Once the claim's longest life has passed by the phone's clock too, it goes.
+        phoneNow = recorded.plus(Duration.ofMinutes(20))
+        assertTrue(p.answers.settle(rec, origin, Ask.DEVICE_LOGIN_CHALLENGE, farAhead).forgotten)
+        assertFalse(p.keyStore.hasKey())
+    }
+
+    /** A phone clock that was set back does not shorten the wait: it counts from now. */
+    @Test fun `a claim recorded in the phone's future counts its own time from now`() = runTest {
+        val until = Instant.parse("2026-11-20T10:20:00Z")
+        val (p, rec) = phone(KeyDevicePhase.CLAIMING, voidAfter = until, since = phoneNow.plus(Duration.ofDays(1)))
+        val past = ServerAnswer(404, "KEY_DEVICE_UNKNOWN", serverTime = until.plusSeconds(60))
+        assertEquals(KeyAnswers.Settled.Kept(Verdict.KEY_GONE, askAgainIn = Duration.ofMinutes(20)), p.answers.settle(rec, origin, Ask.DEVICE_LOGIN_CHALLENGE, past))
+        assertEquals(phoneNow, p.repo.record.value!!.since)
+        assertTrue(p.keyStore.hasKey())
+    }
+
+    /** A claim of a link needs only its server's clock, as before. */
+    @Test fun `a code claim past its time by the server's clock goes at once`() = runTest {
+        val until = Instant.parse("2026-11-20T10:20:00Z")
+        val (p, rec) = phone(KeyDevicePhase.CLAIMING, voidAfter = until, codeClaim = true, since = phoneNow)
+        assertTrue(p.answers.settle(rec, origin, Ask.DEVICE_LOGIN_CHALLENGE, ServerAnswer(404, "KEY_DEVICE_UNKNOWN", serverTime = until.plusSeconds(1))).forgotten)
     }
 
     private fun KeyDeviceRepository.seedForTest(r: StoredKeyDevice) {
