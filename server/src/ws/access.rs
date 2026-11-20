@@ -118,14 +118,18 @@
 //! The forwarder never drops for a stale or failing scope; the writer does,
 //! in one place ([`SocketAccess`]'s decision loop).
 //!
-//! The backoff (since when attempts fail, how many, when to retry) is one
-//! per socket. A failed attempt sets it, and it exists only while a scope is
-//! not current: it is cleared when the database answers, when the last
-//! scope that was not current goes away (`admin_unsubscribe`, the voice peer
-//! left or was replaced) and when a revalidation finds nothing to do. So the
-//! socket never waits for a retry time that has passed with nothing left to
-//! retry, and a later failure never counts from an earlier one that was
-//! over.
+//! The backoff (since when attempts fail, how many, when the next one may be
+//! made) is one per socket, and two things hold for it:
+//!
+//! 1. **It outlasts the scopes.** A failed attempt sets it; until its retry time no read is
+//!    attempted for this socket, whatever goes away or comes back meanwhile (an `admin_unsubscribe`
+//!    and a new `admin_subscribe`, a voice peer that left and rejoined). It ends when the database
+//!    answers, or when no failure renewed it for [`FAILURE_CLOSE_AFTER`] after its retry time: a
+//!    failure that old says nothing about now, and the next one counts from itself.
+//! 2. **Only a scope that is not current waits for the retry.** A socket with nothing left to
+//!    revalidate has no retry time to wake for ([`SocketAccess::retry_at`] is `None`) and is not
+//!    failing ([`SocketAccess::failing_for`]), also while its backoff still runs; a revalidation
+//!    that finds nothing to do is not a failed one.
 //!
 //! # Bounds
 //!
@@ -835,7 +839,8 @@ struct Inner {
     /// channels); kept by [`Inner::request`] and [`Inner::forget`].
     requested_direct: usize,
     /// Backoff after failed revalidations (the database is shared, so one
-    /// for the socket).
+    /// for the socket). It outlasts the scopes: only a successful read or
+    /// its age ends it (see the module docs, Failure).
     failure: Option<Failure>,
     /// A scope recovered after dropping events: the socket must make the
     /// client resynchronise (close 1011, see `ws::handlers`).
@@ -1319,7 +1324,6 @@ impl SocketAccess {
         };
         self.decide(true, |inner| {
             Self::track_voice_in(inner, Some(peer));
-            self.forget_idle_failure(inner);
             let voice = inner.voice.as_ref()?;
             Some((Target::Voice, voice.allowed.then_some(true)))
         })
@@ -1571,11 +1575,7 @@ impl SocketAccess {
     /// Align the voice scope with the peer this socket owns now (`None`: it
     /// owns none). A new peer starts from its join check's epochs.
     pub fn track_voice(&self, peer: Option<&OwnedVoicePeer>) {
-        let mut inner = self.lock();
-        Self::track_voice_in(&mut inner, peer);
-        // The scope of a peer that is gone or was replaced may have been the
-        // one that was failing.
-        self.forget_idle_failure(&mut inner);
+        Self::track_voice_in(&mut self.lock(), peer);
     }
 
     /// The voice peer `(channel, session)` whose access a revalidation found
@@ -1617,16 +1617,6 @@ impl SocketAccess {
                 .is_some_and(|a| self.admin_phase(a) != Phase::Current)
     }
 
-    /// The backoff exists only while a scope is not current. Called
-    /// wherever a scope goes away or a failure is recorded: without a scope
-    /// to revalidate there is nothing to retry, and the next failure starts
-    /// its own count.
-    fn forget_idle_failure(&self, inner: &mut Inner) {
-        if inner.failure.is_some() && !self.needs_revalidation(inner) {
-            inner.failure = None;
-        }
-    }
-
     /// Make the next [`Self::refresh`] re-check everything (backstop): every
     /// scope is invalidated, so events wait for that revalidation.
     pub fn force_full(&self) {
@@ -1642,15 +1632,29 @@ impl SocketAccess {
         Self::invalidate_admin(&mut inner);
     }
 
-    /// When the next retry of a failed revalidation is due (`None`: no
-    /// scope is waiting for one).
+    /// When the socket should try again after a failed revalidation: `None`
+    /// unless a scope is waiting for it. The backoff itself outlasts the
+    /// scopes; a socket with nothing to revalidate just has nothing to wake
+    /// for.
     pub fn retry_at(&self) -> Option<Instant> {
-        self.lock().failure.as_ref().map(|f| f.retry_at)
+        self.waiting_failure(|failure| failure.retry_at)
     }
 
-    /// How long revalidations have been failing, if they are.
+    /// How long revalidations have been failing, if a scope is still
+    /// waiting for one to succeed.
     pub fn failing_for(&self) -> Option<Duration> {
-        self.lock().failure.as_ref().map(|f| f.since.elapsed())
+        self.waiting_failure(|failure| failure.since.elapsed())
+    }
+
+    /// Something of the backoff, if a scope is not current: only then is
+    /// the socket waiting for a retry.
+    fn waiting_failure<T>(&self, of: impl FnOnce(&Failure) -> T) -> Option<T> {
+        let inner = self.lock();
+        inner
+            .failure
+            .as_ref()
+            .filter(|_| self.needs_revalidation(&inner))
+            .map(of)
     }
 
     /// Resolves when the socket loop should look at this socket's access
@@ -1750,10 +1754,7 @@ impl SocketAccess {
 
     /// The client unsubscribed from admin events.
     pub fn unsubscribe_admin(&self) {
-        let mut inner = self.lock();
-        inner.admin = None;
-        // It may have been the scope that was failing.
-        self.forget_idle_failure(&mut inner);
+        self.lock().admin = None;
     }
 
     /// Whether the socket has requested admin events (allowed, refused or
@@ -1813,6 +1814,15 @@ impl SocketAccess {
 
     fn plan(&self) -> Planned {
         let mut inner = self.lock();
+        // A failure that nothing renewed for this long after its retry was
+        // due is over: the next one counts from itself.
+        if inner
+            .failure
+            .as_ref()
+            .is_some_and(|f| Instant::now() >= f.retry_at + FAILURE_CLOSE_AFTER)
+        {
+            inner.failure = None;
+        }
         let user_now = self.user_epoch.load(Ordering::SeqCst);
         let full = self.user_phase(&inner) != Phase::Current;
         let guild_targets: Vec<(Uuid, u64)> = inner
@@ -1837,9 +1847,8 @@ impl SocketAccess {
             .filter(|a| self.admin_phase(a) != Phase::Current)
             .map(|_| inner.admin_invalidations);
         if !full && guild_targets.is_empty() && voice.is_none() && admin.is_none() {
-            // Nothing is waiting for a read: nothing to retry either, and
-            // no backoff to sit out.
-            inner.failure = None;
+            // Nothing is waiting for a read: not a failed attempt, also
+            // while a backoff runs (it stays for whatever comes next).
             return Planned::Nothing;
         }
         if Self::in_backoff(&inner) {
@@ -2213,9 +2222,6 @@ impl SocketAccess {
             attempts: attempts.saturating_add(1),
             retry_at: now + delay,
         });
-        // Every scope the plan covered went away during the read (the
-        // client unsubscribed, the voice peer left): nothing to retry.
-        self.forget_idle_failure(&mut inner);
         drop(inner);
         self.attention.notify_one();
     }
@@ -3683,42 +3689,87 @@ mod tests {
         }
     }
 
-    /// The backoff exists only while a scope is not current. When the last
-    /// scope that was failing goes away by another way than a successful
-    /// revalidation, the backoff goes with it: the socket loop is not left
-    /// with a retry time in the past, and a later failure counts from
-    /// itself.
+    /// A failed check sets one backoff for the socket, and it outlasts the
+    /// scopes: nothing is read before the retry time, whatever goes away or
+    /// comes back meanwhile. A socket with nothing left to check has no
+    /// retry time to wake for all the same, and a failure that nothing
+    /// renewed for a long time no longer counts.
     #[tokio::test(start_paused = true)]
-    async fn the_backoff_goes_with_the_last_scope_that_needed_it() {
+    async fn the_backoff_outlasts_its_scope_and_an_idle_socket_does_not_wait() {
         let idle = |access: &SocketAccess| {
             access.retry_at().is_none() && access.failing_for().is_none() && !access.is_stale()
         };
+        let reads = |u: Uuid| crate::ws::test_hooks::access_reads(u).0;
+        let soon = RETRY_BASE + Duration::from_millis(1);
 
         // The admin stream is failing, and the client unsubscribes.
-        let u = Uuid::new_v4();
+        let (u, g, c) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
         let access = admin_socket(u, true).await;
+        let scope = ChannelScope::Guild(g);
+        assert_eq!(
+            access.commit_subscribe(c, scope, access.snapshot(scope), true),
+            SubscribeCommit::Recorded
+        );
         install(&access, &[FAILS], true, None);
         assert!(!access.admit_admin().await);
-        assert!(access.retry_at().is_some());
+        let retry = access.retry_at();
+        assert!(retry.is_some());
         access.unsubscribe_admin();
-        assert!(idle(&access), "the backoff outlived the admin scope");
-        // What the socket loop does next finds nothing to do, in no time.
-        tokio::time::advance(RETRY_BASE + Duration::from_millis(1)).await;
+        assert!(idle(&access), "a socket with nothing to check waits");
+        // What the socket loop does on its next wake is no failed attempt.
         assert!(access.refresh().await.is_ok());
+        // The backoff is still there: another scope that needs a read is
+        // not read before the retry time.
+        registry().bump_guild(g);
+        crate::ws::test_hooks::count_access_reads(u);
+        assert!(!access.admit(c).await);
+        assert_eq!(reads(u), 0, "a read during the backoff");
+        assert_eq!(access.retry_at(), retry, "the retry time moved");
+        tokio::time::advance(soon).await;
+        assert!(access.admit(c).await);
+        assert_eq!(reads(u), 1);
         assert!(idle(&access));
-        // Much later one read fails: failing since now, not since then.
-        tokio::time::advance(FAILURE_CLOSE_AFTER).await;
-        install(&access, &[FAILS], true, None);
+
+        // Asking and unsubscribing in turns while the database fails: one
+        // attempt per backoff, and the failures add up.
+        let u = Uuid::new_v4();
+        let access = SocketAccess::new(u, lazy_pool());
+        install(&access, &[FAILS; 8], true, None);
+        crate::ws::test_hooks::count_access_reads(u);
+        for _ in 0..4 {
+            assert_eq!(access.subscribe_admin().await, AdminSubscription::Undecided);
+            access.unsubscribe_admin();
+            assert!(idle(&access));
+        }
+        assert_eq!(reads(u), 1, "attempts during the backoff");
+        tokio::time::advance(FAILURE_CLOSE_AFTER / 2).await;
         assert_eq!(access.subscribe_admin().await, AdminSubscription::Undecided);
+        assert_eq!(reads(u), 2);
+        assert_eq!(
+            access.retry_at().map(|at| at - Instant::now()),
+            Some(RETRY_BASE * 2),
+            "the second failure did not double the delay"
+        );
         assert!(
             access
                 .failing_for()
-                .is_some_and(|d| d < FAILURE_CLOSE_AFTER),
-            "one failure counts as failing since an earlier one"
+                .is_some_and(|d| d >= FAILURE_CLOSE_AFTER / 2),
+            "the second failure does not count from the first"
+        );
+        // Much later (nothing renewed the failure meanwhile) one read
+        // fails: failing since now, with the first delay.
+        access.unsubscribe_admin();
+        tokio::time::advance(FAILURE_CLOSE_AFTER + RETRY_MAX).await;
+        assert_eq!(access.subscribe_admin().await, AdminSubscription::Undecided);
+        assert_eq!(reads(u), 3);
+        assert_eq!(access.failing_for(), Some(Duration::ZERO));
+        assert_eq!(
+            access.retry_at().map(|at| at - Instant::now()),
+            Some(RETRY_BASE)
         );
 
         // The voice room is failing, and the peer leaves, or is replaced by
-        // a new one (a rejoin).
+        // a new one (a rejoin): nothing to wait for.
         for rejoined in [false, true] {
             let (u, g) = (Uuid::new_v4(), Uuid::new_v4());
             let access = SocketAccess::new(u, lazy_pool());
@@ -3733,10 +3784,7 @@ mod tests {
             } else {
                 access.track_voice(None);
             }
-            assert!(
-                idle(&access),
-                "rejoined={rejoined}: the backoff outlived the voice scope"
-            );
+            assert!(idle(&access), "rejoined={rejoined}: an idle socket waits");
         }
 
         // The scope goes away while the read that then fails is in flight.
@@ -3748,11 +3796,12 @@ mod tests {
         };
         access.unsubscribe_admin();
         access.fail(&plan);
-        assert!(idle(&access), "a backoff for a scope that is gone");
+        assert!(idle(&access), "waiting for a scope that is gone");
 
-        // Another scope still needs the retry: the backoff stays.
+        // An unsubscribed channel leaves its server's scope to the next
+        // revalidation: the socket still waits for that retry.
         let (u, g, c) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
-        let access = admin_socket(u, true).await;
+        let access = SocketAccess::new(u, lazy_pool());
         let scope = ChannelScope::Guild(g);
         assert_eq!(
             access.commit_subscribe(c, scope, access.snapshot(scope), true),
@@ -3760,21 +3809,15 @@ mod tests {
         );
         registry().bump_guild(g);
         install(&access, &[FAILS], true, Some(g));
-        assert!(!access.admit_admin().await);
-        assert_eq!(access.channel_phase(c), Some(Phase::Failing));
-        let retry = access.retry_at();
-        access.unsubscribe_admin();
-        assert!(retry.is_some() && access.retry_at() == retry);
-        // An unsubscribed channel leaves its server's scope to the next
-        // revalidation, which settles it and the backoff.
+        assert!(!access.admit(c).await);
         access.unsubscribe(c);
         assert!(access.retry_at().is_some() && access.is_stale());
-        tokio::time::advance(RETRY_BASE + Duration::from_millis(1)).await;
+        tokio::time::advance(soon).await;
         assert!(access.refresh().await.is_ok());
         assert!(idle(&access));
 
-        // The safety net: a revalidation that finds nothing to do leaves no
-        // backoff behind, and is not held up by one.
+        // A revalidation that finds nothing to do is not held up by a
+        // backoff, whether its retry time has passed or not.
         let access = SocketAccess::new(Uuid::new_v4(), lazy_pool());
         for retry_in in [Duration::ZERO, RETRY_MAX] {
             let now = Instant::now();
@@ -3930,6 +3973,9 @@ mod tests {
         let mut state = [Task::Ready; 2];
         let mut happened = 0;
         let mut widths = Vec::new();
+        // A read failed and the backoff has not passed since (time only
+        // moves with `Up`).
+        let mut backing_off = false;
         while state != [Task::Done; 2] {
             // Who can go on: a task that is not waiting for the gate, and
             // the world (time passes with `Up`: not while a read is in
@@ -3962,6 +4008,9 @@ mod tests {
                         registry().bump_user(u);
                         trace.borrow_mut().bumped = Some(now);
                     }
+                    if event == World::Up {
+                        backing_off = false;
+                    }
                     match event {
                         World::Expire | World::DeElevate => trace.borrow_mut().ended = Some(now),
                         World::Elevate => trace.borrow_mut().began = Some(now),
@@ -3970,7 +4019,8 @@ mod tests {
                     }
                 }
                 Some(i) => {
-                    if state[i] == Task::Reading {
+                    let was_reading = state[i] == Task::Reading;
+                    if was_reading {
                         seams.release.add_permits(1);
                     }
                     let gate_taken = matches!(state[1 - i], Task::Reading | Task::Next);
@@ -3999,12 +4049,23 @@ mod tests {
                     if state[i] != Task::Reading && state[1 - i] == Task::Waiting {
                         state[1 - i] = Task::Next;
                     }
+                    // Its read has returned; a new one may have begun.
+                    let reads = &trace.borrow().reads;
+                    let began_now = state[i] == Task::Reading;
+                    let returned = reads.len() - usize::from(began_now);
+                    if was_reading && reads[returned - 1].1.is_none() {
+                        backing_off = true;
+                    }
+                    assert!(
+                        !(began_now && backing_off),
+                        "a read during the backoff: {}",
+                        case()
+                    );
                 }
             }
-            let inner = access.lock();
             assert!(
-                inner.failure.is_none() || access.needs_revalidation(&inner),
-                "a backoff with nothing to retry: {}",
+                access.retry_at().is_none() || access.is_stale(),
+                "a retry time with nothing to retry: {}",
                 case()
             );
         }
