@@ -310,3 +310,36 @@ async fn leave_stop_after_a_fresh_join_keeps_the_new_webcam(pool: PgPool) {
 
     r.assert_new_webcam_kept().await;
 }
+
+/// Join: a seat removed between the joiner's room state and the join
+/// announcement (a revocation or the reaper) is not announced: the others
+/// are not told about a participant who is not there.
+#[sqlx::test]
+async fn a_seat_removed_before_its_announcement_is_not_announced(pool: PgPool) {
+    let mut r = room(pool).await;
+    let pause = pause_voice_step(r.user, "join_announce");
+    let mut ws = ws_connect(&r.server, &r.token).await;
+    next_ws_event(&mut ws, "ready", WAIT).await;
+    send(
+        &mut ws,
+        serde_json::json!({ "type": "voice_join", "channel_id": r.voice }),
+    )
+    .await;
+    Room::reached(&pause).await;
+
+    let room = r.app.state.sfu.get_room(r.voice).await.expect("room");
+    let session = room.get_peer(r.user).await.expect("seat").session_id;
+    vc_server::voice::leave::leave_voice_internal(
+        &r.app.state.sfu,
+        &r.app.pool,
+        r.user,
+        r.voice,
+        r.app.state.screen_share_limiter.as_ref(),
+        Some(session),
+    )
+    .await
+    .expect("seat removed");
+    pause.release.notify_one();
+
+    expect_no_ws_event(&mut r.viewer, "voice_user_joined", QUIET).await;
+}

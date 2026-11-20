@@ -373,14 +373,18 @@ async fn handle_join(
     )
     .await?;
 
-    room.broadcast_except(
-        user_id,
+    crate::ws::test_hooks::voice_step(user_id, "join_announce").await;
+    // Only while this seat is still the user's: a seat removed meanwhile
+    // (a revocation, the reaper) is not announced.
+    room.broadcast_if_current(
+        &peer,
         ServerEvent::VoiceUserJoined {
             channel_id,
             user_id,
             username,
             display_name,
         },
+        false,
     )
     .await;
 
@@ -809,7 +813,7 @@ async fn handle_mute(
         }
     };
 
-    room.broadcast_except(user_id, event).await;
+    room.broadcast_if_current(&peer, event, false).await;
 
     Ok(())
 }
@@ -853,8 +857,8 @@ async fn handle_voice_stats(
     stats.session_id = peer.session_id;
 
     // Broadcast to room participants
-    room.broadcast_except(
-        user_id,
+    room.broadcast_if_current(
+        &peer,
         ServerEvent::VoiceUserStats {
             channel_id,
             user_id,
@@ -863,6 +867,7 @@ async fn handle_voice_stats(
             jitter: stats.jitter,
             quality: stats.quality,
         },
+        false,
     )
     .await;
 
