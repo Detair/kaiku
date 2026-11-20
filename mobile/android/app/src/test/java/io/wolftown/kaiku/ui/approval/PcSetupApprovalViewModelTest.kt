@@ -359,7 +359,7 @@ class PcSetupApprovalViewModelTest {
         assertTrue(api.calls.none { it.startsWith("release") })
     }
 
-    // Fix round 3: Back while sending, unknown ends, poll errors, an expired challenge.
+    // Back while sending, unknown ends, poll errors, an expired challenge.
 
     @Test fun `back while the decision is being sent is swallowed and the code is shown after`() = runTest {
         val (v, _) = vm()
