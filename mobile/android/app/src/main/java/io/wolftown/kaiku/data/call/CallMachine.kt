@@ -439,21 +439,15 @@ object CallMachine {
         fun startOk(e: CallEvent.StartOk): CallStep {
             val s = state as? CallState.Outgoing
             if (s != null && s.channelId == e.channelId && s.startedAtMs == e.startedAtMs) {
-                // The call ended on the server before this answer got here (declined or cancelled
-                // at once; its end could not be matched while the id was unknown): it is over,
-                // no voice is joined for it and nothing is left to leave.
-                if (s.callId == null && isEnded(e.channelId, e.callId)) {
-                    effects += CallEffect.LeaveVoice(s.channelId, s.voiceId)
-                    return endedState(s.channelId, endedWhy[e.callId] ?: CallEndReason.Ended)
-                }
                 // The id may already be known (a resync or the other side's answer came first).
-                return to(learnOutgoingId(s, e.callId))
+                return learnOutgoingId(s, e.callId)
             }
             // Still the shown call under another state (connected before the answer): keep it.
             if (state.channelId == e.channelId && shownCallId() == e.callId) return same()
             // The start this answers is no longer shown (hung up, capped, replaced): leave that call,
-            // or it would ring on the server with nobody behind it.
-            leave(e.channelId, e.callId)
+            // or it would ring on the server with nobody behind it. Not a call that is known to
+            // be over (the server ended it, or it was left already): nothing is left to leave.
+            if (!isEnded(e.channelId, e.callId)) leave(e.channelId, e.callId)
             rememberEnded(e.channelId, e.callId)
             return same()
         }
@@ -467,17 +461,32 @@ object CallMachine {
             else -> null
         }
 
+        /**
+         * The outgoing call [s] is about to take the id [callId], and that call is already
+         * known to be over: its end came from the server while the id was unknown and could
+         * only be recorded. The call is over here too, with that end's reason; no voice is
+         * joined for it and nothing is left to leave. Null: not so. Every way an outgoing call
+         * takes an id ([learnOutgoingId], [outgoingConnected]) asks this first.
+         */
+        fun overBeforeKnown(s: CallState.Outgoing, callId: String?): CallStep? {
+            if (s.callId != null || callId.isNullOrEmpty() || !isEnded(s.channelId, callId)) return null
+            effects += CallEffect.LeaveVoice(s.channelId, s.voiceId)
+            return endedState(s.channelId, endedWhy[callId] ?: CallEndReason.Ended)
+        }
+
         /** [s] with its id known; the voice join is asked for once, when the id becomes known. */
-        fun learnOutgoingId(s: CallState.Outgoing, callId: String): CallState.Outgoing {
+        fun learnOutgoingId(s: CallState.Outgoing, callId: String): CallStep {
+            overBeforeKnown(s, callId)?.let { return it }
             if (!s.voice) effects += CallEffect.JoinVoice(s.channelId, callId, s.voiceId)
-            return s.copy(callId = s.callId ?: callId, voice = true)
+            return to(s.copy(callId = s.callId ?: callId, voice = true))
         }
 
         /** The caller's call connected: its voice join is asked for if it was not yet. */
-        fun outgoingConnected(s: CallState.Outgoing, callId: String?, nowMs: Long, others: Set<String>): CallState.Connected {
+        fun outgoingConnected(s: CallState.Outgoing, callId: String?, nowMs: Long, others: Set<String>): CallStep {
+            overBeforeKnown(s, callId)?.let { return it }
             val id = s.callId ?: callId
             if (!s.voice) effects += CallEffect.JoinVoice(s.channelId, id, s.voiceId)
-            return CallState.Connected(s.channelId, id, nowMs, others, s.voiceId, s.muted)
+            return to(CallState.Connected(s.channelId, id, nowMs, others, s.voiceId, s.muted))
         }
 
         fun startFailed(e: CallEvent.StartFailed): CallStep {
@@ -741,7 +750,7 @@ object CallMachine {
                 }
                 is CallState.Outgoing -> if (matches(e.channelId, state.channelId, state.callId, e.callId) && e.userId != me) {
                     // Answered before the start's own answer came: connected, and the voice joins now.
-                    return to(outgoingConnected(state, e.callId.ifEmpty { null }, e.nowMs, setOf(e.userId)))
+                    return outgoingConnected(state, e.callId.ifEmpty { null }, e.nowMs, setOf(e.userId))
                 }
                 is CallState.Connecting -> if (matches(e.channelId, state.channelId, state.callId, e.callId) && e.userId != me) {
                     val changed = if (state.voice) state.changed else state.changed + (e.userId to true)
@@ -987,9 +996,9 @@ object CallMachine {
                     val sameCall = answer != null && (state.callId == null || answer.callId == state.callId)
                     if (!sameCall) return silentEnd(state.channelId, state.callId, state.voiceId)
                     if (answer!!.active) {
-                        return to(outgoingConnected(state, answer.callId, e.nowMs, answer.participants - me))
+                        return outgoingConnected(state, answer.callId, e.nowMs, answer.participants - me)
                     }
-                    return to(learnOutgoingId(state, answer.callId))
+                    return learnOutgoingId(state, answer.callId)
                 }
                 is CallState.Connecting, is CallState.Connected -> {
                     if (state.channelId != e.channelId) return same()

@@ -1071,4 +1071,43 @@ class CallMachineTest {
         send(CallEvent.BusyCap("dm-2", "c-7"))
         assertEquals(listOf(Missed("dm-2", "c-7", "bob", "Bob")), effects)
     }
+
+    // -- An outgoing call never takes the id of a call that is already over ---------------------
+
+    private fun snapshot(callId: String, active: Boolean, participants: Set<String> = emptySet()) =
+        CallSnapshot(callId, ringing = !active, active = active, startedBy = me, participants = participants, declinedBy = emptySet())
+
+    @Test
+    fun `a late resync answer for a call that was declined meanwhile joins no voice`() {
+        send(Start(dm, 0L))
+        // The end comes while the id is unknown and is only recorded.
+        send(ServerEnded(dm, "c-1", "all_declined"))
+        assertTrue(model.state is CallState.Outgoing)
+        // The resync's answer was taken before that end: "ringing, started by me".
+        assertEquals(CallState.Ended(dm, CallEndReason.Declined), send(Resynced(dm, snapshot("c-1", active = false), 1L)))
+        assertEquals(listOf(LeaveVoice(dm, voice), ArmEndedTimer), effects)
+        // The start's own answer: nothing to join and nothing to leave.
+        send(StartOk(dm, "c-1", 0L))
+        assertEquals(emptyList<CallEffect>(), effects)
+        assertEquals(CallState.Ended(dm, CallEndReason.Declined), model.state)
+    }
+
+    @Test
+    fun `a late resync answer that shows an ended call as active connects nothing`() {
+        send(Start(dm, 0L))
+        send(ServerEnded(dm, "c-1", "last_left"))
+        val state = send(Resynced(dm, snapshot("c-1", active = true, participants = setOf(me, "anna")), 1L))
+        assertEquals(CallState.Ended(dm, CallEndReason.Ended), state)
+        assertTrue("voice joined for a call that is over: $effects", effects.none { it is JoinVoice })
+        assertTrue(effects.any { it is LeaveVoice })
+    }
+
+    @Test
+    fun `someone joining a call that is already over does not connect the start that is still out`() {
+        send(Start(dm, 0L))
+        send(ServerEnded(dm, "c-1", "cancelled"))
+        send(ParticipantJoined(dm, "c-1", "anna", 1L))
+        assertTrue(effects.none { it is JoinVoice })
+        assertTrue(model.state is CallState.Outgoing)
+    }
 }
