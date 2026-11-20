@@ -329,6 +329,7 @@ struct Texts {
     /// `{n}`: seconds until another try.
     pc_code_wait: &'static str,
     pc_code_noscript: &'static str,
+    pc_refused: &'static str,
     pc_passkey_prompt: &'static str,
     pc_create: &'static str,
     pc_failed: &'static str,
@@ -360,6 +361,7 @@ const EN: Texts = Texts {
     pc_code_failed: "Too many wrong codes. Start again in the Kaiku app.",
     pc_code_wait: "Too many tries in a short time. Try again in {n} seconds.",
     pc_code_noscript: "This page needs JavaScript. Turn it on, or go back to the app.",
+    pc_refused: "This didn't work here. Go back to the Kaiku app and try again.",
     pc_passkey_prompt: "Create the passkey for this computer.",
     pc_create: "Create passkey",
     pc_failed: "That didn't work. Try again.",
@@ -394,6 +396,7 @@ const DE: Texts = Texts {
     pc_code_failed: "Zu viele falsche Codes. Starte in der Kaiku-App neu.",
     pc_code_wait: "Zu viele Versuche in kurzer Zeit. Versuch es in {n} Sekunden noch einmal.",
     pc_code_noscript: "Diese Seite braucht JavaScript. Schalte es ein oder geh zur\u{fc}ck zur App.",
+    pc_refused: "Das hat hier nicht geklappt. Geh zur\u{fc}ck zur Kaiku-App und versuch es noch einmal.",
     pc_passkey_prompt: "Erstelle den Passkey f\u{fc}r diesen Computer.",
     pc_create: "Passkey erstellen",
     pc_failed: "Das hat nicht geklappt. Versuch es noch einmal.",
@@ -450,6 +453,18 @@ pub fn unavailable_page(lang: Lang) -> Response {
         lang,
         StatusCode::SERVICE_UNAVAILABLE,
         &format!("<h1>Kaiku</h1><p>{}</p>", esc(t.unavailable)),
+    )
+}
+
+/// 403: a `finish` or `cancel` of a `pc_setup` flow that did not come from
+/// the flow's own page. The flow is untouched; the person goes back to the
+/// app.
+pub fn refused_page(lang: Lang) -> Response {
+    let t = texts(lang);
+    page(
+        lang,
+        StatusCode::FORBIDDEN,
+        &format!("<h1>Kaiku</h1><p>{}</p>", esc(t.pc_refused)),
     )
 }
 
@@ -592,7 +607,15 @@ pub fn pc_setup_page(lang: Lang, step: &PcSetupStep, flow_id: Uuid) -> Response 
         linux_other = esc(t.linux_other),
         back = esc(t.back),
     );
-    page(lang, StatusCode::OK, &body)
+    // The page's own form posts (`finish`, `cancel`) then carry its real
+    // `Origin`, which those routes check; another origin, the loopback
+    // hand-off included, still gets no referrer.
+    let mut response = page(lang, StatusCode::OK, &body);
+    response.headers_mut().insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("same-origin"),
+    );
+    response
 }
 
 /// `GET /auth/passkeys/assets/ceremony.js`.

@@ -34,8 +34,8 @@ use super::desktop::{
     FlowOutcome, FlowPurpose, PendingResult, Stored, PENDING_RESULT_TTL_SECS,
 };
 use super::desktop_page::{
-    expired_page, handoff_page, pc_setup_page, stale_page, unavailable_page, HandoffField, Lang,
-    PcSetupStep,
+    expired_page, handoff_page, pc_setup_page, refused_page, stale_page, unavailable_page,
+    HandoffField, Lang, PcSetupStep,
 };
 use super::register::options_for;
 use super::rp::VerifiedRegistration;
@@ -439,10 +439,10 @@ pub async fn finish(
     headers: HeaderMap,
     Form(form): Form<FinishForm>,
 ) -> Response {
-    if !from_the_page(&state, &headers) {
-        return AuthError::Forbidden.into_response();
-    }
     let lang = Lang::from_headers(&headers);
+    if !from_the_page(&state, &headers) {
+        return refused_page(lang);
+    }
     let stored = match load_open(&state, flow_id).await {
         Ok(Some(s)) if has_secret(&state, &headers, &s.flow) => s,
         Ok(_) => return stale_page(lang),
@@ -553,10 +553,10 @@ pub async fn cancel(
     Path(flow_id): Path<Uuid>,
     headers: HeaderMap,
 ) -> Response {
-    if !from_the_page(&state, &headers) {
-        return AuthError::Forbidden.into_response();
-    }
     let lang = Lang::from_headers(&headers);
+    if !from_the_page(&state, &headers) {
+        return refused_page(lang);
+    }
     let stored = match load_open(&state, flow_id).await {
         Ok(Some(s))
             if s.flow.browser_secret_hash.is_none() || has_secret(&state, &headers, &s.flow) =>

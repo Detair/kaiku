@@ -624,9 +624,11 @@ sequenceDiagram
   entry commits. `options` and `finish` refuse without it, `cancel` does after the right code (before it,
   anyone with the page may end the flow, as in F1), and a second code entry is refused. `code`,
   `options`, `finish` and `cancel` accept only the page's own origin (`Origin`, or `Sec-Fetch-Site:
-  same-origin` when the origin is absent or `null`): 403 `FORBIDDEN` otherwise, the flow untouched. The
-  code form posts and stays disabled until the page's script handles it; without script a notice
-  replaces the keypad. A `pc_setup` flow
+  same-origin` when the origin is absent or `null`); the page is served with `Referrer-Policy:
+  same-origin` so its own posts carry its origin, and nothing goes to another origin. Otherwise 403 and
+  the flow untouched (`code`, `options`: `FORBIDDEN`; `finish`, `cancel`: a page that sends the person
+  back to the app). The code form posts and stays disabled until the page's script handles it; without
+  script a notice is shown and the keypad stays disabled. A `pc_setup` flow
   lives 15 minutes (the code's 5 plus the enrolment's 10), and the right code keeps it at least the
   enrolment's 10 minutes; the pending result lives 60 s. When the attempt can no longer register (the
   passkey limit, an ended attempt), the page hands that answer to the app instead of offering a

@@ -2640,3 +2640,72 @@ async fn a_web_finish_of_a_flow_code_is_refused_and_takes_nothing(pool: PgPool) 
     assert_eq!(h.status, 200, "{}", h.body);
     assert!(hidden(&h.body, "code").is_some(), "{}", h.body);
 }
+
+// The page's own posts carry its origin; a refusal stays a page (R-67).
+
+#[sqlx::test]
+async fn the_flow_page_sends_its_origin_and_the_hand_off_no_referrer(pool: PgPool) {
+    let p = desktop_pc(&pool).await;
+    let (id, code) = with_code(&p).await;
+    let flow = pc_flow(&p, &id).await;
+    // Same-origin posts from the page carry the real Origin; nothing is sent
+    // to another origin.
+    let pg = page(&p.app.router, &flow.path, None).await;
+    assert_eq!(
+        pg.headers
+            .get("referrer-policy")
+            .and_then(|v| v.to_str().ok()),
+        Some("same-origin")
+    );
+    let cookie = right_code(&p, &flow, &code).await;
+    let (cred, ceremony_id) = registered(&pc_options(&p, &flow, Some(&cookie)).await);
+    let h = pc_finish(
+        &p,
+        &flow.path,
+        &[("credential", &cred), ("ceremony_id", &ceremony_id)],
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(h.status, 200, "{}", h.body);
+    // The hand-off posts to 127.0.0.1 without any referrer.
+    assert!(h.body.contains("http://127.0.0.1:"), "{}", h.body);
+    assert_eq!(
+        h.headers
+            .get("referrer-policy")
+            .and_then(|v| v.to_str().ok()),
+        Some("no-referrer")
+    );
+}
+
+#[sqlx::test]
+async fn a_refused_finish_or_cancel_is_a_page_that_sends_back_to_the_app(pool: PgPool) {
+    let p = desktop_pc(&pool).await;
+    let (id, code) = with_code(&p).await;
+    let flow = pc_flow(&p, &id).await;
+    let cookie = right_code(&p, &flow, &code).await;
+    let r = &p.app.router;
+    for route in ["finish", "cancel"] {
+        let x = browser_from(
+            r,
+            UNKNOWN,
+            Method::POST,
+            &format!("{}/{route}", flow.path),
+            None,
+            Some("application/x-www-form-urlencoded"),
+            Some(&cookie),
+        )
+        .await;
+        assert_eq!(x.status, 403, "{route}: {}", x.body);
+        let ct = x
+            .headers
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(ct.starts_with("text/html"), "{route}: {ct}");
+        assert!(
+            x.body.contains("Go back to the Kaiku app"),
+            "{route}: {}",
+            x.body
+        );
+    }
+}

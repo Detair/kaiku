@@ -1017,13 +1017,16 @@ Nothing below changes an existing contract entry; a client that does not know it
   **before** the code entry is committed, so a failed commit leaves the code unspent. `options`, `finish`
   and `cancel` after the code refuse without it; a flow URL alone is worthless.
 - **Own origin only.** `…/code`, `…/options`, `…/finish` and `…/cancel` accept a request only when its
-  `Origin` is the configured public origin, or, without one (or with the `null` a form post of the page
-  sends under its `no-referrer` policy), when `Sec-Fetch-Site` is `same-origin`. Anything else → 403
-  `FORBIDDEN` before the flow is read or changed: the `SameSite=Strict` cookie also travels with requests
-  from other origins of the same site.
+  `Origin` is the configured public origin, or, without one (or with `null`), when `Sec-Fetch-Site` is
+  `same-origin`. The flow's page is served with `Referrer-Policy: same-origin`, so its own posts carry
+  its origin; requests to other origins (the loopback hand-off included) carry no referrer, and the
+  hand-off page itself keeps `no-referrer`. Anything else is refused before the flow is read or changed:
+  `code` and `options` with 403 `FORBIDDEN`, `finish` and `cancel` with a 403 page that sends the person
+  back to the app. The `SameSite=Strict` cookie also travels with requests from other origins of the same
+  site.
 - **The code form** posts (`method="post"`, `action=…/code`) and is disabled in the markup until the
-  page's script has installed its handler; without script the page shows a notice instead of a keypad, so
-  the code never lands in a URL. A 429 keeps the keypad; another try is possible after `Retry-After`.
+  page's script has installed its handler; without script the page shows a notice and the keypad stays
+  disabled, so the code never lands in a URL. A 429 keeps the keypad; another try is possible after `Retry-After`.
 - **One path per attempt.** The attempt records how the right code arrived (`web` or this flow); only that
   path registers. The web `passkey/start|finish` answer 409 `APPROVAL_STATE` for an attempt whose code came
   through a flow (`finish` before it takes the submitted ceremony); a flow's `options`, `finish` and `redeem` refuse an attempt whose code did not come through
