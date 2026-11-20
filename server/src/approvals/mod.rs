@@ -50,10 +50,11 @@ pub fn pc_setups_router(state: &AppState) -> Router<AppState> {
     steps.layer(from_fn(no_store))
 }
 
-/// `GET /api/pc-setups/{attempt_id}`, the phone's status poll: mounted
-/// beside the per-user `Write`-limited API routes (only behind the bearer
-/// check), in the per-user `Read` bucket, so neither of the phone's limits
-/// is used up by polling.
+/// `GET /api/pc-setups/{attempt_id}`, the phone's status poll.
+///
+/// Mounted beside the per-user `Write`-limited API routes (only behind the
+/// bearer check), in the per-user `Read` bucket, so neither of the phone's
+/// limits is used up by polling.
 pub fn pc_setup_phone_poll_router(state: &AppState) -> Router<AppState> {
     pc_setup_poll_router(
         state,
