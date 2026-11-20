@@ -59,6 +59,80 @@ fn simulcast_encodings() -> Vec<RTCRtpEncodingParameters> {
     ]
 }
 
+/// What a published video track carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VideoKind {
+    Screen,
+    Webcam,
+}
+
+impl VideoKind {
+    const fn track_prefix(self) -> &'static str {
+        match self {
+            Self::Screen => "screen-video",
+            Self::Webcam => "webcam-video",
+        }
+    }
+
+    const fn stream_prefix(self) -> &'static str {
+        match self {
+            Self::Screen => "screen-share-stream",
+            Self::Webcam => "webcam-stream",
+        }
+    }
+
+    /// Name used in events to the frontend.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Screen => "screen",
+            Self::Webcam => "webcam",
+        }
+    }
+}
+
+/// Publisher renegotiation: never two offers out at once. A change while an
+/// offer waits for its answer is sent as one new offer right after it.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct PublisherNegotiation {
+    awaiting_answer: bool,
+    pending: bool,
+}
+
+impl PublisherNegotiation {
+    /// A track was added or removed. `true`: create and send an offer now.
+    pub const fn request(&mut self) -> bool {
+        if self.awaiting_answer {
+            self.pending = true;
+            false
+        } else {
+            self.awaiting_answer = true;
+            true
+        }
+    }
+
+    /// The answer to our offer was applied. `true`: send the next offer now.
+    pub const fn answered(&mut self) -> bool {
+        if self.pending {
+            self.pending = false;
+            true
+        } else {
+            self.awaiting_answer = false;
+            false
+        }
+    }
+
+    /// Sending the offer failed: nothing is outstanding any more.
+    pub const fn failed(&mut self) {
+        self.awaiting_answer = false;
+        self.pending = false;
+    }
+
+    /// Whether an offer of ours is out.
+    pub const fn is_awaiting_answer(&self) -> bool {
+        self.awaiting_answer
+    }
+}
+
 /// WebRTC errors
 #[derive(Error, Debug)]
 pub enum WebRtcError {
@@ -187,13 +261,8 @@ pub struct WebRtcClient {
     state: Arc<RwLock<ConnectionState>>,
     channel_id: Arc<RwLock<Option<String>>>,
 
-    // Video track for screen sharing (always added at connect time to avoid SDP renegotiation)
-    video_sender: Arc<RwLock<Option<Arc<RTCRtpSender>>>>,
-    video_track: Arc<RwLock<Option<Arc<TrackLocalStaticRTP>>>>,
-
-    // Video track for webcam (separate from screen share, both can be active simultaneously)
-    webcam_sender: Arc<RwLock<Option<Arc<RTCRtpSender>>>>,
-    webcam_track: Arc<RwLock<Option<Arc<TrackLocalStaticRTP>>>>,
+    // Video senders are added per publication (screen share, webcam) and
+    // removed at its end: see `add_video_sender` / `remove_video_sender`.
 
     // Subscriber PeerConnection — receives remote tracks
     subscriber_pc: Arc<RwLock<Option<Arc<RTCPeerConnection>>>>,
@@ -300,10 +369,6 @@ impl WebRtcClient {
             local_track: Arc::new(RwLock::new(None)),
             state: Arc::new(RwLock::new(ConnectionState::Disconnected)),
             channel_id: Arc::new(RwLock::new(None)),
-            video_sender: Arc::new(RwLock::new(None)),
-            video_track: Arc::new(RwLock::new(None)),
-            webcam_sender: Arc::new(RwLock::new(None)),
-            webcam_track: Arc::new(RwLock::new(None)),
             subscriber_pc: Arc::new(RwLock::new(None)),
             publisher_ice: Arc::new(Mutex::new(IceCandidateQueue::default())),
             subscriber_ice: Arc::new(Mutex::new(IceCandidateQueue::default())),
@@ -481,63 +546,6 @@ impl WebRtcClient {
             .await
             .map_err(|e| WebRtcError::TrackError(e.to_string()))?;
 
-        // Create video track for screen sharing (always added to avoid SDP renegotiation)
-        // Uses add_transceiver_from_track with simulcast RID encodings (h/m/l)
-        // so the SDP advertises simulcast layers matching the browser path.
-        // TODO(simulcast): webrtc-rs 0.11 only uses the RID from send_encodings
-        // for SDP generation — it does not produce multiple encoded streams.
-        // True 3-layer simulcast requires feeding 3 separately encoded RTP
-        // streams from the capture pipeline (future work).
-        let video_track = Arc::new(TrackLocalStaticRTP::new(
-            RTCRtpCodecCapability {
-                mime_type: "video/VP8".to_string(),
-                clock_rate: 90000,
-                channels: 0,
-                sdp_fmtp_line: String::new(),
-                rtcp_feedback: vec![],
-            },
-            "screen-video".to_string(),
-            "screen-share-stream".to_string(),
-        ));
-
-        let video_transceiver = pc
-            .add_transceiver_from_track(
-                video_track.clone() as Arc<dyn TrackLocal + Send + Sync>,
-                Some(RTCRtpTransceiverInit {
-                    direction: RTCRtpTransceiverDirection::Sendonly,
-                    send_encodings: simulcast_encodings(),
-                }),
-            )
-            .await
-            .map_err(|e| WebRtcError::TrackError(e.to_string()))?;
-        let video_sender = video_transceiver.sender().await;
-
-        // Create webcam video track (separate from screen share, both can be active)
-        // Same simulcast RID setup as screen share — see TODO above.
-        let webcam_track = Arc::new(TrackLocalStaticRTP::new(
-            RTCRtpCodecCapability {
-                mime_type: "video/VP8".to_string(),
-                clock_rate: 90000,
-                channels: 0,
-                sdp_fmtp_line: String::new(),
-                rtcp_feedback: vec![],
-            },
-            "webcam-video".to_string(),
-            "webcam-stream".to_string(),
-        ));
-
-        let webcam_transceiver = pc
-            .add_transceiver_from_track(
-                webcam_track.clone() as Arc<dyn TrackLocal + Send + Sync>,
-                Some(RTCRtpTransceiverInit {
-                    direction: RTCRtpTransceiverDirection::Sendonly,
-                    send_encodings: simulcast_encodings(),
-                }),
-            )
-            .await
-            .map_err(|e| WebRtcError::TrackError(e.to_string()))?;
-        let webcam_sender = webcam_transceiver.sender().await;
-
         // Create subscriber PeerConnection (receives remote tracks from SFU)
         let sub_config = Self::create_rtc_config(ice_servers);
         let subscriber_connection = self
@@ -554,10 +562,6 @@ impl WebRtcClient {
         *self.peer_connection.write().await = Some(pc);
         *self.audio_sender.write().await = Some(sender);
         *self.local_track.write().await = Some(local_track);
-        *self.video_sender.write().await = Some(video_sender);
-        *self.video_track.write().await = Some(video_track);
-        *self.webcam_sender.write().await = Some(webcam_sender);
-        *self.webcam_track.write().await = Some(webcam_track);
         *self.subscriber_pc.write().await = Some(sub_pc);
 
         info!(
@@ -904,14 +908,71 @@ impl WebRtcClient {
         (*self.local_track.read().await).clone()
     }
 
-    /// Get the video track for screen sharing
-    pub async fn get_video_track(&self) -> Option<Arc<TrackLocalStaticRTP>> {
-        (*self.video_track.read().await).clone()
+    /// Add a fresh video sender for one publication (one screen share or the
+    /// webcam) to the publisher connection. Each publication gets its own
+    /// track and m-line, so the server sees a new track per share and a
+    /// later webcam is never taken for an old share. Renegotiation follows
+    /// (see [`PublisherNegotiation`]).
+    pub async fn add_video_sender(
+        &self,
+        kind: VideoKind,
+        publication_id: &str,
+    ) -> Result<(Arc<TrackLocalStaticRTP>, Arc<RTCRtpSender>), WebRtcError> {
+        let pc = self
+            .peer_connection
+            .read()
+            .await
+            .clone()
+            .ok_or(WebRtcError::NotConnected)?;
+        let track = Arc::new(TrackLocalStaticRTP::new(
+            RTCRtpCodecCapability {
+                mime_type: "video/VP8".to_string(),
+                clock_rate: 90000,
+                channels: 0,
+                sdp_fmtp_line: String::new(),
+                rtcp_feedback: vec![],
+            },
+            format!("{}-{publication_id}", kind.track_prefix()),
+            format!("{}-{publication_id}", kind.stream_prefix()),
+        ));
+        // Same simulcast RID annotation as the browser path (see above).
+        let transceiver = pc
+            .add_transceiver_from_track(
+                track.clone() as Arc<dyn TrackLocal + Send + Sync>,
+                Some(RTCRtpTransceiverInit {
+                    direction: RTCRtpTransceiverDirection::Sendonly,
+                    send_encodings: simulcast_encodings(),
+                }),
+            )
+            .await
+            .map_err(|e| WebRtcError::TrackError(e.to_string()))?;
+        Ok((track, transceiver.sender().await))
     }
 
-    /// Get the video track for webcam
-    pub async fn get_webcam_track(&self) -> Option<Arc<TrackLocalStaticRTP>> {
-        (*self.webcam_track.read().await).clone()
+    /// Remove a publication's sender (its m-line goes inactive with the next
+    /// offer, and its RTCP reader ends).
+    pub async fn remove_video_sender(&self, sender: &Arc<RTCRtpSender>) -> Result<(), WebRtcError> {
+        let Some(pc) = self.peer_connection.read().await.clone() else {
+            return Ok(()); // the connection is gone and its senders with it
+        };
+        pc.remove_track(sender)
+            .await
+            .map_err(|e| WebRtcError::TrackError(e.to_string()))
+    }
+
+    /// Ask the subscriber connection's sender of `media_ssrc` for a key frame
+    /// (a viewer that subscribed late).
+    pub async fn request_subscriber_keyframe(&self, media_ssrc: u32) {
+        let Some(pc) = self.subscriber_pc.read().await.clone() else {
+            return;
+        };
+        let pli = webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication {
+            sender_ssrc: 0,
+            media_ssrc,
+        };
+        if let Err(e) = pc.write_rtcp(&[Box::new(pli)]).await {
+            debug!("Key frame request on the subscriber connection failed: {e}");
+        }
     }
 
     /// Disconnect and clean up
@@ -933,10 +994,6 @@ impl WebRtcClient {
         // Clear state
         *self.audio_sender.write().await = None;
         *self.local_track.write().await = None;
-        *self.video_sender.write().await = None;
-        *self.video_track.write().await = None;
-        *self.webcam_sender.write().await = None;
-        *self.webcam_track.write().await = None;
         *self.state.write().await = ConnectionState::Disconnected;
         *self.channel_id.write().await = None;
         *self.publisher_ice.lock().await = IceCandidateQueue::default();
@@ -1091,5 +1148,112 @@ mod tests {
 
         client.disconnect().await.unwrap();
         sfu.close().await.unwrap();
+    }
+
+    #[test]
+    fn negotiation_never_has_two_offers_out() {
+        let mut n = PublisherNegotiation::default();
+        assert!(n.request(), "first change: offer now");
+        assert!(!n.request(), "second change while waiting: queued");
+        assert!(!n.request(), "third change: still one queued offer");
+        assert!(n.answered(), "answer arrives: send the queued offer");
+        assert!(n.is_awaiting_answer());
+        assert!(!n.answered(), "its answer: nothing more to send");
+        assert!(!n.is_awaiting_answer());
+        assert!(n.request());
+        n.failed();
+        assert!(n.request(), "a failed send leaves nothing outstanding");
+    }
+
+    /// (stream id, direction) of each media section that names a stream.
+    fn sections(sdp: &str) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        for section in sdp.split("m=").skip(1) {
+            let stream = section
+                .lines()
+                .find_map(|l| l.strip_prefix("a=msid:"))
+                .and_then(|l| l.split_whitespace().next());
+            let dir = section.lines().find(|l| {
+                matches!(
+                    *l,
+                    "a=sendonly" | "a=recvonly" | "a=inactive" | "a=sendrecv"
+                )
+            });
+            if let (Some(stream), Some(dir)) = (stream, dir) {
+                out.push((stream.to_string(), dir.trim_start_matches("a=").to_string()));
+            }
+        }
+        out
+    }
+
+    fn msid_streams(sdp: &str) -> Vec<String> {
+        sdp.lines()
+            .filter_map(|l| l.strip_prefix("a=msid:"))
+            .map(|l| l.split_whitespace().next().unwrap_or("").to_string())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn share_stop_share_again_gets_a_new_track_each_time() {
+        let client = WebRtcClient::new().unwrap();
+        client.connect("ch", &[]).await.unwrap();
+        let offer = client.create_offer().await.unwrap();
+        assert!(
+            !offer.contains("m=video"),
+            "no video m-line before anything is published"
+        );
+
+        let (first, first_sender) = client
+            .add_video_sender(VideoKind::Screen, "a")
+            .await
+            .unwrap();
+        let offer = client.create_offer().await.unwrap();
+        assert!(msid_streams(&offer).contains(&"screen-share-stream-a".to_string()));
+
+        client.remove_video_sender(&first_sender).await.unwrap();
+        let (second, _) = client
+            .add_video_sender(VideoKind::Screen, "b")
+            .await
+            .unwrap();
+        assert_ne!(first.id(), second.id());
+        let offer = client.create_offer().await.unwrap();
+        let sections = sections(&offer);
+        assert!(sections.contains(&("screen-share-stream-b".into(), "sendonly".into())));
+        assert!(
+            sections.contains(&("screen-share-stream-a".into(), "inactive".into())),
+            "the stopped share's m-line is inactive: nothing of it is sent"
+        );
+        client.disconnect().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn share_then_webcam_are_separate_tracks_of_the_right_kind() {
+        let client = WebRtcClient::new().unwrap();
+        client.connect("ch", &[]).await.unwrap();
+        let (screen, _) = client
+            .add_video_sender(VideoKind::Screen, "s1")
+            .await
+            .unwrap();
+        let (cam, _) = client
+            .add_video_sender(VideoKind::Webcam, "c1")
+            .await
+            .unwrap();
+        assert_eq!(screen.id(), "screen-video-s1");
+        assert_eq!(cam.id(), "webcam-video-c1");
+        let offer = client.create_offer().await.unwrap();
+        let streams = msid_streams(&offer);
+        assert!(streams.contains(&"screen-share-stream-s1".to_string()));
+        assert!(streams.contains(&"webcam-stream-c1".to_string()));
+        assert_eq!(offer.matches("m=video").count(), 2);
+        client.disconnect().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn no_video_sender_without_a_connection() {
+        let client = WebRtcClient::new().unwrap();
+        assert!(matches!(
+            client.add_video_sender(VideoKind::Screen, "x").await,
+            Err(WebRtcError::NotConnected)
+        ));
     }
 }

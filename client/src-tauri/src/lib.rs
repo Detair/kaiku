@@ -23,15 +23,14 @@ use std::sync::Arc;
 
 use audio::AudioHandle;
 use commands::clipboard::ClipboardGuard;
-use commands::screen_share::ScreenSharePipeline;
+use commands::screen_share::{LiveShare, PreparedShare, ShareSlot};
 use commands::settings::UiState;
-use commands::webcam::WebcamPipeline;
+use commands::webcam::{PreparedWebcam, WebcamPipeline};
 use network::WebSocketManager;
 use reqwest::Client as HttpClient;
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
 use tokio::sync::{mpsc, Mutex, RwLock};
-use uuid::Uuid;
 use webrtc::WebRtcClient;
 
 /// Run the Tauri application.
@@ -184,10 +183,12 @@ pub fn run() {
             commands::tray::set_tray_voice_state,
             // Screen share commands
             commands::screen_share::enumerate_capture_sources,
+            commands::screen_share::prepare_screen_share,
             commands::screen_share::start_screen_share,
             commands::screen_share::stop_screen_share,
             commands::screen_share::get_screen_share_status,
             // Webcam commands
+            commands::webcam::prepare_webcam,
             commands::webcam::start_webcam,
             commands::webcam::stop_webcam,
             commands::webcam::enumerate_webcam_devices_cmd,
@@ -308,10 +309,14 @@ pub struct VoiceState {
     pub session_epoch: Option<u64>,
     /// Sender for encoded audio to WebRTC.
     pub audio_tx: Option<mpsc::Sender<Vec<u8>>>,
-    /// Active screen share pipelines, keyed by stream ID. Max 3 concurrent.
-    pub screen_shares: HashMap<Uuid, ScreenSharePipeline>,
+    /// The one screen share (prepared until the server accepts it, then live).
+    pub shares: ShareSlot<PreparedShare, LiveShare>,
+    /// Camera prepared but not yet accepted by the server.
+    pub prepared_webcam: Option<PreparedWebcam>,
     /// Active webcam pipeline, if any.
     pub webcam: Option<WebcamPipeline>,
+    /// Publisher renegotiation (never two offers out at once).
+    pub negotiation: webrtc::PublisherNegotiation,
     /// Audio mixer for combining remote subscriber tracks.
     pub audio_mixer: Option<voice::audio_mixer::AudioMixer>,
     /// Handles for active video decode tasks (aborted on leave).
@@ -341,8 +346,10 @@ impl VoiceState {
             channel_id: None,
             session_epoch: None,
             audio_tx: None,
-            screen_shares: HashMap::new(),
+            shares: ShareSlot::default(),
+            prepared_webcam: None,
             webcam: None,
+            negotiation: webrtc::PublisherNegotiation::default(),
             audio_mixer: None,
             video_tasks: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             active_video_count: Arc::new(AtomicUsize::new(0)),

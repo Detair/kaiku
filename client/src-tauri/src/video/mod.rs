@@ -3,6 +3,7 @@
 //! VP8 software encoding and RTP packetization for screen sharing.
 
 pub mod encoder;
+pub mod publication;
 pub mod rtp;
 
 use thiserror::Error;

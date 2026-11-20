@@ -93,6 +93,15 @@ impl Vp8Encoder {
         Ok(encoder)
     }
 
+    /// Make the next encoded frame a key frame. `vpx-encode` exposes no
+    /// force-key-frame flag, so libvpx is re-created at the current size:
+    /// its first frame is always a key frame (a few ms; rate-limited by the
+    /// caller).
+    pub fn force_keyframe(&mut self) -> Result<(), VideoError> {
+        self.encoder = Self::build(self.width, self.height, self.fps, self.bitrate_kbps)?;
+        Ok(())
+    }
+
     /// Re-create libvpx when the frame size changed.
     fn ensure_size(&mut self, width: u32, height: u32) -> Result<(), VideoError> {
         if (width, height) == (self.width, self.height) {
@@ -191,6 +200,29 @@ mod tests {
             width,
             height,
         }
+    }
+
+    #[test]
+    fn forced_keyframe_makes_the_next_frame_a_keyframe() {
+        let params = QualityParams {
+            width: 64,
+            height: 64,
+            fps: 30,
+            bitrate_kbps: 200,
+        };
+        let mut encoder = Vp8Encoder::new(&params).expect("encoder");
+        let first = encoder.encode(&gray_frame(64, 64)).expect("first");
+        assert!(first.first().is_some_and(|p| p.is_keyframe));
+        let delta = encoder.encode(&gray_frame(64, 64)).expect("delta");
+        assert!(
+            delta.iter().all(|p| !p.is_keyframe),
+            "second frame is a delta"
+        );
+        encoder.force_keyframe().expect("force");
+        let forced = encoder.encode(&gray_frame(64, 64)).expect("forced");
+        assert!(forced.first().is_some_and(|p| p.is_keyframe));
+        // Timestamps keep counting across the re-creation.
+        assert!(forced[0].pts > delta.first().map_or(0, |p| p.pts));
     }
 
     #[test]

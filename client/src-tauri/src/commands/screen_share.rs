@@ -1,28 +1,144 @@
 //! Screen Share Commands
 //!
-//! Tauri commands for native screen capture and sharing via WebRTC.
+//! A native screen share runs in two steps (contract C30):
+//!
+//! 1. `prepare_screen_share` checks the source (Windows/macOS) or lets the system dialog choose it
+//!    (Linux: xdg-desktop-portal ScreenCast). Nothing is sent; the frontend announces the share to
+//!    the server.
+//! 2. After the server accepted it (`screen_share_started`), `start_screen_share` adds a fresh
+//!    video sender, starts capture → encode → RTP and renegotiates the publisher connection.
+//!
+//! `stop_screen_share` ends either step. One share per person for 1.0. A
+//! capture that ends by itself emits `voice:local_capture_ended` so the
+//! frontend runs its normal stop.
 
-use std::sync::mpsc as std_mpsc;
-
-use serde::{Deserialize, Serialize};
-use tauri::{command, State};
-use tokio::sync::{mpsc, watch};
-use tracing::{error, info, warn};
+use serde::Serialize;
+use tauri::{command, AppHandle, Emitter, State};
+use tokio::sync::RwLock;
+use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::capture::capturer::FrameCapturer;
 use crate::capture::source::enumerate_sources;
 use crate::capture::{CaptureSource, CaptureSourceType};
-use crate::video::encoder::{VideoEncoder, Vp8Encoder};
-use crate::video::rtp::VideoRtpSender;
-use crate::video::{EncodedPacket, QualityParams};
-use crate::AppState;
+use crate::network::{ClientEvent, WebSocketManager};
+use crate::video::publication::{StartCapture, VideoPublication};
+use crate::video::QualityParams;
+use crate::webrtc::VideoKind;
+use crate::{AppState, VoiceState};
 
-/// Maximum number of concurrent screen share pipelines per user.
-const MAX_SCREEN_SHARES: usize = 3;
+/// Event to the frontend when a capture ended by itself.
+pub const LOCAL_CAPTURE_ENDED_EVENT: &str = "voice:local_capture_ended";
+
+/// Payload of [`LOCAL_CAPTURE_ENDED_EVENT`].
+#[derive(Debug, Clone, Serialize)]
+pub struct LocalCaptureEnded {
+    pub kind: &'static str,
+    pub stream_id: Option<String>,
+}
+
+/// Where a prepared share's frames come from.
+pub enum ShareSource {
+    /// A `scap` target (Windows, macOS).
+    Native { source_id: String },
+    /// A ScreenCast portal session (Linux); its stream closes when dropped.
+    #[cfg(target_os = "linux")]
+    Portal(crate::capture::portal::PortalStream),
+}
+
+/// A share the user chose but the server has not accepted yet.
+pub struct PreparedShare {
+    pub source: ShareSource,
+    pub source_name: String,
+    pub source_type: CaptureSourceType,
+    pub quality: String,
+}
+
+/// A running share.
+pub struct LiveShare {
+    pub source_name: String,
+    pub source_type: CaptureSourceType,
+    pub quality: String,
+    pub publication: VideoPublication,
+}
+
+/// What [`ShareSlot::remove`] found.
+pub enum Removed<P, L> {
+    Nothing,
+    Prepared(P),
+    Live(L),
+}
+
+/// One share at a time: prepared (waiting for the server) or live.
+pub struct ShareSlot<P, L> {
+    prepared: Option<(Uuid, P)>,
+    live: Option<(Uuid, L)>,
+}
+
+impl<P, L> Default for ShareSlot<P, L> {
+    fn default() -> Self {
+        Self {
+            prepared: None,
+            live: None,
+        }
+    }
+}
+
+impl<P, L> ShareSlot<P, L> {
+    /// Whether a share is prepared or live.
+    pub const fn is_busy(&self) -> bool {
+        self.prepared.is_some() || self.live.is_some()
+    }
+
+    /// Hold a prepared share (fails while one is prepared or live).
+    pub fn prepare(&mut self, id: Uuid, prepared: P) -> Result<(), &'static str> {
+        if self.is_busy() {
+            return Err("SHARE_ACTIVE: already sharing");
+        }
+        self.prepared = Some((id, prepared));
+        Ok(())
+    }
+
+    /// Take the prepared share `id` to publish it.
+    pub fn take_prepared(&mut self, id: Uuid) -> Option<P> {
+        if self.prepared.as_ref().is_some_and(|(p, _)| *p == id) {
+            self.prepared.take().map(|(_, p)| p)
+        } else {
+            None
+        }
+    }
+
+    pub fn set_live(&mut self, id: Uuid, live: L) {
+        self.live = Some((id, live));
+    }
+
+    pub fn remove(&mut self, id: Uuid) -> Removed<P, L> {
+        if let Some(p) = self.take_prepared(id) {
+            return Removed::Prepared(p);
+        }
+        if self.live.as_ref().is_some_and(|(l, _)| *l == id) {
+            if let Some((_, l)) = self.live.take() {
+                return Removed::Live(l);
+            }
+        }
+        Removed::Nothing
+    }
+
+    /// Everything, for a session teardown.
+    pub fn drain(&mut self) -> (Option<P>, Option<L>) {
+        (
+            self.prepared.take().map(|(_, p)| p),
+            self.live.take().map(|(_, l)| l),
+        )
+    }
+
+    pub fn live(&self) -> Option<(&Uuid, &L)> {
+        self.live.as_ref().map(|(id, l)| (id, l))
+    }
+}
 
 /// Status of an active screen share.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ScreenShareStatus {
     pub stream_id: String,
     pub source_name: String,
@@ -31,203 +147,228 @@ pub struct ScreenShareStatus {
     pub with_audio: bool,
 }
 
-/// Active screen share pipeline (stored in `VoiceState`).
-pub struct ScreenSharePipeline {
+/// Answer of `prepare_screen_share`.
+#[derive(Debug, Clone, Serialize)]
+pub struct PreparedShareInfo {
     pub source_name: String,
-    pub quality: String,
-    pub with_audio: bool,
-    pub source_type: CaptureSourceType,
-    pub shutdown_tx: watch::Sender<bool>,
-    pub capturer_handle: tokio::task::JoinHandle<()>,
-    pub encoder_handle: tokio::task::JoinHandle<()>,
-    pub rtp_handle: tokio::task::JoinHandle<()>,
+    /// Native capture sends no screen audio yet.
+    pub has_audio: bool,
 }
 
-impl ScreenSharePipeline {
-    /// Shut down the pipeline gracefully.
-    pub async fn shutdown(self) {
-        info!("Shutting down screen share pipeline");
-        let _ = self.shutdown_tx.send(true);
-        // Wait for tasks to finish (with timeout)
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(3), async {
-            let _ = self.capturer_handle.await;
-            let _ = self.encoder_handle.await;
-            let _ = self.rtp_handle.await;
-        })
-        .await;
-        info!("Screen share pipeline shut down");
-    }
-}
-
-/// Enumerate available capture sources (monitors and windows).
+/// Enumerate available capture sources (monitors and windows). Linux has no
+/// list: the system dialog chooses there.
 #[command]
 #[tracing::instrument(skip_all)]
 pub async fn enumerate_capture_sources() -> Result<Vec<CaptureSource>, String> {
-    info!("Enumerating capture sources");
-
-    let sources = enumerate_sources().map_err(|e| e.to_string())?;
+    let sources = tokio::task::spawn_blocking(enumerate_sources)
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
     info!(count = sources.len(), "Found capture sources");
     Ok(sources)
 }
 
-/// Start native screen sharing.
-///
-/// Creates the capture -> encode -> RTP pipeline and begins sending
-/// video frames via the WebRTC video track. Supports up to
-/// `MAX_SCREEN_SHARES` concurrent streams.
+/// Send a publisher offer now if no other offer of ours is out (else the
+/// answer handler sends one right after the outstanding answer).
+pub(crate) async fn renegotiate(
+    voice: &mut VoiceState,
+    ws: &RwLock<Option<WebSocketManager>>,
+) -> Result<(), String> {
+    if !voice.negotiation.request() {
+        return Ok(());
+    }
+    send_publisher_offer(voice, ws).await
+}
+
+/// Create and send a publisher offer (renegotiation).
+pub(crate) async fn send_publisher_offer(
+    voice: &mut VoiceState,
+    ws: &RwLock<Option<WebSocketManager>>,
+) -> Result<(), String> {
+    let result = async {
+        let channel_id = voice.channel_id.clone().ok_or("Not in a voice channel")?;
+        let sdp = voice
+            .webrtc
+            .create_offer()
+            .await
+            .map_err(|e| e.to_string())?;
+        let guard = ws.read().await;
+        let sender = guard.as_ref().ok_or("WebSocket not connected")?;
+        sender
+            .send(ClientEvent::VoicePublisherOffer { channel_id, sdp })
+            .await
+    }
+    .await;
+    if result.is_err() {
+        voice.negotiation.failed();
+    }
+    result
+}
+
+/// Step 1: choose and check the source; nothing is sent.
 #[command]
 #[tracing::instrument(skip(state))]
-pub async fn start_screen_share(
-    source_id: String,
+pub async fn prepare_screen_share(
+    stream_id: String,
+    source_id: Option<String>,
     quality: String,
     with_audio: bool,
-    stream_id: String,
     state: State<'_, AppState>,
-) -> Result<(), String> {
+) -> Result<PreparedShareInfo, String> {
     let stream_uuid = Uuid::parse_str(&stream_id).map_err(|e| format!("Invalid stream_id: {e}"))?;
+    QualityParams::from_tier(&quality)?;
+    let _ = with_audio; // screen audio is not captured natively yet
 
-    info!(source_id = %source_id, quality = %quality, stream_id = %stream_id, "Starting screen share");
-
-    let mut voice = state.voice.write().await;
-    let voice_state = voice.as_mut().ok_or("Voice not initialized")?;
-
-    // Check concurrent stream limit
-    if voice_state.screen_shares.len() >= MAX_SCREEN_SHARES {
-        return Err(format!(
-            "Maximum of {MAX_SCREEN_SHARES} concurrent screen shares reached"
-        ));
-    }
-
-    // Check for duplicate stream ID
-    if voice_state.screen_shares.contains_key(&stream_uuid) {
-        return Err(format!("Stream already exists: {stream_id}"));
-    }
-
-    // Must be in a voice channel
-    if voice_state.channel_id.is_none() {
-        return Err("Not in a voice channel".into());
-    }
-
-    // Resolve quality params
-    let params = QualityParams::from_tier(&quality)?;
-
-    let source = enumerate_sources()
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .find(|source| source.id == source_id)
-        .ok_or_else(|| format!("Source not found: {source_id}"))?;
-    let source_name = source.name;
-    let source_type = source.source_type;
-
-    // Get video track from WebRTC
-    let video_track = voice_state
-        .webrtc
-        .get_video_track()
-        .await
-        .ok_or("No video track available (not connected?)")?;
-
-    // Create shutdown signal
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let shutdown_rx2 = shutdown_tx.subscribe();
-
-    // Create frame channel (bounded to avoid memory buildup)
-    let (frame_tx, frame_rx) = std_mpsc::sync_channel(2);
-
-    // Start capturer on blocking thread
-    let capturer = FrameCapturer::new(source_id.clone(), params.fps, params.width, params.height);
-
-    let capturer_handle = capturer
-        .start(frame_tx, shutdown_rx)
-        .map_err(|e| e.to_string())?;
-
-    // Channel for encoded packets (encoder thread -> RTP sender task)
-    let (pkt_tx, mut pkt_rx) = mpsc::channel::<Vec<EncodedPacket>>(4);
-
-    // Encoder runs on a blocking thread (vpx_encode::Encoder is not Send)
-    let encoder_handle = {
-        let quality_str = quality.clone();
-        let shutdown_rx = shutdown_rx2;
-
-        tokio::task::spawn_blocking(move || {
-            let mut encoder = match Vp8Encoder::new(&params) {
-                Ok(e) => e,
-                Err(e) => {
-                    error!("Failed to create VP8 encoder: {e}");
-                    return;
-                }
-            };
-
-            info!(quality = %quality_str, "Encoder started");
-
-            loop {
-                if *shutdown_rx.borrow() {
-                    info!("Encoder shutdown requested");
-                    break;
-                }
-
-                match frame_rx.recv_timeout(std::time::Duration::from_millis(16)) {
-                    Ok(i420) => match encoder.encode(&i420) {
-                        Ok(packets) => {
-                            if !packets.is_empty() && pkt_tx.blocking_send(packets).is_err() {
-                                info!("Packet channel closed, stopping encoder");
-                                break;
-                            }
-                        }
-                        Err(e) => {
-                            warn!("Encode error: {e}");
-                        }
-                    },
-                    Err(std_mpsc::RecvTimeoutError::Timeout) => {
-                        // No frame this interval — loop back to check shutdown
-                    }
-                    Err(std_mpsc::RecvTimeoutError::Disconnected) => {
-                        info!("Frame channel closed, stopping encoder");
-                        break;
-                    }
-                }
-            }
-
-            info!("Encoder stopped");
-        })
+    // Check first, without holding the voice lock across the dialog.
+    let epoch = {
+        let voice = state.voice.read().await;
+        let v = voice.as_ref().ok_or("Voice not initialized")?;
+        if v.channel_id.is_none() {
+            return Err("Not in a voice channel".into());
+        }
+        if v.shares.is_busy() {
+            return Err("SHARE_ACTIVE: already sharing".into());
+        }
+        v.session_epoch
     };
 
-    // RTP sender runs as async task
-    let rtp_handle = tokio::spawn(async move {
-        let rtp_sender = VideoRtpSender::new(video_track);
+    let prepared = choose_source(source_id, quality).await?;
+    let info = PreparedShareInfo {
+        source_name: prepared.source_name.clone(),
+        has_audio: false,
+    };
 
-        info!("RTP sender started");
+    let mut voice = state.voice.write().await;
+    let v = voice.as_mut().ok_or("Voice not initialized")?;
+    // The call may have ended (or another begun) while the dialog was open.
+    if v.channel_id.is_none() || v.session_epoch != epoch {
+        return Err("Not in a voice channel".into());
+    }
+    v.shares.prepare(stream_uuid, prepared)?;
+    Ok(info)
+}
 
-        while let Some(packets) = pkt_rx.recv().await {
-            for pkt in &packets {
-                if let Err(e) = rtp_sender.send_packet(pkt).await {
-                    warn!("RTP send error: {e}");
-                }
-            }
+#[cfg(not(target_os = "linux"))]
+async fn choose_source(
+    source_id: Option<String>,
+    quality: String,
+) -> Result<PreparedShare, String> {
+    let source_id = source_id.ok_or("No source selected")?;
+    let wanted = source_id.clone();
+    let source = tokio::task::spawn_blocking(move || {
+        enumerate_sources().map(|all| all.into_iter().find(|s| s.id == wanted))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| match e {
+        crate::capture::CaptureError::PermissionDenied => format!("PERMISSION_DENIED: {e}"),
+        other => other.to_string(),
+    })?
+    .ok_or_else(|| format!("NO_DEVICE: source not found: {source_id}"))?;
+    Ok(PreparedShare {
+        source: ShareSource::Native { source_id },
+        source_name: source.name,
+        source_type: source.source_type,
+        quality,
+    })
+}
+
+#[cfg(target_os = "linux")]
+async fn choose_source(
+    _source_id: Option<String>,
+    quality: String,
+) -> Result<PreparedShare, String> {
+    let stream = crate::capture::portal::open_screencast(&crate::capture::portal::DbusPortal)
+        .await
+        .map_err(|e| e.code_text())?;
+    Ok(PreparedShare {
+        source_name: stream.label(),
+        source_type: CaptureSourceType::Monitor,
+        source: ShareSource::Portal(stream),
+        quality,
+    })
+}
+
+fn capture_starter(source: ShareSource, params: QualityParams) -> StartCapture {
+    match source {
+        ShareSource::Native { source_id } => Box::new(move |frames, shutdown| {
+            FrameCapturer::new(source_id, params.fps, params.width, params.height)
+                .start(frames, shutdown)
+                .map_err(|e| e.to_string())
+        }),
+        #[cfg(target_os = "linux")]
+        ShareSource::Portal(stream) => Box::new(move |frames, shutdown| {
+            Ok(crate::capture::pipewire_capture::start(
+                stream, params, frames, shutdown,
+            ))
+        }),
+    }
+}
+
+/// Step 2 (after `screen_share_started`): add the track and send.
+#[command]
+#[tracing::instrument(skip(state, app))]
+pub async fn start_screen_share(
+    stream_id: String,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<(), String> {
+    let stream_uuid = Uuid::parse_str(&stream_id).map_err(|e| format!("Invalid stream_id: {e}"))?;
+    let mut voice = state.voice.write().await;
+    let v = voice.as_mut().ok_or("Voice not initialized")?;
+    // Gone when the call ended in between (teardown drops prepared shares).
+    let prepared = v
+        .shares
+        .take_prepared(stream_uuid)
+        .ok_or("Not in a voice channel: share not prepared")?;
+    let params = QualityParams::from_tier(&prepared.quality)?;
+
+    let (track, sender) = v
+        .webrtc
+        .add_video_sender(VideoKind::Screen, &stream_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    let on_end = {
+        let app = app.clone();
+        let stream_id = stream_id.clone();
+        Box::new(move || {
+            let _ = app.emit(
+                LOCAL_CAPTURE_ENDED_EVENT,
+                LocalCaptureEnded {
+                    kind: VideoKind::Screen.as_str(),
+                    stream_id: Some(stream_id),
+                },
+            );
+        })
+    };
+    let publication = match VideoPublication::start(
+        params,
+        track,
+        sender.clone(),
+        capture_starter(prepared.source, params),
+        on_end,
+    ) {
+        Ok(p) => p,
+        Err(e) => {
+            let _ = v.webrtc.remove_video_sender(&sender).await;
+            return Err(e);
         }
-
-        info!("RTP sender stopped");
-    });
-
-    // Store pipeline in voice state
-    voice_state.screen_shares.insert(
+    };
+    v.shares.set_live(
         stream_uuid,
-        ScreenSharePipeline {
-            source_name,
-            quality,
-            with_audio,
-            source_type,
-            shutdown_tx,
-            capturer_handle,
-            encoder_handle,
-            rtp_handle,
+        LiveShare {
+            source_name: prepared.source_name,
+            source_type: prepared.source_type,
+            quality: prepared.quality,
+            publication,
         },
     );
-
+    renegotiate(v, &state.websocket).await?;
     info!(stream_id = %stream_id, "Screen share started");
     Ok(())
 }
 
-/// Stop a specific screen share stream.
+/// Stop a screen share, prepared or live.
 #[command]
 #[tracing::instrument(skip(state))]
 pub async fn stop_screen_share(
@@ -235,41 +376,97 @@ pub async fn stop_screen_share(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let stream_uuid = Uuid::parse_str(&stream_id).map_err(|e| format!("Invalid stream_id: {e}"))?;
-
-    info!(stream_id = %stream_id, "Stopping screen share");
-
     let mut voice = state.voice.write().await;
-    let voice_state = voice.as_mut().ok_or("Voice not initialized")?;
-
-    let pipeline = voice_state
-        .screen_shares
-        .remove(&stream_uuid)
-        .ok_or_else(|| format!("No screen share with stream_id: {stream_id}"))?;
-
-    pipeline.shutdown().await;
-
-    info!(stream_id = %stream_id, "Screen share stopped");
-    Ok(())
+    let v = voice.as_mut().ok_or("Voice not initialized")?;
+    match v.shares.remove(stream_uuid) {
+        Removed::Nothing => Ok(()),
+        Removed::Prepared(_) => Ok(()), // dropping closes a portal session
+        Removed::Live(live) => {
+            let sender = live.publication.sender.clone();
+            live.publication.shutdown().await;
+            if let Err(e) = v.webrtc.remove_video_sender(&sender).await {
+                warn!("Removing the share's sender failed: {e}");
+            }
+            renegotiate(v, &state.websocket).await
+        }
+    }
 }
 
-/// Get current screen share status for all active streams.
+/// Current screen share status.
 #[command]
 #[tracing::instrument(skip(state))]
 pub async fn get_screen_share_status(
     state: State<'_, AppState>,
 ) -> Result<Vec<ScreenShareStatus>, String> {
     let voice = state.voice.read().await;
-    let voice_state = voice.as_ref().ok_or("Voice not initialized")?;
-
-    Ok(voice_state
-        .screen_shares
-        .iter()
-        .map(|(id, pipeline)| ScreenShareStatus {
+    let v = voice.as_ref().ok_or("Voice not initialized")?;
+    Ok(v.shares
+        .live()
+        .map(|(id, live)| ScreenShareStatus {
             stream_id: id.to_string(),
-            source_name: pipeline.source_name.clone(),
-            source_type: pipeline.source_type.clone(),
-            quality: pipeline.quality.clone(),
-            with_audio: pipeline.with_audio,
+            source_name: live.source_name.clone(),
+            source_type: live.source_type.clone(),
+            quality: live.quality.clone(),
+            with_audio: false,
         })
+        .into_iter()
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn share_stop_share_again() {
+        let mut slot: ShareSlot<&str, &str> = ShareSlot::default();
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+        slot.prepare(a, "prep-a").unwrap();
+        assert_eq!(slot.take_prepared(a), Some("prep-a"));
+        slot.set_live(a, "live-a");
+        assert!(matches!(slot.remove(a), Removed::Live("live-a")));
+        slot.prepare(b, "prep-b").unwrap();
+        assert_eq!(slot.take_prepared(b), Some("prep-b"));
+        slot.set_live(b, "live-b");
+        assert!(slot.live().is_some_and(|(id, _)| *id == b));
+    }
+
+    #[test]
+    fn one_share_at_a_time() {
+        let mut slot: ShareSlot<(), ()> = ShareSlot::default();
+        slot.prepare(Uuid::new_v4(), ()).unwrap();
+        assert!(
+            slot.prepare(Uuid::new_v4(), ()).is_err(),
+            "second prepare while prepared"
+        );
+        let mut live: ShareSlot<(), ()> = ShareSlot::default();
+        live.set_live(Uuid::new_v4(), ());
+        assert!(
+            live.prepare(Uuid::new_v4(), ()).is_err(),
+            "second share while live"
+        );
+    }
+
+    #[test]
+    fn teardown_mid_start_drops_the_prepared_share_and_a_late_start_finds_nothing() {
+        let mut slot: ShareSlot<&str, &str> = ShareSlot::default();
+        let a = Uuid::new_v4();
+        slot.prepare(a, "prep").unwrap();
+        // The call ends while the server's answer is outstanding.
+        assert_eq!(slot.drain(), (Some("prep"), None));
+        // The late `start_screen_share` for it has nothing to publish.
+        assert_eq!(slot.take_prepared(a), None);
+        assert!(!slot.is_busy());
+    }
+
+    #[test]
+    fn a_start_for_another_stream_does_not_take_the_prepared_one() {
+        let mut slot: ShareSlot<&str, &str> = ShareSlot::default();
+        let a = Uuid::new_v4();
+        slot.prepare(a, "prep").unwrap();
+        assert_eq!(slot.take_prepared(Uuid::new_v4()), None);
+        assert!(matches!(slot.remove(Uuid::new_v4()), Removed::Nothing));
+        assert_eq!(slot.take_prepared(a), Some("prep"));
+    }
 }

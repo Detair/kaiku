@@ -571,6 +571,16 @@ pub async fn handle_voice_publisher_answer(
         .await
         .map_err(|e| e.to_string())?;
 
+    // Answer to a renegotiation (a share or the camera came or went): call
+    // audio already runs. Send the next offer if a change waited for this.
+    if voice_state.audio_tx.is_some() {
+        if voice_state.negotiation.answered() {
+            crate::commands::screen_share::send_publisher_offer(voice_state, &state.websocket)
+                .await?;
+        }
+        return Ok(());
+    }
+
     // Fetched first: the uplink sender is wired before anything can fail.
     let local_track = voice_state.webrtc.get_local_track().await;
     let gains = voice_state.user_gains.clone();
@@ -807,24 +817,18 @@ impl NativeSession for VoiceState {
         self.session_epoch = None;
         let channel_id = self.channel_id.take();
 
-        // Stop all screen shares if active
-        if !self.screen_shares.is_empty() {
-            info!(
-                count = self.screen_shares.len(),
-                "Auto-stopping screen shares on voice leave"
-            );
-            let pipelines: Vec<_> = self.screen_shares.drain().collect();
-            for (stream_id, pipeline) in pipelines {
-                info!(stream_id = %stream_id, "Shutting down screen share pipeline");
-                bounded_step("screen share", pipeline.shutdown()).await;
-            }
+        // Stop the screen share and the camera (prepared ones just go).
+        let (_prepared, live) = self.shares.drain();
+        if let Some(live) = live {
+            info!("Auto-stopping screen share on voice leave");
+            bounded_step("screen share", live.publication.shutdown()).await;
         }
-
-        // Stop webcam if active
+        self.prepared_webcam = None;
         if let Some(pipeline) = self.webcam.take() {
             info!("Auto-stopping webcam on voice leave");
             bounded_step("webcam", pipeline.shutdown()).await;
         }
+        self.negotiation = crate::webrtc::PublisherNegotiation::default();
 
         // Stop all video decode tasks
         {
