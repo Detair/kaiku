@@ -7,6 +7,7 @@ import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
+import io.ktor.http.HttpStatusCode
 import io.wolftown.kaiku.domain.model.ClaimResult
 import io.wolftown.kaiku.domain.model.ClaimStatus
 import io.wolftown.kaiku.domain.model.Enrollment
@@ -94,7 +95,7 @@ class EnrollmentApiImpl @Inject constructor(private val httpClient: HttpClient) 
             publicRoute()
             setBody(PopChallengeRequest(setupToken, deviceId, publicKeyB64u))
         }
-        r.ensureSuccess("pop challenge failed")
+        r.ensureExactly(HttpStatusCode.Created, "pop challenge failed")
         return r.body()
     }
 
@@ -104,7 +105,7 @@ class EnrollmentApiImpl @Inject constructor(private val httpClient: HttpClient) 
             if (ticket != null) header(TICKET_HEADER, ticket)
             setBody(req)
         }
-        r.ensureSuccess("claim failed")
+        r.ensureExactly(HttpStatusCode.Created, "claim failed")
         return r.body()
     }
 
@@ -113,7 +114,7 @@ class EnrollmentApiImpl @Inject constructor(private val httpClient: HttpClient) 
             publicRoute()
             setBody(StatusRequest(enrollmentId, claimSecret, waitSeconds.coerceIn(0, 25)))
         }
-        r.ensureSuccess("status failed")
+        r.ensureExactly(HttpStatusCode.OK, "status failed")
         return r.body()
     }
 }

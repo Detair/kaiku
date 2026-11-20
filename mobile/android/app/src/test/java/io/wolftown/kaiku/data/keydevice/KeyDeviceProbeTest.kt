@@ -21,9 +21,9 @@ class KeyDeviceProbeTest {
     }
 
     @Test fun `only 404 unknown and 403 revoked say the key is gone`() = runTest {
-        assertEquals(ServerKeyState.Gone, answer(apiError(404, "KEY_DEVICE_UNKNOWN")))
-        assertEquals(ServerKeyState.Gone, answer(apiError(403, "KEY_DEVICE_REVOKED")))
-        assertEquals(ServerKeyState.Gone, answer(apiError(404, "key_device_unknown")))
+        assertEquals(ServerKeyState.Gone(ServerAnswer(404, "KEY_DEVICE_UNKNOWN")), answer(apiError(404, "KEY_DEVICE_UNKNOWN")))
+        assertEquals(ServerKeyState.Gone(ServerAnswer(403, "KEY_DEVICE_REVOKED")), answer(apiError(403, "KEY_DEVICE_REVOKED")))
+        assertEquals(ServerKeyState.Gone(ServerAnswer(404, "KEY_DEVICE_UNKNOWN")), answer(apiError(404, "key_device_unknown")))
     }
 
     @Test fun `the same codes with any other status keep the key`() = runTest {

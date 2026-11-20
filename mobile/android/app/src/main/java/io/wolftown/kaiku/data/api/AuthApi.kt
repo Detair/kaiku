@@ -238,6 +238,8 @@ data class ApiErrorFields(
     val reason: String? = null,
     val recoveryCodesLeft: Int? = null,
     val retryAfterSeconds: Long? = null,
+    /** The server's own time when it answered (the `Date` header); null when it sent none. */
+    val serverTime: java.time.Instant? = null,
 )
 
 open class ApiException(

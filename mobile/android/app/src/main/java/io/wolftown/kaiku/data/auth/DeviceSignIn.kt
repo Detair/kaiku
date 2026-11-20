@@ -14,8 +14,15 @@ import io.wolftown.kaiku.approval.UvPrompt
 import io.wolftown.kaiku.approval.UvResult
 import io.wolftown.kaiku.data.api.ApiException
 import io.wolftown.kaiku.data.api.ApprovalApi
+import io.wolftown.kaiku.data.keydevice.Ask
+import io.wolftown.kaiku.data.keydevice.Change
+import io.wolftown.kaiku.data.keydevice.KeyAnswers
+import io.wolftown.kaiku.data.keydevice.KeyDevicePhase
 import io.wolftown.kaiku.data.keydevice.KeyDeviceRepository
-import io.wolftown.kaiku.data.keydevice.saysKeyDeviceGone
+import io.wolftown.kaiku.data.keydevice.ServerAnswer
+import io.wolftown.kaiku.data.keydevice.StoredKeyDevice
+import io.wolftown.kaiku.data.keydevice.Verdict
+import io.wolftown.kaiku.domain.KaikuPayloads
 import io.wolftown.kaiku.data.repository.AuthRepository
 import java.io.IOException
 import java.time.Duration
@@ -44,8 +51,6 @@ enum class SignInPurpose {
     SIGN_IN,
     /** The last step of a setup: its own fresh challenge, so a second prompt (C26 `device_login`). */
     AFTER_SETUP,
-    /** "Use another account": a session first, then the removal's own confirmation. */
-    FOR_REMOVAL,
     /** The renewal before the 90-day cap. */
     STAY_SIGNED_IN,
 }
@@ -54,7 +59,6 @@ enum class SignInPurpose {
 internal fun signInPromptText(purpose: SignInPurpose): Pair<Int, Int?> = when (purpose) {
     SignInPurpose.SIGN_IN -> R.string.security_uv_sign_in to null
     SignInPurpose.AFTER_SETUP -> R.string.security_uv_after_setup to R.string.security_uv_after_setup_detail
-    SignInPurpose.FOR_REMOVAL -> R.string.security_uv_for_removal to R.string.security_uv_for_removal_detail
     SignInPurpose.STAY_SIGNED_IN -> R.string.security_uv_stay_signed_in to null
 }
 
@@ -62,6 +66,12 @@ internal fun signInPromptText(purpose: SignInPurpose): Pair<Int, Int?> = when (p
  * L2-A11: device-key sign-in (C26 `device_login`) → a full session. Used after a
  * lapse ("Confirm it's you"), at the end of a setup, and for the renewal before
  * the 90-day cap. Never a password.
+ *
+ * The whole sign-in is about the record captured at its start: both requests go to that record's
+ * server, an answer that says the key is gone forgets only that record ([KeyAnswers.settle]), the
+ * session is installed only while that record is still the stored one, and success is reported
+ * only after the record took the sign-in. A key forgotten or replaced meanwhile never ends as
+ * "signed in".
  */
 class DeviceSignIn @Inject constructor(
     private val approvalApi: ApprovalApi,
@@ -69,19 +79,25 @@ class DeviceSignIn @Inject constructor(
     private val keyDevices: KeyDeviceRepository,
     private val deviceIds: DeviceIdProvider,
     private val authRepository: AuthRepository,
+    private val answers: KeyAnswers,
 ) {
     private companion object {
         val logger: Logger = Logger.getLogger("DeviceSignIn")
     }
 
     suspend fun signIn(activity: FragmentActivity, purpose: SignInPurpose = SignInPurpose.SIGN_IN): DeviceSignInResult {
-        val local = keyDevices.local() ?: return DeviceSignInResult.Failed("NO_KEY_DEVICE")
+        val rec = keyDevices.record.value?.takeIf { it.phase == KeyDevicePhase.ACTIVE }
+            ?: return DeviceSignInResult.Failed("NO_KEY_DEVICE")
+        val local = rec.device
+        val origin = KaikuPayloads.canonicalOrigin(local.origin)?.takeIf { it.startsWith("https://") }
+            ?: return DeviceSignInResult.Failed("OTHER_SERVER")
         // Captured before anything is sent: a logout, a server change or another session meanwhile
         // means the answer is not installed (and is ended on the server).
         val start = authRepository.beginDeviceSignIn(local.origin) ?: return DeviceSignInResult.Failed("OTHER_SERVER")
         val deviceId = deviceIds.id()
+        var ask = Ask.DEVICE_LOGIN_CHALLENGE
         return try {
-            val ch = approvalApi.deviceLoginChallenge(local.userId, deviceId)
+            val ch = approvalApi.deviceLoginChallenge(local.userId, deviceId, origin)
             // The context is checked before the prompt: this app signs in only as an Android client.
             val verified = try {
                 signer.check(ch, SigKind.DEVICE_LOGIN, local.userId, deviceId)
@@ -95,36 +111,55 @@ class DeviceSignIn @Inject constructor(
             val out = signer.sign(
                 activity, ch, SigKind.DEVICE_LOGIN, local.userId, deviceId, Decision.APPROVE, ByteArray(0),
                 UvPrompt(R.string.security_uv_title, activity.getString(subtitle), detail?.let(activity::getString)),
+                rec.keyId,
             )
             when (out) {
                 is SignOutcome.Rejected -> DeviceSignInResult.Failed("CHALLENGE_${out.reason}")
                 is SignOutcome.Uv -> onUv(out.result)
                 is SignOutcome.Signed -> {
-                    val auth = approvalApi.deviceLogin(ch.challengeId, out.signatureB64u)
-                    val user = authRepository.installDeviceSession(auth, local.userId, start).getOrElse {
-                        logger.warning("Device session not installed: ${it.javaClass.simpleName}")
-                        return DeviceSignInResult.Failed("SESSION_NOT_INSTALLED")
+                    ask = Ask.DEVICE_LOGIN
+                    val auth = approvalApi.deviceLogin(ch.challengeId, out.signatureB64u, origin)
+                    val user = authRepository.installDeviceSession(auth, local.userId, start) { keyDevices.record.value sameAsRecord rec }
+                        .getOrElse {
+                            logger.warning("Device session not installed: ${it.javaClass.simpleName}")
+                            return if (keyDevices.record.value sameAsRecord rec) {
+                                DeviceSignInResult.Failed("SESSION_NOT_INSTALLED")
+                            } else {
+                                DeviceSignInResult.Failed("NO_KEY_DEVICE")
+                            }
+                        }
+                    val cap = auth.absoluteExpiresAt?.let { runCatching { Instant.parse(it) }.getOrNull() }
+                    val taken = keyDevices.update(rec) {
+                        it.copy(
+                            device = it.device.copy(keyDeviceId = user.session?.keyDeviceId ?: it.device.keyDeviceId, claimSecret = null),
+                            readyAt = null,
+                            sessionCap = cap,
+                        )
                     }
-                    keyDevices.markSignedIn(local.userId, user.session?.keyDeviceId, onlyForRemoval = purpose == SignInPurpose.FOR_REMOVAL)
-                    keyDevices.recordSessionCap(auth.absoluteExpiresAt?.let { runCatching { Instant.parse(it) }.getOrNull() })
+                    if (taken == Change.Mismatch) {
+                        // The key was forgotten or replaced while the session was being installed:
+                        // that session is not a sign-in of this phone's key any more.
+                        authRepository.logout()
+                        return DeviceSignInResult.Failed("NO_KEY_DEVICE")
+                    }
                     DeviceSignInResult.Success
                 }
             }
         } catch (e: CancellationException) {
             throw e
         } catch (e: ApiException) {
-            // Only the server's own two answers for a removed key forget it (any other status keeps it).
-            if (e.saysKeyDeviceGone()) {
-                keyDevices.forget()
-                return DeviceSignInResult.Revoked
-            }
+            // Only the server's own two answers for a removed key forget it (any other status
+            // keeps it), asked on the key's server about the captured record.
+            val settled = answers.settle(rec, origin, ask, ServerAnswer.of(e))
+            if (settled.forgotten) return DeviceSignInResult.Revoked
+            if (settled.verdict == Verdict.KEY_GONE) return DeviceSignInResult.Failed("NO_KEY_DEVICE")
             when (e.normalizedCode) {
                 "KEY_DEVICE_PENDING" -> {
                     val readyAt = e.fields.readyAt?.let { runCatching { Instant.parse(it) }.getOrNull() }
                     if (readyAt == null) {
                         DeviceSignInResult.Failed("KEY_DEVICE_PENDING")
                     } else {
-                        keyDevices.markPending(local, readyAt)
+                        keyDevices.update(rec) { it.copy(phase = KeyDevicePhase.PENDING, readyAt = readyAt) }
                         DeviceSignInResult.Pending(readyAt)
                     }
                 }
@@ -141,6 +176,8 @@ class DeviceSignIn @Inject constructor(
             DeviceSignInResult.Network
         }
     }
+
+    private infix fun StoredKeyDevice?.sameAsRecord(rec: StoredKeyDevice): Boolean = this != null && this sameAs rec
 
     private fun onUv(r: UvResult): DeviceSignInResult = when (r) {
         UvResult.Cancelled -> DeviceSignInResult.Cancelled

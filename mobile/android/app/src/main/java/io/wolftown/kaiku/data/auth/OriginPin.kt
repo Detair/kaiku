@@ -1,6 +1,7 @@
 package io.wolftown.kaiku.data.auth
 
 import io.wolftown.kaiku.data.keydevice.KeyDeviceRepository
+import io.wolftown.kaiku.data.local.AuthSession
 import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.domain.KaikuPayloads
@@ -19,7 +20,8 @@ class OriginPin @Inject constructor(
 ) {
     fun pinned(): String? =
         keyDevices.pinnedOrigin()?.let(KaikuPayloads::canonicalOrigin)
-            ?: if (authState.isLoggedIn.value) tokenStorage.getServerUrl()?.let(KaikuPayloads::canonicalOrigin) else null
+            // The session as it is at this moment (the derived "is logged in" flow follows it a little later).
+            ?: if (authState.session.value is AuthSession.LoggedIn) tokenStorage.getServerUrl()?.let(KaikuPayloads::canonicalOrigin) else null
 
     /**
      * The origin every device signature must name (C26 challenge check): the

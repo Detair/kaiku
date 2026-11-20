@@ -13,8 +13,11 @@ sealed interface ServerKeyState {
     /** An active key device: device-key sign-in works. */
     data object Active : ServerKeyState
     data class Pending(val readyAt: Instant) : ServerKeyState
-    /** No key device (the claim never landed, was not confirmed yet, or the setup was undone). */
-    data object Gone : ServerKeyState
+    /**
+     * No key device for this account on this phone, in one of the server's two answers for that
+     * ([answer]). What it means for a stored record, [KeyAnswers.settle] decides.
+     */
+    data class Gone(val answer: ServerAnswer) : ServerKeyState
     /** Not known now (offline, server trouble): nothing may be deleted. */
     data object Unknown : ServerKeyState
 }
@@ -40,7 +43,7 @@ class KeyDeviceProbe @Inject constructor(
         throw e
     } catch (e: ApiException) {
         when {
-            e.saysKeyDeviceGone() -> ServerKeyState.Gone
+            e.saysKeyDeviceGone() -> ServerKeyState.Gone(ServerAnswer.of(e))
             e.normalizedCode == "KEY_DEVICE_PENDING" -> e.fields.readyAt?.let { runCatching { Instant.parse(it) }.getOrNull() }
                 ?.let { ServerKeyState.Pending(it) } ?: ServerKeyState.Unknown
             else -> ServerKeyState.Unknown

@@ -641,6 +641,45 @@ changes nothing. A record that cannot be read (a Keystore failure, a damaged val
 not "absent": until it can be read the app restores no stored session, starts no setup, deletes no
 key, and shows one screen with "Try again".
 
+**Which server answers make the phone forget its key.** One table, one function; the request must
+have gone to the record's own server over https, and the answer forgets only a record in the phase it
+can speak about and only if that record is still the stored one. Anything not listed (another status
+with a listed code, an unknown code, an unreadable body) keeps the key.
+
+| Request | Answer | Effect |
+|---|---|---|
+| `POST /auth/device-login/challenge`, `POST /auth/device-login`, `DELETE /api/approval-devices/{id}` | 404 `KEY_DEVICE_UNKNOWN`, 403 `KEY_DEVICE_REVOKED` | an active or pending key device is forgotten; a claim only as described below |
+| `DELETE /api/approval-devices/{id}` | 200 | forgotten (the person removed this phone) |
+| step-up challenge and answer | any | never forgets |
+| `POST /auth/enrollments/claim` | 400 `VALIDATION_ERROR`, 400 `SIGNATURE_INVALID`, 400 `DEVICE_UNSUITABLE`, 404 `APPROVAL_NOT_FOUND`, 410 `APPROVAL_EXPIRED` | the claim is refused for good and nothing was stored for its key: its record is forgotten |
+| `POST /auth/enrollments/claim` | 409 `ENROLLMENT_ALREADY_CLAIMED`, 404 `ENROLLMENT_TOKEN_INVALID`, 409 `APPROVAL_STATE`, 409 `ENROLLMENT_STATE` | undecided (it may be this phone's own claim, stored when its answer was lost): the key stays and the claim is checked |
+| `POST /auth/enrollments/claim` | anything else, no answer within 30 s | the key stays, the record stays `CLAIMING`; "Try again" checks the claim |
+| `POST /auth/enrollments/status` | 200 with `cancelled` / `expired` / `failed`, asked for the record's enrolment | a claim waiting for its code is forgotten |
+| `POST /auth/enrollments/status` | 404 `ENROLLMENT_TOKEN_INVALID` | the enrolment is not known any more: the key device is asked; "no key device" then forgets |
+| `POST /auth/enrollments/status` | anything else | the key stays; the wait goes on |
+
+A claim is sent once per challenge and never again. Checking a claim whose answer is not known asks
+for a new `enroll_pop` challenge for the same link and key: the server gives it only while the
+enrolment is still open, under the enrolment's lock, and voids every earlier challenge, so the old
+claim can no longer be stored (the phone drops that record and starts the same link again); "already
+claimed" leaves the key alone and the key-device probe decides (active or pending → the setup goes
+on); "not valid" plus "no key device" forgets. Without the link (the app was restarted; the code is
+never stored) only the probe is left: "no key device" forgets a `CLAIMING` record once the server's
+own clock (the answer's `Date`) is past the time the record carries (the claim challenge's expiry plus
+10 minutes: a code lives 5); until then the screen says it is still checking and asks again by itself.
+The probe identifies account and install, not the key; there is no public route to ask whether a given
+public key is the one claimed for an enrolment.
+
+The signed claim and the final device-key sign-in are not interrupted by a link, Back or Cancel. The
+claim's answer counts as not known after 30 s; the screen leaves the final sign-in after 180 s
+("took too long"), and a sign-in stopped then finishes ending a session it made but did not install
+without the screen waiting for it.
+
+**Device-key sign-in on Android.** Both requests go to the server of the key record captured at the
+start, whatever server is configured. The session is installed only while that record is still the
+stored one, and the sign-in is reported as done only after the record took it; a key forgotten or
+replaced meanwhile never ends as "signed in".
+
 **The sign-in made only to remove the phone ("Use another account").** A signed-out key phone signs
 in with its key only to remove itself (`key_device.remove` needs a session). That session never
 becomes a usable sign-in: the app stores a mark before the sign-in; the flow's clean-up cannot be

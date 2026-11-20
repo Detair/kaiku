@@ -6,6 +6,7 @@ import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
+import io.ktor.http.HttpStatusCode
 import io.wolftown.kaiku.domain.model.AnswerResult
 import io.wolftown.kaiku.domain.model.ApprovalChallenge
 import io.wolftown.kaiku.domain.model.AuthResponse
@@ -24,7 +25,8 @@ interface ApprovalApi {
     suspend fun release(challengeId: String)
     /** [origin]: the key's own server (absolute URL), never another configured one; null = configured. */
     suspend fun deviceLoginChallenge(userId: String, deviceId: String, origin: String? = null): ApprovalChallenge
-    suspend fun deviceLogin(challengeId: String, signatureB64u: String): AuthResponse
+    /** [origin]: the server the challenge came from (the key's own); null = configured. */
+    suspend fun deviceLogin(challengeId: String, signatureB64u: String, origin: String? = null): AuthResponse
     suspend fun keyDevices(): List<KeyDevice>
     suspend fun removeKeyDevice(id: String): KeyDevice
     suspend fun reportInvalidated(id: String): KeyDevice
@@ -97,16 +99,16 @@ class ApprovalApiImpl @Inject constructor(private val httpClient: HttpClient) : 
             publicRoute()
             setBody(DeviceLoginChallengeRequest(userId, deviceId))
         }
-        r.ensureSuccess("device-login challenge failed")
+        r.ensureExactly(HttpStatusCode.Created, "device-login challenge failed")
         return r.body()
     }
 
-    override suspend fun deviceLogin(challengeId: String, signatureB64u: String): AuthResponse {
-        val r = httpClient.post("/auth/device-login") {
+    override suspend fun deviceLogin(challengeId: String, signatureB64u: String, origin: String?): AuthResponse {
+        val r = httpClient.post(at(origin, "/auth/device-login")) {
             publicRoute()
             setBody(DeviceLoginRequest(challengeId, signatureB64u))
         }
-        r.ensureSuccess("device login failed")
+        r.ensureExactly(HttpStatusCode.OK, "device login failed")
         return r.body()
     }
 
@@ -118,7 +120,7 @@ class ApprovalApiImpl @Inject constructor(private val httpClient: HttpClient) : 
 
     override suspend fun removeKeyDevice(id: String): KeyDevice {
         val r = httpClient.delete("/api/approval-devices/$id")
-        r.ensureSuccess("remove key device failed")
+        r.ensureExactly(HttpStatusCode.OK, "remove key device failed")
         return r.body()
     }
 

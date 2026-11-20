@@ -1,5 +1,11 @@
 package io.wolftown.kaiku.data.auth
 
+import io.wolftown.kaiku.data.keydevice.KeyAnswers
+import io.wolftown.kaiku.testutil.forget
+import io.wolftown.kaiku.approval.keyId
+import kotlinx.coroutines.async
+import io.wolftown.kaiku.testutil.saveClaimed
+import io.wolftown.kaiku.testutil.markActive
 import androidx.fragment.app.FragmentActivity
 import io.mockk.coEvery
 import io.mockk.coVerify
@@ -48,6 +54,9 @@ class DeviceSignInTest {
     private val checks = ChallengeVerifier({ SigFixtures.ORIGIN }, { SigFixtures.EXPIRES_AT - 30 })
     private val start = DeviceSignInStart(0L, SigFixtures.ORIGIN, io.wolftown.kaiku.data.local.AuthSession.LoggedOut)
     private var verifier: FakeUserVerifier? = null
+    /** Runs while the session's profile is read, before it is installed / right after it was. */
+    private var beforeInstall: ((KeyDeviceRepository) -> Unit)? = null
+    private var afterInstall: ((KeyDeviceRepository) -> Unit)? = null
 
     private fun TestScope.setUp(uv: UvResult? = null, loggedIn: Boolean = false): Pair<DeviceSignIn, KeyDeviceRepository> {
         val authState = AuthState(backgroundScope)
@@ -59,17 +68,25 @@ class DeviceSignInTest {
         repo.markActive(SigFixtures.USER_ID, "kd1")
         if (!loggedIn) authState.setLoggedOut()
         coEvery { authRepository.beginDeviceSignIn(SigFixtures.ORIGIN) } returns start
-        coEvery { authRepository.installDeviceSession(any(), any(), any()) } answers {
-            authState.setLoggedIn(SigFixtures.USER_ID)
-            Result.success(
-                User(SigFixtures.USER_ID, "alice", "Alice", session = SessionInfo("77777777-7777-4777-8777-777777777777", "full", keyDeviceId = "kd1")),
-            )
+        coEvery { authRepository.installDeviceSession(any(), any(), any(), any()) } coAnswers {
+            beforeInstall?.invoke(repo)
+            // As the real one: installed only while the key it was made with is still the phone's key.
+            if (!arg<() -> Boolean>(3)()) {
+                Result.failure(IllegalStateException("superseded"))
+            } else {
+                authState.setLoggedIn(SigFixtures.USER_ID)
+                afterInstall?.invoke(repo)
+                Result.success(
+                    User(SigFixtures.USER_ID, "alice", "Alice", session = SessionInfo("77777777-7777-4777-8777-777777777777", "full", keyDeviceId = "kd1")),
+                )
+            }
         }
+        coEvery { authRepository.logout() } answers { authState.setLoggedOut() }
         coEvery { authRepository.hasLiveSession() } returns loggedIn
         val invalidation = io.wolftown.kaiku.data.keydevice.KeyInvalidation(api, repo, authRepository)
         val v = FakeUserVerifier(keyStore, uv).also { verifier = it }
         val signer = DeviceSigner(keyStore, v, checks, invalidation::handle)
-        return DeviceSignIn(api, signer, repo, { SigFixtures.DEVICE_ID }, authRepository) to repo
+        return DeviceSignIn(api, signer, repo, { SigFixtures.DEVICE_ID }, authRepository, KeyAnswers(repo)) to repo
     }
 
     @Test fun `device sign-in installs a full session`() = runTest {
@@ -82,7 +99,7 @@ class DeviceSignInTest {
             listOf("deviceLoginChallenge:${SigFixtures.USER_ID}:${SigFixtures.DEVICE_ID}", "deviceLogin:${SigFixtures.challengeId(3)}"),
             api.calls,
         )
-        coVerify { authRepository.installDeviceSession(api.deviceLoginResult, SigFixtures.USER_ID, start) }
+        coVerify { authRepository.installDeviceSession(api.deviceLoginResult, SigFixtures.USER_ID, start, any()) }
         assertEquals(KeyDeviceState.Active(SigFixtures.USER_ID), repo.current())
         assertEquals(Instant.parse("2027-02-01T12:00:00Z"), repo.sessionCap())
     }
@@ -176,7 +193,7 @@ class DeviceSignInTest {
 
     @Test fun `a session the repository does not install is not marked active`() = runTest {
         val (signIn, repo) = setUp()
-        coEvery { authRepository.installDeviceSession(any(), any(), any()) } returns Result.failure(IllegalStateException("superseded"))
+        coEvery { authRepository.installDeviceSession(any(), any(), any(), any()) } returns Result.failure(IllegalStateException("superseded"))
 
         assertEquals(DeviceSignInResult.Failed("SESSION_NOT_INSTALLED"), signIn.signIn(activity))
 
@@ -200,13 +217,10 @@ class DeviceSignInTest {
         io.mockk.every { activity.getString(io.wolftown.kaiku.R.string.security_uv_sign_in) } returns "sign in"
         io.mockk.every { activity.getString(io.wolftown.kaiku.R.string.security_uv_after_setup) } returns "after setup"
         io.mockk.every { activity.getString(io.wolftown.kaiku.R.string.security_uv_after_setup_detail) } returns "after setup detail"
-        io.mockk.every { activity.getString(io.wolftown.kaiku.R.string.security_uv_for_removal) } returns "for removal"
-        io.mockk.every { activity.getString(io.wolftown.kaiku.R.string.security_uv_for_removal_detail) } returns "for removal detail"
         io.mockk.every { activity.getString(io.wolftown.kaiku.R.string.security_uv_stay_signed_in) } returns "stay"
         val expected = mapOf(
             SignInPurpose.SIGN_IN to ("sign in" to null),
             SignInPurpose.AFTER_SETUP to ("after setup" to "after setup detail"),
-            SignInPurpose.FOR_REMOVAL to ("for removal" to "for removal detail"),
             SignInPurpose.STAY_SIGNED_IN to ("stay" to null),
         )
         for ((purpose, text) in expected) {
@@ -219,15 +233,48 @@ class DeviceSignInTest {
         }
     }
 
-    @Test fun `an ordinary sign-in clears a removal mark, the sign-in for a removal keeps it`() = runTest {
-        val (signIn, repo) = setUp()
-        repo.markRemovalSignIn(true) // left over from a removal that ended without clearing it
-        assertEquals(DeviceSignInResult.Success, signIn.signIn(activity, SignInPurpose.SIGN_IN))
-        assertFalse(repo.removalSignInPending())
+    @Test fun `both requests go to the server of the key, whatever server is configured`() = runTest {
+        val (signIn, _) = setUp()
+        assertEquals(DeviceSignInResult.Success, signIn.signIn(activity))
+        assertEquals(SigFixtures.ORIGIN, api.deviceLoginOrigin)
+        assertEquals(SigFixtures.ORIGIN, api.deviceLoginFinishOrigin)
+    }
 
-        val (forRemoval, repo2) = setUp()
-        repo2.markRemovalSignIn(true) // set by "Use another account" before its sign-in
-        assertEquals(DeviceSignInResult.Success, forRemoval.signIn(activity, SignInPurpose.FOR_REMOVAL))
-        assertTrue(repo2.removalSignInPending())
+    @Test fun `a key forgotten while the sign-in finishes is never reported as signed in`() = runTest {
+        val (signIn, repo) = setUp()
+        beforeInstall = { it.forget() } // e.g. its server said it was removed, on another screen
+        assertEquals(DeviceSignInResult.Failed("NO_KEY_DEVICE"), signIn.signIn(activity))
+        assertEquals(KeyDeviceState.None, repo.current())
+    }
+
+    @Test fun `a key forgotten right after the session was installed ends that session`() = runTest {
+        val (signIn, repo) = setUp()
+        afterInstall = { it.forget() }
+        assertEquals(DeviceSignInResult.Failed("NO_KEY_DEVICE"), signIn.signIn(activity))
+        coVerify(exactly = 1) { authRepository.logout() }
+        assertEquals(KeyDeviceState.None, repo.current())
+    }
+
+    @Test fun `a removal answer about the key the sign-in started with never costs a key made meanwhile`() = runTest {
+        val (signIn, repo) = setUp()
+        api.challengeGate = kotlinx.coroutines.CompletableDeferred()
+        api.failWith = apiError(404, "KEY_DEVICE_UNKNOWN")
+        val job = async { signIn.signIn(activity) }
+        testScheduler.runCurrent()
+        // Meanwhile the phone was set up again: another key, another record.
+        repo.forget()
+        val newKey = keyStore.generate(ByteArray(32), UvPolicy.choose(30, true, true) as UvDecision.Use).keyId
+        repo.saveClaimed(LocalKeyDevice(null, SigFixtures.USER_ID, SigFixtures.ORIGIN, UvClass.PER_USE, "e2", "secret"))
+        api.challengeGate!!.complete(Unit)
+        assertEquals(DeviceSignInResult.Failed("NO_KEY_DEVICE"), job.await())
+        assertEquals("e2", repo.local()!!.enrollmentId)
+        assertEquals(newKey, keyStore.keyId())
+    }
+
+    @Test fun `only an active key signs in`() = runTest {
+        val (signIn, repo) = setUp()
+        repo.saveClaimed(LocalKeyDevice(null, SigFixtures.USER_ID, SigFixtures.ORIGIN, UvClass.PER_USE, "e1", "secret"))
+        assertEquals(DeviceSignInResult.Failed("NO_KEY_DEVICE"), signIn.signIn(activity))
+        assertTrue(api.calls.isEmpty())
     }
 }

@@ -25,8 +25,28 @@ internal suspend fun HttpResponse.ensureSuccess(fallback: String) {
         status,
         body?.message ?: fallback,
         code = body?.error,
-        fields = (body?.fields() ?: ApiErrorFields()).copy(retryAfterSeconds = retryAfter),
+        fields = (body?.fields() ?: ApiErrorFields()).copy(retryAfterSeconds = retryAfter, serverTime = serverTime()),
     )
+}
+
+/** The `Date` header as a time; null when absent or not a date. */
+internal fun HttpResponse.serverTime(): java.time.Instant? = headers[HttpHeaders.Date]?.let {
+    try {
+        java.time.ZonedDateTime.parse(it.trim(), java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME).toInstant()
+    } catch (_: java.time.format.DateTimeParseException) {
+        null
+    }
+}
+
+/**
+ * Like [ensureSuccess], and the success must be exactly [expected]: another 2xx is not the answer
+ * the contract defines, so it throws an [ApiException] without a code (callers keep what they have).
+ */
+internal suspend fun HttpResponse.ensureExactly(expected: io.ktor.http.HttpStatusCode, fallback: String) {
+    ensureSuccess(fallback)
+    if (status != expected) {
+        throw ApiException(status, fallback, fields = ApiErrorFields(serverTime = serverTime()))
+    }
 }
 
 /**

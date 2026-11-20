@@ -109,4 +109,28 @@ class EnrollmentApiTest {
             assertEquals(2, e.fields.triesLeft)
         }
     }
+
+    @Test fun `an ending state under another status than 200 is not a status answer`() = runTest {
+        rec.status = HttpStatusCode.Accepted
+        rec.body = """{"state":"expired"}"""
+        try {
+            api.status("e", "claim-secret", 0)
+            org.junit.Assert.fail("expected ApiException")
+        } catch (e: ApiException) {
+            assertEquals(202, e.status.value)
+            assertNull(e.code)
+        }
+    }
+
+    @Test fun `a claim answered with another success than 201 is not a claim answer`() = runTest {
+        rec.status = HttpStatusCode.OK
+        rec.body = """{"enrollment_id":"e","state":"claimed","code":"123456","claim_secret":"s"}"""
+        try {
+            api.claim(claim)
+            org.junit.Assert.fail("expected ApiException")
+        } catch (e: ApiException) {
+            assertEquals(200, e.status.value)
+            assertNull(e.code)
+        }
+    }
 }

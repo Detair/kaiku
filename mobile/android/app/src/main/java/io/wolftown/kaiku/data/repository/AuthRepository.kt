@@ -514,8 +514,15 @@ class AuthRepository @Inject constructor(
      * session (none, or for the B.4 renewal the same one, which it replaces and
      * ends on the server with its bearer only). A session it does not install is
      * ended on the server, so a late answer never leaves a live session behind.
+     * [stillThisKey] is asked at the moment of installing, under the same lock: the session is
+     * installed only while the key it was made with is still this phone's key.
      */
-    suspend fun installDeviceSession(auth: AuthResponse, expectedUserId: String, start: DeviceSignInStart): Result<User> {
+    suspend fun installDeviceSession(
+        auth: AuthResponse,
+        expectedUserId: String,
+        start: DeviceSignInStart,
+        stillThisKey: () -> Boolean = { true },
+    ): Result<User> {
         val serverUrl = start.serverUrl
         // True once the session is installed or already ended: until then a failure ends it.
         var settled = false
@@ -538,7 +545,8 @@ class AuthRepository @Inject constructor(
             val installed = synchronized(pendingLock) {
                 val unchanged = loginAttempt == start.attempt &&
                     tokenStorage.getServerUrl() == serverUrl &&
-                    authState.session.value == start.session
+                    authState.session.value == start.session &&
+                    stillThisKey()
                 if (unchanged) {
                     if (running != null) replacedAccess = tokenStorage.getAccessToken()
                     tokenStorage.saveTokens(auth.accessToken, auth.refreshToken, auth.expiresIn, user.id)

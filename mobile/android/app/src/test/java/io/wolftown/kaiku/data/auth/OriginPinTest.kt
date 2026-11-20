@@ -1,5 +1,7 @@
 package io.wolftown.kaiku.data.auth
 
+import io.wolftown.kaiku.testutil.saveClaimed
+import io.wolftown.kaiku.testutil.markActive
 import io.mockk.every
 import io.mockk.mockk
 import io.wolftown.kaiku.approval.ChallengeRejected
@@ -79,5 +81,37 @@ class OriginPinTest {
         } catch (e: ChallengeRejected) {
             assertEquals(RejectReason.ORIGIN, e.reason)
         }
+    }
+
+    @Test fun `a setup adopts its server only while the app is tied to none and holds no key record`() = runTest {
+        val authState = AuthState(backgroundScope)
+        val store = InMemoryKeyDeviceStore()
+        val repo = KeyDeviceRepository(store, SoftwareApprovalKeyStore(), authState, backgroundScope)
+        val saved = mutableListOf<String>()
+        val tokens: TokenStorage = mockk(relaxed = true) {
+            every { getServerUrl() } answers { serverUrl }
+            every { saveServerUrl(any()) } answers { saved += firstArg<String>(); serverUrl = firstArg() }
+        }
+        val env = io.wolftown.kaiku.ui.auth.setup.AndroidSetupEnvironment(OriginPin(repo, authState, tokens), authState, tokens, repo)
+
+        // Signed in on a server: tied to it.
+        serverUrl = "https://other.example.org"
+        authState.setLoggedIn(SigFixtures.USER_ID)
+        assertEquals(false, env.adoptServer(SigFixtures.ORIGIN))
+        authState.setLoggedOut()
+        // A key record, whatever its phase.
+        repo.saveClaimed(LocalKeyDevice(null, SigFixtures.USER_ID, "https://other.example.org", UvClass.PER_USE, "e1", "s"))
+        assertEquals(false, env.adoptServer(SigFixtures.ORIGIN))
+        // What it has saved cannot be read: nothing is known, nothing is adopted.
+        store.unreadable = true
+        repo.reload()
+        assertEquals(false, env.adoptServer(SigFixtures.ORIGIN))
+        assertEquals(emptyList<String>(), saved)
+
+        store.unreadable = false
+        store.stored = null
+        repo.reload()
+        assertEquals(true, env.adoptServer(SigFixtures.ORIGIN))
+        assertEquals(listOf(SigFixtures.ORIGIN), saved)
     }
 }
