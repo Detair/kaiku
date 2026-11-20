@@ -205,7 +205,13 @@ internal class CallRig(
             if (voiceChannel.value == dm) voiceChannel.value = null
         }
     }
-    val socket: KaikuWebSocket = mockk(relaxed = true) { every { events } returns this@CallRig.events }
+    /** The authenticated socket of the app's connection (null: no live connection). */
+    val authSocket = MutableStateFlow<Long?>(null)
+
+    val socket: KaikuWebSocket = mockk(relaxed = true) {
+        every { events } returns this@CallRig.events
+        every { authenticatedSocket } returns this@CallRig.authSocket
+    }
     val sessions = if (restored) FakeSessions("me") else FakeSessions(user = null).also { it.stored = "me" }
 
     val controller = CallController(

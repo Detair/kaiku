@@ -230,6 +230,9 @@ class CallController internal constructor(
         /** The ring cap wakes at least this often to compare the real clock (device sleep). */
         const val CAP_CHECK_MS = 5_000L
 
+        /** How often a ring that came by push is looked at with the server while no connection is live. */
+        const val RING_POLL_MS = 5_000L
+
         /** Voice tags of one owner: its number times this, plus the call's voice id. */
         private const val TAGS_PER_OWNER = 1_000_000L
 
@@ -304,7 +307,10 @@ class CallController internal constructor(
         if (startsCall && !ticket.open) return null
         val owner = ownerFor(ticket) ?: return null
         val event = owner.eventOf(input) ?: return null
-        return owner.takeIf { it.offer(event, done) }
+        if (!owner.offer(event, done)) return null
+        // A ring that came by push: until a connection is live, the server is asked how it goes.
+        if (input is CallInput.PushRing && event is CallEvent.Rang) owner.lookWhileRinging(event.channelId, event.callId)
+        return owner
     }
 
     /**
@@ -730,6 +736,40 @@ class CallController internal constructor(
                 } catch (e: Exception) {
                     // Unchanged; the next socket asks again, and the ring cap still applies.
                     logger.info("call resync failed: ${e::class.simpleName}")
+                }
+            }
+        }
+
+        /** The looks at a ring that came by push, per conversation. */
+        private val ringLooks = HashMap<String, Job>()
+
+        /**
+         * While the ring of [callId] that came by push is shown here and no connection is
+         * live (nothing tells this phone that its user answered or declined the call on
+         * another device), the server is asked every [RING_POLL_MS] how the call goes; the
+         * answer is applied like a resync's (answered or declined by this user: the ring
+         * stops). Ends with the ring, when a connection is live (its events and its own
+         * resync take over), and with the session. Without a restored session nothing can
+         * be asked, and nothing is.
+         */
+        fun lookWhileRinging(channelId: String, callId: String) = synchronized(ringLooks) {
+            ringLooks.remove(channelId)?.cancel()
+            ringLooks[channelId] = scope.launch {
+                while (true) {
+                    delay(RING_POLL_MS)
+                    val ringing = (shown as? CallState.Incoming)?.takeIf { it.channelId == channelId && it.callId == callId }
+                        ?: break
+                    if (webSocket.authenticatedSocket.value != null) break
+                    val askedFor: CallState = ringing
+                    val answer = try {
+                        getCall(channelId)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        // No restored session, no network: nothing known; looked at again later.
+                        continue
+                    }
+                    offer(CallEvent.Resynced(channelId, answer, clock.nowMs(), askedFor))
                 }
             }
         }

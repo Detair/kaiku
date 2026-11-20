@@ -830,6 +830,8 @@ class CallControllerTest {
     @Test
     fun `a ring by push only ends 100 s after its wake was received`() = runTest {
         val r = rig()
+        // The server still has the call ringing whenever it is asked.
+        r.serverRings("c-1")
         // The wake was received 30 s ago; its work got here only now.
         r.pushRing("c-1", receivedAgoMs = 30_000)
         assertEquals("ring:c-1:Anna", r.notifier.log.single())
@@ -1005,6 +1007,77 @@ class CallControllerTest {
         advanceTimeBy(CallMachine.RING_CAP_MS + CallController.CAP_CHECK_MS); runCurrent()
         assertEquals(CallState.Idle, r.state)
         assertTrue("claimed without knowing: ${r.notifier.log}", r.notifier.log.none { it.startsWith("missed") })
+    }
+
+    // -- A ring that came by push, while there is no connection --------------------------
+
+    @Test
+    fun `a ring by push that this user answers on another device stops within seconds without a connection`() = runTest {
+        val r = rig()
+        r.serverRings("c-1")
+        r.pushRing("c-1")
+        // The first look: still ringing.
+        advanceTimeBy(CallController.RING_POLL_MS); runCurrent()
+        assertEquals(listOf("get"), r.api.requests)
+        assertTrue(r.state is CallState.Incoming)
+        // Answered on the PC; the next look sees it.
+        r.api.current = CallStateDto(r.dm, "c-1", "active", startedBy = "anna", participants = listOf("anna", "me"))
+        advanceTimeBy(CallController.RING_POLL_MS); runCurrent()
+        assertEquals(CallState.Idle, r.state)
+        assertEquals(listOf("ring:c-1:Anna", "stop:c-1"), r.notifier.log)
+        // Nothing more is asked, and no missed call comes later.
+        advanceTimeBy(2 * CallMachine.RING_CAP_MS); runCurrent()
+        assertEquals(listOf("get", "get"), r.api.requests)
+        assertTrue(r.notifier.log.none { it.startsWith("missed") })
+    }
+
+    @Test
+    fun `a ring by push that this user declines on another device stops within seconds without a connection`() = runTest {
+        val r = rig()
+        r.pushRing("c-1")
+        r.api.current = CallStateDto(r.dm, "c-1", "ringing", startedBy = "anna", declinedBy = listOf("me"))
+        advanceTimeBy(CallController.RING_POLL_MS); runCurrent()
+        assertEquals(CallState.Idle, r.state)
+        assertEquals(listOf("ring:c-1:Anna", "stop:c-1"), r.notifier.log)
+    }
+
+    @Test
+    fun `the looks at a ring by push stop when a connection is live and when the ring ends`() = runTest {
+        val live = rig()
+        live.serverRings("c-1")
+        live.pushRing("c-1")
+        advanceTimeBy(CallController.RING_POLL_MS); runCurrent()
+        live.authSocket.value = 1L
+        advanceTimeBy(5 * CallController.RING_POLL_MS); runCurrent()
+        assertEquals("asked on although the connection is live", listOf("get"), live.api.requests)
+
+        val capped = CallRig(this, "dm-2")
+        capped.serverRings("c-2")
+        capped.pushRing("c-2", channel = "dm-2")
+        advanceTimeBy(CallMachine.RING_CAP_MS + CallController.CAP_CHECK_MS); runCurrent()
+        val asked = capped.api.requests.size
+        assertTrue(capped.state is CallState.Idle)
+        advanceTimeBy(5 * CallController.RING_POLL_MS); runCurrent()
+        assertEquals("asked on after the ring ended", asked, capped.api.requests.size)
+    }
+
+    @Test
+    fun `a ring that came over a live connection is not looked at`() = runTest {
+        val r = rig()
+        r.serverRings("c-1")
+        r.authSocket.value = 1L
+        r.ring("c-1")
+        advanceTimeBy(5 * CallController.RING_POLL_MS); runCurrent()
+        assertEquals(emptyList<String>(), r.api.requests)
+    }
+
+    @Test
+    fun `a ring by push in a process without a restored session sends no look`() = runTest {
+        val r = CallRig(this, restored = false)
+        r.pushRing("c-1")
+        advanceTimeBy(5 * CallController.RING_POLL_MS); runCurrent()
+        assertEquals(emptyList<String>(), r.api.requests)
+        assertTrue(r.state is CallState.Incoming)
     }
 
     // -- The ring notification going away ----------------------------------------------
