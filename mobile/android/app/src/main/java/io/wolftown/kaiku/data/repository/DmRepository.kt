@@ -305,13 +305,19 @@ class DmRepository @Inject constructor(
      */
     suspend fun markAsRead(channelId: String) {
         val session = openSession() ?: return
-        val lastMessageId = _conversations.value.find { it.id == channelId }?.lastMessage?.id
-        _conversations.update { clearUnread(it, channelId) }
-        // The server marks read up to a message id; with no message there is nothing to send.
-        if (lastMessageId != null) {
+        var lastMessageId: String? = null
+        // Read and cleared for that session only, in one step with its check: a session that
+        // ended meanwhile changes nothing of the next account's list.
+        val applied = publishFor(session) {
+            lastMessageId = _conversations.value.find { it.id == channelId }?.lastMessage?.id
+            _conversations.update { clearUnread(it, channelId) }
             // Newer than a list answer whose request is already out.
-            reads[channelId] = ReadMark(liveSeq.incrementAndGet(), lastMessageId)
-            withRequestSession(session.requestSession()) { dmApi.markAsRead(channelId, lastMessageId) }
+            lastMessageId?.let { reads[channelId] = ReadMark(liveSeq.incrementAndGet(), it) }
+        }
+        // The server marks read up to a message id; with no message there is nothing to send.
+        val upTo = lastMessageId
+        if (applied && upTo != null) {
+            withRequestSession(session.requestSession()) { dmApi.markAsRead(channelId, upTo) }
         }
     }
 
