@@ -103,6 +103,9 @@ class KaikuHttpClient @Inject constructor(
             connectionSpecs(listOf(tls13Spec))
             // Explicit (OkHttp's default): every long-poll `wait` stays below it (LongPoll).
             readTimeout(LongPoll.READ_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS)
+            // No redirect is followed, here or below (see createConfiguredClient).
+            followRedirects(false)
+            followSslRedirects(false)
         }
     })
 
@@ -114,6 +117,11 @@ class KaikuHttpClient @Inject constructor(
 
     private fun createConfiguredClient(engine: HttpClientEngine): HttpClient {
         val client = HttpClient(engine) {
+            // An answer is the server's own or none: a redirect is never followed (also not to
+            // another path or host), so a redirected request fails with its redirect status
+            // instead of taking another host's answer as the server's. The server probe works the
+            // same way: the address typed in must be the server itself.
+            followRedirects = false
             install(ContentNegotiation) {
                 json(KaikuJson)
             }

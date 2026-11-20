@@ -87,19 +87,21 @@ class RemovalApiTest {
     }
 
     /**
-     * A server may answer a read with a redirect. Followed to another host, the request carries
-     * neither the removal's bearer nor the app's stored one.
+     * A server may answer a read with a redirect. It is not followed: the redirected read fails,
+     * nothing goes to the other host, and its answer is never taken as the server's.
      */
-    @Test fun `a call redirected to another host carries no bearer there`() = runTest {
+    @Test fun `a call redirected to another host fails and sends nothing there`() = runTest {
         val elsewhere = "https://elsewhere.example.net"
         val rec = ApiRecorder(bearer = "stored-access-token", extraHeaders = mapOf("Location" to "$elsewhere/auth/me"))
         rec.respond = { r ->
             if (r.url.startsWith(origin)) HttpStatusCode.Found to "" else HttpStatusCode.OK to """{"id":"u1","username":"alice","display_name":"Alice"}"""
         }
-        runCatching { RemovalApiImpl(rec.client).me(origin, "removal-access") }
+        val result = runCatching { RemovalApiImpl(rec.client).me(origin, "removal-access") }
+        assertTrue("a redirected read was taken as an answer", result.isFailure)
         assertEquals("Bearer removal-access", rec.requests.first().headers["Authorization"])
-        val there = rec.requests.filter { it.url.startsWith(elsewhere) }
-        assertEquals(1, there.size)
-        assertEquals(null, there.single().headers["Authorization"])
+        assertEquals(0, rec.requests.count { it.url.startsWith(elsewhere) })
+        // The list of key devices too.
+        assertTrue(runCatching { RemovalApiImpl(rec.client).keyDevices(origin, "removal-access") }.isFailure)
+        assertEquals(0, rec.requests.count { it.url.startsWith(elsewhere) })
     }
 }

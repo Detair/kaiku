@@ -126,4 +126,20 @@ class ServerProbeTest {
         verify(exactly = 0) { tokenStorage.saveTokensIfRefreshTokenIs(any(), any(), any(), any(), any()) }
         verify(exactly = 0) { tokenStorage.clearIfRefreshTokenIs(any()) }
     }
+
+    /**
+     * The probe asks the address that was typed in, on the app's own client: a redirect (to another
+     * host, or anywhere) is not followed, and such an address is not taken for a Kaiku server.
+     */
+    @Test
+    fun `a redirect is not followed and is not a Kaiku server`() = runTest {
+        val elsewhere = "https://elsewhere.example.net"
+        val rec = io.wolftown.kaiku.testutil.ApiRecorder(bearer = null, extraHeaders = mapOf("Location" to "$elsewhere/health"))
+        rec.respond = { r ->
+            if (r.url.startsWith("https://k.example")) HttpStatusCode.MovedPermanently to ""
+            else HttpStatusCode.OK to """{"registration_policy":"open"}"""
+        }
+        assertEquals(ProbeResult.NotKaiku, ServerProbe(rec.client).probe("https://k.example"))
+        assertEquals(0, rec.requests.count { it.url.startsWith(elsewhere) })
+    }
 }
