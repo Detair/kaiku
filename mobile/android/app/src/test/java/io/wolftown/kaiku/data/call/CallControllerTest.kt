@@ -480,14 +480,17 @@ class CallControllerTest {
     }
 
     @Test
-    fun `a busy ring is missed after 100 s even without the server's end`() = runTest {
+    fun `a busy ring's 100 s alone claim nothing, and its end decides`() = runTest {
         val r = rig()
         r.ring()
         r.accept()
         runCurrent()
         r.server(ServerEvent.IncomingCall("dm-2", "c-9", "bob", "bob"))
         advanceTimeBy(100_000); runCurrent()
-        assertTrue("missed:c-9" in r.notifier.log)
+        assertTrue("claimed without an end: ${r.notifier.log}", r.notifier.log.none { it.startsWith("missed") })
+        r.pushEnded("c-9", "no_answer", channel = "dm-2")
+        r.server(ServerEvent.CallEnded("dm-2", "c-9", "no_answer"))
+        assertEquals(1, r.notifier.log.count { it == "missed:c-9" })
     }
 
     // -- Order, identity and lanes ---------------------------------------------------
@@ -791,7 +794,7 @@ class CallControllerTest {
     // -- Rings that come by push ------------------------------------------------------
 
     @Test
-    fun `a ring that comes by push while a call is on does not ring and is missed after its 100 s`() = runTest {
+    fun `a ring that comes by push while a call is on does not ring and is missed by its end`() = runTest {
         val r = rig()
         r.ring()
         r.accept()
@@ -802,6 +805,8 @@ class CallControllerTest {
         assertTrue("rang over the call that is on: ${r.notifier.log}", r.notifier.log.none { it.startsWith("ring:c-7") })
         assertTrue(r.state is CallState.Connected)
         advanceTimeBy(CallMachine.RING_CAP_MS + CallController.CAP_CHECK_MS); runCurrent()
+        assertTrue(r.notifier.log.none { it.startsWith("missed") })
+        r.pushEnded("c-7", "cancelled", channel = "dm-2")
         assertTrue("missed:c-7" in r.notifier.log)
     }
 
@@ -900,6 +905,20 @@ class CallControllerTest {
         val later = CallRig(this, dm = "dm-3", restored = false)
         later.pushEnded("c-3", "no_answer", channel = "dm-3")
         assertEquals(listOf("stop:c-3", "missed:c-3"), later.notifier.log)
+    }
+
+    @Test
+    fun `a call never shown here that nobody answered is missed once, whichever of its ends comes first`() = runTest {
+        // The ring push was lost; the socket's end and the end push come, in either order.
+        val socketFirst = rig()
+        socketFirst.server(ServerEvent.CallEnded("dm-2", "c-9", "no_answer"))
+        socketFirst.pushEnded("c-9", "no_answer", channel = "dm-2")
+        assertEquals(1, socketFirst.notifier.log.count { it == "missed:c-9" })
+
+        val pushFirst = rig()
+        pushFirst.pushEnded("c-9", "no_answer", channel = "dm-2")
+        pushFirst.server(ServerEvent.CallEnded("dm-2", "c-9", "no_answer"))
+        assertEquals(1, pushFirst.notifier.log.count { it == "missed:c-9" })
     }
 
     @Test

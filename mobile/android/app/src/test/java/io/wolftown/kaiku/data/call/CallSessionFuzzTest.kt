@@ -246,6 +246,8 @@ class CallSessionFuzzTest {
             runCurrent()
             assertTrue("$way: rang over the call that is on", rig.notifier.log.drop(before).isEmpty())
             advanceTimeBy(CallMachine.RING_CAP_MS + CallController.CAP_CHECK_MS); runCurrent()
+            // Its 100 s claim nothing; its end (by push, later) decides.
+            rig.pushEnded("c-1", "no_answer", channel = dm)
             (rig.controller.state.value is CallState.Connected) to rig.notifier.log.drop(before)
         }
         assertEquals(true to listOf("missed:c-1"), outcomes.getValue(Way.Socket))

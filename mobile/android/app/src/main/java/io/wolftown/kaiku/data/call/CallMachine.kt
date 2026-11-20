@@ -348,6 +348,12 @@ data class CallModel(
      * declining it anywhere.
      */
     val openRings: List<OpenRing> = emptyList(),
+    /**
+     * Calls whose end this phone knows from the socket, without having been rung for them as
+     * far as it knows: whether they were missed here is not decided yet. Their end push (it
+     * goes only to those the call rang) decides, once.
+     */
+    val undecided: List<String> = emptyList(),
 )
 
 /** One transition: the next model and what to do. */
@@ -414,9 +420,10 @@ object CallMachine {
         var voiceSeq = model.voiceSeq
         var endedWhy = model.endedWhy
         var openRings = model.openRings
+        var undecided = model.undecided
 
         fun to(next: CallState): CallStep =
-            CallStep(CallModel(next, ended, busy, left, voiceSeq, endedWhy, openRings), effects.toList())
+            CallStep(CallModel(next, ended, busy, left, voiceSeq, endedWhy, openRings, undecided), effects.toList())
         fun same(): CallStep = to(state)
 
         fun rememberEnded(channelId: String, callId: String?) {
@@ -823,7 +830,10 @@ object CallMachine {
             // user elsewhere, or someone else in a group call) it is no unanswered call any more.
             if (e.userId == me || e.callId.isNotEmpty()) dropBusy(e.channelId, e.callId)
             // Answered on another device after its ring had stopped here: not missed.
-            if (e.userId == me) closeOpenRing(e.channelId, e.callId)
+            if (e.userId == me) {
+                closeOpenRing(e.channelId, e.callId)
+                handledElsewhere(e.channelId, e.callId)
+            }
             return same()
         }
 
@@ -860,6 +870,7 @@ object CallMachine {
                 dropBusy(e.channelId, e.callId)
                 // Declined on another device after its ring had stopped here: not missed.
                 closeOpenRing(e.channelId, e.callId)
+                handledElsewhere(e.channelId, e.callId)
             }
             return same()
         }
@@ -871,7 +882,9 @@ object CallMachine {
 
         fun serverEnded(e: CallEvent.ServerEnded): CallStep {
             val reason = serverReason(e.reason)
-            val knownEnded = isEnded(e.channelId, e.callId)
+            // Known as over here, with how it ended for this user decided (an end known only
+            // from the socket for a call not rung here as far as this phone knows is not).
+            val knownEnded = isEnded(e.channelId, e.callId) && e.callId !in undecided
             // Whatever is shown: that call is over and never rings again. How it ended is kept
             // for a start of this user whose answer (with that id) is still on its way.
             rememberEnded(e.channelId, e.callId)
@@ -881,6 +894,7 @@ object CallMachine {
             }
             // A ring that had stopped here before anything was known: this end says how the
             // call ended. (An open ring is one this phone knows no answer or decline of.)
+            val wasOpen = openRing(e.channelId, e.callId) != null
             openRing(e.channelId, e.callId)?.let { ring ->
                 openRings = openRings - ring
                 effects += if (missedOnEnd(reason, handledHere = false)) {
@@ -912,10 +926,15 @@ object CallMachine {
                 // up from an earlier process): the wake says it rang here. A call known here as
                 // over was decided already (its answer or decline here or elsewhere was seen).
                 if (e.rungHere && !wasBusy && !knownEnded && e.callId.isNotEmpty()) {
+                    undecided = undecided - e.callId
                     effects += CallEffect.StopRing(e.channelId, e.callId)
                     if (missedOnEnd(reason, handledHere = false)) {
                         effects += CallEffect.Missed(e.channelId, e.callId, e.callerId.orEmpty(), e.callerName)
                     }
+                } else if (!e.rungHere && !wasBusy && !wasOpen && !knownEnded && e.callId.isNotEmpty()) {
+                    // From the socket, for a call this phone does not know it was rung for: its
+                    // end push (sent only to those it rang) decides.
+                    undecided = (undecided - e.callId + e.callId).takeLast(MAX_ENDED)
                 }
                 return same()
             }
@@ -1069,12 +1088,29 @@ object CallMachine {
             return same()
         }
 
+        /**
+         * The 100 s of a ring that did not ring here because a call was on are over. That says
+         * nothing about how the call ended: the ring is kept open, and the call's end decides by
+         * its reason ([missedOnEnd]), as for any ring that stopped here.
+         */
         fun busyCap(e: CallEvent.BusyCap): CallStep {
             val ring = busy[e.channelId]?.takeIf { it.callId == e.callId } ?: return same()
             busy = busy - e.channelId
+            openRings = (openRings.filterNot { it.channelId == e.channelId && it.callId == e.callId } +
+                OpenRing(e.channelId, ring.callId, ring.callerId, ring.callerName, shown = false)).takeLast(MAX_ENDED)
             rememberEnded(e.channelId, e.callId)
-            effects += CallEffect.Missed(e.channelId, ring.callId, ring.callerId, ring.callerName)
             return same()
+        }
+
+        /**
+         * This user answered or declined, on another device, a call this owner does not show:
+         * remembered, so its end shows no missed call here.
+         */
+        fun handledElsewhere(channelId: String, callId: String) {
+            if (callId.isEmpty()) return
+            if (state.channelId == channelId && (shownCallId() == null || shownCallId() == callId)) return
+            undecided = undecided - callId
+            rememberEnded(channelId, callId)
         }
 
         fun resynced(e: CallEvent.Resynced): CallStep {

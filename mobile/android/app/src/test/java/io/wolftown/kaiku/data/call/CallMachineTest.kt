@@ -652,13 +652,14 @@ class CallMachineTest {
     }
 
     @Test
-    fun `a busy ring gets its own cap and is then missed`() {
+    fun `a busy ring gets its own cap, after which its end decides`() {
         connectedAsCallee()
         send(Rang("dm-2", "c-7", "bob", "Bob", 4L))
         assertEquals(listOf(CallEffect.ArmBusyCap("dm-2", "c-7", 4L)), effects)
         send(CallEvent.BusyCap("dm-2", "c-7"))
-        assertEquals(listOf(Missed("dm-2", "c-7", "bob", "Bob")), effects)
+        assertEquals(emptyList<CallEffect>(), effects)
         assertTrue(model.busy.isEmpty())
+        assertEquals(1, model.openRings.size)
         // A cap of a ring that already ended does nothing.
         send(CallEvent.BusyCap("dm-2", "c-7"))
         assertTrue(effects.isEmpty())
@@ -1105,11 +1106,12 @@ class CallMachineTest {
     }
 
     @Test
-    fun `a busy ring nobody answers is still missed after its 100 s`() {
+    fun `a busy ring nobody answers is still missed when its end comes after its 100 s`() {
         connectedAsCallee()
         send(Rang("dm-2", "c-7", "bob", "Bob", 0L))
         send(ParticipantJoined("dm-2", "c-8", "carl", 1L)) // another call's event
         send(CallEvent.BusyCap("dm-2", "c-7"))
+        send(ServerEnded("dm-2", "c-7", "no_answer", rungHere = true, callerId = "bob"))
         assertEquals(listOf(Missed("dm-2", "c-7", "bob", "Bob")), effects)
     }
 
@@ -1279,5 +1281,82 @@ class CallMachineTest {
         model = CallModel()
         send(ServerEnded(dm, "c-1", "last_left", rungHere = true, callerId = "anna"))
         assertEquals(listOf(StopRing(dm, "c-1")), effects)
+    }
+
+    // -- "Missed" is decided once per call, by its end -----------------------------------------
+
+    /** Every missed call posted over the events, with their effects. */
+    private fun missedOver(vararg events: CallEvent): List<CallEffect> =
+        events.flatMap { send(it); effects }.filterIsInstance<Missed>()
+
+    @Test
+    fun `a call never shown here that nobody answered is missed once, socket end first`() {
+        val missed = missedOver(
+            ServerEnded("dm-2", "c-9", "no_answer"),
+            ServerEnded("dm-2", "c-9", "no_answer", rungHere = true, callerId = "anna", callerName = "Anna"),
+        )
+        assertEquals(listOf(Missed("dm-2", "c-9", "anna", "Anna")), missed)
+    }
+
+    @Test
+    fun `a call never shown here that nobody answered is missed once, end push first`() {
+        val missed = missedOver(
+            ServerEnded("dm-2", "c-9", "no_answer", rungHere = true, callerId = "anna", callerName = "Anna"),
+            ServerEnded("dm-2", "c-9", "no_answer"),
+        )
+        assertEquals(listOf(Missed("dm-2", "c-9", "anna", "Anna")), missed)
+    }
+
+    @Test
+    fun `a busy ring this user declined on another device is no missed call when its end push comes`() {
+        outgoingWithId("c-0")
+        send(Rang("dm-2", "c-7", "bob", "Bob", 0L))
+        val missed = missedOver(
+            Declined("dm-2", "c-7", me),
+            ServerEnded("dm-2", "c-7", "no_answer", rungHere = true, callerId = "bob"),
+        )
+        assertEquals(emptyList<CallEffect>(), missed)
+    }
+
+    @Test
+    fun `a call never shown here that this user declined or answered elsewhere is no missed call when its end push comes`() {
+        for (seen in listOf(Declined("dm-2", "c-9", me), ParticipantJoined("dm-2", "c-9", me, 1L))) {
+            model = CallModel()
+            val missed = missedOver(seen, ServerEnded("dm-2", "c-9", "no_answer", rungHere = true, callerId = "anna"))
+            assertEquals("$seen", emptyList<CallEffect>(), missed)
+        }
+    }
+
+    @Test
+    fun `the busy cap alone claims no missed call, and the end decides once`() {
+        connectedAsCallee()
+        send(Rang("dm-2", "c-7", "bob", "Bob", 0L))
+        send(CallEvent.BusyCap("dm-2", "c-7"))
+        assertTrue("the busy cap claimed a missed call: $effects", effects.none { it is Missed })
+        val missed = missedOver(
+            ServerEnded("dm-2", "c-7", "no_answer", rungHere = true, callerId = "bob"),
+            ServerEnded("dm-2", "c-7", "no_answer"),
+        )
+        assertEquals(listOf(Missed("dm-2", "c-7", "bob", "Bob")), missed)
+    }
+
+    @Test
+    fun `a busy ring whose end says nobody answered is missed once, before its cap`() {
+        connectedAsCallee()
+        send(Rang("dm-2", "c-7", "bob", "Bob", 0L))
+        val missed = missedOver(
+            ServerEnded("dm-2", "c-7", "no_answer"),
+            ServerEnded("dm-2", "c-7", "no_answer", rungHere = true, callerId = "bob"),
+            CallEvent.BusyCap("dm-2", "c-7"),
+        )
+        assertEquals(listOf(Missed("dm-2", "c-7", "bob", "Bob")), missed)
+    }
+
+    @Test
+    fun `a busy ring whose end says somebody answered is no missed call`() {
+        connectedAsCallee()
+        send(Rang("dm-2", "c-7", "bob", "Bob", 0L))
+        send(CallEvent.BusyCap("dm-2", "c-7"))
+        assertEquals(emptyList<CallEffect>(), missedOver(ServerEnded("dm-2", "c-7", "last_left", rungHere = true, callerId = "bob")))
     }
 }
