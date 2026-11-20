@@ -1834,18 +1834,12 @@ impl SocketAccess {
                 break;
             };
             let attempt = self.revalidate(&gate, Some(permit)).await;
-            drop(gate);
-            #[cfg(test)]
-            self.seam().await;
-            match self.admin_answer(asked) {
-                Some((at, true)) => return self.reply_admin(at, AdminSubscription::Allowed),
-                Some((at, false)) => return self.reply_admin(at, AdminSubscription::Refused),
-                None => {}
-            }
-            // Failed or in backoff: undecided, unless the checks have been
-            // failing for so long that the socket ends (the same rule as
-            // for the socket's own revalidation).
+            // Failed or in backoff: undecided before anything else is
+            // looked at, unless the checks have been failing for so long
+            // that the socket ends (the same rule as for the socket's own
+            // revalidation).
             if attempt.is_err() {
+                drop(gate);
                 if self
                     .failing_for()
                     .is_some_and(|failing| failing >= FAILURE_CLOSE_AFTER)
@@ -1853,6 +1847,18 @@ impl SocketAccess {
                     return AdminSubscription::Failed;
                 }
                 break;
+            }
+            // The answer of this attempt, taken while the gate still keeps
+            // other revalidations out: its own read, or one planned after
+            // the request that left it nothing to read (the same rows).
+            let answer = self.admin_answer(asked);
+            drop(gate);
+            #[cfg(test)]
+            self.seam().await;
+            match answer {
+                Some((at, true)) => return self.reply_admin(at, AdminSubscription::Allowed),
+                Some((at, false)) => return self.reply_admin(at, AdminSubscription::Refused),
+                None => {}
             }
         }
         self.attention.notify_one();
@@ -3917,6 +3923,48 @@ mod tests {
             assert!(access.failing_for().is_none());
             tokio::time::advance(ADMIN_SUBSCRIBE_COOLDOWN).await;
         }
+    }
+
+    /// A subscribe whose own attempt failed, or met the backoff, answers
+    /// "not decided yet" before it looks at anything else: also when a
+    /// frame's read, planned after the request, settled a refusal
+    /// meanwhile. The reply is the same with and without that frame.
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_attempt_answers_undecided_whatever_frames_settled() {
+        let mut answers = Vec::new();
+        for frame in [false, true] {
+            let u = Uuid::new_v4();
+            let access = admin_socket(u, false).await;
+            cooled_down().await;
+            registry().bump_user(u);
+            install(&access, &[FAILS; 4], false, None);
+            // The socket's own revalidation is under way when the request
+            // arrives.
+            let gate = access.refresh_gate.lock().await;
+            let subscribe = access.subscribe_admin();
+            tokio::pin!(subscribe);
+            assert!(futures::poll!(&mut subscribe).is_pending());
+            if frame {
+                // A frame's read, planned after the request, says "no"...
+                assert!(access.admin_frame_taken());
+                let Planned::Run(plan) = access.plan() else {
+                    panic!("nothing planned");
+                };
+                access.apply(&plan, admin_found(false));
+            }
+            // ...the epoch moves again, and the next read fails.
+            registry().bump_user(u);
+            if frame {
+                assert!(access.admin_frame_taken());
+                let Planned::Run(plan) = access.plan() else {
+                    panic!("nothing planned");
+                };
+                access.fail(&plan);
+            }
+            drop(gate);
+            answers.push(subscribe.await);
+        }
+        assert_eq!(answers, [AdminSubscription::Undecided; 2]);
     }
 
     /// A read that began before the admin frame was taken does not decide
