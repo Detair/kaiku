@@ -61,6 +61,9 @@ class VoiceSignallingTest {
         var prepare: suspend () -> Unit = {}
         var beforeJoin: (Long) -> Unit = {}
 
+        /** How long the first join's set-up takes after its voice_join went out. */
+        var joinTakesMs = 0L
+
         /** Runs right after an attempt's voice_join went out, before anything else can look. */
         var afterAttemptJoin: (Long) -> Unit = {}
 
@@ -76,12 +79,15 @@ class VoiceSignallingTest {
 
             override suspend fun prepare() = this@Harness.prepare()
 
-            override suspend fun join(socket: Long): Boolean {
+            override suspend fun join(socket: Long, permit: VoiceSignalling.JoinPermit): Boolean {
                 beforeJoin(socket)
                 // Like the real send: only on the socket that is authenticated now.
                 if (this@Harness.socket.value != socket || socket in refusing) return false
+                permit.check()
                 joinSockets += socket
                 this@Harness.joinSocket.value = socket
+                // The publisher's set-up follows the send.
+                if (joinTakesMs > 0) kotlinx.coroutines.delay(joinTakesMs)
                 return true
             }
 
@@ -95,7 +101,7 @@ class VoiceSignallingTest {
                 connectionFailed.first { it }
             }
 
-            override suspend fun rejoin(socket: Long): Attempt {
+            override suspend fun rejoin(socket: Long, permit: VoiceSignalling.JoinPermit): Attempt {
                 connectionFailed.value = false
                 attemptTimes += scope.currentTime
                 attemptSockets += socket
@@ -103,6 +109,7 @@ class VoiceSignallingTest {
                 // An attempt that throws does so before its voice_join; one that
                 // found its socket gone sent none. Every other one sent it.
                 if (result !is Throwable && result != Attempt.SocketGone && result != Attempt.Refused) {
+                    permit.check()
                     this@Harness.joinSocket.value = socket
                     afterAttemptJoin(socket)
                 }
@@ -404,13 +411,13 @@ class VoiceSignallingTest {
         val steps = object : VoiceSignalling.Steps {
             override val joinSocket = MutableStateFlow<Long?>(null)
             override suspend fun prepare() {}
-            override suspend fun join(socket: Long) = true.also { joinSocket.value = socket }
+            override suspend fun join(socket: Long, permit: VoiceSignalling.JoinPermit) = true.also { joinSocket.value = socket }
             override suspend fun awaitConnected() {}
 
             override suspend fun proveCarried(socket: Long) = VoiceSignalling.Proof.Carried
 
             override suspend fun awaitConnectionFailed() = awaitCancellation()
-            override suspend fun rejoin(socket: Long): Attempt {
+            override suspend fun rejoin(socket: Long, permit: VoiceSignalling.JoinPermit): Attempt {
                 joinSocket.value = socket
                 starts += currentTime
                 if (++calls == 1) {
@@ -919,13 +926,13 @@ class VoiceSignallingTest {
         val steps = object : VoiceSignalling.Steps {
             override val joinSocket = MutableStateFlow<Long?>(null)
             override suspend fun prepare() {}
-            override suspend fun join(socket: Long) = true.also { joinSocket.value = socket }
+            override suspend fun join(socket: Long, permit: VoiceSignalling.JoinPermit) = true.also { joinSocket.value = socket }
             override suspend fun awaitConnected() {}
 
             override suspend fun proveCarried(socket: Long) = VoiceSignalling.Proof.Carried
 
             override suspend fun awaitConnectionFailed() = awaitCancellation()
-            override suspend fun rejoin(socket: Long): Attempt {
+            override suspend fun rejoin(socket: Long, permit: VoiceSignalling.JoinPermit): Attempt {
                 joinSocket.value = socket
                 try {
                     awaitCancellation()
@@ -952,5 +959,34 @@ class VoiceSignallingTest {
         assertEquals(2_500L, cleanedAt)
         assertEquals(2_500L, endedAt)
         assertEquals(VoiceLinkState.Stable, signalling.state.value)
+    }
+
+    // -- The first join's 15 s start at the send ----------------------------------------
+
+    @Test
+    fun `the first join's 15 s start when its voice_join goes out and include the publisher's set-up`() = runTest {
+        val h = Harness(this, socket = 1L)
+        h.firstConnected.value = false // the publisher never connects
+        h.joinTakesMs = 8_000 // its set-up (the ICE configuration) takes 8 s
+        h.start()
+        runCurrent()
+        assertEquals(listOf(1L), h.joinSockets)
+
+        advanceTimeBy(14_999); runCurrent()
+        assertTrue(h.giveUps.isEmpty())
+        advanceTimeBy(1); runCurrent()
+        assertEquals("15 s after the voice_join went out", listOf(VoiceSignalling.GiveUp.NeverConnected), h.giveUps)
+    }
+
+    @Test
+    fun `a first join whose set-up never finishes is given up 15 s after its voice_join`() = runTest {
+        val h = Harness(this, socket = 1L)
+        h.firstConnected.value = false
+        h.joinTakesMs = 600_000
+        h.start()
+        runCurrent()
+
+        advanceTimeBy(15_000); runCurrent()
+        assertEquals(listOf(VoiceSignalling.GiveUp.NeverConnected), h.giveUps)
     }
 }

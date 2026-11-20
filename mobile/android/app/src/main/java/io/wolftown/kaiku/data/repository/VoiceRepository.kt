@@ -407,9 +407,20 @@ class VoiceRepository @Inject constructor(
      * the signed-in session it belongs to is over or [socket] is not the
      * authenticated socket any more. All in one step under [sessionLock]: no
      * session end and no mute toggle in between.
+     *
+     * This is the point of no return, so everything that decides whether a
+     * `voice_join` may still go out is looked at here, after whatever the
+     * step had to wait for: the session's identity, and [permit] (the 60 s;
+     * it throws when they are over, and nothing is sent).
      */
-    private fun sendJoinOn(session: Session, socket: Long, job: Job?): Boolean = synchronized(sessionLock) {
+    private fun sendJoinOn(
+        session: Session,
+        socket: Long,
+        job: Job?,
+        permit: VoiceSignalling.JoinPermit,
+    ): Boolean = synchronized(sessionLock) {
         if (live !== session || job?.isActive == false || !session.ticket.alive) return false
+        permit.check()
         if (!webSocket.sendOn(socket, ClientEvent.VoiceJoin(session.channelId))) return false
         session.joinSocket.value = socket
         // The new server-side peer starts unmuted; the local track stays disabled.
@@ -1023,9 +1034,9 @@ class VoiceRepository @Inject constructor(
          * the join on the same socket) and audio focus. The microphone is
          * captured from here on; the call service is already running.
          */
-        override suspend fun join(socket: Long): Boolean {
+        override suspend fun join(socket: Long, permit: VoiceSignalling.JoinPermit): Boolean {
             val job = currentCoroutineContext()[Job]
-            if (!sendJoinOn(session, socket, job)) {
+            if (!sendJoinOn(session, socket, job, permit)) {
                 if (!isLive(session)) throw SessionEnded()
                 return false
             }
@@ -1094,23 +1105,29 @@ class VoiceRepository @Inject constructor(
         }
 
         /**
-         * Proof of carried after a gap: the publisher, read from the
-         * connection, is connected and has not failed, and a fresh inbound
-         * frame arrives on [socket] after a ping, within 5 s.
+         * Proof of carried after a gap: a fresh inbound frame arrives on
+         * [socket] after a ping, within 5 s, and the publisher, read from
+         * the connection, is connected and has not failed.
          */
         override suspend fun proveCarried(socket: Long): VoiceSignalling.Proof {
-            val generation = webRtcManager.currentGeneration
-            if (failedGeneration.value == generation) return VoiceSignalling.Proof.MediaDown
-            // Outside every lock: the read waits for WebRTC's thread.
-            if (!webRtcManager.publisherConnectedNow()) return VoiceSignalling.Proof.MediaDown
+            // The socket first, whatever the media says: when both died, the dead socket is
+            // found (and replaced) and the time without it counts.
             val before = webSocket.inbound.value.takeIf { it.socket == socket }?.frames ?: 0L
             if (!webSocket.sendOn(socket, ClientEvent.Ping)) return VoiceSignalling.Proof.SocketDead
             val fresh = withTimeoutOrNull(VoiceSignalling.PROOF_TIMEOUT_MS) {
                 webSocket.inbound.first { it.socket == socket && it.frames > before }
             } != null
-            // A socket that does not answer is dead: a new one now, not after the heartbeat watchdog.
-            if (!fresh && webSocket.authenticatedSocket.value == socket) deadSocket.report()
-            return if (fresh) VoiceSignalling.Proof.Carried else VoiceSignalling.Proof.SocketDead
+            if (!fresh) {
+                // A socket that does not answer is dead: a new one now, not after the heartbeat watchdog.
+                if (webSocket.authenticatedSocket.value == socket) deadSocket.report()
+                return VoiceSignalling.Proof.SocketDead
+            }
+            // The socket answers. The media: read from the connection, outside every lock
+            // (the read waits for WebRTC's thread).
+            val generation = webRtcManager.currentGeneration
+            if (failedGeneration.value == generation) return VoiceSignalling.Proof.MediaDown
+            if (!webRtcManager.publisherConnectedNow()) return VoiceSignalling.Proof.MediaDown
+            return VoiceSignalling.Proof.Carried
         }
 
         /** The connections of the session as they are now reported ICE `FAILED`. */
@@ -1130,7 +1147,7 @@ class VoiceRepository @Inject constructor(
          * loss, session end) closes the connections it created before it
          * returns.
          */
-        override suspend fun rejoin(socket: Long): VoiceSignalling.Attempt {
+        override suspend fun rejoin(socket: Long, permit: VoiceSignalling.JoinPermit): VoiceSignalling.Attempt {
             val job = currentCoroutineContext()[Job]
             val guard = guardFor(session, job)
             if (!isLive(session)) throw SessionEnded()
@@ -1148,7 +1165,8 @@ class VoiceRepository @Inject constructor(
             var connected = false
             try {
                 if (!webRtcManager.createSubscriberPeerConnection(guard)) return VoiceSignalling.Attempt.Failed
-                if (!sendJoinOn(session, socket, job)) return VoiceSignalling.Attempt.SocketGone
+                // After the call's check with the server and the ICE configuration: the send decides.
+                if (!sendJoinOn(session, socket, job, permit)) return VoiceSignalling.Attempt.SocketGone
                 if (!webRtcManager.createPublisherOffer(guard)) return VoiceSignalling.Attempt.Failed
                 // Already connected before we started waiting?
                 webRtcManager.publisherLink.value.let { link ->

@@ -79,7 +79,7 @@ sealed interface VoiceLinkState {
  * | Mode | Leaves it when | Next |
  * |---|---|---|
  * | first join (held while no socket is authenticated) | the `voice_join` went out on the authenticated socket and its publisher connected | up |
- * | | the publisher did not connect within 15 s | give up ("couldn't connect") |
+ * | | the publisher did not connect within 15 s of the `voice_join` going out (its set-up included) | give up ("couldn't connect") |
  * | | the socket that carried the join is lost before the publisher connected | recovering, 0 attempts used |
  * | up on socket S | the authenticated socket is not S, or the connections failed | recovering, 0 attempts used |
  * | recovering, n used: delay (1 s, 3 s, 9 s), then one attempt of at most 15 s | attempt connected | up on that socket |
@@ -96,6 +96,13 @@ sealed interface VoiceLinkState {
  * Once the join is carried, an attempt that does not connect is a matter of
  * its 15 s and of the three attempts; if that socket is lost again, new 60 s
  * start from that loss.
+ *
+ * **The point of no return** is the send of `voice_join` itself. Whatever a
+ * step has to wait for before it (a call's rejoin check with the server,
+ * the ICE configuration) can take long, and the device can sleep through
+ * it. So the 60 s are looked at once more at the very moment the frame is
+ * about to go out ([JoinPermit]), in one step with the send: a session that
+ * has not been carried for 60 s by then is given up, and nothing is sent.
  *
  * ICE `DISCONNECTED` is an indication only ([VoiceLinkState.Interrupted]).
  *
@@ -185,6 +192,19 @@ class VoiceSignalling(
         Refused,
     }
 
+    /**
+     * Asked by a step at the very moment its `voice_join` is about to go
+     * out, in one step with the send and after everything it had to wait for.
+     */
+    fun interface JoinPermit {
+        /**
+         * Returns if the `voice_join` may go out now. Throws (a
+         * cancellation the machine understands; pass it on) if the session
+         * has not been carried for the 60 s by this instant: nothing may be sent.
+         */
+        fun check()
+    }
+
     /** The steps of one session. Each is called by the owner only, one at a time. */
     interface Steps {
         /**
@@ -199,12 +219,13 @@ class VoiceSignalling(
         suspend fun prepare()
 
         /**
-         * Sends the first `voice_join` on [socket] and completes the join.
-         * Returns false, having sent nothing, if [socket] is not the
-         * authenticated socket any more or refused the frame. Throws if the
-         * join fails.
+         * Sends the first `voice_join` on [socket], as its first act and
+         * after [permit] allowed it, and completes the join (the publisher's
+         * set-up). Returns false, having sent nothing, if [socket] is not
+         * the authenticated socket any more or refused the frame. Throws if
+         * the join fails.
          */
-        suspend fun join(socket: Long): Boolean
+        suspend fun join(socket: Long, permit: JoinPermit): Boolean
 
         /** Returns once the publisher of the session's current connections is connected. */
         suspend fun awaitConnected()
@@ -213,18 +234,21 @@ class VoiceSignalling(
         suspend fun awaitConnectionFailed()
 
         /**
-         * Proof of carried, after a gap: a fresh inbound frame arrives on
-         * [socket] after a ping, and the publisher read from the connection
-         * is live. Bounds itself to [PROOF_TIMEOUT_MS].
+         * Proof of carried, after a gap. The socket first, whatever the
+         * media says: a fresh inbound frame arrives on [socket] after a
+         * ping, or it is [Proof.SocketDead] (and reported). Only then the
+         * publisher, read from the connection: [Proof.MediaDown] if it is
+         * not live. Bounds itself to [PROOF_TIMEOUT_MS].
          */
         suspend fun proveCarried(socket: Long): Proof
 
         /**
-         * One rejoin attempt on [socket]: new connections, `voice_join`, wait
-         * for the publisher. Whatever ends it short of [Attempt.Connected]
-         * (also its cancellation) closes the connections it created.
+         * One rejoin attempt on [socket]: new connections, `voice_join`
+         * (after [permit] allowed it, at the send), wait for the publisher.
+         * Whatever ends it short of [Attempt.Connected] (also its
+         * cancellation) closes the connections it created.
          */
-        suspend fun rejoin(socket: Long): Attempt
+        suspend fun rejoin(socket: Long, permit: JoinPermit): Attempt
 
         /** Ends the call locally. Called once, when the machine is over, while [state] still says "reconnecting" or "connecting". */
         suspend fun giveUp(why: GiveUp)
@@ -305,7 +329,7 @@ class VoiceSignalling(
         return since(start) >= joinDeadlineMs
     }
 
-    /** Right before a `voice_join` goes out: over the 60 s, give up instead. */
+    /** Before a `voice_join` goes out, and again at its send ([JoinPermit]): over the 60 s, give up instead. */
     private fun checkDeadline(session: Session, steps: Steps) {
         if (deadlineOver(session, steps)) {
             session.deadlinePassed.set(true)
@@ -387,34 +411,46 @@ class VoiceSignalling(
     /** Returns when the session is given up; otherwise runs until cancelled. */
     private suspend fun signal(session: Session, steps: Steps): End {
         steps.prepare()
+        // Asked again by the step at the very moment its voice_join is about to go out.
+        val permit = JoinPermit { checkDeadline(session, steps) }
 
         // First join: held until a socket is authenticated, then sent on
         // exactly that socket. A refusal goes around on the state as it is now.
+        //
+        // The first join counts once its publisher is connected (the same
+        // criterion and the same 15 s as a rejoin attempt). The 15 s start
+        // when the voice_join goes out, which is the first thing the join
+        // does, and include the publisher's set-up. If the socket that
+        // carried it is lost first, the session recovers.
         var joined: Long
+        var up: Boolean
         while (true) {
             val id = usableSocket(session)
             checkDeadline(session, steps)
-            if (steps.join(id)) {
-                joined = id
-                break
+            val outcome = withTimeoutOrNull(attemptTimeoutMs) {
+                if (!steps.join(id, permit)) {
+                    FirstJoin.NotSent
+                } else if (whileSocketIs(id) { steps.awaitConnected(); true } == true) {
+                    FirstJoin.Connected
+                } else {
+                    FirstJoin.SocketLost
+                }
             }
-            session.unusable.value = id
+            when (outcome) {
+                FirstJoin.NotSent -> {
+                    session.unusable.value = id
+                    continue
+                }
+                null -> return End.FirstJoinTimedOut
+                FirstJoin.Connected -> session.connectedOnce = true
+                // Goes straight to recovering.
+                FirstJoin.SocketLost -> Unit
+            }
+            joined = id
+            up = outcome == FirstJoin.Connected
+            break
         }
 
-        // The first join counts once its publisher is connected (the same
-        // criterion and the same 15 s as a rejoin attempt). If the
-        // socket that carried it is lost first, the session recovers.
-        val first = whileSocketIs(joined) {
-            withTimeoutOrNull(attemptTimeoutMs) { steps.awaitConnected() } != null
-        }
-        when (first) {
-            true -> session.connectedOnce = true
-            false -> return End.FirstJoinTimedOut
-            null -> Unit
-        }
-
-        // A first join whose socket was lost before it connected goes straight to recovering.
-        var up = first == true
         while (true) {
             if (up) {
                 // Up: nothing to do while the socket that carried the join is the
@@ -444,7 +480,7 @@ class VoiceSignalling(
                 val outcome = whileSocketIs(id) {
                     delay(delaysMs[failures])
                     checkDeadline(session, steps)
-                    attempt(steps, id, number = failures + 1)
+                    attempt(steps, id, permit, number = failures + 1)
                 } ?: Attempt.SocketGone
                 when (outcome) {
                     Attempt.Connected -> break@recovering
@@ -509,9 +545,15 @@ class VoiceSignalling(
         }
     }
 
+    /** How a first join went, short of its 15 s running out. */
+    private enum class FirstJoin { NotSent, Connected, SocketLost }
+
     /** One attempt, at most [attemptTimeoutMs]. Anything it throws by itself is a failed attempt. */
-    private suspend fun attempt(steps: Steps, id: Long, number: Int): Attempt = try {
-        withTimeoutOrNull(attemptTimeoutMs) { steps.rejoin(id) } ?: Attempt.Failed
+    private suspend fun attempt(steps: Steps, id: Long, permit: JoinPermit, number: Int): Attempt = try {
+        withTimeoutOrNull(attemptTimeoutMs) { steps.rejoin(id, permit) } ?: Attempt.Failed
+    } catch (e: DeadlinePassed) {
+        // The 60 s were over at the send: not a failed attempt, the session is given up.
+        throw e
     } catch (e: CancellationException) {
         // Cancelled from outside (socket gone, deadline, session end): not ours to judge.
         currentCoroutineContext().ensureActive()

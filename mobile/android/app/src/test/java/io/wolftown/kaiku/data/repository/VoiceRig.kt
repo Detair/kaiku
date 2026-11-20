@@ -79,7 +79,11 @@ internal fun rigTest(body: suspend TestScope.(VoiceRig) -> Unit) = runTest {
  * the send).
  */
 @OptIn(ExperimentalCoroutinesApi::class)
-internal class VoiceRig(private val test: TestScope) {
+internal class VoiceRig(
+    private val test: TestScope,
+    /** The clock that counts time asleep, for tests of the 60 s (null: a stopped clock, nothing to watch). */
+    clock: (() -> Long)? = null,
+) {
 
     val channel = "ch-1"
 
@@ -154,6 +158,7 @@ internal class VoiceRig(private val test: TestScope) {
             micPermissionChecker = micPermissionChecker,
             context = mockk<Context>(relaxed = true),
             voiceScope = voiceScope,
+            elapsedClock = clock?.let { c -> io.wolftown.kaiku.data.voice.ElapsedClock { c() } } ?: io.wolftown.kaiku.data.voice.ElapsedClock.STOPPED,
             sessions = sessions.generation,
         )
         // The owner runs on the test's own thread: a sign-out inside a step cannot wait for it.

@@ -39,12 +39,20 @@ class VoiceSignallingClockTest {
         var proofsFinished = 0
         val proofs = mutableListOf<Long>()
         var attempts = 0
+
+        /** What a rejoin waits for before its voice_join, while the test holds them: the call check, the ICE fetch. */
+        var gate: CompletableDeferred<Unit>? = null
+        var ice: CompletableDeferred<Unit>? = null
+
+        /** The sockets a rejoin's voice_join actually went out on. */
+        val rejoinSends = mutableListOf<Long>()
         val signalling = VoiceSignalling(socket, clock = { realMs })
 
         private val steps = object : VoiceSignalling.Steps {
             override val joinSocket: StateFlow<Long?> = this@Rig.joinSocket
             override suspend fun prepare() {}
-            override suspend fun join(socket: Long): Boolean {
+            override suspend fun join(socket: Long, permit: VoiceSignalling.JoinPermit): Boolean {
+                permit.check()
                 joins += socket
                 this@Rig.joinSocket.value = socket
                 return true
@@ -59,8 +67,15 @@ class VoiceSignallingClockTest {
             }
 
             override suspend fun awaitConnectionFailed() = awaitCancellation()
-            override suspend fun rejoin(socket: Long): VoiceSignalling.Attempt {
+            override suspend fun rejoin(socket: Long, permit: VoiceSignalling.JoinPermit): VoiceSignalling.Attempt {
                 attempts++
+                // Like the real attempt: first the call's check with the server, then the ICE
+                // configuration. Only after both the voice_join goes out, and only then the
+                // socket carries the session.
+                gate?.await()
+                ice?.await()
+                permit.check()
+                rejoinSends += socket
                 this@Rig.joinSocket.value = socket
                 return awaitCancellation()
             }
@@ -279,5 +294,78 @@ class VoiceSignallingClockTest {
         assertEquals(1, rig.attempts)
         assertFalse(rig.gaveUp.isCompleted)
         rig.owner.cancel()
+    }
+
+    // -- The 60 s are decided at the send of voice_join ----------------------------------
+
+    /** Up on socket 1, which is lost; socket 2 comes and the first rejoin attempt starts. */
+    private fun kotlinx.coroutines.test.TestScope.rejoining(rig: Rig) {
+        runCurrent()
+        rig.socket.value = null
+        runCurrent()
+        rig.socket.value = 2L
+        runCurrent()
+        advanceTimeBy(1_000); runCurrent()
+        assertEquals(1, rig.attempts)
+        assertTrue(rig.rejoinSends.isEmpty())
+    }
+
+    @Test
+    fun `a sleep while the rejoin waits for the call check gives up instead of joining late`() = runTest {
+        val rig = Rig(this)
+        rig.gate = CompletableDeferred()
+        rejoining(rig)
+
+        // The phone sleeps 70 s; the server's answer arrives with the wake-up, before any timer.
+        rig.realMs += 70_000
+        rig.gate!!.complete(Unit)
+        runCurrent()
+
+        assertEquals("a voice_join went out after more than 60 s without one", emptyList<Long>(), rig.rejoinSends)
+        assertTrue(rig.gaveUp.isCompleted)
+    }
+
+    @Test
+    fun `a sleep while the rejoin fetches its ICE configuration gives up instead of joining late`() = runTest {
+        val rig = Rig(this)
+        rig.ice = CompletableDeferred()
+        rejoining(rig)
+
+        rig.realMs += 70_000
+        rig.ice!!.complete(Unit)
+        runCurrent()
+
+        assertEquals(emptyList<Long>(), rig.rejoinSends)
+        assertTrue(rig.gaveUp.isCompleted)
+    }
+
+    @Test
+    fun `a short sleep in the rejoin's set-up still rejoins`() = runTest {
+        val rig = Rig(this)
+        rig.gate = CompletableDeferred()
+        rig.ice = CompletableDeferred()
+        rejoining(rig)
+
+        rig.realMs += 20_000
+        rig.gate!!.complete(Unit)
+        runCurrent()
+        rig.realMs += 20_000
+        rig.ice!!.complete(Unit)
+        runCurrent()
+
+        assertEquals(listOf(2L), rig.rejoinSends)
+        assertFalse(rig.gaveUp.isCompleted)
+        rig.owner.cancel()
+    }
+
+    @Test
+    fun `a held first join that waited too long sends nothing when its socket comes`() = runTest {
+        val rig = Rig(this, startSocket = null)
+        runCurrent()
+        rig.realMs += 70_000 // asleep while no socket was there
+        rig.socket.value = 1L
+        runCurrent()
+        assertTrue(rig.joins.isEmpty())
+        assertTrue(rig.gaveUp.isCompleted)
     }
 }

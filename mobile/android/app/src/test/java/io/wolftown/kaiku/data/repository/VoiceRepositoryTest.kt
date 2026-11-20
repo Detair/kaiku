@@ -1404,6 +1404,50 @@ class VoiceRepositoryTest {
     }
 
     @Test
+    fun `after a gap a dead socket is found and reported even when the publisher is down too`() = runTest {
+        var real = 0L
+        repository = repositoryWithClock { real }
+        every { webRtcManager.publisherConnectedNow() } returns false // the media died as well
+        repository.joinChannel("ch-1")
+        runCurrent()
+
+        real += 30_000
+        advanceTimeBy(5_000); runCurrent()
+        advanceTimeBy(5_000); runCurrent() // the ping is not answered within 5 s
+
+        // The socket was asked whatever the media says, found dead and reported at once.
+        verify(exactly = 1) { webSocket.send(ClientEvent.Ping) }
+        assertEquals(1, deadSocketReports)
+        // No rejoin attempt is spent on the dead socket.
+        advanceTimeBy(2_000); runCurrent()
+        verifyJoins(1)
+        assertEquals(VoiceLinkState.Interrupted, repository.linkState.value)
+        repository.leaveChannel()
+    }
+
+    @Test
+    fun `a rejoin whose set-up outlasts the 60 s sends no voice_join`() = runTest {
+        var real = 0L
+        val rig = VoiceRig(this, clock = { real })
+        try {
+            rig.joinAndConnect()
+            rig.socket.drop()
+            runCurrent()
+            rig.socket.ready()
+            runCurrent()
+            // The attempt fetches its ICE configuration; the phone sleeps through it and the
+            // answer comes with the wake-up.
+            rig.at("sub:create", nth = 2) { real += 70_000 }
+            advanceTimeBy(1_000); runCurrent()
+
+            assertEquals("a voice_join went out after more than 60 s without one: ${rig.log}", listOf(1L), rig.joins())
+            rig.assertGaveUp()
+        } finally {
+            rig.close()
+        }
+    }
+
+    @Test
     fun `a call join cancelled while it leaves the previous channel opens nothing`() = runTest {
         recordWebRtcAndSocket()
         repository.joinChannel("ch-1") // a guild voice channel

@@ -73,7 +73,7 @@ class VoiceSignallingThreadsTest {
 
             override suspend fun prepare() {}
 
-            override suspend fun join(socket: Long): Boolean = step {
+            override suspend fun join(socket: Long, permit: VoiceSignalling.JoinPermit): Boolean = step {
                 sendJoin(socket).also { if (it) firstJoins.incrementAndGet() }
             }
 
@@ -84,7 +84,7 @@ class VoiceSignallingThreadsTest {
 
             override suspend fun awaitConnectionFailed() = awaitCancellation()
 
-            override suspend fun rejoin(socket: Long): Attempt = step {
+            override suspend fun rejoin(socket: Long, permit: VoiceSignalling.JoinPermit): Attempt = step {
                 if (sendJoin(socket)) Attempt.Connected else Attempt.SocketGone
             }
 
