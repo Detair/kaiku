@@ -238,7 +238,8 @@ impl<D: FrameDecoder> TrackPlayout<D> {
                 Playout::Carry | Playout::Silence => break,
                 Playout::Decode(packet) => self.decode(&packet),
                 Playout::Lost { next, dur_ts } => self.recover(next.as_deref(), dur_ts as usize),
-                Playout::Conceal => self.conceal(FRAME_SIZE),
+                Playout::Conceal { dur_ts } => self.conceal(dur_ts as usize),
+                Playout::Quiet { dur_ts } => self.silence(dur_ts as usize),
             }
         }
 
@@ -339,6 +340,13 @@ impl<D: FrameDecoder> TrackPlayout<D> {
                 self.scratch[..samples].fill(0.0);
             }
         }
+        self.append(samples / CHANNELS as usize);
+    }
+
+    /// `per_channel` samples of silence (decoder untouched).
+    fn silence(&mut self, per_channel: usize) {
+        let samples = per_channel.min(MAX_PACKET_SAMPLES_PER_CHANNEL) * CHANNELS as usize;
+        self.scratch[..samples].fill(0.0);
         self.append(samples / CHANNELS as usize);
     }
 
@@ -774,6 +782,111 @@ mod tests {
             );
         }
         assert!(playout.decoder.calls.contains(&Call::Reset));
+    }
+
+    /// Push `(seq, ts in 2.5 ms units, duration units, arrival ms)` packets
+    /// at their arrival and tick every 20 ms until `end_ms`.
+    fn run_packets(
+        playout: &mut TrackPlayout<MockDecoder>,
+        packets: &[(u16, u32, u8, u64)],
+        end_ms: u64,
+    ) {
+        let mut next = 0;
+        let mut out = vec![0.0; FRAME_SAMPLES];
+        for tick in 0..end_ms / 20 {
+            let now = tick * 20;
+            while next < packets.len() && packets[next].3 <= now {
+                let (seq, ts_units, units, at) = packets[next];
+                playout.push(
+                    7,
+                    seq,
+                    ts_units * 120,
+                    false,
+                    at,
+                    vec![(seq % 200) as u8 + 1, 0, units],
+                );
+                next += 1;
+            }
+            playout.next_frame(now, &mut out);
+        }
+    }
+
+    /// A 60 ms packet, then two lost 10 ms packets, then 10 ms packets: the
+    /// gap is concealed for exactly its 20 ms and nothing after it is lost.
+    #[test]
+    fn burst_loss_after_a_duration_change_conceals_only_the_gap() {
+        let mut packets = Vec::new();
+        let mut ts = 0u32; // 2.5 ms units
+        let mut at = 0u64;
+        for seq in 0..20u16 {
+            packets.push((seq, ts, 24, at));
+            ts += 24;
+            at += 60;
+        }
+        // 20 and 21 (10 ms each) are lost.
+        ts += 8;
+        at += 20;
+        for seq in 22..120u16 {
+            packets.push((seq, ts, 4, at));
+            ts += 4;
+            at += 10;
+        }
+        let mut playout = TrackPlayout::new(MockDecoder::default());
+        run_packets(&mut playout, &packets, at + 400);
+        let st = playout.stats();
+        assert_eq!(st.buffer.late_dropped, 0, "{st:?}");
+        // Concealment while the stream runs (not after its end).
+        let calls = &playout.decoder.calls;
+        let last = calls
+            .iter()
+            .rposition(|c| matches!(c, Call::Decode(_)))
+            .unwrap();
+        let plc: usize = calls[..last]
+            .iter()
+            .map(|c| match c {
+                Call::Plc(n) => *n,
+                _ => 0,
+            })
+            .sum();
+        assert_eq!(plc, 960, "concealed {plc} samples per channel: {st:?}");
+        let decoded = playout
+            .decoder
+            .calls
+            .iter()
+            .filter(|c| matches!(c, Call::Decode(_)))
+            .count();
+        assert_eq!(decoded, packets.len(), "{st:?}");
+    }
+
+    /// 10 ms packets with a 10 ms DTX gap between them, both sides already
+    /// buffered: the gap is bridged with 10 ms, not a 20 ms frame.
+    #[test]
+    fn a_short_dtx_gap_is_bridged_for_its_own_length() {
+        let mut packets = Vec::new();
+        let (mut ts, mut at) = (0u32, 0u64);
+        for seq in 0..200u16 {
+            if seq == 100 {
+                ts += 4; // 10 ms of silence, timestamp runs on
+                at += 10;
+            }
+            packets.push((seq, ts, 4, at));
+            ts += 4;
+            at += 10;
+        }
+        let mut playout = TrackPlayout::new(MockDecoder::default());
+        run_packets(&mut playout, &packets, at);
+        let plc: Vec<usize> = playout
+            .decoder
+            .calls
+            .iter()
+            .filter_map(|c| match c {
+                Call::Plc(n) => Some(*n),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(plc, vec![480], "{plc:?}");
+        let st = playout.stats().buffer;
+        assert_eq!(st.drift_drops + st.drift_inserts, 0, "{st:?}");
     }
 
     // ---- real libopus ----

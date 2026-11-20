@@ -142,9 +142,13 @@ pub enum Playout<P> {
     /// if it carries in-band FEC, rebuild the gap from it; otherwise
     /// conceal `dur_ts` (PLC). `next` itself is decoded later as usual.
     Lost { next: Option<P>, dur_ts: u32 },
-    /// Play one 20 ms concealment frame (PLC): the buffer ran dry, a DTX
-    /// gap is being bridged, or a frame is inserted to grow the buffer.
-    Conceal,
+    /// Play `dur_ts` of concealment (PLC; one 20 ms frame, or the rest of
+    /// a shorter DTX gap): the buffer ran dry, a DTX gap is being bridged,
+    /// or a frame is inserted to grow the buffer.
+    Conceal { dur_ts: u32 },
+    /// Play `dur_ts` of silence without touching the decoder: the rest of a
+    /// DTX gap after the concealment budget.
+    Quiet { dur_ts: u32 },
     /// The caller holds enough decoded audio for this tick.
     Carry,
 }
@@ -246,6 +250,7 @@ enum DropState {
 
 /// Jitter buffer of one remote audio track. `P` is the packet payload.
 #[derive(Debug)]
+#[allow(clippy::struct_excessive_bools)] // independent flags of the control state
 pub struct JitterBuffer<P> {
     slots: Vec<Option<Slot<P>>>,
     ssrc: Option<u32>,
@@ -605,7 +610,7 @@ impl<P: Clone> JitterBuffer<P> {
                     fresh,
                     concealed: concealed + 1,
                 };
-                return Playout::Conceal;
+                return Playout::Conceal { dur_ts: FRAME_TS };
             }
             return Playout::Silence;
         }
@@ -658,19 +663,25 @@ impl<P: Clone> JitterBuffer<P> {
                             self.drop = DropState::Done;
                         }
                     }
-                    if self.insert_due {
+                    // The timeline and the decoder advance by the same step:
+                    // a frame, or what is left of a shorter gap.
+                    let step = if self.insert_due {
                         self.insert_due = false;
                         self.stats.drift_inserts += 1;
                         self.adjusted(1.0, false);
+                        frame
                     } else {
-                        self.cursor_ts = (self.cursor_ts + frame).min(ts);
-                    }
+                        let step = (ts - self.cursor_ts).min(frame);
+                        self.cursor_ts += step;
+                        step
+                    };
                     let gap_frames = gap_frames + 1;
                     self.phase = Phase::Playing { gap_frames };
+                    let dur_ts = step as u32;
                     return if gap_frames <= PLC_MAX_FRAMES {
-                        Playout::Conceal
+                        Playout::Conceal { dur_ts }
                     } else {
-                        Playout::Silence
+                        Playout::Quiet { dur_ts }
                     };
                 }
                 Some((ts, dur)) if ts + dur <= self.cursor_ts => {
@@ -686,7 +697,7 @@ impl<P: Clone> JitterBuffer<P> {
                         self.insert_due = false;
                         self.stats.drift_inserts += 1;
                         self.adjusted(1.0, false);
-                        return Playout::Conceal;
+                        return Playout::Conceal { dur_ts: FRAME_TS };
                     }
                     return match self.take(self.cursor_seq) {
                         Some(slot) => {
@@ -702,23 +713,44 @@ impl<P: Clone> JitterBuffer<P> {
                 None if gathering => return Playout::Carry,
                 None if self.highest.is_some_and(|h| h.seq > self.cursor_seq) => {
                     // Later packets are here, this one is not: lost (or so
-                    // late that it is useless now).
+                    // late that it is useless now). The earliest packet that
+                    // did arrive bounds the concealment of the missing run.
                     self.stats.lost += 1;
-                    let next = self
-                        .slot(self.cursor_seq + 1)
-                        .map(|n| (n.ts - self.cursor_ts, n.payload.clone()));
-                    let fits = |d: i64| {
-                        (i64::from(MIN_PACKET_TS)..=i64::from(MAX_PACKET_TS)).contains(&d)
-                            && d % 120 == 0
-                    };
-                    let (dur, next) = match next {
-                        Some((d, payload)) if fits(d) => (d, Some(payload)),
-                        _ => (self.last_dur, None),
-                    };
+                    let (succ_seq, succ_ts) = self
+                        .slots
+                        .iter()
+                        .flatten()
+                        .filter(|s| s.seq > self.cursor_seq)
+                        .min_by_key(|s| s.seq)
+                        .map_or((self.cursor_seq + 1, self.cursor_ts + self.last_dur), |s| {
+                            (s.seq, s.ts)
+                        });
+                    let missing = succ_seq - self.cursor_seq;
+                    let room = succ_ts - self.cursor_ts;
                     self.cursor_seq += 1;
-                    self.cursor_ts += dur;
                     self.played_mask <<= 1;
                     self.phase = Phase::Playing { gap_frames: 0 };
+                    if room <= 0 {
+                        // No time left for it before the next packet.
+                        continue;
+                    }
+                    let dur = if missing == 1 {
+                        room.min(i64::from(MAX_PACKET_TS))
+                    } else {
+                        // Spread over the missing packets, whole 2.5 ms steps.
+                        (room / missing / 120 * 120)
+                            .clamp(120, self.last_dur.max(120))
+                            .min(room)
+                    };
+                    self.cursor_ts += dur;
+                    let fec = missing == 1
+                        && (i64::from(MIN_PACKET_TS)..=i64::from(MAX_PACKET_TS)).contains(&dur)
+                        && dur % 120 == 0;
+                    let next = if fec {
+                        self.slot(succ_seq).map(|n| n.payload.clone())
+                    } else {
+                        None
+                    };
                     return Playout::Lost {
                         next,
                         dur_ts: dur as u32,
@@ -730,7 +762,7 @@ impl<P: Clone> JitterBuffer<P> {
                         fresh: false,
                         concealed: 1,
                     };
-                    return Playout::Conceal;
+                    return Playout::Conceal { dur_ts: FRAME_TS };
                 }
             }
         }
@@ -1006,7 +1038,8 @@ mod tests {
                     }
                     break;
                 }
-                Playout::Decode(_) | Playout::Conceal => *carry += FRAME_TS,
+                Playout::Decode(_) => *carry += FRAME_TS,
+                Playout::Conceal { dur_ts } | Playout::Quiet { dur_ts } => *carry += dur_ts,
                 Playout::Lost { dur_ts, .. } => *carry += dur_ts,
             }
             acts.push(p);
@@ -1200,7 +1233,7 @@ mod tests {
         assert!(!d.contains(&50));
         assert!(d.contains(&49) && d.contains(&51));
         assert_eq!(jb.stats().lost, 1);
-        assert_eq!(count(&out, |p| *p == Playout::Conceal), 0);
+        assert_eq!(count(&out, |p| matches!(p, Playout::Conceal { .. })), 0);
     }
 
     #[test]
@@ -1238,7 +1271,7 @@ mod tests {
         assert!(max_buffered <= CAPACITY);
         // Concealment during the burst is bounded, then silence.
         let concealing = count(&out, |p| {
-            matches!(p, Playout::Conceal | Playout::Lost { .. })
+            matches!(p, Playout::Conceal { .. } | Playout::Lost { .. })
         });
         assert!(concealing as u32 <= PLC_MAX_FRAMES, "{concealing}");
         // Clean resume: everything from 160 on plays in order.
@@ -1313,7 +1346,7 @@ mod tests {
         let d = decoded(&out);
         assert!(d.windows(2).all(|w| w[1] == w[0] + 1));
         // The pause is bounded concealment then silence.
-        assert!(count(&out, |p| *p == Playout::Conceal) as u32 <= PLC_MAX_FRAMES);
+        assert!(count(&out, |p| matches!(p, Playout::Conceal { .. })) as u32 <= PLC_MAX_FRAMES);
         let st = jb.stats();
         assert_eq!(st.underruns, 0, "{st:?}");
         assert_eq!(st.lost, 0);
