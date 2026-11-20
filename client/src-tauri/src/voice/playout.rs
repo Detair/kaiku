@@ -43,8 +43,10 @@ pub trait FrameDecoder {
     fn decode_fec(&mut self, next: &[u8], out: &mut [f32]) -> Result<usize, String>;
     /// One concealment (PLC) frame of `out.len() / 2` samples per channel.
     fn conceal(&mut self, out: &mut [f32]) -> Result<usize, String>;
-    /// Whether `packet` carries in-band FEC for the frame before it.
-    fn has_fec(&self, packet: &[u8]) -> bool;
+    /// Whether rebuilding `lost_per_channel` samples before `next` from
+    /// `next`'s in-band FEC will really use FEC (otherwise the decoder would
+    /// conceal anyway).
+    fn can_recover(&self, next: &[u8], lost_per_channel: usize) -> bool;
     /// Audio duration of `packet` in samples per channel at 48 kHz.
     fn duration(&self, packet: &[u8]) -> Option<u32>;
     /// Forget all state (new stream).
@@ -52,39 +54,50 @@ pub trait FrameDecoder {
 }
 
 /// libopus decoder, 48 kHz stereo.
-pub struct OpusFrameDecoder(opus::Decoder);
+pub struct OpusFrameDecoder {
+    decoder: opus::Decoder,
+    /// The last decoded packet was CELT-only (libopus then conceals
+    /// instead of using FEC).
+    last_celt: bool,
+}
 
 impl OpusFrameDecoder {
     pub fn new() -> Result<Self, opus::Error> {
-        Ok(Self(opus::Decoder::new(
-            SAMPLE_RATE,
-            opus::Channels::Stereo,
-        )?))
+        Ok(Self {
+            decoder: opus::Decoder::new(SAMPLE_RATE, opus::Channels::Stereo)?,
+            last_celt: false,
+        })
     }
 }
 
 impl FrameDecoder for OpusFrameDecoder {
     fn decode(&mut self, packet: &[u8], out: &mut [f32]) -> Result<usize, String> {
-        self.0
+        let decoded = self
+            .decoder
             .decode_float(packet, out, false)
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        self.last_celt = packet.first().is_some_and(|toc| toc >> 3 >= 16);
+        Ok(decoded)
     }
 
     fn decode_fec(&mut self, next: &[u8], out: &mut [f32]) -> Result<usize, String> {
-        self.0
+        self.decoder
             .decode_float(next, out, true)
             .map_err(|e| e.to_string())
     }
 
     fn conceal(&mut self, out: &mut [f32]) -> Result<usize, String> {
         // An empty packet is libopus' "lost frame": PLC.
-        self.0
+        self.decoder
             .decode_float(&[], out, false)
             .map_err(|e| e.to_string())
     }
 
-    fn has_fec(&self, packet: &[u8]) -> bool {
-        opus_packet_has_fec(packet)
+    fn can_recover(&self, next: &[u8], lost_per_channel: usize) -> bool {
+        // libopus falls back to PLC when the previous frame was CELT-only
+        // or the gap is shorter than one frame of `next`.
+        let frame = opus::packet::get_samples_per_frame(next, SAMPLE_RATE).unwrap_or(usize::MAX);
+        !self.last_celt && lost_per_channel >= frame && opus_packet_has_fec(next)
     }
 
     fn duration(&self, packet: &[u8]) -> Option<u32> {
@@ -94,7 +107,8 @@ impl FrameDecoder for OpusFrameDecoder {
     }
 
     fn reset(&mut self) {
-        let _ = self.0.reset_state();
+        let _ = self.decoder.reset_state();
+        self.last_celt = false;
     }
 }
 
@@ -126,7 +140,13 @@ pub fn opus_packet_has_fec(packet: &[u8]) -> bool {
     let Ok(parsed) = opus::packet::parse(packet) else {
         return false;
     };
-    let Some(&first_byte) = parsed.frames.first().and_then(|frame| frame.first()) else {
+    // libopus treats a frame of one byte or less as lost (PLC/DTX).
+    let Some(&first_byte) = parsed
+        .frames
+        .first()
+        .filter(|frame| frame.len() > 1)
+        .and_then(|frame| frame.first())
+    else {
         return false;
     };
     (0..channels).any(|n| first_byte & (0x80 >> ((n + 1) * (silk_frames + 1) - 1)) != 0)
@@ -281,8 +301,8 @@ impl<D: FrameDecoder> TrackPlayout<D> {
             recovered_fec: self.recovered_fec,
             decode_errors: self.decode_errors,
             rejected: self.rejected,
-            target_delay_ms: self.buffer.target_ms(),
-            level_ms: self.buffer.level_ms(),
+            target_delay_ms: self.buffer.playout_target_ms(),
+            level_ms: self.buffer.level_ms() + self.carry_ts() as f64 / 48.0,
         }
     }
 
@@ -315,7 +335,7 @@ impl<D: FrameDecoder> TrackPlayout<D> {
     /// it, otherwise PLC.
     fn recover(&mut self, next: Option<&[u8]>, per_channel: usize) {
         let per_channel = per_channel.min(MAX_PACKET_SAMPLES_PER_CHANNEL);
-        if let Some(next) = next.filter(|n| self.decoder.has_fec(n)) {
+        if let Some(next) = next.filter(|n| self.decoder.can_recover(n, per_channel)) {
             let samples = per_channel * CHANNELS as usize;
             match self.decoder.decode_fec(next, &mut self.scratch[..samples]) {
                 Ok(n) if n == per_channel => {
@@ -411,8 +431,8 @@ mod tests {
             Ok(out.len() / 2)
         }
 
-        fn has_fec(&self, packet: &[u8]) -> bool {
-            packet[1] & 1 == 1
+        fn can_recover(&self, next: &[u8], _lost: usize) -> bool {
+            next[1] & 1 == 1
         }
 
         fn duration(&self, packet: &[u8]) -> Option<u32> {
@@ -889,6 +909,18 @@ mod tests {
         assert_eq!(st.drift_drops + st.drift_inserts, 0, "{st:?}");
     }
 
+    /// The reported target and level are what the track really holds back,
+    /// including the extra reserve for long packets and decoded audio.
+    #[test]
+    fn long_packets_report_their_effective_target_and_held_audio() {
+        let mut playout = TrackPlayout::new(MockDecoder::default());
+        run_stream(&mut playout, 24, 500, &[], 1.0); // 60 ms packets
+        let st = playout.stats();
+        // 40 ms floor + 1.5 × (60 − 20) ms reserve for long packets.
+        assert!((st.target_delay_ms - 100.0).abs() < 1e-9, "{st:?}");
+        assert!(st.level_ms >= 40.0, "{st:?}");
+    }
+
     // ---- real libopus ----
 
     /// Speech-like test signal: a voice whose pitch glides between 100 and
@@ -1014,6 +1046,9 @@ mod tests {
         for packet in &cases {
             assert!(!opus_packet_has_fec(packet), "{packet:?}");
         }
+        // A first SILK frame of one byte is DTX/PLC to libopus, whatever
+        // its bits say.
+        assert!(!opus_packet_has_fec(&[silk, 0xFF]));
         // Largest legal frame count: 48 CELT frames of 2.5 ms (CBR).
         let mut max = vec![(16 << 3) | 3, 48];
         max.extend(std::iter::repeat_n(0x55, 48));
@@ -1035,6 +1070,53 @@ mod tests {
             assert!(buf[0] >> 3 >= 16, "not CELT");
             assert!(!opus_packet_has_fec(&buf[..n]));
         }
+    }
+
+    /// libopus only rebuilds from FEC when the previous frame was not CELT
+    /// and the gap is at least one frame of the next packet; otherwise it
+    /// conceals. That must be counted as concealment, not as FEC.
+    #[test]
+    fn fec_after_a_celt_frame_counts_as_concealment() {
+        let mut celt = opus::Encoder::new(
+            SAMPLE_RATE,
+            opus::Channels::Mono,
+            opus::Application::LowDelay,
+        )
+        .unwrap();
+        let mut silk = crate::audio::voice_encoder().unwrap();
+        let mut pcm = [0i16; FRAME_SIZE];
+        let mut buf = [0u8; 4000];
+        let mut silk_packets = Vec::new();
+        for k in 0..40 {
+            speech_frame(k, &mut pcm);
+            let n = silk.encode(&pcm, &mut buf).unwrap();
+            silk_packets.push(buf[..n].to_vec());
+        }
+        let with_lbrr = silk_packets
+            .iter()
+            .rposition(|p| opus_packet_has_fec(p))
+            .expect("an LBRR packet");
+        let mut playout = TrackPlayout::new(OpusFrameDecoder::new().unwrap());
+        let mut out = vec![0.0f32; FRAME_SAMPLES];
+        for k in 0..30u32 {
+            let now = u64::from(k) * 20;
+            let packet = if k < 20 {
+                speech_frame(k as usize, &mut pcm);
+                let n = celt.encode(&pcm, &mut buf).unwrap();
+                Some(buf[..n].to_vec())
+            } else if k == 20 {
+                None // lost; the next one carries LBRR, the decoder is in CELT
+            } else {
+                Some(silk_packets[with_lbrr].clone())
+            };
+            if let Some(packet) = packet {
+                playout.push(3, k as u16, k * FRAME_TS, false, now, packet);
+            }
+            playout.next_frame(now, &mut out);
+        }
+        let st = playout.stats();
+        assert_eq!(st.buffer.lost, 1, "{st:?}");
+        assert_eq!((st.recovered_fec, st.concealed_plc), (0, 1), "{st:?}");
     }
 
     /// Real Opus packets of every duration a peer may send, through the

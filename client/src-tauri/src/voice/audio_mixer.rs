@@ -77,8 +77,8 @@ impl FrameDecoder for Box<dyn FrameDecoder + Send> {
     fn conceal(&mut self, out: &mut [f32]) -> Result<usize, String> {
         (**self).conceal(out)
     }
-    fn has_fec(&self, packet: &[u8]) -> bool {
-        (**self).has_fec(packet)
+    fn can_recover(&self, next: &[u8], lost_per_channel: usize) -> bool {
+        (**self).can_recover(next, lost_per_channel)
     }
     fn duration(&self, packet: &[u8]) -> Option<u32> {
         (**self).duration(packet)
@@ -567,7 +567,7 @@ mod tests {
             out.fill(0.0);
             Ok(out.len() / 2)
         }
-        fn has_fec(&self, _packet: &[u8]) -> bool {
+        fn can_recover(&self, _next: &[u8], _lost: usize) -> bool {
             false
         }
         fn duration(&self, _packet: &[u8]) -> Option<u32> {
@@ -1049,7 +1049,7 @@ mod tests {
             out.fill(0.0);
             Ok(out.len() / 2)
         }
-        fn has_fec(&self, _packet: &[u8]) -> bool {
+        fn can_recover(&self, _next: &[u8], _lost: usize) -> bool {
             false
         }
         fn duration(&self, _packet: &[u8]) -> Option<u32> {

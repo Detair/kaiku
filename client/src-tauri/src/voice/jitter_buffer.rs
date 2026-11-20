@@ -541,7 +541,13 @@ impl<P: Clone> JitterBuffer<P> {
         }
     }
 
-    /// Current target buffer level in milliseconds.
+    /// The level the buffer actually aims at, in milliseconds: the target
+    /// plus the reserve long packets need (see `control_target_ms`).
+    pub fn playout_target_ms(&self) -> f64 {
+        self.control_target_ms()
+    }
+
+    /// Current target buffer level in milliseconds (jitter part).
     pub fn target_ms(&self) -> f64 {
         (self.peak_ms + FRAME_MS).clamp(MIN_TARGET_MS, MAX_TARGET_MS)
     }

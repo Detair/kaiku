@@ -78,7 +78,7 @@ impl FrameDecoder for TagDecoder {
         out.fill(-1.0);
         Ok(out.len() / 2)
     }
-    fn has_fec(&self, _packet: &[u8]) -> bool {
+    fn can_recover(&self, _next: &[u8], _lost: usize) -> bool {
         false
     }
     fn duration(&self, packet: &[u8]) -> Option<u32> {
