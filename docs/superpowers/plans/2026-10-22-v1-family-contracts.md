@@ -954,16 +954,21 @@ is unchanged (C32 retry).
 |---|---|
 | `SCREEN_SHARE_FORBIDDEN`, `SCREEN_SHARE_LIMIT`, `VIDEO_SOURCE_UNANNOUNCED`, `AUDIO_SOURCE_UNANNOUNCED` | screen share, video and audio (above) |
 | `CHANNEL_FULL` | `voice_join` into a channel whose `user_limit` (or the server cap of 25) is reached. A user who is already in the room (another device, a stale session) may always join again: the new session replaces the old one (C31 `session_replaced`). No role bypasses the limit |
-| `JOIN_REFUSED` | `voice_join` into a DM call when the user and another participant of the DM blocked each other (either direction). The message does not say who |
+| `JOIN_REFUSED` | `voice_join` into a DM call when the user and another participant of the DM blocked each other (either direction). The message does not say who. A failed lookup answers `INTERNAL_ERROR` (the join is refused too) |
 | `UNAUTHORIZED` | no `VIEW_CHANNEL` / `VOICE_CONNECT` |
-| `RATE_LIMITED` | join or share start over its limit |
-| `ROOM_NOT_FOUND`, `PARTICIPANT_NOT_FOUND`, `SIGNALING_ERROR`, `WEBRTC_ERROR`, `DUPLICATE_STREAM_ID`, `INTERNAL_ERROR`, `DATABASE_ERROR` | as named; no internal detail in `message` |
+| `RATE_LIMITED` | join, share start or webcam start over its limit (other voice events over their limit are dropped silently) |
+| `PARTICIPANT_NOT_FOUND` | the request needs a seat in that room and this socket holds none (also after the seat moved to another device, C31) |
+| `ROOM_NOT_FOUND`, `SIGNALING_ERROR`, `WEBRTC_ERROR`, `DUPLICATE_STREAM_ID`, `INTERNAL_ERROR`, `DATABASE_ERROR` | as named; no internal detail in `message` |
+| `ALREADY_JOINED`, `NOT_IN_CHANNEL`, `CHANNEL_NOT_FOUND`, `ICE_FAILED` | defined for completeness; the current server does not send them on the WebSocket |
 
 ### Subscriber renegotiation (server behaviour clients can rely on)
 
 - At most one `voice_subscriber_offer` per participant is outstanding. Changes made while it waits for its
-  `voice_subscriber_answer` are sent as one new offer right after the answer. If no answer comes within 10 s, the
-  next change (or a check 10 s later) offers again; answer the newest offer.
+  `voice_subscriber_answer` are sent as one new offer right after the answer. An offer without an answer after
+  10 s is sent once more (a fresh offer); if that one is not answered either, the server stops waiting and the
+  next change offers at once. Answer the newest offer: an answer that does not fit the open offer (another
+  number of media sections) or comes when no offer is open is ignored; one that the connection rejects is
+  followed by a fresh offer.
 - When a participant leaves (or is replaced, C31), their tracks are removed from everyone else's subscriber
   connection with a new offer (the m-line becomes inactive). A participant who comes back gets a new m-line.
 

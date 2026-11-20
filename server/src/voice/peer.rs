@@ -116,10 +116,14 @@ pub const INACTIVE_MLINE_WARN_THRESHOLD: usize = 60;
 #[derive(Debug, Default)]
 pub struct SubscriberNegotiation {
     /// When the outstanding offer was sent; `None` when stable.
-    pub awaiting_answer_since: Option<std::time::Instant>,
+    pub awaiting_answer_since: Option<tokio::time::Instant>,
     /// Something changed while an offer was outstanding: offer again once
     /// the answer is in.
     pub again: bool,
+    /// Number of the latest offer (its watchdog compares it).
+    pub offer_seq: u64,
+    /// The open offer is already a repeat of an unanswered one.
+    pub repeated: bool,
 }
 
 impl Peer {

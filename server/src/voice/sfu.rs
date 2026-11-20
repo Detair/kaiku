@@ -154,6 +154,11 @@ async fn take_live_source(peer: &Peer, room: &Room, video: bool) -> Option<Track
     }
 }
 
+/// Number of media sections (`m=` lines) in a session description.
+fn count_media_sections(sdp: &str) -> usize {
+    sdp.lines().filter(|l| l.starts_with("m=")).count()
+}
+
 /// How long a subscriber offer may wait for its answer before a new change
 /// offers again regardless (a client that lost the offer would otherwise
 /// never receive tracks again).
@@ -1265,26 +1270,43 @@ impl SfuServer {
     /// Handle a subscriber answer from the client. If tracks changed while
     /// the answered offer was outstanding, the next offer goes out now.
     pub async fn handle_subscriber_answer(peer: &Arc<Peer>, sdp: String) -> Result<(), VoiceError> {
+        let media_sections = count_media_sections(&sdp);
         let answer =
             RTCSessionDescription::answer(sdp).map_err(|e| VoiceError::Signaling(e.to_string()))?;
-        let next = {
+        let (next, applied) = {
             let mut state = peer.negotiation.lock().await;
-            peer.subscriber_pc.set_remote_description(answer).await?;
+            if state.awaiting_answer_since.is_none() {
+                // No offer is open (a repeated or late answer): nothing to do.
+                debug!(user_id = %peer.user_id, "Ignoring a subscriber answer without an open offer");
+                return Ok(());
+            }
+            let open_sections = peer
+                .subscriber_pc
+                .pending_local_description()
+                .await
+                .map(|d| count_media_sections(&d.sdp));
+            if open_sections.is_some_and(|n| n != media_sections) {
+                // Answers an older offer than the open one.
+                debug!(user_id = %peer.user_id, "Ignoring an answer to a superseded subscriber offer");
+                return Ok(());
+            }
+            let applied = peer.subscriber_pc.set_remote_description(answer).await;
             state.awaiting_answer_since = None;
-            if state.again {
-                state.again = false;
-                let event = Self::create_subscriber_offer(peer).await?;
-                state.awaiting_answer_since = Some(std::time::Instant::now());
-                Some(event)
+            state.repeated = false;
+            // A change waited for this answer, or the answer did not fit:
+            // offer (again) now.
+            let next = if state.again || applied.is_err() {
+                Some(Self::open_offer(peer, &mut state).await?)
             } else {
                 None
-            }
+            };
+            (next, applied)
         };
-        match next {
+        if let Some((event, seq)) = next {
             // This runs in the peer's own socket loop.
-            Some(event) => Self::send_offer(peer, event, None).await,
-            None => Ok(()),
+            Self::send_offer(peer, event, seq, None).await?;
         }
+        applied.map_err(VoiceError::from)
     }
 
     /// Renegotiate the subscriber connection of *another* peer after its
@@ -1307,59 +1329,77 @@ impl SfuServer {
     }
 
     async fn negotiate(peer: &Arc<Peer>, bound: Option<Duration>) -> Result<(), VoiceError> {
-        let event = {
+        let (event, seq) = {
             let mut state = peer.negotiation.lock().await;
             if let Some(since) = state.awaiting_answer_since {
                 if since.elapsed() < SUBSCRIBER_ANSWER_TIMEOUT {
-                    if !state.again {
-                        state.again = true;
-                        Self::watch_stalled_offer(
-                            peer,
-                            SUBSCRIBER_ANSWER_TIMEOUT.saturating_sub(since.elapsed()),
-                        );
-                    }
+                    state.again = true;
                     return Ok(());
                 }
                 // The answer is overdue: offer again instead of waiting forever.
                 warn!(user_id = %peer.user_id, "Subscriber answer overdue, offering again");
             }
-            let event = Self::create_subscriber_offer(peer).await?;
-            state.awaiting_answer_since = Some(std::time::Instant::now());
-            state.again = false;
-            event
+            state.repeated = false;
+            Self::open_offer(peer, &mut state).await?
         };
-        Self::send_offer(peer, event, bound).await
+        Self::send_offer(peer, event, seq, bound).await
     }
 
-    /// A change waits for the answer to an earlier offer. If that answer has
-    /// not come when the offer times out, offer again, so the change is not
-    /// lost when an answer is.
-    fn watch_stalled_offer(peer: &Arc<Peer>, after: Duration) {
+    /// Create and set a new subscriber offer under the negotiation lock and
+    /// mark it open. Returns the event to send and the offer's number.
+    async fn open_offer(
+        peer: &Arc<Peer>,
+        state: &mut super::peer::SubscriberNegotiation,
+    ) -> Result<(OutboundMsg, u64), VoiceError> {
+        let event = Self::create_subscriber_offer(peer).await?;
+        state.awaiting_answer_since = Some(tokio::time::Instant::now());
+        state.again = false;
+        state.offer_seq += 1;
+        Ok((event, state.offer_seq))
+    }
+
+    /// After [`SUBSCRIBER_ANSWER_TIMEOUT`], if offer `seq` is still open and
+    /// unanswered: repeat it once (a lost offer or answer would otherwise
+    /// block every later change), or, if it already is the repeat, release
+    /// the open state so the next change offers at once.
+    fn watch_offer(peer: &Arc<Peer>, seq: u64) {
         let peer = Arc::downgrade(peer);
         tokio::spawn(async move {
-            tokio::time::sleep(after + Duration::from_millis(100)).await;
+            tokio::time::sleep(SUBSCRIBER_ANSWER_TIMEOUT).await;
             let Some(peer) = peer.upgrade() else { return };
-            let stalled = {
-                let state = peer.negotiation.lock().await;
-                state.again
-                    && state
-                        .awaiting_answer_since
-                        .is_some_and(|since| since.elapsed() >= SUBSCRIBER_ANSWER_TIMEOUT)
-            };
-            if stalled {
-                if let Err(e) = Self::negotiate(&peer, Some(PEER_SIGNAL_SEND_TIMEOUT)).await {
-                    debug!(user_id = %peer.user_id, error = %e, "Re-offer after a lost answer failed");
+            let repeat = {
+                let mut state = peer.negotiation.lock().await;
+                if state.offer_seq != seq || state.awaiting_answer_since.is_none() {
+                    return;
                 }
-            }
+                if state.repeated {
+                    debug!(user_id = %peer.user_id, "Repeated subscriber offer unanswered; releasing");
+                    state.awaiting_answer_since = None;
+                    state.again = false;
+                    return;
+                }
+                state.repeated = true;
+                match Self::open_offer(&peer, &mut state).await {
+                    Ok(next) => next,
+                    Err(e) => {
+                        debug!(user_id = %peer.user_id, error = %e, "Repeating an unanswered offer failed");
+                        state.awaiting_answer_since = None;
+                        return;
+                    }
+                }
+            };
+            let (event, seq) = repeat;
+            let _ = Self::send_offer(&peer, event, seq, Some(PEER_SIGNAL_SEND_TIMEOUT)).await;
         });
     }
 
-    /// Send an offer created under the negotiation lock. If it cannot be
-    /// queued, the client never answers it: forget that it is outstanding,
-    /// so the next change offers again.
+    /// Send an offer created under the negotiation lock and watch it. If it
+    /// cannot be queued, the client never answers it: forget that it is
+    /// outstanding, so the next change offers again.
     async fn send_offer(
         peer: &Arc<Peer>,
         event: OutboundMsg,
+        seq: u64,
         bound: Option<Duration>,
     ) -> Result<(), VoiceError> {
         let sent = match bound {
@@ -1367,7 +1407,12 @@ impl SfuServer {
             None => send_outbound(&peer.signal_tx, event).await,
         };
         if sent.is_err() {
-            peer.negotiation.lock().await.awaiting_answer_since = None;
+            let mut state = peer.negotiation.lock().await;
+            if state.offer_seq == seq {
+                state.awaiting_answer_since = None;
+            }
+        } else {
+            Self::watch_offer(peer, seq);
         }
         Self::check_offer_sent(peer, sent)
     }
@@ -1701,6 +1746,120 @@ mod negotiation_tests {
         assert!(rx.try_recv().is_err(), "more than one follow-up offer");
 
         let _ = client.close().await;
+        peer.close().await;
+    }
+
+    async fn setup() -> (SfuServer, Arc<Peer>, mpsc::Receiver<OutboundMsg>, Arc<RTCPeerConnection>) {
+        let mut config = Config::default_for_test();
+        config.stun_server = "stun:127.0.0.1:3478".into();
+        let sfu = SfuServer::new(Arc::new(config), None).expect("sfu");
+        let (tx, rx) = mpsc::channel(16);
+        let peer = sfu
+            .create_peer(Uuid::from_u128(1), "a".into(), "A".into(), Uuid::from_u128(2), tx)
+            .await
+            .expect("peer");
+        let client = Arc::new(
+            sfu.api
+                .new_peer_connection(RTCConfiguration::default())
+                .await
+                .expect("client pc"),
+        );
+        (sfu, peer, rx, client)
+    }
+
+    async fn answer_for(client: &RTCPeerConnection, offer: String) -> String {
+        client
+            .set_remote_description(RTCSessionDescription::offer(offer).unwrap())
+            .await
+            .expect("client applies offer");
+        let answer = client.create_answer(None).await.expect("answer");
+        client
+            .set_local_description(answer.clone())
+            .await
+            .expect("client local answer");
+        answer.sdp
+    }
+
+    /// An answer that arrives while no offer is open is ignored, not an
+    /// error that could disturb the connection.
+    #[tokio::test]
+    async fn stray_answer_is_ignored() {
+        let (_sfu, peer, mut rx, client) = setup().await;
+        peer.add_outgoing_track(Uuid::from_u128(3), TrackSource::Microphone, audio_track("u3"))
+            .await
+            .expect("track");
+        SfuServer::renegotiate(&peer).await.expect("offer");
+        let offer = offer_sdp(rx.try_recv().expect("offer sent"));
+        let answer = answer_for(&client, offer).await;
+        SfuServer::handle_subscriber_answer(&peer, answer.clone())
+            .await
+            .expect("answer applied");
+        SfuServer::handle_subscriber_answer(&peer, answer)
+            .await
+            .expect("a repeated answer is ignored");
+        assert!(rx.try_recv().is_err());
+        let _ = client.close().await;
+        peer.close().await;
+    }
+
+    /// An answer to an older offer (other number of m-lines than the open
+    /// one) is ignored; the open offer still takes its own answer.
+    #[tokio::test]
+    async fn answer_to_a_superseded_offer_is_ignored() {
+        let (_sfu, peer, mut rx, client) = setup().await;
+        let old_client = setup().await.3;
+        peer.add_outgoing_track(Uuid::from_u128(3), TrackSource::Microphone, audio_track("u3"))
+            .await
+            .expect("track");
+        SfuServer::renegotiate(&peer).await.expect("offer");
+        let first = offer_sdp(rx.try_recv().expect("offer sent"));
+        // The open offer is replaced (as after the answer timeout) by one
+        // with two m-lines.
+        peer.add_outgoing_track(Uuid::from_u128(4), TrackSource::Microphone, audio_track("u4"))
+            .await
+            .expect("track 2");
+        peer.negotiation.lock().await.awaiting_answer_since =
+            Some(tokio::time::Instant::now() - SUBSCRIBER_ANSWER_TIMEOUT);
+        SfuServer::renegotiate(&peer).await.expect("re-offer");
+        let second = offer_sdp(rx.try_recv().expect("re-offer sent"));
+
+        let stale = answer_for(&old_client, first).await;
+        SfuServer::handle_subscriber_answer(&peer, stale)
+            .await
+            .expect("stale answer ignored");
+        assert!(peer.negotiation.lock().await.awaiting_answer_since.is_some());
+
+        let answer = answer_for(&client, second).await;
+        SfuServer::handle_subscriber_answer(&peer, answer)
+            .await
+            .expect("current answer applied");
+        assert!(peer.negotiation.lock().await.awaiting_answer_since.is_none());
+        let _ = client.close().await;
+        let _ = old_client.close().await;
+        peer.close().await;
+    }
+
+    /// An offer nobody answers is sent once more after the answer timeout;
+    /// if that one stays unanswered too, the open state is released so the
+    /// next change offers right away.
+    #[tokio::test(start_paused = true)]
+    async fn unanswered_offer_is_repeated_once_then_released() {
+        let (_sfu, peer, mut rx, _client) = setup().await;
+        peer.add_outgoing_track(Uuid::from_u128(3), TrackSource::Microphone, audio_track("u3"))
+            .await
+            .expect("track");
+        SfuServer::renegotiate(&peer).await.expect("offer");
+        offer_sdp(rx.try_recv().expect("offer sent"));
+
+        tokio::time::sleep(SUBSCRIBER_ANSWER_TIMEOUT + Duration::from_secs(1)).await;
+        offer_sdp(rx.try_recv().expect("the unanswered offer is repeated"));
+
+        tokio::time::sleep(SUBSCRIBER_ANSWER_TIMEOUT + Duration::from_secs(1)).await;
+        assert!(rx.try_recv().is_err(), "repeated more than once");
+        assert!(peer.negotiation.lock().await.awaiting_answer_since.is_none());
+
+        SfuServer::renegotiate(&peer).await.expect("next change");
+        offer_sdp(rx.try_recv().expect("next change offers at once"));
         peer.close().await;
     }
 }
