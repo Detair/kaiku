@@ -1187,8 +1187,10 @@ fn parse_turn_servers(raw: Option<&str>) -> Result<Vec<String>> {
             let rest = lower
                 .strip_prefix("turn:")
                 .or_else(|| lower.strip_prefix("turns:"));
+            // A host must follow the scheme (before any `?transport=…`).
+            let host = rest.map(|r| r.split('?').next().unwrap_or_default());
             anyhow::ensure!(
-                rest.is_some_and(|r| !r.is_empty()),
+                host.is_some_and(|h| !h.is_empty() && !h.starts_with(':')),
                 "TURN_SERVER entry {url:?} is not a turn: or turns: URL \
                  (list several URLs separated by commas)"
             );
@@ -1208,10 +1210,11 @@ fn parse_min_client_version(name: &str, raw: Option<&str>) -> Result<Option<Stri
         None => (raw, None),
     };
     let numbers: Vec<&str> = core.split('.').collect();
+    // Numbers without leading zeros (semantic versioning).
     let core_ok = numbers.len() == 3
-        && numbers
-            .iter()
-            .all(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+        && numbers.iter().all(|n| {
+            !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) && (n.len() == 1 || !n.starts_with('0'))
+        });
     let pre_ok = pre.is_none_or(|p| {
         !p.is_empty()
             && p.split('.')
@@ -1255,6 +1258,8 @@ mod client_facing_voice_config_tests {
             "stun:t.example.test:3478",
             "t.example.test:3478",
             "turn:",
+            "turn:?transport=tcp",
+            "turns::443",
             "https://t.example.test",
         ] {
             let err = parse_turn_servers(Some(bad)).unwrap_err().to_string();
@@ -1273,7 +1278,16 @@ mod client_facing_voice_config_tests {
             p(Some("1.0.0-rc.6")).unwrap().as_deref(),
             Some("1.0.0-rc.6")
         );
-        for bad in ["1.0", "v1.0.0", "1.0.0-", "1.0.0-rc..1", "1.0.x", "latest"] {
+        for bad in [
+            "1.0",
+            "v1.0.0",
+            "1.0.0-",
+            "1.0.0-rc..1",
+            "1.0.x",
+            "latest",
+            "01.0.0",
+            "1.00.0",
+        ] {
             let err = p(Some(bad)).unwrap_err().to_string();
             assert!(err.contains("MIN_CLIENT_VERSION_WEB"), "{bad}: {err}");
         }
