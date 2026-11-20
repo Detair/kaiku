@@ -644,9 +644,11 @@ sequenceDiagram
   `clock_timestamp()` read after the row locks are held (the requesting session's and the enrolment's
   liveness, `lock_attempt`, `lock_for_answer`) or in the inserting statement (the challenge), so a wait
   for a lock never extends a deadline. The sweeps' and polls' hints, the phone's own key-device session
-  check (shared by every challenge kind) and the other-account hint use `NOW()` of their statement. Every challenge kind with a parent (`login`, `enroll`, `enroll_pop`, `pc_setup`) is
-  stored with the earlier of the database clock plus its lifetime and the parent's stored deadline, in
-  whole seconds, in the statement that inserts it, so it never outlives its attempt, enrolment or code.
+  check (shared by every challenge kind) and the other-account hint use `NOW()` of their statement. The
+  `pc_setup` challenge is stored with the earlier of the database clock plus its lifetime and the attempt's
+  stored deadline, in whole seconds, in the statement that inserts it, so it never outlives its attempt.
+  The other challenge kinds (`login`, `enroll`, `enroll_pop`, `device_login`, `device_stepup`) keep
+  their own timing on the server's clock; account locks are taken as for every other flow.
 - **Scan answers in order:** a token that no longer belongs to a waiting or claimed attempt (every end
   drops it) answers 404 `LOGIN_CODE_STALE` before any other check. For a token that resolves: the
   scanning device's live key-device session (403 `KEY_DEVICE_REQUIRED`, 401, 403 `ACCOUNT_BANNED`), then

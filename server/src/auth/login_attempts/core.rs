@@ -13,7 +13,7 @@ use uuid::Uuid;
 use super::types::{LoginAttempt, LoginQr};
 use crate::approvals::context::{CanonicalContext, LoginContext, Variant};
 use crate::approvals::core::{
-    issue_until, set_state, verify, ChallengeRow, ChallengeState, NewChallenge, Requester,
+    issue, set_state, verify, ChallengeRow, ChallengeState, NewChallenge, Requester,
 };
 use crate::approvals::devices::{key_device_session, KeyDeviceSession};
 use crate::approvals::error::ApprovalError;
@@ -835,7 +835,7 @@ pub async fn claim_tx(
         place: row.place.clone(),
         username,
     });
-    let challenge = issue_until(
+    let challenge = issue(
         conn,
         ctx,
         NewChallenge {
@@ -848,7 +848,6 @@ pub async fn claim_tx(
             transfer_hash: Some(hash),
             ttl: ttl_end - Utc::now(),
         },
-        Some(row.expires_at),
     )
     .await
     .map_err(|e| match e {

@@ -164,23 +164,67 @@ fn variant_of(ctx: &CanonicalContext) -> Option<String> {
 
 /// Issue a challenge: a random v4 id (not a secret), a 32-byte CSPRNG
 /// nonce, `expires_at` = now + `ttl` (whole seconds, as signed).
+#[tracing::instrument(skip(conn, ctx, new), fields(kind = new.context.kind().as_str()))]
 pub async fn issue(
     conn: &mut PgConnection,
     ctx: &AuthCtx<'_>,
     new: NewChallenge,
 ) -> Result<ApprovalChallenge, ApprovalError> {
-    issue_until(conn, ctx, new, None).await
+    if new.ttl > Duration::minutes(MAX_TTL_MINUTES) || new.ttl <= Duration::zero() {
+        return Err(ApprovalError::Validation(
+            "challenge lifetime out of range".into(),
+        ));
+    }
+    let mut nonce = [0u8; 32];
+    OsRng.fill_bytes(&mut nonce);
+    let now = Utc::now();
+    // Whole seconds: the signed `expires_at` is an i64 of Unix seconds.
+    let expires_at =
+        DateTime::from_timestamp((now + new.ttl).timestamp(), 0).unwrap_or(now + new.ttl);
+    // Flooring a remaining lifetime under a second can land at or before
+    // now: such a challenge would be past due when issued.
+    if expires_at <= now {
+        return Err(ApprovalError::Expired);
+    }
+    let (requester_kind, requester_id) = new.requester.parts();
+    let row: ChallengeRow = sqlx::query_as(
+        "INSERT INTO approvals (id, kind, variant, approver_id, subject_id, device_id,
+                                requester_kind, requester_id, nonce, context_hash, context,
+                                display, transfer_hash, state, created_at, expires_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'issued', $14, $15)
+         RETURNING *",
+    )
+    .bind(Uuid::new_v4())
+    .bind(new.context.kind().as_str())
+    .bind(variant_of(&new.context))
+    .bind(new.approver_id)
+    .bind(new.subject_id)
+    .bind(new.device_id)
+    .bind(requester_kind)
+    .bind(requester_id)
+    .bind(nonce.to_vec())
+    .bind(new.context.hash().to_vec())
+    .bind(new.context.to_json())
+    .bind(&new.display)
+    .bind(new.transfer_hash.map(|h| h.to_vec()))
+    .bind(now)
+    .bind(expires_at)
+    .fetch_one(&mut *conn)
+    .await?;
+    row.to_wire(ctx.origin())
 }
 
-/// [`issue`] for a challenge with a parent: it never outlives `not_after`,
-/// the parent's stored deadline (a login attempt's, an enrolment's or its
-/// code's, a "Set up this PC" attempt's).
+/// Issue a `pc_setup` challenge on the database's clock: in the inserting
+/// statement, `expires_at` = the earlier of now + `ttl` and `not_after`
+/// (the attempt's stored deadline), in whole seconds (signed and stored
+/// agree). A lifetime that floors to now or earlier inserts nothing
+/// (`Expired`). The other kinds use [`issue`].
 #[tracing::instrument(skip(conn, ctx, new), fields(kind = new.context.kind().as_str()))]
 pub async fn issue_until(
     conn: &mut PgConnection,
     ctx: &AuthCtx<'_>,
     new: NewChallenge,
-    not_after: Option<DateTime<Utc>>,
+    not_after: DateTime<Utc>,
 ) -> Result<ApprovalChallenge, ApprovalError> {
     if new.ttl > Duration::minutes(MAX_TTL_MINUTES) || new.ttl <= Duration::zero() {
         return Err(ApprovalError::Validation(
@@ -190,11 +234,6 @@ pub async fn issue_until(
     let mut nonce = [0u8; 32];
     OsRng.fill_bytes(&mut nonce);
     let (requester_kind, requester_id) = new.requester.parts();
-    // One statement on the database's clock: `expires_at` = the earlier of
-    // now + `ttl` and the parent's deadline, in whole seconds (the signed
-    // `expires_at` is an i64 of Unix seconds, so signed and stored agree).
-    // Flooring a remaining lifetime under a second can land at or before
-    // now: such a challenge is not inserted.
     let row: Option<ChallengeRow> = sqlx::query_as(
         "WITH c AS (SELECT clock_timestamp() AS now)
          INSERT INTO approvals (id, kind, variant, approver_id, subject_id, device_id,
@@ -223,8 +262,7 @@ pub async fn issue_until(
     .bind(not_after)
     .fetch_optional(&mut *conn)
     .await?;
-    let row = row.ok_or(ApprovalError::Expired)?;
-    row.to_wire(ctx.origin())
+    row.ok_or(ApprovalError::Expired)?.to_wire(ctx.origin())
 }
 
 /// Lock a challenge for answering by the device (`approver_id`, `device_id`).
@@ -256,12 +294,7 @@ pub async fn lock_for_answer(
     if row.state == "expired" {
         return Err(ApprovalError::Expired);
     }
-    // Past due on the database's clock, read after the row lock.
-    let past_due: bool = sqlx::query_scalar("SELECT $1 <= clock_timestamp()")
-        .bind(row.expires_at)
-        .fetch_one(&mut *conn)
-        .await?;
-    if matches!(row.state.as_str(), "issued" | "approved") && past_due {
+    if matches!(row.state.as_str(), "issued" | "approved") && row.expires_at <= Utc::now() {
         sqlx::query("UPDATE approvals SET state = 'expired' WHERE id = $1")
             .bind(id)
             .execute(&mut *conn)
@@ -272,6 +305,51 @@ pub async fn lock_for_answer(
         return Err(ApprovalError::State);
     }
     Ok(row)
+}
+
+/// Lock a `pc_setup` challenge for its device without deciding anything
+/// yet ([`lock_for_answer`] without the expiry check): the transition reads
+/// the database's clock after all its locks and then calls
+/// [`check_for_answer_at`]. Unknown or another device's → 404.
+pub async fn lock_challenge_row(
+    conn: &mut PgConnection,
+    id: Uuid,
+    approver_id: Uuid,
+    device_id: Uuid,
+) -> Result<ChallengeRow, ApprovalError> {
+    sqlx::query_as(
+        "SELECT * FROM approvals WHERE id = $1 AND approver_id = $2 AND device_id = $3
+            FOR UPDATE",
+    )
+    .bind(id)
+    .bind(approver_id)
+    .bind(device_id)
+    .fetch_optional(&mut *conn)
+    .await?
+    .ok_or(ApprovalError::NotFound)
+}
+
+/// [`lock_for_answer`]'s checks at `now` (the database's clock read after
+/// the transition's locks): expired → 410 (marked), not `issued` → 409.
+pub async fn check_for_answer_at(
+    conn: &mut PgConnection,
+    row: &ChallengeRow,
+    now: DateTime<Utc>,
+) -> Result<(), ApprovalError> {
+    if row.state == "expired" {
+        return Err(ApprovalError::Expired);
+    }
+    if matches!(row.state.as_str(), "issued" | "approved") && row.expires_at <= now {
+        sqlx::query("UPDATE approvals SET state = 'expired' WHERE id = $1")
+            .bind(row.id)
+            .execute(&mut *conn)
+            .await?;
+        return Err(ApprovalError::Expired);
+    }
+    if row.state != "issued" {
+        return Err(ApprovalError::State);
+    }
+    Ok(())
 }
 
 /// Who a challenge is addressed to, read without a lock (to learn which

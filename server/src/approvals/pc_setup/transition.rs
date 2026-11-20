@@ -958,7 +958,7 @@ pub async fn claim_tx(
             transfer_hash: Some(hash),
             ttl: CHALLENGE_TTL,
         },
-        Some(a.expires_at),
+        a.expires_at,
     )
     .await
     .map_err(|e| match e {
