@@ -214,17 +214,19 @@ pub async fn issue(
     row.to_wire(ctx.origin())
 }
 
-/// Issue a `pc_setup` challenge on the database's clock.
+/// Issue a `pc_setup` challenge on the transition's clock.
 ///
-/// In the inserting statement, `expires_at` = the earlier of now + `ttl` and `not_after`
-/// (the attempt's stored deadline), in whole seconds (signed and stored
-/// agree). A lifetime that floors to now or earlier inserts nothing
-/// (`Expired`). The other kinds use [`issue`].
+/// `now` is the transition's one database clock reading (taken after its
+/// locks): `created_at` = `now`, `expires_at` = the earlier of `now` + `ttl`
+/// and `not_after` (the attempt's stored deadline), in whole seconds (signed
+/// and stored agree). A lifetime that floors to `now` or earlier inserts
+/// nothing (`Expired`). The other kinds use [`issue`].
 #[tracing::instrument(skip(conn, ctx, new), fields(kind = new.context.kind().as_str()))]
 pub async fn issue_until(
     conn: &mut PgConnection,
     ctx: &AuthCtx<'_>,
     new: NewChallenge,
+    now: DateTime<Utc>,
     not_after: DateTime<Utc>,
 ) -> Result<ApprovalChallenge, ApprovalError> {
     if new.ttl > Duration::minutes(MAX_TTL_MINUTES) || new.ttl <= Duration::zero() {
@@ -236,7 +238,7 @@ pub async fn issue_until(
     OsRng.fill_bytes(&mut nonce);
     let (requester_kind, requester_id) = new.requester.parts();
     let row: Option<ChallengeRow> = sqlx::query_as(
-        "WITH c AS (SELECT clock_timestamp() AS now)
+        "WITH c AS (SELECT $16::timestamptz AS now)
          INSERT INTO approvals (id, kind, variant, approver_id, subject_id, device_id,
                                 requester_kind, requester_id, nonce, context_hash, context,
                                 display, transfer_hash, state, created_at, expires_at)
@@ -261,6 +263,7 @@ pub async fn issue_until(
     .bind(new.transfer_hash.map(|h| h.to_vec()))
     .bind(new.ttl.num_milliseconds() as f64 / 1000.0)
     .bind(not_after)
+    .bind(now)
     .fetch_optional(&mut *conn)
     .await?;
     row.ok_or(ApprovalError::Expired)?.to_wire(ctx.origin())

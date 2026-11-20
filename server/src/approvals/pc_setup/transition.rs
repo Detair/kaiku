@@ -1069,13 +1069,15 @@ pub async fn claim_tx(
     conn: &mut PgConnection,
     ctx: &AuthCtx<'_>,
     auth: &AuthUser,
-    token: &[u8; 32],
+    token: &str,
 ) -> Result<ApprovalChallenge, ApprovalError> {
     require_key_device_snapshot(auth)?;
-    // The scanner first: its refusal is the same whether the token exists,
-    // and nothing is written for it.
+    // The scanner first: its refusal is the same whatever the token (its
+    // shape too), and nothing is written for it.
     scanner_ready(conn, auth).await?;
-    let hash = token_hash(ctx, token);
+    let token = crate::auth::login_attempts::core::decode_token(token)
+        .ok_or(ApprovalError::LoginCodeStale)?;
+    let hash = token_hash(ctx, &token);
     // One read: the token's attempt and whether it is a live code a scan
     // could claim (state, timers, session, account, phone).
     let seen: Option<(Uuid, Uuid, bool)> = sqlx::query_as(concat!(
@@ -1158,6 +1160,7 @@ pub async fn claim_tx(
             transfer_hash: Some(hash),
             ttl: CHALLENGE_TTL,
         },
+        now,
         a.expires_at,
     )
     .await

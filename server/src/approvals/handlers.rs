@@ -169,6 +169,15 @@ fn decision(s: &str) -> Result<Decision, ApprovalError> {
     }
 }
 
+/// Whether challenge `id` is a `pc_setup` challenge (read without a lock).
+async fn is_pc_setup(state: &AppState, id: Uuid) -> Result<bool, ApprovalError> {
+    let kind: Option<String> = sqlx::query_scalar("SELECT kind FROM approvals WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?;
+    Ok(kind.as_deref().and_then(Kind::parse) == Some(Kind::PcSetup))
+}
+
 /// B.7 rule 1 for answer, deny and release: learn the challenge's accounts
 /// without a lock, lock the caller's and the subject's accounts in one
 /// statement, then the device and session rows (`key_device_session`), then
@@ -268,6 +277,11 @@ pub async fn answer(
     let decision = decision(&body.decision)?;
     let response = b64u_decode(&body.response)
         .ok_or_else(|| ApprovalError::Validation("response must be base64url".into()))?;
+    // A `pc_setup` challenge is answered on its own routes only: unknown
+    // here, before anything is locked or marked.
+    if is_pc_setup(&state, id).await? {
+        return Err(ApprovalError::NotFound);
+    }
     let ctx = AuthCtx::from(&state);
     let mut tx = state.db.begin().await?;
     let (dev, row) = match lock_challenge(&mut tx, &auth, id).await {
@@ -410,6 +424,10 @@ pub async fn deny(
     auth: AuthUser,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApprovalError> {
+    // A `pc_setup` challenge is refused on its own route only.
+    if is_pc_setup(&state, id).await? {
+        return Err(ApprovalError::NotFound);
+    }
     let ctx = AuthCtx::from(&state);
     let mut tx = state.db.begin().await?;
     let (dev, row) = match lock_challenge(&mut tx, &auth, id).await {

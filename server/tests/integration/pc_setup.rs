@@ -3514,3 +3514,85 @@ async fn a_phone_session_that_lapsed_behind_a_plain_lock_refuses_the_scan(pool: 
     );
     assert_eq!(attempt_state(&pool, &id_of(&a)).await.0, "waiting");
 }
+
+// ============================================================================
+// Round 7: generic routes, token shape, web finish order
+// ============================================================================
+
+#[sqlx::test]
+async fn the_generic_answer_and_deny_routes_leave_a_pc_setup_challenge_alone(pool: PgPool) {
+    let p = pc(&pool).await;
+    let (_, c, bytes) = claimed(&p).await;
+    let cid = c["challenge_id"].as_str().unwrap().to_string();
+    // Past due: the routes of the other kinds would mark it.
+    sqlx::query("UPDATE approvals SET expires_at = clock_timestamp() - INTERVAL '1 second' WHERE id = $1::uuid")
+        .bind(&cid)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let prefix = b64u_decode(c["signing_prefix"].as_str().unwrap()).unwrap();
+    let sig = p.dev.sign(&prefix, Decision::Approve, &bytes);
+    let body = json!({"decision": "approve", "response": b64u_encode(&bytes), "signature": sig});
+    for (route, b) in [("answer", Some(body)), ("deny", None)] {
+        let (s, r) = call(
+            &p.app,
+            Method::POST,
+            &format!("/api/approvals/{cid}/{route}"),
+            &p.dev.access_token,
+            b,
+        )
+        .await;
+        assert_eq!(
+            (s, r["error"].as_str()),
+            (404, Some("APPROVAL_NOT_FOUND")),
+            "{route}: {r}"
+        );
+    }
+    let state: String = sqlx::query_scalar("SELECT state FROM approvals WHERE id = $1::uuid")
+        .bind(&cid)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(state, "issued");
+}
+
+#[sqlx::test]
+async fn a_refused_scanner_gets_its_own_answer_for_a_malformed_token(pool: PgPool) {
+    let p = pc(&pool).await;
+    set_may_approve(&pool, p.user, false).await;
+    let (s, b) = claim(&p.app, &p.dev, "x").await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (403, Some("APPROVAL_NOT_ALLOWED")),
+        "{b}"
+    );
+}
+
+#[sqlx::test]
+async fn a_web_finish_for_an_attempt_not_enrolled_takes_no_ceremony(pool: PgPool) {
+    let p = pc(&pool).await;
+    let (old, _) = enrolled(&p).await;
+    let (s, start) = passkey_start(&p, &p.token, &old).await;
+    assert_eq!(s, 200, "{start}");
+    let ceremony_id = start["ceremony_id"].as_str().unwrap().to_string();
+    // Start again: the new attempt waits for its scan.
+    let new = id_of(&started(&p).await);
+    let body = json!({"ceremony_id": ceremony_id, "credential": {}, "label": "Work PC"});
+    let (s, b) = passkey_finish(&p, &p.token, &new, body).await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (409, Some("APPROVAL_STATE")),
+        "{b}"
+    );
+    let still: bool = {
+        use fred::interfaces::KeysInterface;
+        p.app
+            .state
+            .redis
+            .exists::<i64, _>(format!("passkey:ceremony:{ceremony_id}"))
+            .await
+            .unwrap()
+            == 1
+    };
+    assert!(still, "the session's ceremony was not taken");
+}

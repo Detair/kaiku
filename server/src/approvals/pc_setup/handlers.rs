@@ -570,7 +570,11 @@ pub async fn passkey_finish(
     {
         let mut conn = state.db.acquire().await?;
         let row = transition::of_session(&mut conn, &auth, id).await?;
-        if row.code_via.as_deref().is_some_and(|via| via != "web") {
+        // Only an attempt whose right code was typed on the web registers
+        // here; anything else is refused before a ceremony is taken.
+        if row.state() != crate::approvals::pc_setup::AttemptState::Enrolled
+            || row.code_via.as_deref() != Some("web")
+        {
             return Err(ApprovalError::State);
         }
     }
@@ -653,11 +657,9 @@ pub async fn claim(
     auth: AuthUser,
     Json(body): Json<ClaimRequest>,
 ) -> Result<(StatusCode, Json<ApprovalChallenge>), ApprovalError> {
-    let token = crate::auth::login_attempts::core::decode_token(&body.token)
-        .ok_or(ApprovalError::LoginCodeStale)?;
     let ctx = AuthCtx::from(&state);
     let mut tx = state.db.begin().await?;
-    let result = transition::claim_tx(&mut tx, &ctx, &auth, &token).await;
+    let result = transition::claim_tx(&mut tx, &ctx, &auth, &body.token).await;
     let challenge = settle(tx, result).await?;
     Ok((StatusCode::CREATED, Json(challenge)))
 }
