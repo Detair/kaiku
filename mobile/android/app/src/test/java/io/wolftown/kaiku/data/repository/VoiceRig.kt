@@ -479,6 +479,28 @@ internal class VoiceRig(
         }
     }
 
+    /** Never two sessions at once: every join after the first follows the leave of the one before. */
+    fun assertOneSessionAtATime() {
+        var joined: String? = null
+        for (frame in joinsAndLeaves()) {
+            val channel = frame.substringAfter(':')
+            if (frame.startsWith("join:")) {
+                assertEquals("joined $channel while still in $joined: ${joinsAndLeaves()}", null, joined)
+                joined = channel
+            } else if (joined == channel) {
+                joined = null
+            }
+        }
+        assertEquals("the channel shown is not the one voice is in: ${joinsAndLeaves()}", joined, repository.currentChannelId.value)
+        assertEquals(repository.currentChannelId.value, repository.current.value?.channelId)
+        assertEquals("a voice_join reached the server while it still held our place: $log", 0, server.refusedJoins)
+        // Connections of two sessions never exist together: a close lies between two set-ups.
+        val installs = log.withIndex().filter { it.value == "sub" }.map { it.index }
+        installs.zipWithNext().forEach { (a, b) ->
+            assertTrue("two sessions set up without a teardown in between: $log", log.subList(a, b).contains("close"))
+        }
+    }
+
     /** The user leaves, as a second thread would at this very point. */
     fun leave() {
         log += "LEAVE"

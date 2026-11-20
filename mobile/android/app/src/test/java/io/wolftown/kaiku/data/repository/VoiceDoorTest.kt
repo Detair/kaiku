@@ -26,28 +26,6 @@ class VoiceDoorTest {
 
     private fun call(tag: Long) = VoiceRepository.CallSession({ RejoinVerdict.Allowed }, "Anna", tag)
 
-    /** Never two sessions at once: every join after the first follows the leave of the one before. */
-    private fun VoiceRig.assertOneSessionAtATime() {
-        var joined: String? = null
-        for (frame in joinsAndLeaves()) {
-            val channel = frame.substringAfter(':')
-            if (frame.startsWith("join:")) {
-                assertEquals("joined $channel while still in $joined: ${joinsAndLeaves()}", null, joined)
-                joined = channel
-            } else if (joined == channel) {
-                joined = null
-            }
-        }
-        assertEquals("the channel shown is not the one voice is in: ${joinsAndLeaves()}", joined, repository.currentChannelId.value)
-        assertEquals(repository.currentChannelId.value, repository.current.value?.channelId)
-        assertEquals("a voice_join reached the server while it still held our place: $log", 0, server.refusedJoins)
-        // Connections of two sessions never exist together: a close lies between two set-ups.
-        val installs = log.withIndex().filter { it.value == "sub" }.map { it.index }
-        installs.zipWithNext().forEach { (a, b) ->
-            assertTrue("two sessions set up without a teardown in between: $log", log.subList(a, b).contains("close"))
-        }
-    }
-
     // -- Sign-out and the owner (the release waits for the owner) -------------------------
 
     @Test
@@ -348,5 +326,48 @@ class VoiceDoorTest {
         rig.repository.toggleMute()
         assertEquals(1, asked)
         assertEquals("the call decides, not the control", false, rig.repository.isMuted.value)
+    }
+
+    // -- Any two requests at any point: one session at a time ----------------------------------
+
+    @Test
+    fun `whatever second request arrives at whatever point of a join, there is one voice session at a time`() = kotlinx.coroutines.test.runTest {
+        val points = listOf("mute", "sub:create", "join:check", "join:sent", "pub:create", "pub:installed")
+        val firsts = listOf<Pair<String, suspend (VoiceRig) -> Unit>>(
+            "call" to { it.repository.joinCall(dm, call(1)) },
+            "channel" to { it.repository.joinChannel("guild-1") },
+        )
+        val seconds = listOf<Pair<String, suspend (VoiceRig) -> Unit>>(
+            "join channel" to { it.repository.joinChannel("guild-2") },
+            "join call" to { it.repository.joinCall("dm-2", call(9)) },
+            "leave" to { it.repository.leaveChannel() },
+            "leave call" to { it.repository.leaveCall(1) },
+        )
+        var runs = 0
+        for ((firstName, first) in firsts) for (point in points) for ((secondName, second) in seconds) {
+            val rig = VoiceRig(this)
+            try {
+                rig.socket.ready()
+                // The second request comes in the middle of the first, as another thread would.
+                rig.at(point) { launch(start = CoroutineStart.UNDISPATCHED) { runCatching { second(rig) } } }
+                launch(start = CoroutineStart.UNDISPATCHED) { runCatching { first(rig) } }
+                runCurrent()
+                try {
+                    rig.assertOneSessionAtATime()
+                } catch (e: AssertionError) {
+                    throw AssertionError("$firstName, then $secondName at $point: ${e.message}", e)
+                }
+                // And it can all be left again: nothing stays behind.
+                rig.repository.leaveChannel()
+                runCurrent()
+                assertEquals("$firstName, then $secondName at $point: ${rig.log}", null, rig.repository.currentChannelId.value)
+                assertEquals("$firstName, then $secondName at $point: ${rig.log}", null, rig.server.peer)
+                rig.assertNoCallNotification()
+                runs++
+            } finally {
+                rig.close()
+            }
+        }
+        assertEquals(48, runs)
     }
 }

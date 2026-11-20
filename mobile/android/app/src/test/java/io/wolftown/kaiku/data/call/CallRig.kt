@@ -40,13 +40,35 @@ internal class FakeCallApi : CallApi {
     /** The call id the server answers a join with. */
     var joinAnswers = "c-1"
 
+    /** While true, every request waits for [release] before it is answered. */
+    var hold = false
+    private val waiting = ArrayDeque<kotlinx.coroutines.CompletableDeferred<Unit>>()
+
+    /** The oldest request that is out gets its answer. */
+    fun release() {
+        waiting.removeFirstOrNull()?.complete(Unit)
+    }
+
+    fun releaseAll() {
+        while (waiting.isNotEmpty()) release()
+    }
+
     private fun sent(what: String, session: Long) {
         calls += what
         sessions += session
     }
 
+    /** The request is out; its answer comes when the test lets it. */
+    private suspend fun answer() {
+        if (!hold) return
+        val mine = kotlinx.coroutines.CompletableDeferred<Unit>()
+        waiting += mine
+        mine.await()
+    }
+
     override suspend fun get(channelId: String, session: Long): CallStateDto? {
         sent("get", session)
+        answer()
         getGate?.await()
         getError?.let { throw it }
         return current
@@ -54,6 +76,7 @@ internal class FakeCallApi : CallApi {
 
     override suspend fun start(channelId: String, session: Long): CallStateDto {
         sent("start", session)
+        answer()
         startGate?.await()
         startError?.let { throw it }
         return CallStateDto(channelId, "c-1", "ringing", startedBy = "me")
@@ -61,17 +84,20 @@ internal class FakeCallApi : CallApi {
 
     override suspend fun join(channelId: String, session: Long): CallStateDto {
         sent("join", session)
+        answer()
         return CallStateDto(channelId, joinAnswers, "active", participants = listOf("anna", "me"))
     }
 
     override suspend fun decline(channelId: String, session: Long): CallStateDto {
         declineGate?.await()
         sent("decline", session)
+        answer()
         return CallStateDto(channelId, "c-1", "ended")
     }
 
     override suspend fun leave(channelId: String, session: Long): CallStateDto {
         sent("leave", session)
+        answer()
         return CallStateDto(channelId, "c-1", "ended")
     }
 }
@@ -116,6 +142,9 @@ internal class CallRig(val test: TestScope, val dm: String = "dm-1") {
     /** Whether Android lets the microphone service start. */
     var holdGranted = true
 
+    /** Everything the call layer asked of the voice layer, in order. */
+    val voiceOps = mutableListOf<String>()
+
     /** The call's voice session as asked for last, and the mute it was opened with. */
     var session: VoiceRepository.CallSession? = null
     var openedMuted: Boolean? = null
@@ -128,6 +157,7 @@ internal class CallRig(val test: TestScope, val dm: String = "dm-1") {
             gate = call.gate
             tag = call.tag
             session = call
+            voiceOps += "join"
             // Like the voice layer: the session opens with the call's mute.
             openedMuted = call.muted()
             voiceChannel.value = firstArg()
@@ -135,11 +165,16 @@ internal class CallRig(val test: TestScope, val dm: String = "dm-1") {
         // The microphone service, asked for at the tap; in the order of the requests.
         every { holdForCall(any(), any(), any()) } answers {
             api.calls += "hold"
+            voiceOps += "hold"
             holdGranted
         }
+        every { setCallMuted(any(), any()) } answers { voiceOps += "mute" }
         coEvery { leaveChannel() } coAnswers { voiceChannel.value = null }
         // Like the voice layer: only the call's own session is left.
-        coEvery { leaveCall(any()) } coAnswers { if (voiceChannel.value == dm) voiceChannel.value = null }
+        coEvery { leaveCall(any()) } coAnswers {
+            voiceOps += "leave"
+            if (voiceChannel.value == dm) voiceChannel.value = null
+        }
     }
     val socket: KaikuWebSocket = mockk(relaxed = true) { every { events } returns this@CallRig.events }
     val sessions = FakeSessions("me")

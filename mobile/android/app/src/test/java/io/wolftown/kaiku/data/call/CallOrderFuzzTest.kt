@@ -1,6 +1,7 @@
 package io.wolftown.kaiku.data.call
 
 import io.wolftown.kaiku.data.call.CallEvent.Accept
+import io.wolftown.kaiku.data.call.CallEvent.JoinFailed
 import io.wolftown.kaiku.data.call.CallEvent.JoinOk
 import io.wolftown.kaiku.data.call.CallEvent.ParticipantJoined
 import io.wolftown.kaiku.data.call.CallEvent.ParticipantLeft
@@ -21,7 +22,8 @@ import org.junit.Test
 /**
  * The same events and answers in every order the transport allows (an
  * answer never before its request, a voice result never before the voice
- * join was asked for): the end state must be an allowed one —
+ * join was asked for; socket events at any point, also while a request is
+ * out): the end state must be an allowed one —
  * - in the call with its voice join asked for exactly once and not left, or
  * - ended (or not shown) with the server told about this user at most once,
  *   exactly once where this user was in the server's call, and every voice
@@ -41,10 +43,17 @@ class CallOrderFuzzTest {
         var voiceAsked = 0
         var voiceOn = false
         var leaves = 0
+
+        /** The microphone service is up for a call (started at the tap, given up with the call's voice). */
+        var serviceHeld = false
         val log = mutableListOf<String>()
 
         fun apply(effects: List<CallEffect>) {
             for (e in effects) when (e) {
+                is CallEffect.HoldVoice -> {
+                    serviceHeld = true
+                    log += "hold"
+                }
                 is CallEffect.JoinVoice -> {
                     voiceAsked++
                     voiceOn = true
@@ -52,6 +61,7 @@ class CallOrderFuzzTest {
                 }
                 is CallEffect.LeaveVoice -> {
                     voiceOn = false
+                    serviceHeld = false
                     log += "leave-voice"
                 }
                 is CallEffect.RestLeave -> {
@@ -82,14 +92,27 @@ class CallOrderFuzzTest {
             var model = CallModel()
             val world = World()
             for (e in prefix + order.map { steps[it].event }) {
+                val before = model.state
                 val step = CallMachine.reduce(model, e, me)
                 model = step.model
                 world.apply(step.effects)
+                // As the controller: leaving a call without a LeaveVoice effect still ends its voice.
+                val had = voiceIdOf(before)
+                if (had != null && voiceIdOf(model.state) != had && step.effects.none { it is CallEffect.LeaveVoice }) {
+                    world.apply(listOf(CallEffect.LeaveVoice(before.channelId!!, had)))
+                }
             }
             check(model, world, order)
             runs++
         }
         return runs
+    }
+
+    private fun voiceIdOf(state: CallState): Long? = when (state) {
+        is CallState.Outgoing -> state.voiceId
+        is CallState.Connecting -> state.voiceId
+        is CallState.Connected -> state.voiceId
+        else -> null
     }
 
     private fun ringingByMe(callId: String) = CallSnapshot(callId, ringing = true, active = false, startedBy = me, participants = emptySet(), declinedBy = emptySet())
@@ -107,6 +130,7 @@ class CallOrderFuzzTest {
         val s = model.state
         assertTrue("still in a call after $order: $s", s is CallState.Ended || s is CallState.Idle || s is CallState.Incoming)
         assertTrue("ended here but voice joined after $order: ${world.log}", !world.voiceOn)
+        assertTrue("ended here but the microphone service is still up after $order: ${world.log}", !world.serviceHeld)
         assertEquals("server told ${world.leaves} times after $order: ${world.log}", if (serverHasMe) 1 else 0, world.leaves)
     }
 
@@ -195,7 +219,9 @@ class CallOrderFuzzTest {
                 Step(ParticipantJoined(dm, "c-1", "carl", 1L)),
                 Step(Accept(dm, "c-1"), after = setOf(0)),
                 Step(JoinOk(dm, "c-1", setOf("anna", "carl", me)), after = setOf(1)),
-                Step(ParticipantLeft(dm, "c-1", "anna"), after = setOf(2)),
+                // The caller may leave at any point after this phone answered, also while the
+                // answer is still on its way to the server and back.
+                Step(ParticipantLeft(dm, "c-1", "anna"), after = setOf(1)),
                 Step(VoiceJoined(dm, 2L, 1L), after = setOf(2)),
             ),
         ) { model, world, order ->
@@ -232,6 +258,91 @@ class CallOrderFuzzTest {
         ) { model, world, order ->
             assertTrue(!world.voiceOn)
             if (world.leaves > 1) fail("two leaves after $order: ${world.log}")
+        }
+    }
+
+    // -- Orders the transport allows while a request is out ------------------------------------
+
+    @Test
+    fun `one-to-one - the other side leaving at any point after the answer ends the call once`() {
+        val runs = fuzz(
+            prefix = listOf(Rang(dm, "c-1", "anna", "Anna", 0L)),
+            steps = listOf(
+                Step(Accept(dm, "c-1")),
+                Step(JoinOk(dm, "c-1", setOf("anna", me)), after = setOf(0)), // the list as the server had it when it answered
+                Step(ParticipantLeft(dm, "c-1", "anna"), after = setOf(0)),
+                Step(VoiceJoined(dm, 2L, 1L), after = setOf(1)),
+            ),
+        ) { model, world, order ->
+            // Never "in the call alone": ended here, voice off, the server told once.
+            assertEnded(model, world, order, serverHasMe = true)
+        }
+        assertEquals(3, runs)
+    }
+
+    @Test
+    fun `group - someone joining at any point after the answer is in the call`() {
+        fuzz(
+            prefix = listOf(Rang(dm, "c-1", "anna", "Anna", 0L)),
+            steps = listOf(
+                Step(Accept(dm, "c-1")),
+                Step(JoinOk(dm, "c-1", setOf("anna", me)), after = setOf(0)),
+                Step(ParticipantJoined(dm, "c-1", "carl", 1L), after = setOf(0)),
+                Step(VoiceJoined(dm, 2L, 1L), after = setOf(1)),
+            ),
+        ) { model, world, order ->
+            assertInCallWithVoice(model, world, order)
+            assertEquals("after $order", setOf("anna", "carl"), (model.state as CallState.Connected).others)
+        }
+    }
+
+    @Test
+    fun `outgoing - the call's end and the start's answer in either order never join a call that is over`() {
+        val runs = fuzz(
+            prefix = listOf(Start(dm, 0L)),
+            steps = listOf(
+                Step(StartOk(dm, "c-1", 0L)),
+                Step(ServerEnded(dm, "c-1", "all_declined")),
+            ),
+        ) { model, world, order ->
+            assertEquals("after $order", CallState.Ended(dm, CallEndReason.Declined), model.state)
+            // The server ended it: nothing to tell, and no voice.
+            assertEnded(model, world, order, serverHasMe = false)
+        }
+        assertEquals(2, runs)
+    }
+
+    @Test
+    fun `outgoing - end, answer, the other side's answer and a hang-up in any order end with voice off`() {
+        fuzz(
+            prefix = listOf(Start(dm, 0L)),
+            steps = listOf(
+                Step(StartOk(dm, "c-1", 0L)),
+                Step(ServerEnded(dm, "c-1", "cancelled")),
+                Step(CallEvent.HangUp(dm, null)),
+                Step(Resynced(dm, ringingByMe("c-1"), 1L)),
+            ),
+        ) { model, world, order ->
+            assertTrue("after $order: ${model.state}", model.state is CallState.Ended)
+            assertTrue("voice on after $order: ${world.log}", !world.voiceOn && !world.serviceHeld)
+            if (world.leaves > 1) fail("two leaves after $order: ${world.log}")
+        }
+    }
+
+    @Test
+    fun `incoming - the microphone service is held from the answer and given up on every way out`() {
+        fuzz(
+            prefix = listOf(Rang(dm, "c-1", "anna", "Anna", 0L)),
+            steps = listOf(
+                Step(Accept(dm, "c-1")),
+                Step(JoinFailed(dm, "c-1", gone = true), after = setOf(0)),
+                Step(ServerEnded(dm, "c-1", "cancelled")),
+                Step(CallEvent.HangUp(dm, "c-1"), after = setOf(0)),
+            ),
+        ) { model, world, order ->
+            assertTrue("after $order: ${model.state}", model.state is CallState.Ended || model.state is CallState.Idle)
+            assertTrue("the microphone service stayed up after $order: ${world.log}", !world.serviceHeld && !world.voiceOn)
+            assertEquals("a leave for an answer the server never accepted after $order: ${world.log}", 0, world.leaves)
         }
     }
 }
