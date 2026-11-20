@@ -25,8 +25,11 @@ import java.util.logging.Logger
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/** The people offered by "New message", and how many servers could not be read. */
-data class People(val people: List<Person>, val failedServers: Int)
+/**
+ * The people offered by "New message", and how many servers could not be read
+ * ([failure]: why the first of them could not).
+ */
+data class People(val people: List<Person>, val failedServers: Int, val failure: Throwable? = null)
 
 /** Every server's member list failed to load (offline, server error). */
 class PeopleUnavailableException(cause: Throwable?) : Exception("no member list could be loaded", cause)
@@ -97,12 +100,17 @@ class PeopleRepository @Inject constructor(
      * Whether [userId] can still be written to, by a fresh [load]: someone
      * who left the user's servers or was blocked since the list was shown
      * (on this or another device) is not confirmed (null). Throws what
-     * [load] throws when it cannot be checked.
+     * [load] throws when it cannot be checked, and
+     * [PeopleUnavailableException] when the person is not among those
+     * loaded while a server's member list could not be loaded: they may be
+     * on that server, so that is no answer.
      */
     suspend fun confirm(userId: String): EligiblePerson? {
         val session = openSession()
         val now = loadFor(session)
-        return if (now.people.any { it.userId == userId }) EligiblePerson(userId, session) else null
+        if (now.people.any { it.userId == userId }) return EligiblePerson(userId, session)
+        if (now.failedServers > 0) throw PeopleUnavailableException(now.failure)
+        return null
     }
 
     private fun openSession(): SessionGeneration.Ticket =
@@ -121,6 +129,7 @@ class PeopleRepository @Inject constructor(
                 People(
                     people = messageCandidates(loaded, session.userId, blocked.await()),
                     failedServers = lists.size - loaded.size,
+                    failure = lists.firstNotNullOfOrNull { it.exceptionOrNull() },
                 )
             }
         }

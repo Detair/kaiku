@@ -187,6 +187,29 @@ class NewMessageViewModelTest {
     }
 
     @Test
+    fun `someone who could not be checked stays, with a message to try again`() = runTest(dispatcher) {
+        coEvery { people.load() } returns People(listOf(anna, bert), failedServers = 1)
+        coEvery { people.confirm("anna") } throws io.wolftown.kaiku.data.repository.PeopleUnavailableException(IOException("offline"))
+        val vm = NewMessageViewModel(people, dms)
+        advanceUntilIdle()
+
+        vm.open(anna)
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) { dms.openDirectMessage(any()) }
+        assertEquals("a person who could not be checked was removed", listOf(anna, bert), vm.ui.value.people)
+        assertEquals(io.wolftown.kaiku.R.string.errors_network, vm.ui.value.message)
+        assertEquals(null, vm.ui.value.openingUserId)
+
+        // Not the neutral refusal, also without a known cause.
+        coEvery { people.confirm("anna") } throws io.wolftown.kaiku.data.repository.PeopleUnavailableException(null)
+        vm.messageShown()
+        vm.open(anna)
+        advanceUntilIdle()
+        assertEquals(io.wolftown.kaiku.R.string.dm_new_create_failed, vm.ui.value.message)
+    }
+
+    @Test
     fun `a tap opens only who was just confirmed`() = runTest(dispatcher) {
         coEvery { people.load() } returns People(listOf(anna), failedServers = 0)
         coEvery { dms.openDirectMessage(any()) } returns "dm-anna"

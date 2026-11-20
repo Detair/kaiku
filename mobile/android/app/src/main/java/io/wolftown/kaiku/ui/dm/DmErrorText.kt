@@ -17,6 +17,8 @@ object DmErrorText {
      */
     @StringRes
     fun open(e: Throwable): Int = when {
+        // The person could not be checked (no member list, or not every one): try again.
+        e is PeopleUnavailableException -> common(underlying(e)) ?: R.string.dm_new_create_failed
         e is ApiException && (e.normalizedCode == "VALIDATION_ERROR" ||
             e.status == HttpStatusCode.Forbidden || e.status == HttpStatusCode.NotFound) -> R.string.dm_new_not_possible
         else -> common(e) ?: R.string.dm_new_create_failed

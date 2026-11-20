@@ -101,6 +101,23 @@ class PeopleRepositoryTest {
     }
 
     @Test
+    fun `someone not found while a server's member list failed is not refused but could not be checked`() = runTest {
+        coEvery { guildApi.getGuilds() } returns listOf(Guild("g1", "Family"), Guild("g2", "Club"))
+        coEvery { guildApi.getMembers("g1") } returns listOf(member("me"), member("bert"))
+        // Anna is on g2, whose member list does not load right now.
+        coEvery { guildApi.getMembers("g2") } throws IOException("offline")
+        coEvery { dmApi.getBlocked() } returns emptySet()
+        try {
+            repo.confirm("anna")
+            fail("a person on a server that could not be read was refused")
+        } catch (e: PeopleUnavailableException) {
+            assertTrue(generateSequence<Throwable>(e) { it.cause }.any { it is IOException })
+        }
+        // Someone found is confirmed all the same.
+        assertEquals("bert", repo.confirm("bert")?.userId)
+    }
+
+    @Test
     fun `someone blocked since on another device is not confirmed`() = runTest {
         coEvery { guildApi.getGuilds() } returns listOf(Guild("g1", "Family"))
         coEvery { guildApi.getMembers("g1") } returns listOf(member("me"), member("anna"))

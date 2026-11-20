@@ -129,6 +129,7 @@ class NewMessageViewModel @Inject constructor(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                // Also when the person could not be checked: they stay, and a tap tries again.
                 logger.warning("open conversation failed (${e::class.simpleName})")
                 _ui.update { it.copy(message = DmErrorText.open(e)) }
             } finally {
