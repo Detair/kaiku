@@ -31,6 +31,10 @@ pub const MAX_CODE_TRIES: i16 = 3;
 pub const CODE_DIGITS: usize = 6;
 /// The enrolment lives this long from the right code.
 pub const ENROLLMENT_MINUTES: i64 = 10;
+/// Starts per account within [`START_WINDOW_MINUTES`] (restarts included).
+pub const MAX_STARTS: i64 = 10;
+/// The window of [`MAX_STARTS`].
+pub const START_WINDOW_MINUTES: i64 = 10;
 
 /// SM5 states. `waiting`, `claimed`, `code` and `enrolled` are live; every
 /// other state is terminal.

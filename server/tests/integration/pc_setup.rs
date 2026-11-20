@@ -2578,3 +2578,43 @@ async fn a_slow_person_finishes_with_the_real_rate_limiter(pool: PgPool) {
     let (s, pk) = passkey_finish(&p, &p.token, &id, body).await;
     assert_eq!(s, 201, "{pk}");
 }
+
+#[sqlx::test]
+async fn starts_per_account_are_bounded(pool: PgPool) {
+    let p = pc(&pool).await;
+    // Ten starts in the last ten minutes, from any session of the account.
+    for _ in 0..10 {
+        let sid = probation_session(&pool, p.user).await;
+        insert_attempt(&pool, p.user, sid, "cancelled").await.unwrap();
+    }
+    let (s, body) = start(&p.app, &p.token).await;
+    assert_eq!((s, body["error"].as_str()), (429, Some("TOO_MANY_ATTEMPTS")), "{body}");
+    // Older starts do not count.
+    sqlx::query("UPDATE pc_setup_attempts SET created_at = NOW() - INTERVAL '11 minutes',
+                        expires_at = NOW() - INTERVAL '1 minute' WHERE user_id = $1")
+        .bind(p.user)
+        .execute(&pool)
+        .await
+        .unwrap();
+    started(&p).await;
+}
+
+#[sqlx::test]
+async fn old_attempts_are_cleaned_up(pool: PgPool) {
+    let p = pc(&pool).await;
+    let old = insert_attempt(&pool, p.user, p.sid, "cancelled").await.unwrap();
+    sqlx::query("UPDATE pc_setup_attempts SET created_at = NOW() - INTERVAL '31 days',
+                        expires_at = NOW() - INTERVAL '31 days' + INTERVAL '10 minutes' WHERE id = $1")
+        .bind(old)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let recent = insert_attempt(&pool, p.user, p.sid, "expired").await.unwrap();
+    vc_server::db::cleanup_finished_approvals(&pool).await.unwrap();
+    let left: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM pc_setup_attempts WHERE user_id = $1")
+        .bind(p.user)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert_eq!(left, vec![recent]);
+}

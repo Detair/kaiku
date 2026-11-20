@@ -585,6 +585,21 @@ pub async fn start_tx(
     if !eligible.allows_start() {
         return Err(ApprovalError::PcSetupUnavailable);
     }
+    // A bound on starts per account, counted under the account lock.
+    let recent: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pc_setup_attempts
+          WHERE user_id = $1 AND created_at > NOW() - make_interval(mins => $2)",
+    )
+    .bind(auth.id)
+    .bind(i32::try_from(super::START_WINDOW_MINUTES).unwrap_or(10))
+    .fetch_one(&mut *conn)
+    .await?;
+    if recent >= super::MAX_STARTS {
+        return Err(crate::auth::AuthError::TooManyAttempts {
+            retry_after: u64::try_from(super::START_WINDOW_MINUTES * 60).unwrap_or(600),
+        }
+        .into());
+    }
     let previous: Option<Uuid> = sqlx::query_scalar(
         "SELECT id FROM pc_setup_attempts
           WHERE session_id = $1 AND state IN ('waiting', 'claimed', 'code', 'enrolled')",

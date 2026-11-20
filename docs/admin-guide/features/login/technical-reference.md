@@ -1072,6 +1072,7 @@ Known gaps between spec and clients (rc.3):
 | Denylist TTL | access lifetime + 60 s | `auth/revocation.rs` |
 | Login attempt / QR token / claim / collect | 600 s / 60 s / 120 s / 60 s | `auth/login_attempts/core.rs` |
 | Set up this PC: attempt (`waiting`, `claimed`) / QR token / `pc_setup` challenge / code / tries / enrolment | 10 min / 60 s / 120 s / 5 min / 3 / 10 min | `approvals/pc_setup/mod.rs` |
+| Set up this PC: starts per account / attempt rows kept | 10 per 10 min (429 `TOO_MANY_ATTEMPTS`) / 30 days | `approvals/pc_setup/mod.rs`, `db/queries.rs` |
 | Long-poll wait / concurrent long-polls | ≤ 25 s / 32 | same |
 | Challenge maximum | 10 min | `approvals/core.rs` |
 | `device_login`, `device_stepup` challenge | 120 s | `approvals/device_login.rs`, `approvals/handlers.rs` |

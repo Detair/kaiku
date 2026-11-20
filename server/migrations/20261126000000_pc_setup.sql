@@ -60,7 +60,17 @@ CREATE UNIQUE INDEX pc_setup_attempts_qr_token ON pc_setup_attempts (qr_token_ha
 -- The minute sweep.
 CREATE INDEX idx_pc_setup_attempts_due ON pc_setup_attempts (expires_at)
     WHERE state IN ('waiting', 'claimed', 'code', 'enrolled');
-CREATE INDEX idx_pc_setup_attempts_user ON pc_setup_attempts (user_id);
+CREATE INDEX idx_pc_setup_attempts_user ON pc_setup_attempts (user_id, created_at);
+-- The foreign keys' `ON DELETE SET NULL` (old challenges, enrolments and
+-- devices are cleaned up) and the 30-day retention.
+CREATE INDEX idx_pc_setup_attempts_challenge ON pc_setup_attempts (challenge_id)
+    WHERE challenge_id IS NOT NULL;
+CREATE INDEX idx_pc_setup_attempts_device ON pc_setup_attempts (device_id)
+    WHERE device_id IS NOT NULL;
+CREATE INDEX idx_pc_setup_attempts_enrollment ON pc_setup_attempts (enrollment_id)
+    WHERE enrollment_id IS NOT NULL;
+CREATE INDEX idx_pc_setup_attempts_created ON pc_setup_attempts (created_at);
+
 -- The client's User-Agent when the session was created. Refresh rotation
 -- updates `user_agent` with every refresh; the description the key phone shows
 -- and signs for an attempt comes from this value, which never changes.

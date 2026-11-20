@@ -966,7 +966,7 @@ Nothing below changes an existing contract entry; a client that does not know it
 
   | Route | Body → answer |
   |---|---|
-  | `POST /auth/pc-setups` | – → 201 `{attempt_id, qr_payload, rotates_at}`; `qr_payload` = `kaiku://pcsetup/v1?o=<percent-encoded origin>&t=<43-char b64u token>`. A start while the session has a live attempt cancels it (reason `restarted`, with its enrolment) and creates a new one. 403 `PC_SETUP_UNAVAILABLE`; 401 `INVALID_TOKEN` |
+  | `POST /auth/pc-setups` | – → 201 `{attempt_id, qr_payload, rotates_at}`; `qr_payload` = `kaiku://pcsetup/v1?o=<percent-encoded origin>&t=<43-char b64u token>`. A start while the session has a live attempt cancels it (reason `restarted`, with its enrolment) and creates a new one. 403 `PC_SETUP_UNAVAILABLE`; 401 `INVALID_TOKEN`; 429 `TOO_MANY_ATTEMPTS` after 10 starts of the account within 10 minutes |
   | `GET /auth/pc-setups/current` | → 200 status or 404; the session's live attempt after a reload. **While `waiting` it always mints a fresh token**, so a QR scanned from an earlier response may then fail with 404 `LOGIN_CODE_STALE`; the phone's message says to scan the code on the computer again |
   | `GET /auth/pc-setups/{id}?wait=0..25` | → 200 status (long-poll, returns early on a state change or a new QR); the PC polls at most once a second |
   | `DELETE /auth/pc-setups/{id}` | → cancel (`cancelled`, also voids the enrolment) |
