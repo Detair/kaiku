@@ -131,6 +131,7 @@ const ScreenShareQualityPicker: Component<ScreenShareQualityPickerProps> = (prop
           data-testid="screen-share-start"
           onClick={handleStart}
           disabled={loading()}
+          aria-busy={loading()}
           class="px-4 py-2 text-sm bg-accent-primary text-on-accent rounded-lg hover:bg-accent-primary/90 transition-colors state-disabled"
         >
           {loading() ? t("voice.screenShare.starting") : t("voice.screenShare.startButton")}

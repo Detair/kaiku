@@ -357,3 +357,16 @@ describe("screenShareViewer", () => {
     });
   });
 });
+
+describe("tile focus request", () => {
+  it("waits for its tile, but not for ever", async () => {
+    vi.useFakeTimers();
+    const m = await import("../screenShareViewer");
+    m.requestTileFocus("s1");
+    vi.advanceTimersByTime(m.TILE_FOCUS_REQUEST_TTL_MS - 1);
+    expect(m.tileFocusRequest()).toBe("s1");
+    vi.advanceTimersByTime(1);
+    expect(m.tileFocusRequest()).toBeNull();
+    vi.useRealTimers();
+  });
+});

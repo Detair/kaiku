@@ -47,7 +47,7 @@ export const voice = {
   "voice.screenShare.error.tryAgain": "Screen sharing could not start this time. Try again.",
   "voice.webcam.error.noMedia": "No picture reached the server, so your camera was turned off.",
   "voice.webcam.error.endedByServer": "The server turned your camera off.",
-  "voice.media.error.busy": "A start is already in progress.",
+  "voice.media.error.busy": "Another share or camera is still starting. Try again in a moment.",
   "voice.media.error.rateLimited": "Too many starts in a row. Wait a moment and try again.",
   "voice.media.error.unannounced": "The server did not accept your video, so it was stopped.",
   "voice.tile.you": "You",

@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   CHANNEL_OVERRIDE_PERMISSION_KEYS,
@@ -35,42 +37,27 @@ describe("channel override permission constants", () => {
 });
 
 /**
- * Copy of the server's table (`server/src/permissions/guild.rs`, 2026-11-20):
- * bit per name, EVERYONE_DEFAULT, EVERYONE_FORBIDDEN, EVERYONE_ALLOWED.
- * A change on either side must change this copy too.
+ * The server's bit table, read from its source (`server/src/permissions/
+ * guild.rs`), so a change of a bit or a name on either side fails here.
  */
-const SERVER_BITS: Record<string, number> = {
-  SEND_MESSAGES: 0,
-  EMBED_LINKS: 1,
-  ATTACH_FILES: 2,
-  USE_EMOJI: 3,
-  ADD_REACTIONS: 4,
-  VOICE_CONNECT: 5,
-  VOICE_SPEAK: 6,
-  VOICE_MUTE_OTHERS: 7,
-  VOICE_DEAFEN_OTHERS: 8,
-  VOICE_MOVE_MEMBERS: 9,
-  MANAGE_MESSAGES: 10,
-  TIMEOUT_MEMBERS: 11,
-  KICK_MEMBERS: 12,
-  BAN_MEMBERS: 13,
-  MANAGE_CHANNELS: 14,
-  MANAGE_ROLES: 15,
-  VIEW_AUDIT_LOG: 16,
-  MANAGE_GUILD: 17,
-  TRANSFER_OWNERSHIP: 18,
-  CREATE_INVITE: 19,
-  MANAGE_INVITES: 20,
-  MANAGE_PAGES: 21,
-  SCREEN_SHARE: 22,
-  MENTION_EVERYONE: 23,
-  VIEW_CHANNEL: 24,
-  PIN_MESSAGES: 25,
-  MANAGE_POSTS: 26,
-  SEND_ANNOUNCEMENTS: 27,
-  MANAGE_EVENTS: 28,
-  MANAGE_WEBHOOKS: 29,
-};
+function readServerBits(): Record<string, number> {
+  const source = readFileSync(
+    resolve(__dirname, "../../../server/src/permissions/guild.rs"),
+    "utf8",
+  );
+  const bits: Record<string, number> = {};
+  for (const m of source.matchAll(/^\s*const ([A-Z_]+)\s*=\s*1 << (\d+);/gm)) {
+    bits[m[1]] = Number(m[2]);
+  }
+  return bits;
+}
+const SERVER_BITS = readServerBits();
+
+/**
+ * The server's @everyone sets as of the screen-share permission change
+ * (SCREEN_SHARE on by default, allowed for @everyone). They are a copy:
+ * that server change ships in its own package.
+ */
 const SERVER_EVERYONE_DEFAULT = [
   "VIEW_CHANNEL", "SEND_MESSAGES", "EMBED_LINKS", "ATTACH_FILES", "USE_EMOJI",
   "ADD_REACTIONS", "VOICE_CONNECT", "VOICE_SPEAK", "CREATE_INVITE", "SCREEN_SHARE",
@@ -83,6 +70,10 @@ const SERVER_EVERYONE_ALLOWED = [
 const maskOf = (names: string[]) => names.reduce((m, n) => m | (1 << SERVER_BITS[n]), 0);
 
 describe("permission table matches the server", () => {
+  it("reads the server's whole table", () => {
+    expect(Object.keys(SERVER_BITS)).toHaveLength(30);
+  });
+
   it("every bit has the server's name", () => {
     expect(PermissionBits).toEqual(
       Object.fromEntries(Object.entries(SERVER_BITS).map(([k, b]) => [k, 1 << b])),

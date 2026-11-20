@@ -119,14 +119,15 @@ const VoiceTileGrid: Component<VoiceTileGridProps> = (props) => {
     setPrevShareCount(currentCount);
   });
 
-  // A share chosen in the voice panel (desktop) opens focused here.
+  // A share chosen in the voice panel (desktop) opens focused here, also
+  // when its tile arrives a moment after the request.
   createEffect(() => {
     const streamId = tileFocusRequest();
     if (!streamId) return;
     if (props.screenShares.some((s) => s.stream_id === streamId)) {
       setFocusedTileId(`screen:${streamId}`);
+      clearTileFocusRequest();
     }
-    clearTileFocusRequest();
   });
 
   // Pop-out needs a browser video track: not in the desktop app.

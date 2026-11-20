@@ -334,12 +334,23 @@ export { viewerState };
 const [tileFocusRequest, setTileFocusRequest] = createSignal<string | null>(null);
 export { tileFocusRequest };
 
-/** Ask the voice channel view to focus `streamId`. */
+/** A focus request not taken within this time is dropped (it would surprise later). */
+export const TILE_FOCUS_REQUEST_TTL_MS = 10_000;
+let tileFocusTimer: ReturnType<typeof setTimeout> | undefined;
+
+/**
+ * Ask the voice channel view to focus `streamId`. The request waits until
+ * the view shows that share (its tile may come a moment later) or until
+ * `TILE_FOCUS_REQUEST_TTL_MS` passed.
+ */
 export function requestTileFocus(streamId: string): void {
+  clearTimeout(tileFocusTimer);
   setTileFocusRequest(streamId);
+  tileFocusTimer = setTimeout(() => setTileFocusRequest(null), TILE_FOCUS_REQUEST_TTL_MS);
 }
 
 /** The view has taken the request. */
 export function clearTileFocusRequest(): void {
+  clearTimeout(tileFocusTimer);
   setTileFocusRequest(null);
 }

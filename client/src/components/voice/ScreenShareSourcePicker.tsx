@@ -36,7 +36,7 @@ const ScreenShareSourcePicker: Component<ScreenShareSourcePickerProps> = (props)
   return (
     <DialogShell title={t("voice.screenShare.dialogTitle")} onClose={props.onClose} wide>
       <Show when={loading()}>
-        <div class="flex items-center justify-center py-8">
+        <div role="status" class="flex items-center justify-center py-8">
           <Loader2 class="w-6 h-6 text-text-secondary animate-spin" />
           <span class="ml-2 text-text-secondary">{t("voice.screenShare.sourcesLoading")}</span>
         </div>

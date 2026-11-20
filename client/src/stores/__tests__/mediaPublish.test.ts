@@ -8,6 +8,7 @@ import {
   isStartRefusal,
   refusalKey,
   MEDIA_START_TIMEOUT_MS,
+  WEBCAM_LATE_ANSWER_GRACE_MS,
   type MediaContext,
 } from "../mediaPublish";
 import type { VoiceAdapter } from "@/lib/webrtc/types";
@@ -119,13 +120,14 @@ describe("screen share start waits for the server", () => {
     ["UNAUTHORIZED", "voice.screenShare.error.refused"],
     ["INTERNAL_ERROR", "voice.screenShare.error.refused"],
     ["VOICE_ERROR", "voice.screenShare.error.refused"],
-  ])("refusal %s stops the capture and gives %s", async (code, key) => {
+  ])("refusal %s stops the capture, sends a stop and gives %s", async (code, key) => {
     const { pub, log, flags } = setup();
     const start = pub.startScreenShare();
     await flush();
     pub.handleAnswer({ type: "voice_error", code, message: "x" });
     expect(await start).toEqual({ ok: false, error: key });
-    expect(log).toEqual(["capture:s1", "sendStart:s1", "adapterStop:s1"]);
+    // The error names no stream: the server may still accept the start.
+    expect(log).toEqual(["capture:s1", "sendStart:s1", "adapterStop:s1", "sendStop:s1"]);
     expect(log).not.toContain("publish:s1");
     expect(flags.screenSharing).toBeFalsy();
   });
@@ -341,19 +343,21 @@ describe("webcam start waits for webcam_started", () => {
     expect(flags.webcamActive).toBe(true);
   });
 
-  it("refusal and timeout stop the camera", async () => {
+  it("refusal and timeout stop the camera, each with one stop", async () => {
     const { pub, log } = setup();
     const refused = pub.startWebcam();
     await flush();
     pub.handleAnswer({ type: "voice_error", code: "SIGNALING_ERROR", message: "x" });
     expect(await refused).toEqual({ ok: false, error: "voice.webcam.error.refused" });
     expect(log).toContain("adapterStopWebcam");
+    expect(log.filter((l) => l === "sendWebcamStop")).toHaveLength(1);
 
+    vi.advanceTimersByTime(WEBCAM_LATE_ANSWER_GRACE_MS);
     const silent = pub.startWebcam();
     await flush();
     vi.advanceTimersByTime(MEDIA_START_TIMEOUT_MS);
     expect(await silent).toEqual({ ok: false, error: "voice.webcam.error.noAnswer" });
-    expect(log.filter((l) => l === "sendWebcamStop")).toHaveLength(1);
+    expect(log.filter((l) => l === "sendWebcamStop")).toHaveLength(2);
   });
 
   it("a camera that ends by itself runs the normal stop", async () => {
@@ -604,21 +608,42 @@ describe("starts end with their session and with the dialog", () => {
     expect(s.flags.screenSharing).toBeFalsy();
   });
 
-  it("webcam: a late acceptance of a timed-out start does not stop the next camera", async () => {
+  it("webcam: the next start waits for the late answer of a timed-out one", async () => {
     vi.useFakeTimers();
     const s = setup();
     const first = s.pub.startWebcam();
     await flush();
     vi.advanceTimersByTime(MEDIA_START_TIMEOUT_MS);
     await first;
+    // The first start's answer may still come: no second attempt yet.
+    expect(await s.pub.startWebcam()).toEqual({ ok: false, error: "voice.media.error.busy" });
+    // The late acceptance of the first, then the end its stop caused.
+    s.pub.handleAnswer({ type: "webcam_started", channel_id: CH, user_id: ME });
+    s.pub.handleAnswer({ type: "webcam_stopped", channel_id: CH, user_id: ME, reason: "user_stopped" });
+    await flush();
+    expect(s.log).not.toContain("publishWebcam");
+    // Now the second start goes out and gets its own answer.
     const second = s.pub.startWebcam();
     await flush();
-    // The first start's late acceptance, then the second's own.
     s.pub.handleAnswer({ type: "webcam_started", channel_id: CH, user_id: ME });
     expect(await second).toEqual({ ok: true });
-    s.pub.handleAnswer({ type: "webcam_started", channel_id: CH, user_id: ME });
-    await flush();
+    expect(s.flags.webcamActive).toBe(true);
     expect(s.log.filter((l) => l === "sendWebcamStop")).toHaveLength(1); // only the timeout's
+    vi.useRealTimers();
+  });
+
+  it("webcam: without a late answer the next start may go after the grace period", async () => {
+    vi.useFakeTimers();
+    const s = setup();
+    const first = s.pub.startWebcam();
+    await flush();
+    vi.advanceTimersByTime(MEDIA_START_TIMEOUT_MS);
+    await first;
+    vi.advanceTimersByTime(WEBCAM_LATE_ANSWER_GRACE_MS);
+    const second = s.pub.startWebcam();
+    await flush();
+    s.pub.handleAnswer({ type: "webcam_started", channel_id: CH, user_id: ME });
+    expect(await second).toEqual({ ok: true });
     vi.useRealTimers();
   });
 
@@ -837,5 +862,132 @@ describe("voice_error codes (contract C30 table)", () => {
     s.session.current = { token: 9, channelId: CH }; // the seat moved
     s.pub.handleAnswer({ type: "voice_error", code: "PARTICIPANT_NOT_FOUND", message: "x" });
     expect(await start).toEqual({ ok: false });
+  });
+});
+
+describe("a start that does not end live ends with a stop", () => {
+  /** A publish step that waits until `finish` is called. */
+  function slowPublish(s: ReturnType<typeof setup>, kind: "screen" | "webcam" = "screen") {
+    let finish!: (ok?: boolean) => void;
+    const impl = (id?: string) =>
+      new Promise((resolve) => {
+        finish = (ok = true) => {
+          s.log.push(kind === "screen" ? `publish:${id}` : "publishWebcam");
+          resolve(
+            ok ? { ok: true, value: undefined } : { ok: false, error: { type: "unknown", message: "x" } },
+          );
+        };
+      }) as never;
+    if (kind === "screen") s.adapter.publishScreenShare.mockImplementationOnce(impl);
+    else s.adapter.publishWebcam.mockImplementationOnce(impl);
+    return (ok?: boolean) => finish(ok);
+  }
+
+  it("capture ended while publishing: torn down, one stop sent, the reason shown", async () => {
+    const s = setup();
+    const finish = slowPublish(s);
+    const start = s.pub.startScreenShare();
+    await flush();
+    s.pub.handleAnswer(started("s1"));
+    await flush();
+    await s.pub.captureEnded("screen", "s1", "no_frames");
+    finish();
+    expect(await start).toEqual({ ok: false, error: "voice.screenShare.error.noFrames" });
+    expect(s.log.filter((l) => l === "sendStop:s1")).toHaveLength(1);
+    expect(s.log[s.log.length - 2]).toBe("adapterStop:s1");
+    expect(s.flags.screenSharing).toBeFalsy();
+    // Nothing is left behind: the next share starts normally.
+    const next = s.pub.startScreenShare();
+    await flush();
+    s.pub.handleAnswer(started("s2"));
+    expect(await next).toEqual({ ok: true });
+  });
+
+  it("camera ended while publishing: torn down and one stop sent", async () => {
+    const s = setup();
+    const finish = slowPublish(s, "webcam");
+    const start = s.pub.startWebcam();
+    await flush();
+    s.pub.handleAnswer({ type: "webcam_started", channel_id: CH, user_id: ME });
+    await flush();
+    await s.pub.captureEnded("webcam", null);
+    finish();
+    expect(await start).toEqual({ ok: false });
+    expect(s.log.filter((l) => l === "sendWebcamStop")).toHaveLength(1);
+    expect(s.flags.webcamActive).toBeFalsy();
+  });
+
+  it("no second start while a publish step runs", async () => {
+    const s = setup();
+    const finish = slowPublish(s);
+    const start = s.pub.startScreenShare();
+    await flush();
+    s.pub.handleAnswer(started("s1"));
+    await flush();
+    expect(await s.pub.startWebcam()).toEqual({ ok: false, error: "voice.media.error.busy" });
+    expect(await s.pub.startScreenShare()).toEqual({ ok: false, error: "voice.media.error.busy" });
+    finish();
+    expect(await start).toEqual({ ok: true });
+  });
+
+  it("a refusal is followed by a stop; a late acceptance then changes nothing", async () => {
+    const s = setup();
+    const start = s.pub.startScreenShare();
+    await flush();
+    s.pub.handleAnswer({ type: "voice_error", code: "SIGNALING_ERROR", message: "offer failed" });
+    expect(await start).toEqual({ ok: false, error: "voice.screenShare.error.refused" });
+    s.pub.handleAnswer(started("s1"));
+    await flush();
+    expect(s.log).not.toContain("publish:s1");
+    expect(s.log.filter((l) => l === "sendStop:s1")).toHaveLength(1);
+  });
+
+  it("a publish that fails after the session changed sends no stop for the old one", async () => {
+    const s = setup();
+    const finish = slowPublish(s);
+    const start = s.pub.startScreenShare();
+    await flush();
+    s.pub.handleAnswer(started("s1"));
+    await flush();
+    s.session.current = { token: 2, channelId: CH };
+    finish(false);
+    await start;
+    expect(s.log).not.toContain("sendStop:s1");
+  });
+
+  it("a dropped new track during the publish step ends it with a stop and a text", async () => {
+    const s = setup();
+    const finish = slowPublish(s);
+    const start = s.pub.startScreenShare();
+    await flush();
+    s.pub.handleAnswer(started("s1"));
+    await flush();
+    s.pub.handleAnswer({ type: "voice_error", code: "VIDEO_SOURCE_UNANNOUNCED", message: "x" });
+    await flush();
+    finish();
+    expect(await start).toEqual({ ok: false, error: "voice.media.error.unannounced" });
+    expect(s.log.filter((l) => l === "sendStop:s1")).toHaveLength(1);
+  });
+
+  it("a capture that ends with a reason while its start waits says why", async () => {
+    const s = setup();
+    const start = s.pub.startScreenShare();
+    await flush();
+    await s.pub.captureEnded("screen", "s1", "no_frames");
+    expect(await start).toEqual({ ok: false, error: "voice.screenShare.error.noFrames" });
+    expect(s.log).toContain("sendStop:s1");
+  });
+
+  it("a stop after a timeout that cannot be sent warns", async () => {
+    vi.useFakeTimers();
+    const s = setup();
+    (s.ctx.sendScreenStop as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("send"));
+    const start = s.pub.startScreenShare();
+    await flush();
+    vi.advanceTimersByTime(MEDIA_START_TIMEOUT_MS);
+    await start;
+    await flush();
+    expect(s.ctx.warnStopFailed).toHaveBeenCalled();
+    vi.useRealTimers();
   });
 });

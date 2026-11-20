@@ -83,6 +83,15 @@ describe("ScreenShareQualityPicker", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
+  it("the start button is marked busy while the start runs", async () => {
+    startScreenShare.mockReturnValue(new Promise(() => {}));
+    render(() => <ScreenShareQualityPicker onClose={() => {}} />);
+    const button = screen.getByTestId("screen-share-start");
+    expect(button.getAttribute("aria-busy")).toBe("false");
+    fireEvent.click(button);
+    await waitFor(() => expect(button.getAttribute("aria-busy")).toBe("true"));
+  });
+
   it("Cancel before starting does not touch any start", () => {
     const onClose = vi.fn();
     render(() => <ScreenShareQualityPicker onClose={onClose} />);
@@ -131,5 +140,15 @@ describe("ScreenShareButton", () => {
     render(() => <ScreenShareButton onShowQualityPicker={onShowQualityPicker} />);
     fireEvent.click(screen.getByTestId("screen-share-toggle"));
     expect(onShowQualityPicker).toHaveBeenCalled();
+  });
+});
+
+describe("ScreenShareSourcePicker", () => {
+  it("announces that the sources are loading", async () => {
+    vi.doMock("@tauri-apps/api/core", () => ({ invoke: () => new Promise(() => {}) }));
+    const { default: ScreenShareSourcePicker } = await import("../ScreenShareSourcePicker");
+    render(() => <ScreenShareSourcePicker onSelect={() => {}} onClose={() => {}} />);
+    expect(screen.getByRole("status").textContent).toContain("Looking for screens");
+    vi.doUnmock("@tauri-apps/api/core");
   });
 });
