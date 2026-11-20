@@ -1456,6 +1456,43 @@ async fn write_event(
     }
 }
 
+/// The reply to an `admin_subscribe`: nothing when admin events follow,
+/// otherwise the error event the client is sent; `Err` when the socket must
+/// end (its access checks have kept failing for
+/// `access::FAILURE_CLOSE_AFTER`, as on its own revalidation).
+///
+/// The request is recorded and answered by `ws::access`; the socket's
+/// revalidation is the one place that decides the admin stream: whether
+/// this socket's session is elevated (an elevation belongs to one session,
+/// C24), read from the committed rows. The answer depends on the user epoch,
+/// this socket's earlier answers and a read the request asks for. What
+/// asking can make the server read is bounded there (a refusal stands for
+/// its user epoch, a cooldown, a pool of its own). The request stays
+/// whatever the answer: a later elevation restores delivery, and frames
+/// decide on their own reads. This writes no state of its own.
+pub(crate) async fn admin_subscribe_reply(
+    access: &SocketAccess,
+) -> Result<Option<ServerEvent>, AccessCheckFailed> {
+    let error = |code: &str, message: &str| {
+        Some(ServerEvent::Error {
+            code: code.to_string(),
+            message: message.to_string(),
+        })
+    };
+    Ok(match access.subscribe_admin().await {
+        AdminSubscription::Allowed => None,
+        AdminSubscription::Refused => error(
+            "ADMIN_NOT_ELEVATED",
+            "Must be an elevated admin to subscribe to admin events",
+        ),
+        AdminSubscription::Undecided => error(
+            "SERVICE_UNAVAILABLE",
+            "Admin access could not be checked yet; events follow once it is",
+        ),
+        AdminSubscription::Failed => return Err(AccessCheckFailed),
+    })
+}
+
 /// Revalidate this socket after a bump (or, with `full`, on the backstop):
 /// channels, server membership, the voice room and the admin stream in one
 /// pass (`SocketAccess::refresh`). A voice peer whose access is gone is
@@ -1878,50 +1915,10 @@ pub async fn handle_client_message(
             debug!("User {} updated custom status", user_id);
         }
 
-        ClientEvent::AdminSubscribe => {
-            // The request is recorded and answered by `ws::access`; the
-            // socket's revalidation is the one place that decides the admin
-            // stream: whether this socket's session is elevated (an
-            // elevation belongs to one session, C24), read from the
-            // committed rows. The answer depends on the user epoch, this
-            // socket's earlier answers and a read the request asks for.
-            // What asking can make the server read is bounded there (a
-            // refusal stands for its user epoch, a cooldown, a pool of its
-            // own). The request stays whatever the answer: a later
-            // elevation restores delivery, and frames decide on their own
-            // reads.
-            match access.subscribe_admin().await {
-                AdminSubscription::Allowed => {
-                    debug!("Admin {} subscribed to admin events", user_id);
-                }
-                AdminSubscription::Refused => {
-                    send_outbound(
-                        tx,
-                        OutboundMsg::Event(ServerEvent::Error {
-                            code: "ADMIN_NOT_ELEVATED".to_string(),
-                            message: "Must be an elevated admin to subscribe to admin events"
-                                .to_string(),
-                        }),
-                    )
-                    .await?;
-                }
-                AdminSubscription::Undecided => {
-                    send_outbound(
-                        tx,
-                        OutboundMsg::Event(ServerEvent::Error {
-                            code: "SERVICE_UNAVAILABLE".to_string(),
-                            message:
-                                "Admin access could not be checked yet; events follow once it is"
-                                    .to_string(),
-                        }),
-                    )
-                    .await?;
-                }
-                // The access checks have been failing for too long: the
-                // socket ends like on its own revalidation.
-                AdminSubscription::Failed => return Err(Box::new(AccessCheckFailed)),
-            }
-        }
+        ClientEvent::AdminSubscribe => match admin_subscribe_reply(access).await? {
+            None => debug!("Admin {} subscribed to admin events", user_id),
+            Some(reply) => send_outbound(tx, OutboundMsg::Event(reply)).await?,
+        },
 
         ClientEvent::AdminUnsubscribe => {
             access.unsubscribe_admin();
