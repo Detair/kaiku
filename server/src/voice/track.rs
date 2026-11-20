@@ -365,6 +365,14 @@ impl TrackRouter {
         source_type: TrackSource,
         remb_bps: u64,
     ) -> Option<Layer> {
+        // A source without layers (one stream) has nothing to select.
+        if !self
+            .simulcast_tracks
+            .iter()
+            .any(|e| e.key().0 == source_user_id && e.key().1 == source_type)
+        {
+            return None;
+        }
         let key = (source_user_id, source_type);
         let mut changed = None;
         if let Some(mut subs) = self.subscriptions.get_mut(&key) {
@@ -792,6 +800,39 @@ mod tests {
 #[cfg(test)]
 mod simulcast_tests {
     use super::*;
+
+    /// A source without simulcast layers (one stream, e.g. a screen share)
+    /// gets no layer selection from a viewer's bandwidth estimate: no layer
+    /// change is reported for it.
+    #[test]
+    fn remb_selects_no_layer_for_a_source_without_layers() {
+        let router = TrackRouter::new();
+        let (source, viewer) = (Uuid::new_v4(), Uuid::new_v4());
+        router
+            .subscriptions
+            .entry((source, TrackSource::Webcam))
+            .or_default()
+            .push(Subscription {
+                subscriber_id: viewer,
+                local_track: Arc::new(TrackLocalStaticRTP::new(
+                    RTCRtpCodecCapability {
+                        mime_type: "video/VP8".into(),
+                        clock_rate: 90_000,
+                        ..Default::default()
+                    },
+                    "t".into(),
+                    "s".into(),
+                )),
+                preferred_layer: LayerPreference::Auto,
+                active_layer: Layer::High,
+                remb_estimate: u64::MAX,
+                last_layer_change: Instant::now(),
+            });
+        assert_eq!(
+            router.update_remb(viewer, source, TrackSource::Webcam, 300_000),
+            None
+        );
+    }
 
     #[test]
     fn test_select_layer_auto_high_bandwidth() {
