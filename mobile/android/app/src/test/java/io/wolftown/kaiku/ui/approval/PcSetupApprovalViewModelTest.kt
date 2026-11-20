@@ -367,7 +367,9 @@ class PcSetupApprovalViewModelTest {
         api.answerGate = gate
         v.start(payload)
         v.approve(activity)
-        assertEquals(PcSetupUi.Working, v.ui.value)
+        // The signature exists and the answer is on its way.
+        assertEquals(PcSetupUi.Sending, v.ui.value)
+        assertTrue(screenHandlesBack(v.ui.value))
         assertFalse(v.requestBack())
         assertFalse(v.leaveAsked.value)
         gate.complete(Unit)
@@ -430,13 +432,34 @@ class PcSetupApprovalViewModelTest {
         w.approve(activity)
         api.pcStatuses.add(apiError(403, "KEY_DEVICE_REQUIRED"))
         advanceTimeBy(1_100)
-        assertEquals(PcSetupUi.Finished(R.string.pc_setup_failed, ok = false), w.ui.value)
+        // An answer that says nothing about the attempt: polling stops, the code stays.
+        assertEquals(PcSetupUi.Code("123456"), w.ui.value)
+        val calls = api.pcStatusCalls
+        advanceTimeBy(5_000)
+        assertEquals(calls, api.pcStatusCalls)
         w.viewModelScope.coroutineContext[kotlinx.coroutines.Job]!!.cancel()
     }
 
     @Test fun `a challenge that expired before the tap says it took too long`() = runTest {
         val (v, _) = vm(now = SigFixtures.EXPIRES_AT + 600)
         v.start(payload)
+        assertEquals(PcSetupUi.Error(R.string.approval_expired, rescan = true), v.ui.value)
+    }
+
+    @Test fun `the screen hands Back to the system during the screen lock and handles it otherwise`() {
+        // During the prompt the system handles Back; while sending and on the code screen the screen does.
+        assertFalse(screenHandlesBack(PcSetupUi.Working))
+        assertTrue(screenHandlesBack(PcSetupUi.Sending))
+        assertTrue(screenHandlesBack(PcSetupUi.Code("123456")))
+        assertTrue(screenHandlesBack(PcSetupUi.Claiming))
+    }
+
+    @Test fun `a challenge that runs out while the person reads says it took too long at the tap`() = runTest {
+        val (v, f) = vm()
+        v.start(payload)
+        assertTrue(v.ui.value is PcSetupUi.Context)
+        f.now = SigFixtures.EXPIRES_AT + 600
+        v.approve(activity)
         assertEquals(PcSetupUi.Error(R.string.approval_expired, rescan = true), v.ui.value)
     }
 }

@@ -44,7 +44,10 @@ sealed interface PcSetupUi {
     data class Context(val ctx: PcSetupContext) : PcSetupUi
     /** "I didn't start this" asks "End that computer's session?" before the screen lock. */
     data class ConfirmReport(val ctx: PcSetupContext) : PcSetupUi
+    /** The screen lock is being asked, or a step before it runs (the system handles Back). */
     data object Working : PcSetupUi
+    /** The signed answer (or the "No") is on its way; bounded by the HTTP timeouts. */
+    data object Sending : PcSetupUi
     /** The six digits for the PC. Held here only: never saved state, disk or a log line. */
     data class Code(val code: String) : PcSetupUi {
         override fun toString() = "Code"
@@ -184,6 +187,7 @@ class PcSetupApprovalViewModel @Inject constructor(
                     // Committed: leaving now never releases the claim, and the signed answer still
                     // reaches the server.
                     open = false
+                    _ui.value = PcSetupUi.Sending
                     val answer = withContext(NonCancellable) {
                         approvalApi.answerPcSetup(ch.challengeId, decision.wire, p.tokenB64u, out.signatureB64u)
                     }
@@ -213,7 +217,7 @@ class PcSetupApprovalViewModel @Inject constructor(
         if (_ui.value !is PcSetupUi.Context) return
         // Committed: a "No" is never turned into a release by leaving the screen meanwhile.
         open = false
-        _ui.value = PcSetupUi.Working
+        _ui.value = PcSetupUi.Sending
         viewModelScope.launch {
             try {
                 withContext(NonCancellable) { approvalApi.refusePcSetup(ch.challengeId) }
@@ -236,8 +240,8 @@ class PcSetupApprovalViewModel @Inject constructor(
      * leaving throws the code away and the computer can then only start again.
      */
     fun requestBack(): Boolean {
-        // A decision is being sent: Back is swallowed, or the code it brings back would be lost.
-        if (_ui.value == PcSetupUi.Working) return false
+        // The answer is on its way: Back is swallowed, or the code it brings back would be lost.
+        if (_ui.value == PcSetupUi.Sending) return false
         if (_ui.value is PcSetupUi.Code) {
             _leaveAsked.value = true
             return false
@@ -287,12 +291,10 @@ class PcSetupApprovalViewModel @Inject constructor(
                         // Wait as long as the server asks.
                         e.status == HttpStatusCode.TooManyRequests ->
                             pause = maxOf(POLL_INTERVAL_MS, (e.fields.retryAfterSeconds ?: 0L) * 1_000L)
-                        // A refusal that waiting does not change ends the screen.
+                        // An answer that says nothing about the attempt: stop asking, but keep
+                        // the code on screen; it ends when the person leaves.
                         e.status.value in 400..499 && e.status != HttpStatusCode.RequestTimeout &&
-                            e.status != HttpStatusCode.Unauthorized -> {
-                            end(R.string.pc_setup_failed)
-                            return@launch
-                        }
+                            e.status != HttpStatusCode.Unauthorized -> return@launch
                     }
                     continue
                 } catch (_: Exception) {

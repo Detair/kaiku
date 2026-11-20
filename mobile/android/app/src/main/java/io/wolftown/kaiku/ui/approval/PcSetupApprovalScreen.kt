@@ -49,6 +49,9 @@ import java.util.Locale
  * large "No" and a smaller "I didn't start this"; after the screen lock the six-digit code. The code
  * is not remembered across process death. Hardened with [SecureScreen].
  */
+/** Whether the screen handles Back in [ui]: not while the screen lock is asked (the system does). */
+fun screenHandlesBack(ui: PcSetupUi): Boolean = ui != PcSetupUi.Working
+
 @Composable
 fun PcSetupApprovalScreen(
     takePayload: () -> ScanPayload.PcSetup?,
@@ -66,9 +69,9 @@ fun PcSetupApprovalScreen(
             if (payload != null) viewModel.start(payload) else onDone()
         }
     }
-    // Back is always handled here: while a decision is being sent it is swallowed (leaving would
-    // lose the code the answer brings back); on the code screen it asks first.
-    BackHandler(enabled = true) {
+    // During the screen lock the system handles Back; while the answer is on its way the screen
+    // swallows it (leaving would lose the code it brings back); on the code screen it asks first.
+    BackHandler(enabled = screenHandlesBack(ui)) {
         if (viewModel.requestBack()) {
             viewModel.back()
             onDone()
@@ -93,7 +96,7 @@ fun PcSetupApprovalScreen(
 
     KeyScreen {
         when (val u = ui) {
-            PcSetupUi.Claiming, PcSetupUi.Working -> {
+            PcSetupUi.Claiming, PcSetupUi.Working, PcSetupUi.Sending -> {
                 CircularProgressIndicator()
                 KeyBody(stringResource(R.string.approval_checking))
             }

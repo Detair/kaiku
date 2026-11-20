@@ -26,7 +26,9 @@ class KeyDeviceFixture(
     val authState = AuthState(scope)
     val repo = KeyDeviceRepository(InMemoryKeyDeviceStore(), keyStore, authState, scope)
     val verifier = FakeUserVerifier(keyStore, uv)
-    val checks = ChallengeVerifier({ SigFixtures.ORIGIN }, { now })
+    /** The phone's clock for the challenge checks; a test may move it. */
+    var now: Long = now
+    val checks = ChallengeVerifier({ SigFixtures.ORIGIN }, { this.now })
     val signer = DeviceSigner(keyStore, verifier, checks)
 
     init {
