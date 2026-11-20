@@ -57,3 +57,53 @@ describe("ScreenShareViewer", () => {
     expect(shown()).toBe("v");
   });
 });
+
+describe("ScreenShareViewer start of playback", () => {
+  /** Frames are run by the test; a cancelled one never runs. */
+  let frames: Map<number, FrameRequestCallback>;
+  const runFrames = () => {
+    const due = [...frames.values()];
+    frames.clear();
+    due.forEach((cb) => cb(0));
+  };
+
+  beforeEach(() => {
+    frames = new Map();
+    let next = 0;
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+      next += 1;
+      frames.set(next, cb);
+      return next;
+    });
+    vi.stubGlobal("cancelAnimationFrame", (id: number) => frames.delete(id));
+  });
+
+  function viewing() {
+    const track = { id: "v", kind: "video", readyState: "live" } as unknown as MediaStreamTrack;
+    addAvailableTrack("s1", track, "u2", "bea", "Screen");
+    setLayoutMode("focus");
+    setViewMode("spotlight");
+    startViewing("s1");
+  }
+
+  it("a play() that returns no promise does not throw", () => {
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockReturnValue(
+      undefined as unknown as Promise<void>,
+    );
+    viewing();
+    render(() => <ScreenShareViewer />);
+    expect(frames.size).toBeGreaterThan(0);
+    expect(runFrames).not.toThrow();
+  });
+
+  it("a frame requested by a viewer that is gone does not run", () => {
+    const play = vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    viewing();
+    const { unmount } = render(() => <ScreenShareViewer />);
+    expect(frames.size).toBeGreaterThan(0);
+    unmount();
+    expect(frames.size).toBe(0); // cancelled, not left to run later
+    runFrames();
+    expect(play).not.toHaveBeenCalled();
+  });
+});

@@ -43,6 +43,18 @@ import {
 import * as tauri from "@/lib/tauri";
 
 /**
+ * `video.play()` as a promise: some environments return nothing, or throw,
+ * instead of a promise.
+ */
+function playVideo(video: HTMLVideoElement): Promise<void> {
+  try {
+    return Promise.resolve(video.play());
+  } catch (err) {
+    return Promise.reject(err);
+  }
+}
+
+/**
  * Screen share viewer overlay.
  * Displays the currently viewed screen share with controls.
  */
@@ -90,27 +102,40 @@ const ScreenShareViewer: Component = () => {
       videoRef.muted = true;
       setAutoplayBlocked(false);
 
-      // Retry play with increasing delays until it succeeds
+      // Retry play with increasing delays until it succeeds. The frame and
+      // the retries belong to this element and track: they are cancelled
+      // when either changes or the viewer goes.
+      let frame: number | undefined;
+      let retry: ReturnType<typeof setTimeout> | undefined;
+      let over = false;
+      onCleanup(() => {
+        over = true;
+        if (frame !== undefined) cancelAnimationFrame(frame);
+        clearTimeout(retry);
+      });
       const tryPlay = (attempt: number) => {
-        if (!videoRef || !videoRef.srcObject) return;
-        videoRef.play().catch((err) => {
-          if (err.name === "AbortError" && attempt < 3) {
-            setTimeout(() => tryPlay(attempt + 1), 100 * (attempt + 1));
-          } else if (err.name !== "AbortError") {
+        if (over || !videoRef.srcObject) return;
+        playVideo(videoRef).catch((err) => {
+          if (over) return;
+          if (err?.name === "AbortError" && attempt < 3) {
+            retry = setTimeout(() => tryPlay(attempt + 1), 100 * (attempt + 1));
+          } else if (err?.name !== "AbortError") {
             console.warn("[ScreenShareViewer] Autoplay blocked:", err);
             setAutoplayBlocked(true);
           }
         });
       };
-      requestAnimationFrame(() => tryPlay(0));
+      frame = requestAnimationFrame(() => {
+        frame = undefined;
+        tryPlay(0);
+      });
     }
   });
 
   // Handle manual play when autoplay is blocked
   const handleClickToPlay = () => {
     if (videoRef) {
-      videoRef
-        .play()
+      playVideo(videoRef)
         .then(() => {
           setAutoplayBlocked(false);
         })
