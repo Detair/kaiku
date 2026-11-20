@@ -1373,6 +1373,7 @@
   "passkeys.settings.title": "Passkeys",
   "pcSetup.banner.noPasskey": "",
   "pcSetup.banner.setUp": "",
+  "pcSetup.checkingPrevious": "",
   "pcSetup.claimed": "",
   "pcSetup.codeFailed": "",
   "pcSetup.codeIntro": "",

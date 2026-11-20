@@ -170,12 +170,12 @@ export const WebPasskeyStep: Component<PcSetupStepProps> = (props) => {
   return (
     <div class="space-y-3">
       <p>{t("pcSetup.registerIntro")}</p>
+      <LinuxPasskeyHint class="text-sm text-text-secondary" />
       <Show when={busy()}>
         <p role="status" class="text-sm text-text-secondary">{t("pcSetup.registering")}</p>
       </Show>
       <Show when={error()}>
         <p role="alert" class="text-sm text-text-primary">{error()}</p>
-        <LinuxPasskeyHint class="text-sm text-text-secondary" />
       </Show>
       <button type="button" class="btn-primary min-h-11 text-base" disabled={busy()} onClick={() => void register()}>
         {t("pcSetup.register")}
@@ -283,6 +283,9 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
   const [offline, setOffline] = createSignal(false);
   const [signingIn, setSigningIn] = createSignal(false);
   const [signInError, setSignInError] = createSignal<string | null>(null);
+  /** Reading the replaced attempt's end after a restart (R-70). */
+  const [checking, setChecking] = createSignal(false);
+  const [checkFailed, setCheckFailed] = createSignal(false);
   /** Bumped by every start, restart and the unmount: older loops and answers stop. */
   let generation = 0;
   let signIn: AbortController | null = null;
@@ -346,7 +349,9 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
         apply(res);
       } catch (err) {
         if (mine !== generation || ctl.signal.aborted) return;
-        if (err instanceof HttpError && err.status === 404) {
+        // Only the server's own "not found" ends the attempt as gone; any
+        // other 404 is an answer from somewhere else (a client-made end below).
+        if (err instanceof HttpError && err.status === 404 && codeIs(err.code, "APPROVAL_NOT_FOUND")) {
           apply({ attempt_id: current.attempt_id, state: "expired", reason: "gone" });
           return;
         }
@@ -374,39 +379,68 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
     }
   };
 
+  /** The attempt a restart created, held back until the replaced attempt's end is read. */
+  let pending: { mine: number; oldId: string; started: { attempt_id: string; qr_payload: string } } | null = null;
+
+  const showStarted = (mine: number, started: { attempt_id: string; qr_payload: string }) => {
+    setStatus({ attempt_id: started.attempt_id, state: "waiting", reason: null });
+    setQr(started.qr_payload);
+    setStarting(false);
+    void pollLoop(mine);
+  };
+
   /**
-   * After a restart from `code` or `enrolled`: if the replaced attempt
-   * completed (its finish won, Locking 6), the PC reports that and gives up
-   * the attempt it shows instead. The read is retried a few times; its
-   * answer counts until the dialog reaches another server-reported end,
-   * also after a further restart.
+   * R-70: after a restart from `code`, `enrolled` or an end the client made
+   * up, the replaced attempt's end is read before the new code is shown.
+   * The server decided "finish or restart" under one lock before the start
+   * answered, so this read is final: `completed` is shown (and the new
+   * attempt given up), anything else shows the new code. Three failed reads
+   * offer a retry, never the code.
    */
-  const finishWon = async (oldId: string) => {
+  const resolvePrevious = async () => {
+    const p = pending;
+    if (!p) return;
+    setCheckFailed(false);
+    setChecking(true);
     let old: PcSetupStatus | null = null;
     for (let i = 0; i < FINISH_READS; i++) {
-      if (closed) return;
-      old = await pollPcSetup(oldId, 0).catch(() => null);
+      old = await pollPcSetup(p.oldId, 0).catch(() => null);
+      if (pending !== p || p.mine !== generation) return;
       if (old) break;
       if (i + 1 < FINISH_READS) await sleep(FINISH_READ_GAP_MS * 2 ** i);
+      if (pending !== p || p.mine !== generation) return;
     }
-    if (closed || old?.state !== "completed") return;
-    const cur = status();
-    if (cur && !isLive(cur) && !clientMade(cur)) return;
-    generation++;
-    polling?.abort();
-    setStarting(false);
-    if (cur && isLive(cur)) void cancelPcSetup(cur.attempt_id).catch(() => undefined);
-    setQr("");
-    setStatus({ ...old, attempt_id: oldId });
+    if (!old) {
+      setCheckFailed(true);
+      return;
+    }
+    pending = null;
+    setChecking(false);
+    if (old.state === "completed") {
+      void cancelPcSetup(p.started.attempt_id).catch(() => undefined);
+      setStarting(false);
+      setStatus({ ...old, attempt_id: p.oldId });
+      return;
+    }
+    showStarted(p.mine, p.started);
   };
 
   const begin = async () => {
     const mine = ++generation;
     polling?.abort();
-    // Locking 6: a finish may have won against this restart; the attempt on
-    // screen is asked again after the start (`finishWon`).
+    // Locking 6: a finish may have won against this restart. The attempt
+    // whose end is not known yet (a check still open counts too) is read
+    // before the new code is shown.
     const previous = status();
-    const mayHaveFinished = !!previous && ["code", "enrolled"].includes(previous.state);
+    const unknownEnd =
+      pending?.oldId ??
+      (previous && (["code", "enrolled"].includes(previous.state) || clientMade(previous))
+        ? previous.attempt_id
+        : null);
+    if (pending) void cancelPcSetup(pending.started.attempt_id).catch(() => undefined);
+    pending = null;
+    setChecking(false);
+    setCheckFailed(false);
     setStatus(null);
     setQr("");
     setStartError(null);
@@ -415,18 +449,16 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
     try {
       const started = await startPcSetup();
       if (mine !== generation) {
-        // The dialog closed, or a replaced attempt turned out completed,
-        // meanwhile: give up the attempt the server just made.
-        if (closed || status()?.state === "completed") {
-          void cancelPcSetup(started.attempt_id).catch(() => undefined);
-        }
+        // The dialog closed meanwhile: give up the attempt the server just made.
+        if (closed) void cancelPcSetup(started.attempt_id).catch(() => undefined);
         return;
       }
-      if (previous && mayHaveFinished) void finishWon(previous.attempt_id);
-      setStatus({ attempt_id: started.attempt_id, state: "waiting", reason: null });
-      setQr(started.qr_payload);
-      setStarting(false);
-      void pollLoop(mine);
+      if (unknownEnd) {
+        pending = { mine, oldId: unknownEnd, started };
+        await resolvePrevious();
+        return;
+      }
+      showStarted(mine, started);
     } catch (err) {
       if (mine !== generation) return;
       setStarting(false);
@@ -467,7 +499,9 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
     generation++;
     polling?.abort();
     signIn?.abort();
-    // Closing the dialog gives a live attempt up.
+    // Closing the dialog gives a live attempt up, and one a restart made.
+    if (pending) void cancelPcSetup(pending.started.attempt_id).catch(() => undefined);
+    pending = null;
     const s = status();
     if (s && isLive(s)) void cancelPcSetup(s.attempt_id).catch(() => undefined);
   });
@@ -495,8 +529,21 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
 
   return (
     <DialogShell title={t("pcSetup.title")} onClose={() => props.onClose()} wide testId="set-up-this-pc">
-      <Show when={starting()}>
+      <Show when={starting() && !checking()}>
         <p role="status" class="text-text-secondary">{t("pcSetup.starting")}</p>
+      </Show>
+      <Show when={checking()}>
+        <Show
+          when={checkFailed()}
+          fallback={<p role="status" class="text-text-secondary">{t("pcSetup.checkingPrevious")}</p>}
+        >
+          <div class="space-y-3">
+            <p role="alert" class="text-text-primary">{t("pcSetup.pollFailed")}</p>
+            <button type="button" class="btn-primary min-h-11 text-base" onClick={() => void resolvePrevious()}>
+              {t("common.tryAgain")}
+            </button>
+          </div>
+        </Show>
       </Show>
       <Show when={startError()}>
         <p role="alert" class="text-text-primary">{startError()}</p>
@@ -551,7 +598,7 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
         <button
           type="button"
           class="min-h-11 px-3 rounded-lg text-base text-text-primary hover:bg-white/10 state-disabled"
-          disabled={starting()}
+          disabled={starting() && !checkFailed()}
           onClick={() => void begin()}
         >
           {t("pcSetup.startAgain")}
