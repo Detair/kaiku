@@ -239,12 +239,7 @@ pub(crate) async fn forward_to(
         return false;
     };
     match subscriber
-        .add_outgoing_track(
-            source_user,
-            source,
-            source_peer.session_id,
-            local_track.clone(),
-        )
+        .add_outgoing_track(source_peer, source, local_track.clone())
         .await
     {
         Ok((sender, replaced)) => {
@@ -2225,6 +2220,21 @@ mod negotiation_tests {
 
     use super::*;
 
+    /// A new seat of user `user` (its own session).
+    async fn seat(user: u128) -> Arc<Peer> {
+        let sfu = SfuServer::new(Arc::new(Config::default_for_test()), None).expect("sfu");
+        let (tx, _rx) = mpsc::channel(8);
+        sfu.create_peer(
+            Uuid::from_u128(user),
+            "s".into(),
+            "S".into(),
+            Uuid::from_u128(2),
+            tx,
+        )
+        .await
+        .expect("seat")
+    }
+
     fn audio_track(id: &str) -> Arc<TrackLocalStaticRTP> {
         Arc::new(TrackLocalStaticRTP::new(
             RTCRtpCodecCapability {
@@ -2272,22 +2282,16 @@ mod negotiation_tests {
             .await
             .expect("client pc");
 
-        peer.add_outgoing_track(
-            Uuid::from_u128(3),
-            TrackSource::Microphone,
-            Uuid::from_u128(100),
-            audio_track("u3"),
-        )
-        .await
-        .expect("track 1");
+        peer.add_outgoing_track(&*seat(3).await, TrackSource::Microphone, audio_track("u3"))
+            .await
+            .expect("track 1");
         SfuServer::renegotiate(&peer).await.expect("offer 1");
         let first = offer_sdp(rx.try_recv().expect("first offer sent"));
 
         for n in 4..6 {
             peer.add_outgoing_track(
-                Uuid::from_u128(n),
+                &*seat(n).await,
                 TrackSource::Microphone,
-                Uuid::from_u128(100),
                 audio_track(&format!("u{n}")),
             )
             .await
@@ -2367,14 +2371,9 @@ mod negotiation_tests {
     #[tokio::test]
     async fn stray_answer_is_ignored() {
         let (_sfu, peer, mut rx, client) = setup().await;
-        peer.add_outgoing_track(
-            Uuid::from_u128(3),
-            TrackSource::Microphone,
-            Uuid::from_u128(100),
-            audio_track("u3"),
-        )
-        .await
-        .expect("track");
+        peer.add_outgoing_track(&*seat(3).await, TrackSource::Microphone, audio_track("u3"))
+            .await
+            .expect("track");
         SfuServer::renegotiate(&peer).await.expect("offer");
         let offer = offer_sdp(rx.try_recv().expect("offer sent"));
         let answer = answer_for(&client, offer).await;
@@ -2395,26 +2394,16 @@ mod negotiation_tests {
     async fn answer_to_a_superseded_offer_is_ignored() {
         let (_sfu, peer, mut rx, client) = setup().await;
         let old_client = setup().await.3;
-        peer.add_outgoing_track(
-            Uuid::from_u128(3),
-            TrackSource::Microphone,
-            Uuid::from_u128(100),
-            audio_track("u3"),
-        )
-        .await
-        .expect("track");
+        peer.add_outgoing_track(&*seat(3).await, TrackSource::Microphone, audio_track("u3"))
+            .await
+            .expect("track");
         SfuServer::renegotiate(&peer).await.expect("offer");
         let first = offer_sdp(rx.try_recv().expect("offer sent"));
         // The open offer is replaced (as after the answer timeout) by one
         // with two m-lines.
-        peer.add_outgoing_track(
-            Uuid::from_u128(4),
-            TrackSource::Microphone,
-            Uuid::from_u128(100),
-            audio_track("u4"),
-        )
-        .await
-        .expect("track 2");
+        peer.add_outgoing_track(&*seat(4).await, TrackSource::Microphone, audio_track("u4"))
+            .await
+            .expect("track 2");
         peer.negotiation.lock().await.awaiting_answer_since =
             Some(tokio::time::Instant::now() - SUBSCRIBER_ANSWER_TIMEOUT);
         SfuServer::renegotiate(&peer).await.expect("re-offer");
@@ -2451,14 +2440,9 @@ mod negotiation_tests {
     #[tokio::test(start_paused = true)]
     async fn an_offer_that_could_not_be_sent_is_offered_again() {
         let (_sfu, peer, mut rx, _client) = setup().await;
-        peer.add_outgoing_track(
-            Uuid::from_u128(3),
-            TrackSource::Microphone,
-            Uuid::from_u128(100),
-            audio_track("u3"),
-        )
-        .await
-        .expect("track");
+        peer.add_outgoing_track(&*seat(3).await, TrackSource::Microphone, audio_track("u3"))
+            .await
+            .expect("track");
         // A full queue: the offer cannot be sent within its bound.
         for _ in 0..16 {
             if peer.signal_tx.try_send(OutboundMsg::Ping).is_err() {
@@ -2477,27 +2461,17 @@ mod negotiation_tests {
     #[tokio::test(start_paused = true)]
     async fn a_change_during_the_repeat_is_offered_after_it() {
         let (_sfu, peer, mut rx, _client) = setup().await;
-        peer.add_outgoing_track(
-            Uuid::from_u128(3),
-            TrackSource::Microphone,
-            Uuid::from_u128(100),
-            audio_track("u3"),
-        )
-        .await
-        .expect("track");
+        peer.add_outgoing_track(&*seat(3).await, TrackSource::Microphone, audio_track("u3"))
+            .await
+            .expect("track");
         SfuServer::renegotiate(&peer).await.expect("offer");
         offer_sdp(rx.try_recv().expect("offer sent"));
         tokio::time::sleep(SUBSCRIBER_ANSWER_TIMEOUT + Duration::from_secs(1)).await;
         offer_sdp(rx.try_recv().expect("repeat sent"));
 
-        peer.add_outgoing_track(
-            Uuid::from_u128(4),
-            TrackSource::Microphone,
-            Uuid::from_u128(100),
-            audio_track("u4"),
-        )
-        .await
-        .expect("track 2");
+        peer.add_outgoing_track(&*seat(4).await, TrackSource::Microphone, audio_track("u4"))
+            .await
+            .expect("track 2");
         SfuServer::renegotiate(&peer).await.expect("coalesced");
         assert!(rx.try_recv().is_err());
 
@@ -2575,35 +2549,36 @@ mod negotiation_tests {
     }
 
     /// What a listener receives from a person belongs to that person's seat:
-    /// a track of the person's new seat replaces the old seat's entry (also
-    /// while the old seat's teardown has not removed it yet), a second one of
-    /// the same seat is refused, and the old seat's late removal by track
-    /// leaves the new one.
+    /// a track of the person's new seat replaces the old seat's entry and
+    /// sender (also while the old seat's teardown has not removed it yet), a
+    /// second one of the same seat is refused, and the old seat's late
+    /// removal by track leaves the new one.
     #[tokio::test]
     async fn a_new_seats_track_replaces_the_old_seats_entry() {
-        use webrtc::track::track_local::TrackLocal;
         let (_sfu, listener, _rx, _client) = setup().await;
-        let user = Uuid::from_u128(7);
-        let (old_seat, new_seat) = (Uuid::from_u128(70), Uuid::from_u128(71));
+        let (old_seat, new_seat) = (seat(7).await, seat(7).await);
+        let user = old_seat.user_id;
         let shared = Uuid::from_u128(72);
+        let mut new_tracks = Vec::new();
         for source in [
             TrackSource::Microphone,
             TrackSource::Webcam,
             TrackSource::ScreenVideo(shared),
         ] {
-            let old = audio_track(&format!("old-{source}"));
-            let new = audio_track(&format!("new-{source}"));
+            // Old and new carry the same id, as forwarded tracks do.
+            let old = audio_track(&format!("{user}:{source}"));
+            let new = audio_track(&format!("{user}:{source}"));
             listener
-                .add_outgoing_track(user, source, old_seat, old.clone())
+                .add_outgoing_track(&old_seat, source, old.clone())
                 .await
                 .expect("old seat's track");
             listener
-                .add_outgoing_track(user, source, new_seat, new.clone())
+                .add_outgoing_track(&new_seat, source, new.clone())
                 .await
                 .expect("the new seat's track replaces the old one");
             assert!(
                 listener
-                    .add_outgoing_track(user, source, new_seat, audio_track("dup"))
+                    .add_outgoing_track(&new_seat, source, audio_track("dup"))
                     .await
                     .is_err(),
                 "a second track of the same seat is refused"
@@ -2612,13 +2587,56 @@ mod negotiation_tests {
                 !listener.remove_outgoing_track_if(user, source, &old).await,
                 "the old seat's late removal finds nothing of its own"
             );
+            new_tracks.push(new);
         }
         let kept = listener.outgoing_track_list().await;
         assert_eq!(kept.len(), 3, "exactly one track per source");
         assert!(
-            kept.iter().all(|t| t.id().starts_with("new-")),
-            "{:?}",
-            kept.iter().map(|t| t.id().to_owned()).collect::<Vec<_>>()
+            kept.iter()
+                .all(|t| new_tracks.iter().any(|n| Arc::ptr_eq(n, t))),
+            "an old seat's track is still listed"
+        );
+        // The old senders are gone from the listener's connection: only the
+        // three new ones still carry a track.
+        let mut carrying = 0;
+        for sender in listener.subscriber_pc.get_senders().await {
+            if sender.track().await.is_some() {
+                carrying += 1;
+            }
+        }
+        assert_eq!(carrying, 3, "an old seat's sender is still sending");
+        assert_eq!(listener.inactive_mlines(), 3);
+    }
+
+    /// A track of a seat that is no longer current never replaces an entry:
+    /// the new seat's track is in place, the old seat's late add comes, the
+    /// old seat's teardown runs, and the listener still has the new track.
+    #[tokio::test]
+    async fn a_retired_seats_late_track_replaces_nothing() {
+        let (_sfu, listener, _rx, _client) = setup().await;
+        let (old_seat, new_seat) = (seat(9).await, seat(9).await);
+        let user = old_seat.user_id;
+        old_seat.retire();
+        let new = audio_track("new");
+        listener
+            .add_outgoing_track(&new_seat, TrackSource::Microphone, new.clone())
+            .await
+            .expect("the new seat's track");
+        let late = audio_track("late");
+        assert!(
+            listener
+                .add_outgoing_track(&old_seat, TrackSource::Microphone, late.clone())
+                .await
+                .is_err(),
+            "a retired seat's track is refused"
+        );
+        listener
+            .remove_outgoing_track_if(user, TrackSource::Microphone, &late)
+            .await;
+        let kept = listener.outgoing_track_list().await;
+        assert!(
+            kept.len() == 1 && Arc::ptr_eq(&kept[0], &new),
+            "the listener lost the new seat's track"
         );
     }
 
@@ -2733,12 +2751,7 @@ mod negotiation_tests {
         room.add_peer(viewer.clone()).await.expect("viewer");
         let track = audio_track("p-mic");
         viewer
-            .add_outgoing_track(
-                publisher.user_id,
-                TrackSource::Microphone,
-                publisher.session_id,
-                track.clone(),
-            )
+            .add_outgoing_track(&publisher, TrackSource::Microphone, track.clone())
             .await
             .expect("forwarded");
         publisher.record_forwarded(viewer.user_id, TrackSource::Microphone, track);
@@ -2779,14 +2792,9 @@ mod negotiation_tests {
     async fn answer_to_an_offer_before_a_removal_is_ignored() {
         let (_sfu, peer, mut rx, client) = setup().await;
         let track = audio_track("u3");
-        peer.add_outgoing_track(
-            Uuid::from_u128(3),
-            TrackSource::Microphone,
-            Uuid::from_u128(100),
-            track.clone(),
-        )
-        .await
-        .expect("track");
+        peer.add_outgoing_track(&*seat(3).await, TrackSource::Microphone, track.clone())
+            .await
+            .expect("track");
         SfuServer::renegotiate(&peer).await.expect("offer");
         let first = offer_sdp(rx.try_recv().expect("offer sent"));
         let stale = answer_for(&client, first).await;
@@ -2822,14 +2830,9 @@ mod negotiation_tests {
     #[tokio::test(start_paused = true)]
     async fn unanswered_offer_is_repeated_once_then_released() {
         let (_sfu, peer, mut rx, _client) = setup().await;
-        peer.add_outgoing_track(
-            Uuid::from_u128(3),
-            TrackSource::Microphone,
-            Uuid::from_u128(100),
-            audio_track("u3"),
-        )
-        .await
-        .expect("track");
+        peer.add_outgoing_track(&*seat(3).await, TrackSource::Microphone, audio_track("u3"))
+            .await
+            .expect("track");
         SfuServer::renegotiate(&peer).await.expect("offer");
         offer_sdp(rx.try_recv().expect("offer sent"));
 

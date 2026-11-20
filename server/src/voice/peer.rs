@@ -48,9 +48,10 @@ pub struct Peer {
     /// Map: `TrackSource` -> remote track
     pub incoming_tracks: RwLock<HashMap<TrackSource, Arc<TrackRemote>>>,
     /// Tracks being forwarded to this peer (on `subscriber_pc`).
-    /// Map: `(source_user_id, source_type)` -> (source seat's session, local
-    /// track): what a listener receives belongs to the source seat.
-    outgoing_tracks: RwLock<HashMap<(Uuid, TrackSource), (Uuid, Arc<TrackLocalStaticRTP>)>>,
+    /// Map: `(source_user_id, source_type)` -> the source seat's session, the
+    /// local track and its sender: what a listener receives belongs to the
+    /// source seat.
+    outgoing_tracks: RwLock<HashMap<(Uuid, TrackSource), OutgoingEntry>>,
 
     /// Whether the user muted themselves.
     self_muted: RwLock<bool>,
@@ -133,6 +134,14 @@ impl Drop for Peer {
 /// once. Offers and answers grow by roughly 0.5–1 KiB per inactive m-line;
 /// the inbound frame limit (256 KiB) is reached at several hundred.
 pub const INACTIVE_MLINE_WARN_THRESHOLD: usize = 60;
+
+/// A track forwarded to a listener: the source seat it came from, the
+/// local track and the sender carrying it on the listener's connection.
+struct OutgoingEntry {
+    session: Uuid,
+    track: Arc<TrackLocalStaticRTP>,
+    sender: Arc<RTCRtpSender>,
+}
 
 /// What the first layer of a simulcast publisher transceiver decided.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -246,8 +255,8 @@ impl Peer {
         incoming.insert(source, track);
     }
 
-    /// Add an outgoing track to forward media of seat `source_session` of
-    /// another user. The track is added to the subscriber `PeerConnection`.
+    /// Add an outgoing track to forward media of `source_seat` (another
+    /// user's seat). The track is added to the subscriber `PeerConnection`.
     /// Returns the `RTCRtpSender` (callers read RTCP feedback from it) and
     /// the track of an older seat of the same user that this one replaced
     /// (its sender is removed; the caller drops its router subscription).
@@ -258,17 +267,25 @@ impl Peer {
     /// track handler and the first-offer subscribe path may race).
     pub async fn add_outgoing_track(
         &self,
-        source_user_id: Uuid,
+        source_seat: &Self,
         source_type: TrackSource,
-        source_session: Uuid,
         track: Arc<TrackLocalStaticRTP>,
     ) -> Result<(Arc<RTCRtpSender>, Option<Arc<TrackLocalStaticRTP>>), super::error::VoiceError>
     {
+        let source_user_id = source_seat.user_id;
+        let source_session = source_seat.session_id;
         let key = (source_user_id, source_type);
         let mut tracks = self.outgoing_tracks.write().await;
+        // Decided under this lock: a seat that is no longer current adds
+        // nothing (its late add must not displace its successor's track).
+        if source_seat.is_retired() {
+            return Err(super::error::VoiceError::Internal(format!(
+                "{source_user_id}:{source_type} comes from a seat that left"
+            )));
+        }
         if tracks
             .get(&key)
-            .is_some_and(|(session, _)| *session == source_session)
+            .is_some_and(|entry| entry.session == source_session)
         {
             return Err(super::error::VoiceError::Internal(format!(
                 "{source_user_id}:{source_type} is already forwarded to {}",
@@ -292,33 +309,37 @@ impl Peer {
             )
             .await?;
         let sender = transceiver.sender().await;
-        let replaced = tracks
-            .insert(key, (source_session, track))
-            .map(|(_, old)| old);
-        if let Some(old) = &replaced {
-            self.remove_sender_of(old).await;
-        }
+        let replaced = tracks.insert(
+            key,
+            OutgoingEntry {
+                session: source_session,
+                track,
+                sender: sender.clone(),
+            },
+        );
+        let replaced = match replaced {
+            Some(old) => {
+                self.remove_sender(&old.sender).await;
+                Some(old.track)
+            }
+            None => None,
+        };
 
         Ok((sender, replaced))
     }
 
-    /// Remove the sender of `track` from the subscriber connection.
-    async fn remove_sender_of(&self, track: &Arc<TrackLocalStaticRTP>) {
-        for sender in self.subscriber_pc.get_senders().await {
-            if let Some(t) = sender.track().await {
-                if t.id() == track.id() {
-                    if let Err(e) = self.subscriber_pc.remove_track(&sender).await {
-                        tracing::warn!(
-                            user_id = %self.user_id,
-                            error = %e,
-                            "failed to remove track from subscriber PC"
-                        );
-                    } else {
-                        self.count_inactive_mline();
-                    }
-                    break;
-                }
-            }
+    /// Remove `sender` (the very sender of a forwarded track, found by
+    /// identity: old and new tracks of a person carry the same id) from the
+    /// subscriber connection.
+    async fn remove_sender(&self, sender: &Arc<RTCRtpSender>) {
+        if let Err(e) = self.subscriber_pc.remove_track(sender).await {
+            tracing::warn!(
+                user_id = %self.user_id,
+                error = %e,
+                "failed to remove track from subscriber PC"
+            );
+        } else {
+            self.count_inactive_mline();
         }
     }
 
@@ -333,11 +354,15 @@ impl Peer {
     ) -> bool {
         let mut tracks = self.outgoing_tracks.write().await;
         let key = (source_user_id, source);
-        if !tracks.get(&key).is_some_and(|(_, t)| Arc::ptr_eq(t, track)) {
+        if !tracks
+            .get(&key)
+            .is_some_and(|entry| Arc::ptr_eq(&entry.track, track))
+        {
             return false;
         }
-        tracks.remove(&key);
-        self.remove_sender_of(track).await;
+        if let Some(entry) = tracks.remove(&key) {
+            self.remove_sender(&entry.sender).await;
+        }
         true
     }
 
@@ -347,7 +372,7 @@ impl Peer {
             .read()
             .await
             .values()
-            .map(|(_, t)| t.clone())
+            .map(|entry| entry.track.clone())
             .collect()
     }
 
