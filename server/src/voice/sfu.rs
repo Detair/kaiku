@@ -514,9 +514,14 @@ impl Room {
         let forwarded_tracks: Vec<_> = forwarded.iter().map(|(_, _, t)| t.clone()).collect();
         self.track_router
             .remove_subscriptions_into(&forwarded_tracks);
-        self.track_router
-            .remove_subscriptions_into(&departed.outgoing_track_list().await);
+        // What it received: the router subscriptions into those tracks and
+        // the publishers' records of them.
+        let received = departed.outgoing_track_list().await;
+        self.track_router.remove_subscriptions_into(&received);
         let others = self.get_other_peers(user_id).await;
+        for other in &others {
+            other.forget_forwarded_tracks(&received);
+        }
         let forwarded = &forwarded;
         let updates = others.into_iter().map(|other| async move {
             let mut removed = 0;
@@ -2721,6 +2726,46 @@ mod negotiation_tests {
                 ..
             })
         ));
+    }
+
+    /// A viewer that leaves takes its entries out of the publishers'
+    /// forwarded lists (a long-lived publisher keeps nothing of departed
+    /// viewers).
+    #[tokio::test]
+    async fn a_departed_viewer_leaves_nothing_in_a_publishers_list() {
+        let (sfu, publisher, _rx, _client) = setup().await;
+        let room = Room::new(publisher.channel_id, 10);
+        let (tx, _rx2) = mpsc::channel(8);
+        let viewer = sfu
+            .create_peer(
+                Uuid::from_u128(6),
+                "v".into(),
+                "V".into(),
+                publisher.channel_id,
+                tx,
+            )
+            .await
+            .expect("peer");
+        room.add_peer(publisher.clone()).await.expect("publisher");
+        room.add_peer(viewer.clone()).await.expect("viewer");
+        let track = audio_track("p-mic");
+        viewer
+            .add_outgoing_track(
+                publisher.user_id,
+                TrackSource::Microphone,
+                publisher.session_id,
+                track.clone(),
+            )
+            .await
+            .expect("forwarded");
+        publisher.record_forwarded(viewer.user_id, TrackSource::Microphone, track);
+
+        room.remove_peer(viewer.user_id).await;
+        room.detach_media(&viewer).await;
+        assert!(
+            publisher.take_forwarded().is_empty(),
+            "the publisher still lists the departed viewer's track"
+        );
     }
 
     /// A track waiting for its announcement on a seat that is retired stops

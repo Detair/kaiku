@@ -421,6 +421,18 @@ impl Peer {
         )
     }
 
+    /// Forget forwarded entries whose track is one of `tracks` (they
+    /// belonged to a viewer that left).
+    pub fn forget_forwarded_tracks(&self, tracks: &[Arc<TrackLocalStaticRTP>]) {
+        if tracks.is_empty() {
+            return;
+        }
+        self.forwarded
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|(_, _, t)| !tracks.iter().any(|gone| Arc::ptr_eq(gone, t)));
+    }
+
     /// Take the forwarded tracks of the sources matching `ended`.
     pub fn take_forwarded_of(
         &self,
