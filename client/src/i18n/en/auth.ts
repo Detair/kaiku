@@ -235,6 +235,8 @@ export const auth = {
   "auth.session.notRememberedTitle": "Login not saved",
   "auth.session.notRemembered": "Kaiku couldn't save your login on this computer, so you'll need to sign in again next time.",
   "auth.logout.failed": "Sign-out failed.",
+  "auth.serverSetupPending.title": "This server is still being set up",
+  "auth.serverSetupPending.text": "An admin has to finish the first setup. Until then some things may not work yet.",
   "auth.pcSetup.button": "Set up this PC",
   "auth.pcSetup.title": "Set up this PC",
   "auth.pcSetup.starting": "Getting ready\u2026",

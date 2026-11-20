@@ -11,7 +11,9 @@
  * - setup_required flag is true in auth response
  */
 
-import { Component, createSignal, createEffect, Show } from "solid-js";
+import { Component, createResource, createSignal, createEffect, Show } from "solid-js";
+import { t } from "@/i18n";
+import { checkAdminStatus } from "@/lib/tauri/admin";
 import { codeIs } from "@/lib/errorCode";
 import { authState, clearSetupRequired } from "@/stores/auth";
 import { AlertCircle, CheckCircle, Server } from "lucide-solid";
@@ -162,7 +164,7 @@ async function completeSetup(config: SetupConfig): Promise<void> {
   }
 }
 
-const SetupWizard: Component = () => {
+const SetupForm: Component = () => {
   // Form state
   const [serverName, setServerName] = createSignal("");
   const [registrationPolicy, setRegistrationPolicy] = createSignal<
@@ -408,6 +410,47 @@ const SetupWizard: Component = () => {
             </p>
           </div>
       </Modal>
+    </Show>
+  );
+};
+
+/**
+ * A user who is not a system admin cannot complete the setup (the server
+ * answers 403), so they get a closable notice instead of the wizard. When the
+ * admin status cannot be read, the wizard shows as before.
+ */
+const SetupPendingNotice: Component = () => (
+  <Modal
+    onClose={() => clearSetupRequired()}
+    labelledBy="setup-pending-title"
+    class="bg-surface-layer2 rounded-xl p-6 w-[28rem] max-w-full shadow-2xl border border-white/10 space-y-4"
+    testId="setup-pending"
+  >
+    <h2 id="setup-pending-title" class="text-lg font-semibold text-text-primary">
+      {t("auth.serverSetupPending.title")}
+    </h2>
+    <p class="text-base text-text-primary">{t("auth.serverSetupPending.text")}</p>
+    <div class="flex justify-end">
+      <button type="button" class="btn-primary min-h-11 text-base" onClick={() => clearSetupRequired()}>
+        {t("common.close")}
+      </button>
+    </div>
+  </Modal>
+);
+
+const SetupWizard: Component = () => {
+  const [admin] = createResource(async () => {
+    try {
+      return (await checkAdminStatus()).is_admin;
+    } catch {
+      return true;
+    }
+  });
+  return (
+    <Show when={admin() !== undefined}>
+      <Show when={admin()} fallback={<SetupPendingNotice />}>
+        <SetupForm />
+      </Show>
     </Show>
   );
 };

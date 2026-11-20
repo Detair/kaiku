@@ -433,6 +433,8 @@
   "auth.secure.notAccepted": "",
   "auth.secure.submit": "",
   "auth.secure.title": "",
+  "auth.serverSetupPending.text": "",
+  "auth.serverSetupPending.title": "",
   "auth.session.notRemembered": "",
   "auth.session.notRememberedTitle": "",
   "auth.sessionExpired.title": "",
