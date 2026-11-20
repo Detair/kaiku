@@ -42,15 +42,19 @@ import { DESKTOP_PLATFORM } from "./SetUpThisPcDesktop";
 export const MIN_POLL_GAP_MS = 1_000;
 /** The long-poll's wait (the server allows up to 25 s). */
 const POLL_WAIT_S = 20;
-/** Pause after a failed poll. */
+/** First pause after a failed poll; it doubles up to [`POLL_RETRY_MAX_MS`]. */
 const POLL_RETRY_MS = 3_000;
+const POLL_RETRY_MAX_MS = 30_000;
 
 type Patch = Pick<PcSetupStatus, "state"> & Partial<Pick<PcSetupStatus, "reason" | "enrollment_id">>;
 
-/** What a platform step gets: the attempt, and a way to report what it learned. */
+/**
+ * What a platform step gets: the attempt, and a way to report what it learned
+ * about that attempt (the dialog drops a report about an earlier attempt).
+ */
 export interface PcSetupStepProps {
   attemptId: string;
-  onState: (patch: Patch) => void;
+  onState: (attemptId: string, patch: Patch) => void;
 }
 
 /** The steps that differ between the web page and the desktop app (Task 6). */
@@ -72,12 +76,13 @@ export const WebCodeStep: Component<PcSetupStepProps> = (props) => {
   const [error, setError] = createSignal<string | null>(null);
 
   const submit = async () => {
+    const id = props.attemptId;
     setBusy(true);
     setError(null);
     try {
-      const res = await enterPcSetupCode(props.attemptId, code());
-      if (res.state === "enrolled") props.onState({ state: "enrolled", reason: null, enrollment_id: res.enrollment_id });
-      else if (res.state === "failed") props.onState({ state: "failed", reason: "too_many_codes" });
+      const res = await enterPcSetupCode(id, code());
+      if (res.state === "enrolled") props.onState(id, { state: "enrolled", reason: null, enrollment_id: res.enrollment_id });
+      else if (res.state === "failed") props.onState(id, { state: "failed", reason: "too_many_codes" });
       else
         setError(
           typeof res.tries_left === "number"
@@ -86,7 +91,7 @@ export const WebCodeStep: Component<PcSetupStepProps> = (props) => {
         );
     } catch (err) {
       if (err instanceof HttpError && codeIs(err.code, "APPROVAL_EXPIRED")) {
-        props.onState({ state: "expired", reason: "code_expired" });
+        props.onState(id, { state: "expired", reason: "code_expired" });
       } else {
         // A state conflict is corrected by the next poll.
         setError(errorText(err, "auth.pcSetup.codeFailed"));
@@ -124,6 +129,7 @@ export const WebPasskeyStep: Component<PcSetupStepProps> = (props) => {
   onCleanup(() => ctl?.abort());
 
   const register = async () => {
+    const id = props.attemptId;
     ctl?.abort();
     const mine = new AbortController();
     ctl = mine;
@@ -171,8 +177,16 @@ const WEB_PLATFORM: PcSetupPlatform = { CodeStep: WebCodeStep, PasskeyStep: WebP
 
 const isLive = (s: PcSetupStatus | null): boolean => !!s && LIVE_PC_SETUP_STATES.includes(s.state);
 
+/** SM5 order of the live states and `completed`; every other state is an end. */
+const RANK: Record<string, number> = { waiting: 0, claimed: 1, code: 2, enrolled: 3, completed: 4 };
+const rank = (state: string): number => RANK[state] ?? 5;
+
+/** States the client knows (C27); anything else reads as the generic text. */
+const KNOWN_ENDS = ["completed", "refused", "reported", "failed", "cancelled", "expired"];
+
 /** The sentence for an ended attempt (the PC error table of the spec). */
 function endedKey(s: PcSetupStatus): MessageKey {
+  if (!LIVE_PC_SETUP_STATES.includes(s.state) && !KNOWN_ENDS.includes(s.state)) return "auth.pcSetup.ended.generic";
   if (s.state === "refused") return "auth.pcSetup.ended.refused";
   if (s.state === "reported") return "auth.pcSetup.ended.reported";
   if (s.state === "failed") return "auth.pcSetup.ended.tooManyCodes";
@@ -196,8 +210,15 @@ function endedKey(s: PcSetupStatus): MessageKey {
       return "auth.pcSetup.ended.cancelled";
     case "gone":
       return "auth.pcSetup.ended.gone";
+    case "timeout":
+    case "code_expired":
+    case "enrollment_expired":
+      return "auth.pcSetup.ended.timeout";
+    case null:
+    case undefined:
+      return s.state === "cancelled" ? "auth.pcSetup.ended.cancelled" : "auth.pcSetup.ended.generic";
     default:
-      return s.state === "cancelled" ? "auth.pcSetup.ended.cancelled" : "auth.pcSetup.ended.timeout";
+      return "auth.pcSetup.ended.generic";
   }
 }
 
@@ -220,23 +241,31 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
   /** Bumped by every start, restart and the unmount: older loops and answers stop. */
   let generation = 0;
   let signIn: AbortController | null = null;
+  /** The dialog is gone: a start answered later is given up at once. */
+  let closed = false;
   /** The open long-poll: ended by a restart and by the unmount (it holds a server slot). */
   let polling: AbortController | null = null;
 
   const apply = (res: PcSetupStatus) => {
-    // A late answer must not take back a code the person just entered.
-    if (status()?.state === "enrolled" && res.state === "code") return;
+    const cur = status();
+    // Only answers about the attempt on screen count.
+    if (cur && cur.attempt_id !== res.attempt_id) return;
+    // A late answer never takes a step back (a code just typed, a finished
+    // passkey); only `claimed` may return to `waiting` (released, or expired).
+    if (cur && rank(res.state) < rank(cur.state) && !(cur.state === "claimed" && res.state === "waiting")) return;
     setStatus((prev) => ({ ...res, enrollment_id: res.enrollment_id ?? prev?.enrollment_id }));
     if (res.state !== "waiting") setQr("");
     else if (res.qr_payload) setQr(res.qr_payload);
   };
 
-  const patch = (p: Patch) => {
+  const patch = (attemptId: string, p: Patch) => {
+    if (status()?.attempt_id !== attemptId) return;
     setStatus((prev) => (prev ? { ...prev, reason: null, ...p } : prev));
     if (p.state !== "waiting") setQr("");
   };
 
   const pollLoop = async (mine: number) => {
+    let retry = POLL_RETRY_MS;
     while (mine === generation) {
       const current = status();
       if (!current || !isLive(current)) return;
@@ -248,6 +277,7 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
         const res = await pollPcSetup(current.attempt_id, POLL_WAIT_S, ctl.signal);
         if (mine !== generation) return;
         setOffline(false);
+        retry = POLL_RETRY_MS;
         apply(res);
       } catch (err) {
         if (mine !== generation) return;
@@ -255,8 +285,15 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
           apply({ attempt_id: current.attempt_id, state: "expired", reason: "gone" });
           return;
         }
+        // A refusal that waiting does not change: end with the generic text.
+        if (err instanceof HttpError && err.status >= 400 && err.status < 500 && err.status !== 408 && err.status !== 429) {
+          apply({ attempt_id: current.attempt_id, state: "expired", reason: "poll_refused" });
+          return;
+        }
         setOffline(true);
-        pause = POLL_RETRY_MS;
+        const asked = err instanceof HttpError && err.retryAfter ? err.retryAfter * 1_000 : 0;
+        pause = Math.max(retry, asked);
+        retry = Math.min(retry * 2, POLL_RETRY_MAX_MS);
       } finally {
         if (polling === ctl) polling = null;
       }
@@ -275,7 +312,11 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
     setStarting(true);
     try {
       const started = await startPcSetup();
-      if (mine !== generation) return;
+      if (mine !== generation) {
+        // The dialog closed meanwhile: give up the attempt the server just made.
+        if (closed) void cancelPcSetup(started.attempt_id).catch(() => undefined);
+        return;
+      }
       setStatus({ attempt_id: started.attempt_id, state: "waiting", reason: null });
       setQr(started.qr_payload);
       setStarting(false);
@@ -312,6 +353,7 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
   onMount(() => void resumeOrBegin());
 
   onCleanup(() => {
+    closed = true;
     generation++;
     polling?.abort();
     signIn?.abort();

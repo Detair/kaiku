@@ -297,6 +297,7 @@
   "auth.pcSetup.desktop.title": "",
   "auth.pcSetup.desktop.waiting": "",
   "auth.pcSetup.ended.cancelled": "",
+  "auth.pcSetup.ended.generic": "",
   "auth.pcSetup.ended.gone": "",
   "auth.pcSetup.ended.mayApproveOff": "",
   "auth.pcSetup.ended.refused": "",

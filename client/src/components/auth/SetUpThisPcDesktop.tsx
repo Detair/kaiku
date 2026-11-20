@@ -42,7 +42,7 @@ function startFlow(attemptId: string, onState: PcSetupStepProps["onState"]) {
     () => {
       flow.done = true;
       setVersion((v) => v + 1);
-      if (!ctl.signal.aborted) onState({ state: "completed", reason: null });
+      if (!ctl.signal.aborted) onState(attemptId, { state: "completed", reason: null });
     },
     (err: unknown) => {
       flow.done = true;

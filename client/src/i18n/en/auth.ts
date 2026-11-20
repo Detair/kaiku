@@ -271,4 +271,5 @@ export const auth = {
   "auth.pcSetup.ended.cancelled": "This was cancelled. Start again?",
   "auth.pcSetup.ended.sessionEnded": "This session has ended. Sign in again.",
   "auth.pcSetup.ended.gone": "This setup is no longer active. Start again?",
+  "auth.pcSetup.ended.generic": "This didn't work. Start again.",
 } as const satisfies Record<`auth.${string}`, string>;

@@ -32,6 +32,8 @@ vi.mock("@/stores/auth", async (orig) => ({ ...(await orig<object>()), replaceSe
 
 import SetUpThisPc from "../SetUpThisPc";
 import ProbationBanner from "../ProbationBanner";
+import SetUpThisPcHost from "../SetUpThisPcHost";
+import { closeSetUpThisPc } from "../SetUpThisPcButton";
 import PasskeyFirstSteps from "@/components/settings/security/PasskeyFirstSteps";
 import { Route, Router } from "@solidjs/router";
 import { setAuthState } from "@/stores/auth";
@@ -107,6 +109,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  closeSetUpThisPc();
   vi.useRealTimers();
   setAuthState({ user: null });
 });
@@ -167,7 +170,12 @@ describe("buttons in the banners", () => {
 
   it("clicking it opens the dialog and starts an attempt", async () => {
     getMeSecurity.mockResolvedValue(security(0, true));
-    render(() => <ProbationBanner />);
+    render(() => (
+      <>
+        <ProbationBanner />
+        <SetUpThisPcHost />
+      </>
+    ));
     fireEvent.click(await screen.findByRole("button", { name: "Set up this PC" }));
     await waitFor(() => expect(pc.startPcSetup).toHaveBeenCalledOnce());
     expect(await screen.findByRole("img", { name: "Code to scan with the Kaiku app on your phone" })).toBeTruthy();
@@ -461,5 +469,126 @@ describe("on the desktop", () => {
     expect(await screen.findByRole("button", { name: "Open the browser" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Start again" })).toBeTruthy();
     expect(setUpThisPcInBrowser).not.toHaveBeenCalled();
+  });
+});
+
+describe("answers belong to their attempt", () => {
+  const OLD = ID;
+  const NEW = "00000000-0000-4000-8000-000000000002";
+
+  it("a late code answer of the old attempt does not move the new one", async () => {
+    await openAt("code");
+    let answer: (v: unknown) => void = () => undefined;
+    pc.enterPcSetupCode.mockImplementation(() => new Promise((r) => (answer = r)));
+    fireEvent.input(await screen.findByLabelText("Code from your phone"), { target: { value: "123456" } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    await waitFor(() => expect(pc.enterPcSetupCode).toHaveBeenCalledWith(OLD, "123456"));
+    pc.startPcSetup.mockResolvedValue({ attempt_id: NEW, qr_payload: "kaiku://pcsetup/v1?o=x&t=z", rotates_at: "" });
+    polls();
+    fireEvent.click(screen.getByRole("button", { name: "Start again" }));
+    expect(await screen.findByRole("img", { name: "Code to scan with the Kaiku app on your phone" })).toBeTruthy();
+    answer({ state: "enrolled", enrollment_id: "e1" });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.queryByRole("button", { name: "Create a passkey" })).toBeNull();
+    expect(screen.getByRole("img", { name: "Code to scan with the Kaiku app on your phone" })).toBeTruthy();
+  });
+
+  it("a late poll answer never takes back a completed attempt", async () => {
+    let late: (v: unknown) => void = () => undefined;
+    pc.pollPcSetup.mockReset();
+    pc.pollPcSetup
+      .mockResolvedValueOnce(status("enrolled"))
+      .mockImplementationOnce(() => new Promise((r) => (late = r)))
+      .mockImplementation(never);
+    pc.startPcSetupPasskey.mockResolvedValue({ ceremony_id: "c1", options: {} });
+    createPasskeyCredential.mockResolvedValue({});
+    pc.finishPcSetupPasskey.mockResolvedValue({});
+    render(() => <SetUpThisPc onClose={vi.fn()} />);
+    const create = await screen.findByRole("button", { name: "Create a passkey" });
+    // A poll is open while the passkey is made.
+    await waitFor(() => expect(pc.pollPcSetup).toHaveBeenCalledTimes(2), { timeout: 2_000 });
+    fireEvent.click(create);
+    expect(await screen.findByRole("button", { name: "Sign in with your passkey" })).toBeTruthy();
+    // That poll answers only now, with what it read before the finish.
+    late(status("enrolled"));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.getByRole("button", { name: "Sign in with your passkey" })).toBeTruthy();
+  });
+});
+
+describe("C27's generic text and poll errors", () => {
+  it("an unknown reason or state reads as the generic text, not as a timeout", async () => {
+    await openAt("expired", "some_new_reason");
+    expect(await screen.findByText("This didn't work. Start again.")).toBeTruthy();
+    cleanup();
+    await openAt("some_new_state", null);
+    expect(await screen.findByText("This didn't work. Start again.")).toBeTruthy();
+  });
+
+  it("a 429 waits as long as Retry-After says", async () => {
+    vi.useFakeTimers();
+    pc.pollPcSetup.mockReset();
+    pc.pollPcSetup
+      .mockRejectedValueOnce(new HttpError(429, "TOO_MANY_ATTEMPTS", "TOO_MANY_ATTEMPTS", {}, 12))
+      .mockImplementation(never);
+    render(() => <SetUpThisPc onClose={vi.fn()} />);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pc.pollPcSetup).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(11_000);
+    expect(pc.pollPcSetup).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(pc.pollPcSetup).toHaveBeenCalledTimes(2);
+  });
+
+  it("failed polls back off", async () => {
+    vi.useFakeTimers();
+    pc.pollPcSetup.mockReset();
+    pc.pollPcSetup.mockRejectedValue(new Error("offline"));
+    render(() => <SetUpThisPc onClose={vi.fn()} />);
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(pc.pollPcSetup).toHaveBeenCalledTimes(2);
+    // The second pause is longer than the first.
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(pc.pollPcSetup).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(pc.pollPcSetup).toHaveBeenCalledTimes(3);
+  });
+
+  it("a refused poll ends with the generic text instead of retrying", async () => {
+    pc.pollPcSetup.mockReset();
+    pc.pollPcSetup.mockRejectedValueOnce(http("FORBIDDEN", 403)).mockImplementation(never);
+    render(() => <SetUpThisPc onClose={vi.fn()} />);
+    expect(await screen.findByText("This didn't work. Start again.")).toBeTruthy();
+    expect(pc.pollPcSetup).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("the attempt follows the dialog", () => {
+  it("closing during the start cancels the attempt the server made", async () => {
+    let answer: (v: unknown) => void = () => undefined;
+    pc.startPcSetup.mockImplementation(() => new Promise((r) => (answer = r)));
+    render(() => <SetUpThisPc onClose={vi.fn()} />);
+    await waitFor(() => expect(pc.startPcSetup).toHaveBeenCalled());
+    cleanup();
+    answer({ attempt_id: ID, qr_payload: "kaiku://pcsetup/v1?o=x&t=y", rotates_at: "" });
+    await waitFor(() => expect(pc.cancelPcSetup).toHaveBeenCalledWith(ID));
+  });
+
+  it("a refresh of the security overview does not close an open dialog", async () => {
+    getMeSecurity.mockResolvedValue(security(0, true));
+    render(() => (
+      <>
+        <ProbationBanner />
+        <SetUpThisPcHost />
+      </>
+    ));
+    fireEvent.click(await screen.findByRole("button", { name: "Set up this PC" }));
+    expect(await screen.findByRole("img", { name: "Code to scan with the Kaiku app on your phone" })).toBeTruthy();
+    getMeSecurity.mockResolvedValue(security(0, false));
+    await refreshMeSecurity();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.getByRole("img", { name: "Code to scan with the Kaiku app on your phone" })).toBeTruthy();
+    expect(pc.cancelPcSetup).not.toHaveBeenCalled();
   });
 });
