@@ -246,6 +246,21 @@ fn room_remove_layers(room: &Room, peer: &Peer) {
     room.track_router.remove_simulcast_tracks(&layers);
 }
 
+/// Ask the publisher of `peer` for a key frame on each of `ssrcs` (PLI).
+pub(crate) async fn request_keyframe(peer: &Peer, ssrcs: &[u32]) -> Result<(), webrtc::Error> {
+    use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
+    let packets: Vec<Box<dyn webrtc::rtcp::packet::Packet + Send + Sync>> = ssrcs
+        .iter()
+        .map(|ssrc| {
+            Box::new(PictureLossIndication {
+                sender_ssrc: 0,
+                media_ssrc: *ssrc,
+            }) as Box<dyn webrtc::rtcp::packet::Packet + Send + Sync>
+        })
+        .collect();
+    peer.publisher_pc.write_rtcp(&packets).await.map(|_| ())
+}
+
 /// Number of media sections (`m=` lines) in a session description.
 fn count_media_sections(sdp: &str) -> usize {
     sdp.lines().filter(|l| l.starts_with("m=")).count()
@@ -1427,22 +1442,31 @@ impl SfuServer {
                     // pattern — webrtc-rs doesn't include an interval PLI interceptor
                     // by default, and PeerConnection::write_rtcp() doesn't reliably
                     // deliver PLI to the remote browser.
+                    // The request goes to every layer of the source (a viewer
+                    // may watch any) and ends with the source or the seat.
                     if source_type.is_video() {
-                        let publisher_pc_weak = Arc::downgrade(&peer.publisher_pc);
-                        let track_ssrc = track.ssrc();
+                        let peer_weak = Arc::downgrade(&peer);
+                        let primary_ssrc = track.ssrc();
                         tokio::spawn(async move {
-                            use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
                             let mut interval = tokio::time::interval(std::time::Duration::from_secs(3));
+                            let mut seen = false;
                             loop {
                                 interval.tick().await;
-                                let Some(publisher_pc) = publisher_pc_weak.upgrade() else {
-                                    break; // PC dropped — stop PLI
-                                };
-                                let pli = PictureLossIndication {
-                                    sender_ssrc: 0,
-                                    media_ssrc: track_ssrc,
-                                };
-                                if publisher_pc.write_rtcp(&[Box::new(pli)]).await.is_err() {
+                                let Some(peer) = peer_weak.upgrade() else { break };
+                                let live = peer.incoming_tracks.read().await.contains_key(&source_type);
+                                if peer.is_retired() || (seen && !live) {
+                                    break;
+                                }
+                                seen |= live;
+                                let mut ssrcs: Vec<u32> = peer
+                                    .simulcast_ssrcs(source_type)
+                                    .into_iter()
+                                    .map(|(_, ssrc)| ssrc)
+                                    .collect();
+                                if ssrcs.is_empty() {
+                                    ssrcs.push(primary_ssrc);
+                                }
+                                if request_keyframe(&peer, &ssrcs).await.is_err() {
                                     break;
                                 }
                             }

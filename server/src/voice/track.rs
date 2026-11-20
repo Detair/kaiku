@@ -588,11 +588,20 @@ pub fn spawn_subscriber_rtcp_reader(
             if wants_keyframe {
                 if let Some(publisher) = publisher.upgrade() {
                     if !publisher.is_retired() && publisher.allow_keyframe_request(source_type) {
-                        let pli = PictureLossIndication {
-                            sender_ssrc: 0,
-                            media_ssrc,
-                        };
-                        let _ = publisher.publisher_pc.write_rtcp(&[Box::new(pli)]).await;
+                        // The layer this viewer receives (simulcast), else the
+                        // track's own SSRC.
+                        let layer =
+                            track_router.active_layer(subscriber_id, source_user_id, source_type);
+                        let ssrc = layer
+                            .and_then(|layer| {
+                                publisher
+                                    .simulcast_ssrcs(source_type)
+                                    .into_iter()
+                                    .find(|(l, _)| *l == layer)
+                                    .map(|(_, ssrc)| ssrc)
+                            })
+                            .unwrap_or(media_ssrc);
+                        let _ = crate::voice::sfu::request_keyframe(&publisher, &[ssrc]).await;
                     }
                 }
             }
