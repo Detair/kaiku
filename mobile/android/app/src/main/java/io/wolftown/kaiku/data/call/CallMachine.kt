@@ -1125,6 +1125,14 @@ object CallMachine {
                     // "Still ringing" for this call is older than what this phone saw (an answer or
                     // its own join turn a call active on the server at once): unchanged.
                     if (answer != null && answer.callId == callId && answer.ringing) return same()
+                    // This user's own answer is still on its way: the server's look may be older
+                    // than it, so "active without me" for this call says nothing. Gone or another
+                    // call still ends it; a call that really ended ends through the answer or its end.
+                    if (state is CallState.Connecting && !state.voice && answer != null &&
+                        answer.callId == callId && answer.active && me !in answer.participants
+                    ) {
+                        return same()
+                    }
                     val stillIn = answer != null && (callId == null || answer.callId == callId) &&
                         answer.active && me in answer.participants
                     if (!stillIn) return silentEnd(e.channelId, callId, shownVoiceId() ?: 0L)

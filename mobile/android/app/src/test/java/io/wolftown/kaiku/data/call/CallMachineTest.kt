@@ -223,6 +223,30 @@ class CallMachineTest {
     }
 
     @Test
+    fun `a status answer without this user while this user's answer is on its way changes nothing`() {
+        incoming()
+        send(accept())
+        // A group call someone else answered: the server's look, taken before this user's own
+        // join counted, shows it active without this user.
+        send(Resynced(dm, snapshot(participants = setOf("anna", "bob")), 0L, model.state))
+        assertTrue("an answer on its way was undone: ${model.state}", model.state is CallState.Connecting)
+        assertTrue(effects.none { it is LeaveVoice || it is RestLeave })
+        // The answer comes: the voice joins.
+        send(JoinOk(dm, "c-1"))
+        assertEquals(listOf(JoinVoice(dm, "c-1", voice)), effects)
+    }
+
+    @Test
+    fun `a status answer of no call or another call still ends an answer on its way`() {
+        for (said in listOf(null, snapshot(callId = "c-2", participants = setOf("anna", "bob")))) {
+            model = CallModel()
+            incoming()
+            send(accept())
+            assertEquals("$said", CallState.Idle, send(Resynced(dm, said, 0L, model.state)))
+        }
+    }
+
+    @Test
     fun `an answer the server refuses ends without leaving`() {
         incoming()
         send(accept())
