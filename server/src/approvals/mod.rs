@@ -58,7 +58,10 @@ pub fn pc_setups_router(state: &AppState) -> Router<AppState> {
 
 /// `Cache-Control: no-store`: these answers may carry a single-use secret
 /// (a "Set up this PC" QR token or code, an enrolment's setup data).
-async fn no_store(request: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
+async fn no_store(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
     let mut response = next.run(request).await;
     response.headers_mut().insert(
         axum::http::header::CACHE_CONTROL,

@@ -960,7 +960,8 @@ pub async fn lock_for_phone(
     // revoked device, an ended session get their own answers), then the
     // attempt's end, also when a poll or the sweep ended it earlier.
     let dev = key_device_session(conn, auth).await?;
-    if !locked.account.may_approve || locked.end_reason() == Some(EndCause::MayApproveOff.as_str()) {
+    if !locked.account.may_approve || locked.end_reason() == Some(EndCause::MayApproveOff.as_str())
+    {
         return Err(ApprovalError::NotAllowed);
     }
     if locked.end_reason().is_some() {

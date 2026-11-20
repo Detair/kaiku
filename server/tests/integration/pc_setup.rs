@@ -2873,9 +2873,16 @@ async fn an_attempt_ended_by_a_poll_keeps_its_own_refusal(pool: PgPool) {
     let (id, c, bytes) = claimed(&p).await;
     set_may_approve(&pool, p.user, false).await;
     pc_poll(&p, &id).await;
-    assert_eq!(attempt_state(&pool, &id).await.1.as_deref(), Some("may_approve_off"));
+    assert_eq!(
+        attempt_state(&pool, &id).await.1.as_deref(),
+        Some("may_approve_off")
+    );
     let (s, b) = answer(&p.app, &p.dev, &c, &bytes, Decision::Approve).await;
-    assert_eq!((s, b["error"].as_str()), (403, Some("APPROVAL_NOT_ALLOWED")), "{b}");
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (403, Some("APPROVAL_NOT_ALLOWED")),
+        "{b}"
+    );
 
     // The code ran out and the sweep ended the attempt before it was typed.
     let p = pc(&pool).await;
@@ -2885,10 +2892,19 @@ async fn an_attempt_ended_by_a_poll_keeps_its_own_refusal(pool: PgPool) {
         .execute(&pool)
         .await
         .unwrap();
-    vc_server::approvals::pc_setup::transition::expire_due(&pool).await.unwrap();
-    assert_eq!(attempt_state(&pool, &id).await.1.as_deref(), Some("code_expired"));
+    vc_server::approvals::pc_setup::transition::expire_due(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        attempt_state(&pool, &id).await.1.as_deref(),
+        Some("code_expired")
+    );
     let (s, b) = enter(&p, &p.token, &id, &code).await;
-    assert_eq!((s, b["error"].as_str()), (410, Some("APPROVAL_EXPIRED")), "{b}");
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (410, Some("APPROVAL_EXPIRED")),
+        "{b}"
+    );
 }
 
 #[sqlx::test]
@@ -2903,7 +2919,11 @@ async fn another_phone_learns_nothing_about_a_claim(pool: PgPool) {
         .await
         .unwrap();
     let (s, b) = answer(&p.app, &other, &c, &bytes, Decision::Approve).await;
-    assert_eq!((s, b["error"].as_str()), (404, Some("APPROVAL_NOT_FOUND")), "{b}");
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (404, Some("APPROVAL_NOT_FOUND")),
+        "{b}"
+    );
     // Nothing changed on its behalf.
     assert_eq!(attempt_state(&pool, &id).await.0, "claimed");
 }
@@ -2917,14 +2937,26 @@ async fn a_foreign_code_is_told_apart_only_when_live_and_only_to_a_scanner(pool:
     // A scanner whose account may not confirm sign-ins gets that refusal.
     set_may_approve(&pool, q.user, false).await;
     let (s, b) = claim(&q.app, &q.dev, &token).await;
-    assert_eq!((s, b["error"].as_str()), (403, Some("APPROVAL_NOT_ALLOWED")), "{b}");
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (403, Some("APPROVAL_NOT_ALLOWED")),
+        "{b}"
+    );
     set_may_approve(&pool, q.user, true).await;
     let (s, b) = claim(&q.app, &q.dev, &token).await;
-    assert_eq!((s, b["error"].as_str()), (409, Some("PC_SETUP_OTHER_ACCOUNT")), "{b}");
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (409, Some("PC_SETUP_OTHER_ACCOUNT")),
+        "{b}"
+    );
     // The other PC's session ended: its code is no longer live.
     end_session(&pool, p.sid).await;
     let (s, b) = claim(&q.app, &q.dev, &token).await;
-    assert_eq!((s, b["error"].as_str()), (404, Some("LOGIN_CODE_STALE")), "{b}");
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (404, Some("LOGIN_CODE_STALE")),
+        "{b}"
+    );
 }
 
 #[sqlx::test]
@@ -2973,14 +3005,32 @@ async fn responses_with_a_token_or_code_are_not_stored(pool: PgPool) {
             (resp.status().as_u16(), cc, body_to_json_lenient(resp).await)
         }
     };
-    let (s, cc, a) = send(Method::POST, "/auth/pc-setups".into(), p.token.clone(), Some(json!({}))).await;
+    let (s, cc, a) = send(
+        Method::POST,
+        "/auth/pc-setups".into(),
+        p.token.clone(),
+        Some(json!({})),
+    )
+    .await;
     assert_eq!((s, cc.as_deref()), (201, Some("no-store")), "{a}");
     let id = id_of(&a);
-    for uri in [format!("/auth/pc-setups/{id}?wait=0"), "/auth/pc-setups/current".into()] {
+    for uri in [
+        format!("/auth/pc-setups/{id}?wait=0"),
+        "/auth/pc-setups/current".into(),
+    ] {
         let (s, cc, b) = send(Method::GET, uri.clone(), p.token.clone(), None).await;
         assert_eq!((s, cc.as_deref()), (200, Some("no-store")), "{uri} {b}");
     }
-    let (token, bytes) = qr_token(&send(Method::GET, "/auth/pc-setups/current".into(), p.token.clone(), None).await.2["qr_payload"]);
+    let (token, bytes) = qr_token(
+        &send(
+            Method::GET,
+            "/auth/pc-setups/current".into(),
+            p.token.clone(),
+            None,
+        )
+        .await
+        .2["qr_payload"],
+    );
     let (_, c) = claim(&p.app, &p.dev, &token).await;
     let prefix = b64u_decode(c["signing_prefix"].as_str().unwrap()).unwrap();
     let sig = p.dev.sign(&prefix, Decision::Approve, &bytes);
