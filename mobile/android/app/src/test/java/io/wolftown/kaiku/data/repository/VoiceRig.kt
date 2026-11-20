@@ -208,12 +208,16 @@ internal class VoiceRig(
         }
     }
 
-    @Synchronized
     private fun step(name: String) {
-        val n = (reached[name] ?: 0) + 1
-        reached[name] = n
-        hooks.remove("$name#$n")?.forEach { it() }
-        lastHooks.remove("$name#$n")?.forEach { it() }
+        // Only the bookkeeping is locked (the release of a sign-out runs on its own thread):
+        // a block runs unlocked, so it never orders two threads that the code under test does not.
+        val (first, last) = synchronized(reached) {
+            val n = (reached[name] ?: 0) + 1
+            reached[name] = n
+            hooks.remove("$name#$n").orEmpty() to lastHooks.remove("$name#$n").orEmpty()
+        }
+        first.forEach { it() }
+        last.forEach { it() }
     }
 
     // -- The socket -----------------------------------------------------------
