@@ -42,6 +42,54 @@ const POLL_STEP: std::time::Duration = std::time::Duration::from_millis(500);
 /// answer comes at once (as the login attempts' Fable M3).
 const MAX_LONG_POLLS: usize = 32;
 static LONG_POLLS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(MAX_LONG_POLLS);
+/// Waiting long-polls per user (any of their sessions and devices).
+const MAX_LONG_POLLS_PER_USER: usize = 4;
+
+/// Who waits: one long-poll per attempt and side (PC or phone), and at most
+/// [`MAX_LONG_POLLS_PER_USER`] per user. A poll that finds its place taken
+/// answers at once.
+#[derive(Default)]
+struct Waiting {
+    attempts: std::collections::HashSet<(Uuid, bool)>,
+    users: std::collections::HashMap<Uuid, usize>,
+}
+
+static WAITING: std::sync::LazyLock<std::sync::Mutex<Waiting>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(Waiting::default()));
+
+/// A held place in [`WAITING`], given back on drop.
+struct WaitSlot {
+    attempt: (Uuid, bool),
+    user: Uuid,
+}
+
+impl WaitSlot {
+    fn take(attempt: Uuid, pc_side: bool, user: Uuid) -> Option<Self> {
+        let mut w = WAITING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let held = w.users.get(&user).copied().unwrap_or(0);
+        if held >= MAX_LONG_POLLS_PER_USER || !w.attempts.insert((attempt, pc_side)) {
+            return None;
+        }
+        w.users.insert(user, held + 1);
+        Some(Self {
+            attempt: (attempt, pc_side),
+            user,
+        })
+    }
+}
+
+impl Drop for WaitSlot {
+    fn drop(&mut self) {
+        let mut w = WAITING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        w.attempts.remove(&self.attempt);
+        if let Some(n) = w.users.get_mut(&self.user) {
+            *n -= 1;
+            if *n == 0 {
+                w.users.remove(&self.user);
+            }
+        }
+    }
+}
 
 /// `POST /auth/pc-setups` → 201.
 #[derive(Serialize, utoipa::ToSchema)]
@@ -227,17 +275,24 @@ pub(crate) async fn settle<T>(
     }
 }
 
-/// Wait for a change of `id` (`rotation`: and mint due QR tokens).
+/// Wait for a change of `id` (`rotation`: the PC's poll, which also mints
+/// due QR tokens). An ended attempt never changes, so it answers at once;
+/// so does a poll without a free place (process, user, attempt).
 async fn long_poll(
     state: &AppState,
+    user: Uuid,
     id: Uuid,
     first: &AttemptRow,
     wait: u8,
     rotation: bool,
 ) -> Result<(AttemptRow, Option<Secret256>), ApprovalError> {
     let ctx = AuthCtx::from(state);
-    let permit = LONG_POLLS.try_acquire().ok();
-    let wait = if permit.is_some() {
+    let wants = wait > 0 && !first.state().is_terminal();
+    let permit = wants.then(|| LONG_POLLS.try_acquire().ok()).flatten();
+    let slot = permit
+        .as_ref()
+        .and_then(|_| WaitSlot::take(id, rotation, user));
+    let wait = if slot.is_some() {
         wait.min(MAX_WAIT_SECS)
     } else {
         0
@@ -334,7 +389,7 @@ pub async fn poll(
         let mut conn = state.db.acquire().await?;
         transition::of_session(&mut conn, &auth, id).await?
     };
-    let (row, token) = long_poll(&state, id, &first, q.wait.unwrap_or(0), true).await?;
+    let (row, token) = long_poll(&state, auth.id, id, &first, q.wait.unwrap_or(0), true).await?;
     Ok(Json(status(
         AuthCtx::from(&state).origin(),
         &row,
@@ -700,7 +755,7 @@ pub async fn phone_poll(
         let mut conn = state.db.acquire().await?;
         transition::of_scanner(&mut conn, &auth, id).await?
     };
-    let (row, _) = long_poll(&state, id, &first, q.wait.unwrap_or(0), false).await?;
+    let (row, _) = long_poll(&state, auth.id, id, &first, q.wait.unwrap_or(0), false).await?;
     Ok(Json(PcSetupPhoneStatus {
         state: row.state,
         reason: row.reason,
@@ -711,6 +766,23 @@ pub async fn phone_poll(
 mod tests {
     use super::*;
     use crate::auth::AuthError;
+
+    #[test]
+    fn wait_slots_are_one_per_attempt_side_and_few_per_user() {
+        let user = Uuid::new_v4();
+        let a = Uuid::new_v4();
+        let pc = WaitSlot::take(a, true, user).expect("first");
+        assert!(WaitSlot::take(a, true, user).is_none(), "same attempt and side");
+        let phone = WaitSlot::take(a, false, user).expect("the phone's side");
+        let more: Vec<_> = (0..2)
+            .filter_map(|_| WaitSlot::take(Uuid::new_v4(), true, user))
+            .collect();
+        assert_eq!(more.len(), 2);
+        assert!(WaitSlot::take(Uuid::new_v4(), true, user).is_none(), "per user");
+        drop(pc);
+        assert!(WaitSlot::take(a, true, user).is_some(), "given back on drop");
+        drop((phone, more));
+    }
 
     #[test]
     fn only_check_refusals_keep_the_lazy_marks() {

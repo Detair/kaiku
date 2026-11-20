@@ -641,7 +641,8 @@ sequenceDiagram
   polls (`GET /auth/pc-setups/{id}`, `GET /api/pc-setups/{attempt_id}`) count in the per-user `Read`
   class, so a slow person's polling never blocks the code entry or the passkey.
 - **No push is involved**; both sides poll at most once a second (long-poll `?wait=` ≤ 25 s; at most 32
-  attempt long-polls per server process, beyond that a poll answers at once).
+  attempt long-polls per server process, 4 per user and one per attempt and side; a poll without a free
+  place, and every poll of an ended attempt, answers at once).
 
 ## 8. Enrolment (SM2)
 

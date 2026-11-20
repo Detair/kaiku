@@ -2650,3 +2650,33 @@ async fn a_stale_locked_value_never_advances_an_attempt(pool: PgPool) {
         .unwrap();
     assert_eq!(n, 0);
 }
+
+#[sqlx::test]
+async fn long_polls_hold_no_slot_without_need(pool: PgPool) {
+    let p = pc(&pool).await;
+    let a = started(&p).await;
+    let id = id_of(&a);
+    // A second waiting poll of the same attempt answers at once.
+    let poll = |wait: u8| {
+        let uri = format!("/auth/pc-setups/{id}?wait={wait}");
+        let p = &p;
+        async move { call(&p.app, Method::GET, &uri, &p.token, None).await }
+    };
+    let quick = async {
+        // Let the first poll take its slot.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let t = std::time::Instant::now();
+        let (s, _) = poll(25).await;
+        (s, t.elapsed())
+    };
+    let ((s1, _), (s2, quick_took)) = tokio::join!(poll(3), quick);
+    assert_eq!((s1, s2), (200, 200));
+    assert!(quick_took < std::time::Duration::from_secs(2), "{quick_took:?}");
+    // An attempt that has ended never changes: no wait at all.
+    let (s, _) = call(&p.app, Method::DELETE, &format!("/auth/pc-setups/{id}"), &p.token, None).await;
+    assert_eq!(s, 204);
+    let t = std::time::Instant::now();
+    let (s, body) = poll(25).await;
+    assert_eq!((s, body["state"].as_str()), (200, Some("cancelled")), "{body}");
+    assert!(t.elapsed() < std::time::Duration::from_secs(2), "{:?}", t.elapsed());
+}
