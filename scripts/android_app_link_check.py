@@ -6,8 +6,9 @@ Usage: aapt2 dump xmltree --file AndroidManifest.xml app.apk | android_app_link_
 Passes only when MainActivity has an intent filter that is exactly the setup App Link:
 autoVerify, the VIEW action, the DEFAULT and BROWSABLE categories, and data of exactly
 scheme https, host <host> and path /setup. Any https filter of MainActivity for <host> that
-matches more than exact paths (pathPrefix, pathPattern, pathSuffix, pathAdvancedPattern) or
-names a port fails the check, as does a setup filter with any other data.
+matches more than exact paths (pathPrefix, pathPattern, pathSuffix, pathAdvancedPattern, or no
+path at all, which matches every path) or names a port fails the check, as does a setup filter
+with any other data. Other filters for <host> with exact paths of their own stay allowed.
 """
 from __future__ import annotations
 
@@ -68,6 +69,10 @@ def problems(tree: str, host: str) -> list[str]:
                 wrong.append(f"https filter for {host} uses {', '.join(loose)}")
                 continue
             paths = {d["path"] for d in data if "path" in d}
+            if not paths:
+                # No path at all: Android matches every path on the host.
+                wrong.append(f"https filter for {host} without a path")
+                continue
             if "/setup" not in paths:
                 continue
             actions = {a["attrs"].get("name") for a in walk(f["children"], "action")}

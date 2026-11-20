@@ -78,6 +78,18 @@ class AppLinkCheckTest(unittest.TestCase):
         loose = setup_filter(data=[("scheme", "https"), ("host", HOST), ("pathPrefix", "/")])
         self.assertTrue(check.problems(manifest(setup_filter(), loose), HOST))
 
+    def test_a_filter_for_the_whole_host_fails_beside_the_exact_one(self):
+        # scheme + host and no path: Android matches every path on the host.
+        whole_host = setup_filter(data=[("scheme", "https"), ("host", HOST)])
+        self.assertEqual([f"https filter for {HOST} without a path"], check.problems(manifest(setup_filter(), whole_host), HOST))
+        self.assertTrue(check.problems(manifest(whole_host, setup_filter(), callback_filter()), HOST))
+        self.assertTrue(check.problems(manifest(whole_host), HOST))
+        # Without autoVerify too: it still claims every path for the app chooser.
+        self.assertTrue(check.problems(manifest(setup_filter(), setup_filter(data=[("scheme", "https"), ("host", HOST)], verify=False)), HOST))
+        # Other hosts' filters and exact paths of this host stay allowed.
+        other_host = setup_filter(data=[("scheme", "https"), ("host", "other.example.org")])
+        self.assertEqual([], check.problems(manifest(setup_filter(), other_host, callback_filter()), HOST))
+
     def test_a_port_fails(self):
         tree = manifest(setup_filter(data=[("scheme", "https"), ("host", HOST), ("port", "8443"), ("path", "/setup")]))
         self.assertTrue(check.problems(tree, HOST))
@@ -112,6 +124,8 @@ class AppLinkCheckTest(unittest.TestCase):
         self.assertEqual(0, run(manifest(setup_filter()), HOST))
         prefix = manifest(setup_filter(data=[("scheme", "https"), ("host", HOST), ("pathPrefix", "/setup")]))
         self.assertEqual(1, run(prefix, HOST))
+        whole_host = manifest(setup_filter(), setup_filter(data=[("scheme", "https"), ("host", HOST)]))
+        self.assertEqual(1, run(whole_host, HOST))
         self.assertEqual(2, run(manifest(setup_filter())))
 
 
