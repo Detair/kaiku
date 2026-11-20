@@ -296,6 +296,35 @@ class VoiceDoorTest {
         assertEquals(listOf("service:start", "service:stop"), rig.serviceLog())
     }
 
+    @Test
+    fun `a held microphone service that reports it could not start tells the call, once`() = rigTest { rig ->
+        var failed = 0
+        assertTrue(rig.repository.holdForCall(1, dm, "Anna") { failed++ })
+        // The service could not go to the foreground and stopped itself.
+        rig.serviceEvents.emit(io.wolftown.kaiku.data.voice.VoiceServiceEvent.StartFailed)
+        runCurrent()
+        rig.serviceEvents.emit(io.wolftown.kaiku.data.voice.VoiceServiceEvent.StartFailed)
+        runCurrent()
+        assertEquals(1, failed)
+        // Nothing is held any more: the call's leave has nothing to stop.
+        rig.repository.leaveCall(1)
+        runCurrent()
+        assertEquals(listOf("service:start"), rig.serviceLog())
+    }
+
+    @Test
+    fun `once a call's session has taken the service over, the session handles what the service reports`() = rigTest { rig ->
+        rig.socket.ready()
+        var failed = 0
+        assertTrue(rig.repository.holdForCall(1, dm, "Anna") { failed++ })
+        launch(start = CoroutineStart.UNDISPATCHED) { rig.repository.joinCall(dm, call(1)) }
+        runCurrent()
+        rig.serviceEvents.emit(io.wolftown.kaiku.data.voice.VoiceServiceEvent.StartFailed)
+        runCurrent()
+        assertEquals("the hold is over: the session ends itself", 0, failed)
+        assertEquals(null, rig.repository.currentChannelId.value)
+    }
+
     // -- A call's mute belongs to the call ----------------------------------------------------
 
     @Test

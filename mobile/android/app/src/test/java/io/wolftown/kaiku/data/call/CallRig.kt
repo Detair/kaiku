@@ -142,6 +142,9 @@ internal class CallRig(val test: TestScope, val dm: String = "dm-1") {
     /** Whether Android lets the microphone service start. */
     var holdGranted = true
 
+    /** What the voice layer calls if the service reports later that it could not go to the foreground. */
+    var serviceFailed: (() -> Unit)? = null
+
     /** Everything the call layer asked of the voice layer, in order. */
     val voiceOps = mutableListOf<String>()
 
@@ -163,9 +166,10 @@ internal class CallRig(val test: TestScope, val dm: String = "dm-1") {
             voiceChannel.value = firstArg()
         }
         // The microphone service, asked for at the tap; in the order of the requests.
-        every { holdForCall(any(), any(), any()) } answers {
+        every { holdForCall(any(), any(), any(), any()) } answers {
             api.calls += "hold"
             voiceOps += "hold"
+            serviceFailed = arg(3)
             holdGranted
         }
         every { setCallMuted(any(), any()) } answers { voiceOps += "mute" }

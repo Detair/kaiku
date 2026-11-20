@@ -883,4 +883,21 @@ class CallControllerTest {
         assertEquals(true, (r.state as CallState.Connected).muted)
         verify(exactly = 1) { r.voice.setCallMuted(r.tag, true) }
     }
+
+    @Test
+    fun `a microphone service that reports it could not start ends the answer as failed`() = runTest {
+        val r = rig()
+        r.api.hold = true // the answer is still on its way to the server
+        r.ring()
+        r.accept()
+        runCurrent()
+        // The service was started at the tap; now it reports that it could not go to the foreground.
+        r.serviceFailed!!.invoke()
+        runCurrent()
+        assertEquals(CallState.Ended(r.dm, CallEndReason.Failed), r.state)
+        r.api.releaseAll()
+        runCurrent()
+        assertEquals(listOf("join", "leave"), r.api.requests)
+        coVerify(exactly = 0) { r.voice.joinCall(any(), any<VoiceRepository.CallSession>()) }
+    }
 }

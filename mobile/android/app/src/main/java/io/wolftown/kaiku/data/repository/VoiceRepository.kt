@@ -758,6 +758,9 @@ class VoiceRepository @Inject constructor(
     /** The call (its tag) the service was started for before its session exists, or null. Guarded by [serviceLock]. */
     private var heldForCall: Long? = null
 
+    /** Listens to the service while it is held for a call without a session. Guarded by [serviceLock]. */
+    private var holdEvents: Job? = null
+
     /**
      * Starts the microphone service for the DM call [tag] now, before the
      * call's voice session exists: when the user taps Call or Accept the
@@ -769,27 +772,49 @@ class VoiceRepository @Inject constructor(
      * current meanwhile (a voice channel being left for the call) keeps
      * running under it.
      *
-     * Returns false if Android refused the start.
+     * Returns false if Android refused the start. If the service itself
+     * reports later that it could not go to the foreground while no session
+     * has taken it over yet, [onStartFailed] is called (once).
      */
-    fun holdForCall(tag: Long, channelId: String, title: String?): Boolean = synchronized(serviceLock) {
-        try {
-            VoiceCallService.start(context, channelId, title ?: channelId, forCall = true)
-        } catch (e: IllegalStateException) {
-            // ForegroundServiceStartNotAllowedException (API 31+) is one.
-            logger.warning("Call service refused for a call: ${e::class.simpleName}")
-            return false
-        } catch (e: SecurityException) {
-            logger.warning("Call service refused for a call: ${e::class.simpleName}")
-            return false
+    fun holdForCall(tag: Long, channelId: String, title: String?, onStartFailed: () -> Unit = {}): Boolean =
+        synchronized(serviceLock) {
+            // Listen first, so the service's own report cannot be missed (the events have no replay).
+            holdEvents?.cancel()
+            holdEvents = scope.launch(start = CoroutineStart.UNDISPATCHED) {
+                voiceServiceEvents.events.collect { event ->
+                    if (event == VoiceServiceEvent.StartFailed) {
+                        val mine = synchronized(serviceLock) { (heldForCall == tag).also { if (it) heldForCall = null } }
+                        if (mine) onStartFailed()
+                    }
+                }
+            }
+            try {
+                VoiceCallService.start(context, channelId, title ?: channelId, forCall = true)
+            } catch (e: IllegalStateException) {
+                // ForegroundServiceStartNotAllowedException (API 31+) is one.
+                logger.warning("Call service refused for a call: ${e::class.simpleName}")
+                stopHoldEvents()
+                return false
+            } catch (e: SecurityException) {
+                logger.warning("Call service refused for a call: ${e::class.simpleName}")
+                stopHoldEvents()
+                return false
+            }
+            heldForCall = tag
+            true
         }
-        heldForCall = tag
-        true
+
+    /** Call with [serviceLock] held. */
+    private fun stopHoldEvents() {
+        holdEvents?.cancel()
+        holdEvents = null
     }
 
     /** Gives up the service held for call [tag] if no session took it over. */
     private fun releaseHold(tag: Long) = synchronized(serviceLock) {
         if (heldForCall != tag) return
         heldForCall = null
+        stopHoldEvents()
         val running = synchronized(sessionLock) { live }
         if (running == null) {
             VoiceCallService.stop(context)
@@ -838,7 +863,10 @@ class VoiceRepository @Inject constructor(
         synchronized(joinLock) { joinJob?.cancel() }
         _endNotice.value = null
         // A call that was being answered: its hold on the microphone service ends with the session.
-        val held = synchronized(serviceLock) { heldForCall.also { heldForCall = null } }
+        val held = synchronized(serviceLock) {
+            stopHoldEvents()
+            heldForCall.also { heldForCall = null }
+        }
         if (session == null) {
             // No session to tear down: the service goes by itself (off the caller's thread).
             if (held != null) releaseScope.launch { synchronized(serviceLock) { VoiceCallService.stop(context) } }
@@ -1194,6 +1222,8 @@ class VoiceRepository @Inject constructor(
                 // A call's service was started when the user tapped Call or Accept: taken over.
                 if (session.call != null && heldForCall == session.call.tag) {
                     heldForCall = null
+                    // This session listens to the service itself from here on (subscribed above).
+                    stopHoldEvents()
                     return
                 }
                 try {

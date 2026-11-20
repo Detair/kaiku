@@ -100,6 +100,9 @@ internal class VoiceRig(
      */
     val native: MutableList<String> = java.util.Collections.synchronizedList(mutableListOf<String>())
 
+    /** What the call service reports by itself (mute and disconnect taps, a start that failed). */
+    val serviceEvents = MutableSharedFlow<io.wolftown.kaiku.data.voice.VoiceServiceEvent>(extraBufferCapacity = 4)
+
     /** Calls into a connection that had already been closed and disposed. */
     @Volatile
     var callsIntoClosed = 0
@@ -146,7 +149,7 @@ internal class VoiceRig(
         every { audioRouteManager.abandonAudioFocus() } answers { log += "audio:abandon" }
 
         val voiceServiceEvents: VoiceServiceEvents = mockk(relaxed = true)
-        every { voiceServiceEvents.events } returns MutableSharedFlow()
+        every { voiceServiceEvents.events } returns serviceEvents
         val micPermissionChecker: MicPermissionChecker = mockk()
         every { micPermissionChecker.isGranted() } returns true
 
