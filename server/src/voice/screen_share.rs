@@ -131,7 +131,7 @@ pub struct ScreenShareLimiter {
     key_prefix: Arc<str>,
 }
 
-/// Prefix of the per-channel slot counters in Valkey.
+/// Prefix of the slot counters (one per room) in Valkey.
 pub const SCREEN_SHARE_KEY_PREFIX: &str = "screenshare:limit:";
 
 /// Keys deleted per `DEL` when clearing counters.
@@ -195,23 +195,23 @@ impl ScreenShareLimiter {
     /// Run the Lua script with retry on NOSCRIPT.
     async fn run_script(
         &self,
-        channel_id: impl std::fmt::Display,
+        counter: impl std::fmt::Display + Send + Sync,
         max_shares: u32,
         op: &str,
     ) -> Result<(bool, i64), ScreenShareError> {
-        self.run_script_with_extra(&channel_id, max_shares, op, &[])
+        self.run_script_with_extra(&counter, max_shares, op, &[])
             .await
     }
 
     /// Run the Lua script with optional extra ARGV arguments and retry on NOSCRIPT.
     async fn run_script_with_extra(
         &self,
-        channel_id: impl std::fmt::Display,
+        counter: impl std::fmt::Display + Send + Sync,
         max_shares: u32,
         op: &str,
         extra_args: &[String],
     ) -> Result<(bool, i64), ScreenShareError> {
-        let key = format!("{}{channel_id}", self.key_prefix);
+        let key = format!("{}{counter}", self.key_prefix);
         let sha = self.script_sha.read().await.clone();
         let mut args: Vec<String> = vec![max_shares.to_string(), op.to_string()];
         args.extend_from_slice(extra_args);
@@ -224,7 +224,7 @@ impl ScreenShareLimiter {
             Ok(result) => Self::parse_result(&result),
             Err(e) if e.to_string().contains("NOSCRIPT") => {
                 warn!(
-                    channel_id = %channel_id,
+                    counter = %counter,
                     "NOSCRIPT error, reloading screen share limit script"
                 );
                 let new_sha = self.reload_script().await.map_err(|e| {
@@ -237,7 +237,7 @@ impl ScreenShareLimiter {
                     .await
                     .map_err(|e| {
                         error!(
-                            channel_id = %channel_id,
+                            counter = %counter,
                             error = %e,
                             "EVALSHA failed after reload"
                         );
@@ -247,7 +247,7 @@ impl ScreenShareLimiter {
             }
             Err(e) => {
                 error!(
-                    channel_id = %channel_id,
+                    counter = %counter,
                     error = %e,
                     "Redis EVALSHA failed"
                 );
@@ -267,10 +267,10 @@ impl ScreenShareLimiter {
     /// Check if a screen share slot is available (does not reserve it).
     pub async fn check(
         &self,
-        channel_id: impl std::fmt::Display,
+        counter: impl std::fmt::Display + Send + Sync,
         max_shares: u32,
     ) -> Result<(), ScreenShareError> {
-        let (allowed, _) = self.run_script(&channel_id, max_shares, "check").await?;
+        let (allowed, _) = self.run_script(&counter, max_shares, "check").await?;
         if allowed {
             Ok(())
         } else {
@@ -281,10 +281,10 @@ impl ScreenShareLimiter {
     /// Atomically reserve a screen share slot. Returns error if limit reached.
     pub async fn start(
         &self,
-        channel_id: impl std::fmt::Display,
+        counter: impl std::fmt::Display + Send + Sync,
         max_shares: u32,
     ) -> Result<(), ScreenShareError> {
-        let (allowed, _) = self.run_script(&channel_id, max_shares, "start").await?;
+        let (allowed, _) = self.run_script(&counter, max_shares, "start").await?;
         if allowed {
             Ok(())
         } else {
@@ -293,11 +293,11 @@ impl ScreenShareLimiter {
     }
 
     /// Release a screen share slot (decrements if count > 0).
-    pub async fn stop(&self, channel_id: impl std::fmt::Display) {
+    pub async fn stop(&self, counter: impl std::fmt::Display + Send + Sync) {
         // max_shares arg is unused by "stop" op, pass 0
-        if let Err(e) = self.run_script(&channel_id, 0, "stop").await {
+        if let Err(e) = self.run_script(&counter, 0, "stop").await {
             warn!(
-                channel_id = %channel_id,
+                counter = %counter,
                 error = ?e,
                 "Failed to decrement screen share counter"
             );
@@ -308,17 +308,17 @@ impl ScreenShareLimiter {
     ///
     /// Used when a user with multiple active screen shares leaves.
     /// Clamps to zero if `count` exceeds the current counter value.
-    pub async fn stop_n(&self, channel_id: impl std::fmt::Display, count: usize) {
+    pub async fn stop_n(&self, counter: impl std::fmt::Display + Send + Sync, count: usize) {
         if count == 0 {
             return;
         }
         // max_shares arg is unused by "stop_n" op, pass 0
         if let Err(e) = self
-            .run_script_with_extra(&channel_id, 0, "stop_n", &[count.to_string()])
+            .run_script_with_extra(&counter, 0, "stop_n", &[count.to_string()])
             .await
         {
             warn!(
-                channel_id = %channel_id,
+                counter = %counter,
                 count = count,
                 error = ?e,
                 "Failed to batch-decrement screen share counter"
