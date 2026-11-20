@@ -87,15 +87,15 @@ export const WebCodeStep: Component<PcSetupStepProps> = (props) => {
       else
         setError(
           typeof res.tries_left === "number"
-            ? plural(res.tries_left, { one: "auth.pcSetup.codeWrong.one", other: "auth.pcSetup.codeWrong.other" })
-            : t("auth.pcSetup.codeFailed"),
+            ? plural(res.tries_left, { one: "pcSetup.codeWrong.one", other: "pcSetup.codeWrong.other" })
+            : t("pcSetup.codeFailed"),
         );
     } catch (err) {
       if (err instanceof HttpError && codeIs(err.code, "APPROVAL_EXPIRED")) {
         props.onState(id, { state: "expired", reason: "code_expired" });
       } else {
         // A state conflict is corrected by the next poll.
-        setError(errorText(err, "auth.pcSetup.codeFailed"));
+        setError(errorText(err, "pcSetup.codeFailed"));
       }
     } finally {
       setCode("");
@@ -105,15 +105,15 @@ export const WebCodeStep: Component<PcSetupStepProps> = (props) => {
 
   return (
     <div class="space-y-3">
-      <p>{t("auth.pcSetup.codeIntro")}</p>
-      <p class="text-sm text-text-primary">{t("auth.pcSetup.codeWarning")}</p>
+      <p>{t("pcSetup.codeIntro")}</p>
+      <p class="text-sm text-text-primary">{t("pcSetup.codeWarning")}</p>
       <CodeEntry
         length={6}
         value={code()}
         onInput={setCode}
         onSubmit={() => void submit()}
         disabled={busy()}
-        label={t("auth.pcSetup.codeLabel")}
+        label={t("pcSetup.codeLabel")}
       />
       <Show when={error()}>
         <p role="alert" class="text-sm text-text-primary">{error()}</p>
@@ -143,7 +143,7 @@ export const WebPasskeyStep: Component<PcSetupStepProps> = (props) => {
       if (!mine.signal.aborted) props.onState(id, { state: "completed", reason: null });
     } catch (err) {
       if (!mine.signal.aborted) {
-        setError(passkeyFailureText(err, "auth.pcSetup.registerFailed", PASSKEY_ERRORS) || null);
+        setError(passkeyFailureText(err, "pcSetup.registerFailed", PASSKEY_ERRORS) || null);
       }
     } finally {
       if (ctl === mine) {
@@ -155,16 +155,16 @@ export const WebPasskeyStep: Component<PcSetupStepProps> = (props) => {
 
   return (
     <div class="space-y-3">
-      <p>{t("auth.pcSetup.registerIntro")}</p>
+      <p>{t("pcSetup.registerIntro")}</p>
       <Show when={busy()}>
-        <p role="status" class="text-sm text-text-secondary">{t("auth.pcSetup.registering")}</p>
+        <p role="status" class="text-sm text-text-secondary">{t("pcSetup.registering")}</p>
       </Show>
       <Show when={error()}>
         <p role="alert" class="text-sm text-text-primary">{error()}</p>
         <LinuxPasskeyHint class="text-sm text-text-secondary" />
       </Show>
       <button type="button" class="btn-primary min-h-11 text-base" disabled={busy()} onClick={() => void register()}>
-        {t("auth.pcSetup.register")}
+        {t("pcSetup.register")}
       </button>
     </div>
   );
@@ -187,39 +187,39 @@ const KNOWN_ENDS = ["completed", "refused", "reported", "failed", "cancelled", "
 
 /** The sentence for an ended attempt (the PC error table of the spec). */
 function endedKey(s: PcSetupStatus): MessageKey {
-  if (!LIVE_PC_SETUP_STATES.includes(s.state) && !KNOWN_ENDS.includes(s.state)) return "auth.pcSetup.ended.generic";
-  if (s.state === "refused") return "auth.pcSetup.ended.refused";
-  if (s.state === "reported") return "auth.pcSetup.ended.reported";
-  if (s.state === "failed") return "auth.pcSetup.ended.tooManyCodes";
+  if (!LIVE_PC_SETUP_STATES.includes(s.state) && !KNOWN_ENDS.includes(s.state)) return "pcSetup.ended.generic";
+  if (s.state === "refused") return "pcSetup.ended.refused";
+  if (s.state === "reported") return "pcSetup.ended.reported";
+  if (s.state === "failed") return "pcSetup.ended.tooManyCodes";
   switch (s.reason) {
     case "may_approve_off":
     case "device_revoked":
     case "no_key_device":
-      return "auth.pcSetup.ended.mayApproveOff";
+      return "pcSetup.ended.mayApproveOff";
     case "session_ended":
-      return "auth.pcSetup.ended.sessionEnded";
+      return "pcSetup.ended.sessionEnded";
     case "account_banned":
       return "auth.login.banned";
     case "refused":
-      return "auth.pcSetup.ended.refused";
+      return "pcSetup.ended.refused";
     case "reported":
-      return "auth.pcSetup.ended.reported";
+      return "pcSetup.ended.reported";
     case "too_many_codes":
-      return "auth.pcSetup.ended.tooManyCodes";
+      return "pcSetup.ended.tooManyCodes";
     case "restarted":
     case "cancelled":
-      return "auth.pcSetup.ended.cancelled";
+      return "pcSetup.ended.cancelled";
     case "gone":
-      return "auth.pcSetup.ended.gone";
+      return "pcSetup.ended.gone";
     case "timeout":
     case "code_expired":
     case "enrollment_expired":
-      return "auth.pcSetup.ended.timeout";
+      return "pcSetup.ended.timeout";
     case null:
     case undefined:
-      return s.state === "cancelled" ? "auth.pcSetup.ended.cancelled" : "auth.pcSetup.ended.generic";
+      return s.state === "cancelled" ? "pcSetup.ended.cancelled" : "pcSetup.ended.generic";
     default:
-      return "auth.pcSetup.ended.generic";
+      return "pcSetup.ended.generic";
   }
 }
 
@@ -326,7 +326,7 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
       if (mine !== generation) return;
       setStarting(false);
       setStartError(
-        errorText(err, "auth.pcSetup.startFailed", { PC_SETUP_UNAVAILABLE: "auth.pcSetup.unavailable" }),
+        errorText(err, "pcSetup.startFailed", { PC_SETUP_UNAVAILABLE: "pcSetup.unavailable" }),
       );
     }
   };
@@ -346,7 +346,7 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
       if (err instanceof HttpError && err.status === 404) void begin();
       else {
         setStarting(false);
-        setStartError(errorText(err, "auth.pcSetup.startFailed"));
+        setStartError(errorText(err, "pcSetup.startFailed"));
       }
     }
   };
@@ -385,9 +385,9 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
   };
 
   return (
-    <DialogShell title={t("auth.pcSetup.title")} onClose={() => props.onClose()} wide testId="set-up-this-pc">
+    <DialogShell title={t("pcSetup.title")} onClose={() => props.onClose()} wide testId="set-up-this-pc">
       <Show when={starting()}>
-        <p role="status" class="text-text-secondary">{t("auth.pcSetup.starting")}</p>
+        <p role="status" class="text-text-secondary">{t("pcSetup.starting")}</p>
       </Show>
       <Show when={startError()}>
         <p role="alert" class="text-text-primary">{startError()}</p>
@@ -397,14 +397,14 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
           <Switch>
             <Match when={s().state === "waiting"}>
               <div class="space-y-3 text-center">
-                <p class="text-left">{t("auth.pcSetup.waiting")}</p>
-                <Show when={qr()} fallback={<p role="status" class="text-text-secondary">{t("auth.pcSetup.starting")}</p>}>
-                  <QrCodeImage payload={qr()} alt={t("auth.pcSetup.qrAlt")} />
+                <p class="text-left">{t("pcSetup.waiting")}</p>
+                <Show when={qr()} fallback={<p role="status" class="text-text-secondary">{t("pcSetup.starting")}</p>}>
+                  <QrCodeImage payload={qr()} alt={t("pcSetup.qrAlt")} />
                 </Show>
               </div>
             </Match>
             <Match when={s().state === "claimed"}>
-              <p role="status">{t("auth.pcSetup.claimed")}</p>
+              <p role="status">{t("pcSetup.claimed")}</p>
             </Match>
             <Match when={s().state === "code"}>
               <Dynamic component={platform().CodeStep} attemptId={s().attempt_id} onState={patch} />
@@ -414,14 +414,14 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
             </Match>
             <Match when={s().state === "completed"}>
               <div class="space-y-3">
-                <p>{t("auth.pcSetup.completed")}</p>
+                <p>{t("pcSetup.completed")}</p>
                 <button
                   type="button"
                   class="btn-primary min-h-11 text-base"
                   disabled={signingIn()}
                   onClick={() => void signInWithPasskey()}
                 >
-                  {t("auth.pcSetup.signIn")}
+                  {t("pcSetup.signIn")}
                 </button>
                 <Show when={signInError()}>
                   <p role="alert" class="text-sm text-text-primary">{signInError()}</p>
@@ -436,7 +436,7 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
         )}
       </Show>
       <Show when={offline()}>
-        <p role="status" class="text-sm text-text-secondary">{t("auth.pcSetup.pollFailed")}</p>
+        <p role="status" class="text-sm text-text-secondary">{t("pcSetup.pollFailed")}</p>
       </Show>
       <div class="flex justify-end">
         <button
@@ -445,7 +445,7 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
           disabled={starting()}
           onClick={() => void begin()}
         >
-          {t("auth.pcSetup.startAgain")}
+          {t("pcSetup.startAgain")}
         </button>
       </div>
     </DialogShell>

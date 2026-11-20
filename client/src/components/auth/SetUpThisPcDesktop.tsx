@@ -48,7 +48,7 @@ function startFlow(attemptId: string, onState: PcSetupStepProps["onState"]) {
       flow.done = true;
       setVersion((v) => v + 1);
       if (ctl.signal.aborted) return;
-      setError(passkeyFailureText(err, "auth.pcSetup.desktop.failed", PASSKEY_ERRORS) || t("auth.pcSetup.desktop.failed"));
+      setError(passkeyFailureText(err, "pcSetup.desktop.failed", PASSKEY_ERRORS) || t("pcSetup.desktop.failed"));
     },
   );
 }
@@ -91,9 +91,9 @@ export const DesktopCodeStep: Component<PcSetupStepProps> = (props) => {
   const open = () => startFlow(attemptId, onState);
   return (
     <div class="space-y-3">
-      <p class="font-semibold">{t("auth.pcSetup.desktop.title")}</p>
-      <p>{t("auth.pcSetup.desktop.intro")}</p>
-      <p class="text-sm text-text-primary">{t("auth.pcSetup.codeWarning")}</p>
+      <p class="font-semibold">{t("pcSetup.desktop.title")}</p>
+      <p>{t("pcSetup.desktop.intro")}</p>
+      <p class="text-sm text-text-primary">{t("pcSetup.codeWarning")}</p>
       <Show
         when={running(attemptId)}
         fallback={
@@ -102,12 +102,12 @@ export const DesktopCodeStep: Component<PcSetupStepProps> = (props) => {
               <p role="alert" class="text-sm text-text-primary">{failure(attemptId)}</p>
             </Show>
             <button type="button" class="btn-primary min-h-11 text-base" onClick={open}>
-              {t("auth.pcSetup.desktop.open")}
+              {t("pcSetup.desktop.open")}
             </button>
           </>
         }
       >
-        <p role="status" class="text-sm text-text-secondary">{t("auth.pcSetup.desktop.waiting")}</p>
+        <p role="status" class="text-sm text-text-secondary">{t("pcSetup.desktop.waiting")}</p>
       </Show>
       <LinuxPasskeyHint class="text-sm text-text-secondary" />
     </div>
@@ -127,16 +127,16 @@ export const DesktopPasskeyStep: Component<PcSetupStepProps> = (props) => {
         fallback={
           <>
             <p role="alert" class="text-sm text-text-primary">
-              {failure(attemptId) ?? t("auth.pcSetup.desktop.interrupted")}
+              {failure(attemptId) ?? t("pcSetup.desktop.interrupted")}
             </p>
             <Show when={failure(attemptId)}>
-              <p class="text-sm text-text-secondary">{t("auth.pcSetup.desktop.interrupted")}</p>
+              <p class="text-sm text-text-secondary">{t("pcSetup.desktop.interrupted")}</p>
             </Show>
           </>
         }
       >
-        <p>{t("auth.pcSetup.registerIntro")}</p>
-        <p role="status" class="text-sm text-text-secondary">{t("auth.pcSetup.desktop.waiting")}</p>
+        <p>{t("pcSetup.registerIntro")}</p>
+        <p role="status" class="text-sm text-text-secondary">{t("pcSetup.desktop.waiting")}</p>
       </Show>
       <LinuxPasskeyHint class="text-sm text-text-secondary" />
     </div>

@@ -427,9 +427,9 @@ const SetupPendingNotice: Component = () => (
     testId="setup-pending"
   >
     <h2 id="setup-pending-title" class="text-lg font-semibold text-text-primary">
-      {t("auth.serverSetupPending.title")}
+      {t("onboarding.serverSetupPending.title")}
     </h2>
-    <p class="text-base text-text-primary">{t("auth.serverSetupPending.text")}</p>
+    <p class="text-base text-text-primary">{t("onboarding.serverSetupPending.text")}</p>
     <div class="flex justify-end">
       <button type="button" class="btn-primary min-h-11 text-base" onClick={() => clearSetupRequired()}>
         {t("common.close")}
