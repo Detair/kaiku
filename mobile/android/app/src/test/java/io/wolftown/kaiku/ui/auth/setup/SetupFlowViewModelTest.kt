@@ -163,7 +163,7 @@ class SetupFlowViewModelTest {
         assertEquals(SetupUi.Ended(R.string.setup_cannot_be_key, canRetry = false), v.ui.value)
     }
 
-    @Test fun `setup for another user while signed in asks to sign out`() = runTest {
+    @Test fun `setup for another user while signed in asks to sign out`() = runTest(timeout = kotlin.time.Duration.parse("30s")) {
         env.pinned = SigFixtures.ORIGIN
         env.signedInUser = SigFixtures.USER_ID
         val (v, f) = vm()

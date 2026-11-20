@@ -66,4 +66,36 @@ class WakeDeferralTest {
         WakeDeferral(prefs).release { s, o -> out += s to o }
         assertEquals(listOf(WakeSignal(WakeKind.DM, "c1", 2) to owner, WakeSignal(WakeKind.MENTION, "c2", 1) to null), out)
     }
+
+    /**
+     * A wake kept with its account goes out only into that account's session on that server; a
+     * wake kept without one goes to whoever is signed in.
+     */
+    @Test fun `a held wake is released only into its own account's session`() {
+        var user: String? = "u2"
+        var server: String? = "https://chat.example.com"
+        val tokens: io.wolftown.kaiku.data.local.TokenStorage = io.mockk.mockk {
+            io.mockk.every { getUserId() } answers { user }
+            io.mockk.every { getServerUrl() } answers { server }
+        }
+        val sent = mutableListOf<Pair<WakeSignal, WakeOwner>>()
+        val enqueuer = WorkManagerWakeEnqueuer(io.mockk.mockk(relaxed = true), tokens, { false }, WakeDeferral(prefs)) { s, o -> sent += s to o }
+        val ownerA = WakeOwner("u1", "https://chat.example.com")
+        val wake = WakeSignal(WakeKind.DM, "c1", 1)
+        // Another person is signed in.
+        enqueuer.enqueueHeld(wake, ownerA)
+        assertTrue(sent.isEmpty())
+        // The same person on another server.
+        user = "u1"; server = "https://other.example.org"
+        enqueuer.enqueueHeld(wake, ownerA)
+        assertTrue(sent.isEmpty())
+        // Its own account and server.
+        server = "https://chat.example.com"
+        enqueuer.enqueueHeld(wake, ownerA)
+        assertEquals(listOf(wake to ownerA), sent)
+        // Without a kept account: the account signed in now.
+        user = "u2"
+        enqueuer.enqueueHeld(wake, null)
+        assertEquals(wake to WakeOwner("u2", "https://chat.example.com"), sent.last())
+    }
 }

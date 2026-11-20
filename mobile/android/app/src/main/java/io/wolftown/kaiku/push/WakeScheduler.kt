@@ -51,12 +51,22 @@ interface WakeWorkEnqueuer {
  * [CallWakeWorker] (`call-<channelId>`, REPLACE, no network constraint: the
  * name lookup has an offline fallback).
  */
-class WorkManagerWakeEnqueuer @Inject constructor(
-    @ApplicationContext private val context: Context,
+class WorkManagerWakeEnqueuer internal constructor(
+    private val context: Context,
     private val tokenStorage: TokenStorage,
     private val keyStorage: KeyStorageCheck,
     private val deferral: WakeDeferral,
+    /** Where a message fetch goes instead of WorkManager (tests); null: WorkManager. */
+    private val submitFetch: ((WakeSignal, WakeOwner) -> Unit)?,
 ) : WakeWorkEnqueuer {
+
+    @Inject
+    constructor(
+        @ApplicationContext context: Context,
+        tokenStorage: TokenStorage,
+        keyStorage: KeyStorageCheck,
+        deferral: WakeDeferral,
+    ) : this(context, tokenStorage, keyStorage, deferral, null)
 
     private val workManager: WorkManager
         get() = WorkManager.getInstance(context)
@@ -79,6 +89,7 @@ class WorkManagerWakeEnqueuer @Inject constructor(
     private fun enqueueNow(signal: WakeSignal) {
         val userId = tokenStorage.getUserId() ?: return
         val owner = WakeOwner(userId, tokenStorage.getServerUrl())
+        submitFetch?.let { return it(signal, owner) }
         val request = OneTimeWorkRequestBuilder<WakeFetchWorker>()
             .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
             .setConstraints(

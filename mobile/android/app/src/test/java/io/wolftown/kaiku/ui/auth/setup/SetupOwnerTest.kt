@@ -1471,7 +1471,7 @@ class SetupOwnerTest {
     // ── The claim is made for the session that was checked ──────────────────────────────────────
 
     /** Someone signs in while the question is on screen: confirming sends no claim and keeps nothing. */
-    @Test fun `a sign-in that completes while the question is shown stops the claim`() = runTest {
+    @Test fun `a sign-in that completes while the question is shown stops the claim`() = runTest(timeout = BOUNDED) {
         env.pinned = SigFixtures.ORIGIN
         val (owner, f) = phone()
         val v = SetupFlowViewModel(owner)
@@ -1489,7 +1489,7 @@ class SetupOwnerTest {
     }
 
     /** The app is tied to another server meanwhile: confirming sends no claim and keeps nothing. */
-    @Test fun `a sign-in on another server while the question is shown stops the claim`() = runTest {
+    @Test fun `a sign-in on another server while the question is shown stops the claim`() = runTest(timeout = BOUNDED) {
         env.pinned = SigFixtures.ORIGIN
         val (owner, f) = phone()
         val v = SetupFlowViewModel(owner)
@@ -1539,6 +1539,8 @@ class SetupOwnerTest {
 
     private companion object {
         const val ORIGIN_SETUP = "https://chat.example.com/setup"
+        /** A test whose guard is missing ends red instead of hanging. */
+        val BOUNDED = kotlin.time.Duration.parse("30s")
     }
 
     // ── A code that ran out: the phone says how long it holds on, and keeps a new link ────────

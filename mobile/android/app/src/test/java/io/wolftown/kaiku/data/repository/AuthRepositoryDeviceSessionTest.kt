@@ -5,6 +5,7 @@ import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
+import io.wolftown.kaiku.approval.keyId
 import io.wolftown.kaiku.data.api.AuthApi
 import io.wolftown.kaiku.data.local.AuthSession
 import io.wolftown.kaiku.data.local.AuthState
@@ -287,5 +288,35 @@ class AuthRepositoryDeviceSessionTest {
         coVerify(exactly = 1) { authApi.logoutSession(origin, "device-access", "device-refresh") }
         verify(exactly = 0) { tokenStorage.saveSession(any(), "device-access", any(), any(), any()) }
         assertEquals(AuthSession.LoggedOut, authState.session.value)
+    }
+
+    /**
+     * A setup creates its key record for the session it checked: a sign-in that would install a
+     * session meanwhile waits until the record is made (and is then judged with it).
+     */
+    @Test fun `a session is not installed while a key record is being created`() = runTest {
+        val f = io.wolftown.kaiku.testutil.KeyDeviceFixture(backgroundScope, active = false)
+        coEvery { authApi.authenticatedGetMe("attempt-access", origin) } returns alice
+        val finished = java.util.concurrent.CountDownLatch(1)
+        var installedDuringCreate = true
+        var install: Thread? = null
+        val record = io.wolftown.kaiku.data.keydevice.StoredKeyDevice(
+            io.wolftown.kaiku.data.keydevice.LocalKeyDevice(null, "u1", origin, io.wolftown.kaiku.approval.UvClass.PER_USE, "e1", null, "Alice"),
+            io.wolftown.kaiku.data.keydevice.KeyDevicePhase.CLAIMING,
+            keyId = f.keyStore.keyId(),
+        )
+        val created = f.repo.create(record) {
+            // The check runs; a sign-in completes on another thread right now.
+            install = Thread {
+                kotlinx.coroutines.runBlocking { repository.completeAttempt(origin, null) { attemptAuth } }
+                finished.countDown()
+            }.also { it.start() }
+            installedDuringCreate = finished.await(1, java.util.concurrent.TimeUnit.SECONDS)
+            false
+        }
+        install!!.join(10_000)
+        assertTrue(created is io.wolftown.kaiku.data.keydevice.Change.Done)
+        assertTrue("the sign-in installed while the record was being created", !installedDuringCreate)
+        assertEquals(0L, finished.count)
     }
 }

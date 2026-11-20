@@ -61,6 +61,8 @@ class FakeEnrollmentApi {
 
     companion object {
         const val SUBJECT_ID = "66666666-6666-4666-8666-666666666666"
+        /** More status questions than any test needs: a loop that never ends. */
+        const val MAX_STATUS_CALLS = 500
         /** In [popAnswers]: the server hands out a challenge. */
         val GIVEN = Exception("challenge given")
     }
@@ -111,6 +113,9 @@ class FakeEnrollmentApi {
             statusGate?.await()
             calls += "status"; origins += origin
             statusIds += enrollmentId
+            // A wait that never ends is a failure with a message, not a test that hangs (an Error:
+            // the setup's own handling of failed requests does not swallow it).
+            if (statusIds.size > MAX_STATUS_CALLS) throw AssertionError("status asked ${statusIds.size} times: the wait never ends")
             lastStatusWait = waitSeconds
             statusFailures.pollFirst()?.let { throw it }
             // A long-poll with nothing new waits (until the test ends).
