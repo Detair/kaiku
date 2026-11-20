@@ -75,8 +75,13 @@ class KeyAnswers @Inject constructor(private val keyDevices: KeyDeviceRepository
     /** One line of the table: [code] for a refusal, [state] for an enrolment status, neither for a plain success. */
     data class Row(val ask: Ask, val status: Int, val code: String?, val state: String?, val verdict: Verdict)
 
-    /** Proof, made only by [settle], that the server no longer knows the enrolment of one record. */
-    class EnrolmentUnknown internal constructor(internal val about: StoredKeyDevice)
+    /**
+     * Proof that the server no longer knows the enrolment of one record. Only [settle] makes one
+     * (the one implementation is private to this class), and it counts only for that very record.
+     */
+    sealed interface EnrolmentUnknown
+
+    private class UnknownFor(val about: StoredKeyDevice) : EnrolmentUnknown
 
     sealed interface Settled {
         val verdict: Verdict
@@ -159,7 +164,7 @@ class KeyAnswers @Inject constructor(private val keyDevices: KeyDeviceRepository
         val own = KaikuPayloads.canonicalOrigin(expected.device.origin)
         if (askedOrigin == null || own == null || askedOrigin != own || !own.startsWith("https://")) return Settled.Kept(Verdict.KEEP)
         val v = verdict(ask, answer)
-        val proven = unknown != null && unknown.about sameAs expected
+        val proven = unknown is UnknownFor && unknown.about sameAs expected
         val phase = expected.phase
         return when (v) {
             Verdict.KEY_GONE -> when {
@@ -175,7 +180,7 @@ class KeyAnswers @Inject constructor(private val keyDevices: KeyDeviceRepository
             Verdict.ENROLMENT_UNKNOWN -> {
                 val about = (ask == Ask.CLAIM_CHECK && phase == KeyDevicePhase.CLAIMING) ||
                     (ask == Ask.ENROLMENT_STATUS && phase == KeyDevicePhase.CLAIMED && askedEnrolment == expected.device.enrollmentId)
-                Settled.Kept(v, unknown = if (about) EnrolmentUnknown(expected) else null)
+                Settled.Kept(v, unknown = if (about) UnknownFor(expected) else null)
             }
             Verdict.KEEP, Verdict.CLAIM_UNDECIDED -> Settled.Kept(v)
         }

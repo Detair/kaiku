@@ -844,9 +844,17 @@ class SetupOwner internal constructor(
         val k = a?.key
         if (a != null && k != null && a.rec?.sameAs(rec) == true) {
             try {
-                enrollmentApi.popChallenge(a.entry.tokenB64u, deviceIds.id(), b64u(k.spki), a.origin)
+                val p = enrollmentApi.popChallenge(a.entry.tokenB64u, deviceIds.id(), b64u(k.spki), a.origin)
                 live(a)
-                if (answers.settle(rec, a.origin, Ask.CLAIM_CHECK, ServerAnswer(201)).forgotten) {
+                // Only a challenge of this very enrolment, for this very key, says the enrolment is
+                // still open; any other answer under that status proves nothing.
+                val thisEnrolment = try {
+                    val ctx = signer.check(p.challenge, SigKind.ENROLL_POP, rec.device.userId, deviceIds.id()).context as? EnrollPopContext
+                    ctx != null && ctx.enrollmentId == rec.device.enrollmentId && ctx.newKeyHash.contentEquals(KaikuSig.sha256(k.spki))
+                } catch (r: ChallengeRejected) {
+                    false
+                }
+                if (thisEnrolment && answers.settle(rec, a.origin, Ask.CLAIM_CHECK, ServerAnswer(201)).forgotten) {
                     a.key = null
                     a.rec = null
                     return begin(a.entry, a.origin)

@@ -447,6 +447,22 @@ class SetupOwnerTest {
         assertNull(f.repo.local())
     }
 
+    @Test fun `a claim check answered with a challenge of another enrolment or key proves nothing`() = runTest {
+        for (rewrite in listOf<(String) -> String>(
+            { it.replace("55555555-5555-4555-8555-555555555555", "55555555-5555-4555-8555-000000000009") },
+            { it.replace(Regex("\"new_key_hash\":\"[^\"]*\""), "\"new_key_hash\":\"SNXZ3WXZTk1gg0TCFd1P6gmdzP1Rwao9hsqXg-SsX10\"") },
+        )) {
+            val (v, f, _) = atClaim(IOException("reset"))
+            val key = f.keyStore.keyId()
+            enroll.popContext = rewrite
+            v.retry()
+            assertEquals(SetupUi.Ended(R.string.setup_claim_unsure, canRetry = true), v.ui.value)
+            assertEquals(key, f.keyStore.keyId())
+            assertEquals(KeyDevicePhase.CLAIMING, f.repo.phase())
+            enroll.popContext = { it }
+        }
+    }
+
     @Test fun `the claim records when its time is over from the challenge it signed`() = runTest {
         val (_, f, _) = atClaim(IOException("reset"))
         // The challenge of the fixture runs out at EXPIRES_AT; a code would live 5 minutes more, plus a margin.
