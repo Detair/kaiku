@@ -423,11 +423,16 @@ pub async fn join_voice(
                     forward_remote_audio_track(track, handle.packets, &track_id, &stats_registry)
                         .await;
 
-                    // Track ended — remove from mixer and stats registry
-                    stats_registry.remove_track(&track_id);
-                    // Only this instance: a replacement with the same id
-                    // (participant rejoined) keeps playing.
+                    // Track ended — remove this instance from the mixer. A
+                    // replacement with the same id (participant rejoined)
+                    // keeps playing; only the current instance reports the
+                    // track as gone.
                     mixer.remove_track(handle.instance).await;
+                    if !mixer.release(&track_id, handle.instance) {
+                        info!(track_id = %track_id, "Replaced remote audio track ended");
+                        return;
+                    }
+                    stats_registry.remove_track(&track_id);
                     info!(track_id = %track_id, "Remote audio track ended");
 
                     let _ = app.emit(
@@ -858,10 +863,15 @@ impl NativeSession for VoiceState {
         // emitter task in spawn_frame_emitter to exit cleanly.
         self.video_frame_sinks.lock().await.clear();
 
-        // Stop audio and drop mixer
+        // End the mixer first, so its task, the PCM thread and the RTP
+        // readers end with the session even if a later step times out or a
+        // reader still holds a mixer handle.
+        if let Some(mixer) = self.audio_mixer.take() {
+            mixer.shutdown();
+        }
+        // Stop audio
         bounded_step("audio", self.audio.stop_all()).await;
         self.audio_tx = None;
-        self.audio_mixer = None;
         // Disconnect WebRTC. A failed or slow disconnect must not keep the
         // rest of the session alive.
         if let Some(Err(e)) = bounded_step("peer connections", self.webrtc.disconnect()).await {
@@ -1458,7 +1468,16 @@ async fn forward_remote_audio_track(
     let mut dropped: u64 = 0;
 
     loop {
-        match track.read_rtp().await {
+        // Also wake when the mixer retired this instance or ended: a silent
+        // track would otherwise keep its reader (and a mixer handle) alive.
+        let read = tokio::select! {
+            read = track.read_rtp() => read,
+            () = packet_tx.closed() => {
+                debug!("Mixer queue closed, stopping remote audio track");
+                break;
+            }
+        };
+        match read {
             Ok((rtp_packet, _attributes)) => {
                 let arrival = std::time::Instant::now();
                 jitter.on_packet(rtp_packet.header.timestamp, arrival);

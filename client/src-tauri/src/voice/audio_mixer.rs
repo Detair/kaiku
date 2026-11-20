@@ -243,6 +243,10 @@ pub struct AudioMixer {
     command_tx: mpsc::Sender<MixerCommand>,
     gains: UserGains,
     stats: PlayoutStatsMap,
+    /// Current instance per track id (a replacement takes over at once).
+    current: Arc<Mutex<HashMap<String, TrackInstance>>>,
+    /// Set by [`AudioMixer::shutdown`].
+    stop: Arc<tokio::sync::watch::Sender<bool>>,
 }
 
 impl AudioMixer {
@@ -267,6 +271,7 @@ impl AudioMixer {
     ) -> Self {
         let (command_tx, command_rx) = mpsc::channel(32);
         let stats = PlayoutStatsMap::default();
+        let (stop, stopped) = tokio::sync::watch::channel(false);
         tokio::spawn(Self::run(
             command_rx,
             output_tx,
@@ -274,11 +279,14 @@ impl AudioMixer {
             level,
             factory,
             stats.clone(),
+            stopped,
         ));
         Self {
             command_tx,
             gains,
             stats,
+            current: Arc::default(),
+            stop: Arc::new(stop),
         }
     }
 
@@ -292,6 +300,9 @@ impl AudioMixer {
     /// sender for its RTP packets.
     pub async fn add_track(&self, track_id: String) -> TrackHandle {
         let instance = NEXT_INSTANCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if let Ok(mut current) = self.current.lock() {
+            current.insert(track_id.clone(), instance);
+        }
         let (tx, packets) = mpsc::channel(PACKET_QUEUE);
         let _ = self
             .command_tx
@@ -304,6 +315,29 @@ impl AudioMixer {
         TrackHandle {
             instance,
             packets: tx,
+        }
+    }
+
+    /// End the mixer now, whatever else still holds a handle (a teardown
+    /// that times out, a reader stuck on a silent track). Its output and
+    /// every track's packet queue close, which ends the PCM thread and
+    /// wakes the RTP readers.
+    pub fn shutdown(&self) {
+        let _ = self.stop.send(true);
+    }
+
+    /// Whether `instance` is still the current instance of `track_id`;
+    /// if so, it stops being current (the caller may report the track as
+    /// gone). A retired instance gets `false`.
+    pub fn release(&self, track_id: &str, instance: TrackInstance) -> bool {
+        let Ok(mut current) = self.current.lock() else {
+            return false;
+        };
+        if current.get(track_id) == Some(&instance) {
+            current.remove(track_id);
+            true
+        } else {
+            false
         }
     }
 
@@ -335,6 +369,7 @@ impl AudioMixer {
         level: OutputLevel,
         factory: DecoderFactory,
         stats: PlayoutStatsMap,
+        mut stopped: tokio::sync::watch::Receiver<bool>,
     ) {
         let epoch = Instant::now();
         let mut tracks: HashMap<TrackInstance, Track> = HashMap::new();
@@ -349,18 +384,24 @@ impl AudioMixer {
             // When no tracks are registered, block-wait for the next command
             // instead of spinning the timer.
             if tracks.is_empty() {
-                match command_rx.recv().await {
-                    Some(cmd) => {
-                        Self::apply_command(cmd, &mut tracks, &factory, &stats);
-                        continue;
-                    }
-                    None => break, // every mixer handle dropped
+                tokio::select! {
+                    cmd = command_rx.recv() => match cmd {
+                        Some(cmd) => {
+                            Self::apply_command(cmd, &mut tracks, &factory, &stats);
+                            continue;
+                        }
+                        None => break, // every mixer handle dropped
+                    },
+                    _ = stopped.wait_for(|stop| *stop) => break,
                 }
             }
 
-            ticker.tick().await;
-            if output_tx.is_closed() {
-                break; // playback stopped
+            tokio::select! {
+                _ = ticker.tick() => {}
+                _ = stopped.wait_for(|stop| *stop) => break,
+            }
+            if output_tx.is_closed() || *stopped.borrow() {
+                break; // playback stopped or the session ended
             }
 
             // 1. Pending commands (non-blocking).
@@ -509,6 +550,16 @@ impl AudioMixer {
                     return;
                 };
                 debug!(track_id = %track_id, instance, "Mixer: added track");
+                // A replacement (participant rejoined) retires its
+                // predecessor now: the old instance stops feeding the mix.
+                let retired: Vec<TrackInstance> = tracks
+                    .iter()
+                    .filter(|(_, t)| t.track_id == track_id)
+                    .map(|(i, _)| *i)
+                    .collect();
+                for old in retired {
+                    Self::remove(tracks, stats, old);
+                }
                 let user_id = track_id
                     .split(':')
                     .next()
@@ -1109,6 +1160,70 @@ mod tests {
                 assert_eq!(run.device_missing, 0, "{block_ms} ms, {period_us}: {run:?}");
             }
         }
+    }
+
+    /// A replacement retires its predecessor when it is added: the old
+    /// instance can no longer feed audio into the mix, and only the current
+    /// instance may report the track as gone.
+    #[tokio::test]
+    async fn a_replacement_retires_its_predecessor_at_once() {
+        let (out_tx, _out_rx) = mpsc::channel(8);
+        let mixer = AudioMixer::with_decoder(
+            out_tx,
+            UserGains::default(),
+            OutputLevel::new(),
+            const_factory(),
+        );
+        let id = format!("{}:microphone", Uuid::new_v4());
+        let old = mixer.add_track(id.clone()).await;
+        let new = mixer.add_track(id.clone()).await;
+        let retired = tokio::time::timeout(Duration::from_secs(1), async {
+            while !old.packets.is_closed() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await;
+        assert!(retired.is_ok(), "the old instance still feeds the mix");
+        assert!(!new.packets.is_closed());
+        assert!(
+            !mixer.release(&id, old.instance),
+            "old instance released the track"
+        );
+        assert!(mixer.release(&id, new.instance));
+    }
+
+    /// A leave that times out must still end the mixer, its PCM output and
+    /// the readers, even while a silent track's reader still holds a handle.
+    #[tokio::test]
+    async fn shutdown_ends_mixer_output_and_readers_whatever_holds_a_handle() {
+        let (out_tx, mut out_rx) = mpsc::channel(8);
+        let mixer = AudioMixer::with_decoder(
+            out_tx,
+            UserGains::default(),
+            OutputLevel::new(),
+            const_factory(),
+        );
+        let handle = mixer.add_track("silent:microphone".into()).await;
+        // A reader on a track that never delivers a packet, holding a mixer
+        // handle the way the real reader task does.
+        let reader = {
+            let mixer = mixer.clone();
+            tokio::spawn(async move {
+                let _keep = mixer;
+                tokio::select! {
+                    () = std::future::pending::<()>() => {}
+                    () = handle.packets.closed() => {}
+                }
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        mixer.shutdown();
+        let ended = tokio::time::timeout(Duration::from_secs(1), async {
+            while out_rx.recv().await.is_some() {}
+            reader.await.unwrap();
+        })
+        .await;
+        assert!(ended.is_ok(), "mixer, output or reader still alive");
     }
 
     #[test]
