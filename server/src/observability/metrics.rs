@@ -337,9 +337,18 @@ pub fn voice_inactive_mline_added() {
 
 /// A subscriber connection with `n` inactive m-lines is gone.
 pub fn voice_inactive_mlines_released(n: u64) {
-    let _ = VOICE_INACTIVE_MLINES.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
-        Some(v.saturating_sub(n))
-    });
+    let mut current = VOICE_INACTIVE_MLINES.load(Ordering::Relaxed);
+    loop {
+        match VOICE_INACTIVE_MLINES.compare_exchange_weak(
+            current,
+            current.saturating_sub(n),
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => break,
+            Err(actual) => current = actual,
+        }
+    }
 }
 
 fn register_voice_gauges(meter: &opentelemetry::metrics::Meter) {

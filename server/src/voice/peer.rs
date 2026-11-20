@@ -93,7 +93,7 @@ pub struct Peer {
     /// Video source bound to each simulcast publisher transceiver (`mid`) by
     /// its first layer (`None`: that layer was refused). The other layers of
     /// the transceiver use it, nothing else does.
-    video_mids: std::sync::Mutex<HashMap<String, Option<TrackSource>>>,
+    video_mids: std::sync::Mutex<HashMap<String, MidBinding>>,
     /// Number of the latest accepted announcement per source (a timer of an
     /// older announcement of the same source acts on nothing).
     announcements: std::sync::Mutex<HashMap<TrackSource, u64>>,
@@ -124,6 +124,15 @@ impl Drop for Peer {
 /// once. Offers and answers grow by roughly 0.5–1 KiB per inactive m-line;
 /// the inbound frame limit (256 KiB) is reached at several hundred.
 pub const INACTIVE_MLINE_WARN_THRESHOLD: usize = 60;
+
+/// What the first layer of a simulcast publisher transceiver decided.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MidBinding {
+    /// Bound to this accepted announcement.
+    Source(TrackSource),
+    /// The first layer had no announcement and was dropped.
+    Refused,
+}
 
 /// Offer/answer state of a peer's subscriber connection.
 ///
@@ -424,14 +433,15 @@ impl Peer {
     /// Bind the simulcast publisher transceiver `mid` to `source` (`None`:
     /// its first layer was refused).
     pub fn bind_video_mid(&self, mid: &str, source: Option<TrackSource>) {
+        let binding = source.map_or(MidBinding::Refused, MidBinding::Source);
         self.video_mids
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(mid.to_owned(), source);
+            .insert(mid.to_owned(), binding);
     }
 
     /// The binding of transceiver `mid`, if its first layer was decided.
-    pub fn video_mid(&self, mid: &str) -> Option<Option<TrackSource>> {
+    pub fn video_mid(&self, mid: &str) -> Option<MidBinding> {
         self.video_mids
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

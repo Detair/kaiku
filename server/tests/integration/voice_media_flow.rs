@@ -633,7 +633,7 @@ async fn takeover_during_track_forwarding_leaves_no_ghost(pool: PgPool) {
             .await,
         "the viewer does not hear the new seat"
     );
-    let _ = old.close().await;
+    old.close().await;
 }
 
 /// A stop that races the share's first track wins: the track is not

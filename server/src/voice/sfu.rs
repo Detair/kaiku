@@ -1162,7 +1162,9 @@ impl SfuServer {
                     let source_type = if let Some(bound) = binding {
                         // The transceiver's first layer was refused: so are its
                         // other layers (refusal already reported).
-                        let Some(st) = bound else { return };
+                        let super::peer::MidBinding::Source(st) = bound else {
+                            return;
+                        };
                         st
                     } else {
                         // Every track needs a source the server accepted
