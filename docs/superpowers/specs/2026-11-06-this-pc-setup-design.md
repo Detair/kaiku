@@ -44,9 +44,9 @@ need a proximity check that Kaiku does not have", and two anti-goals are close t
 
 The danger is concrete. F2's QR scan can be relayed, which is acceptable because it yields only a
 probation session. The same scan here would yield a passkey, which means sign-in changes, ending the
-owner's sessions and, on an admin account, the admin panel. An attacker holding a stolen or phished
-probation session could send the victim their QR code ("scan this to fix your Kaiku"), and a fooled
-scan plus a fingerprint would turn it into a takeover.
+owner's sessions and, on an admin account, the admin panel. So a scan and the screen lock alone must
+never be enough to give a chat-only session a passkey: the person at the phone also has to type a code
+on the computer in front of them.
 
 F5a is safe against this because its secret starts on the trusted phone and the person has to hand it
 over. A flow that starts on the PC reverses that, so it needs something to replace it.
@@ -176,8 +176,7 @@ The actions are **Yes, continue**, a prominent **No**, and a smaller **I didn't 
 
   It does **not** mark any password or TOTP compromised **(call)**. F3's report does, because a correct
   password was typed at that moment. Here the session may be days old, and a stolen session says nothing
-  about the password. Otherwise a thief could make a careful owner destroy their own password just by
-  getting them to scan and report. The notice says what happened and offers the existing paths: the
+  about the password, so a report must not cost the owner their own password. The notice says what happened and offers the existing paths: the
   security log's "That wasn't me" on the sign-in that created that session, and changing the password.
 
 ### Step 4: the code
@@ -210,8 +209,8 @@ with a new `issuer_kind` recording both the approving key device (its `approval_
 requesting session. If that response is lost, the PC's next poll sees `enrolled` and carries on.
 
 **There is no setup token.** The login spec's setup token is a bearer secret, safe in F5a only because
-the claimant must then pass a code back to the issuer. Here the code has already been used, so a bearer
-token could be raced by anyone who saw it. Registration is bound to the requesting session instead:
+the claimant must then pass a code back to the issuer. Here the code has already been used, so no
+bearer secret is issued at all. Registration is bound to the requesting session instead:
 
 - **Browser client:** the page shows the keypad. It enters the code and then calls session-authenticated
   `passkey/start` and `passkey/finish` routes of the attempt, reusing LP's `register::{begin, complete}`.
@@ -228,9 +227,9 @@ token could be raced by anyone who saw it. Registration is bound to the requesti
   - The hand-off then works as in F1, and **nothing takes effect before `redeem`**, with the one-time
     code, the verifier and the starting session's bearer.
   - The flow URL alone is therefore worthless, before and after the legitimate code entry. Whoever has
-    it but neither the code nor the cookie cannot reach a ceremony, so they cannot produce a hand-off for
-    the app to redeem (the relay attack of rounds 2 and 3). Before the code is entered they can only burn
-    the three tries, which ends the attempt and shows on the PC and the phone.
+    it but neither the code nor the cookie reaches no ceremony and produces no hand-off for the app to
+    redeem. Before the code is entered, wrong entries on the page count on the attempt; the third ends it,
+    and the PC and the phone both say so.
   - F1 today supports assertions only. Registration needs a new ceremony kind, pending result and
     redemption handling, which holds the verified credential until `redeem`.
 
@@ -453,7 +452,7 @@ without FCM.
 
 | Finding | Resolution |
 |---|---|
-| Desktop: an attacker with the flow URL registers, relays the hand-off through the victim's browser, and the legitimate app redeems the attacker's credential | Code entered in the browser before any ceremony |
+| Desktop: the flow URL alone must not lead to a registration that the app then redeems | Code entered in the browser before any ceremony |
 | Finish and redeem lock order deadlocks or misses logout | Locking 3 now covers them and restart |
 
 Codex confirmed in this round: the web path closes the leaked-link attack, and reverting the credential
@@ -463,6 +462,6 @@ remediation is safe.
 
 | Finding | Resolution |
 |---|---|
-| The right code unlocked the flow, so a URL holder could race the legitimate browser after it | Browser secret set by the code entry, required by `options` and `finish` |
+| After the right code, only the browser that typed it may run the ceremony | Browser secret set by the code entry, required by `options` and `finish` |
 
 Codex confirmed in this round that the lock order is sound against logout and the cascades.

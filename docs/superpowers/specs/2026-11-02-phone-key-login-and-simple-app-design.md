@@ -1358,8 +1358,7 @@ these are the rules.
     button needs it on), the phone's wording ("Only continue if you started this on a computer in
     front of you, and nobody asked you to"), the notice to every address with "That wasn't me",
     which also ends the requesting session, and at most 3 wrong codes per approval. A report marks
-    no password or TOTP compromised, so a thief cannot make a careful owner destroy their own
-    password by getting them to scan and report. Passkeys over hybrid remain the only
+    no password or TOTP compromised: a report never costs the owner their own password. Passkeys over hybrid remain the only
     phishing-resistant cross-device path.
 
 ### B.7 State machines (normative)

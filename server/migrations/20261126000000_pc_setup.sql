@@ -91,8 +91,8 @@ ALTER TABLE approvals
 -- SM2 variant `pc_setup`: issued by an attempt whose code was typed, recording
 -- the requesting session (`issuer_session_id`) and the approving key device
 -- (`issuer_device_id`, an `approval_devices` row id). There is no setup token
--- and no claim: a bearer token could be raced by anyone who saw it, so the
--- passkey is registered by the requesting session itself.
+-- and no claim: only the requesting session itself (or its desktop flow)
+-- registers the passkey, so no secret that creates a passkey leaves it.
 ALTER TABLE enrollments
     DROP CONSTRAINT enrollments_variant_check,
     ADD CONSTRAINT enrollments_variant_check
