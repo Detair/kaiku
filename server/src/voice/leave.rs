@@ -49,24 +49,28 @@ pub async fn leave_voice_internal(
 
     // A session-bound leave removes the peer first, atomically with the
     // session check, so a newer session's screen shares and webcam stay.
-    let session_peer = match expected_session {
-        Some(session_id) => match room.remove_peer_if_session(user_id, session_id).await {
-            Some(peer) => Some(peer),
+    // A session-bound leave takes the seat together with its screen shares
+    // and webcam in one step under the room lock, so a seat the user takes
+    // right afterwards keeps its own.
+    let (session_peer, seat_media) = match expected_session {
+        Some(session_id) => match room.remove_seat_if_session(user_id, session_id).await {
+            Some(seat) => (Some(seat.peer), Some((seat.screen_shares, seat.webcam))),
             None => return Ok(false),
         },
-        None => None,
+        None => (None, None),
     };
 
-    // The user joined again (new seat) right after this seat was removed:
-    // the screen shares, webcam and presence in the room now belong to that
-    // seat (the replacement already ended this one's media), so leave them.
+    // The user is seated again (a new seat taken right after this removal):
+    // the room keeps showing them, so the others are not told they left.
     let rejoined = session_peer.is_some() && room.get_peer(user_id).await.is_some();
 
     // Remove all screen shares for this user
-    let removed_shares = if rejoined {
-        Vec::new()
-    } else {
-        room.remove_user_screen_shares(user_id).await
+    let (removed_shares, had_webcam) = match seat_media {
+        Some((shares, webcam)) => (shares, webcam.is_some()),
+        None => (
+            room.remove_user_screen_shares(user_id).await,
+            room.remove_webcam(user_id).await.is_some(),
+        ),
     };
     if !removed_shares.is_empty() {
         if let Some(limiter) = screen_share_limiter {
@@ -90,7 +94,7 @@ pub async fn leave_voice_internal(
     }
 
     // Check if webcam is active and stop it
-    if !rejoined && room.remove_webcam(user_id).await.is_some() {
+    if had_webcam {
         room.broadcast_except(
             user_id,
             ServerEvent::WebcamStopped {

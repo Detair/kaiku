@@ -339,6 +339,42 @@ impl Room {
         self.remove_peer_matching(user_id, None).await
     }
 
+    /// Remove the seat of `user_id` if it is still session `session_id`,
+    /// together with its screen shares and webcam, all under the peers lock
+    /// (as a replacement does): a seat the user takes afterwards keeps its
+    /// own. The seat is retired in the same step.
+    pub async fn remove_seat_if_session(
+        &self,
+        user_id: Uuid,
+        session_id: Uuid,
+    ) -> Option<ReplacedMedia> {
+        let mut peers = self.peers.write().await;
+        if peers.get(&user_id).map(|p| p.session_id) != Some(session_id) {
+            return None;
+        }
+        let peer = peers.remove(&user_id)?;
+        peer.retire();
+        // Lock order as in `get_participant_info`: peers, shares, webcams.
+        let screen_shares = {
+            let mut shares = self.screen_shares.write().await;
+            let ids: Vec<Uuid> = shares
+                .values()
+                .filter(|s| s.user_id == user_id)
+                .map(|s| s.stream_id)
+                .collect();
+            ids.iter().filter_map(|id| shares.remove(id)).collect()
+        };
+        let webcam = self.webcams.write().await.remove(&user_id);
+        drop(peers);
+        self.track_router
+            .remove_subscriptions_into(&peer.outgoing_track_list().await);
+        Some(ReplacedMedia {
+            peer,
+            screen_shares,
+            webcam,
+        })
+    }
+
     /// Remove a peer only if it is still the given session. Check and removal
     /// happen under one lock, so a newer session of the same user is never hit.
     pub async fn remove_peer_if_session(
