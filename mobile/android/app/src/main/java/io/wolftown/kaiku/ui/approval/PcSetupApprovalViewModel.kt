@@ -291,7 +291,9 @@ class PcSetupApprovalViewModel @Inject constructor(
                     throw e
                 } catch (e: ApiException) {
                     when {
-                        e.status == HttpStatusCode.NotFound -> {
+                        // Only the server's own "not found" ends the attempt.
+                        e.status == HttpStatusCode.NotFound &&
+                            e.normalizedCode == "APPROVAL_NOT_FOUND" -> {
                             end(R.string.pc_setup_cancelled)
                             return@launch
                         }
@@ -338,10 +340,13 @@ class PcSetupApprovalViewModel @Inject constructor(
     }
 
     /**
-     * The end text of a status, null while the attempt is live. A state or reason this app does not
-     * know reads as the generic failure (C27) and ends polling.
+     * The end text of a status, null while the attempt is live. `completed` is success whatever its
+     * reason; another state, or an unknown reason on any other state, reads as the generic failure
+     * (C27) and ends polling.
      */
     private fun endText(s: PcSetupPhoneStatus): Int? = when {
+        // `completed` means the passkey exists, whatever reason comes with it.
+        s.state == "completed" -> R.string.pc_setup_done
         s.reason != null && s.reason !in KNOWN_REASONS -> R.string.pc_setup_failed
         else -> knownEndText(s)
     }

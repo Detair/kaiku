@@ -406,6 +406,29 @@ class PcSetupApprovalViewModelTest {
         }
     }
 
+    @Test fun `a 404 without APPROVAL_NOT_FOUND keeps the code and stops asking`() = runTest {
+        val (v, _) = vm()
+        v.start(payload)
+        v.approve(activity)
+        api.pcStatuses.add(io.wolftown.kaiku.data.api.ApiException(io.ktor.http.HttpStatusCode.NotFound, "Not Found"))
+        advanceTimeBy(1_100)
+        assertEquals(PcSetupUi.Code("123456"), v.ui.value)
+        val calls = api.pcStatusCalls
+        advanceTimeBy(5_000)
+        assertEquals(calls, api.pcStatusCalls)
+        v.viewModelScope.coroutineContext[kotlinx.coroutines.Job]!!.cancel()
+    }
+
+    @Test fun `completed is success whatever reason comes with it`() = runTest {
+        val (v, _) = vm()
+        v.start(payload)
+        v.approve(activity)
+        api.pcStatuses.add(PcSetupPhoneStatus("completed", "brand_new"))
+        advanceTimeBy(1_100)
+        assertEquals(PcSetupUi.Finished(R.string.pc_setup_done, ok = true), v.ui.value)
+        v.viewModelScope.coroutineContext[kotlinx.coroutines.Job]!!.cancel()
+    }
+
     @Test fun `a vanished attempt closes the leave question`() = runTest {
         val (v, _) = vm()
         v.start(payload)
