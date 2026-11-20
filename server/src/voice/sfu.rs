@@ -783,24 +783,17 @@ impl Room {
             let peers = self.peers.read().await;
             // The source's room state stays held (read) until the stop is
             // queued: a successor's start has to write it first, so its
-            // start event is queued after this stop.
-            let mut _webcams = None;
-            let mut _shares = None;
+            // start event is queued after this stop. Lock order: peers,
+            // shares, webcams.
+            let shares = self.screen_shares.read().await;
+            let webcams = self.webcams.read().await;
             let (user_id, live_again) = match &event {
                 ServerEvent::WebcamStopped { user_id, .. } => {
-                    let webcams = self.webcams.read().await;
-                    let live = webcams.contains_key(user_id);
-                    _webcams = Some(webcams);
-                    (*user_id, live)
+                    (*user_id, webcams.contains_key(user_id))
                 }
                 ServerEvent::ScreenShareStopped {
                     user_id, stream_id, ..
-                } => {
-                    let shares = self.screen_shares.read().await;
-                    let live = shares.contains_key(stream_id);
-                    _shares = Some(shares);
-                    (*user_id, live)
-                }
+                } => (*user_id, shares.contains_key(stream_id)),
                 _ => return false,
             };
             crate::ws::test_hooks::voice_step(user_id, "stop_decided").await;
@@ -1373,12 +1366,11 @@ impl SfuServer {
                 None
             }
         };
-        match result {
-            Some(result) => result,
-            None => {
-                peer.close().await;
-                Err(VoiceError::RoomNotFound(room.channel_id))
-            }
+        if let Some(result) = result {
+            result
+        } else {
+            peer.close().await;
+            Err(VoiceError::RoomNotFound(room.channel_id))
         }
     }
 
