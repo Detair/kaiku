@@ -17,10 +17,10 @@ class WakeDeferralTest {
         // Kept across a new process.
         val later = WakeDeferral(prefs)
         val out = mutableListOf<WakeSignal>()
-        later.release { out += it }
+        later.release { s, _ -> out += s }
         assertEquals(listOf(WakeSignal(WakeKind.DM, "c1", 1), WakeSignal(WakeKind.MENTION, "c2", 2)), out)
         // Once.
-        later.release { out += it }
+        later.release { s, _ -> out += s }
         assertEquals(2, out.size)
     }
 
@@ -30,7 +30,7 @@ class WakeDeferralTest {
         deferral.hold(WakeSignal(WakeKind.DM, "c1", 1))
         deferral.hold(WakeSignal(WakeKind.CALL, "c9", 1))
         val out = mutableListOf<WakeSignal>()
-        deferral.release { out += it }
+        deferral.release { s, _ -> out += s }
         assertEquals(listOf(WakeSignal(WakeKind.DM, "c1", 3)), out)
     }
 
@@ -39,7 +39,7 @@ class WakeDeferralTest {
         deferral.hold(WakeSignal(WakeKind.DM, "c1", 1))
         deferral.clear()
         val out = mutableListOf<WakeSignal>()
-        deferral.release { out += it }
+        deferral.release { s, _ -> out += s }
         assertTrue(out.isEmpty())
     }
 
@@ -51,9 +51,19 @@ class WakeDeferralTest {
         val src = java.io.File(root, "push/WakeScheduler.kt").readText()
         val enqueue = src.substringAfter("override fun enqueue(signal: WakeSignal) {").substringBefore("private fun enqueueNow")
         assertTrue(enqueue.contains("if (keyStorage.unreadable()) return deferral.hold(signal)"))
-        assertTrue(enqueue.indexOf("deferral.release(::enqueueNow)") < enqueue.indexOf("enqueueNow(signal)"))
+        assertTrue(enqueue.indexOf("deferral.release(::enqueueHeld)") < enqueue.indexOf("enqueueNow(signal)"))
         val activity = java.io.File(root, "ui/MainActivity.kt").readText()
         assertTrue(activity.substringAfter("authState.initialize(tokenStorage)").substringBefore("setContent {")
-            .contains("wakeDeferral.release(wakeEnqueuer::enqueue)"))
+            .contains("wakeDeferral.release(wakeEnqueuer::enqueueHeld)"))
+    }
+
+    /** A wake kept with its account (in a new process too) goes out with that account. */
+    @Test fun `a wake kept with its account keeps that account`() {
+        val owner = WakeOwner("u1", "https://chat.example.com/a|b")
+        WakeDeferral(prefs).hold(WakeSignal(WakeKind.DM, "c1", 2), owner)
+        WakeDeferral(prefs).hold(WakeSignal(WakeKind.MENTION, "c2", 1))
+        val out = mutableListOf<Pair<WakeSignal, WakeOwner?>>()
+        WakeDeferral(prefs).release { s, o -> out += s to o }
+        assertEquals(listOf(WakeSignal(WakeKind.DM, "c1", 2) to owner, WakeSignal(WakeKind.MENTION, "c2", 1) to null), out)
     }
 }

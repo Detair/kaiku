@@ -32,6 +32,9 @@ enum class WakeOutcome {
     /** The wake was queued for another account or server than the signed-in one. */
     WRONG_ACCOUNT,
     RETRY,
+
+    /** The key storage could not be read: the wake is kept with its account until it can ([WakeDeferral]). */
+    DEFERRED,
 }
 
 /**
@@ -67,6 +70,7 @@ class WakeFetchProcessor @Inject constructor(
     private val chat: ChatRepository,
     private val dms: DmRepository,
     private val keyStorage: KeyStorageCheck = KeyStorageCheck.READABLE,
+    private val deferral: WakeDeferral? = null,
 ) {
     companion object {
         private val logger = Logger.getLogger("WakeFetchProcessor")
@@ -108,8 +112,13 @@ class WakeFetchProcessor @Inject constructor(
      */
     suspend fun process(signal: WakeSignal, owner: WakeOwner, isStopped: () -> Boolean = { false }): WakeOutcome {
         // While what the phone saved about its key cannot be read, the stored session is not
-        // touched at all (not read, refreshed, cleared or recovered): the wake waits.
-        if (keyStorage.unreadable()) return WakeOutcome.RETRY
+        // touched at all (not read, refreshed, cleared or recovered): the wake is kept with its
+        // account until the storage can be read, not retried against the work budget.
+        if (keyStorage.unreadable()) {
+            val held = deferral ?: return WakeOutcome.RETRY
+            held.hold(signal, owner)
+            return WakeOutcome.DEFERRED
+        }
         // Captured before the refresh: a refresh rotation keeps the generation,
         // a logout or new login changes it (TokenStorage).
         val generation = tokenStorage.getSessionGeneration()

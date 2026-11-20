@@ -829,4 +829,24 @@ class WakeFetchProcessorTest {
         io.mockk.verify { refreshes wasNot io.mockk.Called }
         io.mockk.verify(exactly = 0) { sink.cancelAll() }
     }
+
+    /**
+     * A queued wake that meets the closed storage is kept with its account (not retried until the
+     * work gives up), and goes out again only for that account once the storage can be read.
+     */
+    @Test
+    fun `a queued wake that meets the closed storage is kept with its account`() = runTest {
+        val untouchable: TokenStorage = mockk()
+        val deferral = WakeDeferral(InMemorySharedPreferences())
+        val gated = WakeFetchProcessor(
+            mockk(), untouchable, messages, unreadApi, titles, ledger, sink, enqueuer, active, chat, dms,
+            keyStorage = { true }, deferral = deferral,
+        )
+        val signal = WakeSignal(WakeKind.DM, ch, 1)
+        assertEquals(WakeOutcome.DEFERRED, gated.process(signal, owner))
+        io.mockk.verify { untouchable wasNot io.mockk.Called }
+        val out = mutableListOf<Pair<WakeSignal, WakeOwner?>>()
+        deferral.release { s, o -> out += s to o }
+        assertEquals(listOf(signal to owner), out)
+    }
 }

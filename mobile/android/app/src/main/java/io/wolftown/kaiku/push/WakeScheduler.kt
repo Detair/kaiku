@@ -23,6 +23,14 @@ interface WakeWorkEnqueuer {
     fun enqueue(signal: WakeSignal)
 
     /**
+     * A wake kept while the key storage could not be read ([WakeDeferral]): with its [owner] it is
+     * scheduled only for that account (otherwise it is dropped), without one for the signed-in account.
+     */
+    fun enqueueHeld(signal: WakeSignal, owner: WakeOwner?) {
+        enqueue(signal)
+    }
+
+    /**
      * Schedules the quick call path for a call wake (no message fetch); a
      * newer call wake of the same channel replaces it. No-op when signed out.
      */
@@ -57,8 +65,15 @@ class WorkManagerWakeEnqueuer @Inject constructor(
         // The stored session is not read while what the phone saved about its key cannot be: the
         // wake is kept for when it can.
         if (keyStorage.unreadable()) return deferral.hold(signal)
-        deferral.release(::enqueueNow)
+        deferral.release(::enqueueHeld)
         enqueueNow(signal)
+    }
+
+    override fun enqueueHeld(signal: WakeSignal, owner: WakeOwner?) {
+        if (keyStorage.unreadable()) return deferral.hold(signal, owner)
+        if (owner == null) return enqueueNow(signal)
+        val userId = tokenStorage.getUserId() ?: return
+        if (WakeOwner(userId, tokenStorage.getServerUrl()) == owner) enqueueNow(signal)
     }
 
     private fun enqueueNow(signal: WakeSignal) {

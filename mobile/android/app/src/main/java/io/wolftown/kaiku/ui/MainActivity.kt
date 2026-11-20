@@ -98,7 +98,7 @@ class MainActivity : FragmentActivity() {
         }
         authState.initialize(tokenStorage)
         // Message wakes kept while the key storage could not be read go to the account signed in now.
-        wakeDeferral.release(wakeEnqueuer::enqueue)
+        wakeDeferral.release(wakeEnqueuer::enqueueHeld)
         // A link kept while the app could not start is judged like one opened now.
         PendingSetupLinks.releaseKept(setupOwner::offer)
         // On recreation (rotation, theme change, process restore) getIntent() is the
