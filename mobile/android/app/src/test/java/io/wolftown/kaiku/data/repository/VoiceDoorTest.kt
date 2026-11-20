@@ -88,6 +88,20 @@ class VoiceDoorTest {
         assertFalse("a session of the ended account was joined: ${rig.joinsAndLeaves()}", "join:ch-2" in rig.joinsAndLeaves())
     }
 
+    @Test
+    fun `no voice session is opened while nobody is signed in or the session is being signed out`() = rigTest { rig ->
+        rig.socket.ready()
+        // The sign-out has started; the tokens are still stored.
+        rig.sessions.generation.close(rig.sessions.sessionId)
+        assertTrue(runCatching { rig.repository.joinChannel("ch-2") }.isFailure)
+        rig.sessions.signOut()
+        assertTrue(runCatching { rig.repository.joinChannel("ch-3") }.isFailure)
+        runCurrent()
+
+        assertEquals(null, rig.repository.currentChannelId.value)
+        assertTrue("something was set up: ${rig.log}", rig.log.none { it == "sub" || it.startsWith("send:") || it == "service:start" })
+    }
+
     // -- Voice channels and calls through the same door -----------------------------------
 
     @Test

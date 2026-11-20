@@ -615,8 +615,9 @@ class VoiceRepository @Inject constructor(
         if (!micPermissionChecker.isGranted()) {
             throw MissingMicPermissionException()
         }
-        // A voice session belongs to the signed-in session it was asked for.
-        val ticket = sessions.enter() ?: throw SessionEnded()
+        // A voice session belongs to the signed-in session it was asked for; one that is being
+        // signed out gets no new voice session.
+        val ticket = sessions.enter()?.takeIf { it.open } ?: throw SessionEnded()
         val session = replaceSession(Expected.Anything, Opening(channelId, call, ticket, muted)) ?: throw SessionEnded()
         try {
             session.firstJoin.await()
