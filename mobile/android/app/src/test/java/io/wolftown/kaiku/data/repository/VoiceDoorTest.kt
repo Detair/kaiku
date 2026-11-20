@@ -482,6 +482,18 @@ class VoiceDoorTest {
         rig.repository.closeCall(2)
     }
 
+    @Test
+    fun `a call's session says it has the sound only once its first join took it`() = rigTest { rig ->
+        rig.socket.ready()
+        var whileOpening: Boolean? = null
+        rig.at("mute") { whileOpening = rig.repository.current.value?.hasAudio }
+        launch(start = CoroutineStart.UNDISPATCHED) { runCatching { rig.repository.joinCall(dm, call(1)) } }
+        runCurrent()
+        assertEquals("the sound before the session took it", false, whileOpening)
+        assertEquals(true, rig.repository.current.value?.hasAudio)
+        assertEquals(1L, rig.repository.current.value?.callTag)
+    }
+
     // -- A leave names the session it was tapped for -------------------------------------------
 
     @Test
