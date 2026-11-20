@@ -1246,7 +1246,7 @@ fn is_turn_uri(url: &str) -> bool {
     host_ok && port_ok
 }
 
-/// A minimum client version in SemVer 2.0 syntax without build metadata:
+/// A minimum client version in `SemVer` 2.0 syntax without build metadata:
 /// `MAJOR.MINOR.PATCH` (numbers without leading zeros) with an optional
 /// pre-release of dot-separated identifiers (`[0-9A-Za-z-]`, numeric ones
 /// without leading zeros), e.g. `1.0.0`, `1.0.0-rc.6`, `1.0.0-beta-1`.

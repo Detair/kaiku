@@ -990,8 +990,9 @@ pub async fn end_abandoned_calls(
     ended
 }
 
-/// The start-up clean-up of DM calls. Ringing calls of the previous
-/// process end before this returns (call it before the server accepts
+/// The start-up clean-up of DM calls.
+///
+/// Ringing calls of the previous process end before this returns (call it before the server accepts
 /// connections); answered ones are checked in the returned background task
 /// after [`RESTART_REJOIN_GRACE`] and end if nobody rejoined their room.
 pub async fn restart_cleanup(
