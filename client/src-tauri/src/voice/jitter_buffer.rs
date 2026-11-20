@@ -96,13 +96,18 @@ const LONG_GAP_TS: i64 = LONG_GAP_MS as i64 * TS_PER_MS;
 /// pause of a sender that does not advance its timestamp over pauses.
 const STEP_GAP_MS: u64 = 40;
 
-/// Packets that must keep the new arrival/timestamp relation (within
-/// [`STEP_TOLERANCE_TS`]) before it counts as such a pause.
-const STEP_CONFIRM: usize = 4;
+/// Packets after the gap that decide between a pause and network delay.
+const STEP_CONFIRM: usize = 5;
 
-/// A packet this much earlier than the first one after the gap shows the
-/// network catching up: the gap was jitter, not a pause.
-const STEP_TOLERANCE_TS: i64 = 15 * TS_PER_MS;
+/// A pause shifts the arrival/timestamp relation for good: every packet
+/// after the gap, even the earliest, stays at least this much above the
+/// old best. A packet back below that shows the network catching up.
+const STEP_MIN_TS: i64 = 40 * TS_PER_MS;
+
+/// After a pause the packets keep a steady relation: their spread stays
+/// within ordinary network jitter. A wider spread (delay still growing or
+/// shrinking) is network behaviour, not a pause.
+const STEP_SPREAD_TS: i64 = 40 * TS_PER_MS;
 
 /// A packet this far behind the highest sequence number does not belong to
 /// the stream.
@@ -225,7 +230,8 @@ struct RestartCandidate {
 /// held back until that is clear.
 #[derive(Debug, Clone, Copy)]
 struct StepCandidate {
-    first: i64,
+    /// Best relative transit before the gap.
+    old_best: i64,
     samples: [i64; STEP_CONFIRM],
     len: usize,
 }
@@ -259,6 +265,8 @@ pub struct JitterBuffer<P> {
     transit_len: usize,
     transit_pos: usize,
     step: Option<StepCandidate>,
+    /// This stream has set the marker bit (it marks its talk spurts).
+    marker_seen: bool,
     /// The packet ending the current starvation began a talk spurt.
     pause_seen: bool,
     /// Resumed with the due packet while a step candidate was open: an
@@ -295,6 +303,7 @@ impl<P: Clone> JitterBuffer<P> {
             transit_len: 0,
             transit_pos: 0,
             step: None,
+            marker_seen: false,
             pause_seen: false,
             pending_underrun: false,
             peak_ms: 0.0,
@@ -377,6 +386,9 @@ impl<P: Clone> JitterBuffer<P> {
 
         let seq_gap = eseq - high.seq;
         let starving = matches!(self.phase, Phase::Buffering { fresh: false, .. });
+        // A sender that marks its talk spurts advances its timestamps over
+        // pauses: steps after a gap are then network delay, always.
+        self.marker_seen |= marker;
         let mut step_start = false;
         if seq_gap > 0 {
             // More timeline than the missing packets explain: the sender
@@ -389,8 +401,9 @@ impl<P: Clone> JitterBuffer<P> {
                 if starving {
                     self.pause_seen = true;
                 }
-            } else if seq_gap == 1
+            } else if (1..=3).contains(&seq_gap)
                 && self.step.is_none()
+                && !self.marker_seen
                 && since_last >= high.dur as u64 / TS_PER_MS as u64 + STEP_GAP_MS
             {
                 step_start = true;
@@ -779,6 +792,7 @@ impl<P: Clone> JitterBuffer<P> {
         }
         self.clear_transit();
         self.step = None;
+        self.marker_seen = false;
         self.pending_underrun = false;
         self.pause_seen = false;
         self.played_mask = 0;
@@ -818,12 +832,18 @@ impl<P: Clone> JitterBuffer<P> {
     /// gap is unresolved (network late vs. sender paused).
     fn observe_transit(&mut self, arrival_ms: u64, ts: i64, seq_gap: i64, step_start: bool) {
         let relative = arrival_ms as i64 * TS_PER_MS - ts;
+        let _ = seq_gap;
         let Some(mut step) = self.step else {
             if step_start {
                 let mut samples = [0; STEP_CONFIRM];
                 samples[0] = relative;
+                let old_best = self.transit[..self.transit_len]
+                    .iter()
+                    .copied()
+                    .min()
+                    .unwrap_or(relative);
                 self.step = Some(StepCandidate {
-                    first: relative,
+                    old_best,
                     samples,
                     len: 1,
                 });
@@ -832,32 +852,36 @@ impl<P: Clone> JitterBuffer<P> {
             }
             return;
         };
-        if seq_gap <= 0 || relative < step.first - STEP_TOLERANCE_TS {
-            // Reordering or catching up: it was network jitter.
-            self.step = None;
-            for &sample in &step.samples[..step.len] {
-                self.add_transit(sample);
-            }
-            self.add_transit(relative);
-            if self.pending_underrun {
-                self.pending_underrun = false;
-                self.count_underrun();
-            }
-            return;
-        }
-        step.samples[step.len] = relative;
-        step.len += 1;
         if step.len < STEP_CONFIRM {
+            step.samples[step.len] = relative;
+            step.len += 1;
+        }
+        let held = &step.samples[..step.len];
+        let low = held.iter().copied().min().unwrap_or(relative);
+        let high = held.iter().copied().max().unwrap_or(relative);
+        let back_to_old = low < step.old_best + STEP_MIN_TS;
+        if !back_to_old && step.len < STEP_CONFIRM {
             self.step = Some(step);
             return;
         }
-        // The new relation holds: the sender paused. Start the jitter
-        // reference afresh from here.
         self.step = None;
-        self.pending_underrun = false;
-        self.clear_transit();
-        for &sample in &step.samples {
+        if !back_to_old && high - low <= STEP_SPREAD_TS {
+            // The new relation holds steadily: the sender paused. Start the
+            // jitter reference afresh from here.
+            self.pending_underrun = false;
+            self.clear_transit();
+            for &sample in held {
+                self.add_transit(sample);
+            }
+            return;
+        }
+        // Catching up, or a delay still on the move: network jitter.
+        for &sample in held {
             self.add_transit(sample);
+        }
+        if self.pending_underrun {
+            self.pending_underrun = false;
+            self.count_underrun();
         }
     }
 
@@ -1757,5 +1781,59 @@ mod tests {
             d.contains(&99) && d.contains(&101) && d.contains(&290),
             "{d:?}"
         );
+    }
+
+    /// Old senders on Wi-Fi: pauses with contiguous timestamps and 20–30 ms
+    /// of network jitter must still be recognised as pauses.
+    #[test]
+    fn old_sender_pauses_survive_network_jitter() {
+        for jitter in [20u64, 30] {
+            let mut jb = JitterBuffer::new();
+            let mut rng = Lcg(7);
+            let mut arrivals = Vec::new();
+            let (mut t, mut seq) = (0u64, 0u32);
+            for round in 0..60 {
+                for _ in 0..100 {
+                    arrivals.push((t + rng.next(jitter), seq, seq));
+                    t += 20;
+                    seq += 1;
+                }
+                t += if round % 2 == 0 { 150 } else { 350 };
+            }
+            arrivals.sort_unstable();
+            let (mut sum, mut n) = (0.0, 0.0);
+            simulate_frames(&mut jb, &arrivals, 0..t / 20, |tick, jb| {
+                if tick > 100 {
+                    sum += jb.target_ms();
+                    n += 1.0;
+                }
+            });
+            let st = jb.stats();
+            let mean = sum / n;
+            // A real network of this jitter needs a target of about
+            // 40 + jitter; pauses must not push it further.
+            assert!(
+                mean <= 40.0 + jitter as f64 + 15.0,
+                "{jitter} ms: mean target {mean}, {st:?}"
+            );
+            assert!(st.underruns <= 6, "{jitter} ms: {st:?}");
+        }
+    }
+
+    /// A network whose delay keeps growing is jitter, not a sender pause.
+    #[test]
+    fn steadily_growing_delay_is_not_taken_for_a_pause() {
+        let mut jb = JitterBuffer::new();
+        let mut arrivals: Vec<_> = (0..300u32).map(|i| (u64::from(i) * 20, i, i)).collect();
+        // From packet 100 on, each packet 25 ms later than the one before,
+        // for eight packets, then the network catches up at once.
+        for k in 0..8u32 {
+            arrivals[(100 + k) as usize].0 += 60 + u64::from(k) * 25;
+        }
+        arrivals.sort_unstable();
+        simulate_frames(&mut jb, &arrivals, 0..300, |_, _| {});
+        let st = jb.stats();
+        assert!(st.underruns >= 1, "{st:?}");
+        assert!(jb.target_ms() > MIN_TARGET_MS, "{}", jb.target_ms());
     }
 }
