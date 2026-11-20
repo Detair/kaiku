@@ -472,9 +472,10 @@ On your **key phone** there are two choices:
   or passkey this way; add another one first.
 
 To use another account on a key phone, remove the phone as your key first (**Use another
-account**). On a signed-out phone this signs in with your screen lock only to remove the phone. If
-the removal does not happen (you cancel, leave the screen, or the app closes), that sign-in ends
-again and the phone shows **Confirm it's you**.
+account**). On a signed-out phone you confirm twice with your screen lock: once to unlock your key
+and once to remove the phone. The app itself is not signed in by this at any point. If the removal
+does not happen (you cancel, leave the screen, or the app closes), nothing has changed and the phone
+shows **Confirm it's you**.
 
 Kaiku also asks **Confirm it's you to stay signed in** on your key phone from time to time: after a
 week without use, or after 90 days at the latest. A browser sign-in lasts at most 30 days, the
@@ -503,6 +504,7 @@ device**.
 | *Another setup link was opened. It was not used ...* | A second setup link arrived while a setup was running on the phone (also while the phone waits for its code or for its ready time). A running setup is never replaced by a link. | Finish the running setup, or tap **Cancel** (or go back and choose **Stop setup**), then open the other link again. If the phone already waits for its code, it keeps waiting until that code is confirmed or runs out (5 minutes); when the screen says so, open the link again. |
 | *The connection broke while this phone was being set up ...* | The phone asked to be set up and did not get the answer. It keeps its key until the server has said what happened. | Tap **Try again**. Either the setup goes on, or the same setup starts again from its question. |
 | *Kaiku could not yet find out whether this phone was set up ...* | The server has not listed this phone as a key yet, and the earlier request could still arrive. | Leave Kaiku open or come back later; it checks again by itself, at the latest after about 20 minutes. If the setup did not go through, start again with a new setup code then. |
+| *Kaiku could not read what it has saved about this phone's key ...* | Android could not open Kaiku's saved data just now. Kaiku changes nothing while that is so: it does not sign in and does not treat the phone as new. | Tap **Try again**, or restart the phone and open Kaiku again. If it stays, clear Kaiku's storage in Android's app settings and set the phone up again; if this phone was your only key, ask your admin to remove it first. |
 | *This passkey was removed from Kaiku.* | The passkey no longer exists on the server. | Remove it from your device and sign in another way. |
 | *This passkey is ready at <time>.* | It waits for a request to complete. | Wait until then. |
 | *This is your only phone or passkey. Add another one first.* | You tried to remove your last key. | Add another phone or passkey first. |

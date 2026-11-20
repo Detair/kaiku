@@ -682,6 +682,8 @@
     <string name="setup_leave_stop">Stop setup</string>
     <string name="setup_leave_body_question">Nothing has been changed yet. To set up this phone later, open the setup link or scan the code again.</string>
     <string name="setup_leave_continue">Continue setup</string>
+    <string name="setup_claim_waiting">Kaiku could not yet find out whether this phone was set up. It checks again by itself; this can take up to 20 minutes. If the setup did not go through, you can then start again with a new setup code.</string>
+    <string name="security_key_storage_unreadable">Kaiku could not read what it has saved about this phone\'s key. Nothing was changed. Try again. If this stays, restart the phone and open Kaiku again.</string>
     <string name="setup_link_ignored">Another setup link was opened. It was not used, because this setup is still running.</string>
     <string name="auth_login_set_up_phone_hint">New here? Use the setup code or link you got from your admin.</string>
     <string name="auth_login_already_set_up">Already set up? Sign in</string>

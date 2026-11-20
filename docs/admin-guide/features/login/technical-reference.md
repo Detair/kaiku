@@ -681,14 +681,18 @@ start, whatever server is configured. The session is installed only while that r
 stored one, and the sign-in is reported as done only after the record took it; a key forgotten or
 replaced meanwhile never ends as "signed in".
 
-**The sign-in made only to remove the phone ("Use another account").** A signed-out key phone signs
-in with its key only to remove itself (`key_device.remove` needs a session). That session never
-becomes a usable sign-in: the app stores a mark before the sign-in; the flow's clean-up cannot be
-cancelled and, unless the removal was granted, signs that session out and clears the mark, also when
-the screen goes away half way. At every activity start, before the stored session is read, a mark
-left behind with no removal running in the process clears the stored tokens and the mark at once and
-opens "Confirm it's you"; only the server-side logout runs afterwards (best effort, 10 s). Any other
-device-key sign-in clears a stale mark.
+**Removing a signed-out key phone ("Use another account").** `key_device.remove` needs a session,
+and the phone has none. The removal makes one for itself: a device-key sign-in on the key's server
+whose tokens exist only inside that one operation, in memory. They are never written to storage,
+never become the app's sign-in, and the connection, push registration and token renewal never see
+them. With them, on requests that name their server and carry that bearer explicitly, the operation
+reads the account, asks for and answers the `key_device.remove` step-up, and deletes the key device.
+However it ends (removed, refused, cancelled, its screen gone), nothing of it is stored, so there is
+nothing to clean up at the next start and an ordinary sign-in made meanwhile is not affected. Unless
+the server ended that session with the removal, the operation revokes it best effort (10 s) on the
+application's scope. If the app is killed half way, that session stays valid on the server until it
+runs out; no client holds its tokens. It is bounded at 5 minutes. An app updated from a version that
+stored such a session removes it from storage at its first start, before anything reads it.
 
 The issuing screen names the claimer as "a device calling itself '<label>'" because the label is
 self-reported. The 256-bit token is the binding secret; the 6-digit code only checks that the

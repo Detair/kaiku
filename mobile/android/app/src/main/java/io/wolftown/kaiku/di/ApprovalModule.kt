@@ -100,4 +100,7 @@ object ApprovalModule {
         checks: ChallengeVerifier,
         invalidation: io.wolftown.kaiku.data.keydevice.KeyInvalidation,
     ): DeviceSigner = DeviceSigner(keyStore, verifier, checks, invalidation::handle)
+
+    @Provides
+    fun provideRemovalApi(impl: io.wolftown.kaiku.data.api.RemovalApiImpl): io.wolftown.kaiku.data.api.RemovalApi = impl
 }

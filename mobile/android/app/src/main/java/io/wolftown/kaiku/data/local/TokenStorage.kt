@@ -245,11 +245,14 @@ class TokenStorage internal constructor(
         return System.currentTimeMillis() >= expiresAt
     }
 
-    /** Removes the session tokens (logout). Starts a new session generation. */
+    /**
+     * Removes the session tokens (logout). Starts a new session generation. False when the
+     * removal did not reach storage (the tokens may still be on disk).
+     */
     @Synchronized
-    fun clear() {
+    fun clear(): Boolean {
         sessionGeneration++
-        removeTokens()
+        return removeTokens()
     }
 
     /**
@@ -282,7 +285,7 @@ class TokenStorage internal constructor(
         return true
     }
 
-    private fun removeTokens() {
+    private fun removeTokens(): Boolean {
         // Only ending a stored session voids a pending move; clearing an empty store
         // (cleanup after a failed sign-in) keeps the move for the next start (Codex r4).
         if (prefs.contains(KEY_ACCESS_TOKEN) || prefs.contains(KEY_REFRESH_TOKEN)) sessionChanged()
@@ -295,5 +298,6 @@ class TokenStorage internal constructor(
         if (!success) {
             logger.warning("Failed to clear tokens from storage")
         }
+        return success
     }
 }

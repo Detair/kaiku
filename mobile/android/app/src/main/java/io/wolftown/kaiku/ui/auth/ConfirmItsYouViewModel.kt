@@ -10,20 +10,22 @@ import io.wolftown.kaiku.approval.StepUpOutcome
 import io.wolftown.kaiku.data.auth.DeviceSignIn
 import io.wolftown.kaiku.data.auth.DeviceSignInResult
 import io.wolftown.kaiku.data.auth.KeyDeviceSignOut
-import io.wolftown.kaiku.data.auth.RemovalsInProgress
+import io.wolftown.kaiku.data.auth.RemovalResult
 import io.wolftown.kaiku.data.auth.SessionEndLog
 import io.wolftown.kaiku.data.auth.SignInPurpose
+import io.wolftown.kaiku.data.keydevice.Ask
+import io.wolftown.kaiku.data.keydevice.KeyAnswers
 import io.wolftown.kaiku.data.keydevice.KeyDeviceProbe
 import io.wolftown.kaiku.data.keydevice.KeyDeviceRepository
 import io.wolftown.kaiku.data.keydevice.ServerKeyState
 import io.wolftown.kaiku.data.keydevice.KeyDeviceState
-import kotlinx.coroutines.NonCancellable
+import io.wolftown.kaiku.domain.KaikuPayloads
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.time.Instant
 import javax.inject.Inject
 
@@ -59,14 +61,17 @@ internal fun signInResultText(r: DeviceSignInResult): Int? = when (r) {
  * key, signed out, and the text names the ways on (add another phone or passkey, or the admin).
  */
 @StringRes
-internal fun removalFailedText(out: StepUpOutcome): Int {
-    val code = (out as? StepUpOutcome.Failed)?.code
+internal fun removalFailedText(out: StepUpOutcome): Int = removalFailedText((out as? StepUpOutcome.Failed)?.code)
+
+@StringRes
+internal fun removalFailedText(code: String?): Int {
     return when (code) {
         "KEY_INVALIDATED" -> R.string.security_key_invalidated
         "LAST_STRONG_AUTHENTICATOR" -> R.string.security_only_key
         "UV_LOCKED_OUT" -> R.string.security_locked_out
         "NETWORK" -> R.string.security_network_error
-        "APPROVAL_EXPIRED" -> R.string.security_took_too_long
+        "APPROVAL_EXPIRED", "TOOK_TOO_LONG" -> R.string.security_took_too_long
+        "ACCOUNT_BANNED" -> R.string.auth_login_banned
         else -> R.string.security_sign_in_failed
     }
 }
@@ -88,11 +93,13 @@ class ConfirmItsYouViewModel @Inject constructor(
     private val signOut: KeyDeviceSignOut,
     sessionEndLog: SessionEndLog,
     probe: KeyDeviceProbe,
-    private val removals: RemovalsInProgress = RemovalsInProgress(),
+    private val answers: KeyAnswers,
 ) : ViewModel() {
 
-    /** Held while "Use another account" runs here; an app start then leaves its session to it. */
-    private var removal: AutoCloseable? = null
+    companion object {
+        /** The longest "Use another account" may take (two prompts, each on a challenge of two minutes). */
+        const val REMOVAL_TIMEOUT_MS = 300_000L
+    }
 
     private val _ui = MutableStateFlow(
         ConfirmItsYouUi(
@@ -115,12 +122,13 @@ class ConfirmItsYouViewModel @Inject constructor(
         // An admin may have removed this phone as a key while it was signed out. The key's own
         // server is asked once (the public device-login challenge, left unanswered); only a key it
         // does not know, or knows as removed, is forgotten. Offline or unclear keeps everything.
-        val local = keyDevices.local()
-        if (local != null && keyDevices.current() is KeyDeviceState.Lapsed) {
+        val rec = keyDevices.record.value
+        if (rec != null && keyDevices.current() is KeyDeviceState.Lapsed) {
             viewModelScope.launch {
-                val gone = probe.probe(local.userId, local.origin) == ServerKeyState.Gone
-                if (gone && !_ui.value.working && keyDevices.local() == local && keyDevices.current() is KeyDeviceState.Lapsed) {
-                    keyDevices.forget()
+                val st = probe.probe(rec.device.userId, rec.device.origin)
+                if (st is ServerKeyState.Gone && !_ui.value.working && keyDevices.current() is KeyDeviceState.Lapsed &&
+                    answers.settle(rec, KaikuPayloads.canonicalOrigin(rec.device.origin), Ask.DEVICE_LOGIN_CHALLENGE, st.answer).forgotten
+                ) {
                     _ui.update { it.copy(error = R.string.security_device_revoked, keyGone = true) }
                 }
             }
@@ -151,59 +159,17 @@ class ConfirmItsYouViewModel @Inject constructor(
     }
 
     /**
-     * "Use another account": this phone stops being the key first. Removing it needs a session, so
-     * a signed-out phone signs in with the key, then steps up and removes.
-     *
-     * The session made only for the removal never outlives a removal that did not happen, also when
-     * this is stopped half way (the screen goes away while the app stays): the clean-up cannot be
-     * cancelled, signs that session out and clears the mark. If the app dies first, the next activity
-     * start does it ([io.wolftown.kaiku.data.auth.UnfinishedRemoval]).
+     * "Use another account": this phone stops being the key first. Removing it needs a session. A
+     * phone that is not signed in gets one that only the removal itself holds
+     * ([io.wolftown.kaiku.data.auth.PhoneRemoval]): the app is never signed in by it, nothing of it
+     * is stored, and when this is stopped half way (the screen goes away) there is nothing to undo.
      */
     fun removeThisPhone(activity: FragmentActivity) {
         if (_ui.value.working || _ui.value.keyGone) return
         _ui.update { it.copy(working = true, error = null) }
-        val signedInForRemoval = keyDevices.current() !is KeyDeviceState.Active
-        val running = if (signedInForRemoval) removals.begin().also { removal = it } else null
         viewModelScope.launch {
-            var sessionMade = false
-            var granted = false
-            var cleaned = !signedInForRemoval
-            suspend fun cleanUp() {
-                if (cleaned) return
-                cleaned = true
-                running?.close()
-                withContext(NonCancellable) {
-                    // Signed in with the key now can only be the removal's own session.
-                    if (!granted && (sessionMade || keyDevices.current() is KeyDeviceState.Active)) signOut.signOut()
-                    keyDevices.markRemovalSignIn(false)
-                }
-            }
-            try {
-                if (signedInForRemoval) {
-                    // Stored before the sign-in: if the app dies before the removal ends, the next
-                    // start ends this session before anything reads it.
-                    keyDevices.markRemovalSignIn(true)
-                    val r = deviceSignIn.signIn(activity, SignInPurpose.FOR_REMOVAL)
-                    sessionMade = r == DeviceSignInResult.Success
-                    if (!sessionMade) {
-                        cleanUp()
-                        _ui.update {
-                            it.copy(
-                                working = false,
-                                error = if (r.keyIsGone()) gonePhoneText(r) else signInResultText(r),
-                                keyGone = r.keyIsGone(),
-                                readyAt = (r as? DeviceSignInResult.Pending)?.readyAt,
-                                done = if (r is DeviceSignInResult.Pending) ConfirmDone.PENDING else null,
-                            )
-                        }
-                        recheckKey()
-                        return@launch
-                    }
-                }
+            if (keyDevices.current() is KeyDeviceState.Active) {
                 val out = signOut.signOutAndRemovePhone(activity)
-                granted = out is StepUpOutcome.Granted
-                // The phone goes back to "Confirm it's you" (or, without a key, to signed out).
-                cleanUp()
                 val keyGone = out is StepUpOutcome.Failed && out.code == "KEY_INVALIDATED"
                 _ui.update {
                     when (out) {
@@ -212,10 +178,23 @@ class ConfirmItsYouViewModel @Inject constructor(
                         else -> it.copy(working = false, keyGone = keyGone, error = removalFailedText(out))
                     }
                 }
-                recheckKey()
-            } finally {
-                cleanUp()
+            } else {
+                val r = withTimeoutOrNull(REMOVAL_TIMEOUT_MS) { signOut.removeSignedOutPhone(activity) }
+                    ?: RemovalResult.Failed("TOOK_TOO_LONG")
+                _ui.update {
+                    when (r) {
+                        RemovalResult.Removed -> it.copy(working = false, done = ConfirmDone.SIGNED_OUT)
+                        RemovalResult.Cancelled -> it.copy(working = false)
+                        is RemovalResult.KeyGone -> it.copy(
+                            working = false,
+                            keyGone = true,
+                            error = if (r.invalidated) R.string.security_key_invalidated else R.string.security_device_revoked,
+                        )
+                        is RemovalResult.Failed -> it.copy(working = false, error = removalFailedText(r.code))
+                    }
+                }
             }
+            recheckKey()
         }
     }
 
@@ -225,12 +204,6 @@ class ConfirmItsYouViewModel @Inject constructor(
         if (!u.working && !u.keyGone && u.done == null && keyDevices.local() == null) {
             _ui.update { it.copy(error = R.string.security_device_revoked, keyGone = true) }
         }
-    }
-
-    override fun onCleared() {
-        // The screen is gone: an app start from now on ends a removal session left behind.
-        removal?.close()
-        super.onCleared()
     }
 
     /** After the key is gone: the app continues as unconfigured for this account. */

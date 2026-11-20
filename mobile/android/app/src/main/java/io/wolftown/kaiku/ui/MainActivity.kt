@@ -35,7 +35,9 @@ import io.wolftown.kaiku.ui.auth.PendingOidcCallback
 import io.wolftown.kaiku.ui.auth.OidcHandler
 import io.wolftown.kaiku.ui.shared.KaikuTheme
 import io.wolftown.kaiku.ui.shared.LocalServerBaseUrl
-import io.wolftown.kaiku.data.auth.UnfinishedRemoval
+import io.wolftown.kaiku.data.auth.KeyStorageGate
+import io.wolftown.kaiku.ui.auth.KeyStorageUnreadable
+import io.wolftown.kaiku.ui.auth.setup.SetupOwner
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import java.time.Instant
@@ -67,7 +69,10 @@ class MainActivity : FragmentActivity() {
     lateinit var keyDevices: KeyDeviceRepository
 
     @Inject
-    lateinit var unfinishedRemoval: UnfinishedRemoval
+    lateinit var keyStorage: KeyStorageGate
+
+    @Inject
+    lateinit var setupOwner: SetupOwner
 
     /** A route the running app should open next (the B.4 renewal prompt). */
     private val pendingRoute = MutableStateFlow<String?>(null)
@@ -77,15 +82,18 @@ class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        // Before the stored session is read: a sign-in made only to remove this phone ("Use another
-        // account") that did not finish is ended here, so it never opens the app (the key stays).
-        val removal = unfinishedRemoval.atActivityStart()
+        // What the phone has saved about its key cannot be read right now: nothing is decided on it
+        // (no stored session is restored, no setup starts); the person can try again.
+        if (keyStorage.unreadable()) {
+            setContent { KeyStorageUnreadable(onRetry = { if (keyStorage.retry()) recreate() }) }
+            return
+        }
         authState.initialize(tokenStorage)
         // On recreation (rotation, theme change, process restore) getIntent() is the
         // original launch intent; handling it again would replay a consumed link.
         if (savedInstanceState == null) handleIntent(intent)
 
-        val startDestination = if (unfinishedRemoval.startsAtConfirm(removal)) CONFIRM_ROUTE else resolveStartDestination()
+        val startDestination = resolveStartDestination()
         // After the start destination: reading the stored session may have found a damaged store.
         if (tokenStorage.consumeStorageResetNotice()) {
             Toast.makeText(this, R.string.auth_storage_reset, Toast.LENGTH_LONG).show()
@@ -157,7 +165,8 @@ class MainActivity : FragmentActivity() {
         }
         // A setup link (kaiku://setup/v1 or the https App Link, L2-A15); its token stays in memory.
         SetupLinks.parse(uri.toString())?.let {
-            PendingSetupLinks.post(it)
+            // While a setup is held the link is only noted on its screen; otherwise it goes to the setup screen.
+            if (setupOwner.offer(it)) PendingSetupLinks.post(it)
             intent.data = null
             return
         }

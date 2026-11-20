@@ -1,5 +1,7 @@
 package io.wolftown.kaiku.data.auth
 
+import io.wolftown.kaiku.testutil.saveClaimed
+import io.wolftown.kaiku.testutil.markActive
 import androidx.fragment.app.FragmentActivity
 import io.mockk.coEvery
 import io.mockk.coVerify
@@ -34,6 +36,16 @@ class KeyDeviceSignOutTest {
 
     private val activity: FragmentActivity = mockk(relaxed = true)
 
+    private fun signOut(
+        authRepository: AuthRepository,
+        repo: KeyDeviceRepository,
+        stepUp: DeviceStepUp,
+        api: io.wolftown.kaiku.data.api.ApprovalApi,
+        tokenStorage: TokenStorage = TokenStorage(InMemorySharedPreferences()).apply { saveServerUrl("https://chat.example.com") },
+        push: PushRegistrar = mockk(relaxed = true),
+        removal: PhoneRemoval = mockk(),
+    ) = KeyDeviceSignOut(authRepository, repo, stepUp, api, io.wolftown.kaiku.data.keydevice.KeyAnswers(repo), tokenStorage, removal, push)
+
     @Test fun `sign out keeps the key and sign out and remove deletes it`() = runTest {
         val keyStore = SoftwareApprovalKeyStore().apply {
             generate(ByteArray(32), UvPolicy.choose(30, true, true) as UvDecision.Use)
@@ -48,7 +60,7 @@ class KeyDeviceSignOutTest {
         authRepository.keyDevicePolicy = repo
         val stepUp: DeviceStepUp = mockk()
         val api = FakeApprovalApi()
-        val signOut = KeyDeviceSignOut(authRepository, repo, stepUp, api)
+        val signOut = signOut(authRepository, repo, stepUp, api, tokenStorage, pushRegistrar)
 
         fun signIn() {
             tokenStorage.saveTokens("a", "r", 900, "u1")
@@ -88,13 +100,13 @@ class KeyDeviceSignOutTest {
         val stepUp: DeviceStepUp = mockk()
         coEvery { stepUp.stepUp(any(), any(), any(), any()) } returns StepUpOutcome.Cancelled
         val api = FakeApprovalApi()
-        val signOut = KeyDeviceSignOut(mockk(relaxed = true), repo, stepUp, api)
+        val signOut = signOut(mockk(relaxed = true), repo, stepUp, api)
         assertEquals(StepUpOutcome.Cancelled, signOut.signOutAndRemovePhone(activity))
         assertTrue(api.calls.isEmpty())
         assertEquals(KeyDeviceState.Active("u1"), repo.current())
     }
 
-    private class Harness(scope: kotlinx.coroutines.CoroutineScope) {
+    private inner class Harness(scope: kotlinx.coroutines.CoroutineScope) {
         val keyStore = SoftwareApprovalKeyStore().apply { generate(ByteArray(32), UvPolicy.choose(30, true, true) as UvDecision.Use) }
         val authState = AuthState(scope)
         val tokenStorage = TokenStorage(InMemorySharedPreferences()).apply { saveServerUrl("https://chat.example.com") }
@@ -104,7 +116,8 @@ class KeyDeviceSignOutTest {
             .also { it.keyDevicePolicy = repo }
         val stepUp: DeviceStepUp = mockk()
         val api = FakeApprovalApi()
-        val signOut = KeyDeviceSignOut(authRepository, repo, stepUp, api)
+        val removal: PhoneRemoval = mockk()
+        val signOut = signOut(authRepository, repo, stepUp, api, tokenStorage, pushRegistrar, removal)
         val grant = StepUpOutcome.Granted(StepUpGrant("key_device.remove", "kd1", "device", "t"))
 
         init {
@@ -166,7 +179,7 @@ class KeyDeviceSignOutTest {
         coEvery { stepUp.stepUp(activity, StepUpAction.KEY_DEVICE_REMOVE, "kd7", any()) } returns
             StepUpOutcome.Granted(StepUpGrant("key_device.remove", "kd7", "device", "t"))
 
-        val out = KeyDeviceSignOut(authRepository, repo, stepUp, api).signOutAndRemovePhone(activity)
+        val out = signOut(authRepository, repo, stepUp, api, tokenStorage).signOutAndRemovePhone(activity)
         assertTrue(out is StepUpOutcome.Granted)
         assertTrue("removeKeyDevice:kd7" in api.calls)
     }
@@ -187,9 +200,47 @@ class KeyDeviceSignOutTest {
             StepUpOutcome.Granted(StepUpGrant("key_device.remove", "kd1", "device", "t"))
         coEvery { api.removeKeyDevice("kd1") } throws kotlinx.coroutines.CancellationException("screen left")
 
-        val thrown = runCatching { KeyDeviceSignOut(authRepository, repo, stepUp, api).signOutAndRemovePhone(activity) }.exceptionOrNull()
+        val thrown = runCatching { signOut(authRepository, repo, stepUp, api, tokenStorage).signOutAndRemovePhone(activity) }.exceptionOrNull()
         assertTrue(thrown is kotlin.coroutines.cancellation.CancellationException)
         // Nothing was forgotten for a removal that never finished.
         assertTrue(repo.local() != null)
+    }
+
+    @Test fun `the server's removal answer counts only when the session talks to the key's own server`() = runTest {
+        val h = Harness(backgroundScope)
+        // The configured server is not the key's (it cannot be while signed in with the key; the
+        // answer is refused all the same).
+        h.tokenStorage.saveServerUrl("https://other.example.com")
+        h.api.failWith = io.wolftown.kaiku.testutil.apiError(403, "KEY_DEVICE_REVOKED")
+
+        assertEquals(StepUpOutcome.Failed("KEY_DEVICE_REVOKED"), h.signOut.signOutAndRemovePhone(activity))
+
+        assertTrue(h.keyStore.hasKey())
+        assertTrue(h.repo.local() != null)
+    }
+
+    @Test fun `a removal answered for a record that is no longer the phone's forgets nothing`() = runTest {
+        val h = Harness(backgroundScope)
+        coEvery { h.stepUp.stepUp(any(), StepUpAction.KEY_DEVICE_REMOVE, "kd1", any()) } answers {
+            // While the prompt is open the phone is set up again by another part of the app.
+            h.repo.saveClaimed(LocalKeyDevice(null, "u1", "https://chat.example.com", UvClass.PER_USE, "e2", "secret"))
+            h.grant
+        }
+
+        assertEquals(StepUpOutcome.Failed("NOT_FORGOTTEN"), h.signOut.signOutAndRemovePhone(activity))
+
+        assertEquals("e2", h.repo.local()!!.enrollmentId)
+        assertTrue(h.keyStore.hasKey())
+    }
+
+    @Test fun `a signed-out phone that was removed turns its push off, any other end leaves it`() = runTest {
+        val h = Harness(backgroundScope)
+        coEvery { h.removal.run(activity) } returns RemovalResult.Cancelled
+        assertEquals(RemovalResult.Cancelled, h.signOut.removeSignedOutPhone(activity))
+        coVerify(exactly = 0) { h.pushRegistrar.unregisterForLogout(any()) }
+
+        coEvery { h.removal.run(activity) } returns RemovalResult.Removed
+        assertEquals(RemovalResult.Removed, h.signOut.removeSignedOutPhone(activity))
+        coVerify(exactly = 1) { h.pushRegistrar.unregisterForLogout(any()) }
     }
 }

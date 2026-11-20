@@ -165,9 +165,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Android: passkey sign-in, confirmation and adding a passkey only run for exactly the server the app is set up for; a passkey request for any other website, including a parent domain of the server, is stopped before your passkey is used.
 - Android: a setup always talks to the server of the link it was started from; while a setup runs, every other setup link is left unused (the screen says so), whatever its server.
 - Android: the phone forgets its key only on the server's own answers for a removed key, never on the same code with another status.
-- Android: "Use another account" no longer leaves the phone signed in when the app is closed, or the screen is left, while the removal is being confirmed; that sign-in is ended before the app opens again.
+- Android: "Use another account" on a signed-out phone never signs the app in any more: the sign-in it needs exists only for that one removal and is not saved. However the removal ends, the phone is exactly as before or no longer a key; an app updated half way through an older removal clears what that left behind at its first start.
 - Android: the app has one setup at a time, whichever screen shows it. A setup link opened while a setup runs, also on the waiting screen, is not used and the screen says so; once the screen says the setup has ended, the link opened again starts.
 - Android: a phone keeps its key when the server's answer to its setup request is lost or unclear ("already used", an error page, no answer): it asks the server what it holds instead of sending the request again, and goes on or starts the same setup again. It forgets the key only on the answers that say nothing was set up.
+- Android: when Android cannot open Kaiku's saved key data, Kaiku says so and offers "Try again" instead of treating the phone as new.
 - Web: "Open in Kaiku" on the setup page hands the setup code only to the Kaiku app.
 - Android: Kaiku data is no longer copied by cloud backup or when moving to a new phone. "Confirm it's you" is protected against screenshots and taps through other apps like the other key screens.
 - The end-to-end encryption library was updated to a release that clears key material from memory more thoroughly.
