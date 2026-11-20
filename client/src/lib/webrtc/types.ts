@@ -107,7 +107,10 @@ export interface VoiceAdapterEvents {
   onLocalMediaEnded?: (
     kind: "screen" | "webcam",
     streamId: string | null,
-    /** Native: why (`ended`, `no_frames`, `encoder_failed`, `not_sent`). */
+    /**
+     * Why (`ended`, `no_frames`, `encoder_failed`, `not_sent`); the browser
+     * reports `not_sent` when its offer's answer could not be applied.
+     */
     reason?: string,
   ) => void;
 
