@@ -32,12 +32,17 @@
 //! ([`Room::try_add_screen_share_for`], [`Room::add_webcam_for`]); removing on
 //! behalf of a seat removes only entries that seat owns
 //! ([`Room::remove_screen_share_of`], [`Room::remove_webcam_of`]). Events the
-//! others get about a seat are decided under the peers lock and queued in
-//! that same section without waiting ([`Room::broadcast_if_current`],
-//! [`Room::announce_departure`], [`Room::announce_stopped`]), so they reach
-//! every healthy queue in the order they were decided. A participant whose
-//! queue is full gets the event after the lock is released (bounded wait,
-//! order not guaranteed for that participant).
+//! others get about a seat are decided and queued without waiting in one
+//! section under the peers lock ([`Room::broadcast_if_current`],
+//! [`Room::announce_departure`], [`Room::announce_stopped`]). These take the
+//! peers lock for reading, so it does not order them against each other;
+//! it gives that the seat check and the queueing see the same seat list (a
+//! join or leave, which writes it, cannot come in between). The order of a
+//! stop and a successor's start comes from the source's room state: a stop
+//! holds it (webcams or screen shares, read) from its decision until it is
+//! queued, and a start must write it before its start event is queued. A
+//! participant whose queue is full gets the event after the lock is
+//! released (bounded wait, order not guaranteed for that participant).
 //!
 //! `Peer::negotiation` (the subscriber offer/answer state) is a leaf lock: it
 //! is taken with no room lock held, nothing else of ours is locked while it is
@@ -776,18 +781,29 @@ impl Room {
     pub async fn announce_stopped(&self, event: ServerEvent, include_self: bool) -> bool {
         let full = {
             let peers = self.peers.read().await;
+            // The source's room state stays held (read) until the stop is
+            // queued: a successor's start has to write it first, so its
+            // start event is queued after this stop.
+            let mut _webcams = None;
+            let mut _shares = None;
             let (user_id, live_again) = match &event {
                 ServerEvent::WebcamStopped { user_id, .. } => {
-                    (*user_id, self.webcams.read().await.contains_key(user_id))
+                    let webcams = self.webcams.read().await;
+                    let live = webcams.contains_key(user_id);
+                    _webcams = Some(webcams);
+                    (*user_id, live)
                 }
                 ServerEvent::ScreenShareStopped {
                     user_id, stream_id, ..
-                } => (
-                    *user_id,
-                    self.screen_shares.read().await.contains_key(stream_id),
-                ),
+                } => {
+                    let shares = self.screen_shares.read().await;
+                    let live = shares.contains_key(stream_id);
+                    _shares = Some(shares);
+                    (*user_id, live)
+                }
                 _ => return false,
             };
+            crate::ws::test_hooks::voice_step(user_id, "stop_decided").await;
             if live_again {
                 return false;
             }
@@ -2632,6 +2648,63 @@ mod negotiation_tests {
             RTCPeerConnectionState::Closed,
             "the refused peer is closed"
         );
+    }
+
+    /// A stop is decided and queued while the source's room state is held:
+    /// a successor seat's start of that source waits for it, so the others
+    /// get the stop before the new start.
+    #[tokio::test]
+    async fn a_successors_start_follows_the_old_seats_stop() {
+        let (sfu, viewer, mut rx, _client) = setup().await;
+        let room = Arc::new(Room::new(viewer.channel_id, 10));
+        room.add_peer(viewer.clone()).await.expect("viewer");
+        let user = Uuid::from_u128(8);
+        let (tx, _rx2) = mpsc::channel(8);
+        let successor = sfu
+            .create_peer(user, "n".into(), "N".into(), viewer.channel_id, tx)
+            .await
+            .expect("peer");
+        room.add_peer(successor.clone()).await.expect("successor");
+
+        let pause = crate::ws::test_hooks::pause_voice_step(user, "stop_decided");
+        let stopping = {
+            let room = room.clone();
+            tokio::spawn(async move {
+                room.announce_stopped(
+                    ServerEvent::WebcamStopped {
+                        channel_id: room.channel_id,
+                        user_id: user,
+                        reason: "disconnected".into(),
+                    },
+                    false,
+                )
+                .await
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(5), pause.reached.notified())
+            .await
+            .expect("the stop was decided");
+        let start = room.add_webcam_for(
+            &successor,
+            crate::voice::webcam::WebcamInfo::new(user, "n".into(), crate::voice::Quality::Medium),
+        );
+        tokio::pin!(start);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut start)
+                .await
+                .is_err(),
+            "the start completed while the stop was being decided"
+        );
+        pause.release.notify_one();
+        assert!(stopping.await.expect("join"), "the stop was sent");
+        start.await.expect("the start completes after the stop");
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(OutboundMsg::Voice {
+                event: ServerEvent::WebcamStopped { .. },
+                ..
+            })
+        ));
     }
 
     /// A track waiting for its announcement on a seat that is retired stops
