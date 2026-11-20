@@ -928,6 +928,21 @@ struct Script {
     bump_guild: Option<Uuid>,
     /// The last read that was answered.
     last_served: Option<ScriptStep>,
+    /// Set by a test that explores interleavings (see [`Seams`]).
+    seams: Option<Arc<Seams>>,
+}
+
+/// Lets a test run the tasks of one socket step by step: every scripted
+/// read waits (its answer already fixed) until the test lets it return, and
+/// every [`SocketAccess::seam`] hands control back to the test once.
+#[cfg(test)]
+struct Seams {
+    /// Reads that have their answer and wait to return.
+    parked: std::sync::atomic::AtomicUsize,
+    /// The task stopped at a seam (not at a read, not for the gate).
+    yielded: std::sync::atomic::AtomicBool,
+    /// One permit lets one parked read return.
+    release: tokio::sync::Semaphore,
 }
 
 /// One socket's requested and allowed channels, server memberships and voice
@@ -1324,6 +1339,8 @@ impl SocketAccess {
         if !self.admin_frame_taken() {
             return false;
         }
+        #[cfg(test)]
+        self.seam().await;
         self.decide_admin().await
     }
 
@@ -1418,6 +1435,8 @@ impl SocketAccess {
             // A failure leaves the scope failing and the socket in backoff:
             // the next pass ends as undecided.
             let _ = self.refresh().await;
+            #[cfg(test)]
+            self.seam().await;
         }
     }
 
@@ -1685,6 +1704,8 @@ impl SocketAccess {
         let asked = self.request_admin();
         for _ in 0..DECISION_REVALIDATIONS {
             let attempt = self.refresh().await;
+            #[cfg(test)]
+            self.seam().await;
             match self.admin_answer(asked) {
                 Some(true) => return AdminSubscription::Allowed,
                 Some(false) => return AdminSubscription::Refused,
@@ -1754,6 +1775,8 @@ impl SocketAccess {
     /// Nothing is consumed before the read succeeded: dropping this future
     /// leaves every scope as it was.
     pub async fn refresh(&self) -> Result<(), AccessCheckFailed> {
+        #[cfg(test)]
+        self.seam().await;
         let _gate = self.refresh_gate.lock().await;
         let plan = match self.plan() {
             Planned::Nothing => return Ok(()),
@@ -1847,6 +1870,13 @@ impl SocketAccess {
     async fn read(&self, plan: &Plan) -> Result<ReadResult, String> {
         #[cfg(test)]
         if let Some(scripted) = self.scripted_read(plan) {
+            if let Some(seams) = self.seams() {
+                seams.parked.fetch_add(1, Ordering::SeqCst);
+                if let Ok(permit) = seams.release.acquire().await {
+                    permit.forget();
+                }
+                seams.parked.fetch_sub(1, Ordering::SeqCst);
+            }
             return scripted;
         }
         if crate::ws::test_hooks::access_read_fails(self.user_id) {
@@ -1931,6 +1961,23 @@ impl SocketAccess {
             voice_ok,
             admin_ok,
         })
+    }
+
+    #[cfg(test)]
+    fn seams(&self) -> Option<Arc<Seams>> {
+        let script = self.script.lock().unwrap_or_else(PoisonError::into_inner);
+        script.as_ref().and_then(|script| script.seams.clone())
+    }
+
+    /// A point between two steps of one task at which another task of the
+    /// socket can run. Nothing happens here unless a test explores
+    /// interleavings ([`Seams`]): then the task stops once.
+    #[cfg(test)]
+    async fn seam(&self) {
+        if let Some(seams) = self.seams() {
+            seams.yielded.store(true, Ordering::SeqCst);
+            tokio::task::yield_now().await;
+        }
     }
 
     /// The scripted answer to a read, if a script is installed (tests).
@@ -2707,6 +2754,7 @@ mod tests {
             then,
             bump_guild,
             last_served: None,
+            seams: None,
         });
     }
 
@@ -2914,12 +2962,89 @@ mod tests {
         exit
     }
 
+    /// One `admin_subscribe` through the same scripted reads, on a socket
+    /// that never asked (`before` is `None`) or whose earlier request stands
+    /// as `before` says. Returns its answer as text, or panics if the answer
+    /// is not what a standing read said. Then access comes back, as in
+    /// [`one_decision`]: whatever the answer was, the request is still
+    /// there.
+    async fn one_subscribe(
+        before: Option<Start>,
+        steps: &[ScriptStep],
+        then: bool,
+        u: Uuid,
+    ) -> &'static str {
+        let access = match before {
+            None => SocketAccess::new(u, lazy_pool()),
+            Some(start) => {
+                let access = admin_socket(u, true).await;
+                match start {
+                    Start::Current => {}
+                    Start::Bumped => registry().bump_user(u),
+                    Start::Invalidated => access.force_full(),
+                }
+                access
+            }
+        };
+        install(&access, steps, then, None);
+        let answer = access.subscribe_admin().await;
+
+        let decision = admin_decision(&access);
+        let last = access
+            .script
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|s| s.last_served);
+        let standing = |answer: bool| matches!(last, Some(ScriptStep { bump: false, outcome: Some(a) }) if a == answer);
+        let case = format!("subscribe after {before:?} {steps:?} then={then}");
+        assert!(access.admin_subscribed(), "the request is gone: {case}");
+        let exit = match answer {
+            AdminSubscription::Allowed => {
+                assert!(
+                    decision == Some(true) && standing(true),
+                    "allowed, but no standing read said so: {case}"
+                );
+                "allowed"
+            }
+            AdminSubscription::Refused => {
+                assert!(
+                    decision == Some(false) && standing(false),
+                    "refused, but no standing read said so: {case}"
+                );
+                "refused"
+            }
+            AdminSubscription::Undecided => {
+                // Only when no read stands: it failed, or every one of them
+                // was overtaken by an epoch move.
+                assert!(
+                    decision.is_none() && !standing(true) && !standing(false),
+                    "undecided although a read stands: {case}"
+                );
+                assert!(access.is_stale(), "nothing left to decide it: {case}");
+                "undecided"
+            }
+        };
+        assert!(!access.take_resync(), "nothing was dropped: {case}");
+
+        tokio::time::advance(RETRY_MAX + Duration::from_millis(1)).await;
+        registry().bump_user(u);
+        install(&access, &[], true, None);
+        assert!(
+            access.admit_admin().await,
+            "access came back, delivery did not: {case}"
+        );
+        exit
+    }
+
     /// Every way through the decision loop: all sequences of read outcomes
     /// (answers yes, answers no, fails), each with or without an epoch
     /// moving while the read is in flight, for every kind of frame, every
     /// starting state and both epochs. A frame leaves the loop admitted (on
     /// current authorization), denied (by a decision at the current epoch)
     /// or undecided with the drop recorded — never dropped without either.
+    /// The same sequences behind an `admin_subscribe`: it answers what a
+    /// standing read said or nothing, and the request survives.
     #[tokio::test(start_paused = true)]
     async fn every_exit_of_the_decision_loop_is_accounted_for() {
         const OUTCOMES: [Option<bool>; 3] = [Some(true), Some(false), None];
@@ -2940,7 +3065,9 @@ mod tests {
             (Kind::Voice, true),
             (Kind::Admin, false),
         ];
+        let starts = [Start::Current, Start::Bumped, Start::Invalidated];
         let mut exits = std::collections::BTreeMap::<&str, usize>::new();
+        let mut answers = std::collections::BTreeMap::<&str, usize>::new();
         let n = symbols.len();
         for code in 0..n.pow(u32::try_from(DECISION_REVALIDATIONS).unwrap()) {
             let mut steps = Vec::with_capacity(DECISION_REVALIDATIONS);
@@ -2950,16 +3077,21 @@ mod tests {
                 rest /= n;
             }
             for then in [true, false] {
-                for start in [Start::Current, Start::Bumped, Start::Invalidated] {
+                for start in starts {
                     for (kind, bump_guild) in kinds {
                         let exit = one_decision(kind, bump_guild, start, &steps, then, ids).await;
                         *exits.entry(exit).or_default() += 1;
                     }
                 }
+                for before in std::iter::once(None).chain(starts.map(Some)) {
+                    let answer = one_subscribe(before, &steps, then, ids.0).await;
+                    *answers.entry(answer).or_default() += 1;
+                }
             }
         }
-        // All three ways out occur.
+        // All three ways out occur, and all three answers.
         assert_eq!(exits.len(), 3, "{exits:?}");
+        assert_eq!(answers.len(), 3, "{answers:?}");
     }
 
     /// The case that was lost: epochs move under the first revalidations and
@@ -3654,6 +3786,360 @@ mod tests {
             assert!(access.refresh().await.is_ok());
             assert!(idle(&access));
         }
+    }
+
+    /// What happens around the two tasks of a socket in one schedule of
+    /// [`explore`].
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum World {
+        /// The elevation ends without an epoch moving (it ran out, or
+        /// another process removed it).
+        Expire,
+        /// It ends through the server: committed, and the epoch bumped.
+        DeElevate,
+        /// The session is elevated: committed, and the epoch bumped.
+        Elevate,
+        /// The database stops answering.
+        Down,
+        /// It answers again, and the backoff has passed.
+        Up,
+    }
+
+    /// What the socket's own task does in one schedule of [`explore`].
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Doing {
+        Subscribe,
+        /// `admin_unsubscribe`, then `admin_subscribe`.
+        Resubscribe,
+        /// The periodic re-check of everything.
+        Backstop,
+        /// A DM the user was just added to is recorded (by the forwarder),
+        /// then the socket revalidates.
+        NewDm,
+    }
+
+    /// What one schedule did, in ticks (one per step).
+    #[derive(Default)]
+    struct Trace {
+        /// Per read: when it began, and what it said (`None`: it failed).
+        reads: Vec<(u64, Option<bool>)>,
+        /// Per admin frame: when it was taken, when it was decided, and
+        /// whether it was written.
+        frames: Vec<(u64, u64, bool)>,
+        /// Per `admin_subscribe`: when it arrived, and its answer.
+        answers: Vec<(u64, AdminSubscription)>,
+        /// When the user's epoch moved, the elevation ended, it began.
+        bumped: Option<u64>,
+        ended: Option<u64>,
+        began: Option<u64>,
+        /// The database failed at some point.
+        failed: bool,
+    }
+
+    /// What the schedules of one [`explore`] family have in common.
+    #[derive(Debug, Clone, Copy)]
+    struct Family {
+        user: Uuid,
+        /// What the socket's first `admin_subscribe` was answered.
+        elevated: bool,
+        /// Admin frames the sender task writes.
+        frames: usize,
+        /// What the socket task does meanwhile.
+        doing: Doing,
+        /// What happens around them, in this order.
+        world: &'static [World],
+    }
+
+    /// One schedule of three things going on at once on a socket: the sender
+    /// task writes its admin frames, the socket task does its part, and the
+    /// world changes.
+    ///
+    /// Each task runs up to its next seam, read or wait for the gate, then
+    /// the schedule picks who goes on: `choices[k]` among the steps
+    /// possible at the k-th decision (the first one beyond its end). A read
+    /// has its answer when it begins and returns when its task is picked
+    /// again. Returns how many steps were possible at each decision, after
+    /// checking what must hold in every schedule.
+    async fn explore(family: Family, choices: &[usize]) -> Vec<usize> {
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum Task {
+            Ready,
+            /// Its read has its answer and has not returned (it holds the
+            /// gate).
+            Reading,
+            /// It waits for the gate.
+            Waiting,
+            /// It waited for the gate and is the next to have it (the gate
+            /// is handed over in order).
+            Next,
+            Done,
+        }
+        let Family {
+            user: u,
+            elevated,
+            frames,
+            doing,
+            world,
+        } = family;
+        let case = || format!("{family:?} {choices:?}");
+        let later = RETRY_MAX + Duration::from_millis(1);
+
+        let access = admin_socket(u, elevated).await;
+        let seams = Arc::new(Seams {
+            parked: 0.into(),
+            yielded: false.into(),
+            release: tokio::sync::Semaphore::new(0),
+        });
+        let script = |change: &mut dyn FnMut(&mut Script)| {
+            change(access.script.lock().unwrap().as_mut().unwrap());
+        };
+        script(&mut |script| script.seams = Some(seams.clone()));
+        let tick = std::cell::Cell::new(1_u64);
+        let trace = std::cell::RefCell::new(Trace::default());
+
+        let sender = async {
+            for n in 0..frames {
+                if n > 0 {
+                    access.seam().await;
+                }
+                let taken = tick.get();
+                let written = access.admit_admin().await;
+                trace.borrow_mut().frames.push((taken, tick.get(), written));
+            }
+        };
+        let socket = async {
+            if matches!(doing, Doing::Backstop | Doing::NewDm) {
+                if doing == Doing::Backstop {
+                    access.force_full();
+                } else {
+                    assert!(access.insert_direct(Uuid::new_v4()));
+                }
+                let _ = access.refresh().await;
+                return;
+            }
+            if doing == Doing::Resubscribe {
+                access.unsubscribe_admin();
+                access.seam().await;
+            }
+            let asked = tick.get();
+            let answer = access.subscribe_admin().await;
+            trace.borrow_mut().answers.push((asked, answer));
+        };
+        let mut tasks: [std::pin::Pin<Box<dyn std::future::Future<Output = ()> + '_>>; 2] =
+            [Box::pin(sender), Box::pin(socket)];
+        let mut state = [Task::Ready; 2];
+        let mut happened = 0;
+        let mut widths = Vec::new();
+        while state != [Task::Done; 2] {
+            // Who can go on: a task that is not waiting for the gate, and
+            // the world (time passes with `Up`: not while a read is in
+            // flight, it would time out).
+            let reading = state.contains(&Task::Reading);
+            let mut steps: Vec<Option<usize>> = (0..2)
+                .filter(|i| matches!(state[*i], Task::Ready | Task::Reading | Task::Next))
+                .map(Some)
+                .collect();
+            if happened < world.len() && !(reading && world[happened] == World::Up) {
+                steps.push(None);
+            }
+            assert!(!steps.is_empty(), "nothing can go on: {}", case());
+            let pick = choices.get(widths.len()).copied().unwrap_or(0);
+            widths.push(steps.len());
+            assert!(widths.len() < 100, "no end: {}", case());
+            tick.set(tick.get() + 1);
+            let now = tick.get();
+            match steps[pick] {
+                None => {
+                    let event = world[happened];
+                    happened += 1;
+                    script(&mut |script| match event {
+                        World::Expire | World::DeElevate => script.then = false,
+                        World::Elevate => script.then = true,
+                        World::Down => script.steps = vec![FAILS; 64].into(),
+                        World::Up => script.steps.clear(),
+                    });
+                    if matches!(event, World::DeElevate | World::Elevate) {
+                        registry().bump_user(u);
+                        trace.borrow_mut().bumped = Some(now);
+                    }
+                    match event {
+                        World::Expire | World::DeElevate => trace.borrow_mut().ended = Some(now),
+                        World::Elevate => trace.borrow_mut().began = Some(now),
+                        World::Down => trace.borrow_mut().failed = true,
+                        World::Up => tokio::time::advance(later).await,
+                    }
+                }
+                Some(i) => {
+                    if state[i] == Task::Reading {
+                        seams.release.add_permits(1);
+                    }
+                    let gate_taken = matches!(state[1 - i], Task::Reading | Task::Next);
+                    state[i] = loop {
+                        seams.yielded.store(false, Ordering::SeqCst);
+                        if futures::poll!(tasks[i].as_mut()).is_ready() {
+                            break Task::Done;
+                        }
+                        if seams.yielded.load(Ordering::SeqCst) {
+                            break Task::Ready;
+                        }
+                        if gate_taken {
+                            break Task::Waiting;
+                        }
+                        if seams.parked.load(Ordering::SeqCst) == 1 {
+                            let mut said = None;
+                            script(&mut |script| said = script.last_served);
+                            let said = said.expect("a read was served").outcome;
+                            trace.borrow_mut().reads.push((now, said));
+                            break Task::Reading;
+                        }
+                        // It waits for one of the process-wide permits,
+                        // which other tests hold for a moment.
+                        std::thread::yield_now();
+                    };
+                    if state[i] != Task::Reading && state[1 - i] == Task::Waiting {
+                        state[1 - i] = Task::Next;
+                    }
+                }
+            }
+            let inner = access.lock();
+            assert!(
+                inner.failure.is_none() || access.needs_revalidation(&inner),
+                "a backoff with nothing to retry: {}",
+                case()
+            );
+        }
+        drop(tasks);
+
+        let trace = trace.into_inner();
+        let read_since = |since: u64, said: bool| {
+            trace
+                .reads
+                .iter()
+                .any(|(began, answer)| *began >= since && *answer == Some(said))
+        };
+        for &(taken, decided, written) in &trace.frames {
+            if written {
+                // On a "yes" whose read began after the frame was taken,
+                // and after the last epoch move its decision saw.
+                let moved = trace.bumped.filter(|bumped| *bumped < decided);
+                assert!(
+                    read_since(moved.map_or(taken, |bumped| bumped.max(taken)), true),
+                    "a frame was written without a read of its own: {}",
+                    case()
+                );
+                continue;
+            }
+            // Nothing that was owed is lost while the database answers:
+            // not while the elevation lasts, and not once it began.
+            let owed = if elevated {
+                trace.ended.is_none_or(|ended| ended > decided)
+            } else {
+                trace.began.is_some_and(|began| began < taken)
+            };
+            assert!(
+                !owed || trace.failed || doing == Doing::Resubscribe,
+                "a frame the socket was owed was not written: {}",
+                case()
+            );
+        }
+        for &(asked, answer) in &trace.answers {
+            let answered = match answer {
+                AdminSubscription::Allowed => read_since(asked, true),
+                AdminSubscription::Refused => read_since(asked, false),
+                AdminSubscription::Undecided => trace.failed,
+            };
+            assert!(answered, "{answer:?} without a read to say so: {}", case());
+        }
+        let resync = access.take_resync();
+        if !trace.failed {
+            assert!(
+                !dropped(&access) && !resync,
+                "a frame was dropped undecided: {}",
+                case()
+            );
+        }
+        if !elevated && trace.began.is_none() {
+            assert!(!resync, "a refused socket was told to resync: {}", case());
+        }
+
+        // Whatever happened, the request is still there: the next
+        // elevation brings the stream back without the client asking.
+        script(&mut |script| {
+            script.seams = None;
+            script.steps.clear();
+            script.then = true;
+        });
+        tokio::time::advance(later).await;
+        registry().bump_user(u);
+        assert!(
+            access.admit_admin().await,
+            "access came back, delivery did not: {}",
+            case()
+        );
+        widths
+    }
+
+    /// Every interleaving of the sender task (admin frames, each one taken,
+    /// pinned and decided) with the socket task (an `admin_subscribe`, an
+    /// unsubscribe and subscribe, or the periodic re-check), while at any
+    /// point between two steps the elevation ends without an epoch moving,
+    /// ends or begins with a bump, or the database fails and recovers.
+    ///
+    /// In all of them: a frame is written only on a read that began after
+    /// it was taken (and after the last bump), a subscribe is answered only
+    /// by a read that began after it arrived, nothing owed is lost, a
+    /// refused socket is never told to resynchronise, the backoff never
+    /// outlives the scopes that need it, and the stream comes back with the
+    /// next elevation.
+    #[tokio::test(start_paused = true)]
+    async fn every_interleaving_of_admin_frames_and_the_socket_task() {
+        use Doing::{Backstop, NewDm, Resubscribe, Subscribe};
+        use World::{DeElevate, Down, Elevate, Expire, Up};
+        let user = Uuid::new_v4();
+        let family = |elevated, frames, doing, world| Family {
+            user,
+            elevated,
+            frames,
+            doing,
+            world,
+        };
+        let families = [
+            family(true, 2, Subscribe, &[Expire]),
+            family(true, 2, Resubscribe, &[Expire]),
+            family(true, 2, Backstop, &[Expire]),
+            family(true, 2, NewDm, &[Expire]),
+            family(true, 2, Subscribe, &[DeElevate]),
+            family(true, 2, Resubscribe, &[DeElevate]),
+            family(true, 2, Backstop, &[DeElevate]),
+            family(false, 2, Subscribe, &[Elevate]),
+            family(false, 2, Resubscribe, &[Elevate]),
+            family(true, 1, Subscribe, &[Down, Up]),
+            family(true, 1, Resubscribe, &[Down, Up]),
+            family(true, 1, Backstop, &[Down, Up]),
+            family(true, 1, NewDm, &[Down, Up]),
+            family(false, 2, Resubscribe, &[Down, Up]),
+        ];
+        let mut schedules = 0_usize;
+        for family in families {
+            let mut choices: Vec<usize> = Vec::new();
+            loop {
+                let widths = explore(family, &choices).await;
+                schedules += 1;
+                // The next schedule: at the last decision that had another
+                // step, take it.
+                choices.resize(widths.len(), 0);
+                while let Some(last) = choices.pop() {
+                    if last + 1 < widths[choices.len()] {
+                        choices.push(last + 1);
+                        break;
+                    }
+                }
+                if choices.is_empty() {
+                    break;
+                }
+            }
+        }
+        assert!(schedules > 100_000, "only {schedules} schedules explored");
     }
 
     /// Every SQL statement that writes a table feeding channel access, per

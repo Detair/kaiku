@@ -1451,6 +1451,110 @@ async fn admin_events_cost_one_read_per_elevated_socket(pool: PgPool) {
     assert_eq!(vc_server::ws::test_hooks::access_reads(other), (0, 0));
 }
 
+/// One `admin_subscribe` (or `admin_unsubscribe`) through the client
+/// message handler; returns the error the client is sent, if any.
+async fn admin_request(
+    app: &TestApp,
+    access: &std::sync::Arc<vc_server::ws::access::SocketAccess>,
+    user: Uuid,
+    kind: &str,
+) -> Option<(String, String)> {
+    let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+    let mut msg_state = vc_server::ws::ClientMessageState::default();
+    let text = json!({ "type": kind }).to_string();
+    vc_server::ws::handle_client_message(&text, user, &app.state, &tx, access, &mut msg_state)
+        .await
+        .expect("handled");
+    drop(tx);
+    match rx.recv().await {
+        None => None,
+        Some(vc_server::ws::OutboundMsg::Event(ServerEvent::Error { code, message })) => {
+            Some((code, message))
+        }
+        Some(other) => panic!("unexpected {other:?}"),
+    }
+}
+
+/// The three answers to `admin_subscribe`, against the database and
+/// without a socket around the access state (other tests publish on the
+/// shared admin channel). Elevated: no reply, and admin events are written.
+/// Not elevated: `ADMIN_NOT_ELEVATED` with its message; the request is kept
+/// and delivery starts with the elevation, without a new request. A check
+/// that cannot be made: `SERVICE_UNAVAILABLE`; the request is kept and the
+/// retry decides it. `admin_unsubscribe` ends the request.
+#[sqlx::test]
+async fn admin_subscribe_answers_and_keeps_the_request(pool: PgPool) {
+    use vc_server::ws::access::SocketAccess;
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (admin, _) = create_test_user(&pool).await;
+    make_admin(&pool, admin).await;
+    let (sid, _) = create_session_with_token(&pool, &app.config, admin).await;
+    let access = SocketAccess::for_session(admin, Some(sid), app.state.db.clone());
+    let elevate = || async {
+        sqlx::query(
+            "INSERT INTO elevated_sessions (user_id, session_id, ip_address, expires_at, reason)
+             VALUES ($1, $2, '127.0.0.1', NOW() + INTERVAL '15 minutes', 'test')",
+        )
+        .bind(admin)
+        .bind(sid)
+        .execute(&pool)
+        .await
+        .unwrap();
+        user_bumped(Uuid::new_v4(), admin).await;
+    };
+
+    // Not elevated.
+    let refused = admin_request(&app, &access, admin, "admin_subscribe").await;
+    assert_eq!(
+        refused,
+        Some((
+            "ADMIN_NOT_ELEVATED".to_string(),
+            "Must be an elevated admin to subscribe to admin events".to_string()
+        ))
+    );
+    assert!(access.admin_subscribed() && !access.admin_allowed());
+    assert!(!access.admit_admin().await);
+    // The elevation (committed, epoch bumped) is all it takes.
+    elevate().await;
+    assert!(
+        access.admit_admin().await,
+        "no delivery after the elevation"
+    );
+
+    // Elevated: no reply.
+    assert_eq!(
+        admin_request(&app, &access, admin, "admin_subscribe").await,
+        None
+    );
+    assert!(access.admin_allowed() && access.admit_admin().await);
+
+    // `admin_unsubscribe` ends the request.
+    assert_eq!(
+        admin_request(&app, &access, admin, "admin_unsubscribe").await,
+        None
+    );
+    assert!(!access.admin_subscribed() && !access.admit_admin().await);
+
+    // The check cannot be made.
+    vc_server::ws::test_hooks::fail_access_reads(admin, 1);
+    let undecided = admin_request(&app, &access, admin, "admin_subscribe").await;
+    assert_eq!(
+        undecided,
+        Some((
+            "SERVICE_UNAVAILABLE".to_string(),
+            "Admin access could not be checked yet; events follow once it is".to_string()
+        ))
+    );
+    assert!(access.admin_subscribed() && !access.admin_allowed());
+    // What the socket does when the retry is due.
+    let retry = access.retry_at().expect("a retry is due");
+    tokio::time::sleep_until(retry).await;
+    assert!(access.refresh().await.is_ok());
+    assert!(access.admin_allowed() && access.admit_admin().await);
+    assert!(access.retry_at().is_none());
+    assert!(!access.take_resync(), "nothing was dropped meanwhile");
+}
+
 /// A voice join whose permission check passed, then the role that
 /// allowed it was removed before the peer was added: the peer is not
 /// admitted.
