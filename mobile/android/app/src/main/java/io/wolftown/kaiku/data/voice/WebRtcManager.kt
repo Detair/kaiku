@@ -218,9 +218,11 @@ class WebRtcManager @Inject constructor(
     }
 
     /**
-     * Held across closing and disposing the connections and across
-     * [publisherConnectedNow], so a connection is never read while it is
-     * disposed. No callback takes it; it may be held across calls into WebRTC.
+     * Held across closing and disposing the connections, across
+     * [publisherConnectedNow] and across applying what the server sent
+     * ([handleSubscriberOffer], [handlePublisherAnswer], [addIceCandidate]),
+     * so a connection is never read or called while it is disposed. No
+     * callback takes it; it may be held across calls into WebRTC.
      */
     private val disposeLock = Any()
 
@@ -498,7 +500,8 @@ class WebRtcManager @Inject constructor(
      * Sets the remote description to the offer, then creates and sets a local
      * SDP answer. When the answer is ready, [onSubscriberAnswer] is invoked.
      */
-    fun handleSubscriberOffer(sdp: String) {
+    fun handleSubscriberOffer(sdp: String): Unit = synchronized(disposeLock) {
+        // Under [disposeLock]: a teardown disposes the connection after this call, not during it.
         val pc = subscriberPc ?: run {
             logger.warning("handleSubscriberOffer called but subscriber PC is null")
             onError?.invoke("Voice connection error: not initialized")
@@ -537,7 +540,8 @@ class WebRtcManager @Inject constructor(
      * Sets the remote description to the answer, then drains any ICE
      * candidates buffered while the answer was outstanding.
      */
-    fun handlePublisherAnswer(sdp: String) {
+    fun handlePublisherAnswer(sdp: String): Unit = synchronized(disposeLock) {
+        // Under [disposeLock]: a teardown disposes the connection after this call, not during it.
         val pc = publisherPc ?: run {
             logger.warning("handlePublisherAnswer called but publisher PC is null")
             return
@@ -559,14 +563,14 @@ class WebRtcManager @Inject constructor(
     private fun drainSubscriberCandidates() {
         val drained = subscriberPendingCandidates.toList()
         subscriberPendingCandidates.clear()
-        drained.forEach { candidateJson -> addIceCandidate("subscriber", candidateJson) }
+        drained.forEach { candidateJson -> applyIceCandidate("subscriber", candidateJson) }
     }
 
     /** Replays publisher ICE candidates buffered before remote description was set. */
     private fun drainPublisherCandidates() {
         val drained = publisherPendingCandidates.toList()
         publisherPendingCandidates.clear()
-        drained.forEach { candidateJson -> addIceCandidate("publisher", candidateJson) }
+        drained.forEach { candidateJson -> applyIceCandidate("publisher", candidateJson) }
     }
 
     /** Returns the current subscriber-PC local SDP description, or null if none is set. */
@@ -587,6 +591,15 @@ class WebRtcManager @Inject constructor(
      *   `{"candidate":"...","sdpMLineIndex":0,"sdpMid":"..."}`
      */
     fun addIceCandidate(pcType: String, candidateJson: String) {
+        // Under [disposeLock]: a teardown disposes the connection after this call, not during it.
+        synchronized(disposeLock) { applyIceCandidate(pcType, candidateJson) }
+    }
+
+    /**
+     * [addIceCandidate] without [disposeLock]: for the replay of buffered
+     * candidates, which runs in a WebRTC callback (no callback takes that lock).
+     */
+    private fun applyIceCandidate(pcType: String, candidateJson: String) {
         val pc: PeerConnection?
         val buffer: MutableList<String>
         val remoteSet: Boolean

@@ -742,4 +742,95 @@ class WebRtcManagerTest {
         // install steps each installed their connection inside the guard.
         assertEquals(2, installedInsideGuard.count { it })
     }
+
+    // -- What the server sends is never applied to a connection being disposed ------------------
+
+    /** A manager whose peer connections are recorded (subscriber first, then publisher). */
+    private fun managerWithConnections(scope: CoroutineScope, pcs: MutableList<PeerConnection>): WebRtcManager {
+        val factory = mockk<PeerConnectionFactory>(relaxed = true)
+        io.mockk.every { factory.createPeerConnection(any<PeerConnection.RTCConfiguration>(), any<PeerConnection.Observer>()) } answers {
+            mockk<PeerConnection>(relaxed = true).also { pcs += it }
+        }
+        val voiceApi = mockk<VoiceApi>()
+        coEvery { voiceApi.getIceServers() } returns IceServerConfig(iceServers = emptyList())
+        return newWebRtcManager(
+            voiceScope = scope,
+            voiceApi = voiceApi,
+            factoryProvider = DefaultPeerConnectionFactoryProvider(create = { factory }),
+        )
+    }
+
+    /**
+     * While [inCall] is in its call into [pc] (still waiting for WebRTC's thread), a teardown
+     * starts on another thread. Returns whether [pc] was disposed during that call.
+     */
+    private fun disposedDuringCall(manager: WebRtcManager, pc: PeerConnection, stub: (() -> Unit) -> Unit, inCall: () -> Unit): Boolean {
+        var disposed = false
+        io.mockk.every { pc.dispose() } answers { disposed = true }
+        var disposedDuring = false
+        val closer = Thread { manager.closePeerConnections() }
+        stub {
+            closer.start()
+            closer.join(300)
+            disposedDuring = disposed
+        }
+        inCall()
+        closer.join(5_000)
+        assertTrue("the teardown did not finish", disposed)
+        return disposedDuring
+    }
+
+    @Test
+    fun `a subscriber offer being applied is not disposed under its hands`() = runTest {
+        val pcs = mutableListOf<PeerConnection>()
+        val manager = managerWithConnections(backgroundScope, pcs)
+        manager.initialize()
+        manager.createSubscriberPeerConnection()
+        manager.createPublisherOffer()
+        val subscriber = pcs[0]
+        assertFalse(
+            "the subscriber was disposed while the offer was being applied",
+            disposedDuringCall(manager, subscriber, { during ->
+                io.mockk.every { subscriber.setRemoteDescription(any(), any()) } answers { during() }
+            }) { manager.handleSubscriberOffer("v=0") },
+        )
+    }
+
+    @Test
+    fun `a publisher answer being applied is not disposed under its hands`() = runTest {
+        val pcs = mutableListOf<PeerConnection>()
+        val manager = managerWithConnections(backgroundScope, pcs)
+        manager.initialize()
+        manager.createSubscriberPeerConnection()
+        manager.createPublisherOffer()
+        val publisher = pcs[1]
+        assertFalse(
+            "the publisher was disposed while the answer was being applied",
+            disposedDuringCall(manager, publisher, { during ->
+                io.mockk.every { publisher.setRemoteDescription(any(), any()) } answers { during() }
+            }) { manager.handlePublisherAnswer("v=0") },
+        )
+    }
+
+    @Test
+    fun `an ICE candidate being added is not disposed under its hands`() = runTest {
+        val pcs = mutableListOf<PeerConnection>()
+        val manager = managerWithConnections(backgroundScope, pcs)
+        manager.initialize()
+        manager.createSubscriberPeerConnection()
+        manager.createPublisherOffer()
+        val publisher = pcs[1]
+        // The answer is applied, so candidates go to the connection itself.
+        io.mockk.every { publisher.setRemoteDescription(any(), any()) } answers {
+            firstArg<org.webrtc.SdpObserver>().onSetSuccess()
+        }
+        manager.handlePublisherAnswer("v=0")
+        val candidate = IceCandidateData(candidate = "candidate:1 1 udp 1 10.0.0.1 9 typ host", sdpMid = "0", sdpMLineIndex = 0).toJson()
+        assertFalse(
+            "the publisher was disposed while a candidate was being added",
+            disposedDuringCall(manager, publisher, { during ->
+                io.mockk.every { publisher.addIceCandidate(any<org.webrtc.IceCandidate>()) } answers { during(); true }
+            }) { manager.addIceCandidate("publisher", candidate) },
+        )
+    }
 }
