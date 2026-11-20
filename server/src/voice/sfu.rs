@@ -2379,6 +2379,38 @@ mod negotiation_tests {
         peer.close().await;
     }
 
+    /// A refused simulcast transceiver stays refused across a new offer
+    /// that still sends the same track on it (its late layers must not bind
+    /// to a newer announcement); it is forgotten once the offer sends
+    /// another track there or stops sending.
+    #[tokio::test]
+    async fn a_refused_transceiver_is_forgotten_only_when_its_track_changes() {
+        let (_sfu, peer, _rx, _client) = setup().await;
+        let offer = |msid: &str, dir: &str| {
+            format!(
+                "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:0\r\na=sendonly\r\n\
+                 m=video 9 UDP/TLS/RTP/SAVPF 96\r\na=mid:1\r\na={dir}\r\na=msid:{msid}\r\n"
+            )
+        };
+        peer.forget_refused_mids(&offer("s cam", "sendonly"));
+        peer.bind_video_mid("1", None);
+        peer.forget_refused_mids(&offer("s cam", "sendonly"));
+        assert_eq!(
+            peer.video_mid("1"),
+            Some(crate::voice::peer::MidBinding::Refused),
+            "same track, still refused"
+        );
+        peer.forget_refused_mids(&offer("s cam2", "sendonly"));
+        assert_eq!(
+            peer.video_mid("1"),
+            None,
+            "another track on the transceiver"
+        );
+        peer.bind_video_mid("1", None);
+        peer.forget_refused_mids(&offer("s cam2", "inactive"));
+        assert_eq!(peer.video_mid("1"), None, "the transceiver stopped sending");
+    }
+
     /// A track waiting for its announcement on a seat that is retired stops
     /// waiting at once (no grace period, nothing bound).
     #[tokio::test]

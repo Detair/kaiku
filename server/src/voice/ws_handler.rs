@@ -614,7 +614,7 @@ async fn handle_publisher_offer(
     // client adds the microphone before it sends that offer). Refused video
     // transceiver bindings do not outlive an offer (it may reuse them).
     peer.set_microphone_mid(first_audio_mid(sdp));
-    peer.forget_refused_mids();
+    peer.forget_refused_mids(sdp);
 
     match SfuServer::handle_publisher_offer(&peer, sdp.to_string()).await {
         Ok(answer_sdp) => {

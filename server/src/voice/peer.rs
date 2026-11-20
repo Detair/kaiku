@@ -109,6 +109,9 @@ pub struct Peer {
     /// Media id of the microphone negotiated in the first publisher offer
     /// (`None` inside: that offer had no audio).
     microphone_mid: std::sync::OnceLock<Option<String>>,
+    /// The track each publisher transceiver (by media id) sent in the last
+    /// publisher offer (`None`: not sending).
+    offered_tracks: std::sync::Mutex<HashMap<String, Option<String>>>,
     /// Whether an audio track was taken as this peer's microphone.
     microphone_claimed: AtomicBool,
     /// Login session of the socket that joined with this peer (set once by
@@ -192,6 +195,7 @@ impl Peer {
             microphone_claimed: AtomicBool::new(false),
             simulcast_layers: std::sync::Mutex::new(Vec::new()),
             microphone_mid: std::sync::OnceLock::new(),
+            offered_tracks: std::sync::Mutex::new(HashMap::new()),
             forwarded: std::sync::Mutex::new(Vec::new()),
             video_mids: std::sync::Mutex::new(HashMap::new()),
             announcements: std::sync::Mutex::new(HashMap::new()),
@@ -492,13 +496,25 @@ impl Peer {
             .retain(|_, b| !matches!(b, MidBinding::Source(s) if ended(s)));
     }
 
-    /// Forget refused transceiver bindings (a new offer may reuse the
-    /// transceiver for an announced source).
-    pub fn forget_refused_mids(&self) {
+    /// Note a publisher offer: forget the refused binding of each
+    /// transceiver whose track changed with it (the offer sends another
+    /// track there, or stops sending). A refused transceiver that still
+    /// sends the same track stays refused, so its late layers do not bind
+    /// to a newer announcement; a reused one can bind again.
+    pub fn forget_refused_mids(&self, sdp: &str) {
+        let now = sending_tracks(sdp);
+        let mut before = self
+            .offered_tracks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.video_mids
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .retain(|_, b| *b != MidBinding::Refused);
+            .retain(|mid, b| {
+                *b != MidBinding::Refused
+                    || (matches!(now.get(mid), Some(Some(_))) && before.get(mid) == now.get(mid))
+            });
+        *before = now;
     }
 
     /// Record the media id of the microphone: the first audio section of
@@ -669,4 +685,38 @@ impl Peer {
             tracing::warn!(user_id = %self.user_id, error = %e, "failed to close subscriber PC");
         }
     }
+}
+
+/// The track (`a=msid`) each media section of a session description sends,
+/// by media id; `None` for a section that does not send.
+fn sending_tracks(sdp: &str) -> HashMap<String, Option<String>> {
+    struct Section {
+        mid: Option<String>,
+        sends: bool,
+        msid: String,
+    }
+    let mut sections: Vec<Section> = Vec::new();
+    for line in sdp.lines() {
+        if line.starts_with("m=") {
+            sections.push(Section {
+                mid: None,
+                sends: true,
+                msid: String::new(),
+            });
+        } else if let Some(section) = sections.last_mut() {
+            if let Some(mid) = line.strip_prefix("a=mid:") {
+                section.mid = Some(mid.trim().to_owned());
+            } else if let Some(msid) = line.strip_prefix("a=msid:") {
+                msid.trim().clone_into(&mut section.msid);
+            } else if matches!(line, "a=recvonly" | "a=inactive") {
+                section.sends = false;
+            } else if matches!(line, "a=sendonly" | "a=sendrecv") {
+                section.sends = true;
+            }
+        }
+    }
+    sections
+        .into_iter()
+        .filter_map(|s| Some((s.mid?, s.sends.then_some(s.msid))))
+        .collect()
 }
