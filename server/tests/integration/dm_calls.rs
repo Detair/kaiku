@@ -755,7 +755,7 @@ async fn restart_ends_calls_left_ringing(pool: PgPool) {
         .await
         .expect("scan call streams");
     assert!(found.contains(&fx.dm), "the ringing call was not found");
-    let left_active = end_calls_left_ringing(&calls, [fx.dm])
+    let left_active = end_calls_left_ringing(&calls, [fx.dm], chrono::Utc::now())
         .await
         .expect("end ringing calls");
     assert!(left_active.is_empty(), "{left_active:?}");
@@ -787,7 +787,7 @@ async fn restart_keeps_active_call_that_was_rejoined(pool: PgPool) {
     assert_eq!(call_state(&fx).await["status"], "active");
 
     let calls = CallService::new(fx.app.state.redis.clone(), pool.clone());
-    let left_active = end_calls_left_ringing(&calls, [fx.dm])
+    let left_active = end_calls_left_ringing(&calls, [fx.dm], chrono::Utc::now())
         .await
         .expect("restart clean-up");
     assert_eq!(left_active.len(), 1, "the active call is kept for rejoins");
@@ -821,7 +821,7 @@ async fn restart_ends_active_call_without_rejoin(pool: PgPool) {
         StatusCode::OK
     );
     let calls = CallService::new(fx.app.state.redis.clone(), pool.clone());
-    let left_active = end_calls_left_ringing(&calls, [fx.dm])
+    let left_active = end_calls_left_ringing(&calls, [fx.dm], chrono::Utc::now())
         .await
         .expect("restart clean-up");
     assert_eq!(
@@ -831,4 +831,20 @@ async fn restart_ends_active_call_without_rejoin(pool: PgPool) {
     let ended = next_ws_event(&mut callee_ws, "call_ended", EVENT_TIMEOUT).await;
     assert_eq!(ended["reason"], "last_left");
     assert!(call_state(&fx).await.is_null());
+}
+
+/// A call started after this process started is not "left over": the
+/// start-up clean-up leaves it ringing.
+#[sqlx::test]
+async fn restart_cleanup_leaves_calls_of_this_process(pool: PgPool) {
+    use vc_server::voice::call_service::end_calls_left_ringing;
+
+    let fx = setup(&pool).await;
+    let process_start = chrono::Utc::now() - chrono::Duration::hours(1);
+    assert_eq!(start(&fx, &fx.caller_token).await, StatusCode::CREATED);
+    let calls = CallService::new(fx.app.state.redis.clone(), pool.clone());
+    end_calls_left_ringing(&calls, [fx.dm], process_start)
+        .await
+        .expect("restart clean-up");
+    assert_eq!(call_state(&fx).await["status"], "ringing");
 }

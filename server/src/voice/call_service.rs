@@ -903,17 +903,23 @@ pub async fn channels_with_calls(redis: &Client) -> Result<Vec<Uuid>, CallError>
 /// the previous process. Answered calls are returned for step 2 and kept for
 /// now: their participants may rejoin the room (C32).
 ///
-/// Kaiku runs one server process (v1), so every call in the store belongs to
-/// a process that is gone, and no room of this process exists yet.
+/// Kaiku runs one server process (v1, deployed with `Recreate`), so every
+/// call started before `started_before` (this process's start) belongs to a
+/// process that is gone. Calls started later are left alone.
 pub async fn end_calls_left_ringing(
     calls: &CallService,
     channels: impl IntoIterator<Item = Uuid>,
+    started_before: DateTime<Utc>,
 ) -> Result<Vec<LeftCall>, CallError> {
     let mut active = Vec::new();
     for channel_id in channels {
         let Some((state, meta)) = calls.get_call(channel_id).await? else {
             continue;
         };
+        // A call this process started meanwhile is not left over.
+        if meta.started_at >= started_before {
+            continue;
+        }
         match state {
             CallState::Ringing { .. } => {
                 let ended = calls
@@ -983,6 +989,7 @@ pub fn spawn_restart_cleanup(
     calls: CallService,
     sfu: std::sync::Weak<crate::voice::SfuServer>,
 ) -> tokio::task::JoinHandle<()> {
+    let process_start = Utc::now();
     tokio::spawn(async move {
         let channels = match channels_with_calls(&calls.redis).await {
             Ok(channels) => channels,
@@ -991,7 +998,7 @@ pub fn spawn_restart_cleanup(
                 return;
             }
         };
-        let left = match end_calls_left_ringing(&calls, channels).await {
+        let left = match end_calls_left_ringing(&calls, channels, process_start).await {
             Ok(left) => left,
             Err(e) => {
                 tracing::warn!(error = %e, "Could not end calls left by the previous process");
