@@ -92,6 +92,12 @@ jobs:
         working-directory: client
         run: bun run tauri build --config src-tauri/tauri.ci.conf.json
 
+      # libvpx must be linked statically, or the app fails to start on Macs
+      # without Homebrew's libvpx.
+      - name: Check libvpx is linked statically (macOS)
+        if: runner.os == 'macOS'
+        run: scripts/check_macos_static_libvpx.sh "$(ls -d target/${{ matrix.target }}/release/bundle/macos/*.app | head -n 1)"
+
       # Upload artifacts
       - name: Upload Linux artifacts
         if: runner.os == 'Linux'
