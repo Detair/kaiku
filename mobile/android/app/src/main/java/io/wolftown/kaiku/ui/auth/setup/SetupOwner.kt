@@ -352,6 +352,12 @@ class SetupOwner internal constructor(
     fun holdsAttempt(): Boolean = attempt != null || _waiting.value || signingIn
 
     /** A setup is held: started (from a link, or found stored) and not stopped, failed or finished yet (rule 2). */
+    /**
+     * A stored setup that has not finished owns the app's entry, and no screen has opened it in
+     * this process: a scanner screen restored over it gives way to the waiting screen.
+     */
+    fun storedSetupWaits(): Boolean = !started && !keyDevices.unreadable() && setupOwnsEntry(keyDevices.record.value)
+
     fun held(): Boolean = signingIn || ((attempt != null || _waiting.value) && !_ui.value.isEnd())
 
     /**
@@ -516,6 +522,8 @@ class SetupOwner internal constructor(
         val now = _ui.value as? SetupUi.CodeRanOut ?: return false
         val rec = keyDevices.record.value?.takeIf { it.phase == KeyDevicePhase.CLAIMED } ?: return false
         if (KaikuPayloads.canonicalOrigin(e.origin) != originOf(rec)) return false
+        // The link of the setup that is ending, opened again, changes nothing: a link kept is kept.
+        if (e.sameCodeAs((attempt ?: claimKeeper)?.entry)) return true
         keptLink = e
         _linkKept.value = now.minutes
         return true
@@ -640,7 +648,7 @@ class SetupOwner internal constructor(
         } catch (c: CancellationException) {
             throw c
         } catch (x: Exception) {
-            show(a, setupErrorFor(x))
+            show(a, errorFor(a, x))
         }
     }
 
@@ -867,7 +875,7 @@ class SetupOwner internal constructor(
         } catch (x: Exception) {
             live(a)
             dropKey(a)
-            show(a, setupErrorFor(x))
+            show(a, errorFor(a, x))
         }
     }
 
@@ -1023,7 +1031,7 @@ class SetupOwner internal constructor(
                 settled?.forgotten == true -> {
                     a.key = null
                     a.rec = null
-                    show(a, setupErrorFor(x))
+                    show(a, errorFor(a, x))
                 }
                 settled?.verdict == Verdict.CLAIM_UNDECIDED -> reconcileClaim(a, rec, x)
                 else -> {
@@ -1171,7 +1179,7 @@ class SetupOwner internal constructor(
                             next?.let(PendingSetupLinks::post)
                             return
                         }
-                        return show(a, about?.let(::setupErrorFor) ?: SetupUi.Ended(overText(rec), canRetry = false))
+                        return show(a, about?.let { errorFor(a, it) } ?: SetupUi.Ended(overText(rec), canRetry = false))
                     }
                     // The server answered; it is there.
                     heard(rec)
@@ -1239,6 +1247,25 @@ class SetupOwner internal constructor(
         _ui.value = SetupUi.Ended(R.string.setup_discarded, canRetry = false)
     }
 
+    /**
+     * A server refusal as its text. "This phone is already a key of this account" offers its
+     * sign-in only while this phone holds that account's key for that server; otherwise that
+     * button cannot work and the text says what is needed instead.
+     */
+    private fun errorFor(a: Attempt?, x: Exception): SetupUi.Ended {
+        val ended = setupErrorFor(x)
+        if (!ended.offerSignIn) return ended
+        val user = a?.subject?.userId
+        val rec = keyDevices.record.value
+        val holds = user != null && rec != null && originOf(rec) == a.origin &&
+            when (val k = keyDevices.current()) {
+                is KeyDeviceState.Active -> k.userId == user
+                is KeyDeviceState.Lapsed -> k.userId == user
+                else -> false
+            }
+        return if (holds) ended else SetupUi.Ended(R.string.setup_device_in_use_no_key, canRetry = false)
+    }
+
     @StringRes
     private fun overText(rec: StoredKeyDevice): Int =
         if (rec.phase == KeyDevicePhase.CLAIMING) R.string.setup_not_finished else R.string.setup_cancelled
@@ -1286,7 +1313,13 @@ class SetupOwner internal constructor(
             // Cancelled or reset while the long-poll ran: its answer changes nothing any more.
             if (!(_ui.value is SetupUi.ShowCode || _ui.value == SetupUi.WaitingForCode)) return
             val ended = when (s.state) {
-                EnrollmentState.DONE -> return onDone(a, start, s.authenticatorState, s.readyAt)
+                // "Done" counts by the state of the key device it made: active or pending as said;
+                // any other word (removed meanwhile, or none) is not taken as this key's: the claim
+                // and its secret stay, and the key-device probe decides.
+                EnrollmentState.DONE -> return when (s.authenticatorState) {
+                    "active", "pending" -> onDone(a, start, s.authenticatorState, s.readyAt)
+                    else -> askKeyDevice(a, start, null, null)
+                }
                 EnrollmentState.CANCELLED -> R.string.setup_cancelled
                 EnrollmentState.FAILED -> R.string.setup_code_failed
                 // "Expired" is worked out from the server's clock while a confirmation sent just in

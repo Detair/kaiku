@@ -32,7 +32,12 @@ import io.wolftown.kaiku.ui.shared.KeyScreen
  * lock and hardware key store before any scan).
  */
 @Composable
-fun SetupScanScreen(onSignedIn: () -> Unit, onBack: (() -> Unit)?, flow: SetupFlowViewModel = hiltViewModel()) {
+fun SetupScanScreen(
+    onSignedIn: () -> Unit,
+    onBack: (() -> Unit)?,
+    onWaiting: () -> Unit = {},
+    flow: SetupFlowViewModel = hiltViewModel(),
+) {
     val started by flow.startedFlow.collectAsState()
     val ready by flow.scanReady.collectAsState()
     // Checked anew whenever the scanner part is what this screen shows: at a visit, and again
@@ -42,7 +47,13 @@ fun SetupScanScreen(onSignedIn: () -> Unit, onBack: (() -> Unit)?, flow: SetupFl
     // a screen above it closed).
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { if (!flow.startedFlow.value) flow.scannerShown() }
     val r = ready
+    // Restored over a stored setup that has not finished: its waiting screen, never the camera.
+    val waits = remember { flow.storedSetupWaits() }
     when {
+        waits && !started -> {
+            LaunchedEffect(Unit) { onWaiting() }
+            KeyScreen { CircularProgressIndicator() }
+        }
         started -> SetupFlowScreen(link = null, onSignedIn = onSignedIn, onBack = flow::reset, viewModel = flow)
         r == null -> KeyScreen { CircularProgressIndicator() }
         // The guide is a column of its own content; it needs the screen frame like its neighbours.

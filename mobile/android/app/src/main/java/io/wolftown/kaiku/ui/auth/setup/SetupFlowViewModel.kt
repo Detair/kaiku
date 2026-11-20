@@ -121,6 +121,9 @@ class SetupFlowViewModel @Inject constructor(private val owner: SetupOwner) : Vi
     fun discard() = owner.discard()
     fun start(e: SetupEntry) = owner.start(e)
     fun resumeWithoutEntry() = owner.resumeWithoutEntry()
+
+    /** True when this screen's scanner must give way to the waiting screen of a stored setup. */
+    fun storedSetupWaits(): Boolean = !startedFlow.value && owner.storedSetupWaits()
     fun reset() = owner.reset()
     fun retry() = owner.retry()
     fun cancel() = owner.cancel()

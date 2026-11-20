@@ -717,12 +717,16 @@ class SetupFlowViewModelTest {
         assertFalse(f.keyStore.hasKey())
     }
 
-    @Test fun `a phone that already is the account's key is told so and offered to sign in`() = runTest {
+    /**
+     * The server still lists this phone as the account's key, but the phone holds no key for it (a
+     * setup only runs without one): signing in with it cannot work, so it is not offered.
+     */
+    @Test fun `a phone still listed as the account's key without its key is told the way out`() = runTest {
         env.pinned = SigFixtures.ORIGIN
         enroll.popFailure = apiError(400, "ENROLLMENT_DEVICE_IN_USE")
         val (v, f) = vm()
         v.start(entry)
-        assertEquals(SetupUi.Ended(R.string.setup_device_in_use, canRetry = false, offerSignIn = true), v.ui.value)
+        assertEquals(SetupUi.Ended(R.string.setup_device_in_use_no_key, canRetry = false), v.ui.value)
         assertFalse(f.keyStore.hasKey()) // the key made for this attempt goes; nothing was revoked
         assertFalse(enroll.calls.contains("claim"))
     }

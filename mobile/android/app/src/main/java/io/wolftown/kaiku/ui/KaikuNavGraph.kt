@@ -404,6 +404,7 @@ fun KaikuNavGraph(
                     SetupScanScreen(
                         onSignedIn = { navController.navigate("home") { popUpTo(0) { inclusive = true } } },
                         onBack = { navController.popBackStack() },
+                        onWaiting = { navController.navigate(SETUP_PENDING_ROUTE) { popUpTo(SCAN_SETUP_ROUTE) { inclusive = true } } },
                     )
                 }
 

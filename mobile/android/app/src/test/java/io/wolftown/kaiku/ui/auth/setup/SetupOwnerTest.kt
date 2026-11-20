@@ -1580,6 +1580,95 @@ class SetupOwnerTest {
         io.wolftown.kaiku.navigation.PendingSetupLinks.clear()
     }
 
+    /** The setup that is ending, its link tapped again: a new link kept meanwhile stays kept. */
+    @Test fun `the ending setup's own link does not replace a kept link`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        val codeExpires = Instant.parse(enroll.claimResult.codeExpiresAt)
+        enroll.claimResult = enroll.claimResult.copy(serverTime = codeExpires.minusSeconds(300))
+        val (owner, _) = phone()
+        val v = SetupFlowViewModel(owner)
+        v.start(entry)
+        enroll.statuses += ClaimStatus(EnrollmentState.EXPIRED)
+        approval.failWith = noKeyDeviceAt(codeExpires.plusSeconds(180))
+        v.confirmSubject(activity)
+        runCurrent()
+        assertTrue(v.ui.value is SetupUi.CodeRanOut)
+        val next = SetupEntry(SigFixtures.ORIGIN, token2, SetupEntry.Source.LINK)
+        assertFalse(owner.offer(next))
+        // The old code once more, as a link: nothing changes.
+        assertFalse(owner.offer(SetupEntry(SigFixtures.ORIGIN, token, SetupEntry.Source.LINK)))
+        v.start(SetupEntry(SigFixtures.ORIGIN, token, SetupEntry.Source.LINK))
+        boot.advance(java.time.Duration.ofMinutes(7))
+        advanceTimeBy(5 * 60_000L + 6_000)
+        runCurrent()
+        advanceTimeBy(6_000)
+        runCurrent()
+        assertEquals(SetupUi.Ended(R.string.setup_code_not_confirmed, canRetry = false), v.ui.value)
+        assertEquals(token2, io.wolftown.kaiku.navigation.PendingSetupLinks.pending.value?.tokenB64u)
+        io.wolftown.kaiku.navigation.PendingSetupLinks.clear()
+    }
+
+    // ── "Done" counts by the state of the key device it made ──────────────────────────────────
+
+    /** "Done" without the key device's state proves nothing about this key: the claim and its secret stay. */
+    @Test fun `a 'done' without a key device state keeps the claim and its secret`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        val (owner, f) = phone()
+        val v = SetupFlowViewModel(owner)
+        v.start(entry)
+        enroll.statuses += ClaimStatus(EnrollmentState.DONE)
+        approval.failWith = IOException("offline")
+        v.confirmSubject(activity)
+        runCurrent()
+        val rec = f.repo.record.value!!
+        assertEquals(KeyDevicePhase.CLAIMED, rec.phase)
+        assertEquals("claim-secret", rec.device.claimSecret)
+        assertTrue(f.keyStore.hasKey())
+        // The key-device probe was asked.
+        assertTrue(approval.calls.isNotEmpty())
+    }
+
+    /** A key device removed again right after the confirmation: the record is not made active first. */
+    @Test fun `a 'done' whose key device was removed is not taken as active`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        val (owner, f) = phone()
+        val v = SetupFlowViewModel(owner)
+        v.start(entry)
+        enroll.statuses += ClaimStatus(EnrollmentState.DONE, "revoked")
+        approval.failWith = IOException("offline")
+        v.confirmSubject(activity)
+        runCurrent()
+        assertEquals(KeyDevicePhase.CLAIMED, f.repo.phase())
+        assertTrue(f.store.writes.none { it == "save:ACTIVE" })
+    }
+
+    // ── "This phone is already a key of this account" ─────────────────────────────────────────
+
+    /** The server still lists this phone, but no key of it is here: no sign-in is offered, the way out is named. */
+    @Test fun `a phone still listed is told what to do when the answer comes before the question`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        val (owner, _) = phone()
+        val v = SetupFlowViewModel(owner)
+        enroll.popFailure = apiError(409, "ENROLLMENT_DEVICE_IN_USE")
+        v.start(entry)
+        runCurrent()
+        assertEquals(SetupUi.Ended(R.string.setup_device_in_use_no_key, canRetry = false), v.ui.value)
+    }
+
+    // ── A scanner restored over a stored setup ────────────────────────────────────────────────
+
+    /** After a restart, a scanner screen that was on top while a setup is stored shows the waiting screen instead. */
+    @Test fun `a restored scanner gives way to the waiting screen of a stored setup`() = runTest {
+        val (first, f, _) = lostClaim()
+        first.onCleared()
+        // A new process: a new owner, a scanner screen restored without its setup.
+        val restored = SetupFlowViewModel(owner(f))
+        assertTrue(restored.storedSetupWaits())
+        // A phone without a stored setup keeps its scanner.
+        val (fresh, _) = phone()
+        assertFalse(SetupFlowViewModel(fresh).storedSetupWaits())
+    }
+
     /** A legacy waiting key device whose install id is lost: nothing can be asked; the screen names the way out. */
     @Test fun `a waiting key device whose install id is lost names the way out`() = runTest {
         val (owner, f) = storedSetup(KeyDevicePhase.PENDING)

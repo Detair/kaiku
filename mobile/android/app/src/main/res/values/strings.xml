@@ -420,6 +420,7 @@
     <string name="setup_invalid">This is not a valid setup code.</string>
     <string name="setup_device_in_use">This phone is already a key of this account. Sign in with it instead.</string>
     <string name="setup_device_in_use_sign_in">Sign in with this phone</string>
+    <string name="setup_device_in_use_no_key">This phone is still listed as a key of this account, but its key is no longer on this phone. Have the phone removed from the account, then start the setup again.</string>
     <string name="setup_registration_expired">The registration ran out of time. Register again.</string>
     <string name="setup_request_not_ready">This request is not ready yet. Try again once it is ready.</string>
     <string name="setup_request_expired">This request has expired. Start a new one.</string>
