@@ -48,8 +48,9 @@ pub struct Peer {
     /// Map: `TrackSource` -> remote track
     pub incoming_tracks: RwLock<HashMap<TrackSource, Arc<TrackRemote>>>,
     /// Tracks being forwarded to this peer (on `subscriber_pc`).
-    /// Map: `(source_user_id, source_type)` -> local track
-    outgoing_tracks: RwLock<HashMap<(Uuid, TrackSource), Arc<TrackLocalStaticRTP>>>,
+    /// Map: `(source_user_id, source_type)` -> (source seat's session, local
+    /// track): what a listener receives belongs to the source seat.
+    outgoing_tracks: RwLock<HashMap<(Uuid, TrackSource), (Uuid, Arc<TrackLocalStaticRTP>)>>,
 
     /// Whether the user muted themselves.
     self_muted: RwLock<bool>,
@@ -245,20 +246,30 @@ impl Peer {
         incoming.insert(source, track);
     }
 
-    /// Add an outgoing track to forward media from another user.
-    /// The track is added to the subscriber `PeerConnection`.
-    /// Returns the `RTCRtpSender` so callers can read RTCP feedback (e.g. REMB).
+    /// Add an outgoing track to forward media of seat `source_session` of
+    /// another user. The track is added to the subscriber `PeerConnection`.
+    /// Returns the `RTCRtpSender` (callers read RTCP feedback from it) and
+    /// the track of an older seat of the same user that this one replaced
+    /// (its sender is removed; the caller drops its router subscription).
+    ///
+    /// Only a current seat may call this (the caller holds the source seat's
+    /// `media` and checked it), so a newer seat's track replaces an older
+    /// seat's entry, while a second track of the same seat is refused (the
+    /// track handler and the first-offer subscribe path may race).
     pub async fn add_outgoing_track(
         &self,
         source_user_id: Uuid,
         source_type: TrackSource,
+        source_session: Uuid,
         track: Arc<TrackLocalStaticRTP>,
-    ) -> Result<Arc<RTCRtpSender>, super::error::VoiceError> {
-        // One forwarded track per source: the track handler and the
-        // first-offer subscribe path may race to add the same source; the
-        // second one is refused (its caller drops its router subscription).
+    ) -> Result<(Arc<RTCRtpSender>, Option<Arc<TrackLocalStaticRTP>>), super::error::VoiceError>
+    {
+        let key = (source_user_id, source_type);
         let mut tracks = self.outgoing_tracks.write().await;
-        if tracks.contains_key(&(source_user_id, source_type)) {
+        if tracks
+            .get(&key)
+            .is_some_and(|(session, _)| *session == source_session)
+        {
             return Err(super::error::VoiceError::Internal(format!(
                 "{source_user_id}:{source_type} is already forwarded to {}",
                 self.user_id
@@ -281,78 +292,53 @@ impl Peer {
             )
             .await?;
         let sender = transceiver.sender().await;
-        tracks.insert((source_user_id, source_type), track);
+        let replaced = tracks
+            .insert(key, (source_session, track))
+            .map(|(_, old)| old);
+        if let Some(old) = &replaced {
+            self.remove_sender_of(old).await;
+        }
 
-        Ok(sender)
+        Ok((sender, replaced))
     }
 
-    /// Remove an outgoing track, also removing it from the subscriber peer connection.
-    pub async fn remove_outgoing_track(
-        &self,
-        source_user_id: Uuid,
-        source_type: TrackSource,
-    ) -> bool {
-        let mut tracks = self.outgoing_tracks.write().await;
-        if let Some(track) = tracks.remove(&(source_user_id, source_type)) {
-            // Remove from subscriber PeerConnection so the subscriber stops receiving it
-            let senders = self.subscriber_pc.get_senders().await;
-            for sender in senders {
-                if let Some(t) = sender.track().await {
-                    if t.id() == track.id() {
-                        if let Err(e) = self.subscriber_pc.remove_track(&sender).await {
-                            tracing::warn!(
-                                user_id = %self.user_id,
-                                error = %e,
-                                "failed to remove track from subscriber PC"
-                            );
-                        } else {
-                            self.count_inactive_mline();
-                        }
-                        break;
+    /// Remove the sender of `track` from the subscriber connection.
+    async fn remove_sender_of(&self, track: &Arc<TrackLocalStaticRTP>) {
+        for sender in self.subscriber_pc.get_senders().await {
+            if let Some(t) = sender.track().await {
+                if t.id() == track.id() {
+                    if let Err(e) = self.subscriber_pc.remove_track(&sender).await {
+                        tracing::warn!(
+                            user_id = %self.user_id,
+                            error = %e,
+                            "failed to remove track from subscriber PC"
+                        );
+                    } else {
+                        self.count_inactive_mline();
                     }
+                    break;
                 }
             }
-            true
-        } else {
-            false
         }
     }
 
     /// Remove the outgoing track of `(source_user_id, source)` only if it is
-    /// exactly `track` (a newer peer of the same user keeps its own).
+    /// exactly `track` (what a newer seat of the same user added stays).
+    /// Entries are removed by track only, never by user.
     pub async fn remove_outgoing_track_if(
         &self,
         source_user_id: Uuid,
         source: TrackSource,
         track: &Arc<TrackLocalStaticRTP>,
     ) -> bool {
-        let same = self
-            .outgoing_tracks
-            .read()
-            .await
-            .get(&(source_user_id, source))
-            .is_some_and(|t| Arc::ptr_eq(t, track));
-        same && self.remove_outgoing_track(source_user_id, source).await
-    }
-
-    /// Remove every outgoing track that forwards media of `source_user_id`
-    /// from the subscriber connection. Returns how many were removed.
-    pub async fn remove_outgoing_tracks_from(&self, source_user_id: Uuid) -> usize {
-        let sources: Vec<TrackSource> = self
-            .outgoing_tracks
-            .read()
-            .await
-            .keys()
-            .filter(|(user, _)| *user == source_user_id)
-            .map(|(_, source)| *source)
-            .collect();
-        let mut removed = 0;
-        for source in sources {
-            if self.remove_outgoing_track(source_user_id, source).await {
-                removed += 1;
-            }
+        let mut tracks = self.outgoing_tracks.write().await;
+        let key = (source_user_id, source);
+        if !tracks.get(&key).is_some_and(|(_, t)| Arc::ptr_eq(t, track)) {
+            return false;
         }
-        removed
+        tracks.remove(&key);
+        self.remove_sender_of(track).await;
+        true
     }
 
     /// The local tracks currently forwarded to this peer.
@@ -361,7 +347,7 @@ impl Peer {
             .read()
             .await
             .values()
-            .cloned()
+            .map(|(_, t)| t.clone())
             .collect()
     }
 

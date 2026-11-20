@@ -234,10 +234,19 @@ pub(crate) async fn forward_to(
         return false;
     };
     match subscriber
-        .add_outgoing_track(source_user, source, local_track.clone())
+        .add_outgoing_track(
+            source_user,
+            source,
+            source_peer.session_id,
+            local_track.clone(),
+        )
         .await
     {
-        Ok(sender) => {
+        Ok((sender, replaced)) => {
+            // An older seat's track that this one replaced writes nowhere.
+            if let Some(old) = replaced {
+                room.track_router.remove_subscriptions_into(&[old]);
+            }
             // The subscriber left meanwhile: take the add back (its own
             // removal may already have run).
             if subscriber.is_retired() {
@@ -499,9 +508,6 @@ impl Room {
             .remove_subscriptions_into(&forwarded_tracks);
         self.track_router
             .remove_subscriptions_into(&departed.outgoing_track_list().await);
-        if self.get_peer(user_id).await.is_none() {
-            self.track_router.remove_source(user_id).await;
-        }
         let others = self.get_other_peers(user_id).await;
         let forwarded = &forwarded;
         let updates = others.into_iter().map(|other| async move {
@@ -2216,6 +2222,7 @@ mod negotiation_tests {
         peer.add_outgoing_track(
             Uuid::from_u128(3),
             TrackSource::Microphone,
+            Uuid::from_u128(100),
             audio_track("u3"),
         )
         .await
@@ -2227,6 +2234,7 @@ mod negotiation_tests {
             peer.add_outgoing_track(
                 Uuid::from_u128(n),
                 TrackSource::Microphone,
+                Uuid::from_u128(100),
                 audio_track(&format!("u{n}")),
             )
             .await
@@ -2309,6 +2317,7 @@ mod negotiation_tests {
         peer.add_outgoing_track(
             Uuid::from_u128(3),
             TrackSource::Microphone,
+            Uuid::from_u128(100),
             audio_track("u3"),
         )
         .await
@@ -2336,6 +2345,7 @@ mod negotiation_tests {
         peer.add_outgoing_track(
             Uuid::from_u128(3),
             TrackSource::Microphone,
+            Uuid::from_u128(100),
             audio_track("u3"),
         )
         .await
@@ -2347,6 +2357,7 @@ mod negotiation_tests {
         peer.add_outgoing_track(
             Uuid::from_u128(4),
             TrackSource::Microphone,
+            Uuid::from_u128(100),
             audio_track("u4"),
         )
         .await
@@ -2390,6 +2401,7 @@ mod negotiation_tests {
         peer.add_outgoing_track(
             Uuid::from_u128(3),
             TrackSource::Microphone,
+            Uuid::from_u128(100),
             audio_track("u3"),
         )
         .await
@@ -2415,6 +2427,7 @@ mod negotiation_tests {
         peer.add_outgoing_track(
             Uuid::from_u128(3),
             TrackSource::Microphone,
+            Uuid::from_u128(100),
             audio_track("u3"),
         )
         .await
@@ -2427,6 +2440,7 @@ mod negotiation_tests {
         peer.add_outgoing_track(
             Uuid::from_u128(4),
             TrackSource::Microphone,
+            Uuid::from_u128(100),
             audio_track("u4"),
         )
         .await
@@ -2507,6 +2521,54 @@ mod negotiation_tests {
         assert_eq!(peer.video_mid("1"), None, "the transceiver stopped sending");
     }
 
+    /// What a listener receives from a person belongs to that person's seat:
+    /// a track of the person's new seat replaces the old seat's entry (also
+    /// while the old seat's teardown has not removed it yet), a second one of
+    /// the same seat is refused, and the old seat's late removal by track
+    /// leaves the new one.
+    #[tokio::test]
+    async fn a_new_seats_track_replaces_the_old_seats_entry() {
+        use webrtc::track::track_local::TrackLocal;
+        let (_sfu, listener, _rx, _client) = setup().await;
+        let user = Uuid::from_u128(7);
+        let (old_seat, new_seat) = (Uuid::from_u128(70), Uuid::from_u128(71));
+        let shared = Uuid::from_u128(72);
+        for source in [
+            TrackSource::Microphone,
+            TrackSource::Webcam,
+            TrackSource::ScreenVideo(shared),
+        ] {
+            let old = audio_track(&format!("old-{source}"));
+            let new = audio_track(&format!("new-{source}"));
+            listener
+                .add_outgoing_track(user, source, old_seat, old.clone())
+                .await
+                .expect("old seat's track");
+            listener
+                .add_outgoing_track(user, source, new_seat, new.clone())
+                .await
+                .expect("the new seat's track replaces the old one");
+            assert!(
+                listener
+                    .add_outgoing_track(user, source, new_seat, audio_track("dup"))
+                    .await
+                    .is_err(),
+                "a second track of the same seat is refused"
+            );
+            assert!(
+                !listener.remove_outgoing_track_if(user, source, &old).await,
+                "the old seat's late removal finds nothing of its own"
+            );
+        }
+        let kept = listener.outgoing_track_list().await;
+        assert_eq!(kept.len(), 3, "exactly one track per source");
+        assert!(
+            kept.iter().all(|t| t.id().starts_with("new-")),
+            "{:?}",
+            kept.iter().map(|t| t.id().to_owned()).collect::<Vec<_>>()
+        );
+    }
+
     /// A track waiting for its announcement on a seat that is retired stops
     /// waiting at once (no grace period, nothing bound).
     #[tokio::test]
@@ -2534,10 +2596,12 @@ mod negotiation_tests {
     #[tokio::test]
     async fn answer_to_an_offer_before_a_removal_is_ignored() {
         let (_sfu, peer, mut rx, client) = setup().await;
+        let track = audio_track("u3");
         peer.add_outgoing_track(
             Uuid::from_u128(3),
             TrackSource::Microphone,
-            audio_track("u3"),
+            Uuid::from_u128(100),
+            track.clone(),
         )
         .await
         .expect("track");
@@ -2546,7 +2610,7 @@ mod negotiation_tests {
         let stale = answer_for(&client, first).await;
 
         assert!(
-            peer.remove_outgoing_track(Uuid::from_u128(3), TrackSource::Microphone)
+            peer.remove_outgoing_track_if(Uuid::from_u128(3), TrackSource::Microphone, &track)
                 .await
         );
         peer.negotiation.lock().await.awaiting_answer_since =
@@ -2579,6 +2643,7 @@ mod negotiation_tests {
         peer.add_outgoing_track(
             Uuid::from_u128(3),
             TrackSource::Microphone,
+            Uuid::from_u128(100),
             audio_track("u3"),
         )
         .await
