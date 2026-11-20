@@ -84,6 +84,11 @@ pub enum VoiceError {
     #[error("Video track without an announced source was dropped")]
     VideoSourceUnannounced,
 
+    /// An audio track that is neither the microphone nor the audio of an
+    /// accepted share arrived and was dropped.
+    #[error("Audio track without an announced source was dropped")]
+    AudioSourceUnannounced,
+
     /// The join was refused (deliberately without the reason).
     #[error("Cannot join this call")]
     JoinRefused,
@@ -112,6 +117,7 @@ impl VoiceError {
             Self::ScreenShareForbidden => "SCREEN_SHARE_FORBIDDEN",
             Self::ScreenShareLimit(_) => "SCREEN_SHARE_LIMIT",
             Self::VideoSourceUnannounced => "VIDEO_SOURCE_UNANNOUNCED",
+            Self::AudioSourceUnannounced => "AUDIO_SOURCE_UNANNOUNCED",
             Self::JoinRefused => "JOIN_REFUSED",
         }
     }
@@ -138,7 +144,10 @@ impl IntoResponse for VoiceError {
             Self::WebRtc(_) | Self::Internal(_) | Self::Outbound(_) | Self::Database(_) => {
                 StatusCode::INTERNAL_SERVER_ERROR
             }
-            Self::Signaling(_) | Self::NotInChannel | Self::VideoSourceUnannounced => {
+            Self::Signaling(_)
+            | Self::NotInChannel
+            | Self::VideoSourceUnannounced
+            | Self::AudioSourceUnannounced => {
                 StatusCode::BAD_REQUEST
             }
             Self::DuplicateStreamId

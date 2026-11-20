@@ -83,6 +83,8 @@ pub struct Peer {
     /// Set once the peer left its room or was replaced: its late track
     /// callbacks and forwarders must not touch the room any more.
     retired: AtomicBool,
+    /// Whether an audio track was taken as this peer's microphone.
+    microphone_claimed: AtomicBool,
     /// Login session of the socket that joined with this peer (set once by
     /// the join; `None` when unknown).
     auth_session: std::sync::OnceLock<Option<Uuid>>,
@@ -134,6 +136,7 @@ impl Peer {
             admission: std::sync::OnceLock::new(),
             negotiation: tokio::sync::Mutex::new(SubscriberNegotiation::default()),
             retired: AtomicBool::new(false),
+            microphone_claimed: AtomicBool::new(false),
             auth_session: std::sync::OnceLock::new(),
         }
     }
@@ -288,28 +291,45 @@ impl Peer {
         self.pending_track_sources.write().await.retain(|s| !pred(s));
     }
 
-    /// Take the oldest announced video source; if none is queued, wait up to
-    /// `grace` for an announcement. `None`: the track stays unannounced.
+    /// Claim the microphone: `true` for the first audio track of this peer
+    /// only (a peer has exactly one microphone, announced by its join).
+    pub fn claim_microphone(&self) -> bool {
+        !self
+            .microphone_claimed
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
+    }
+
+    /// Take the oldest announced source of the track's kind (video: screen
+    /// share or webcam; audio: share audio); if none is queued, wait until
+    /// `deadline` for an announcement. `None`: the track stays unannounced.
     ///
     /// A track is matched to an announcement by arrival order, whichever of
     /// the two comes first (contract C30).
-    pub async fn take_video_source_within(
+    pub async fn take_source_until(
         &self,
-        grace: std::time::Duration,
+        video: bool,
+        deadline: tokio::time::Instant,
     ) -> Option<TrackSource> {
-        let deadline = tokio::time::Instant::now() + grace;
         loop {
             // Register for the wake-up before looking, so an announcement
             // between the look and the wait is not missed.
             let notified = self.announced.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
-            if let Some(source) = self.pop_pending_video_source().await {
+            if let Some(source) = self.pop_pending(video).await {
                 return Some(source);
             }
             if tokio::time::timeout_at(deadline, notified).await.is_err() {
-                return self.pop_pending_video_source().await;
+                return self.pop_pending(video).await;
             }
+        }
+    }
+
+    async fn pop_pending(&self, video: bool) -> Option<TrackSource> {
+        if video {
+            self.pop_pending_video_source().await
+        } else {
+            self.pop_pending_audio_source().await
         }
     }
 

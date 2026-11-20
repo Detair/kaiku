@@ -930,14 +930,19 @@ Media of a participant reaches others only under a source the server accepted.
   by arrival order. A video track that arrives before its announcement waits up to 3 s for it (so a start sent
   right after the track still works); without an announcement by then it is dropped: never forwarded, no
   `incoming_tracks` entry. The sender gets `voice_error` `VIDEO_SOURCE_UNANNOUNCED`.
-- Audio: the first audio track of a connection is the microphone (announced by `voice_join`). A further audio
-  track is screen audio only when a start with `has_audio: true` announced it; otherwise it is taken as the
-  microphone (unchanged behaviour).
+- Audio follows the same rule: the first audio track of a seat is its microphone (announced by `voice_join`;
+  there is exactly one). A further audio track is forwarded only as the audio of an accepted start with
+  `has_audio: true`, matched the same way (arrival order, 3 s wait); otherwise it is dropped and the sender gets
+  `voice_error` `AUDIO_SOURCE_UNANNOUNCED`. Changing the microphone device must replace the track on the existing
+  sender (`replaceTrack`), not add a second audio track.
+- An announcement dies with its share or webcam: a stop (or the end of the share) removes it, and a track never
+  binds to a share or webcam that has ended.
 - Permission: `SCREEN_SHARE` is part of the @everyone default (since 2026-11-20, existing servers migrated).
   Admins can deny it per channel with an override.
 - Compatibility: rc.5 clients add the track right before they send the start and do not wait. An accepted
   start still binds that track (it waits for the announcement); a refused start leaves the track dropped and
-  the client gets two `voice_error`s (the refusal, then `VIDEO_SOURCE_UNANNOUNCED`).
+  the client gets the refusal and then `VIDEO_SOURCE_UNANNOUNCED` (plus `AUDIO_SOURCE_UNANNOUNCED` when it also
+  added share audio).
 
 ### `voice_error` codes (all voice requests)
 
@@ -947,7 +952,7 @@ is unchanged (C32 retry).
 
 | code | when |
 |---|---|
-| `SCREEN_SHARE_FORBIDDEN`, `SCREEN_SHARE_LIMIT`, `VIDEO_SOURCE_UNANNOUNCED` | screen share and video (above) |
+| `SCREEN_SHARE_FORBIDDEN`, `SCREEN_SHARE_LIMIT`, `VIDEO_SOURCE_UNANNOUNCED`, `AUDIO_SOURCE_UNANNOUNCED` | screen share, video and audio (above) |
 | `CHANNEL_FULL` | `voice_join` into a channel whose `user_limit` (or the server cap of 25) is reached. A user who is already in the room (another device, a stale session) may always join again: the new session replaces the old one (C31 `session_replaced`). No role bypasses the limit |
 | `JOIN_REFUSED` | `voice_join` into a DM call when the user and another participant of the DM blocked each other (either direction). The message does not say who |
 | `UNAUTHORIZED` | no `VIEW_CHANNEL` / `VOICE_CONNECT` |

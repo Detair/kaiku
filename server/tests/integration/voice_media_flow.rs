@@ -396,3 +396,123 @@ async fn second_socket_join_replaces_the_session(pool: PgPool) {
         "the new session was told it was removed"
     );
 }
+
+/// Audio follows the same rule as video: a refused share's audio (rc.5
+/// order: tracks first, start after) reaches nobody, there is never a
+/// second microphone, and the sender gets `AUDIO_SOURCE_UNANNOUNCED`.
+#[sqlx::test]
+async fn refused_share_audio_reaches_no_viewer(pool: PgPool) {
+    let f = fixture(pool.clone()).await;
+    let everyone: Uuid =
+        sqlx::query_scalar("SELECT id FROM guild_roles WHERE guild_id = $1 AND is_default")
+            .bind(f.guild)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    sqlx::query(
+        "INSERT INTO channel_overrides (id, channel_id, role_id, allow_permissions, deny_permissions)
+         VALUES ($1, $2, $3, 0, $4)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(f.voice)
+    .bind(everyone)
+    .bind(GuildPermissions::SCREEN_SHARE.to_db())
+    .execute(&pool)
+    .await
+    .unwrap();
+    let (mut a, b) = two_in_call(&f).await;
+
+    a.add_track(true, "screen").await;
+    a.add_track(false, "screen-audio").await;
+    a.publish().await;
+    let mut share = serde_json::json!(share_start(f.voice, Uuid::new_v4()));
+    share["has_audio"] = serde_json::json!(true);
+    a.send(share);
+    let mut codes = Vec::new();
+    while let Some(err) = a
+        .try_next_matching(Duration::from_secs(8), |ev| ev["type"] == "voice_error")
+        .await
+    {
+        codes.push(err["code"].as_str().unwrap_or_default().to_owned());
+        if codes.len() == 3 {
+            break;
+        }
+    }
+    codes.sort();
+    assert_eq!(
+        codes,
+        [
+            "AUDIO_SOURCE_UNANNOUNCED",
+            "SCREEN_SHARE_FORBIDDEN",
+            "VIDEO_SOURCE_UNANNOUNCED"
+        ],
+        "answers to the refused share"
+    );
+    let (active, _) = subscriber_counts(&f.app, f.voice, b.user_id).await;
+    assert_eq!(active, 1, "the viewer gets more than A's microphone");
+}
+
+/// An accepted share with audio: the viewer gets the screen audio under the
+/// share's stream id, next to (not instead of) the microphone.
+#[sqlx::test]
+async fn accepted_share_audio_is_forwarded_as_screen_audio(pool: PgPool) {
+    let f = fixture(pool).await;
+    let (mut a, b) = two_in_call(&f).await;
+
+    let stream = Uuid::new_v4();
+    let mut share = share_start(f.voice, stream);
+    share["has_audio"] = serde_json::json!(true);
+    a.send(share);
+    a.next_event("screen_share_started", WAIT).await;
+    a.add_track(true, "screen").await;
+    a.add_track(false, "screen-audio").await;
+    a.publish().await;
+
+    let audio = format!("{}:screen_audio:{stream}", a.user_id);
+    assert!(
+        b.wait_for_packets(&audio, 5, WAIT).await,
+        "viewer did not get the screen audio: {:?}",
+        b.seen_tracks()
+    );
+    let mic = mic_track(a.user_id);
+    let before = b.packets(&mic);
+    assert!(b.wait_for_packets(&mic, before + 5, WAIT).await, "mic stopped");
+}
+
+/// A share that was stopped before its track came leaves no announcement:
+/// the next video (a webcam) is forwarded as the webcam.
+#[sqlx::test]
+async fn stopped_share_does_not_bind_a_later_webcam(pool: PgPool) {
+    let f = fixture(pool).await;
+    let (mut a, b) = two_in_call(&f).await;
+
+    let stream = Uuid::new_v4();
+    a.send(share_start(f.voice, stream));
+    a.next_event("screen_share_started", WAIT).await;
+    a.send(serde_json::json!({
+        "type": "voice_screen_share_stop",
+        "channel_id": f.voice,
+        "stream_id": stream,
+    }));
+    a.next_event("screen_share_stopped", WAIT).await;
+    a.send(serde_json::json!({
+        "type": "voice_webcam_start",
+        "channel_id": f.voice,
+        "quality": "medium",
+    }));
+    a.next_event("webcam_started", WAIT).await;
+    a.add_track(true, "cam").await;
+    a.publish().await;
+
+    let cam = format!("{}:webcam", a.user_id);
+    assert!(
+        b.wait_for_packets(&cam, 5, WAIT).await,
+        "webcam not forwarded as webcam: {:?}",
+        b.seen_tracks()
+    );
+    assert!(
+        !b.seen_tracks().iter().any(|t| t.contains(":screen_video:")),
+        "{:?}",
+        b.seen_tracks()
+    );
+}

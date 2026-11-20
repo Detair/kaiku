@@ -103,18 +103,54 @@ pub const UNANNOUNCED_TRACK_GRACE: Duration = Duration::from_secs(3);
 
 /// Drop a video track that has no announced source: it gets no forwarder
 /// and no subscriber tracks, and the sender learns why.
-async fn reject_unannounced_track(peer: &Peer, track: &webrtc::track::track_remote::TrackRemote) {
+async fn reject_unannounced_track(
+    peer: &Peer,
+    track: &webrtc::track::track_remote::TrackRemote,
+    video: bool,
+) {
     warn!(
         user_id = %peer.user_id,
         channel_id = %peer.channel_id,
         track_id = %track.id(),
-        "Dropping video track without an announced source"
+        video,
+        "Dropping track without an announced source"
     );
-    let event = OutboundMsg::Event(crate::ws::handlers::voice_error_event(
-        &VoiceError::VideoSourceUnannounced,
-    ));
+    let error = if video {
+        VoiceError::VideoSourceUnannounced
+    } else {
+        VoiceError::AudioSourceUnannounced
+    };
+    let event = OutboundMsg::Event(crate::ws::handlers::voice_error_event(&error));
     if let Err(e) = send_outbound_within(&peer.signal_tx, event, PEER_SIGNAL_SEND_TIMEOUT).await {
-        debug!(user_id = %peer.user_id, error = %e, "Could not report dropped video track");
+        debug!(user_id = %peer.user_id, error = %e, "Could not report dropped track");
+    }
+}
+
+/// The oldest announced source for a new track of `peer` whose share or
+/// webcam is still live, waiting up to [`UNANNOUNCED_TRACK_GRACE`].
+/// Announcements whose share or webcam ended meanwhile are discarded.
+///
+/// webrtc-rs runs the track callbacks of one connection one after another,
+/// so this wait also holds back that participant's next track (bounded by
+/// the grace).
+async fn take_live_source(peer: &Peer, room: &Room, video: bool) -> Option<TrackSource> {
+    let deadline = tokio::time::Instant::now() + UNANNOUNCED_TRACK_GRACE;
+    loop {
+        let source = peer.take_source_until(video, deadline).await?;
+        let live = match source {
+            TrackSource::ScreenVideo(id) | TrackSource::ScreenAudio(id) => room
+                .screen_shares
+                .read()
+                .await
+                .get(&id)
+                .is_some_and(|share| share.user_id == peer.user_id),
+            TrackSource::Webcam => room.webcams.read().await.contains_key(&peer.user_id),
+            TrackSource::Microphone => true,
+        };
+        if live {
+            return Some(source);
+        }
+        debug!(user_id = %peer.user_id, source = %source, "Discarding announcement of an ended source");
     }
 }
 
@@ -935,27 +971,30 @@ impl SfuServer {
                             return;
                         }
                     } else {
-                        match track.kind() {
-                            RTPCodecType::Audio => peer
-                                .pop_pending_audio_source()
-                                .await
-                                .unwrap_or(TrackSource::Microphone),
-                            // A video track needs an announced source
-                            // (`voice_screen_share_start` / `voice_webcam_start`,
-                            // accepted). One that stays unannounced is never
-                            // forwarded (contract C30).
-                            RTPCodecType::Video => {
-                                let Some(source) =
-                                    peer.take_video_source_within(UNANNOUNCED_TRACK_GRACE).await
-                                else {
-                                    reject_unannounced_track(&peer, &track).await;
-                                    return;
-                                };
-                                source
-                            }
+                        // Every track needs a source the server accepted
+                        // (contract C30): the first audio track is the
+                        // microphone (announced by the join); any further
+                        // audio needs an accepted share with audio, video an
+                        // accepted share or webcam start. One that stays
+                        // unannounced is never forwarded.
+                        let video = match track.kind() {
+                            RTPCodecType::Audio if peer.claim_microphone() => None,
+                            RTPCodecType::Audio => Some(false),
+                            RTPCodecType::Video => Some(true),
                             RTPCodecType::Unspecified => {
                                 warn!("Unspecified track kind: {:?}", track.kind());
                                 return;
+                            }
+                        };
+                        match video {
+                            None => TrackSource::Microphone,
+                            Some(video) => {
+                                let Some(source) = take_live_source(&peer, &room, video).await
+                                else {
+                                    reject_unannounced_track(&peer, &track, video).await;
+                                    return;
+                                };
+                                source
                             }
                         }
                     };
@@ -964,6 +1003,14 @@ impl SfuServer {
                     // being resolved must not touch the room (its user may
                     // have a new peer here already).
                     if peer.is_retired() {
+                        return;
+                    }
+                    // One track per source: a key that is taken stays with its
+                    // first track (no second forwarder into its subscribers).
+                    if !is_secondary_simulcast
+                        && peer.incoming_tracks.read().await.contains_key(&source_type)
+                    {
+                        warn!(user_id = %uid, source = %source_type, "Dropping a second track for a taken source");
                         return;
                     }
 

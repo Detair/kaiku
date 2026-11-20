@@ -709,6 +709,7 @@ async fn rate_limit_voice_and_call_codes_are_upper_snake() {
             VoiceError::ScreenShareForbidden,
             VoiceError::ScreenShareLimit("x"),
             VoiceError::VideoSourceUnannounced,
+            VoiceError::AudioSourceUnannounced,
             VoiceError::JoinRefused,
         ],
     )
