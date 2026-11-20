@@ -131,7 +131,9 @@
 //! retried with backoff; the socket stays open. When the scope recovers and
 //! something was dropped, the socket closes with 1011 `RESYNC` (spread over a
 //! few seconds) so the client reconnects and catches up. Only after failing
-//! for [`FAILURE_CLOSE_AFTER`] does the socket close with 1011 regardless.
+//! for [`FAILURE_CLOSE_AFTER`] does the socket close with 1011 regardless —
+//! when the socket's own revalidation fails then, and when a read an
+//! `admin_subscribe` asked for does ([`AdminSubscription::Failed`]).
 //! The forwarder never drops for a stale or failing scope; the writer does,
 //! in one place ([`SocketAccess`]'s decision loop).
 //!
@@ -687,7 +689,11 @@ pub enum ChannelScope {
 
 /// A revalidation could not be completed (database error, timeout, or still
 /// in backoff after such an error).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// As a client request's error it means that the socket's access checks
+/// have kept failing for [`FAILURE_CLOSE_AFTER`]: the socket ends (1011).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("access could not be checked for too long")]
 pub struct AccessCheckFailed;
 
 /// What a socket knows about one scope: the user (membership, roles, DMs),
@@ -900,6 +906,10 @@ pub enum AdminSubscription {
     /// moving. Given on purpose in those cases: it does not take what a
     /// frame's read settled meanwhile. Frames decide on their own reads.
     Undecided,
+    /// The read it asked for failed, and the socket's access checks have
+    /// been failing for [`FAILURE_CLOSE_AFTER`]: the socket ends, as on its
+    /// own revalidation.
+    Failed,
 }
 
 struct Failure {
@@ -1829,8 +1839,16 @@ impl SocketAccess {
                 Some((at, false)) => return self.reply_admin(at, AdminSubscription::Refused),
                 None => {}
             }
-            // Failed or in backoff: the socket's retry decides.
+            // Failed or in backoff: undecided, unless the checks have been
+            // failing for so long that the socket ends (the same rule as
+            // for the socket's own revalidation).
             if attempt.is_err() {
+                if self
+                    .failing_for()
+                    .is_some_and(|failing| failing >= FAILURE_CLOSE_AFTER)
+                {
+                    return AdminSubscription::Failed;
+                }
                 break;
             }
         }
@@ -3240,6 +3258,7 @@ mod tests {
                 assert!(access.is_stale(), "nothing left to decide it: {case}");
                 "undecided"
             }
+            AdminSubscription::Failed => panic!("one failure ended the socket: {case}"),
         };
         assert!(!access.take_resync(), "nothing was dropped: {case}");
 
@@ -3806,6 +3825,30 @@ mod tests {
             std::task::Poll::Ready(AdminSubscription::Undecided)
         );
         drop(gate);
+    }
+
+    /// The close after [`FAILURE_CLOSE_AFTER`] covers the reads an
+    /// `admin_subscribe` asks for as well: a client that asks, is answered
+    /// "not decided yet" on a failed read and withdraws the request, again
+    /// and again, is told to end the socket once the admin stream has been
+    /// failing that long, like the socket's own revalidation.
+    #[tokio::test(start_paused = true)]
+    async fn a_subscribe_whose_reads_keep_failing_ends_the_socket() {
+        let u = Uuid::new_v4();
+        let access = SocketAccess::new(u, lazy_pool());
+        install(&access, &[FAILS; 16], true, None);
+        let began = Instant::now();
+        loop {
+            let answer = access.subscribe_admin().await;
+            if began.elapsed() >= FAILURE_CLOSE_AFTER {
+                assert_eq!(answer, AdminSubscription::Failed, "the socket stays");
+                break;
+            }
+            assert_eq!(answer, AdminSubscription::Undecided);
+            access.unsubscribe_admin();
+            assert!(access.failing_for().is_none());
+            tokio::time::advance(ADMIN_SUBSCRIBE_COOLDOWN).await;
+        }
     }
 
     /// A read that began before the admin frame was taken does not decide
@@ -4479,6 +4522,7 @@ mod tests {
                     AdminSubscription::Allowed => self.read_between(since, until, true),
                     AdminSubscription::Refused => self.read_between(since, until, false),
                     AdminSubscription::Undecided => asked.at_once.is_some() || self.failed,
+                    AdminSubscription::Failed => self.failed,
                 };
                 if !justified {
                     return Err("a subscribe was answered without a read to say so");
