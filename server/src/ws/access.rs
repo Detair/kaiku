@@ -89,7 +89,8 @@
 //!    "no" only makes it not allowed; the next elevation bumps the user epoch and delivery comes
 //!    back without the client doing anything.
 //! 5. **A refused socket is told nothing.** A read that fails drops the frame and makes the scope
-//!    failing; the recovery asks for a resync only if it finds the stream allowed.
+//!    failing; the recovery asks for a resync only if it finds the stream allowed (the same holds
+//!    for the voice room).
 //!
 //! # Revalidation cost
 //!
@@ -2107,7 +2108,12 @@ impl SocketAccess {
                 .filter(|v| v.session_id == planned.session_id)
             {
                 if voice.guild_now() == planned.guild_now {
-                    resync |= voice.state.settle(fresh);
+                    // As for the admin stream: a recovery that finds the peer
+                    // no longer allowed owes it nothing (it is removed from
+                    // the room with `voice_removed`); only an allowed peer
+                    // that missed room events resynchronises.
+                    let dropped = voice.state.settle(fresh);
+                    resync |= dropped && ok;
                     if fresh {
                         voice.seen_user = planned.user_now;
                         voice.seen_guild = planned.guild_now;
@@ -3680,6 +3686,30 @@ mod tests {
                 guild_id: Some(g),
                 epochs: registry().snapshot(u, Some(g)),
             }),
+        }
+    }
+
+    /// The voice room follows the admin rule: room events dropped while its
+    /// revalidation was failing cause a resync only when the recovery finds
+    /// the peer still allowed. A peer whose access is confirmed gone is
+    /// removed from the room (`voice_removed`); the events it missed were
+    /// not its own.
+    #[tokio::test(start_paused = true)]
+    async fn a_voice_peer_found_not_allowed_is_not_resynced() {
+        for allowed in [false, true] {
+            let (u, g) = (Uuid::new_v4(), Uuid::new_v4());
+            let access = SocketAccess::new(u, lazy_pool());
+            let peer = voice_peer(u, g);
+            assert!(access.admit_voice(Some(&peer)).await);
+            registry().bump_guild(g);
+            install(&access, &[FAILS], allowed, None);
+            assert!(!access.admit_voice(Some(&peer)).await);
+            assert!(dropped(&access), "the undecided drop is recorded");
+
+            tokio::time::advance(RETRY_MAX + Duration::from_millis(1)).await;
+            assert!(access.refresh().await.is_ok());
+            assert!(!dropped(&access));
+            assert_eq!(access.take_resync(), allowed, "allowed={allowed}");
         }
     }
 
