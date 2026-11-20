@@ -82,6 +82,37 @@ class DmRepositorySessionTest {
         assertEquals(emptyList<DmConversation>(), repo.conversations.value)
     }
 
+    /** The session ends right after the next "still open?" check has read that it is. */
+    private fun endRightAfterTheNextOpenCheck() {
+        var armed = true
+        sessions.onRead = {
+            val inOpenCheck = Thread.currentThread().stackTrace
+                .firstOrNull { it.className.endsWith("SessionGeneration") }?.methodName?.contains("isOpen") == true
+            if (armed && inOpenCheck) {
+                armed = false
+                sessions.signOut()
+            }
+        }
+    }
+
+    @Test
+    fun `socket events checked just before the session ends change nothing of the next account's list`() = runTest {
+        val repo = repository()
+        runCurrent()
+        // A conversation created on another device, a read and a message: each checked as Anna's,
+        // and her session ends right after that check.
+        val created = KaikuJson.encodeToJsonElement(DmConversation.serializer(), dm("dm-carl", "anna", "carl")) as kotlinx.serialization.json.JsonObject
+        endRightAfterTheNextOpenCheck()
+        events.tryEmit(ServerEvent.DmCreated(created))
+        runCurrent()
+        sessions.onRead = {}
+        sessions.signIn("bert")
+        events.tryEmit(ServerEvent.Ready("bert"))
+        runCurrent()
+
+        assertEquals("Anna's conversation is in Bert's list", emptyList<DmConversation>(), repo.conversations.value)
+    }
+
     @Test
     fun `the advance clears the list itself, also when no teardown ran before`() = runTest {
         coEvery { api.getDms() } returns listOf(dm("dm-carl", "anna", "carl"))

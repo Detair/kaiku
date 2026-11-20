@@ -72,9 +72,9 @@ class DmRepository @Inject constructor(
             webSocket.events.collect { event ->
                 if (event is ServerEvent.Ready) socketAccount = event.userId
                 when (event) {
-                    is ServerEvent.DmCreated -> forSocketAccount(socketAccount) { onDmCreated(event) }
+                    is ServerEvent.DmCreated -> forSocketAccount(socketAccount) { onDmCreated(event, it) }
                     is ServerEvent.MessageNew -> forSocketAccount(socketAccount) { onMessageNew(event, it) }
-                    is ServerEvent.DmRead -> forSocketAccount(socketAccount) { onDmRead(event) }
+                    is ServerEvent.DmRead -> forSocketAccount(socketAccount) { onDmRead(event, it) }
                     else -> Unit
                 }
             }
@@ -86,6 +86,18 @@ class DmRepository @Inject constructor(
         val session = sessions.enter(account ?: return)?.takeIf { it.open } ?: return
         block(session)
     }
+
+    /**
+     * Changes the list for an event of [session], checked in one step with the change, under
+     * the lock the session's end clears the list under (as [create] does): a session that ended
+     * meanwhile changes nothing. Returns whether it ran.
+     */
+    private inline fun publishFor(session: SessionGeneration.Ticket, change: () -> Unit): Boolean =
+        synchronized(epochLock) {
+            if (!session.open) return false
+            change()
+            true
+        }
 
     /** The open session's ticket, or null: no work for nobody or for a session that is ending. */
     private fun openSession(): SessionGeneration.Ticket? = sessions.enter()?.takeIf { it.open }
@@ -327,7 +339,7 @@ class DmRepository @Inject constructor(
         val active = event.channelId == activeChannelId.value
         val own = message.author.id == session.userId
         var duplicate = false
-        _conversations.update { current ->
+        val published = publishFor(session) { _conversations.update { current ->
             val updated = current.map {
                 when {
                     it.id != event.channelId -> it
@@ -349,8 +361,8 @@ class DmRepository @Inject constructor(
             // The updated conversation goes first before the (stable) sort, so it wins a tie.
             val (moved, rest) = if (duplicate) emptyList<DmConversation>() to updated else updated.partition { it.id == event.channelId }
             sortByActivity(moved + rest)
-        }
-        if (active && !duplicate) markReadQuietly(event.channelId, session)
+        } }
+        if (published && active && !duplicate) markReadQuietly(event.channelId, session)
     }
 
     /** Marks [channelId] read in the signed-in session's scope (leaving the screen does not stop it); failures are logged. */
@@ -363,12 +375,14 @@ class DmRepository @Inject constructor(
      * the conversation's last message. A read up to an older message leaves
      * the count (the newer messages are still unread; their number is not known).
      */
-    private fun onDmRead(event: ServerEvent.DmRead) {
+    private fun onDmRead(event: ServerEvent.DmRead, session: SessionGeneration.Ticket) {
         val readUpTo = event.lastReadMessageId ?: return
-        // Kept for a list answer that is already on its way and still has the old count.
-        reads[event.channelId] = ReadMark(liveSeq.incrementAndGet(), readUpTo)
-        _conversations.update { current ->
-            current.map { if (it.id == event.channelId && it.lastMessage?.id == readUpTo) it.copy(unreadCount = 0) else it }
+        publishFor(session) {
+            // Kept for a list answer that is already on its way and still has the old count.
+            reads[event.channelId] = ReadMark(liveSeq.incrementAndGet(), readUpTo)
+            _conversations.update { current ->
+                current.map { if (it.id == event.channelId && it.lastMessage?.id == readUpTo) it.copy(unreadCount = 0) else it }
+            }
         }
     }
 
@@ -384,15 +398,17 @@ class DmRepository @Inject constructor(
         }
     }
 
-    private fun onDmCreated(event: ServerEvent.DmCreated) {
+    private fun onDmCreated(event: ServerEvent.DmCreated, session: SessionGeneration.Ticket) {
         val dm = try {
             json.decodeFromJsonElement<DmConversation>(event.channel)
         } catch (e: Exception) {
             logger.warning("Failed to decode dm_created payload (${e::class.simpleName})")
             return
         }
-        liveCreatedAt[dm.id] = liveSeq.incrementAndGet()
-        _conversations.update { sortByActivity(upsertAtTop(it, dm)) }
+        publishFor(session) {
+            liveCreatedAt[dm.id] = liveSeq.incrementAndGet()
+            _conversations.update { sortByActivity(upsertAtTop(it, dm)) }
+        }
     }
 
     companion object {

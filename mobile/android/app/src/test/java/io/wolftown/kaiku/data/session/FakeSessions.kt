@@ -17,11 +17,14 @@ class FakeSessions(user: String? = "me") {
     @Volatile
     var stored: String? = null
 
-    /** Runs on every read of the account state (to act at the exact moment something checks it). */
+    /**
+     * Runs right after every read of the account state, before the reader goes on with what it
+     * read (to act at the exact moment something has checked it).
+     */
     @Volatile
     var onRead: () -> Unit = {}
 
-    val generation = SessionGeneration({ onRead(); session }, { stored })
+    val generation = SessionGeneration({ session.also { onRead() } }, { stored })
 
     val sessionId: Long? get() = (session as? AuthSession.LoggedIn)?.sessionId
 
