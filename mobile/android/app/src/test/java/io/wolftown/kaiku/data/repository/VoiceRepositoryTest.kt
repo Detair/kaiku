@@ -30,6 +30,7 @@ import io.wolftown.kaiku.service.VoiceCallService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
@@ -1299,17 +1300,33 @@ class VoiceRepositoryTest {
         verify(atLeast = 1) { VoiceCallService.stop(any()) }
     }
 
+    /** The signed-in session ends: the voice part of the hook, as the token store runs it. */
+    private fun signOut() {
+        // The owner runs on this test's thread and cannot finish while the hook waits for it.
+        repository.releaseWaitMs = 20
+        repository.endForSignOut()
+    }
+
+    /** Lets the cancelled owner finish, then waits for the release on its own thread. */
+    private fun kotlinx.coroutines.test.TestScope.releaseAfterSignOut() {
+        advanceUntilIdle()
+        assertTrue(repository.lastRelease!!.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        advanceUntilIdle()
+    }
+
     @Test
     fun `sign-out ends the call at once and nothing of it goes out afterwards`() = runTest {
         repository.joinChannel("ch-1")
         advanceUntilIdle()
         verifyJoins(1)
 
-        repository.endForSignOut()
+        signOut()
 
-        // Synchronously, before the account state is cleared: microphone and service released.
+        // Synchronously, before the account state is cleared: the session is over and the peer told.
         assertEquals(null, repository.currentChannelId.value)
         verify(exactly = 1) { webSocket.send(ClientEvent.VoiceLeave("ch-1")) }
+        // Behind the owner (which runs on this test's thread): microphone and service released.
+        releaseAfterSignOut()
         verify(atLeast = 1) { webRtcManager.closePeerConnections() }
         verify(atLeast = 1) { VoiceCallService.stop(any()) }
         verify(atLeast = 1) { audioRouteManager.abandonAudioFocus() }
@@ -1413,8 +1430,8 @@ class VoiceRepositoryTest {
         advanceUntilIdle()
         assertEquals(1, serviceEvents.subscriptionCount.value)
 
-        repository.endForSignOut()
-        advanceUntilIdle()
+        signOut()
+        releaseAfterSignOut()
 
         // No collector of the old session stays (a later Mute would fire twice), its callbacks are gone.
         assertEquals(0, serviceEvents.subscriptionCount.value)
@@ -1423,25 +1440,42 @@ class VoiceRepositoryTest {
     }
 
     @Test
-    fun `sign-out releases the media on another thread, never under the caller's locks, before it returns`() = runTest {
-        repository.joinChannel("ch-1")
-        advanceUntilIdle()
-        val storageLock = Any()
-        val caller = Thread.currentThread()
-        var releasedOn: Thread? = null
-        var heldTheLock = true
-        every { webRtcManager.closePeerConnections() } answers {
-            releasedOn = Thread.currentThread()
-            heldTheLock = Thread.holdsLock(storageLock)
-            rtcGen++
-            rtcGen
+    fun `sign-out releases the media on another thread, never under the caller's locks, before it returns`() {
+        // The owner on a thread of its own, as in the app: the sign-out can wait for it.
+        val ownerThread = java.util.concurrent.Executors.newSingleThreadExecutor()
+        val realScope = CoroutineScope(SupervisorJob() + ownerThread.asCoroutineDispatcher())
+        try {
+            repository = VoiceRepository(
+                webRtcManager = webRtcManager,
+                webSocket = webSocket,
+                audioRouteManager = audioRouteManager,
+                voiceServiceEvents = voiceServiceEvents,
+                micPermissionChecker = micPermissionChecker,
+                context = context,
+                voiceScope = realScope,
+            )
+            kotlinx.coroutines.runBlocking { kotlinx.coroutines.withTimeout(5_000) { repository.joinChannel("ch-1") } }
+            val storageLock = Any()
+            val caller = Thread.currentThread()
+            var releasedOn: Thread? = null
+            var heldTheLock = true
+            every { webRtcManager.closePeerConnections() } answers {
+                releasedOn = Thread.currentThread()
+                heldTheLock = Thread.holdsLock(storageLock)
+                rtcGen++
+                rtcGen
+            }
+
+            synchronized(storageLock) { repository.endForSignOut() }
+
+            assertTrue("media not released before sign-out went on", releasedOn != null)
+            assertTrue("released on the caller's thread", releasedOn !== caller)
+            assertTrue("released on the owner's thread", releasedOn?.name == "voice-release")
+            assertEquals(false, heldTheLock)
+        } finally {
+            realScope.cancel()
+            ownerThread.shutdown()
         }
-
-        synchronized(storageLock) { repository.endForSignOut() }
-
-        assertTrue("media not released before sign-out went on", releasedOn != null)
-        assertTrue("released on the caller's thread", releasedOn !== caller)
-        assertEquals(false, heldTheLock)
     }
 
     @Test
@@ -1504,7 +1538,7 @@ class VoiceRepositoryTest {
         assertEquals(null, repository.currentChannelId.value)
         assertEquals(null, repository.endNotice.value)
         assertEquals(
-            listOf(io.wolftown.kaiku.data.call.CallVoiceEnd("ch-1", io.wolftown.kaiku.data.call.VoiceEnd.Refused)),
+            listOf(io.wolftown.kaiku.data.call.CallVoiceEnd(0L, io.wolftown.kaiku.data.call.VoiceEnd.Refused)),
             ends,
         )
     }
@@ -1545,7 +1579,7 @@ class VoiceRepositoryTest {
         assertEquals(
             listOf(
                 io.wolftown.kaiku.data.call.CallVoiceEnd(
-                    "ch-1",
+                    0L,
                     io.wolftown.kaiku.data.call.VoiceEnd.Removed(VoiceRemovedReason.SessionReplaced),
                 )
             ),
@@ -1564,7 +1598,7 @@ class VoiceRepositoryTest {
         repository.leaveChannel()
         runCurrent()
         assertEquals(
-            listOf(io.wolftown.kaiku.data.call.CallVoiceEnd("ch-1", io.wolftown.kaiku.data.call.VoiceEnd.Left)),
+            listOf(io.wolftown.kaiku.data.call.CallVoiceEnd(0L, io.wolftown.kaiku.data.call.VoiceEnd.Left)),
             ends,
         )
     }

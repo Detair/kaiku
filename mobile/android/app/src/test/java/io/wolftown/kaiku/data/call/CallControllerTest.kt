@@ -91,17 +91,24 @@ class CallControllerTest {
         val voiceChannel = MutableStateFlow<String?>(null)
         var gate: RejoinGate? = null
 
+        /** The tag of the voice session asked for last. */
+        var tag = 0L
+
         /** Clock jump on top of virtual time (device sleep). */
         var slept = 0L
 
         val voice: VoiceRepository = mockk(relaxed = true) {
             every { callEnds } returns this@Rig.callEnds
             every { currentChannelId } returns voiceChannel
-            coEvery { joinCall(any(), any(), any()) } coAnswers {
-                gate = thirdArg()
+            coEvery { joinCall(any(), any<VoiceRepository.CallSession>()) } coAnswers {
+                val call = secondArg<VoiceRepository.CallSession>()
+                gate = call.gate
+                tag = call.tag
                 voiceChannel.value = firstArg()
             }
             coEvery { leaveChannel() } coAnswers { voiceChannel.value = null }
+            // Like the voice layer: only the call's own session is left.
+            coEvery { leaveCall(any()) } coAnswers { if (voiceChannel.value == dm) voiceChannel.value = null }
         }
         val socket: KaikuWebSocket = mockk(relaxed = true) { every { events } returns this@Rig.events }
         val auth = AuthState(test.backgroundScope).also { it.setLoggedIn("me") }
@@ -149,7 +156,7 @@ class CallControllerTest {
         runCurrent()
 
         assertEquals(listOf("join"), r.api.calls)
-        coVerify(exactly = 1) { r.voice.joinCall(dm, "Anna", any()) }
+        coVerify(exactly = 1) { r.voice.joinCall(dm, match<VoiceRepository.CallSession> { it.title == "Anna" }) }
         assertEquals(CallState.Connected(dm, "c-1", 0L, setOf("anna")), r.state)
         assertEquals(listOf("ring:c-1:Anna", "stop:c-1"), r.notifier.log)
     }
@@ -194,13 +201,13 @@ class CallControllerTest {
         runCurrent()
         assertEquals(listOf("start"), r.api.calls)
         assertEquals(CallState.Outgoing(dm, "c-1", 0L, voice = true), r.state)
-        coVerify(exactly = 1) { r.voice.joinCall(dm, "Anna", any()) }
+        coVerify(exactly = 1) { r.voice.joinCall(dm, match<VoiceRepository.CallSession> { it.title == "Anna" }) }
 
         advanceTimeBy(100_000); runCurrent()
 
         assertEquals(CallState.Ended(dm, CallEndReason.NoAnswer), r.state)
         assertEquals(listOf("start", "leave"), r.api.calls)
-        coVerify(exactly = 1) { r.voice.leaveChannel() }
+        coVerify(exactly = 1) { r.voice.leaveCall(any()) }
         advanceTimeBy(CallMachine.ENDED_SHOWN_MS); runCurrent()
         assertEquals(CallState.Idle, r.state)
     }
@@ -225,7 +232,7 @@ class CallControllerTest {
         r.controller.startCall(dm)
         runCurrent()
         assertEquals(CallState.Idle, r.state)
-        coVerify(exactly = 0) { r.voice.joinCall(any(), any(), any()) }
+        coVerify(exactly = 0) { r.voice.joinCall(any(), any<VoiceRepository.CallSession>()) }
     }
 
     @Test
@@ -258,7 +265,7 @@ class CallControllerTest {
         r.server(ServerEvent.Ready("me"))
         runCurrent()
         assertEquals(CallState.Idle, r.state)
-        coVerify(exactly = 1) { r.voice.leaveChannel() }
+        coVerify(exactly = 1) { r.voice.leaveCall(any()) }
         assertTrue("leave" !in r.api.calls)
     }
 
@@ -302,7 +309,7 @@ class CallControllerTest {
         r.ring()
         r.controller.accept(dm)
         runCurrent()
-        r.callEnds.tryEmit(CallVoiceEnd(dm, VoiceEnd.Removed(VoiceRemovedReason.SessionReplaced)))
+        r.callEnds.tryEmit(CallVoiceEnd(r.tag, VoiceEnd.Removed(VoiceRemovedReason.SessionReplaced)))
         runCurrent()
         assertEquals(CallState.Ended(dm, CallEndReason.Removed, VoiceRemovedReason.SessionReplaced), r.state)
         // Taking the call on another device must not end it for everyone.
@@ -319,7 +326,7 @@ class CallControllerTest {
         runCurrent()
         assertEquals(CallState.Ended(dm, CallEndReason.Left), r.state)
         assertEquals(listOf("join", "leave"), r.api.calls)
-        coVerify(exactly = 1) { r.voice.leaveChannel() }
+        coVerify(exactly = 1) { r.voice.leaveCall(any()) }
     }
 
     @Test
@@ -331,7 +338,9 @@ class CallControllerTest {
         r.voiceChannel.value = "guild-voice"
         r.server(ServerEvent.CallEnded(dm, "c-1", "last_left"))
         runCurrent()
+        // The leave names the call's own session; the voice layer leaves nothing else.
         coVerify(exactly = 0) { r.voice.leaveChannel() }
+        assertEquals("guild-voice", r.voiceChannel.value)
     }
 
     @Test
@@ -399,7 +408,7 @@ class CallControllerTest {
         val leavingPrevious = kotlinx.coroutines.CompletableDeferred<Unit>()
         val settingUp = kotlinx.coroutines.CompletableDeferred<Unit>()
         r.voiceChannel.value = "guild-voice" // the user is in a guild voice channel
-        coEvery { r.voice.joinCall(any(), any(), any()) } coAnswers {
+        coEvery { r.voice.joinCall(any(), any<VoiceRepository.CallSession>()) } coAnswers {
             val ch = firstArg<String>()
             try {
                 leavingPrevious.await() // like VoiceRepository leaving the guild channel first
@@ -450,7 +459,7 @@ class CallControllerTest {
     fun `the caller ending the call while the join runs also ends the join`() = runTest {
         val r = rig()
         val settingUp = kotlinx.coroutines.CompletableDeferred<Unit>()
-        coEvery { r.voice.joinCall(any(), any(), any()) } coAnswers {
+        coEvery { r.voice.joinCall(any(), any<VoiceRepository.CallSession>()) } coAnswers {
             r.voiceChannel.value = firstArg()
             try { settingUp.await() } catch (c: kotlinx.coroutines.CancellationException) {
                 r.voiceChannel.value = null
@@ -469,7 +478,7 @@ class CallControllerTest {
     fun `a late start answer after hang up is left on the server`() = runTest {
         val r = rig()
         val answer = kotlinx.coroutines.CompletableDeferred<Unit>()
-        coEvery { r.voice.joinCall(any(), any(), any()) } returns Unit
+        coEvery { r.voice.joinCall(any(), any<VoiceRepository.CallSession>()) } returns Unit
         val api = r.api
         r.controller.startCall(dm)
         r.controller.hangUp()
@@ -504,7 +513,7 @@ class CallControllerTest {
     @Test
     fun `a removal before the voice join was set up ends the call without telling the server`() = runTest {
         val r = rig()
-        coEvery { r.voice.joinCall(any(), any(), any()) } throws
+        coEvery { r.voice.joinCall(any(), any<VoiceRepository.CallSession>()) } throws
             io.wolftown.kaiku.data.voice.VoiceRemovedException(VoiceRemovedReason.SessionReplaced)
         r.ring()
         r.controller.accept(dm)
@@ -574,7 +583,7 @@ class CallControllerTest {
     fun `an ended call's voice leave never ends the next call's voice in the same conversation`() = runTest {
         val r = rig()
         val leaving = kotlinx.coroutines.CompletableDeferred<Unit>()
-        coEvery { r.voice.leaveChannel() } coAnswers {
+        coEvery { r.voice.leaveCall(any()) } coAnswers {
             leaving.await() // the first call's leave takes its time
             r.voiceChannel.value = null
         }

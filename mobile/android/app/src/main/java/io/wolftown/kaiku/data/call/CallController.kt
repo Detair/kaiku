@@ -112,7 +112,7 @@ class CallController @Inject constructor(
             webSocket.events.collect { onServerEvent(it) }
         }
         scope.launch(start = CoroutineStart.UNDISPATCHED) {
-            voice.callEnds.collect { send(CallEvent.VoiceEnded(it.channelId, it.why)) }
+            voice.callEnds.collect { end -> voiceTags.remove(end.tag)?.let { send(CallEvent.VoiceEnded(it, end.why)) } }
         }
         // Every session that ends (sign-out, expiry, another user): the call is over
         // (signed-in user). A sign-in alone changes nothing.
@@ -274,8 +274,12 @@ class CallController @Inject constructor(
         scope.launch { for (t in ch) t() }
     }
 
+    /** The voice sessions asked for, by their tag: an end is taken only for a session that is still on. */
+    private val voiceTags = java.util.concurrent.ConcurrentHashMap<Long, String>()
+    private val tags = java.util.concurrent.atomic.AtomicLong()
+
     /** One voice join of a call: cancelled by that call's leave, also before it started. */
-    private class VoiceTicket(val channelId: String) {
+    private class VoiceTicket(val channelId: String, val tag: Long) {
         private val lock = Any()
         private var job: Job? = null
         private var cancelled = false
@@ -390,13 +394,17 @@ class CallController @Inject constructor(
 
     private fun joinVoice(channelId: String, callId: String?) {
         voiceTicket?.cancel()
-        val ticket = VoiceTicket(channelId)
+        val ticket = VoiceTicket(channelId, tags.incrementAndGet())
+        voiceTags[ticket.tag] = channelId
         voiceTicket = ticket
         voiceLane.trySend {
             ticket.launch {
                 scope.launch {
                     try {
-                        voice.joinCall(channelId, directory.titleOf(channelId)) { mayRejoin(it) }
+                        voice.joinCall(
+                            channelId,
+                            VoiceRepository.CallSession({ mayRejoin(it) }, directory.titleOf(channelId), ticket.tag),
+                        )
                         send(CallEvent.VoiceJoined(channelId, clock.nowMs(), callId))
                     } catch (e: VoiceRemovedException) {
                         // Removed by the server before the join was set up: an end, not a failure.
@@ -425,9 +433,12 @@ class CallController @Inject constructor(
         val ticket = voiceTicket?.takeIf { it.channelId == channelId }
         if (ticket != null) voiceTicket = null
         val job = ticket?.cancel()
+        // Left by the call itself: its session's end is not news.
+        if (ticket != null) voiceTags.remove(ticket.tag)
         voiceLane.trySend {
             (job ?: ticket?.cancel())?.cancelAndJoin()
-            if (voice.currentChannelId.value == channelId) voice.leaveChannel()
+            // Only this call's session: check and leave are one step in the voice layer.
+            if (ticket != null) voice.leaveCall(ticket.tag)
         }
     }
 

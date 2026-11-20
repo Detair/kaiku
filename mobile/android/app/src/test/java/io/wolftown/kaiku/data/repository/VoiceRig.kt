@@ -82,7 +82,23 @@ internal fun rigTest(body: suspend TestScope.(VoiceRig) -> Unit) = runTest {
 internal class VoiceRig(private val test: TestScope) {
 
     val channel = "ch-1"
-    val log = mutableListOf<String>()
+
+    /** Thread-safe: the release of a sign-out runs on its own thread. */
+    val log: MutableList<String> = java.util.Collections.synchronizedList(mutableListOf<String>())
+
+    /** Who is signed in; [signOut] ends that session the way the token store does. */
+    val sessions = io.wolftown.kaiku.data.session.FakeSessions("me")
+
+    /**
+     * What reached the native connections, with the generation it was for:
+     * `track@n` (the microphone track attached to the publisher) and
+     * `close@n` (the connections of generation n closed and disposed).
+     */
+    val native: MutableList<String> = java.util.Collections.synchronizedList(mutableListOf<String>())
+
+    /** Calls into a connection that had already been closed and disposed. */
+    @Volatile
+    var callsIntoClosed = 0
 
     private val hooks = mutableMapOf<String, MutableList<() -> Unit>>()
     private val lastHooks = mutableMapOf<String, MutableList<() -> Unit>>()
@@ -122,7 +138,7 @@ internal class VoiceRig(private val test: TestScope) {
         stubWebRtc()
 
         val audioRouteManager: AudioRouteManager = mockk(relaxed = true)
-        every { audioRouteManager.requestAudioFocus() } answers { log += "audio:focus" }
+        every { audioRouteManager.requestAudioFocus(any()) } answers { log += "audio:focus" }
         every { audioRouteManager.abandonAudioFocus() } answers { log += "audio:abandon" }
 
         val voiceServiceEvents: VoiceServiceEvents = mockk(relaxed = true)
@@ -138,7 +154,27 @@ internal class VoiceRig(private val test: TestScope) {
             micPermissionChecker = micPermissionChecker,
             context = mockk<Context>(relaxed = true),
             voiceScope = voiceScope,
+            sessions = sessions.generation,
         )
+        // The owner runs on the test's own thread: a sign-out inside a step cannot wait for it.
+        repository.releaseWaitMs = 20
+    }
+
+    /**
+     * The signed-in session ends, at this very point: the hook's advance and
+     * its voice part, as the token store runs them, then the account state.
+     */
+    fun signOut() {
+        log += "SIGNOUT"
+        sessions.generation.advance()
+        repository.endForSignOut()
+        sessions.session = io.wolftown.kaiku.data.local.AuthSession.LoggedOut
+    }
+
+    /** Waits (real time) until the release of the last sign-out is done on its own thread. */
+    fun awaitRelease() {
+        val release = repository.lastRelease ?: return
+        assertTrue("the release of the sign-out never finished", release.await(5, java.util.concurrent.TimeUnit.SECONDS))
     }
 
     fun close() {
@@ -167,6 +203,7 @@ internal class VoiceRig(private val test: TestScope) {
         }
     }
 
+    @Synchronized
     private fun step(name: String) {
         val n = (reached[name] ?: 0) + 1
         reached[name] = n
@@ -351,9 +388,11 @@ internal class VoiceRig(private val test: TestScope) {
         every { rtc.onIceTrouble = any() } answers { iceTrouble = firstArg() }
         every { rtc.publisherLink } returns publisherLink
         every { rtc.currentGeneration } answers { generation }
+        every { rtc.setMuted(any()) } answers { step("mute") }
         every { rtc.closePeerConnections() } answers {
             step("close")
             log += "close"
+            native += "close@$generation"
             generation++
             publisherLink.value = PublisherLink(generation, false)
             generation
@@ -369,8 +408,15 @@ internal class VoiceRig(private val test: TestScope) {
         }
         coEvery { rtc.createPublisherOffer(any()) } coAnswers {
             step("pub:create")
+            val created = generation
             val installed = firstArg<SessionGuard>().runIfCurrent {}
             log += if (installed) "pub" else "pub-discarded"
+            if (installed) {
+                // Like WebRtcManager: the microphone track is created and attached after the install.
+                step("pub:installed")
+                if (created != generation) callsIntoClosed++
+                native += "track@$created"
+            }
             // Media connects when the server holds our peer on the socket that is up.
             if (installed && mediaConnects) connectPublisher()
             installed
@@ -409,6 +455,23 @@ internal class VoiceRig(private val test: TestScope) {
         repository.startJoin(channel)
         test.runCurrent()
         assertCallUp(joins = listOf(1L))
+    }
+
+    /** Joins [channel] on the authenticated socket and waits until the call is up (any number of sockets before). */
+    fun joinAndConnectFirst() {
+        repository.startJoin(channel)
+        test.runCurrent()
+        assertEquals(channel, repository.currentChannelId.value)
+        assertTrue("not connected: $log", repository.isConnected.value)
+    }
+
+    /** The channels of the `voice_join` frames and the `voice_leave` frames, in order. */
+    fun joinsAndLeaves(): List<String> = socket.frames.mapNotNull { (_, frame) ->
+        when (frame) {
+            is ClientEvent.VoiceJoin -> "join:${frame.channelId}"
+            is ClientEvent.VoiceLeave -> "leave:${frame.channelId}"
+            else -> null
+        }
     }
 
     /** The user leaves, as a second thread would at this very point. */

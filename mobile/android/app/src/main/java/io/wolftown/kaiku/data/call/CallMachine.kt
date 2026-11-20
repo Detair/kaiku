@@ -109,8 +109,11 @@ sealed interface VoiceEnd {
     data object Refused : VoiceEnd
 }
 
-/** A DM call's voice session ended ([io.wolftown.kaiku.data.repository.VoiceRepository.callEnds]). */
-data class CallVoiceEnd(val channelId: String, val why: VoiceEnd)
+/**
+ * A DM call's voice session ended ([io.wolftown.kaiku.data.repository.VoiceRepository.callEnds]).
+ * [tag] is the name the call layer gave that session when it asked for it.
+ */
+data class CallVoiceEnd(val tag: Long, val why: VoiceEnd)
 
 /** What `GET /api/dm/{id}/call` said, reduced to what the machine needs. */
 data class CallSnapshot(
