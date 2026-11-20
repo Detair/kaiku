@@ -52,19 +52,18 @@ object CallIntents {
     }
 
     /**
-     * What a notification broadcast of [action] for [ring] means to the
-     * call owner at [nowMs], or null for nothing: Decline declines exactly
-     * that call; the ring notification going away after its time is the
-     * ring's end (a missed call only once the owner knows that nobody answered
-     * or declined it here or elsewhere), going away earlier was the user's
-     * swipe and changes nothing.
-     */
-    /**
      * The first of the four request codes of a ring notification's intents: per conversation
      * and call, so the intents of a ring are never changed into another call's.
      */
     fun ringRequestBase(channelId: String, callId: String): Int = "ring-$channelId-$callId".hashCode() * 4
 
+    /**
+     * What a notification broadcast of [action] for [ring] means to the
+     * call owner at [nowMs], or null for nothing: Decline declines exactly
+     * that call; the ring notification going away after its time is the
+     * ring's end here (whether it was missed is decided by the call's end),
+     * going away earlier was the user's swipe and changes nothing.
+     */
     fun inputOf(action: String?, ring: Ring, nowMs: Long): CallInput? = when (action) {
         ACTION_DECLINE -> CallInput.Decline(ring.ref())
         ACTION_RING_GONE -> {

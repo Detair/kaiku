@@ -778,11 +778,6 @@ class VoiceRepository @Inject constructor(
     }
 
     /**
-     * Leaves the voice session of the DM call [tag] if it is the current
-     * one. Any other session (a voice channel the user moved to, another
-     * call) is left alone: check and leave are one step under the door.
-     */
-    /**
      * Closes the voice session of the DM call [tag], if it is the running one, at once and
      * without waiting: from here on it sends no `voice_join` (also not a rejoin already
      * allowed) and opens no connection. No call into WebRTC; the teardown follows through
@@ -798,6 +793,11 @@ class VoiceRepository @Inject constructor(
         }
     }
 
+    /**
+     * Leaves the voice session of the DM call [tag] if it is the current
+     * one. Any other session (a voice channel the user moved to, another
+     * call) is left alone: check and leave are one step under the door.
+     */
     suspend fun leaveCall(tag: Long) {
         closeCall(tag)
         withContext(NonCancellable) {
@@ -1004,11 +1004,11 @@ class VoiceRepository @Inject constructor(
         logger.info("Voice session ended at sign-out")
     }
 
-    /** Runs the release of a sign-out ([endForSignOut]) on its own thread. */
     /** Runs on the release thread right before a sign-out's stop of a held service (tests). */
     @Volatile
     internal var beforeHoldStop: () -> Unit = {}
 
+    /** Runs the release of a sign-out ([endForSignOut]) on its own thread. */
     private val releaseScope = CoroutineScope(
         SupervisorJob() + java.util.concurrent.Executors.newSingleThreadExecutor { r ->
             Thread(r, "voice-release").apply { isDaemon = true }
