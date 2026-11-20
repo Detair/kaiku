@@ -318,9 +318,9 @@ pub async fn code(
             // The flow changed meanwhile (a cancel, another entry): roll
             // back, the code stays unspent.
             // The flow lives as long as the enrolment the code opened.
-            let ttl_ms = super::desktop::PENDING_RESULT_TTL_SECS.max(
-                crate::approvals::pc_setup::ENROLLMENT_MINUTES * 60,
-            ) * 1000;
+            let ttl_ms = super::desktop::PENDING_RESULT_TTL_SECS
+                .max(crate::approvals::pc_setup::ENROLLMENT_MINUTES * 60)
+                * 1000;
             if !cas(&state, flow_id, &stored.raw, Some(&flow), Some(ttl_ms)).await? {
                 return Err(ApprovalError::State);
             }

@@ -2350,10 +2350,28 @@ async fn a_passkey_limit_in_the_browser_reaches_the_app(pool: PgPool) {
     }
     // The options call is refused; the flow stays for the page to hand it on.
     let r = pc_options(&p, &flow, Some(&cookie)).await;
-    assert_eq!((r.status, r.json()["error"].as_str()), (409, Some("PASSKEY_LIMIT")), "{}", r.body);
+    assert_eq!(
+        (r.status, r.json()["error"].as_str()),
+        (409, Some("PASSKEY_LIMIT")),
+        "{}",
+        r.body
+    );
     // The page, reloaded, hands the refusal to the app's loopback listener.
-    let page = browser(&p.app.router, Method::GET, &flow.path, None, None, Some(&cookie)).await;
-    assert_eq!(hidden(&page.body, "error").as_deref(), Some("PASSKEY_LIMIT"), "{}", page.body);
+    let page = browser(
+        &p.app.router,
+        Method::GET,
+        &flow.path,
+        None,
+        None,
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(
+        hidden(&page.body, "error").as_deref(),
+        Some("PASSKEY_LIMIT"),
+        "{}",
+        page.body
+    );
 }
 
 #[sqlx::test]
@@ -2382,7 +2400,13 @@ async fn the_code_field_accepts_a_pasted_code_with_spaces(pool: PgPool) {
     let flow = pc_flow(&p, &id).await;
     let page = browser(&p.app.router, Method::GET, &flow.path, None, None, None).await;
     assert_eq!(page.status, 200);
-    assert!(!page.body.contains("maxlength=\"6\""), "a pasted \"123 456\" must not be cut");
-    assert!(!page.body.contains("pattern="), "the page's own check gives the message");
+    assert!(
+        !page.body.contains("maxlength=\"6\""),
+        "a pasted \"123 456\" must not be cut"
+    );
+    assert!(
+        !page.body.contains("pattern="),
+        "the page's own check gives the message"
+    );
     assert!(page.body.contains("novalidate"));
 }

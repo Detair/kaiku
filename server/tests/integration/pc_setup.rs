@@ -3172,7 +3172,11 @@ async fn a_scan_checks_the_scanning_device_before_the_account_setting(pool: PgPo
     .await
     .unwrap();
     let (s, b) = claim(&p.app, &p.dev, &token).await;
-    assert_eq!((s, b["error"].as_str()), (403, Some("KEY_DEVICE_REQUIRED")), "{b}");
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (403, Some("KEY_DEVICE_REQUIRED")),
+        "{b}"
+    );
 }
 
 #[sqlx::test]
@@ -3187,5 +3191,9 @@ async fn another_account_sees_a_claimed_code_as_its_own_answer(pool: PgPool) {
         .unwrap();
     let q = pc(&pool).await;
     let (s, b) = claim(&q.app, &q.dev, &b64u_encode(&bytes)).await;
-    assert_eq!((s, b["error"].as_str()), (409, Some("PC_SETUP_OTHER_ACCOUNT")), "{b}");
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (409, Some("PC_SETUP_OTHER_ACCOUNT")),
+        "{b}"
+    );
 }

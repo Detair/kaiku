@@ -358,7 +358,8 @@ const EN: Texts = Texts {
     pc_passkey_prompt: "Create the passkey for this computer.",
     pc_create: "Create passkey",
     pc_failed: "That didn't work. Try again.",
-    pc_already: "This passkey is already added to your account. Use another one, or go back to the app.",
+    pc_already:
+        "This passkey is already added to your account. Use another one, or go back to the app.",
 };
 
 const DE: Texts = Texts {

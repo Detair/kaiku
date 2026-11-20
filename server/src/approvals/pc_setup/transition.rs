@@ -879,7 +879,8 @@ pub async fn claim_tx(
     // account's setting, then the attempt's state, also when a poll or the
     // sweep ended it before this request.
     let dev = key_device_session(conn, auth).await?;
-    if !locked.account.may_approve || locked.end_reason() == Some(EndCause::MayApproveOff.as_str()) {
+    if !locked.account.may_approve || locked.end_reason() == Some(EndCause::MayApproveOff.as_str())
+    {
         return Err(ApprovalError::NotAllowed);
     }
     if locked.end_reason().is_some() {
