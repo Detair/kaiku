@@ -26,7 +26,7 @@ VIEW = "android.intent.action.VIEW"
 CATEGORIES = {"android.intent.category.DEFAULT", "android.intent.category.BROWSABLE"}
 LOOSE = ("pathPrefix", "pathPattern", "pathSuffix", "pathAdvancedPattern", "port")
 EXACT_DATA = {"scheme", "host", "path"}
-MAIN = ".ui.MainActivity"
+MAIN = "io.wolftown.kaiku.ui.MainActivity"
 
 
 def parse(tree: str) -> list[dict]:
@@ -68,13 +68,23 @@ def host_matches(pattern: str, host: str) -> bool:
     return pattern == host
 
 
+def full_name(name: str, package: str) -> str:
+    """A component name as Android resolves it: ".X" and a name without a dot are in the manifest's package."""
+    if name.startswith("."):
+        return package + name
+    if "." not in name:
+        return f"{package}.{name}" if package else name
+    return name
+
+
 def components(nodes: list[dict]):
-    """MainActivity and every activity-alias that targets it, as (element, is_alias)."""
+    """MainActivity (by its full class name) and every activity-alias that targets it, as (element, is_alias)."""
+    package = next((m["attrs"].get("package", "") for m in walk(nodes, "manifest")), "")
     for act in walk(nodes, "activity"):
-        if act["attrs"].get("name", "").endswith(MAIN):
+        if full_name(act["attrs"].get("name", ""), package) == MAIN:
             yield act, False
     for alias in walk(nodes, "activity-alias"):
-        if alias["attrs"].get("targetActivity", "").endswith(MAIN):
+        if full_name(alias["attrs"].get("targetActivity", ""), package) == MAIN:
             yield alias, True
 
 

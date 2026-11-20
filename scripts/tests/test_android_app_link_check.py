@@ -21,7 +21,13 @@ def attr(depth: int, name: str, value: str, raw: bool = True) -> str:
     return f"{pad}A: {NS}:{name}(0x01010000)={value}"
 
 
-def manifest(*filters: str, activity: str = "io.wolftown.kaiku.ui.MainActivity", alias: tuple[str, ...] = (), alias_target: str = "io.wolftown.kaiku.ui.MainActivity") -> str:
+def manifest(
+    *filters: str,
+    activity: str = "io.wolftown.kaiku.ui.MainActivity",
+    alias: tuple[str, ...] = (),
+    alias_target: str = "io.wolftown.kaiku.ui.MainActivity",
+    package: str | None = None,
+) -> str:
     """An aapt2 xmltree dump shaped like the real one, with the given intent filters on the activity.
 
     alias: intent filters of an activity-alias that targets alias_target.
@@ -29,6 +35,7 @@ def manifest(*filters: str, activity: str = "io.wolftown.kaiku.ui.MainActivity",
     lines = [
         "N: android=http://schemas.android.com/apk/res/android (line=2)",
         "  E: manifest (line=2)",
+        *([attr(4, "package", package)] if package else []),
         "      E: application (line=10)",
         "          E: activity (line=60)",
         attr(12, "name", activity),
@@ -177,6 +184,22 @@ class AppLinkCheckTest(unittest.TestCase):
     def test_only_main_activity_counts(self):
         tree = manifest(setup_filter(), activity="io.wolftown.kaiku.OtherActivity")
         self.assertTrue(check.problems(tree, HOST))
+
+    def test_main_activity_is_named_in_full(self):
+        # Another package's activity with the same simple name is not the app's MainActivity.
+        other = manifest(setup_filter(), activity="example.other.ui.MainActivity", package="io.wolftown.kaiku")
+        self.assertTrue(check.problems(other, HOST))
+        other_alias = manifest(
+            activity="example.other.Holder",
+            alias=(setup_filter(),),
+            alias_target="example.other.ui.MainActivity",
+            package="io.wolftown.kaiku",
+        )
+        self.assertTrue(check.problems(other_alias, HOST))
+        # A name relative to the manifest's package is resolved against it.
+        self.assertEqual([], check.problems(manifest(setup_filter(), activity=".ui.MainActivity", package="io.wolftown.kaiku"), HOST))
+        relative_other = manifest(setup_filter(), activity=".ui.MainActivity", package="example.other")
+        self.assertTrue(check.problems(relative_other, HOST))
 
     def test_cli_exit_codes(self):
         def run(tree: str, *args: str) -> int:
