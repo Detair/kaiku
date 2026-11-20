@@ -292,13 +292,17 @@ impl CallService {
             .await
             .map_err(|e| CallError::Redis(e.to_string()))?;
 
-        let Some(((_, first), (last_id, _))) = events.first().zip(events.last()) else {
+        let Some(((first_id, first), (last_id, _))) = events.first().zip(events.last()) else {
             return Ok(None);
         };
 
+        // The start time, or (missing or unreadable) the time of the
+        // stream's first entry, which Valkey stamps into its id.
+        let entry_ms = |id: &str| id.split('-').next().and_then(|ms| ms.parse::<i64>().ok());
         let started_at = first
             .get("started_ms")
             .and_then(|ms| ms.parse::<i64>().ok())
+            .or_else(|| entry_ms(first_id))
             .and_then(|ms| Utc.timestamp_millis_opt(ms).single())
             .unwrap_or_else(Utc::now);
         let targets: HashSet<Uuid> = first

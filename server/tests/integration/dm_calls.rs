@@ -875,3 +875,44 @@ async fn restart_cleanup_leaves_calls_of_this_process(pool: PgPool) {
         .expect("restart clean-up");
     assert_eq!(call_state(&fx).await["status"], "ringing");
 }
+
+/// A left-over ringing call whose start time is missing (an older or
+/// partly written entry) still ends at start-up: its age is read from the
+/// stream entry itself.
+#[sqlx::test]
+async fn restart_ends_a_ringing_call_without_a_start_time(pool: PgPool) {
+    use vc_server::voice::call_service::end_calls_left_ringing;
+
+    let fx = setup(&pool).await;
+    let redis = fx.app.state.redis.clone();
+    let key = format!("call_events:{}", fx.dm);
+    let old_ms = chrono::Utc::now().timestamp_millis() - 60_000;
+    let started = serde_json::json!({ "type": "started", "initiator": fx.caller }).to_string();
+    let targets = serde_json::json!([fx.callee]).to_string();
+    let call_id = Uuid::new_v4().to_string();
+    let _: String = redis
+        .xadd(
+            &key,
+            false,
+            None,
+            format!("{old_ms}-0"),
+            vec![
+                ("call_id", call_id.as_str()),
+                ("data", started.as_str()),
+                ("targets", targets.as_str()),
+            ],
+        )
+        .await
+        .unwrap();
+    let _: bool = redis.expire(&key, 600, None).await.unwrap();
+    assert_eq!(call_state(&fx).await["status"], "ringing");
+
+    let calls = CallService::new(redis.clone(), pool.clone());
+    end_calls_left_ringing(&calls, [fx.dm], chrono::Utc::now())
+        .await
+        .expect("restart clean-up");
+    assert!(
+        call_state(&fx).await.is_null(),
+        "the left-over call survived"
+    );
+}
