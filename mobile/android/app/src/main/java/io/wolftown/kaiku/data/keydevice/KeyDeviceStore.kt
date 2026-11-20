@@ -83,7 +83,8 @@ data class StoredKeyDevice(
     /**
      * [KeyDevicePhase.CLAIMED] with its code's time known: the phone's running time when the code
      * arrived ([codeReceived]) and how long, from then, until the code has run out with the margin
-     * ([codeWait]: its remaining life by the server's own time at that moment, plus the margin).
+     * ([codeWait]: its remaining life by the server's own time at that moment, never less than
+     * the server's code lifetime, plus the margin; [KeyAnswers.codeWait]).
      */
     val codeReceived: BootTime? = null,
     val codeWait: java.time.Duration? = null,

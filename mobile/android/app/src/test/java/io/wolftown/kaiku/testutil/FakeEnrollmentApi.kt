@@ -65,11 +65,15 @@ class FakeEnrollmentApi {
         val GIVEN = Exception("challenge given")
     }
 
+    /** Every challenge the server hands out has an id of its own; true: it hands out the first one again. */
+    var replayFirstChallenge = false
+
     fun popChallengeFor(publicKeyB64u: String, userId: String = SUBJECT_ID): ApprovalChallenge {
+        val n = if (replayFirstChallenge) 5 else 5 + (popCalls - 1).coerceAtLeast(0)
         val json = popContext("""{"enrollment_id":"55555555-5555-4555-8555-555555555555","new_key_hash":"${SigFixtures.b64u(SigFixtures.sha256(SigFixtures.unb64u(publicKeyB64u)))}","attestation_challenge":"${SigFixtures.b64u(nonce)}","subject_username":"${subject.username}"}""")
         val ctx = SigContext.fromJson(SigKind.ENROLL_POP, SigFixtures.json(json))
-        val prefix = SigFixtures.prefixFor(SigKind.ENROLL_POP, SigFixtures.challengeId(5), ctx, userId = popPrefixUser ?: userId)
-        return SigFixtures.challengeFor(SigKind.ENROLL_POP, 5, json, prefix = prefix)
+        val prefix = SigFixtures.prefixFor(SigKind.ENROLL_POP, SigFixtures.challengeId(n), ctx, userId = popPrefixUser ?: userId)
+        return SigFixtures.challengeFor(SigKind.ENROLL_POP, n, json, prefix = prefix)
     }
 
     val api = object : EnrollmentApi {

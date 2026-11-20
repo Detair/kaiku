@@ -171,6 +171,21 @@ class KeyAnswers @Inject constructor(
          */
         val CODE_MARGIN: Duration = Duration.ofMinutes(2)
 
+        /**
+         * How long a code lives on the server (`CODE_MINUTES` in the server's enrolments). The
+         * phone waits at least this long after a code arrived, whatever the answer's `Date` says
+         * (a clock in front of the server may run ahead); a longer lifetime on the server is still
+         * honoured through the `Date` it sends with the code.
+         */
+        val SERVER_CODE_LIFETIME: Duration = Duration.ofMinutes(5)
+
+        /**
+         * The phone's running time to wait after a code arrived: the code's remaining life (at
+         * least [SERVER_CODE_LIFETIME], or more if the server's `Date` says so) and [CODE_MARGIN].
+         */
+        fun codeWait(serverTime: Instant, codeExpires: Instant): Duration =
+            maxOf(SERVER_CODE_LIFETIME, Duration.between(serverTime, codeExpires)).plus(CODE_MARGIN)
+
         /** While only the phone's own time is left to pass, the probe is asked again at least this often. */
         val ASK_AGAIN_WHILE_WAITING: Duration = Duration.ofMinutes(5)
 
@@ -292,7 +307,8 @@ class KeyAnswers @Inject constructor(
      *    ([StoredKeyDevice.claimVoidAfter]: for a code that arrived with its time, the code's
      *    expiry plus [CODE_MARGIN]; otherwise the challenge's expiry plus [CLAIM_VOID_MARGIN]);
      * 2. the phone's running time is past the same span: since the code arrived, the code's
-     *    remaining life then plus [CODE_MARGIN] ([StoredKeyDevice.codeWait]); otherwise, since the
+     *    remaining life then (at least [SERVER_CODE_LIFETIME]) plus [CODE_MARGIN]
+     *    ([StoredKeyDevice.codeWait], [codeWait]); otherwise, since the
      *    claim was recorded, [CLAIM_LIFE_WITH_MARGIN];
      * 3. this probe was sent after 1 and 2 were found ([over], made by an earlier call here).
      * Until then the key stays and the probe is asked again. A record without its time gets one

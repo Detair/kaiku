@@ -663,6 +663,20 @@ class SetupOwnerTest {
         assertTrue(owner.offer(entry))
     }
 
+    /** The challenge the claim itself answered, handed out again, says nothing about the claim: the key stays. */
+    @Test fun `the claim's own challenge handed out again keeps the key`() = runTest {
+        val (first, f, owner) = lostClaim()
+        val key = f.keyStore.keyId()
+        enroll.replayFirstChallenge = true
+        first.onCleared()
+        val waiting = SetupPendingViewModel(owner)
+        waiting.check()
+        assertEquals(SetupUi.Ended(R.string.setup_claim_unsure, canRetry = true), waiting.ui.value)
+        assertEquals(KeyDevicePhase.CLAIMING, f.repo.phase())
+        assertEquals(key, f.keyStore.keyId())
+        assertTrue(f.store.writes.none { it == "clear" })
+    }
+
     /**
      * The last screen closes while the claim is on its way: the request is given up, the record
      * written before it and its key stay, no code is shown anywhere, and the next look asks the server.
@@ -1446,6 +1460,42 @@ class SetupOwnerTest {
         io.wolftown.kaiku.navigation.PendingSetupLinks.deliver(link, again::offer)
         io.wolftown.kaiku.navigation.PendingSetupLinks.deliver(link, again::offer)
         assertFalse(again.linkIgnored.value)
+        io.wolftown.kaiku.navigation.PendingSetupLinks.clear()
+    }
+
+    /**
+     * The claim answer's `Date` runs 3 minutes ahead (a clock in front of the server): it would
+     * leave the code 2 minutes. The phone still waits the server's code lifetime and the margin
+     * (5 + 2 minutes of its own time) before it lets go.
+     */
+    @Test fun `a server time running ahead never shortens the wait after a code`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        val codeExpires = Instant.parse(enroll.claimResult.codeExpiresAt)
+        enroll.claimResult = enroll.claimResult.copy(serverTime = codeExpires.minusSeconds(120))
+        val (owner, f) = phone()
+        val v = SetupFlowViewModel(owner)
+        v.start(entry)
+        enroll.statuses += ClaimStatus(EnrollmentState.EXPIRED)
+        approval.failWith = noKeyDeviceAt(codeExpires.plusSeconds(180))
+        v.confirmSubject(activity)
+        runCurrent()
+        assertEquals(SetupUi.CodeRanOut(7), v.ui.value)
+        // 4 minutes of the phone's own time: what the answer's `Date` alone would have allowed.
+        boot.advance(java.time.Duration.ofMinutes(4))
+        advanceTimeBy(5 * 60_000L + 6_000)
+        runCurrent()
+        advanceTimeBy(6_000)
+        runCurrent()
+        assertTrue(f.keyStore.hasKey())
+        assertTrue(v.ui.value is SetupUi.CodeRanOut)
+        // 7 minutes: now it lets go.
+        boot.advance(java.time.Duration.ofMinutes(3))
+        advanceTimeBy(5 * 60_000L + 6_000)
+        runCurrent()
+        advanceTimeBy(6_000)
+        runCurrent()
+        assertFalse(f.keyStore.hasKey())
+        assertEquals(SetupUi.Ended(R.string.setup_code_not_confirmed, canRetry = false), v.ui.value)
         io.wolftown.kaiku.navigation.PendingSetupLinks.clear()
     }
 

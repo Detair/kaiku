@@ -981,10 +981,11 @@ class SetupOwner internal constructor(
                 phase = KeyDevicePhase.CLAIMED,
                 // The code's own time, with the margin: until then a confirmation may still arrive.
                 claimVoidAfter = codeExpires.plus(KeyAnswers.CODE_MARGIN),
-                // The same span by the phone's running time, from now: the code's remaining life by
-                // the server's own time (when it said it), and the margin.
+                // The same span by the phone's running time, from now: the code's remaining life
+                // (never less than the server's code lifetime, whatever the answer's `Date` says)
+                // and the margin.
                 codeReceived = res.serverTime?.let { boot.now() },
-                codeWait = res.serverTime?.let { Duration.between(it, codeExpires).coerceAtLeast(Duration.ZERO).plus(KeyAnswers.CODE_MARGIN) },
+                codeWait = res.serverTime?.let { KeyAnswers.codeWait(it, codeExpires) },
             )
             // The code is shown only once storage says it was received. A stored `CLAIMING` therefore
             // always means: no code of this claim was ever on this phone's screen, in this run of
@@ -1047,7 +1048,9 @@ class SetupOwner internal constructor(
                 // still open; any other answer under that status proves nothing.
                 val thisEnrolment = try {
                     val ctx = signer.check(p.challenge, SigKind.ENROLL_POP, rec.device.userId, a.installId, ceremonyOrigin = a.origin).context as? EnrollPopContext
-                    ctx != null && ctx.enrollmentId == rec.device.enrollmentId && ctx.newKeyHash.contentEquals(KaikuSig.sha256(k.spki))
+                    ctx != null && ctx.enrollmentId == rec.device.enrollmentId && ctx.newKeyHash.contentEquals(KaikuSig.sha256(k.spki)) &&
+                        // Only a new challenge: the one the claim itself answered proves nothing.
+                        p.challenge.challengeId != a.pop?.challengeId
                 } catch (r: ChallengeRejected) {
                     false
                 }
