@@ -328,6 +328,8 @@ pub struct StatusResponse {
     /// `active` or `pending` once done.
     pub authenticator_state: Option<String>,
     pub ready_at: Option<DateTime<Utc>>,
+    /// The enrolment this answer is about (additive; after the fields above).
+    pub enrollment_id: Uuid,
 }
 
 /// A claim that carries the issuing client's own request secret or ticket
@@ -1032,7 +1034,17 @@ pub async fn lock_issued_by(
 /// SM2 status for the claiming device (long-poll ≤ 25 s, re-read every 500 ms, DC13).
 ///
 /// Unknown id or wrong claim secret → 404 `ENROLLMENT_TOKEN_INVALID`; a known enrolment
-/// answers 200 with its state, also `cancelled`, `expired` or `failed`.
+/// answers 200 with its stored state, also `cancelled`, `expired` or `failed`.
+///
+/// `expired` is final: the code's time is over and no confirmation can succeed any more.
+/// For a `claimed` row past its code time the call first stores `expired` like the sweep
+/// (`expire_due`), in one statement under the row's lock that re-checks state and time,
+/// so it waits for a confirmation that holds the lock and then reads `done` if that
+/// confirmation committed. Lock order: this statement holds no other lock and takes only
+/// the enrolment row; a confirmation takes accounts, device and session rows, then the
+/// enrolment row (B.7), so neither waits for the other in the opposite order. It runs at
+/// most once per enrolment (only while the row is `claimed` and past due); every other
+/// read is a plain `SELECT`.
 pub async fn status(
     ctx: &AuthCtx<'_>,
     enrollment_id: Uuid,
@@ -1047,11 +1059,11 @@ pub async fn status(
         claim_secret.as_bytes(),
     );
     let mut first_state: Option<String> = None;
+    let mut settled = false;
     loop {
-        // A code past due reads `expired` before the sweep marks it.
-        let row: Option<(String, Option<Vec<u8>>, Option<String>)> = sqlx::query_as(
-            "SELECT CASE WHEN e.state = 'claimed' AND e.code_expires_at <= NOW()
-                         THEN 'expired' ELSE e.state END,
+        let row: Option<(String, bool, Option<Vec<u8>>, Option<String>)> = sqlx::query_as(
+            "SELECT e.state,
+                    COALESCE(e.state = 'claimed' AND e.code_expires_at <= NOW(), false),
                     e.claim_secret_hash,
                     COALESCE(
                         (SELECT d.state FROM approval_devices d WHERE d.enrollment_id = e.id LIMIT 1),
@@ -1061,11 +1073,23 @@ pub async fn status(
         .bind(enrollment_id)
         .fetch_optional(ctx.db)
         .await?;
-        let Some((state, hash, device_state)) = row else {
+        let Some((state, past_due, hash, device_state)) = row else {
             return Err(ApprovalError::EnrollmentTokenInvalid);
         };
         if !hash.is_some_and(|h| ct_eq(&h, &want)) {
             return Err(ApprovalError::EnrollmentTokenInvalid);
+        }
+        if past_due && !settled {
+            // Waits for a running confirmation; then the row says `done` or `expired`.
+            sqlx::query(
+                "UPDATE enrollments SET state = 'expired', ended_at = NOW()
+                  WHERE id = $1 AND state = 'claimed' AND code_expires_at <= NOW()",
+            )
+            .bind(enrollment_id)
+            .execute(ctx.db)
+            .await?;
+            settled = true;
+            continue;
         }
         let changed = first_state.as_ref().is_some_and(|s| *s != state);
         if changed || state != "claimed" || started.elapsed() >= wait {
@@ -1105,6 +1129,7 @@ pub async fn status(
                 state,
                 authenticator_state: device_state,
                 ready_at,
+                enrollment_id,
             });
         }
         first_state.get_or_insert(state);
