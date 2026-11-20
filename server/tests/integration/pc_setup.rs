@@ -1076,10 +1076,11 @@ async fn session_ended_or_device_revoked_stops_every_transition(pool: PgPool) {
     .execute(&pool)
     .await
     .unwrap();
+    // The revoked device gets the key-device refusal; the attempt ends.
     let (s, body) = answer(&p.app, &p.dev, &c, &bytes, Decision::Report).await;
     assert_eq!(
         (s, body["error"].as_str()),
-        (409, Some("APPROVAL_STATE")),
+        (403, Some("KEY_DEVICE_REQUIRED")),
         "{body}"
     );
     assert_eq!(
@@ -1243,11 +1244,11 @@ async fn fresh_start_restarts_the_live_attempt(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(st, "expired");
-    // The old approval goes nowhere.
+    // The old approval goes nowhere: its attempt ended (C26: 409).
     let (s, body) = answer(&p.app, &p.dev, &c, &bytes, Decision::Approve).await;
     assert_eq!(
         (s, body["error"].as_str()),
-        (410, Some("APPROVAL_EXPIRED")),
+        (409, Some("APPROVAL_STATE")),
         "{body}"
     );
     // The PC's cancel ends the new one.
@@ -2858,4 +2859,138 @@ async fn a_scan_in_the_attempts_last_instant_is_stale(pool: PgPool) {
         (404, Some("LOGIN_CODE_STALE")),
         "{b}"
     );
+}
+
+// ============================================================================
+// Answers for attempts that already ended, and for callers that are not the
+// claiming device
+// ============================================================================
+
+#[sqlx::test]
+async fn an_attempt_ended_by_a_poll_keeps_its_own_refusal(pool: PgPool) {
+    // may_approve off while the phone shows the context; the PC's poll ends it first.
+    let p = pc(&pool).await;
+    let (id, c, bytes) = claimed(&p).await;
+    set_may_approve(&pool, p.user, false).await;
+    pc_poll(&p, &id).await;
+    assert_eq!(attempt_state(&pool, &id).await.1.as_deref(), Some("may_approve_off"));
+    let (s, b) = answer(&p.app, &p.dev, &c, &bytes, Decision::Approve).await;
+    assert_eq!((s, b["error"].as_str()), (403, Some("APPROVAL_NOT_ALLOWED")), "{b}");
+
+    // The code ran out and the sweep ended the attempt before it was typed.
+    let p = pc(&pool).await;
+    let (id, code) = with_code(&p).await;
+    sqlx::query("UPDATE pc_setup_attempts SET code_expires_at = NOW() - INTERVAL '1 second' WHERE id = $1::uuid")
+        .bind(&id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    vc_server::approvals::pc_setup::transition::expire_due(&pool).await.unwrap();
+    assert_eq!(attempt_state(&pool, &id).await.1.as_deref(), Some("code_expired"));
+    let (s, b) = enter(&p, &p.token, &id, &code).await;
+    assert_eq!((s, b["error"].as_str()), (410, Some("APPROVAL_EXPIRED")), "{b}");
+}
+
+#[sqlx::test]
+async fn another_phone_learns_nothing_about_a_claim(pool: PgPool) {
+    let p = pc(&pool).await;
+    let (id, c, bytes) = claimed(&p).await;
+    let other = KeyDeviceFixture::insert(&pool, &p.app.config, p.user, "active").await;
+    // The attempt ran out; the other phone answers the first phone's challenge.
+    sqlx::query("UPDATE pc_setup_attempts SET expires_at = NOW() - INTERVAL '1 second', created_at = NOW() - INTERVAL '9 minutes' WHERE id = $1::uuid")
+        .bind(&id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (s, b) = answer(&p.app, &other, &c, &bytes, Decision::Approve).await;
+    assert_eq!((s, b["error"].as_str()), (404, Some("APPROVAL_NOT_FOUND")), "{b}");
+    // Nothing changed on its behalf.
+    assert_eq!(attempt_state(&pool, &id).await.0, "claimed");
+}
+
+#[sqlx::test]
+async fn a_foreign_code_is_told_apart_only_when_live_and_only_to_a_scanner(pool: PgPool) {
+    let p = pc(&pool).await;
+    let a = started(&p).await;
+    let (token, _) = qr_token(&a["qr_payload"]);
+    let q = pc(&pool).await;
+    // A scanner whose account may not confirm sign-ins gets that refusal.
+    set_may_approve(&pool, q.user, false).await;
+    let (s, b) = claim(&q.app, &q.dev, &token).await;
+    assert_eq!((s, b["error"].as_str()), (403, Some("APPROVAL_NOT_ALLOWED")), "{b}");
+    set_may_approve(&pool, q.user, true).await;
+    let (s, b) = claim(&q.app, &q.dev, &token).await;
+    assert_eq!((s, b["error"].as_str()), (409, Some("PC_SETUP_OTHER_ACCOUNT")), "{b}");
+    // The other PC's session ended: its code is no longer live.
+    end_session(&pool, p.sid).await;
+    let (s, b) = claim(&q.app, &q.dev, &token).await;
+    assert_eq!((s, b["error"].as_str()), (404, Some("LOGIN_CODE_STALE")), "{b}");
+}
+
+#[sqlx::test]
+async fn a_new_passkey_hints_authenticators_changed(pool: PgPool) {
+    use fred::interfaces::{ClientLike, EventInterface, PubsubInterface};
+    let p = pc(&pool).await;
+    let subscriber = p.app.state.redis.clone_new();
+    let _ = subscriber.connect();
+    subscriber.wait_for_connect().await.unwrap();
+    let () = subscriber
+        .subscribe(vc_server::ws::channels::user_events(p.user))
+        .await
+        .unwrap();
+    let mut rx = subscriber.message_rx();
+    completed(&p).await;
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            let msg = rx.recv().await.unwrap();
+            let v: Value = serde_json::from_str(&msg.value.convert::<String>().unwrap()).unwrap();
+            if v["type"] == "authenticators_changed" {
+                return;
+            }
+        }
+    })
+    .await
+    .expect("an authenticators_changed hint");
+}
+
+#[sqlx::test]
+async fn responses_with_a_token_or_code_are_not_stored(pool: PgPool) {
+    let p = pc(&pool).await;
+    let send = |method: Method, uri: String, bearer: String, body: Option<Value>| {
+        let app = &p.app;
+        async move {
+            let req = TestApp::request(method, &uri)
+                .header("Authorization", format!("Bearer {bearer}"))
+                .header("Content-Type", "application/json")
+                .body(body.map_or_else(Body::empty, |b| Body::from(b.to_string())))
+                .unwrap();
+            let resp = app.oneshot(req).await;
+            let cc = resp
+                .headers()
+                .get("cache-control")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned);
+            (resp.status().as_u16(), cc, body_to_json_lenient(resp).await)
+        }
+    };
+    let (s, cc, a) = send(Method::POST, "/auth/pc-setups".into(), p.token.clone(), Some(json!({}))).await;
+    assert_eq!((s, cc.as_deref()), (201, Some("no-store")), "{a}");
+    let id = id_of(&a);
+    for uri in [format!("/auth/pc-setups/{id}?wait=0"), "/auth/pc-setups/current".into()] {
+        let (s, cc, b) = send(Method::GET, uri.clone(), p.token.clone(), None).await;
+        assert_eq!((s, cc.as_deref()), (200, Some("no-store")), "{uri} {b}");
+    }
+    let (token, bytes) = qr_token(&send(Method::GET, "/auth/pc-setups/current".into(), p.token.clone(), None).await.2["qr_payload"]);
+    let (_, c) = claim(&p.app, &p.dev, &token).await;
+    let prefix = b64u_decode(c["signing_prefix"].as_str().unwrap()).unwrap();
+    let sig = p.dev.sign(&prefix, Decision::Approve, &bytes);
+    let cid = c["challenge_id"].as_str().unwrap();
+    let (s, cc, b) = send(
+        Method::POST,
+        format!("/api/pc-setups/{cid}/answer"),
+        p.dev.access_token.clone(),
+        Some(json!({"decision": "approve", "response": b64u_encode(&bytes), "signature": sig})),
+    )
+    .await;
+    assert_eq!((s, cc.as_deref()), (200, Some("no-store")), "{b}");
 }

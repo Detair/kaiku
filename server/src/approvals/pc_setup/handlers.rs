@@ -607,6 +607,7 @@ pub async fn passkey_finish(
     .await;
     let row = settle(tx, result).await?;
     crate::security_events::notices::spawn_pending_delivery(&state);
+    crate::approvals::devices::notify_authenticators_changed(&state, auth.id).await;
     tracing::info!(passkey_id = %row.id, "pc setup passkey added");
     Ok((StatusCode::CREATED, Json((&row).into())))
 }

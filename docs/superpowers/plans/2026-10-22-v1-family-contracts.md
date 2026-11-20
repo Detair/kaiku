@@ -943,6 +943,13 @@ Nothing below changes an existing contract entry; a client that does not know it
   | `POST /api/approvals/{challenge_id}/release` | – → 204 (dispatches to the `pc_setup` challenge; the attempt returns to `waiting`) |
   | `GET /api/pc-setups/{attempt_id}?wait=0..25` | → 200 `{state, reason\|null}` (the phone's poll while it shows the code; at most once a second, long-poll) |
 
+  `answer`, `refuse` and `release` answer 404 `APPROVAL_NOT_FOUND` to any caller but the device the
+  challenge was issued to, before anything is locked or changed; for that device an ended attempt answers
+  403 `APPROVAL_NOT_ALLOWED` (`may_approve` off) or 409 `APPROVAL_STATE`, also when a poll or the sweep ended
+  it first. A scan of another account's code answers 409 `PC_SETUP_OTHER_ACCOUNT` only to a scanner whose
+  account may approve, and only while that code is live (its session live, its account eligible); otherwise
+  403 `APPROVAL_NOT_ALLOWED` or 404 `LOGIN_CODE_STALE`. Every route of the feature answers with
+  `Cache-Control: no-store`; a new passkey sends the `authenticators_changed` hint.
   The code is returned **only** in the approve answer and never sent again; the app keeps it in memory
   while the attempt is in `code`. The phone checks, before UV, what B.2 lists, and displays only values of
   the parsed `context`.

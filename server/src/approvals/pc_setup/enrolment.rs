@@ -83,8 +83,9 @@ pub enum CodeOutcome {
 /// time → 410, any other ended or moved-on attempt → 409 (the PC reads the
 /// reason from its poll).
 fn not_live(locked: &LockedAttempt, want: AttemptState) -> Option<ApprovalError> {
-    match locked.ended_now {
-        Some(EndCause::CodeExpired) => Some(ApprovalError::Expired),
+    // Also when a poll or the sweep ended the attempt before this request.
+    match locked.end_reason() {
+        Some(r) if r == EndCause::CodeExpired.as_str() => Some(ApprovalError::Expired),
         Some(_) => Some(ApprovalError::State),
         None if locked.attempt.state() != want => Some(ApprovalError::State),
         None => None,

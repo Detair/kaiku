@@ -47,11 +47,24 @@ pub fn pc_setups_router(state: &AppState) -> Router<AppState> {
         .route("/{id}/refuse", post(pc_setup::handlers::refuse))
         .layer(from_fn_with_state(state.clone(), rate_limit_by_user))
         .layer(from_fn(with_category(RateLimitCategory::ApprovalLogin)));
-    steps.merge(pc_setup_poll_router(
-        state,
-        "/{id}",
-        get(pc_setup::handlers::phone_poll),
-    ))
+    steps
+        .merge(pc_setup_poll_router(
+            state,
+            "/{id}",
+            get(pc_setup::handlers::phone_poll),
+        ))
+        .layer(from_fn(no_store))
+}
+
+/// `Cache-Control: no-store`: these answers may carry a single-use secret
+/// (a "Set up this PC" QR token or code, an enrolment's setup data).
+async fn no_store(request: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
+    let mut response = next.run(request).await;
+    response.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    response
 }
 
 /// A "Set up this PC" status poll in the per-user `Read` bucket: the two
@@ -152,6 +165,8 @@ pub fn flow_router(state: &AppState) -> Router<AppState> {
             "/pc-setups/{id}",
             get(pc_setup::handlers::poll),
         ))
+        // Enrolment and attempt answers carry single-use secrets.
+        .layer(from_fn(no_store))
         .layer(from_fn_with_state(state.clone(), crate::auth::require_auth));
     public.merge(bearer)
 }

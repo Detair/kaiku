@@ -153,6 +153,23 @@ pub struct LockedAttempt {
     pub session: Option<RequestingSession>,
     /// Set when this lock expired a stale attempt.
     pub ended_now: Option<EndCause>,
+    /// The database's clock when the locks were held: every deadline of the
+    /// attempt is compared with this one clock (the rows were written with
+    /// the database's `NOW()`).
+    pub now: DateTime<Utc>,
+}
+
+impl LockedAttempt {
+    /// Why the attempt ended, whether this lock ended it or an earlier
+    /// transition, poll or sweep did; `None` while it is live.
+    #[must_use]
+    pub fn end_reason(&self) -> Option<&str> {
+        match self.ended_now {
+            Some(cause) => Some(cause.as_str()),
+            None if self.attempt.state().is_terminal() => self.attempt.reason.as_deref(),
+            None => None,
+        }
+    }
 }
 
 fn token_hash(ctx: &AuthCtx<'_>, token: &[u8]) -> [u8; 32] {
@@ -238,11 +255,15 @@ pub async fn lock_attempt(
     let attempt = read(conn, attempt_id, true)
         .await?
         .ok_or(ApprovalError::NotFound)?;
+    let now: DateTime<Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
+        .fetch_one(&mut *conn)
+        .await?;
     let mut locked = LockedAttempt {
         attempt,
         account,
         session,
         ended_now: None,
+        now,
     };
     refresh(conn, &mut locked).await?;
     Ok(locked)
@@ -280,7 +301,7 @@ async fn stale_cause(conn: &mut PgConnection, l: &LockedAttempt) -> sqlx::Result
         }
         None => {}
     }
-    let now = Utc::now();
+    let now = l.now;
     Ok(match state {
         AttemptState::Waiting | AttemptState::Claimed if a.expires_at <= now => {
             Some(EndCause::Timeout)
@@ -430,9 +451,10 @@ pub async fn rotate_tx(
     conn: &mut PgConnection,
     ctx: &AuthCtx<'_>,
     a: &mut AttemptRow,
+    now: DateTime<Utc>,
     force: bool,
 ) -> sqlx::Result<Option<Secret256>> {
-    let due = a.qr_token_hash.is_none() || a.qr_rotates_at.is_none_or(|t| t <= Utc::now());
+    let due = a.qr_token_hash.is_none() || a.qr_rotates_at.is_none_or(|t| t <= now);
     if a.state() != AttemptState::Waiting || !(force || due) {
         return Ok(None);
     }
@@ -703,7 +725,7 @@ pub async fn refresh_for_pc_tx(
 ) -> Result<(AttemptRow, Option<Secret256>), ApprovalError> {
     of_session(conn, auth, id).await?;
     let mut locked = lock_attempt(conn, id).await?;
-    let token = rotate_tx(conn, ctx, &mut locked.attempt, force).await?;
+    let token = rotate_tx(conn, ctx, &mut locked.attempt, locked.now, force).await?;
     Ok((locked.attempt, token))
 }
 
@@ -732,7 +754,7 @@ pub async fn poll_step(
         let mut tx = db.begin().await?;
         let mut locked = lock_attempt(&mut tx, id).await?;
         let token = if rotation {
-            rotate_tx(&mut tx, ctx, &mut locked.attempt, false).await?
+            rotate_tx(&mut tx, ctx, &mut locked.attempt, locked.now, false).await?
         } else {
             None
         };
@@ -800,7 +822,26 @@ pub async fn claim_tx(
         return Err(ApprovalError::LoginCodeStale);
     };
     if owner != auth.id {
-        // Another account's attempt: never locked or changed from here.
+        // Another account's attempt: never locked or changed from here. Only
+        // a scanner that may approve learns that a live code is another
+        // account's; "live" includes the requesting session and account.
+        key_device_session(conn, auth).await?;
+        let may_approve: bool = sqlx::query_scalar("SELECT may_approve FROM users WHERE id = $1")
+            .bind(auth.id)
+            .fetch_one(&mut *conn)
+            .await?;
+        if !may_approve {
+            return Err(ApprovalError::NotAllowed);
+        }
+        let live = live
+            && sqlx::query_scalar::<_, bool>(concat!(
+                "SELECT NOT EXISTS (SELECT 1 FROM pc_setup_attempts a WHERE a.id = $1 AND (",
+                needs_lock!(),
+                "))"
+            ))
+            .bind(id)
+            .fetch_one(&mut *conn)
+            .await?;
         return Err(if live {
             ApprovalError::PcSetupOtherAccount
         } else {
@@ -817,7 +858,8 @@ pub async fn claim_tx(
     if a.state() == AttemptState::Claimed && current {
         return Err(ApprovalError::LoginAttemptClaimed);
     }
-    let fresh = a.qr_rotates_at.is_some_and(|t| t > Utc::now());
+    let now = locked.now;
+    let fresh = a.qr_rotates_at.is_some_and(|t| t > now);
     if a.state() != AttemptState::Waiting || !current || !fresh {
         return Err(ApprovalError::LoginCodeStale);
     }
@@ -833,10 +875,10 @@ pub async fn claim_tx(
         session_created_at: session.created_at.timestamp(),
         place,
     });
-    let ttl_end = (Utc::now() + CHALLENGE_TTL).min(a.expires_at);
+    let ttl_end = (now + CHALLENGE_TTL).min(a.expires_at);
     // An attempt in its last seconds is as good as over: no challenge a
     // phone could answer fits (the challenge's end is whole seconds).
-    if ttl_end - Utc::now() < Duration::seconds(MIN_CHALLENGE_SECS) {
+    if ttl_end - now < Duration::seconds(MIN_CHALLENGE_SECS) {
         return Err(ApprovalError::LoginCodeStale);
     }
     let challenge = issue(
@@ -850,7 +892,7 @@ pub async fn claim_tx(
             requester: Requester::PcSetupAttempt(a.id),
             display: serde_json::json!({}),
             transfer_hash: Some(hash),
-            ttl: ttl_end - Utc::now(),
+            ttl: ttl_end - now,
         },
     )
     .await
@@ -890,29 +932,40 @@ pub async fn lock_for_phone(
     auth: &AuthUser,
     challenge_id: Uuid,
 ) -> Result<PhoneLocked, ApprovalError> {
-    require_key_device_snapshot(auth)?;
-    let head: Option<(String, Uuid, String, Uuid)> = sqlx::query_as(
-        "SELECT kind, approver_id, requester_kind, requester_id FROM approvals WHERE id = $1",
+    let caller = require_key_device_snapshot(auth)?;
+    // The caller must be the device the challenge was issued to; anyone else
+    // learns nothing and changes nothing (404 before any lock).
+    let head: Option<(String, Uuid, String, Uuid, bool)> = sqlx::query_as(
+        "SELECT a.kind, a.approver_id, a.requester_kind, a.requester_id,
+                EXISTS (SELECT 1 FROM approval_devices d
+                         WHERE d.id = $2 AND d.user_id = a.approver_id AND d.device_id = a.device_id)
+           FROM approvals a WHERE a.id = $1",
     )
     .bind(challenge_id)
+    .bind(caller.id)
     .fetch_optional(&mut *conn)
     .await?;
-    let Some((kind, approver, requester_kind, attempt_id)) = head else {
+    let Some((kind, approver, requester_kind, attempt_id, own_device)) = head else {
         return Err(ApprovalError::NotFound);
     };
     if Kind::parse(&kind) != Some(Kind::PcSetup)
         || requester_kind != "pc_setup_attempt"
         || approver != auth.id
+        || !own_device
     {
         return Err(ApprovalError::NotFound);
     }
     let locked = lock_attempt(conn, attempt_id).await?;
-    match locked.ended_now {
-        Some(EndCause::MayApproveOff) => return Err(ApprovalError::NotAllowed),
-        Some(_) => return Err(ApprovalError::State),
-        None => {}
-    }
+    // The caller's live key-device session first (a banned account, a
+    // revoked device, an ended session get their own answers), then the
+    // attempt's end, also when a poll or the sweep ended it earlier.
     let dev = key_device_session(conn, auth).await?;
+    if !locked.account.may_approve || locked.end_reason() == Some(EndCause::MayApproveOff.as_str()) {
+        return Err(ApprovalError::NotAllowed);
+    }
+    if locked.end_reason().is_some() {
+        return Err(ApprovalError::State);
+    }
     let challenge =
         lock_for_answer(conn, challenge_id, dev.device.user_id, dev.device.device_id).await?;
     let a = &locked.attempt;

@@ -635,6 +635,12 @@ sequenceDiagram
 - **End reasons** the PC can read: `session_ended`, `device_revoked`, `no_key_device`, `may_approve_off`,
   `account_banned`, `timeout`, `code_expired`, `restarted`, `cancelled`, `refused`, `reported`,
   `too_many_codes`, `enrollment_expired`.
+- **One clock:** every deadline of an attempt (QR rotation, 10 minutes, code, challenge length) is
+  compared with the database's clock, read under the locks; the rows are written with it too.
+- **Answers:** a code typed after the 5 minutes answers 410 also when a poll or the sweep ended the
+  attempt first; the phone's `answer`/`refuse`/`release` answer 404 to any caller but the claiming device
+  before anything is locked; responses carry `Cache-Control: no-store`; a new passkey sends the
+  `authenticators_changed` hint to the account's sockets.
 - **Audit rows** `auth.pc_setup.start`, `.approve`, `.report`, `.refuse`, `.enrol` and `.complete` carry
   only the attempt id.
 - **Rate limits:** every step is in the per-user `ApprovalLogin` class (30 per minute); the two status

@@ -560,6 +560,7 @@ pub(super) async fn redeem(
     .await;
     let row = settle(tx, result).await.map_err(to_auth)?;
     crate::security_events::notices::spawn_pending_delivery(state);
+    crate::approvals::devices::notify_authenticators_changed(state, user_id).await;
     tracing::info!(passkey_id = %row.id, "pc setup passkey added through the desktop flow");
     Ok((
         StatusCode::OK,
