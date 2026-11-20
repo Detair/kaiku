@@ -139,6 +139,9 @@ fn queue_now(
     full
 }
 
+/// How long removing an empty room waits for its share counter to clear.
+const COUNTER_CLEAR_TIMEOUT: Duration = Duration::from_millis(500);
+
 /// How long a peer connection may stay `Failed` before the peer is removed
 /// from its room. Gives ICE restarts and brief network switches a chance.
 pub const PEER_FAILED_GRACE: Duration = Duration::from_secs(15);
@@ -1376,12 +1379,33 @@ impl SfuServer {
 
     /// Remove a room if empty.
     pub async fn cleanup_room_if_empty(&self, channel_id: Uuid) {
+        self.cleanup_room_if_empty_with(channel_id, None).await;
+    }
+
+    /// Remove a room if empty, and with it the channel's share counter
+    /// (no share of the room is left; a count left behind by a release
+    /// that failed would hold slots for the next call). The counter is
+    /// cleared while the room list is held, so a new room of the channel
+    /// cannot count a share before (bounded wait).
+    pub async fn cleanup_room_if_empty_with(
+        &self,
+        channel_id: Uuid,
+        screen_share_limiter: Option<&super::screen_share::ScreenShareLimiter>,
+    ) {
         let mut rooms = self.rooms.write().await;
 
         if let Some(room) = rooms.get(&channel_id) {
             if room.is_empty().await {
                 rooms.remove(&channel_id);
                 debug!(channel_id = %channel_id, "Removed empty voice room");
+                if let Some(limiter) = screen_share_limiter {
+                    if tokio::time::timeout(COUNTER_CLEAR_TIMEOUT, limiter.clear(channel_id))
+                        .await
+                        .is_err()
+                    {
+                        warn!(channel_id = %channel_id, "Clearing the screen share counter timed out");
+                    }
+                }
             }
         }
     }

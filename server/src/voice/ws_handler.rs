@@ -308,7 +308,8 @@ async fn handle_join(
                 // Refused (room full, or removed again): the new
                 // connections are not used.
                 peer.close().await;
-                sfu.cleanup_room_if_empty(channel_id).await;
+                sfu.cleanup_room_if_empty_with(channel_id, screen_share_limiter)
+                    .await;
                 return Err(e);
             }
         }
@@ -947,13 +948,14 @@ async fn handle_screen_share_start(
     }
 
     // Fetch max_screen_shares from channel settings
+    // A failed read refuses the start (a default could exceed the
+    // channel's configured limit); an unset limit means the default.
     let max_screen_shares: i32 = queries::find_channel_max_screen_shares(pool, params.channel_id)
         .await
-        .inspect_err(|e| {
-            warn!(channel_id = %params.channel_id, error = %e, "Failed to query max_screen_shares, using default");
-        })
-        .ok()
-        .flatten()
+        .map_err(|e| {
+            warn!(channel_id = %params.channel_id, error = %e, "Failed to query max_screen_shares, refusing the start");
+            VoiceError::Internal("channel settings unavailable".to_string())
+        })?
         .unwrap_or(6);
     // Use the stream_id provided by the client.
     let stream_id = params.stream_id;

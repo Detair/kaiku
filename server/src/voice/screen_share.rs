@@ -283,6 +283,15 @@ impl ScreenShareLimiter {
         }
     }
 
+    /// Delete the slot counter of `channel_id` (its room was removed: no
+    /// share of it is left). Errors are logged.
+    pub async fn clear(&self, channel_id: Uuid) {
+        let key = format!("{}{channel_id}", self.key_prefix);
+        if let Err(e) = self.redis.del::<i64, _>(key).await {
+            warn!(channel_id = %channel_id, error = ?e, "Failed to clear screen share counter");
+        }
+    }
+
     /// Release a screen share slot (decrements if count > 0).
     pub async fn stop(&self, channel_id: Uuid) {
         // max_shares arg is unused by "stop" op, pass 0

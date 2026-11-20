@@ -371,3 +371,30 @@ async fn expiry_ends_only_the_start_it_was_armed_for(pool: PgPool) {
 
     r.assert_new_webcam_kept().await;
 }
+
+/// A channel's share counter goes with its room: when the last participant
+/// leaves and the room is removed, a count left behind (a release that
+/// failed earlier) does not hold slots for the next call.
+#[sqlx::test]
+async fn the_share_counter_goes_with_its_room(pool: PgPool) {
+    let mut r = room(pool).await;
+    let key = format!("screenshare:limit:{}", r.voice);
+    let _: () = r
+        .app
+        .state
+        .redis
+        .set(&key, 2, None, None, false)
+        .await
+        .expect("set counter");
+    send(
+        &mut r.viewer,
+        serde_json::json!({ "type": "voice_leave", "channel_id": r.voice }),
+    )
+    .await;
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while r.app.state.sfu.get_room(r.voice).await.is_some() {
+        assert!(tokio::time::Instant::now() < deadline, "the room stayed");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(r.slots().await, 0, "slots left behind");
+}

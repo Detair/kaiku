@@ -155,7 +155,8 @@ pub async fn leave_voice_internal(
         }
     }
 
-    sfu.cleanup_room_if_empty(channel_id).await;
+    sfu.cleanup_room_if_empty_with(channel_id, screen_share_limiter)
+        .await;
 
     info!(
         user_id = %user_id,
