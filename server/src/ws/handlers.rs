@@ -20,7 +20,9 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use super::access::{ChannelScope, OwnedVoicePeer, SocketAccess, SubscribeCommit};
+use super::access::{
+    AdminSubscription, ChannelScope, OwnedVoicePeer, SocketAccess, SubscribeCommit,
+};
 use super::connection_limit::{ConnectionPermit, TOO_MANY_CONNECTIONS};
 use super::events::{
     broadcast_to_channel, channels, ClientEvent, ClientMessageState, OutboundMsg, ServerEvent,
@@ -1882,25 +1884,19 @@ pub async fn handle_client_message(
         }
 
         ClientEvent::AdminSubscribe => {
-            // Whether this socket's session is elevated (an elevation
-            // belongs to one session, C24), read from the committed rows at
-            // the current user epoch and recorded only if the epoch is
-            // unchanged — the same steps as `subscribe`. A check that could
-            // not be made is recorded undecided and revalidated.
-            let mut decision = None;
-            for _ in 0..SUBSCRIBE_ATTEMPTS {
-                let epoch = access.user_epoch_now();
-                let Ok(allowed) = access.check_admin().await else {
-                    break;
-                };
-                if access.commit_admin(epoch, allowed) {
-                    decision = Some(allowed);
-                    break;
+            // The request is recorded and settled by the socket's
+            // revalidation, the one place that decides the admin stream
+            // (`ws::access`): whether this socket's session is elevated (an
+            // elevation belongs to one session, C24), read from the
+            // committed rows after the request was recorded. The request
+            // stays whatever the answer: a later elevation restores
+            // delivery, and a check that could not be made is repeated by
+            // the socket.
+            match access.subscribe_admin().await {
+                AdminSubscription::Allowed => {
+                    debug!("Admin {} subscribed to admin events", user_id);
                 }
-            }
-            match decision {
-                Some(true) => debug!("Admin {} subscribed to admin events", user_id),
-                Some(false) => {
+                AdminSubscription::Refused => {
                     send_outbound(
                         tx,
                         OutboundMsg::Event(ServerEvent::Error {
@@ -1911,8 +1907,7 @@ pub async fn handle_client_message(
                     )
                     .await?;
                 }
-                None => {
-                    access.record_admin_unchecked();
+                AdminSubscription::Undecided => {
                     send_outbound(
                         tx,
                         OutboundMsg::Event(ServerEvent::Error {
