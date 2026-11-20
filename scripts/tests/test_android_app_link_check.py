@@ -201,6 +201,23 @@ class AppLinkCheckTest(unittest.TestCase):
         relative_other = manifest(setup_filter(), activity=".ui.MainActivity", package="example.other")
         self.assertTrue(check.problems(relative_other, HOST))
 
+    def test_a_relative_filter_group_fails(self):
+        # Android before 15 ignores the group: the filter would match every https path on the host.
+        group = "\n".join([
+            "                  E: uri-relative-filter-group (line=80)",
+            "                      E: data (line=81)",
+            attr(24, "path", "/setup"),
+        ])
+        only_in_group = manifest(setup_filter(data=[("scheme", "https"), ("host", HOST)]) + "\n" + group)
+        found = check.problems(only_in_group, HOST)
+        self.assertTrue(any("uri-relative-filter-group" in p for p in found), found)
+        beside_exact = manifest(setup_filter() + "\n" + group.replace("/setup", "/other"))
+        found = check.problems(beside_exact, HOST)
+        self.assertTrue(any("uri-relative-filter-group" in p for p in found), found)
+        # A group in a filter for another host is not this check's business.
+        other = manifest(setup_filter(), setup_filter(data=[("scheme", "https"), ("host", "other.example.org"), ("path", "/x")], verify=False) + "\n" + group)
+        self.assertEqual([], check.problems(other, HOST))
+
     def test_cli_exit_codes(self):
         def run(tree: str, *args: str) -> int:
             return subprocess.run([sys.executable, str(CLI), *args], input=tree, text=True, capture_output=True).returncode

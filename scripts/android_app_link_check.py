@@ -14,8 +14,11 @@ It fails the check when it reaches more of <host> than exact paths:
 - a wildcard host that covers <host> (Android matches a host that starts with * against every
   host that ends with the rest), whatever paths it names;
 - no host at all (Android then matches every https link, whatever paths it names);
-as does a setup filter with any other data. Other filters for <host> with exact paths of their
-own stay allowed. A setup filter on an alias does not stand in for the one on MainActivity.
+as does a setup filter with any other data. Only a filter's own <data> elements count; a
+uri-relative-filter-group inside an https filter for <host> fails the check (Android before 15
+ignores the group, so its paths would not limit the filter there). Other filters for <host> with
+exact paths of their own stay allowed. A setup filter on an alias does not stand in for the one
+on MainActivity.
 """
 from __future__ import annotations
 
@@ -95,7 +98,8 @@ def problems(tree: str, host: str) -> list[str]:
     for comp, alias in components(parse(tree)):
         where = " (on an alias of MainActivity)" if alias else ""
         for f in walk(comp["children"], "intent-filter"):
-            data = [d["attrs"] for d in walk(f["children"], "data")]
+            # Only the filter's own data: data inside a group is not read by every Android version.
+            data = [d["attrs"] for d in f["children"] if d["tag"] == "data"]
             if not any(d.get("scheme") == "https" for d in data):
                 continue
             named = [d["host"] for d in data if "host" in d]
@@ -108,6 +112,9 @@ def problems(tree: str, host: str) -> list[str]:
                 wrong.append(f"https filter with a wildcard host that covers {host}: {', '.join(wild)}" + where)
                 continue
             if host not in named:
+                continue
+            if any(True for _ in walk(f["children"], "uri-relative-filter-group")):
+                wrong.append(f"https filter for {host} uses uri-relative-filter-group" + where)
                 continue
             loose = sorted({k for d in data for k in d if k in LOOSE})
             if loose:
