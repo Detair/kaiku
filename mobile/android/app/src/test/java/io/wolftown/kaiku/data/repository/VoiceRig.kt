@@ -298,7 +298,7 @@ internal class VoiceRig(private val test: TestScope) {
 
         fun start() {
             if (running != null) return
-            gate.open()
+            val generation = gate.open()
             notifications += "foreground"
             notificationShown = true
             running = OngoingCallNotification(
@@ -314,7 +314,7 @@ internal class VoiceRig(private val test: TestScope) {
                     notifications += "cancel"
                     notificationShown = false
                 },
-            ).also { it.follow() }
+            ).also { it.follow(generation) }
         }
 
         fun stop() {

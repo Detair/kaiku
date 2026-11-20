@@ -66,9 +66,9 @@ class OngoingCallNotificationTest {
 
         /** The service starts as Android does it: foreground first, then the updates. */
         fun start() {
-            control.start {
+            control.start { generation ->
                 notifications.foreground()
-                notification.follow()
+                notification.follow(generation)
             }
         }
 
@@ -115,7 +115,7 @@ class OngoingCallNotificationTest {
     fun `following twice does not post twice`() = runTest {
         val h = Harness(this)
         h.start()
-        h.notification.follow()
+        h.notification.follow(1L) // the same start again
         runCurrent()
 
         assertEquals(listOf("foreground", "post:in-call"), h.notifications.calls)
@@ -178,7 +178,7 @@ class OngoingCallNotificationTest {
             post = h.notifications::post,
             cancel = h.notifications::cancel,
         )
-        h.control.start { next.follow() }
+        h.control.start { next.follow(it) }
         runCurrent()
         h.link.value = VoiceLinkState.Interrupted
         runCurrent()
@@ -191,9 +191,10 @@ class OngoingCallNotificationTest {
         val gate = CallNotificationGate()
         val control = ServiceStartStop(gate)
         var openAtStart = false
-        control.start { gate.ifOpen { openAtStart = true } }
+        var started = 0L
+        control.start { generation -> started = generation; gate.ifOpen(generation) { openAtStart = true } }
         var postedAtStop = false
-        control.stop { gate.ifOpen { postedAtStop = true } }
+        control.stop { gate.ifOpen(started) { postedAtStop = true } }
         assertTrue(openAtStart)
         assertFalse(postedAtStop)
     }
@@ -213,5 +214,31 @@ class OngoingCallNotificationTest {
 
         assertEquals(listOf("foreground", "post:in-call", "stop", "cancel"), h.notifications.calls)
         assertFalse(h.notifications.shown)
+    }
+
+    @Test
+    fun `an update of a stopped call never posts after the next call started`() = runTest {
+        val h = Harness(this)
+        h.start() // call A
+        runCurrent()
+        h.stop()
+        // Call B starts before A's service instance is destroyed.
+        val b = OngoingCallNotification(
+            scope = backgroundScope,
+            callIsOn = { true },
+            gate = h.gate,
+            linkState = MutableStateFlow<VoiceLinkState>(VoiceLinkState.Stable),
+            post = { },
+            cancel = { },
+        )
+        h.control.start { b.follow(it) }
+        runCurrent()
+        val before = h.notifications.calls.toList()
+
+        // An update queued for A runs now: it must not post A's notification.
+        h.link.value = VoiceLinkState.Interrupted
+        runCurrent()
+
+        assertEquals(before, h.notifications.calls)
     }
 }

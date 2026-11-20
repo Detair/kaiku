@@ -90,6 +90,7 @@ class VoiceCallService : Service() {
         private const val EXTRA_CHANNEL_NAME = "channel_name"
         private const val EXTRA_ACTION = "extra_action"
         private const val EXTRA_FOR_CALL = "for_call"
+        private const val EXTRA_GENERATION = "generation"
         const val ACTION_MUTE_TOGGLE = "io.wolftown.kaiku.MUTE_TOGGLE"
         const val ACTION_DISCONNECT = "io.wolftown.kaiku.DISCONNECT"
 
@@ -106,7 +107,10 @@ class VoiceCallService : Service() {
                 putExtra(EXTRA_CHANNEL_NAME, channelName)
                 putExtra(EXTRA_FOR_CALL, forCall)
             }
-            startStop.start { context.startForegroundService(intent) }
+            startStop.start { generation ->
+                intent.putExtra(EXTRA_GENERATION, generation)
+                context.startForegroundService(intent)
+            }
         }
 
         /**
@@ -172,7 +176,7 @@ class VoiceCallService : Service() {
             throw e
         }
 
-        ongoingNotification.follow()
+        ongoingNotification.follow(intent?.getLongExtra(EXTRA_GENERATION, 0L) ?: 0L)
         logger.info("VoiceCallService started for channel: $channelName")
         return START_NOT_STICKY
     }

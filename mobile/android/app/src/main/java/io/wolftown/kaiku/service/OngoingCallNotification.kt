@@ -40,19 +40,23 @@ internal class OngoingCallNotification(
     private val cancel: () -> Unit,
 ) {
     private var updates: Job? = null
+    private var following = -1L
 
     /**
-     * Follows the link from now on, starting with its current state. The
-     * service calls it once it is in the foreground; calling it again changes
-     * nothing.
+     * Follows the link from now on, starting with its current state, for the
+     * start [generation] (from [CallNotificationGate.open]). The service calls
+     * it once it is in the foreground; again for the same start changes
+     * nothing, a newer start replaces the updates.
      */
-    fun follow() {
-        if (updates?.isActive == true) return
+    fun follow(generation: Long) {
+        if (updates?.isActive == true && following == generation) return
+        updates?.cancel()
+        following = generation
         updates = scope.launch {
             linkState
                 .map { it.statusText() }
                 .distinctUntilChanged()
-                .collect { status -> gate.ifOpen { if (callIsOn()) post(status) } }
+                .collect { status -> gate.ifOpen(generation) { if (callIsOn()) post(status) } }
         }
     }
 
@@ -70,9 +74,9 @@ internal class OngoingCallNotification(
  * requested and closes before the stop is requested.
  */
 internal class ServiceStartStop(private val gate: CallNotificationGate) {
-    fun start(requestStart: () -> Unit) {
-        gate.open()
-        requestStart()
+    /** [requestStart] gets the start's generation, which the service's updates must carry. */
+    fun start(requestStart: (generation: Long) -> Unit) {
+        requestStart(gate.open())
     }
 
     fun stop(requestStop: () -> Unit) {
@@ -83,17 +87,30 @@ internal class ServiceStartStop(private val gate: CallNotificationGate) {
 
 /**
  * Orders "post the ongoing-call notification" against "stop the service".
- * [open] when a call starts the service; [retire] before the stop is
- * requested. [ifOpen] runs its block only while open, under the same lock,
- * so no post can slip in between the retire and the stop.
+ * [open] when a call starts the service (a new generation per start);
+ * [retire] before the stop is requested. [ifOpen] runs its block only while
+ * open for its own start, under the same lock, so no post can slip in
+ * between the retire and the stop, nor come from an earlier start.
  */
 internal class CallNotificationGate {
     private val lock = Any()
     private var open = false
+    private var generation = 0L
 
-    fun open() = synchronized(lock) { open = true }
+    /** Opens the gate for a new start and returns that start's generation. */
+    fun open(): Long = synchronized(lock) {
+        open = true
+        ++generation
+    }
 
     fun retire() = synchronized(lock) { open = false }
 
-    fun ifOpen(block: () -> Unit) = synchronized(lock) { if (open) block() }
+    /**
+     * Runs [block] only while the gate is open for the start [generation]: an
+     * update of an earlier, stopped start never posts, even after a newer
+     * start opened the gate again.
+     */
+    fun ifOpen(generation: Long, block: () -> Unit) = synchronized(lock) {
+        if (open && generation == this.generation) block()
+    }
 }
