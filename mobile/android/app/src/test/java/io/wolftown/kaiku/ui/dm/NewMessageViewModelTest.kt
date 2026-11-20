@@ -22,6 +22,7 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import kotlinx.coroutines.test.runCurrent
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -34,9 +35,11 @@ import java.io.IOException
 class NewMessageViewModelTest {
     private val dispatcher = StandardTestDispatcher()
     private val invalidated = kotlinx.coroutines.flow.MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    private val blocked = kotlinx.coroutines.flow.MutableSharedFlow<String>(extraBufferCapacity = 1)
     private val sessions = io.wolftown.kaiku.data.session.FakeSessions("me")
     private val people: PeopleRepository = mockk {
         every { invalidated } returns this@NewMessageViewModelTest.invalidated
+        every { blocked } returns this@NewMessageViewModelTest.blocked
         // By default whoever is tapped is still someone to write to.
         coEvery { confirm(any()) } answers {
             io.wolftown.kaiku.data.repository.EligiblePerson(firstArg(), sessions.generation.enter()!!)
@@ -207,6 +210,19 @@ class NewMessageViewModelTest {
         vm.open(anna)
         advanceUntilIdle()
         assertEquals(io.wolftown.kaiku.R.string.dm_new_create_failed, vm.ui.value.message)
+    }
+
+    @Test
+    fun `someone blocked just now leaves the list at once, before the reload answers`() = runTest(dispatcher) {
+        coEvery { people.load() } returns People(listOf(anna, bert), failedServers = 0)
+        val vm = NewMessageViewModel(people, dms)
+        advanceUntilIdle()
+        // The reload after the block does not answer yet.
+        coEvery { people.load() } coAnswers { kotlinx.coroutines.awaitCancellation() }
+        blocked.emit("anna")
+        invalidated.emit(Unit)
+        runCurrent()
+        assertEquals(listOf(bert), vm.ui.value.people)
     }
 
     @Test

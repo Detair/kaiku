@@ -72,12 +72,21 @@ class PeopleRepository @Inject constructor(
      */
     val invalidated: SharedFlow<Unit> = _invalidated.asSharedFlow()
 
+    private val _blocked = MutableSharedFlow<String>(extraBufferCapacity = 8)
+
+    /** Someone this user just blocked (on any device): no longer to be offered, from now on. */
+    val blocked: SharedFlow<String> = _blocked.asSharedFlow()
+
     init {
         // UNDISPATCHED: subscribed before init returns (the events have no replay).
         scope.launch(start = CoroutineStart.UNDISPATCHED) {
             webSocket.events.collect { event ->
                 when (event) {
-                    is ServerEvent.UserBlocked, is ServerEvent.UserUnblocked, is ServerEvent.Ready -> _invalidated.tryEmit(Unit)
+                    is ServerEvent.UserBlocked -> {
+                        _blocked.tryEmit(event.userId)
+                        _invalidated.tryEmit(Unit)
+                    }
+                    is ServerEvent.UserUnblocked, is ServerEvent.Ready -> _invalidated.tryEmit(Unit)
                     else -> Unit
                 }
             }

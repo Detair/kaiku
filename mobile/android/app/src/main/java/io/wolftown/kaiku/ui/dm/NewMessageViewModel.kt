@@ -75,6 +75,12 @@ class NewMessageViewModel @Inject constructor(
         // Who can be written to may have changed (a block on any device, or the connection was
         // away): what is shown is loaded again.
         viewModelScope.launch { peopleRepository.invalidated.collect { load() } }
+        // Someone just blocked leaves the list at once, not only once the reload has answered.
+        viewModelScope.launch {
+            peopleRepository.blocked.collect { userId ->
+                _ui.update { it.copy(people = it.people.filter { p -> p.userId != userId }) }
+            }
+        }
     }
 
     fun load() {

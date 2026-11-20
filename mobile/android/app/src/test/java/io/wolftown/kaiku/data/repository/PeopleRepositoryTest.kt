@@ -140,6 +140,18 @@ class PeopleRepositoryTest {
     }
 
     @Test
+    fun `a block names who was blocked`() = runTest {
+        val seen = mutableListOf<String>()
+        val job = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.test.UnconfinedTestDispatcher(testScheduler)).launch {
+            repo.blocked.collect { seen += it }
+        }
+        events.emit(io.wolftown.kaiku.data.ws.ServerEvent.UserBlocked("anna"))
+        events.emit(io.wolftown.kaiku.data.ws.ServerEvent.UserUnblocked("bert"))
+        assertEquals(listOf("anna"), seen)
+        job.cancel()
+    }
+
+    @Test
     fun `nobody signed in loads nobody, and a list of the previous account is not handed out`() = runTest {
         val members = kotlinx.coroutines.CompletableDeferred<List<GuildMember>>()
         coEvery { guildApi.getGuilds() } returns listOf(Guild("g1", "Family"))
