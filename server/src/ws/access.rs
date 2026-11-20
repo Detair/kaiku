@@ -809,8 +809,8 @@ pub enum AdminSubscription {
     Allowed,
     /// It is not; a later elevation restores delivery.
     Refused,
-    /// Not decided yet (the read failed, or the epoch kept moving); the next
-    /// revalidation decides.
+    /// Not decided yet (the read failed, the socket is in backoff after a
+    /// failed one, or the epoch kept moving); the next revalidation decides.
     Undecided,
 }
 
