@@ -680,7 +680,7 @@ with a listed code, an unknown code, an unreadable body) keeps the key.
 | `POST /auth/enrollments/claim` | 400 `VALIDATION_ERROR`, 400 `SIGNATURE_INVALID`, 400 `DEVICE_UNSUITABLE`, 404 `APPROVAL_NOT_FOUND`, 410 `APPROVAL_EXPIRED` | the claim is refused for good and nothing was stored for its key: its record is forgotten |
 | `POST /auth/enrollments/claim` | 409 `ENROLLMENT_ALREADY_CLAIMED`, 404 `ENROLLMENT_TOKEN_INVALID`, 409 `APPROVAL_STATE`, 409 `ENROLLMENT_STATE` | undecided (it may be this phone's own claim, stored when its answer was lost): the key stays and the claim is checked |
 | `POST /auth/enrollments/claim` | anything else, no answer within 30 s | the key stays, the record stays `CLAIMING`; "Try again" checks the claim |
-| claim check (`POST /auth/enrollments/pop-challenge` for the same link and key) | 201 with a challenge of this very enrolment and key | the enrolment is still open and every earlier claim of it is void: the `CLAIMING` record is forgotten |
+| claim check (`POST /auth/enrollments/pop-challenge` for the same link and key) | 201 with a new challenge (not the one the claim answered) of this very enrolment and key | the enrolment is still open and every earlier claim of it is void: the `CLAIMING` record is forgotten |
 | claim check | 404 `ENROLLMENT_TOKEN_INVALID` | the enrolment is not known any more: the key device is asked; this alone forgets nothing |
 | claim check | 409 `ENROLLMENT_ALREADY_CLAIMED` | a claim is stored: the key device is asked after this answer; "no key device" then forgets a record whose own claim never got its answer (`CLAIMING`), at once |
 | claim check | anything else | the key stays |
@@ -690,10 +690,11 @@ with a listed code, an unknown code, an unreadable body) keeps the key.
 | `POST /auth/enrollments/status` | anything else | the key stays; the wait goes on |
 
 Taken together, the phone forgets a key or a record only in these cases: (1) the five refusals of
-the claim; (2) the claim check's new challenge for this enrolment and key (the earlier claim can no
-longer land); (3) the lost-claim rule below; (4) a stored `cancelled` or `failed` of the enrolment;
+the claim; (2) the claim check's new challenge for this enrolment and key, other than the one the claim
+answered (the earlier claim can no longer land); (3) the lost-claim rule below; (4) a stored `cancelled` or `failed` of the enrolment;
 (5) an unfinished claim once its time is over by the server's and the phone's measure (for a code
-that ran out: its expiry plus 2 minutes on both clocks) and a later
+that ran out: its expiry plus 2 minutes on the server's clock, and at least the server's code lifetime
+plus 2 minutes on the phone's) and a later
 probe still finds no key device; (6) "no key device" or "removed" for an active or pending key device
 (not one that took the probe's word only provisionally, not one whose install id is lost or was
 never recorded); (7) the
@@ -707,7 +708,11 @@ claim can no longer be stored (the phone drops that record and starts the same l
 link that was opened meanwhile). A claim answer is taken only if it is this claim's: for the
 enrolment the claim was made for, of the kind the claim gets (a code for a link or a scanned code,
 "done" for the app's own registration), with every part; any other answer leaves the stored claim as
-it was, to be checked like a lost one.
+it was, to be checked like a lost one. The key record is created under the same lock as a session
+install, after checking again that no other person and no other server is signed in; otherwise the
+new key is dropped and no claim is sent. A status `done` counts by the key device's state: `active`
+or `pending` as said; any other state, or none, leaves the claim and its secret as they are, and the
+key-device probe decides.
 
 "Already claimed" is said under the same lock, so a claim is stored by then. The phone then asks the
 key-device probe, and only a probe sent after that answer counts: active or pending → the claim had
@@ -728,9 +733,13 @@ An unfinished claim is given up on it only when all three hold: the server's own
 (measured with the phone's running time and its boot count, so setting the clock changes nothing and a
 restart of the phone counts from its new start, never shortening it); and a probe sent after both
 were found still says "no key device". For a code that arrived with the server's time, the span is the
-code's own: its expiry plus 2 minutes on the server's clock, and its remaining life when it arrived
-plus 2 minutes on the phone's running time (the 2 minutes cover a confirmation that passed the
-server's expiry check just in time and is stored late). For a claim without an answer, and for one
+code's own: its expiry plus 2 minutes on the server's clock, and on the phone's running time since it
+arrived the server's code lifetime (5 minutes) or its remaining life by the answer's `Date`, whichever
+is longer, plus 2 minutes (a `Date` that runs ahead never shortens the wait; the 2 minutes cover a
+confirmation that passed the server's expiry check just in time and is stored late). A confirmation
+stored more than 2 minutes after its expiry check, while the server still answers, is a known limit:
+it would leave a key device on the account whose key the phone has already let go; the next setup of
+the same phone replaces it, or the phone is removed from the account. For a claim without an answer, and for one
 whose code came without the server's time, it stays the claim's longest life: the challenge's expiry
 plus 10 minutes, and 25 minutes since the claim was recorded. Until then the key stays, the screen
 says what is going on ("The setup code has run out. Kaiku keeps this phone's key for about N more min
