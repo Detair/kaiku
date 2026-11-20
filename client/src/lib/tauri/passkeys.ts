@@ -335,15 +335,17 @@ export async function stepUpWithPasskey(
  * "Set up this PC" on the desktop: Rust starts the `pc_setup` flow for the
  * server's attempt, opens the system browser (the code is typed and the
  * passkey created there) and redeems the result, which carries no session.
- * The server's attempt id doubles as the cancel handle. Desktop only.
+ * Each invocation has its own cancel handle. Desktop only.
  */
 export async function setUpThisPcInBrowser(pcSetupAttemptId: string, signal: AbortSignal): Promise<void> {
   if (!isTauri()) throw new PasskeyError("PASSKEY_NOT_SUPPORTED");
   const { baseUrl } = await getAuthContext();
+  // A fresh cancel handle per invocation, as for sign-in and step-up: a
+  // second run for the same attempt never shares the first one's handle.
   return invokeCancellable(
-    (id) => invoke<void>("passkey_pc_setup", { serverUrl: baseUrl, attemptId: id }),
+    (cancelId) =>
+      invoke<void>("passkey_pc_setup", { serverUrl: baseUrl, attemptId: pcSetupAttemptId, cancelId }),
     signal,
-    pcSetupAttemptId,
   );
 }
 

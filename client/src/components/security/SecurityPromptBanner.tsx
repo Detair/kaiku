@@ -14,7 +14,6 @@ import { currentPrompt, snoozePrompt } from "@/stores/security";
 import { requestSettings } from "@/stores/settingsNav";
 import { canUsePasskeys } from "@/lib/tauri/passkeys";
 import { passkeyFailureText } from "@/lib/authErrors";
-import { SetUpThisPcButton, canSetUpThisPc } from "@/components/auth/SetUpThisPcButton";
 import SetupPhoneModal from "@/components/settings/security/SetupPhoneModal";
 
 const TEXT: Record<SecurityPrompt, MessageKey> = {
@@ -35,10 +34,7 @@ const SecurityPromptBanner: Component = () => {
   const [setupPhone, setSetupPhone] = createSignal(false);
   // In a chat-only session the chat-only banner already says where to add a
   // passkey: the same words in a second row help nobody.
-  const prompt = () => {
-    const current = currentPrompt(currentUser()?.id ?? "");
-    return current === "add_passkey" && isProbation() ? null : current;
-  };
+  const prompt = () => currentPrompt(currentUser()?.id ?? "", isProbation() ? ["add_passkey"] : []);
   // "Sign in with a passkey": busy, worded failures, aborted with the banner
   // (Argon review 2 #5).
   const [signingIn, setSigningIn] = createSignal(false);
@@ -93,22 +89,10 @@ const SecurityPromptBanner: Component = () => {
                 </Show>
               </Match>
               <Match when={p() === "add_passkey"}>
-                <Show
-                  when={!isProbation()}
-                  fallback={
-                    <Show
-                      when={canSetUpThisPc()}
-                      fallback={<p class="text-sm text-text-primary">{t("auth.probation.addPasskeyHint")}</p>}
-                    >
-                      <SetUpThisPcButton primary />
-                    </Show>
-                  }
-                >
-                  {/* LP's "Add a passkey" needs the user's click on it (WebAuthn), so the prompt opens the section. */}
-                  <button type="button" class={action} onClick={() => requestSettings("security")}>
-                    {t("security.prompt.openSettings")}
-                  </button>
-                </Show>
+                {/* LP's "Add a passkey" needs the user's click on it (WebAuthn), so the prompt opens the section. */}
+                <button type="button" class={action} onClick={() => requestSettings("security")}>
+                  {t("security.prompt.openSettings")}
+                </button>
               </Match>
               <Match when={p() === "sign_in_with_passkey"}>
                 <Show when={canUsePasskeys()}>

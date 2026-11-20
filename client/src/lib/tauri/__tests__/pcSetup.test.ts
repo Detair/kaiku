@@ -84,7 +84,11 @@ describe("setUpThisPcInBrowser", () => {
   it("runs passkey_pc_setup with the server and the attempt id", async () => {
     invoke.mockResolvedValue(undefined);
     await setUpThisPcInBrowser(ID, new AbortController().signal);
-    expect(invoke).toHaveBeenCalledWith("passkey_pc_setup", { serverUrl: "https://chat.example.com", attemptId: ID });
+    expect(invoke).toHaveBeenCalledWith("passkey_pc_setup", {
+      serverUrl: "https://chat.example.com",
+      attemptId: ID,
+      cancelId: expect.any(String),
+    });
   });
 
   it("aborting cancels the flow by the attempt id and rejects as ABORTED", async () => {
@@ -96,7 +100,10 @@ describe("setUpThisPcInBrowser", () => {
     const pending = setUpThisPcInBrowser(ID, ctl.signal);
     await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("passkey_pc_setup", expect.anything()));
     ctl.abort();
-    expect(invoke).toHaveBeenCalledWith("passkey_cancel", { attemptId: ID });
+    // The cancel handle is the invocation's own, never the server's attempt id.
+    const cancelId = (invoke.mock.calls.find((c) => c[0] === "passkey_pc_setup")![1] as { cancelId: string }).cancelId;
+    expect(cancelId).not.toBe(ID);
+    expect(invoke).toHaveBeenCalledWith("passkey_cancel", { attemptId: cancelId });
     fail("PASSKEY_CANCELLED");
     await expect(pending).rejects.toMatchObject({ code: "ABORTED" });
   });
@@ -112,5 +119,14 @@ describe("setUpThisPcInBrowser", () => {
     tauriMode.on = false;
     await expect(setUpThisPcInBrowser(ID, new AbortController().signal)).rejects.toBeInstanceOf(PasskeyError);
     expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it("every invocation gets its own cancel handle", async () => {
+    invoke.mockResolvedValue(undefined);
+    await setUpThisPcInBrowser(ID, new AbortController().signal);
+    await setUpThisPcInBrowser(ID, new AbortController().signal);
+    const ids = invoke.mock.calls.filter((c) => c[0] === "passkey_pc_setup").map((c) => (c[1] as { cancelId: string }).cancelId);
+    expect(ids).toHaveLength(2);
+    expect(ids[0]).not.toBe(ids[1]);
   });
 });

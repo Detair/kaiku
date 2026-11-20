@@ -141,10 +141,10 @@ function isSnoozed(p: SecurityPrompt, scope: string): boolean {
 }
 
 /** The one prompt the banner shows now for account `scope`, or null. */
-export function currentPrompt(scope = ""): SecurityPrompt | null {
+export function currentPrompt(scope = "", skip: readonly SecurityPrompt[] = []): SecurityPrompt | null {
   snoozeTick();
   const prompts = security()?.prompts ?? [];
-  return PROMPT_ORDER.find((p) => prompts.includes(p) && !isSnoozed(p, scope)) ?? null;
+  return PROMPT_ORDER.find((p) => prompts.includes(p) && !skip.includes(p) && !isSnoozed(p, scope)) ?? null;
 }
 
 /** "Later": hide a prompt of account `scope` for 7 days in this browser. */

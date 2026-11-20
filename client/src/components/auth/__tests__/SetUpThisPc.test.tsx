@@ -652,3 +652,60 @@ describe("answers that a retry cannot change, and ones it can", () => {
     expect(screen.queryByText("This didn't work. Start again.")).toBeNull();
   });
 });
+
+describe("late answers after the step or the dialog is gone", () => {
+  it("a code answer after the attempt ended keeps the real end", async () => {
+    let answer: (v: unknown) => void = () => undefined;
+    let ended: (v: unknown) => void = () => undefined;
+    pc.pollPcSetup.mockReset();
+    pc.pollPcSetup
+      .mockResolvedValueOnce(status("code"))
+      .mockImplementationOnce(() => new Promise((r) => (ended = r)))
+      .mockImplementation(never);
+    pc.enterPcSetupCode.mockImplementation(() => new Promise((r) => (answer = r)));
+    render(() => <SetUpThisPc onClose={vi.fn()} />);
+    fireEvent.input(await screen.findByLabelText("Code from your phone"), { target: { value: "123456" } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    await waitFor(() => expect(pc.pollPcSetup).toHaveBeenCalledTimes(2), { timeout: 2_000 });
+    ended(status("expired", "may_approve_off"));
+    expect(await screen.findByText("Your phone can no longer confirm this. Ask your admin.")).toBeTruthy();
+    answer({ state: "enrolled", enrollment_id: "e1" });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.getByText("Your phone can no longer confirm this. Ask your admin.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Create a passkey" })).toBeNull();
+  });
+
+  it("closing while the session's attempt is being looked up cancels it", async () => {
+    let answer: (v: unknown) => void = () => undefined;
+    pc.currentPcSetup.mockImplementation(() => new Promise((r) => (answer = r)));
+    render(() => <SetUpThisPc onClose={vi.fn()} />);
+    await waitFor(() => expect(pc.currentPcSetup).toHaveBeenCalled());
+    cleanup();
+    answer(status("waiting", null, { qr_payload: "kaiku://pcsetup/v1?o=x&t=y" }));
+    await waitFor(() => expect(pc.cancelPcSetup).toHaveBeenCalledWith(ID));
+  });
+});
+
+describe("desktop texts", () => {
+  beforeEach(() => {
+    tauri.on = true;
+  });
+
+  it("an unknown flow error reads as the browser step, not as a passkey error", async () => {
+    await openAt("code");
+    setUpThisPcInBrowser.mockRejectedValueOnce(new PasskeyError("APPROVAL_EXPIRED"));
+    fireEvent.click(await screen.findByRole("button", { name: "Open the browser" }));
+    expect(await screen.findByText("The browser step did not finish. Please try again.")).toBeTruthy();
+  });
+
+  it("after the code a failed browser step shows one line: start again", async () => {
+    polls(status("code"), status("enrolled"));
+    setUpThisPcInBrowser.mockImplementation(
+      () => new Promise((_, reject) => setTimeout(() => reject(new PasskeyError("PASSKEY_CANCELLED")), 50)),
+    );
+    render(() => <SetUpThisPc onClose={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Open the browser" }));
+    expect(await screen.findByText("The browser step was interrupted. Use Start again.")).toBeTruthy();
+    expect(screen.queryByText("The browser step did not finish. Please try again.")).toBeNull();
+  });
+});

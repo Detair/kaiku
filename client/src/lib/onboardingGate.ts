@@ -3,15 +3,16 @@
  * `App.tsx` can decide it without loading the wizard's chunk.
  */
 
-import { authState } from "@/stores/auth";
+import { authState, setupStatusKnown } from "@/stores/auth";
 import {
   preferences,
   isInitialized as preferencesInitialized,
 } from "@/stores/preferences";
 
-/** Not before sign-in state and preferences are known, never over the admin setup. */
+/** Not before sign-in state, preferences and the setup state are known, never over the admin setup. */
 export const shouldShowOnboarding = (): boolean =>
   authState.isInitialized &&
   preferencesInitialized() &&
   !preferences().onboarding_completed &&
+  setupStatusKnown() &&
   !authState.setupRequired;

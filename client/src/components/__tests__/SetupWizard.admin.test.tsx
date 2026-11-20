@@ -54,4 +54,11 @@ describe("SetupWizard", () => {
     mount();
     expect(await screen.findByTestId("setup-wizard")).toBeTruthy();
   });
+
+  it("an admin status that cannot be read shows the notice, not the form", async () => {
+    admin.checkAdminStatus.mockRejectedValue(new Error("offline"));
+    mount();
+    expect(await screen.findByText("This server is still being set up")).toBeTruthy();
+    expect(screen.queryByTestId("setup-wizard")).toBeNull();
+  });
 });

@@ -76,6 +76,7 @@ import {
   clearError,
   updateUser,
   clearSetupRequired,
+  setupStatusKnown,
   isAuthenticated,
   currentUser,
   abandonRestore,
@@ -234,6 +235,20 @@ describe("auth store", () => {
       await tick();
       expect(authState.user).not.toBeNull();
       expect(authState.setupRequired).toBe(false);
+    });
+
+    it("the setup status is not known until a restored session has asked", async () => {
+      let answer!: (complete: boolean) => void;
+      vi.mocked(tauri.getCurrentUser).mockResolvedValue({ user: createUser(), error_reason: null });
+      vi.mocked(tauri.isServerSetupComplete).mockImplementation(
+        () => new Promise<boolean>((resolve) => (answer = resolve)),
+      );
+      await initAuth();
+      // The first-run tour must not start over a wizard that is about to show.
+      expect(setupStatusKnown()).toBe(false);
+      answer(false);
+      await vi.waitFor(() => expect(setupStatusKnown()).toBe(true));
+      expect(authState.setupRequired).toBe(true);
     });
 
     it("a late setup answer never reaches the next account", async () => {

@@ -75,6 +75,9 @@ export const WebCodeStep: Component<PcSetupStepProps> = (props) => {
   const [code, setCode] = createSignal("");
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
+  /** The step is gone: a late answer changes nothing. */
+  let gone = false;
+  onCleanup(() => (gone = true));
 
   const submit = async () => {
     const id = props.attemptId;
@@ -82,6 +85,7 @@ export const WebCodeStep: Component<PcSetupStepProps> = (props) => {
     setError(null);
     try {
       const res = await enterPcSetupCode(id, code());
+      if (gone) return;
       if (res.state === "enrolled") props.onState(id, { state: "enrolled", reason: null, enrollment_id: res.enrollment_id });
       else if (res.state === "failed") props.onState(id, { state: "failed", reason: "too_many_codes" });
       else
@@ -91,6 +95,7 @@ export const WebCodeStep: Component<PcSetupStepProps> = (props) => {
             : t("pcSetup.codeFailed"),
         );
     } catch (err) {
+      if (gone) return;
       if (err instanceof HttpError && codeIs(err.code, "APPROVAL_EXPIRED")) {
         props.onState(id, { state: "expired", reason: "code_expired" });
       } else {
@@ -98,8 +103,10 @@ export const WebCodeStep: Component<PcSetupStepProps> = (props) => {
         setError(errorText(err, "pcSetup.codeFailed"));
       }
     } finally {
-      setCode("");
-      setBusy(false);
+      if (!gone) {
+        setCode("");
+        setBusy(false);
+      }
     }
   };
 
@@ -262,7 +269,10 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
   };
 
   const patch = (attemptId: string, p: Patch) => {
-    if (status()?.attempt_id !== attemptId) return;
+    const cur = status();
+    if (cur?.attempt_id !== attemptId) return;
+    // As for polls: never leave an end, never take a step back.
+    if (rank(cur.state) >= 5 || rank(p.state) < rank(cur.state)) return;
     setStatus((prev) => (prev ? { ...prev, reason: null, ...p } : prev));
     if (p.state !== "waiting") setQr("");
   };
@@ -346,7 +356,11 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
     polling?.abort();
     try {
       const res = await currentPcSetup();
-      if (mine !== generation) return;
+      if (mine !== generation) {
+        // The dialog closed meanwhile: give the resumed attempt up.
+        if (closed && isLive(res)) void cancelPcSetup(res.attempt_id).catch(() => undefined);
+        return;
+      }
       apply(res);
       setStarting(false);
       void pollLoop(mine);

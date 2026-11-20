@@ -6,6 +6,7 @@
 
 import { loadServerFeatures, resetServerFeatures } from "@/stores/serverFeatures";
 import { createStore } from "solid-js/store";
+import { createSignal } from "solid-js";
 import { codeIs } from "@/lib/errorCode";
 import {
   decodeAuthSession,
@@ -543,19 +544,31 @@ export function abandonRestore(): void {
 }
 
 /**
+ * Whether the server's setup state is known for this session: false while a
+ * restored session is still asking, so the first-run tour never starts over
+ * a setup wizard that is about to show.
+ */
+const [setupChecked, setSetupChecked] = createSignal(true);
+export const setupStatusKnown = setupChecked;
+
+/**
  * A restored session learns whether the server setup is still open (only
  * sign-in answers carry `setup_required`), so the first admin's setup wizard
  * comes back after a reload. The answer counts only for the account it was
  * asked for; without one the wizard stays closed, as before.
  */
 async function restoreSetupRequired(userId: string): Promise<void> {
+  setSetupChecked(false);
   try {
     const complete = await tauri.isServerSetupComplete();
     if (authState.user?.id === userId) setAuthState("setupRequired", !complete);
   } catch {
     // Unknown: nothing changes.
+  } finally {
+    setSetupChecked(true);
   }
 }
+
 
 /** One restore attempt; reschedules itself while the server is unreachable. */
 async function attemptRestore(): Promise<void> {

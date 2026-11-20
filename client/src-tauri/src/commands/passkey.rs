@@ -21,7 +21,7 @@ use tauri::{command, State};
 use tokio::time::Instant;
 use tracing::info;
 
-use super::loopback_post::{self, HandBack, FLOW_LISTEN_MAX};
+use super::loopback_post::{self, HandBack, FLOW_LISTEN_MAX, PC_SETUP_LISTEN_MAX};
 use super::oidc_loopback::{new_secret, s256_challenge, READ_DEADLINE};
 use super::reauth::{registry, run_cancellable, Attempt, CANCELLED};
 use crate::session::{AuthResult, SessionError, SessionManager, TokenResponse};
@@ -355,12 +355,15 @@ pub async fn passkey_pc_setup(
     app_handle: tauri::AppHandle,
     server_url: String,
     attempt_id: String,
+    cancel_id: String,
 ) -> Result<(), String> {
     let browser = super::settings::load_settings(&app_handle)
         .await
         .map(|s| s.passkey_browser)
         .unwrap_or_default();
-    with_attempt(&attempt_id, async |attempt| {
+    // `cancel_id` is this invocation's own handle (`passkey_cancel`), never
+    // the server's attempt id.
+    with_attempt(&cancel_id, async |attempt| {
         let result = run_flow(
             &state.session,
             server_url.trim_end_matches('/'),
@@ -369,7 +372,7 @@ pub async fn passkey_pc_setup(
             None,
             attempt,
             |url| super::auth::open_browser_with(&app_handle, url, browser),
-            FLOW_LISTEN_MAX,
+            PC_SETUP_LISTEN_MAX,
         )
         .await?;
         match result {

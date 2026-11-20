@@ -14,7 +14,7 @@
 import { Component, Show, createSignal, onCleanup } from "solid-js";
 import { t } from "@/i18n";
 import { PASSKEY_ERRORS, passkeyFailureText } from "@/lib/authErrors";
-import { setUpThisPcInBrowser } from "@/lib/tauri/passkeys";
+import { PasskeyError, setUpThisPcInBrowser } from "@/lib/tauri/passkeys";
 import type { PcSetupPlatform, PcSetupStepProps } from "./SetUpThisPc";
 import LinuxPasskeyHint from "./LinuxPasskeyHint";
 
@@ -29,6 +29,18 @@ const flows = new Map<string, BrowserFlow>();
 /** Steps showing each attempt's flow. */
 const refs = new Map<string, number>();
 const [version, setVersion] = createSignal(0);
+
+/**
+ * The text of a failed browser step: the passkey texts for passkey errors
+ * (limit, already added, not supported), the desktop text for everything
+ * else the flow can answer (an ended attempt, a refused start).
+ */
+function desktopFailureText(err: unknown): string {
+  if (err instanceof PasskeyError && !Object.prototype.hasOwnProperty.call(PASSKEY_ERRORS, err.code)) {
+    return t("pcSetup.desktop.failed");
+  }
+  return passkeyFailureText(err, "pcSetup.desktop.failed", PASSKEY_ERRORS) || t("pcSetup.desktop.failed");
+}
 
 function startFlow(attemptId: string, onState: PcSetupStepProps["onState"]) {
   const old = flows.get(attemptId);
@@ -48,7 +60,7 @@ function startFlow(attemptId: string, onState: PcSetupStepProps["onState"]) {
       flow.done = true;
       setVersion((v) => v + 1);
       if (ctl.signal.aborted) return;
-      setError(passkeyFailureText(err, "pcSetup.desktop.failed", PASSKEY_ERRORS) || t("pcSetup.desktop.failed"));
+      setError(desktopFailureText(err));
     },
   );
 }
@@ -126,12 +138,10 @@ export const DesktopPasskeyStep: Component<PcSetupStepProps> = (props) => {
         when={running(attemptId)}
         fallback={
           <>
+            {/* After the code only Start again can help: one line that says so. */}
             <p role="alert" class="text-sm text-text-primary">
-              {failure(attemptId) ?? t("pcSetup.desktop.interrupted")}
+              {t("pcSetup.desktop.interrupted")}
             </p>
-            <Show when={failure(attemptId)}>
-              <p class="text-sm text-text-secondary">{t("pcSetup.desktop.interrupted")}</p>
-            </Show>
           </>
         }
       >

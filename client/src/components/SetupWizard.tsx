@@ -416,8 +416,9 @@ const SetupForm: Component = () => {
 
 /**
  * A user who is not a system admin cannot complete the setup (the server
- * answers 403), so they get a closable notice instead of the wizard. When the
- * admin status cannot be read, the wizard shows as before.
+ * answers 403), so they get a closable notice instead of the wizard; so does
+ * anyone whose admin status cannot be read (an admin gets the wizard after a
+ * reload).
  */
 const SetupPendingNotice: Component = () => (
   <Modal
@@ -443,7 +444,8 @@ const SetupWizard: Component = () => {
     try {
       return (await checkAdminStatus()).is_admin;
     } catch {
-      return true;
+      // Unknown: the closable notice, never a form that only an admin can send.
+      return false;
     }
   });
   return (
