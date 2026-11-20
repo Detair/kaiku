@@ -23,7 +23,11 @@ class PrefsKeyDeviceStoreTest {
         claimVoidAfter = Instant.parse("2026-11-20T10:20:00Z"),
         installId = "22222222-2222-4222-8222-222222222222", since = Instant.parse("2026-11-20T10:00:00Z"),
         codeClaim = true,
-        unanswered = Unanswered(Instant.parse("2026-11-20T11:00:00Z"), Instant.parse("2026-11-21T12:00:00Z"), 3),
+        unanswered = Unanswered(BootTime(4, 90_000_000), 3, java.time.Duration.ofHours(25)),
+        written = BootTime(4, 1_000),
+        provisionalFrom = KeyDevicePhase.CLAIMED,
+        installIdLost = true,
+        notThisKey = true,
     )
 
     private fun store() = PrefsKeyDeviceStore(KeystoreWrappedPreferences(backing, testValueCipher()))
@@ -50,12 +54,18 @@ class PrefsKeyDeviceStoreTest {
         store().save(record)
         val back = (store().load() as KeyStorage.Present).record
         assertTrue(back.codeClaim)
-        assertEquals(Unanswered(Instant.parse("2026-11-20T11:00:00Z"), Instant.parse("2026-11-21T12:00:00Z"), 3), back.unanswered)
+        assertEquals(Unanswered(BootTime(4, 90_000_000), 3, java.time.Duration.ofHours(25)), back.unanswered)
+        assertEquals(BootTime(4, 1_000), back.written)
+        assertEquals(KeyDevicePhase.CLAIMED, back.provisionalFrom)
+        assertTrue(back.installIdLost && back.notThisKey)
         // A record of an earlier version says neither.
         store().save(StoredKeyDevice(device, KeyDevicePhase.CLAIMING, keyId = "key-1"))
         val older = (store().load() as KeyStorage.Present).record
         assertFalse(older.codeClaim)
         assertNull(older.unanswered)
+        assertNull(older.written)
+        assertNull(older.provisionalFrom)
+        assertFalse(older.installIdLost || older.notThisKey)
         // Cleared with the record: nothing of it is left for a later one.
         store().save(record)
         assertTrue(store().clear())
@@ -69,7 +79,7 @@ class PrefsKeyDeviceStoreTest {
         KeystoreWrappedPreferences(backing, testValueCipher()).edit().remove("unanswered_occasions").commit()
         assertEquals(KeyStorage.Unreadable, store().load())
         store().save(record)
-        KeystoreWrappedPreferences(backing, testValueCipher()).edit().putString("unanswered_last", "yesterday").commit()
+        KeystoreWrappedPreferences(backing, testValueCipher()).edit().putString("unanswered_span_ms", "a day").commit()
         assertEquals(KeyStorage.Unreadable, store().load())
     }
 
@@ -157,5 +167,19 @@ class PrefsKeyDeviceStoreTest {
         // Readable, it is no record (the flag has its own clean-up).
         assertEquals(KeyStorage.Absent, store().load())
         assertEquals(true, store().legacyRemovalMark())
+    }
+
+    /** A record that can be read, beside a left-over flag that cannot: the store is unreadable, not "a record". */
+    @Test fun `an unreadable left-over flag beside a readable record makes the store unreadable`() {
+        val good = KeystoreWrappedPreferences(backing, testValueCipher())
+        PrefsKeyDeviceStore(good).save(record)
+        // The flag written with a key that is gone now: only it cannot be decrypted.
+        val brokenCipher = object : ValueCipher {
+            override fun encrypt(plain: ByteArray, aad: ByteArray) = testValueCipher().encrypt(plain.reversedArray(), aad)
+            override fun decrypt(blob: ByteArray, aad: ByteArray) = testValueCipher().decrypt(blob, aad)
+        }
+        KeystoreWrappedPreferences(backing, brokenCipher).edit().putBoolean("removal_sign_in", true).commit()
+        assertEquals(KeyStorage.Unreadable, store().load())
+        assertNull(store().legacyRemovalMark())
     }
 }

@@ -15,10 +15,11 @@ enum class KeyDevicePhase { CLAIMING, CLAIMED, PENDING, ACTIVE }
 
 /**
  * Questions about a record that its server left without an answer, since that server's last answer:
- * when the first one failed ([since]), when the last counted one did ([last]), and on how many
- * separate occasions ([occasions]; see [ServerSilence]). By the phone's own clock.
+ * when the last counted one failed ([last]), on how many separate occasions ([occasions]; see
+ * [ServerSilence]), and how much of the phone's running time lies between the first and the last
+ * of them ([span]). By the phone's running time ([BootClock]), not its clock.
  */
-data class Unanswered(val since: Instant, val last: Instant, val occasions: Int)
+data class Unanswered(val last: BootTime, val occasions: Int, val span: java.time.Duration)
 
 /** Everything the phone keeps about its key device; [LocalKeyDevice.claimSecret] is a secret. */
 data class StoredKeyDevice(
@@ -33,8 +34,9 @@ data class StoredKeyDevice(
     /** The setup that made this record (null for a record written before this field existed). */
     val attemptId: String? = null,
     /**
-     * [KeyDevicePhase.CLAIMING] only: the server time after which the claim can no longer turn this
-     * key into a key device (its challenge has run out, and so has any code a claim would have got).
+     * A claim not finished yet: the server time after which it can no longer turn this key into a
+     * key device, with a margin. [KeyDevicePhase.CLAIMING]: its challenge has run out, and so has
+     * any code it would have got; [KeyDevicePhase.CLAIMED]: its code has run out.
      */
     val claimVoidAfter: Instant? = null,
     /**
@@ -43,10 +45,7 @@ data class StoredKeyDevice(
      * null for a record written before this field existed.
      */
     val installId: String? = null,
-    /**
-     * The phone's own clock when the claim was recorded. Read by [SetupDiscard], and by
-     * [KeyAnswers] for a claim that completes by itself.
-     */
+    /** The phone's own clock when the claim was recorded (kept for older readers; no decision uses it). */
     val since: Instant? = null,
     /**
      * The claim of this record can complete only through a code that the phone shows and someone
@@ -56,6 +55,31 @@ data class StoredKeyDevice(
     val codeClaim: Boolean = false,
     /** What [ServerSilence] has noted about this record; null while its server answers. */
     val unanswered: Unanswered? = null,
+    /**
+     * The phone's running time when the claim was recorded ([BootClock]): how long ago a claim
+     * was sent is measured by it, never by the phone's clock. Null for a record written before
+     * this was kept (it is then noted at its first use and counted from there).
+     */
+    val written: BootTime? = null,
+    /**
+     * The server's word that this is a key device came only from a question about this install
+     * (the probe), not about this key: until a signature of this key was accepted, the setup is not
+     * finished ([provisionalFrom] is the phase it came from, which it goes back to if that signature
+     * is refused).
+     */
+    val provisionalFrom: KeyDevicePhase? = null,
+    /**
+     * The install id this key device was enrolled under could not be read when it was to be
+     * recorded (the app had none, or a new one had to be made): no answer about "this install"
+     * then speaks for this key, and none of them forgets it.
+     */
+    val installIdLost: Boolean = false,
+    /**
+     * A provisional record ([provisionalFrom]) whose key's signature the server refused: the
+     * server's word about this install is about another key. Such a word never makes this record
+     * a key device again.
+     */
+    val notThisKey: Boolean = false,
 ) {
     /**
      * Whether [other] is this very record: same server, account, key device, enrolment, key, setup
@@ -116,19 +140,25 @@ class PrefsKeyDeviceStore(private val prefs: SharedPreferences) : KeyDeviceStore
         const val INSTALL_ID = "install_id"
         const val SINCE = "since"
         const val CODE_CLAIM = "code_claim"
-        const val UNANSWERED_SINCE = "unanswered_since"
-        const val UNANSWERED_LAST = "unanswered_last"
+        const val UNANSWERED_LAST_ELAPSED = "unanswered_last_elapsed"
+        const val UNANSWERED_LAST_BOOT = "unanswered_last_boot"
+        const val UNANSWERED_SPAN = "unanswered_span_ms"
         const val UNANSWERED_OCCASIONS = "unanswered_occasions"
+        const val WRITTEN_ELAPSED = "written_elapsed"
+        const val WRITTEN_BOOT = "written_boot"
+        const val PROVISIONAL_FROM = "provisional_from"
+        const val INSTALL_ID_LOST = "install_id_lost"
+        const val NOT_THIS_KEY = "not_this_key"
         const val LEGACY_REMOVAL_SIGN_IN = "removal_sign_in"
         val REQUIRED = listOf(PHASE, USER_ID, ORIGIN, ENROLLMENT_ID)
     }
 
     @Synchronized
     override fun load(): KeyStorage = try {
+        // A flag of an earlier version that is there but cannot be read makes the whole store
+        // unreadable, with or without a record: reading it throws.
+        if (prefs.contains(LEGACY_REMOVAL_SIGN_IN)) prefs.getBoolean(LEGACY_REMOVAL_SIGN_IN, false)
         if (REQUIRED.none(prefs::contains)) {
-            // No record. A flag of an earlier version that is there but cannot be read is not
-            // "nothing stored" either: reading it throws, and the store counts as unreadable.
-            if (prefs.contains(LEGACY_REMOVAL_SIGN_IN)) prefs.getBoolean(LEGACY_REMOVAL_SIGN_IN, false)
             KeyStorage.Absent
         } else {
             // A record is there. Anything about it that cannot be read (a failed decrypt, a phase
@@ -163,14 +193,20 @@ class PrefsKeyDeviceStore(private val prefs: SharedPreferences) : KeyDeviceStore
                         installId = prefs.getString(INSTALL_ID, null),
                         since = prefs.getString(SINCE, null)?.let(Instant::parse),
                         codeClaim = prefs.getString(CODE_CLAIM, null) == "true",
-                        // All three parts or none: a part that is missing or cannot be parsed throws.
-                        unanswered = prefs.getString(UNANSWERED_SINCE, null)?.let { since ->
+                        // All parts or none: a part that is missing or cannot be parsed throws.
+                        unanswered = prefs.getString(UNANSWERED_LAST_ELAPSED, null)?.let { last ->
                             Unanswered(
-                                Instant.parse(since),
-                                Instant.parse(prefs.getString(UNANSWERED_LAST, null)),
+                                BootTime(prefs.getString(UNANSWERED_LAST_BOOT, null)?.toInt(), last.toLong()),
                                 prefs.getString(UNANSWERED_OCCASIONS, null)!!.toInt(),
+                                java.time.Duration.ofMillis(prefs.getString(UNANSWERED_SPAN, null)!!.toLong()),
                             )
                         },
+                        written = prefs.getString(WRITTEN_ELAPSED, null)?.let { BootTime(prefs.getString(WRITTEN_BOOT, null)?.toInt(), it.toLong()) },
+                        provisionalFrom = prefs.getString(PROVISIONAL_FROM, null)?.let { p ->
+                            KeyDevicePhase.entries.firstOrNull { it.name == p } ?: throw IllegalStateException("phase")
+                        },
+                        installIdLost = prefs.getString(INSTALL_ID_LOST, null) == "true",
+                        notThisKey = prefs.getString(NOT_THIS_KEY, null) == "true",
                     ),
                 )
             }
@@ -203,9 +239,15 @@ class PrefsKeyDeviceStore(private val prefs: SharedPreferences) : KeyDeviceStore
             .putString(INSTALL_ID, s.installId)
             .putString(SINCE, s.since?.toString())
             .putString(CODE_CLAIM, if (s.codeClaim) "true" else null)
-            .putString(UNANSWERED_SINCE, s.unanswered?.since?.toString())
-            .putString(UNANSWERED_LAST, s.unanswered?.last?.toString())
+            .putString(UNANSWERED_LAST_ELAPSED, s.unanswered?.last?.elapsedMs?.toString())
+            .putString(UNANSWERED_LAST_BOOT, s.unanswered?.last?.boot?.toString())
+            .putString(UNANSWERED_SPAN, s.unanswered?.span?.toMillis()?.toString())
             .putString(UNANSWERED_OCCASIONS, s.unanswered?.occasions?.toString())
+            .putString(WRITTEN_ELAPSED, s.written?.elapsedMs?.toString())
+            .putString(WRITTEN_BOOT, s.written?.boot?.toString())
+            .putString(PROVISIONAL_FROM, s.provisionalFrom?.name)
+            .putString(INSTALL_ID_LOST, if (s.installIdLost) "true" else null)
+            .putString(NOT_THIS_KEY, if (s.notThisKey) "true" else null)
             .commit()
     } catch (e: Exception) {
         logger.warning("Key-device store not written: ${e.javaClass.simpleName}")
@@ -216,7 +258,7 @@ class PrefsKeyDeviceStore(private val prefs: SharedPreferences) : KeyDeviceStore
     override fun clear(): Boolean = try {
         // The legacy flag is not part of the record and has its own clean-up.
         val editor = prefs.edit()
-        (REQUIRED + listOf(KEY_DEVICE_ID, UV_CLASS, CLAIM_SECRET, ACCOUNT_NAME, READY_AT, SESSION_CAP, RENEWAL_PROMPT, KEY_ID, ATTEMPT_ID, CLAIM_VOID_AFTER, INSTALL_ID, SINCE, CODE_CLAIM, UNANSWERED_SINCE, UNANSWERED_LAST, UNANSWERED_OCCASIONS))
+        (REQUIRED + listOf(KEY_DEVICE_ID, UV_CLASS, CLAIM_SECRET, ACCOUNT_NAME, READY_AT, SESSION_CAP, RENEWAL_PROMPT, KEY_ID, ATTEMPT_ID, CLAIM_VOID_AFTER, INSTALL_ID, SINCE, CODE_CLAIM, UNANSWERED_LAST_ELAPSED, UNANSWERED_LAST_BOOT, UNANSWERED_SPAN, UNANSWERED_OCCASIONS, WRITTEN_ELAPSED, WRITTEN_BOOT, PROVISIONAL_FROM, INSTALL_ID_LOST, NOT_THIS_KEY, "unanswered_since", "unanswered_last"))
             .forEach { editor.remove(it) }
         editor.commit()
     } catch (e: Exception) {

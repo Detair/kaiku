@@ -26,6 +26,8 @@ class FakeEnrollmentApi {
         codeExpiresAt = "2026-11-03T12:05:00Z", claimSecret = "claim-secret")
     var lastClaim: EnrollmentClaim? = null
     var lastTicket: String? = null
+    /** The origin each registration ticket was sent to. */
+    val ticketOrigins = mutableListOf<String>()
     val statuses = ArrayDeque<ClaimStatus>()
     val statusFailures = ArrayDeque<Exception>()
     var lastOrigin: String? = null
@@ -72,7 +74,9 @@ class FakeEnrollmentApi {
 
     val api = object : EnrollmentApi {
         override suspend fun issueOwn(): EnrollmentIssued { calls += "issueOwn"; return issued }
-        override suspend fun issueWithTicket(ticket: String): EnrollmentIssued { calls += "issueWithTicket"; lastTicket = ticket; return issued }
+        override suspend fun issueWithTicket(ticket: String, origin: String): EnrollmentIssued {
+            calls += "issueWithTicket"; lastTicket = ticket; ticketOrigins += origin; return issued
+        }
         override suspend fun get(id: String): Enrollment {
             calls += "get:$id"
             getFailure?.let { throw it }

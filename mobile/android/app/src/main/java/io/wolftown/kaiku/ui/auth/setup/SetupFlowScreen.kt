@@ -148,8 +148,8 @@ private fun SetupFlowSteps(
                 KeySecondaryButton(stringResource(R.string.common_cancel), onClick = viewModel::cancel)
             }
             is SetupUi.ShowCode -> SetupCode(u.code)
-            SetupUi.ClaimWaiting -> {
-                KeyNotice(stringResource(R.string.setup_claim_waiting), warning = false)
+            SetupUi.ClaimWaiting, SetupUi.CodeRanOut -> {
+                KeyNotice(stringResource(if (u == SetupUi.CodeRanOut) R.string.setup_code_ran_out else R.string.setup_claim_waiting), warning = false)
                 KeyPrimaryButton(stringResource(R.string.common_try_again), onClick = viewModel::retry)
                 if (onBack != null) KeySecondaryButton(stringResource(R.string.common_back), onClick = onBack)
             }

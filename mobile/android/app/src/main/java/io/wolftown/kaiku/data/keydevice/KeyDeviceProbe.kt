@@ -37,11 +37,12 @@ sealed interface ServerKeyState {
 }
 
 /**
- * Whether a failed request brought nothing the server itself said: no connection, a timeout, a
- * server fault (5xx), "too many requests", or a body that is not the server's (no error code).
+ * Whether a failed request brought nothing the server itself said: no connection, a timeout, or a
+ * body that is not the server's (no error code of its own). Any answer with the server's own error
+ * code, also "too many requests" or a fault it reports, is an answer.
  */
 fun Exception.isNoAnswer(): Boolean = when (this) {
-    is ApiException -> status.value >= 500 || status.value == 429 || normalizedCode == null
+    is ApiException -> normalizedCode == null
     else -> true
 }
 

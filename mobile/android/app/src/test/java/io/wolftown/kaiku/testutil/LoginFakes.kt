@@ -29,10 +29,14 @@ class InMemoryKeyDeviceStore : KeyDeviceStore {
     var unreadable = false
     var failWrites = false
     var legacyMark = false
+    /** Only the flag an earlier version left cannot be read (the record can). As in the real store, the whole store then counts as unreadable. */
+    var flagUnreadable = false
+    /** How many clears of that flag still fail. */
+    var failFlagClears = 0
     /** Every durable change, in order (`save:PHASE`, `clear`). */
     val writes = mutableListOf<String>()
     override fun load(): KeyStorage = when {
-        unreadable -> KeyStorage.Unreadable
+        unreadable || flagUnreadable -> KeyStorage.Unreadable
         else -> stored?.let { KeyStorage.Present(it) } ?: KeyStorage.Absent
     }
     override fun save(s: StoredKeyDevice): Boolean {
@@ -47,8 +51,12 @@ class InMemoryKeyDeviceStore : KeyDeviceStore {
         writes += "clear"
         return true
     }
-    override fun legacyRemovalMark(): Boolean? = if (unreadable) null else legacyMark
+    override fun legacyRemovalMark(): Boolean? = if (flagUnreadable) null else legacyMark
     override fun clearLegacyRemovalMark(): Boolean {
+        if (failFlagClears > 0) {
+            failFlagClears--
+            return false
+        }
         legacyMark = false
         return true
     }

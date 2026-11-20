@@ -27,7 +27,8 @@ import javax.inject.Inject
  */
 interface EnrollmentApi {
     suspend fun issueOwn(): EnrollmentIssued
-    suspend fun issueWithTicket(ticket: String): EnrollmentIssued
+    /** A registration ticket goes only to the server that issued it ([origin], absolute). */
+    suspend fun issueWithTicket(ticket: String, origin: String): EnrollmentIssued
     suspend fun get(id: String): Enrollment
     suspend fun cancel(id: String)
     suspend fun open(setupToken: String, origin: String? = null): EnrollmentOpen
@@ -61,8 +62,8 @@ class EnrollmentApiImpl @Inject constructor(private val httpClient: HttpClient) 
         return r.body()
     }
 
-    override suspend fun issueWithTicket(ticket: String): EnrollmentIssued {
-        val r = httpClient.post("/auth/registration/enrollments") {
+    override suspend fun issueWithTicket(ticket: String, origin: String): EnrollmentIssued {
+        val r = httpClient.post(at(origin, "/auth/registration/enrollments")) {
             publicRoute()
             header(TICKET_HEADER, ticket)
             setBody(JsonObject(emptyMap()))
@@ -100,8 +101,11 @@ class EnrollmentApiImpl @Inject constructor(private val httpClient: HttpClient) 
     }
 
     override suspend fun claim(req: EnrollmentClaim, ticket: String?, origin: String?): ClaimResult {
+        // A registration ticket never goes to "whatever server is configured".
+        require(ticket == null || origin != null) { "a ticket needs its origin" }
         val r = httpClient.post(at(origin, "/auth/enrollments/claim")) {
             publicRoute()
+            sentOnce()
             if (ticket != null) header(TICKET_HEADER, ticket)
             setBody(req)
         }

@@ -74,6 +74,12 @@ class MainActivity : FragmentActivity() {
     @Inject
     lateinit var setupOwner: SetupOwner
 
+    @Inject
+    lateinit var wakeDeferral: io.wolftown.kaiku.push.WakeDeferral
+
+    @Inject
+    lateinit var wakeEnqueuer: io.wolftown.kaiku.push.WakeWorkEnqueuer
+
     /** A route the running app should open next (the B.4 renewal prompt). */
     private val pendingRoute = MutableStateFlow<String?>(null)
 
@@ -92,6 +98,8 @@ class MainActivity : FragmentActivity() {
         }
         keyStorage.bindInstallId()
         authState.initialize(tokenStorage)
+        // Message wakes kept while the key storage could not be read go to the account signed in now.
+        wakeDeferral.release(wakeEnqueuer::enqueue)
         // A link kept while the app could not start is judged like one opened now.
         PendingSetupLinks.releaseKept(setupOwner::offer)
         // On recreation (rotation, theme change, process restore) getIntent() is the
@@ -149,6 +157,12 @@ class MainActivity : FragmentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        // While the key storage cannot be read a setup link is only kept: it is judged once the
+        // storage was read again ("Try again"), like the link that opened the app.
+        if (keyStorage.unreadable()) {
+            if (PendingSetupLinks.keep(intent.data?.toString())) intent.data = null
+            return
+        }
         handleIntent(intent)
     }
 

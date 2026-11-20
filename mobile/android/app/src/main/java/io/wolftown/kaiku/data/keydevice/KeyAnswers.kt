@@ -43,8 +43,14 @@ enum class Verdict {
      * asked after this answer says whether that claim made this phone a key.
      */
     CLAIM_TAKEN,
-    /** The enrolment ended without making a key device. */
+    /** The enrolment ended without making a key device, as a state the server has stored (`cancelled`, `failed`). */
     ENROLMENT_ENDED,
+    /**
+     * The server says the code has run out (`expired`). It works that out from its clock while a
+     * confirmation sent just in time may still be being stored, so by itself it forgets nothing:
+     * the key-device probe decides, after the time is over by the server's and the phone's measure.
+     */
+    ENROLMENT_RAN_OUT,
     /** The server does not know the enrolment (any more); whether a key device came of it, the key-device probe says. */
     ENROLMENT_UNKNOWN,
 }
@@ -89,28 +95,21 @@ internal object AskOrder {
  *   (a code it may have got was in the answer that never arrived, so nobody can confirm it; or
  *   another phone holds the link). In that order a claim that completed by itself shows as a key
  *   device in the probe and is taken over instead;
- * - an enrolment status counts only as `200` with an ending state, asked for the record's own
- *   enrolment (the answer is bound to the id and secret that were sent).
+ * - an enrolment status counts only as `200` with a stored ending state (`cancelled`, `failed`),
+ *   asked for the record's own enrolment (the answer is bound to the id and secret that were
+ *   sent); `expired` is worked out from the server's clock and forgets nothing by itself;
+ * - "no key device" and "not known" say nothing final about a claim that is not finished: such a
+ *   claim is given up on them only once its time is over by the server's and the phone's measure
+ *   and a probe asked after that still finds no key device.
  */
-class KeyAnswers internal constructor(
+class KeyAnswers @Inject constructor(
     private val keyDevices: KeyDeviceRepository,
-    /** The phone's own clock (only for how long ago a claim was recorded, see [afterItsTime]). */
-    private val clock: () -> Instant,
+    /** The phone's running time (how long ago a claim was recorded, see [afterItsTime]). */
+    private val boot: BootClock,
 ) {
-
-    @Inject
-    constructor(keyDevices: KeyDeviceRepository) : this(keyDevices, Instant::now)
 
     /** One line of the table: [code] for a refusal, [state] for an enrolment status, neither for a plain success. */
     data class Row(val ask: Ask, val status: Int, val code: String?, val state: String?, val verdict: Verdict)
-
-    /**
-     * Proof that the server no longer knows the enrolment of one record. Only [settle] makes one
-     * (the one implementation is private to this class), and it counts only for that very record.
-     */
-    sealed interface EnrolmentUnknown
-
-    private class UnknownFor(val about: StoredKeyDevice) : EnrolmentUnknown
 
     /**
      * Proof that the claim check said "already claimed" about one record whose own claim never got
@@ -120,20 +119,30 @@ class KeyAnswers internal constructor(
 
     private class TakenFor(val about: StoredKeyDevice, val at: Long) : ClaimTaken
 
+    /**
+     * Proof that the time of one unfinished claim is over by both measures: the server's own time
+     * (`Date`) is past the claim's time with its margin, and the phone's running time since the
+     * claim was recorded is past the longest life of a claim with that margin; and when ([AskOrder]).
+     * Only [settle] makes one, from a probe's answer; only a probe sent after it can use it.
+     */
+    sealed interface TimeOver
+
+    private class OverFor(val about: StoredKeyDevice, val at: Long) : TimeOver
+
     sealed interface Settled {
         val verdict: Verdict
 
         /**
-         * [unknown]: the enrolment is not known to the server; pass it with the key-device probe's
-         * answer. [askAgainIn]: a claim without an answer is still within the time in which the
-         * server could store it; ask again after that long.
+         * [askAgainIn]: an unfinished claim may still be stored by its server, or its time has just
+         * been found over ([over]); ask the key-device probe again after that long.
          */
         data class Kept(
             override val verdict: Verdict,
-            val unknown: EnrolmentUnknown? = null,
             val askAgainIn: Duration? = null,
             /** The claim check said "already claimed"; pass it with the answer of a probe asked afterwards. */
             val taken: ClaimTaken? = null,
+            /** The claim's time is over by both measures; pass it with the answer of a probe asked afterwards. */
+            val over: TimeOver? = null,
         ) : Settled
         data class Forgotten(override val verdict: Verdict) : Settled
 
@@ -146,6 +155,15 @@ class KeyAnswers internal constructor(
 
         /** For a claim whose challenge time is not stored: a challenge's longest life (10 min) on top. */
         val CLAIM_VOID_UNKNOWN: Duration = Duration.ofMinutes(20)
+
+        /**
+         * The longest life of a claim (its challenge, 10 min, then its code, 5 min) and the margin
+         * (10 min): by the phone's running time since the claim was recorded.
+         */
+        val CLAIM_LIFE_WITH_MARGIN: Duration = Duration.ofMinutes(25)
+
+        /** While only the phone's own time is left to pass, the probe is asked again at least this often. */
+        val ASK_AGAIN_WHILE_WAITING: Duration = Duration.ofMinutes(5)
 
         private fun gone(ask: Ask) = listOf(
             Row(ask, 404, "KEY_DEVICE_UNKNOWN", null, Verdict.KEY_GONE),
@@ -167,7 +185,7 @@ class KeyAnswers internal constructor(
             Row(Ask.CLAIM_CHECK, 409, "ENROLLMENT_ALREADY_CLAIMED", null, Verdict.CLAIM_TAKEN),
             Row(Ask.CLAIM_CHECK, 404, "ENROLLMENT_TOKEN_INVALID", null, Verdict.ENROLMENT_UNKNOWN),
             Row(Ask.ENROLMENT_STATUS, 200, null, "cancelled", Verdict.ENROLMENT_ENDED),
-            Row(Ask.ENROLMENT_STATUS, 200, null, "expired", Verdict.ENROLMENT_ENDED),
+            Row(Ask.ENROLMENT_STATUS, 200, null, "expired", Verdict.ENROLMENT_RAN_OUT),
             Row(Ask.ENROLMENT_STATUS, 200, null, "failed", Verdict.ENROLMENT_ENDED),
             Row(Ask.ENROLMENT_STATUS, 404, "ENROLLMENT_TOKEN_INVALID", null, Verdict.ENROLMENT_UNKNOWN),
         )
@@ -186,10 +204,8 @@ class KeyAnswers internal constructor(
      * [askedEnrolment] is the enrolment id an [Ask.ENROLMENT_STATUS] was sent for. The verdict
      * comes from [rows]; it forgets only a record in the phase it can speak about, and only if that
      * record is still the stored one ([KeyDeviceRepository.forget]):
-     * - [Verdict.KEY_GONE]: an active or pending key device. A claim (`CLAIMING`, `CLAIMED`) only
-     *   with [unknown] (the server no longer knows its enrolment); a claim whose answer never came
-     *   (`CLAIMING`) also through the probe's own form of this function (below), or once the
-     *   server's own clock is past the time the claim could still be stored;
+     * - [Verdict.KEY_GONE]: an active or pending key device (not one whose install id could not be
+     *   established); an unfinished claim only through the probe's own form of this function (below);
      * - [Verdict.REMOVED]: an active key device;
      * - [Verdict.CLAIM_REFUSED], [Verdict.CLAIM_VOID]: a claim whose answer was not known (`CLAIMING`);
      * - [Verdict.ENROLMENT_ENDED]: a claim waiting for its code (`CLAIMED`) of that very enrolment.
@@ -200,22 +216,23 @@ class KeyAnswers internal constructor(
         ask: Ask,
         answer: ServerAnswer,
         askedEnrolment: String? = null,
-        unknown: EnrolmentUnknown? = null,
-    ): Settled = decide(expected, askedOrigin, ask, answer, askedEnrolment, unknown, null, null)
+    ): Settled = decide(expected, askedOrigin, ask, answer, askedEnrolment, null, null, null)
 
     /**
      * The key-device probe said "no key device" about [expected]: [gone] is the probe's own result
-     * and carries when its question was sent. Only here can [taken] count: for a claim whose
-     * answer never came (`CLAIMING`), when the claim check said "already claimed" about that very
-     * record and this probe was sent after that answer.
+     * and carries when its question was sent. Only here can an unfinished claim be given up, in one
+     * of two ways, each only for a probe sent after its proof was made:
+     * - [taken]: the claim's answer never came (`CLAIMING`), and the claim check said "already
+     *   claimed" about that very record;
+     * - [over]: the claim's time is over by the server's and the phone's measure ([afterItsTime]).
      */
     fun settle(
         expected: StoredKeyDevice,
         askedOrigin: String?,
         gone: ServerKeyState.Gone,
-        unknown: EnrolmentUnknown? = null,
         taken: ClaimTaken? = null,
-    ): Settled = decide(expected, askedOrigin, Ask.DEVICE_LOGIN_CHALLENGE, gone.answer, null, unknown, taken, gone.sent)
+        over: TimeOver? = null,
+    ): Settled = decide(expected, askedOrigin, Ask.DEVICE_LOGIN_CHALLENGE, gone.answer, null, taken, over, gone.sent)
 
     private fun decide(
         expected: StoredKeyDevice,
@@ -223,54 +240,52 @@ class KeyAnswers internal constructor(
         ask: Ask,
         answer: ServerAnswer,
         askedEnrolment: String?,
-        unknown: EnrolmentUnknown?,
         taken: ClaimTaken?,
+        over: TimeOver?,
         sent: ProbeSent?,
     ): Settled {
         val own = KaikuPayloads.canonicalOrigin(expected.device.origin)
         if (askedOrigin == null || own == null || askedOrigin != own || !own.startsWith("https://")) return Settled.Kept(Verdict.KEEP)
         val v = verdict(ask, answer)
-        val proven = unknown is UnknownFor && unknown.about sameAs expected
-        val phase = expected.phase
+        // A record that took the server's word about this install only provisionally is still the
+        // claim it was: no answer forgets it as a key device.
+        val phase = expected.provisionalFrom ?: expected.phase
+        val unfinished = phase == KeyDevicePhase.CLAIMING || phase == KeyDevicePhase.CLAIMED
         // The claim's answer never came (the stored phase says so), its enrolment is claimed all
         // the same, and a probe asked after that answer finds no key device.
         val claimLost = phase == KeyDevicePhase.CLAIMING && ask == Ask.DEVICE_LOGIN_CHALLENGE &&
             taken is TakenFor && taken.about sameAs expected && sent != null && sent.isAfter(taken.at)
         return when (v) {
             Verdict.KEY_GONE -> when {
-                phase == KeyDevicePhase.ACTIVE || phase == KeyDevicePhase.PENDING || proven || claimLost -> drop(expected, v)
-                // A claim that has no claim secret to ask its enrolment with.
-                phase == KeyDevicePhase.CLAIMING || expected.device.claimSecret == null -> afterItsTime(expected, answer.serverTime, v)
+                // "No key device for this install" says nothing about a key whose install id is not known.
+                expected.installIdLost -> Settled.Kept(v)
+                phase == KeyDevicePhase.ACTIVE || phase == KeyDevicePhase.PENDING || claimLost -> drop(expected, v)
+                unfinished && sent != null -> afterItsTime(expected, answer.serverTime, v, over, sent)
                 else -> Settled.Kept(v)
             }
             Verdict.REMOVED -> if (phase == KeyDevicePhase.ACTIVE) drop(expected, v) else Settled.Kept(v)
             Verdict.CLAIM_REFUSED, Verdict.CLAIM_VOID -> if (phase == KeyDevicePhase.CLAIMING) drop(expected, v) else Settled.Kept(v)
             Verdict.ENROLMENT_ENDED ->
                 if (phase == KeyDevicePhase.CLAIMED && askedEnrolment == expected.device.enrollmentId) drop(expected, v) else Settled.Kept(v)
-            Verdict.ENROLMENT_UNKNOWN -> {
-                val about = (ask == Ask.CLAIM_CHECK && phase == KeyDevicePhase.CLAIMING) ||
-                    (ask == Ask.ENROLMENT_STATUS && phase == KeyDevicePhase.CLAIMED && askedEnrolment == expected.device.enrollmentId)
-                Settled.Kept(v, unknown = if (about) UnknownFor(expected) else null)
-            }
             Verdict.CLAIM_TAKEN -> Settled.Kept(
                 v,
                 taken = if (ask == Ask.CLAIM_CHECK && phase == KeyDevicePhase.CLAIMING) TakenFor(expected, AskOrder.next()) else null,
             )
-            Verdict.KEEP, Verdict.CLAIM_UNDECIDED -> Settled.Kept(v)
+            Verdict.KEEP, Verdict.CLAIM_UNDECIDED, Verdict.ENROLMENT_UNKNOWN, Verdict.ENROLMENT_RAN_OUT -> Settled.Kept(v)
         }
     }
 
     /**
-     * A claim whose answer never came, with only the key-device probe left to ask (the link is
-     * gone with the process): "no key device" forgets it once nothing can turn it into one any
-     * more, by the server's own clock. A record without that time gets one from this answer.
-     *
-     * A claim that completes by itself (the app's own registration: no code) could still be
-     * stored by its server just after a restart, whatever time the answer's `Date` names (a proxy
-     * in front of the server may set it): for such a claim the phone's own clock must also say
-     * that the claim's longest life has passed since it was recorded ([ownTimeLeft]).
+     * An unfinished claim (`CLAIMING`, or `CLAIMED` whose code ran out) about which only the
+     * key-device probe is left to ask: "no key device" forgets it only when all three hold:
+     * 1. the server's own time ([serverTime], its `Date`) is past the claim's time with its margin;
+     * 2. the phone's running time since the claim was recorded is past [CLAIM_LIFE_WITH_MARGIN];
+     * 3. this probe was sent after 1 and 2 were found ([over], made by an earlier call here).
+     * Until then the key stays and the probe is asked again. A record without its time gets one
+     * from this answer, one without its running time gets it now; both count from there.
      */
-    private fun afterItsTime(expected: StoredKeyDevice, serverTime: Instant?, v: Verdict): Settled {
+    private fun afterItsTime(expected: StoredKeyDevice, serverTime: Instant?, v: Verdict, over: TimeOver?, sent: ProbeSent): Settled {
+        if (over is OverFor && over.about sameAs expected && sent.isAfter(over.at)) return drop(expected, v)
         val now = serverTime ?: return Settled.Kept(v)
         val until = expected.claimVoidAfter
         if (until == null) {
@@ -278,28 +293,24 @@ class KeyAnswers internal constructor(
             val noted = keyDevices.update(expected) { it.copy(claimVoidAfter = now.plus(CLAIM_VOID_UNKNOWN)) }.done
             return Settled.Kept(v, askAgainIn = if (noted) CLAIM_VOID_UNKNOWN else null)
         }
-        if (!now.isAfter(until)) return Settled.Kept(v, askAgainIn = Duration.between(now, until))
-        if (expected.phase == KeyDevicePhase.CLAIMING && !expected.codeClaim) {
-            val left = ownTimeLeft(expected) ?: return Settled.Kept(v)
-            if (!left.isZero) return Settled.Kept(v, askAgainIn = left)
-        }
-        return drop(expected, v)
+        val serverLeft = if (now.isAfter(until)) Duration.ZERO else Duration.between(now, until)
+        val ownLeft = ownTimeLeft(expected) ?: return Settled.Kept(v)
+        if (serverLeft.isZero && ownLeft.isZero) return Settled.Kept(v, askAgainIn = Duration.ZERO, over = OverFor(expected, AskOrder.next()))
+        // Asked again when the server's time is over, and then every few minutes while the
+        // phone's own time runs: a claim that completed late is taken over as soon as it shows.
+        return Settled.Kept(v, askAgainIn = if (!serverLeft.isZero) serverLeft else minOf(ownLeft, ASK_AGAIN_WHILE_WAITING))
     }
 
     /**
-     * How long, by the phone's own clock, until [CLAIM_VOID_UNKNOWN] (a challenge's longest life
-     * and the margin) has passed since the claim was recorded; zero once it has. A record without
-     * that time, or with one the clock has not reached yet (it was set back), counts from now: the
-     * time is noted and the whole span is left (null when the note did not reach storage).
+     * How much of [CLAIM_LIFE_WITH_MARGIN] is still left, by the phone's running time since the
+     * claim was recorded; zero once it has passed. A record that does not say when it was written
+     * is noted now and has the whole span left (null when the note did not reach storage).
      */
     private fun ownTimeLeft(expected: StoredKeyDevice): Duration? {
-        val phoneNow = clock()
-        val since = expected.since
-        if (since == null || since.isAfter(phoneNow)) {
-            return if (keyDevices.update(expected) { it.copy(since = phoneNow) }.done) CLAIM_VOID_UNKNOWN else null
-        }
-        val passed = Duration.between(since, phoneNow)
-        return if (passed >= CLAIM_VOID_UNKNOWN) Duration.ZERO else CLAIM_VOID_UNKNOWN.minus(passed)
+        val written = expected.written
+            ?: return if (keyDevices.update(expected) { it.copy(written = boot.now()) }.done) CLAIM_LIFE_WITH_MARGIN else null
+        val passed = boot.since(written)
+        return if (passed >= CLAIM_LIFE_WITH_MARGIN) Duration.ZERO else CLAIM_LIFE_WITH_MARGIN.minus(passed)
     }
 
     private fun drop(expected: StoredKeyDevice, v: Verdict): Settled =

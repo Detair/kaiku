@@ -47,14 +47,21 @@ class WorkManagerWakeEnqueuer @Inject constructor(
     @ApplicationContext private val context: Context,
     private val tokenStorage: TokenStorage,
     private val keyStorage: KeyStorageCheck,
+    private val deferral: WakeDeferral,
 ) : WakeWorkEnqueuer {
 
     private val workManager: WorkManager
         get() = WorkManager.getInstance(context)
 
     override fun enqueue(signal: WakeSignal) {
-        // The stored session is not read while what the phone saved about its key cannot be.
-        if (keyStorage.unreadable()) return
+        // The stored session is not read while what the phone saved about its key cannot be: the
+        // wake is kept for when it can.
+        if (keyStorage.unreadable()) return deferral.hold(signal)
+        deferral.release(::enqueueNow)
+        enqueueNow(signal)
+    }
+
+    private fun enqueueNow(signal: WakeSignal) {
         val userId = tokenStorage.getUserId() ?: return
         val owner = WakeOwner(userId, tokenStorage.getServerUrl())
         val request = OneTimeWorkRequestBuilder<WakeFetchWorker>()

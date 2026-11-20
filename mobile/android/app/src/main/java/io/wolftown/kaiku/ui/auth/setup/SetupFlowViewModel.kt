@@ -44,6 +44,11 @@ sealed interface SetupUi {
      * asked again by itself once nothing can come of that claim any more (minutes).
      */
     data object ClaimWaiting : SetupUi
+    /**
+     * The code ran out before the server said it was confirmed. The key stays until the server's
+     * and the phone's time say a confirmation can no longer arrive; it is asked again by itself.
+     */
+    data object CodeRanOut : SetupUi
     /** The UV prompt of the final sign-in was cancelled: one button to try again. */
     data object SignInPaused : SetupUi
     /** The final sign-in's prompt stayed open past its challenge: say so, one button for a fresh one. */
@@ -65,16 +70,6 @@ interface SetupEnvironment {
     /** The origin a session or a key ties the app to; null = unconfigured. */
     fun pinnedOrigin(): String?
     fun signedInUserId(): String?
-    /**
-     * An unconfigured app adopts the setup code's server once the person confirmed it: only if,
-     * at this moment, [ServerAddressRule] allows it (the app is still tied to no server and holds
-     * no key record, the same rule a link is accepted under). False: nothing was written.
-     */
-    fun adoptServer(origin: String): Boolean
-    /** The saved server URL (an unconfigured app may have one typed in, without a session). */
-    fun savedServer(): String?
-    /** Puts back what an abandoned setup replaced: the server saved before, or none (null). */
-    fun restoreServer(url: String?)
     val deviceLabel: String
     val apiLevel: Int
 }
@@ -82,22 +77,9 @@ interface SetupEnvironment {
 class AndroidSetupEnvironment @Inject constructor(
     private val originPin: OriginPin,
     private val authState: AuthState,
-    private val tokenStorage: TokenStorage,
-    private val serverAddress: ServerAddressRule,
 ) : SetupEnvironment {
     override fun pinnedOrigin() = originPin.pinned()
     override fun signedInUserId() = (authState.session.value as? AuthSession.LoggedIn)?.userId
-    override fun adoptServer(origin: String): Boolean {
-        // Asked and written in one go: nothing can come in between.
-        if (!serverAddress.mayChange(forOwnSetup = true)) return false
-        if (tokenStorage.getServerUrl()?.let(KaikuPayloads::canonicalOrigin) != origin) tokenStorage.saveServerUrl(origin)
-        return true
-    }
-    override fun savedServer(): String? = tokenStorage.getServerUrl()
-    override fun restoreServer(url: String?) {
-        // Exactly what was there before the setup adopted its server, also when that was nothing.
-        if (url != null) tokenStorage.saveServerUrl(url) else tokenStorage.clearServerUrl()
-    }
     override val deviceLabel: String = "${Build.MANUFACTURER} ${Build.MODEL}".trim()
     override val apiLevel: Int = Build.VERSION.SDK_INT
 }

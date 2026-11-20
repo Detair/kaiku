@@ -31,25 +31,25 @@ class KeyAnswersTest {
 
     private class Phone(val repo: KeyDeviceRepository, val keyStore: SoftwareApprovalKeyStore, val answers: KeyAnswers)
 
-    /** The phone's own clock. */
-    private var phoneNow: Instant = Instant.parse("2026-11-20T10:00:00Z")
+    /** The phone's running time. */
+    private val boot = io.wolftown.kaiku.testutil.FakeBootClock(boot = 1, elapsedMs = 0)
 
     private fun TestScope.phone(
         phase: KeyDevicePhase,
         secret: String? = null,
         voidAfter: Instant? = null,
         codeClaim: Boolean = false,
-        since: Instant? = null,
+        written: BootTime? = null,
     ): Pair<Phone, StoredKeyDevice> {
         val keyStore = SoftwareApprovalKeyStore().apply { generate(ByteArray(32), use) }
         val store = InMemoryKeyDeviceStore()
         val rec = StoredKeyDevice(
             LocalKeyDevice(if (phase == KeyDevicePhase.ACTIVE) "kd1" else null, "u1", origin, UvClass.PER_USE, "e1", secret),
-            phase, keyId = keyStore.keyId(), attemptId = "a1", claimVoidAfter = voidAfter, codeClaim = codeClaim, since = since,
+            phase, keyId = keyStore.keyId(), attemptId = "a1", claimVoidAfter = voidAfter, codeClaim = codeClaim, written = written,
         )
         store.stored = rec
         val repo = KeyDeviceRepository(store, keyStore, AuthState(backgroundScope), backgroundScope)
-        return Phone(repo, keyStore, KeyAnswers(repo) { phoneNow }) to rec
+        return Phone(repo, keyStore, KeyAnswers(repo, boot)) to rec
     }
 
     /** `ApprovalError` and the `AuthError`s these routes can end in, as (status, code). */
@@ -145,7 +145,8 @@ class KeyAnswersTest {
         Ask.ENROLMENT_STATUS,
         mapOf(
             ServerAnswer(200, state = "cancelled") to Verdict.ENROLMENT_ENDED,
-            ServerAnswer(200, state = "expired") to Verdict.ENROLMENT_ENDED,
+            // Worked out from the server's clock: its own verdict, which forgets nothing by itself.
+            ServerAnswer(200, state = "expired") to Verdict.ENROLMENT_RAN_OUT,
             ServerAnswer(200, state = "failed") to Verdict.ENROLMENT_ENDED,
             ServerAnswer(404, "ENROLLMENT_TOKEN_INVALID") to Verdict.ENROLMENT_UNKNOWN,
         ),
@@ -207,30 +208,35 @@ class KeyAnswersTest {
 
     @Test fun `an ended enrolment forgets only when it is the record's own enrolment`() = runTest {
         val (p, rec) = phone(KeyDevicePhase.CLAIMED, secret = "s")
-        assertFalse(p.answers.settle(rec, origin, Ask.ENROLMENT_STATUS, ServerAnswer(200, state = "expired"), askedEnrolment = "another").forgotten)
-        assertFalse(p.answers.settle(rec, origin, Ask.ENROLMENT_STATUS, ServerAnswer(200, state = "expired")).forgotten)
-        assertTrue(p.answers.settle(rec, origin, Ask.ENROLMENT_STATUS, ServerAnswer(200, state = "expired"), askedEnrolment = "e1").forgotten)
+        assertFalse(p.answers.settle(rec, origin, Ask.ENROLMENT_STATUS, ServerAnswer(200, state = "cancelled"), askedEnrolment = "another").forgotten)
+        assertFalse(p.answers.settle(rec, origin, Ask.ENROLMENT_STATUS, ServerAnswer(200, state = "cancelled")).forgotten)
+        assertTrue(p.answers.settle(rec, origin, Ask.ENROLMENT_STATUS, ServerAnswer(200, state = "cancelled"), askedEnrolment = "e1").forgotten)
     }
 
-    @Test fun `a claim loses its key to 'no key device' only once the server no longer knows its enrolment`() = runTest {
-        val goneAnswer = ServerAnswer(404, "KEY_DEVICE_UNKNOWN")
-        for ((phase, ask) in listOf(KeyDevicePhase.CLAIMED to Ask.ENROLMENT_STATUS, KeyDevicePhase.CLAIMING to Ask.CLAIM_CHECK)) {
-            val (p, rec) = phone(phase, secret = "s")
-            assertFalse(p.answers.settle(rec, origin, Ask.DEVICE_LOGIN_CHALLENGE, goneAnswer).forgotten)
-            val unknown = p.answers.settle(rec, origin, ask, ServerAnswer(404, "ENROLLMENT_TOKEN_INVALID"), askedEnrolment = "e1") as KeyAnswers.Settled.Kept
-            assertNotNull(unknown.unknown)
-            assertNotNull(p.repo.record.value)
-            assertTrue(p.answers.settle(rec, origin, Ask.DEVICE_LOGIN_CHALLENGE, goneAnswer, unknown = unknown.unknown).forgotten)
+    /**
+     * "Expired" is worked out from the server's clock while a confirmation sent just in time may
+     * still be stored: said once, twice, or three times, it never forgets the key.
+     */
+    @Test fun `a code that ran out forgets nothing, however often that is said`() = runTest {
+        val (p, rec) = phone(KeyDevicePhase.CLAIMED, secret = "s")
+        repeat(3) {
+            val r = p.answers.settle(rec, origin, Ask.ENROLMENT_STATUS, ServerAnswer(200, state = "expired"), askedEnrolment = "e1")
+            assertEquals(KeyAnswers.Settled.Kept(Verdict.ENROLMENT_RAN_OUT), r)
         }
-        // The proof is about one record: it does not carry over to another.
-        val (p1, rec1) = phone(KeyDevicePhase.CLAIMED, secret = "s")
-        val proof = (p1.answers.settle(rec1, origin, Ask.ENROLMENT_STATUS, ServerAnswer(404, "ENROLLMENT_TOKEN_INVALID"), askedEnrolment = "e1") as KeyAnswers.Settled.Kept).unknown
-        val (p2, rec2) = phone(KeyDevicePhase.CLAIMED, secret = "s")
-        assertFalse(p2.answers.settle(rec2.copy(attemptId = "a2").also { p2.repo.seedForTest(it) }, origin, Ask.DEVICE_LOGIN_CHALLENGE, goneAnswer, unknown = proof).forgotten)
-        // Asked for another enrolment, or from the wrong request: no proof.
-        val (p3, rec3) = phone(KeyDevicePhase.CLAIMED, secret = "s")
-        assertNull((p3.answers.settle(rec3, origin, Ask.ENROLMENT_STATUS, ServerAnswer(404, "ENROLLMENT_TOKEN_INVALID"), askedEnrolment = "x") as KeyAnswers.Settled.Kept).unknown)
-        assertNull((p3.answers.settle(rec3, origin, Ask.CLAIM_CHECK, ServerAnswer(404, "ENROLLMENT_TOKEN_INVALID")) as KeyAnswers.Settled.Kept).unknown)
+        assertNotNull(p.repo.record.value)
+        assertTrue(p.keyStore.hasKey())
+    }
+
+    /** "The enrolment is not known" is only "not known": with "no key device" it gives up nothing by itself. */
+    @Test fun `an enrolment the server does not know gives a claim up no sooner`() = runTest {
+        for ((phase, ask) in listOf(KeyDevicePhase.CLAIMED to Ask.ENROLMENT_STATUS, KeyDevicePhase.CLAIMING to Ask.CLAIM_CHECK)) {
+            val (p, rec) = phone(phase, secret = "s", voidAfter = Instant.parse("2026-11-20T10:20:00Z"), written = boot.now())
+            val unknown = p.answers.settle(rec, origin, ask, ServerAnswer(404, "ENROLLMENT_TOKEN_INVALID"), askedEnrolment = "e1")
+            assertEquals(Verdict.ENROLMENT_UNKNOWN, unknown.verdict)
+            assertFalse(p.answers.settle(rec, origin, probeNow(rec)).forgotten)
+            assertNotNull(p.repo.record.value)
+            assertTrue(p.keyStore.hasKey())
+        }
     }
 
     private val claimed = ServerAnswer(409, "ENROLLMENT_ALREADY_CLAIMED")
@@ -343,78 +349,121 @@ class KeyAnswersTest {
         assertNotNull(p2.repo.record.value)
     }
 
-    @Test fun `a claim without an answer is given up only after its time, by the server's clock`() = runTest {
-        val until = Instant.parse("2026-11-20T10:20:00Z")
-        val goneAt = { t: Instant? -> ServerAnswer(404, "KEY_DEVICE_UNKNOWN", serverTime = t) }
-        // A claim of a link: it can only complete through its code, which never came.
-        val (p, rec) = phone(KeyDevicePhase.CLAIMING, voidAfter = until, codeClaim = true)
-        // No server time: nothing is known about how late it is.
-        assertEquals(KeyAnswers.Settled.Kept(Verdict.KEY_GONE), p.answers.settle(rec, origin, Ask.DEVICE_LOGIN_CHALLENGE, goneAt(null)))
-        // Within the time the claim could still be stored: kept, with how long to wait.
-        val early = p.answers.settle(rec, origin, Ask.DEVICE_LOGIN_CHALLENGE, goneAt(until.minusSeconds(120)))
-        assertEquals(KeyAnswers.Settled.Kept(Verdict.KEY_GONE, askAgainIn = Duration.ofSeconds(120)), early)
-        assertFalse(p.answers.settle(rec, origin, Ask.DEVICE_LOGIN_CHALLENGE, goneAt(until)).forgotten)
-        assertNotNull(p.repo.record.value)
-        assertTrue(p.answers.settle(rec, origin, Ask.DEVICE_LOGIN_CHALLENGE, goneAt(until.plusSeconds(1))).forgotten)
-        assertFalse(p.keyStore.hasKey())
-    }
+    private val until = Instant.parse("2026-11-20T10:20:00Z")
+    private fun goneAt(t: Instant?) = ServerAnswer(404, "KEY_DEVICE_UNKNOWN", serverTime = t)
 
-    @Test fun `a claim of an earlier version, stored without its time, gets one from the first answer`() = runTest {
-        val (p, rec) = phone(KeyDevicePhase.CLAIMING)
-        val t = Instant.parse("2026-11-20T10:00:00Z")
-        val first = p.answers.settle(rec, origin, Ask.DEVICE_LOGIN_CHALLENGE, ServerAnswer(403, "KEY_DEVICE_REVOKED", serverTime = t))
-        assertEquals(KeyAnswers.Settled.Kept(Verdict.KEY_GONE, askAgainIn = Duration.ofMinutes(20)), first)
-        val now = p.repo.record.value!!
-        assertEquals(t.plus(Duration.ofMinutes(20)), now.claimVoidAfter)
-        assertFalse(p.answers.settle(now, origin, Ask.DEVICE_LOGIN_CHALLENGE, ServerAnswer(404, "KEY_DEVICE_UNKNOWN", serverTime = t.plusSeconds(600))).forgotten)
-        // Such a record does not say its kind: it could complete by itself, so the phone's own
-        // time since it was first seen has to pass as well (it is noted now).
-        assertEquals(
-            KeyAnswers.Settled.Kept(Verdict.KEY_GONE, askAgainIn = Duration.ofMinutes(20)),
-            p.answers.settle(now, origin, Ask.DEVICE_LOGIN_CHALLENGE, ServerAnswer(404, "KEY_DEVICE_UNKNOWN", serverTime = t.plusSeconds(1201))),
-        )
-        assertEquals(phoneNow, p.repo.record.value!!.since)
-        phoneNow = phoneNow.plus(Duration.ofMinutes(20))
-        assertTrue(p.answers.settle(p.repo.record.value!!, origin, Ask.DEVICE_LOGIN_CHALLENGE, ServerAnswer(404, "KEY_DEVICE_UNKNOWN", serverTime = t.plusSeconds(1201))).forgotten)
-    }
+    /** The probe's own "no key device", sent now, with the server's time [t]. */
+    private suspend fun probeAt(rec: StoredKeyDevice, t: Instant?): ServerKeyState.Gone = probeNow(rec).copy(answer = goneAt(t))
 
     /**
-     * A claim of the app's own registration completes by itself on the server. Right after a
-     * restart, an answer whose `Date` says its time is long over (a clock in front of the server
-     * may run ahead) does not give it up: the phone's own clock has to say so as well.
+     * An unfinished claim is given up on "no key device" only when all three hold: the server's
+     * time is past the claim's time with its margin, the phone's running time since the claim was
+     * recorded is past the longest life of a claim with that margin, and a probe sent after both
+     * were found still says so. For every kind of unfinished claim.
      */
-    @Test fun `a claim that completes by itself is given up only when the phone's own time agrees`() = runTest {
-        val until = Instant.parse("2026-11-20T10:20:00Z")
-        val recorded = phoneNow
-        val (p, rec) = phone(KeyDevicePhase.CLAIMING, voidAfter = until, codeClaim = false, since = recorded)
-        val farAhead = ServerAnswer(404, "KEY_DEVICE_UNKNOWN", serverTime = until.plus(Duration.ofHours(2)))
-        // Two minutes after it was recorded, by the phone's clock.
-        phoneNow = recorded.plus(Duration.ofMinutes(2))
-        val early = p.answers.settle(rec, origin, Ask.DEVICE_LOGIN_CHALLENGE, farAhead)
-        assertEquals(KeyAnswers.Settled.Kept(Verdict.KEY_GONE, askAgainIn = Duration.ofMinutes(18)), early)
-        assertTrue(p.keyStore.hasKey())
-        assertEquals(rec, p.repo.record.value)
-        // Once the claim's longest life has passed by the phone's clock too, it goes.
-        phoneNow = recorded.plus(Duration.ofMinutes(20))
-        assertTrue(p.answers.settle(rec, origin, Ask.DEVICE_LOGIN_CHALLENGE, farAhead).forgotten)
-        assertFalse(p.keyStore.hasKey())
+    @Test fun `an unfinished claim goes only when both times are over and a later probe agrees`() = runTest {
+        for ((phase, codeClaim) in listOf(KeyDevicePhase.CLAIMING to true, KeyDevicePhase.CLAIMING to false, KeyDevicePhase.CLAIMED to true)) {
+            val case = "$phase codeClaim=$codeClaim"
+            boot.elapsedMs = 0
+            val (p, rec) = phone(phase, secret = if (phase == KeyDevicePhase.CLAIMED) "s" else null, voidAfter = until, codeClaim = codeClaim, written = boot.now())
+            // Both times over: no forgetting yet, only the proof for the next probe.
+            boot.advance(KeyAnswers.CLAIM_LIFE_WITH_MARGIN)
+            val first = p.answers.settle(rec, origin, probeAt(rec, until.plusSeconds(1))) as KeyAnswers.Settled.Kept
+            assertNotNull(case, first.over)
+            assertEquals(case, Duration.ZERO, first.askAgainIn)
+            assertTrue(case, p.keyStore.hasKey())
+            // A probe sent after that, saying "no key device" again: given up.
+            assertTrue(case, p.answers.settle(rec, origin, probeAt(rec, until.plusSeconds(30)), over = first.over).forgotten)
+            assertFalse(case, p.keyStore.hasKey())
+        }
     }
 
-    /** A phone clock that was set back does not shorten the wait: it counts from now. */
-    @Test fun `a claim recorded in the phone's future counts its own time from now`() = runTest {
-        val until = Instant.parse("2026-11-20T10:20:00Z")
-        val (p, rec) = phone(KeyDevicePhase.CLAIMING, voidAfter = until, since = phoneNow.plus(Duration.ofDays(1)))
-        val past = ServerAnswer(404, "KEY_DEVICE_UNKNOWN", serverTime = until.plusSeconds(60))
-        assertEquals(KeyAnswers.Settled.Kept(Verdict.KEY_GONE, askAgainIn = Duration.ofMinutes(20)), p.answers.settle(rec, origin, Ask.DEVICE_LOGIN_CHALLENGE, past))
-        assertEquals(phoneNow, p.repo.record.value!!.since)
+    @Test fun `each of the three conditions missing keeps the key`() = runTest {
+        boot.elapsedMs = 0
+        val (p, rec) = phone(KeyDevicePhase.CLAIMING, voidAfter = until, codeClaim = false, written = boot.now())
+        // 1. The server's time not past (or not said at all).
+        boot.advance(Duration.ofHours(5))
+        assertEquals(KeyAnswers.Settled.Kept(Verdict.KEY_GONE, askAgainIn = Duration.ofSeconds(120)), p.answers.settle(rec, origin, probeAt(rec, until.minusSeconds(120))))
+        assertEquals(KeyAnswers.Settled.Kept(Verdict.KEY_GONE), p.answers.settle(rec, origin, probeAt(rec, null)))
+        // 2. The phone's running time not past, whatever the server's time says (a clock ahead).
+        val (q, rec2) = phone(KeyDevicePhase.CLAIMING, voidAfter = until, codeClaim = false, written = boot.now())
+        boot.advance(Duration.ofMinutes(2))
+        val early = q.answers.settle(rec2, origin, probeAt(rec2, until.plus(Duration.ofDays(3))))
+        // Asked again every few minutes meanwhile (a late claim is taken over at once).
+        assertEquals(KeyAnswers.Settled.Kept(Verdict.KEY_GONE, askAgainIn = KeyAnswers.ASK_AGAIN_WHILE_WAITING), early)
+        // 3. No probe after the proof: the proof's own probe, or one sent before it, does not count.
+        boot.advance(Duration.ofMinutes(30))
+        val before = probeAt(rec2, until.plusSeconds(60))
+        val proof = (q.answers.settle(rec2, origin, probeAt(rec2, until.plusSeconds(60))) as KeyAnswers.Settled.Kept).over
+        assertNotNull(proof)
+        assertFalse(q.answers.settle(rec2, origin, before, over = proof).forgotten)
+        // A proof about another record does not count either.
+        val other = rec2.copy(attemptId = "a2")
+        assertFalse(q.answers.settle(other, origin, probeAt(other, until.plusSeconds(90)), over = proof).forgotten)
+        assertTrue(p.keyStore.hasKey() && q.keyStore.hasKey())
+    }
+
+    /** A reboot restarts the phone's count from the start of the new boot; it never shortens the wait. */
+    @Test fun `a reboot restarts the phone's count`() = runTest {
+        boot.elapsedMs = Duration.ofDays(3).toMillis()
+        val (p, rec) = phone(KeyDevicePhase.CLAIMING, voidAfter = until, written = boot.now())
+        boot.reboot(Duration.ofMinutes(5))
+        val r = p.answers.settle(rec, origin, probeAt(rec, until.plus(Duration.ofHours(1)))) as KeyAnswers.Settled.Kept
+        assertNull(r.over)
+        assertEquals(KeyAnswers.ASK_AGAIN_WHILE_WAITING, r.askAgainIn)
+        boot.advance(Duration.ofMinutes(20))
+        assertNotNull((p.answers.settle(rec, origin, probeAt(rec, until.plus(Duration.ofHours(1)))) as KeyAnswers.Settled.Kept).over)
+    }
+
+    /** Setting the phone's clock forward or back changes nothing: only its running time counts. */
+    @Test fun `the phone's clock does not count, forward or back`() = runTest {
+        boot.elapsedMs = 0
+        val (p, rec) = phone(KeyDevicePhase.CLAIMING, voidAfter = until, written = boot.now())
+        // However the wall clock is set (it is not asked), 10 minutes of running time are 10 minutes.
+        boot.advance(Duration.ofMinutes(10))
+        val left = p.answers.settle(rec, origin, probeAt(rec, until.plusSeconds(1))) as KeyAnswers.Settled.Kept
+        assertNull(left.over)
+        assertEquals(KeyAnswers.ASK_AGAIN_WHILE_WAITING, left.askAgainIn)
+        // And once both are over the claim is not kept for good.
+        boot.advance(Duration.ofMinutes(15))
+        val proof = (p.answers.settle(rec, origin, probeAt(rec, until.plusSeconds(1))) as KeyAnswers.Settled.Kept).over
+        assertTrue(p.answers.settle(rec, origin, probeAt(rec, until.plusSeconds(2)), over = proof).forgotten)
+    }
+
+    @Test fun `a claim stored without its times gets them and counts from there`() = runTest {
+        val (p, rec) = phone(KeyDevicePhase.CLAIMING)
+        val t = Instant.parse("2026-11-20T10:00:00Z")
+        val first = p.answers.settle(rec, origin, probeAt(rec, t))
+        assertEquals(KeyAnswers.Settled.Kept(Verdict.KEY_GONE, askAgainIn = Duration.ofMinutes(20)), first)
+        assertEquals(t.plus(Duration.ofMinutes(20)), p.repo.record.value!!.claimVoidAfter)
+        val noted = p.repo.record.value!!
+        val second = p.answers.settle(noted, origin, probeAt(noted, t.plus(Duration.ofMinutes(21))))
+        assertEquals(KeyAnswers.Settled.Kept(Verdict.KEY_GONE, askAgainIn = KeyAnswers.ASK_AGAIN_WHILE_WAITING), second)
+        assertEquals(boot.now(), p.repo.record.value!!.written)
         assertTrue(p.keyStore.hasKey())
     }
 
-    /** A claim of a link needs only its server's clock, as before. */
-    @Test fun `a code claim past its time by the server's clock goes at once`() = runTest {
-        val until = Instant.parse("2026-11-20T10:20:00Z")
-        val (p, rec) = phone(KeyDevicePhase.CLAIMING, voidAfter = until, codeClaim = true, since = phoneNow)
-        assertTrue(p.answers.settle(rec, origin, Ask.DEVICE_LOGIN_CHALLENGE, ServerAnswer(404, "KEY_DEVICE_UNKNOWN", serverTime = until.plusSeconds(1))).forgotten)
+    /** "No key device for this install" says nothing about a key whose install id could not be established. */
+    @Test fun `a key whose install id is lost is never forgotten on no key device`() = runTest {
+        for (phase in listOf(KeyDevicePhase.ACTIVE, KeyDevicePhase.PENDING)) {
+            val (p, rec) = phone(phase)
+            val lost = rec.copy(installIdLost = true).also { p.repo.seedForTest(it) }
+            for (ask in listOf(Ask.DEVICE_LOGIN_CHALLENGE, Ask.DEVICE_LOGIN, Ask.KEY_DEVICE_REMOVE)) {
+                assertFalse(p.answers.settle(lost, origin, ask, ServerAnswer(404, "KEY_DEVICE_UNKNOWN")).forgotten)
+                assertFalse(p.answers.settle(lost, origin, ask, ServerAnswer(403, "KEY_DEVICE_REVOKED")).forgotten)
+            }
+            assertTrue(p.keyStore.hasKey())
+        }
+    }
+
+    /** A record that took the probe's word only provisionally is still the claim it was. */
+    @Test fun `a provisional key device is not forgotten as one`() = runTest {
+        val (p, rec) = phone(KeyDevicePhase.ACTIVE)
+        val provisional = rec.copy(provisionalFrom = KeyDevicePhase.CLAIMING).also { p.repo.seedForTest(it) }
+        for (ask in listOf(Ask.DEVICE_LOGIN_CHALLENGE, Ask.DEVICE_LOGIN)) {
+            assertFalse(p.answers.settle(provisional, origin, ask, ServerAnswer(404, "KEY_DEVICE_UNKNOWN")).forgotten)
+        }
+        assertTrue(p.keyStore.hasKey())
     }
 
     private fun KeyDeviceRepository.seedForTest(r: StoredKeyDevice) {

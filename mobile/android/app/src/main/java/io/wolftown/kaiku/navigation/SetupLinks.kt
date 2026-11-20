@@ -31,11 +31,14 @@ object PendingSetupLinks {
     }
 
     /**
-     * An opened link goes to the one setup first ([offer], the setup owner's): only a link it is
-     * to use is posted for the setup screen; any other was noted there and goes nowhere.
+     * An opened link goes to the one setup first ([offer], the setup owner's, told which link is
+     * already waiting for the setup screen): only a link it is to use is posted; any other was
+     * noted there and goes nowhere. Judged and posted in one step, so a link that waits is never
+     * replaced by a later one.
      */
-    fun deliver(e: SetupEntry, offer: (SetupEntry) -> Boolean) {
-        if (offer(e)) post(e)
+    @Synchronized
+    fun deliver(e: SetupEntry, offer: (SetupEntry, SetupEntry?) -> Boolean) {
+        if (offer(e, _pending.value)) post(e)
     }
 
     /**
@@ -50,7 +53,7 @@ object PendingSetupLinks {
     }
 
     /** Once the app has started: the kept link is delivered like any link opened now ([deliver]). */
-    fun releaseKept(offer: (SetupEntry) -> Boolean) {
+    fun releaseKept(offer: (SetupEntry, SetupEntry?) -> Boolean) {
         kept.getAndUpdate { null }?.let { deliver(it, offer) }
     }
 

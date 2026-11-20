@@ -28,7 +28,12 @@ class ChallengeVerifier(
     private val pinnedOrigin: () -> String?,
     private val nowSeconds: () -> Long,
 ) {
-    fun verify(ch: ApprovalChallenge, expected: SigKind, userId: String, deviceId: String): VerifiedChallenge {
+    /**
+     * [ceremonyOrigin]: the origin a running ceremony is bound to (a setup's code was accepted for
+     * it, and checked against the app's pin when it was); it stands in for the pinned origin, which
+     * a setup does not change while it runs.
+     */
+    fun verify(ch: ApprovalChallenge, expected: SigKind, userId: String, deviceId: String, ceremonyOrigin: String? = null): VerifiedChallenge {
         val raw = try {
             Base64.getUrlDecoder().decode(ch.signingPrefix)
         } catch (_: IllegalArgumentException) {
@@ -45,7 +50,7 @@ class ChallengeVerifier(
         val kind = SigKind.fromByte(prefix.kind) ?: throw ChallengeRejected(RejectReason.UNKNOWN_KIND)
         if (kind != expected || ch.kind != expected.wire) throw ChallengeRejected(RejectReason.KIND_MISMATCH)
         if (prefix.challengeId != ch.challengeId) throw ChallengeRejected(RejectReason.CHALLENGE_ID)
-        val pinned = pinnedOrigin() ?: throw ChallengeRejected(RejectReason.ORIGIN)
+        val pinned = ceremonyOrigin ?: pinnedOrigin() ?: throw ChallengeRejected(RejectReason.ORIGIN)
         if (prefix.origin != pinned) throw ChallengeRejected(RejectReason.ORIGIN)
         if (prefix.userId != userId) throw ChallengeRejected(RejectReason.USER)
         if (prefix.deviceId != deviceId) throw ChallengeRejected(RejectReason.DEVICE)

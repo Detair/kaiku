@@ -25,9 +25,12 @@ class SetupDiscard @Inject constructor(private val keyDevices: KeyDeviceReposito
     /** Whether [record] is of the one kind that can be discarded at all. */
     fun canNeverFinish(record: StoredKeyDevice): Boolean = record.phase == KeyDevicePhase.CLAIMING && record.codeClaim
 
-    /** Whether discarding [record] is offered now. */
+    /**
+     * Whether discarding [record] is offered now: its claim was recorded more than [CLAIM_AFTER] ago
+     * by the phone's running time (a record that does not say when has not been).
+     */
     fun offered(record: StoredKeyDevice): Boolean = canNeverFinish(record) &&
-        record.since?.plus(CLAIM_AFTER)?.let(silence.now()::isAfter) == true &&
+        record.written?.let { silence.clock.since(it) > CLAIM_AFTER } == true &&
         silence.lasting(record)
 
     /**

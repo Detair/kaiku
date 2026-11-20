@@ -57,8 +57,11 @@ class SetupPendingViewModelTest {
     private val approval = FakeApprovalApi()
     private val probe = KeyDeviceProbe(approval) { SigFixtures.DEVICE_ID }
 
+    /** The phone's running time. */
+    private val boot = io.wolftown.kaiku.testutil.FakeBootClock(boot = 1, elapsedMs = 0)
+
     private fun pendingVm(repo: KeyDeviceRepository) =
-        SetupPendingViewModel(setupOwner(enroll.api, repo, mockk(), deviceSignIn, probe))
+        SetupPendingViewModel(setupOwner(enroll.api, repo, mockk(), deviceSignIn, probe, boot = boot))
 
     @Before fun setUp() = Dispatchers.setMain(UnconfinedTestDispatcher())
     @After fun tearDown() = Dispatchers.resetMain()
@@ -210,8 +213,8 @@ class SetupPendingViewModelTest {
     }
 
     @Test fun `an ended enrolment forgets the claim it was asked for`() = runTest {
+        // Stored states of the enrolment: they count at once.
         for ((state, text) in listOf(
-            EnrollmentState.EXPIRED to R.string.setup_expired,
             EnrollmentState.CANCELLED to R.string.setup_cancelled,
             EnrollmentState.FAILED to R.string.setup_code_failed,
         )) {
@@ -219,34 +222,77 @@ class SetupPendingViewModelTest {
             repo.saveClaimed(pendingDevice())
             enroll.statuses.clear()
             enroll.statuses += ClaimStatus(state)
-            enroll.statuses += ClaimStatus(state) // a code that ran out is asked about twice
             val v = pendingVm(repo)
             v.check()
-            advanceTimeBy(SetupOwner.EXPIRED_RECHECK_MS + 1)
-            runCurrent()
             assertEquals(SetupUi.Ended(text, canRetry = false), v.ui.value)
             assertEquals(KeyDeviceState.None, repo.current())
             assertFalse(f.keyStore.hasKey())
         }
     }
 
-    @Test fun `a code that ran out counts once it is said again, a confirmation stored meanwhile wins`() = runTest {
-        // The code's time is just over while the confirmation typed in time is still being stored.
+    /**
+     * "Expired" is worked out from the server's clock while a confirmation sent just in time may
+     * still be being stored: the key stays, the screen says the code ran out, and the phone keeps
+     * asking quietly; a confirmation that committed late is taken over.
+     */
+    @Test fun `a code that ran out keeps the key and a late confirmation is taken over`() = runTest {
         val (repo, f) = repo()
         repo.saveClaimed(pendingDevice())
         enroll.statuses += ClaimStatus(EnrollmentState.EXPIRED)
-        enroll.statuses += ClaimStatus(EnrollmentState.DONE, "active")
+        enroll.statuses += ClaimStatus(EnrollmentState.EXPIRED)
+        approval.failWith = noKeyDeviceAt(Instant.parse("2026-11-04T12:00:00Z"))
         val v = pendingVm(repo)
         v.check()
-        // Said once: nothing is forgotten yet.
-        assertEquals(SetupUi.WaitingForCode, v.ui.value)
+        assertEquals(SetupUi.CodeRanOut, v.ui.value)
         assertEquals(KeyDevicePhase.CLAIMED, repo.phase())
         assertTrue(f.keyStore.hasKey())
-        advanceTimeBy(SetupOwner.EXPIRED_RECHECK_MS + 1)
+        // Said again: still nothing forgotten.
+        v.check()
+        assertEquals(SetupUi.CodeRanOut, v.ui.value)
+        assertTrue(f.keyStore.hasKey())
+        // The confirmation did commit: the key device is there now.
+        approval.failWith = null
+        approval.nextChallenge = SigFixtures.challengeFor(SigKind.DEVICE_LOGIN, 3, SigFixtures.V03_CONTEXT)
+        advanceTimeBy(kotlin.time.Duration.parse("30m").inWholeMilliseconds)
         runCurrent()
         assertEquals(SetupUi.SigningIn, v.ui.value)
         assertEquals(KeyDevicePhase.ACTIVE, repo.phase())
+        // Only provisionally: the probe spoke about this install, not this key.
+        assertEquals(KeyDevicePhase.CLAIMED, repo.record.value!!.provisionalFrom)
         assertTrue(f.keyStore.hasKey())
+    }
+
+    /** A code that ran out is given up only once both times are over and a probe sent after that agrees. */
+    @Test fun `a code that ran out is given up only when both times are over and a later probe agrees`() = runTest {
+        val (repo, f) = repo()
+        repo.saveClaimed(pendingDevice())
+        val stamped = repo.record.value!!.copy(
+            claimVoidAfter = Instant.parse("2026-11-04T12:10:00Z"),
+            written = boot.now(),
+        )
+        repo.update(repo.record.value!!) { stamped }
+        enroll.statuses += ClaimStatus(EnrollmentState.EXPIRED)
+        // The server's time is past, the phone's running time is not.
+        approval.failWith = noKeyDeviceAt(Instant.parse("2026-11-04T13:00:00Z"))
+        val v = pendingVm(repo)
+        v.check()
+        assertEquals(SetupUi.CodeRanOut, v.ui.value)
+        assertTrue(f.keyStore.hasKey())
+        // Asked again a few minutes later: the phone's running time is still not past.
+        advanceTimeBy(5 * 60_000L + 6_000)
+        runCurrent()
+        assertEquals(SetupUi.CodeRanOut, v.ui.value)
+        assertTrue(f.keyStore.hasKey())
+        // The phone's running time passes too: the next probe finds both over, keeps the key, and
+        // one more probe sent after that confirms.
+        boot.advance(io.wolftown.kaiku.data.keydevice.KeyAnswers.CLAIM_LIFE_WITH_MARGIN)
+        advanceTimeBy(5 * 60_000L + 6_000)
+        runCurrent()
+        assertTrue(f.keyStore.hasKey())
+        advanceTimeBy(6_000)
+        runCurrent()
+        assertEquals(SetupUi.Ended(R.string.setup_cancelled, canRetry = false), v.ui.value)
+        assertFalse(f.keyStore.hasKey())
     }
 
     @Test fun `a late ending answer for an older claim never costs the claim stored now`() = runTest {
@@ -267,7 +313,8 @@ class SetupPendingViewModelTest {
         assertEquals(newKey, f.keyStore.keyId())
     }
 
-    @Test fun `an unknown enrolment without a key device forgets the key`() = runTest {
+    /** "Not known" is only that: an unknown enrolment and "no key device" without the server's time keep the key. */
+    @Test fun `an unknown enrolment without a key device keeps the key`() = runTest {
         val (repo, f) = repo()
         repo.saveClaimed(pendingDevice())
         enroll.statusFailures += apiError(404, "ENROLLMENT_TOKEN_INVALID")
@@ -276,9 +323,9 @@ class SetupPendingViewModelTest {
         val v = pendingVm(repo)
         v.check()
 
-        assertEquals(SetupUi.Ended(R.string.setup_cancelled, canRetry = false), v.ui.value)
-        assertEquals(KeyDeviceState.None, repo.current())
-        assertFalse(f.keyStore.hasKey())
+        assertTrue(v.ui.value is SetupUi.Ended)
+        assertEquals(KeyDevicePhase.CLAIMED, repo.phase())
+        assertTrue(f.keyStore.hasKey())
     }
 
     @Test fun `a gone enrolment while the server is unreachable keeps the key`() = runTest {
@@ -300,11 +347,16 @@ class SetupPendingViewModelTest {
 
     @Test fun `a claim that never landed is dropped at app start once its time has passed`() = runTest {
         val (repo, f) = repo()
-        repo.seed(StoredKeyDevice(pendingDevice().copy(claimSecret = null), KeyDevicePhase.CLAIMING, claimVoidAfter = claimTime, codeClaim = true))
+        repo.seed(StoredKeyDevice(pendingDevice().copy(claimSecret = null), KeyDevicePhase.CLAIMING, claimVoidAfter = claimTime, codeClaim = true, written = boot.now()))
+        boot.advance(io.wolftown.kaiku.data.keydevice.KeyAnswers.CLAIM_LIFE_WITH_MARGIN)
         approval.failWith = noKeyDeviceAt(claimTime.plusSeconds(1))
 
         val v = pendingVm(repo)
         v.check()
+        // Both times are over: the key stays until a probe sent after that says the same.
+        assertTrue(f.keyStore.hasKey())
+        advanceTimeBy(6_000)
+        runCurrent()
 
         assertEquals(SetupUi.Ended(R.string.setup_not_finished, canRetry = false), v.ui.value)
         assertEquals(KeyDeviceState.None, repo.current())
@@ -335,13 +387,17 @@ class SetupPendingViewModelTest {
 
     @Test fun `a kept claim that never became a key is dropped by the next ask after its time`() = runTest {
         val (repo, f) = repo()
-        repo.seed(StoredKeyDevice(pendingDevice().copy(claimSecret = null), KeyDevicePhase.CLAIMING, claimVoidAfter = claimTime, codeClaim = true))
+        repo.seed(StoredKeyDevice(pendingDevice().copy(claimSecret = null), KeyDevicePhase.CLAIMING, claimVoidAfter = claimTime, codeClaim = true, written = boot.now()))
+        boot.advance(io.wolftown.kaiku.data.keydevice.KeyAnswers.CLAIM_LIFE_WITH_MARGIN)
         approval.failWith = noKeyDeviceAt(claimTime.minusSeconds(60))
         val v = pendingVm(repo)
         v.check()
         assertEquals(SetupUi.ClaimWaiting, v.ui.value)
         approval.failWith = noKeyDeviceAt(claimTime.plusSeconds(6))
         advanceTimeBy(60_000 + 6_000)
+        runCurrent()
+        assertTrue(f.keyStore.hasKey())
+        advanceTimeBy(6_000)
         runCurrent()
         assertEquals(SetupUi.Ended(R.string.setup_not_finished, canRetry = false), v.ui.value)
         assertFalse(f.keyStore.hasKey())

@@ -136,9 +136,9 @@ class SetupFlowViewModelTest {
         assertEquals(SetupUi.ConfirmServer("Familie Müller", "other.example.org"), v.ui.value)
         assertEquals(listOf("open"), enroll.calls)
         assertEquals("https://other.example.org", enroll.lastOrigin)
-        assertTrue(env.saved.isEmpty())
         v.confirmServer()
-        assertEquals(listOf("https://other.example.org"), env.saved)
+        // The setup goes on with that server, without making it the app's server address.
+        assertNull(env.stored)
         assertTrue(enroll.calls.contains("popChallenge"))
     }
 
@@ -254,7 +254,11 @@ class SetupFlowViewModelTest {
         assertEquals(1, enroll.calls.count { it == "claim" })
     }
 
-    @Test fun `a link someone else used is given up once its server neither knows the enrolment nor a key`() = runTest {
+    /**
+     * "Not valid" and "no key device" are only "not known": the key stays until the claim's time is
+     * over by the server's and the phone's measure (or the claim check, under its lock, says more).
+     */
+    @Test fun `a link someone else used keeps the key while its server only does not know it`() = runTest {
         env.pinned = SigFixtures.ORIGIN
         enroll.claimFailure = apiError(404, "ENROLLMENT_TOKEN_INVALID")
         enroll.popAnswers += FakeEnrollmentApi.GIVEN
@@ -263,9 +267,9 @@ class SetupFlowViewModelTest {
         val (v, f) = vm()
         v.start(entry)
         v.confirmSubject(activity)
-        assertEquals(SetupUi.Ended(R.string.setup_token_invalid, canRetry = false), v.ui.value)
-        assertFalse(f.keyStore.hasKey())
-        assertNull(f.repo.local())
+        assertTrue(v.ui.value is SetupUi.Ended)
+        assertTrue(f.keyStore.hasKey())
+        assertEquals(KeyDevicePhase.CLAIMING, f.repo.phase())
         assertEquals(1, enroll.calls.count { it == "claim" })
     }
 
@@ -457,7 +461,7 @@ class SetupFlowViewModelTest {
         assertEquals(2, enroll.calls.count { it == "status" })
     }
 
-    @Test fun `an unknown enrolment during the code wait ends the setup`() = runTest {
+    @Test fun `an unknown enrolment during the code wait keeps the key`() = runTest {
         env.pinned = SigFixtures.ORIGIN
         enroll.statusFailures += apiError(404, "ENROLLMENT_TOKEN_INVALID")
         // The server knows no key device for this phone either.
@@ -466,7 +470,9 @@ class SetupFlowViewModelTest {
         v.start(entry)
         v.confirmSubject(activity)
         runCurrent()
-        assertFalse(f.keyStore.hasKey())
+        // "Not known" is only that: the key stays (without the server's time nothing is counted).
+        assertTrue(f.keyStore.hasKey())
+        assertEquals(KeyDevicePhase.CLAIMED, f.repo.phase())
         assertTrue(v.ui.value is SetupUi.Ended)
     }
 
@@ -649,12 +655,12 @@ class SetupFlowViewModelTest {
         assertFalse(f.keyStore.hasKey())
     }
 
-    @Test fun `cancel after confirming the server puts the saved one back`() = runTest {
+    @Test fun `cancel after confirming the server leaves the saved one as it was`() = runTest {
         env.stored = "https://typed.example.net"
         val (v, f) = vm()
         v.start(entry.copy(origin = "https://other.example.org"))
         v.confirmServer()
-        assertEquals("https://other.example.org", env.stored)
+        assertEquals("https://typed.example.net", env.stored)
         v.cancel()
         assertEquals("https://typed.example.net", env.stored)
         assertFalse(f.keyStore.hasKey())
@@ -973,7 +979,8 @@ class SetupFlowViewModelTest {
         assertEquals(atQuestion, v.ui.value)
         assertTrue(enroll.origins.all { it == SigFixtures.ORIGIN })
         assertTrue(f.keyStore.publicKeySpki()!!.contentEquals(spki))
-        assertEquals(SigFixtures.ORIGIN, env.stored)
+        // The setup never writes the app's server address.
+        assertNull(env.stored)
     }
 
     @Test fun `on a phone tied to no server a link for another server at the server question changes nothing`() = runTest {

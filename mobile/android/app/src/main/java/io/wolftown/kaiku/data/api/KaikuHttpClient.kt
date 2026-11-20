@@ -106,6 +106,8 @@ class KaikuHttpClient @Inject constructor(
             // No redirect is followed, here or below (see createConfiguredClient).
             followRedirects(false)
             followSslRedirects(false)
+            // A request marked "sent once" never reaches the server a second time.
+            addNetworkInterceptor(OneShotRequests())
         }
     })
 

@@ -49,6 +49,7 @@ class RegisterViewModel @Inject constructor(
     private val authRepository: AuthRepository,
     private val enrollmentApi: EnrollmentApi,
     private val tokenStorage: TokenStorage,
+    private val registrations: Registrations,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(RegisterUiState())
@@ -71,44 +72,58 @@ class RegisterViewModel @Inject constructor(
     }
 
     /**
-     * The ticket of an account this screen already created (30 min, C27): a retry after a failed
-     * issuance only issues again, it never registers the same name twice (Argon part6 #2).
+     * The ticket of an account this screen already created (30 min, C27), with the name and the
+     * server it was created on: a retry after a failed issuance only issues again, it never
+     * registers the same name twice (Argon part6 #2), and the ticket only ever goes to its server.
      */
-    private var created: Pair<String, String>? = null
+    private class Created(val username: String, val origin: String, val ticket: String)
+
+    private var created: Created? = null
 
     fun onRegisterClicked() {
         val state = _uiState.value
         if (state.isLoading) return
         _uiState.update { it.copy(isLoading = true, errorRes = null) }
 
+        // The server is fixed now, before anything is sent: every request of this registration
+        // goes to it, and its ticket never goes anywhere else.
+        val origin = tokenStorage.getServerUrl()?.let(KaikuPayloads::canonicalOrigin)
+        if (origin == null) {
+            _uiState.update { it.copy(isLoading = false, errorRes = R.string.auth_register_failed) }
+            return
+        }
         viewModelScope.launch {
-            val email = state.email.ifBlank { null }
-            val displayName = state.displayName.ifBlank { null }
-            val kept = created?.takeIf { it.first == state.username }?.second
-            val ticket = kept ?: authRepository.register(
-                state.username,
-                state.password,
-                email,
-                displayName
-            ).getOrElse { exception ->
-                _uiState.update { it.copy(isLoading = false, errorRes = AuthErrorMapper.register(exception)) }
-                return@launch
-            }.ticket
-            created = state.username to ticket
-            // F8: no session; the ticket binds this phone's own key (claim without a code).
-            try {
-                val origin = tokenStorage.getServerUrl()?.let(KaikuPayloads::canonicalOrigin)
-                    ?: throw IllegalStateException("no server")
-                val issued = enrollmentApi.issueWithTicket(ticket)
-                val entry = SetupEntry(origin, issued.setupToken, SetupEntry.Source.TICKET, ticket = ticket)
-                _uiState.update { it.copy(isLoading = false, setupEntry = entry) }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                // An expired ticket (30 min) is gone with its unconfirmed account: register again.
-                if (e is io.wolftown.kaiku.data.api.ApiException && e.normalizedCode == "REGISTRATION_TICKET_INVALID") created = null
-                _uiState.update { it.copy(isLoading = false, errorRes = AuthErrorMapper.register(e)) }
-            }
+            registrations.during { register(state, origin) }
+        }
+    }
+
+    private suspend fun register(state: RegisterUiState, origin: String) {
+        val email = state.email.ifBlank { null }
+        val displayName = state.displayName.ifBlank { null }
+        // A ticket of another server (the address changed since) is not used, and not sent.
+        val kept = created?.takeIf { it.username == state.username && it.origin == origin }?.ticket
+        val ticket = kept ?: authRepository.register(
+            state.username,
+            state.password,
+            email,
+            displayName,
+            origin,
+        ).getOrElse { exception ->
+            _uiState.update { it.copy(isLoading = false, errorRes = AuthErrorMapper.register(exception)) }
+            return
+        }.ticket
+        created = Created(state.username, origin, ticket)
+        // F8: no session; the ticket binds this phone's own key (claim without a code).
+        try {
+            val issued = enrollmentApi.issueWithTicket(ticket, origin)
+            val entry = SetupEntry(origin, issued.setupToken, SetupEntry.Source.TICKET, ticket = ticket)
+            _uiState.update { it.copy(isLoading = false, setupEntry = entry) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // An expired ticket (30 min) is gone with its unconfirmed account: register again.
+            if (e is io.wolftown.kaiku.data.api.ApiException && e.normalizedCode == "REGISTRATION_TICKET_INVALID") created = null
+            _uiState.update { it.copy(isLoading = false, errorRes = AuthErrorMapper.register(e)) }
         }
     }
 

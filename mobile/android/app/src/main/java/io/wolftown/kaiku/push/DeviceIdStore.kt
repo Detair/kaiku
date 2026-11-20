@@ -44,6 +44,13 @@ class DeviceIdStore @Inject constructor(
         }
     }
 
+    override fun storedId(): String? {
+        cached?.let { return it }
+        return synchronized(lock) {
+            cached ?: context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_DEVICE_ID, null)?.takeIf(::isUuid)
+        }
+    }
+
     private fun isUuid(value: String): Boolean =
         try {
             UUID.fromString(value).toString() == value.lowercase()

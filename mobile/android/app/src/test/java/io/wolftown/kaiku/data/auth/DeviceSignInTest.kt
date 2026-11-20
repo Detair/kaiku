@@ -35,6 +35,8 @@ import io.wolftown.kaiku.testutil.apiError
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import io.wolftown.kaiku.data.keydevice.KeyDevicePhase
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -58,8 +60,10 @@ class DeviceSignInTest {
     private var beforeInstall: ((KeyDeviceRepository) -> Unit)? = null
     private var afterInstall: ((KeyDeviceRepository) -> Unit)? = null
 
+    private lateinit var authState: AuthState
+
     private fun TestScope.setUp(uv: UvResult? = null, loggedIn: Boolean = false): Pair<DeviceSignIn, KeyDeviceRepository> {
-        val authState = AuthState(backgroundScope)
+        authState = AuthState(backgroundScope)
         val repo = KeyDeviceRepository(store, keyStore, authState, backgroundScope)
         repo.saveClaimed(
             LocalKeyDevice("kd1", SigFixtures.USER_ID, SigFixtures.ORIGIN, UvClass.PER_USE, "e1", null, "Alice"),
@@ -68,13 +72,14 @@ class DeviceSignInTest {
         repo.markActive(SigFixtures.USER_ID, "kd1")
         if (!loggedIn) authState.setLoggedOut()
         coEvery { authRepository.beginDeviceSignIn(SigFixtures.ORIGIN) } returns start
-        coEvery { authRepository.installDeviceSession(any(), any(), any(), any()) } coAnswers {
+        coEvery { authRepository.installDeviceSession(any(), any(), any(), any(), any()) } coAnswers {
             beforeInstall?.invoke(repo)
             // As the real one: installed only while the key it was made with is still the phone's key.
             if (!arg<() -> Boolean>(3)()) {
                 Result.failure(IllegalStateException("superseded"))
             } else {
                 authState.setLoggedIn(SigFixtures.USER_ID)
+                arg<(io.wolftown.kaiku.data.local.AuthSession.LoggedIn) -> Unit>(4)(authState.session.value as io.wolftown.kaiku.data.local.AuthSession.LoggedIn)
                 afterInstall?.invoke(repo)
                 Result.success(
                     User(SigFixtures.USER_ID, "alice", "Alice", session = SessionInfo("77777777-7777-4777-8777-777777777777", "full", keyDeviceId = "kd1")),
@@ -82,6 +87,9 @@ class DeviceSignInTest {
             }
         }
         coEvery { authRepository.logout() } answers { authState.setLoggedOut() }
+        coEvery { authRepository.logoutIfCurrent(any()) } answers {
+            if (authState.session.value == firstArg<io.wolftown.kaiku.data.local.AuthSession.LoggedIn>()) authState.setLoggedOut()
+        }
         coEvery { authRepository.hasLiveSession() } returns loggedIn
         val invalidation = io.wolftown.kaiku.data.keydevice.KeyInvalidation(api, repo, authRepository)
         val v = FakeUserVerifier(keyStore, uv).also { verifier = it }
@@ -104,8 +112,9 @@ class DeviceSignInTest {
 
     @Test fun `a sign-in that worked takes back what was noted about a silent server`() = runTest {
         val (signIn, repo) = setUp()
-        val t = Instant.parse("2026-11-20T09:00:00Z")
-        repo.update(repo.record.value!!) { it.copy(unanswered = io.wolftown.kaiku.data.keydevice.Unanswered(t, t.plusSeconds(90_000), 3)) }
+        repo.update(repo.record.value!!) {
+            it.copy(unanswered = io.wolftown.kaiku.data.keydevice.Unanswered(io.wolftown.kaiku.data.keydevice.BootTime(1, 90_000_000), 3, java.time.Duration.ofHours(25)))
+        }
         assertEquals(DeviceSignInResult.Success, signIn.signIn(activity))
         assertEquals(null, repo.record.value!!.unanswered)
         assertEquals(null, store.stored!!.unanswered)
@@ -129,7 +138,7 @@ class DeviceSignInTest {
             listOf("deviceLoginChallenge:${SigFixtures.USER_ID}:${SigFixtures.DEVICE_ID}", "deviceLogin:${SigFixtures.challengeId(3)}"),
             api.calls,
         )
-        coVerify { authRepository.installDeviceSession(api.deviceLoginResult, SigFixtures.USER_ID, start, any()) }
+        coVerify { authRepository.installDeviceSession(api.deviceLoginResult, SigFixtures.USER_ID, start, any(), any()) }
         assertEquals(KeyDeviceState.Active(SigFixtures.USER_ID), repo.current())
         assertEquals(Instant.parse("2027-02-01T12:00:00Z"), repo.sessionCap())
     }
@@ -223,7 +232,7 @@ class DeviceSignInTest {
 
     @Test fun `a session the repository does not install is not marked active`() = runTest {
         val (signIn, repo) = setUp()
-        coEvery { authRepository.installDeviceSession(any(), any(), any(), any()) } returns Result.failure(IllegalStateException("superseded"))
+        coEvery { authRepository.installDeviceSession(any(), any(), any(), any(), any()) } returns Result.failure(IllegalStateException("superseded"))
 
         assertEquals(DeviceSignInResult.Failed("SESSION_NOT_INSTALLED"), signIn.signIn(activity))
 
@@ -281,8 +290,25 @@ class DeviceSignInTest {
         val (signIn, repo) = setUp()
         afterInstall = { it.forget() }
         assertEquals(DeviceSignInResult.Failed("NO_KEY_DEVICE"), signIn.signIn(activity))
-        coVerify(exactly = 1) { authRepository.logout() }
+        coVerify(exactly = 1) { authRepository.logoutIfCurrent(any()) }
         assertEquals(KeyDeviceState.None, repo.current())
+    }
+
+    /**
+     * The sign-in installed its session; before it could note that on the key record, the key was
+     * forgotten and another account signed in. What it ends is only the session it installed
+     * itself: the newer one stays.
+     */
+    @Test fun `a late clean-up never ends a newer session`() = runTest {
+        val (signIn, repo) = setUp()
+        afterInstall = {
+            it.forget()
+            authState.setLoggedOut()
+            authState.setLoggedIn("someone-else")
+        }
+        assertEquals(DeviceSignInResult.Failed("NO_KEY_DEVICE"), signIn.signIn(activity))
+        coVerify(exactly = 0) { authRepository.logout() }
+        assertEquals("someone-else", (authState.session.value as io.wolftown.kaiku.data.local.AuthSession.LoggedIn).userId)
     }
 
     @Test fun `a removal answer about the key the sign-in started with never costs a key made meanwhile`() = runTest {
@@ -306,5 +332,43 @@ class DeviceSignInTest {
         repo.saveClaimed(LocalKeyDevice(null, SigFixtures.USER_ID, SigFixtures.ORIGIN, UvClass.PER_USE, "e1", "secret"))
         assertEquals(DeviceSignInResult.Failed("NO_KEY_DEVICE"), signIn.signIn(activity))
         assertTrue(api.calls.isEmpty())
+    }
+
+    /**
+     * A record that took the probe's word ("this install is a key device") only provisionally: the
+     * server refuses this key's signature, so that word was about another key. The record goes
+     * back to the claim it was, is marked so, and keeps its key; nothing is installed.
+     */
+    @Test fun `a provisional key device whose signature is refused goes back to its claim`() = runTest {
+        val (signIn, repo) = setUp()
+        val rec = repo.record.value!!
+        repo.update(rec) { it.copy(provisionalFrom = KeyDevicePhase.CLAIMING) }
+        api.deviceLoginFailure = apiError(400, "SIGNATURE_INVALID")
+        assertEquals(DeviceSignInResult.Failed("NOT_THIS_KEY"), signIn.signIn(activity))
+        val back = repo.record.value!!
+        assertEquals(KeyDevicePhase.CLAIMING, back.phase)
+        assertNull(back.provisionalFrom)
+        assertTrue(back.notThisKey)
+        assertTrue(keyStore.hasKey())
+        coVerify(exactly = 0) { authRepository.installDeviceSession(any(), any(), any(), any(), any()) }
+    }
+
+    /** The same refusal for a key device that is one for good changes nothing about the record. */
+    @Test fun `a refused signature of a key device for good keeps it as it is`() = runTest {
+        val (signIn, repo) = setUp()
+        api.deviceLoginFailure = apiError(400, "SIGNATURE_INVALID")
+        signIn.signIn(activity)
+        assertEquals(KeyDevicePhase.ACTIVE, repo.phase())
+        assertFalse(repo.record.value!!.notThisKey)
+    }
+
+    /** A key whose install id is lost is kept on "no key device", and the sign-in says so. */
+    @Test fun `a key whose install id is lost is kept on no key device`() = runTest {
+        val (signIn, repo) = setUp()
+        repo.update(repo.record.value!!) { it.copy(installIdLost = true) }
+        api.failWith = apiError(404, "KEY_DEVICE_UNKNOWN")
+        assertEquals(DeviceSignInResult.Failed("INSTALL_ID_LOST"), signIn.signIn(activity))
+        assertEquals(KeyDevicePhase.ACTIVE, repo.phase())
+        assertTrue(keyStore.hasKey())
     }
 }

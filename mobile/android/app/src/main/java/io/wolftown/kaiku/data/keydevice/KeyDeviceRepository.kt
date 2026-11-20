@@ -130,7 +130,7 @@ class KeyDeviceRepository @Inject constructor(
     private val keyStore: ApprovalKeyStore,
     private val authState: AuthState,
     @AuthCoroutineScope scope: CoroutineScope,
-) : KeyDevicePolicy, KeyStorageCheck {
+) : KeyDevicePolicy {
 
     private companion object {
         val logger: Logger = Logger.getLogger("KeyDeviceRepository")
@@ -157,7 +157,7 @@ class KeyDeviceRepository @Inject constructor(
     private fun stored(): StoredKeyDevice? = _record.value
 
     /** The store could not be read: nothing is known about a key device, and nothing is changed. */
-    override fun unreadable(): Boolean = storage is KeyStorage.Unreadable
+    fun unreadable(): Boolean = storage is KeyStorage.Unreadable
 
     val state: StateFlow<KeyDeviceState> = combine(_record, authState.session) { s, session -> derive(s, session) }
         .stateIn(scope, SharingStarted.Eagerly, derive(stored(), authState.session.value))
@@ -282,7 +282,9 @@ class KeyDeviceRepository @Inject constructor(
             next.device.origin == now.device.origin && next.device.userId == now.device.userId &&
                 next.keyId == now.keyId && next.attemptId == now.attemptId,
         ) { "a record keeps its server, account, key and setup" }
-        return write(if (now.installId != null) next.copy(installId = now.installId) else next)
+        // What the stored record says about its install id stays.
+        val kept = next.copy(installId = now.installId ?: next.installId, installIdLost = now.installIdLost || next.installIdLost)
+        return write(kept)
     }
 
     /** [replace] with the stored record's current times kept: [change] gets the record as stored now. */
@@ -294,15 +296,17 @@ class KeyDeviceRepository @Inject constructor(
     }
 
     /**
-     * A record written before records named their install id takes [id]: the id the app has now,
-     * under which such a record was enrolled. A record that names one keeps it, whatever [id] is.
+     * A record written before records named their install id takes [id]: the id the app has kept,
+     * under which such a record was enrolled. Null: the app has no id kept (it would have to make
+     * a new one, which the server never heard of); the record then notes that its id is lost, for
+     * good. A record that names one, or whose id is lost, keeps that, whatever [id] is.
      */
     @Synchronized
-    fun bindInstallId(id: String): Change {
+    fun bindInstallId(id: String?): Change {
         if (storage is KeyStorage.Unreadable) return Change.Unreadable
         val now = stored() ?: return Change.Mismatch
-        if (now.installId != null) return Change.Done(now)
-        return write(now.copy(installId = id))
+        if (now.installId != null || now.installIdLost) return Change.Done(now)
+        return write(if (id != null) now.copy(installId = id) else now.copy(installIdLost = true))
     }
 
     /** The time of the last "stay signed in" prompt, kept beside [expected]. */

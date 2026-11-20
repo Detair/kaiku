@@ -29,8 +29,8 @@ class DeviceSigner(
     private val onKeyInvalidated: suspend (keyId: String?) -> Unit = {},
 ) {
     /** Runs only the checks, for screens that show the context before asking to confirm. */
-    fun check(ch: ApprovalChallenge, expected: SigKind, userId: String, deviceId: String): VerifiedChallenge =
-        checks.verify(ch, expected, userId, deviceId)
+    fun check(ch: ApprovalChallenge, expected: SigKind, userId: String, deviceId: String, ceremonyOrigin: String? = null): VerifiedChallenge =
+        checks.verify(ch, expected, userId, deviceId, ceremonyOrigin)
 
     suspend fun sign(
         activity: FragmentActivity,
@@ -43,9 +43,11 @@ class DeviceSigner(
         prompt: UvPrompt,
         /** The key the caller holds; null: it holds none (its record names no key). */
         keyId: String?,
+        /** See [ChallengeVerifier.verify]. */
+        ceremonyOrigin: String? = null,
     ): SignOutcome {
         val verified = try {
-            checks.verify(ch, expected, userId, deviceId)
+            checks.verify(ch, expected, userId, deviceId, ceremonyOrigin)
         } catch (e: ChallengeRejected) {
             return SignOutcome.Rejected(e.reason)
         }

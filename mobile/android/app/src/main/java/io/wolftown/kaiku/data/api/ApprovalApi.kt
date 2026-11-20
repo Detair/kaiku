@@ -80,6 +80,7 @@ class ApprovalApiImpl @Inject constructor(private val httpClient: HttpClient) : 
         signatureB64u: String,
     ): AnswerResult {
         val r = httpClient.post("/api/approvals/$challengeId/answer") {
+            sentOnce()
             setBody(AnswerRequest(decision, responseB64u, signatureB64u))
         }
         r.ensureSuccess("answer failed")
@@ -106,6 +107,7 @@ class ApprovalApiImpl @Inject constructor(private val httpClient: HttpClient) : 
     override suspend fun deviceLogin(challengeId: String, signatureB64u: String, origin: String?): AuthResponse {
         val r = httpClient.post(at(origin, "/auth/device-login")) {
             publicRoute()
+            sentOnce()
             setBody(DeviceLoginRequest(challengeId, signatureB64u))
         }
         r.ensureExactly(HttpStatusCode.OK, "device login failed")

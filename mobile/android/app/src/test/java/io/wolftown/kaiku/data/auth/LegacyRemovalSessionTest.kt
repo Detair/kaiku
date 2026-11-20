@@ -148,4 +148,93 @@ class LegacyRemovalSessionTest {
         assertEquals(0, asked)
         assertTrue(store.writes.isEmpty())
     }
+
+    // ── One result of what an earlier version left, and everything waits for it ───────────────
+
+    private fun keyStore() = SoftwareApprovalKeyStore().apply { generate(ByteArray(32), UvPolicy.choose(30, true, true) as UvDecision.Use) }
+
+    /** The flag cannot be read, the record beside it can: the stored session is not restored as an ordinary one. */
+    @Test fun `an unreadable flag beside a readable record keeps the session from being restored`() = runTest {
+        store.legacyMark = true
+        store.flagUnreadable = true
+        tokenStorage.saveTokens("left-access", "left-refresh", 900, "u1")
+        val repo = KeyDeviceRepository(store, keyStore(), AuthState(backgroundScope), backgroundScope)
+        val gate = KeyStorageGate(repo, LegacyRemovalSession(store, tokenStorage, authApi, backgroundScope)) { "install-1" }
+        assertFalse(gate.start())
+        assertTrue(gate.unreadable())
+        // Nothing was decided: the session is still in storage, and nothing may read it.
+        assertEquals("left-access", tokenStorage.getAccessToken())
+        // Readable again: the left-over session goes before anything restores it.
+        store.flagUnreadable = false
+        assertTrue(gate.retry())
+        assertNull(tokenStorage.getAccessToken())
+    }
+
+    /** A readable flag beside a record that cannot be read: nothing is cleaned up on half a picture. */
+    @Test fun `a readable flag beside an unreadable record decides nothing`() = runTest {
+        store.legacyMark = true
+        store.unreadable = true
+        tokenStorage.saveTokens("left-access", "left-refresh", 900, "u1")
+        val legacy = LegacyRemovalSession(store, tokenStorage, authApi, backgroundScope)
+        assertFalse(legacy.endIfLeft())
+        assertEquals("left-access", tokenStorage.getAccessToken())
+        assertEquals(true, store.legacyMark)
+    }
+
+    /**
+     * A clear of the flag that fails is tried again before anything is restored; when it fails
+     * again the app stays closed (nothing reads the session, nobody signs in), so the flag can
+     * never clear a later ordinary sign-in: at the next start it finds the same left-over again.
+     */
+    @Test fun `a flag that could not be cleared keeps everything waiting`() = runTest {
+        store.legacyMark = true
+        tokenStorage.saveTokens("left-access", "left-refresh", 900, "u1")
+        val repo = KeyDeviceRepository(store, keyStore(), AuthState(backgroundScope), backgroundScope)
+        // Fails once: tried again at once, and it is done.
+        store.failFlagClears = 1
+        val gate = KeyStorageGate(repo, LegacyRemovalSession(store, tokenStorage, authApi, backgroundScope)) { "install-1" }
+        assertTrue(gate.start())
+        assertEquals(false, store.legacyMark)
+        // Fails twice: the gate stays closed.
+        store.legacyMark = true
+        tokenStorage.saveTokens("left-access-2", "left-refresh-2", 900, "u1")
+        store.failFlagClears = 2
+        val next = KeyStorageGate(repo, LegacyRemovalSession(store, tokenStorage, authApi, backgroundScope)) { "install-1" }
+        assertFalse(next.start())
+        assertTrue(next.unreadable())
+        assertNull(tokenStorage.getAccessToken())
+        assertEquals(true, store.legacyMark)
+    }
+
+    /** The gate is closed until what an earlier version left was looked at in this process. */
+    @Test fun `the gate is closed until the start has settled what was left`() = runTest {
+        val repo = KeyDeviceRepository(store, keyStore(), AuthState(backgroundScope), backgroundScope)
+        val gate = KeyStorageGate(repo, LegacyRemovalSession(store, tokenStorage, authApi, backgroundScope)) { "install-1" }
+        assertTrue(gate.unreadable())
+        assertTrue(gate.start())
+        assertFalse(gate.unreadable())
+    }
+
+    /**
+     * An older key record without its install id, on an app that has kept none (it would have to
+     * make a new one): the record notes that its id is lost, for good; it never takes an id made
+     * later.
+     */
+    @Test fun `a record whose install id cannot be established is marked so, and never takes a new one`() = runTest {
+        val repo = KeyDeviceRepository(store, keyStore(), AuthState(backgroundScope), backgroundScope)
+        var kept: String? = null
+        val ids = object : io.wolftown.kaiku.approval.DeviceIdProvider {
+            override fun id(): String = "made-now".also { kept = it }
+            override fun storedId(): String? = kept
+        }
+        val gate = KeyStorageGate(repo, LegacyRemovalSession(store, tokenStorage, authApi, backgroundScope), ids)
+        gate.bindInstallId()
+        assertTrue(store.stored!!.installIdLost)
+        assertNull(store.stored!!.installId)
+        // The app made an id meanwhile; the next start does not bind it.
+        ids.id()
+        gate.bindInstallId()
+        assertNull(store.stored!!.installId)
+        assertTrue(store.stored!!.installIdLost)
+    }
 }

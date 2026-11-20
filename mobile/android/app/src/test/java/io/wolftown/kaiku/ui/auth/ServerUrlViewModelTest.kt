@@ -35,7 +35,9 @@ class ServerUrlViewModelTest {
     private lateinit var keyDevices: io.wolftown.kaiku.data.keydevice.KeyDeviceRepository
     /** Whether the setup of this phone holds an attempt (as the setup owner reports it). */
     private var setupHolds = false
-    private val serverAddress by lazy { io.wolftown.kaiku.ui.auth.setup.ServerAddressRule(keyDevices, { null }) { setupHolds } }
+    /** Whether a registration is on its way. */
+    private var registering = false
+    private val serverAddress by lazy { io.wolftown.kaiku.ui.auth.setup.ServerAddressRule(keyDevices, { null }, { setupHolds }, { registering }) }
 
     @Before
     fun setUp() {
@@ -238,22 +240,21 @@ class ServerUrlViewModelTest {
     }
 
     /**
-     * One rule, asked by both writers of the address: the server-address screen and a setup adopting
-     * its link's server. Neither writes the address under a condition of its own.
+     * One rule, asked by the one writer of the address: the server-address screen, right before
+     * it writes. A setup never writes the address; nothing else of the app decides it on its own.
      */
     @Test
-    fun `the server-address screen and the setup ask the one rule`() {
+    fun `the server-address screen asks the one rule and the setup never writes the address`() {
         val root = generateSequence(java.io.File("").absoluteFile) { it.parentFile }
             .map { java.io.File(it, "src/main/java/io/wolftown/kaiku") }
             .first { it.isDirectory }
         val screen = java.io.File(root, "ui/auth/ServerUrlScreen.kt").readText()
             .substringAfter("class ServerUrlViewModel").substringBefore("@Composable")
-        val setup = java.io.File(root, "ui/auth/setup/SetupFlowViewModel.kt").readText()
-            .substringAfter("override fun adoptServer(").substringBefore("override fun savedServer")
         assertEquals(2, Regex("""serverAddress\.mayChange\(\)""").findAll(screen).count())
-        assertTrue(setup.contains("serverAddress.mayChange(forOwnSetup = true)"))
-        for (src in listOf(screen, setup)) {
-            for (own in listOf("record.value", "unreadable()", "pinned()", "holdsAttempt()")) assertFalse(own, src.contains(own))
+        for (own in listOf("record.value", "unreadable()", "pinned()", "holdsAttempt()")) assertFalse(own, screen.contains(own))
+        for (f in listOf("ui/auth/setup/SetupOwner.kt", "ui/auth/setup/SetupFlowViewModel.kt", "ui/auth/RegisterScreen.kt")) {
+            val src = java.io.File(root, f).readText()
+            assertFalse(f, src.contains("saveServerUrl(") || src.contains("clearServerUrl("))
         }
     }
 
@@ -261,24 +262,37 @@ class ServerUrlViewModelTest {
     @Test
     fun `the rule refuses for each of its conditions alone`() {
         var pinned: String? = null
-        val rule = io.wolftown.kaiku.ui.auth.setup.ServerAddressRule(keyDevices, { pinned }) { setupHolds }
+        val rule = io.wolftown.kaiku.ui.auth.setup.ServerAddressRule(keyDevices, { pinned }, { setupHolds }, { registering })
         assertTrue(rule.mayChange())
         pinned = "https://chat.example.com"
         assertFalse(rule.mayChange())
-        assertFalse(rule.mayChange(forOwnSetup = true))
         pinned = null
         setupHolds = true
         assertFalse(rule.mayChange())
-        assertTrue(rule.mayChange(forOwnSetup = true))
         setupHolds = false
+        registering = true
+        assertFalse(rule.mayChange())
+        registering = false
         keyStore.stored = claimedRecord()
         keyDevices.reload()
         assertFalse(rule.mayChange())
-        assertFalse(rule.mayChange(forOwnSetup = true))
         keyStore.stored = null
         keyStore.unreadable = true
         keyDevices.reload()
         assertFalse(rule.mayChange())
-        assertFalse(rule.mayChange(forOwnSetup = true))
+    }
+
+    /** A probe that answers while a registration is on its way changes nothing. */
+    @Test
+    fun `a probe that answers during a registration writes nothing`() = runTest {
+        coEvery { serverProbe.probe(any()) } coAnswers {
+            registering = true
+            ProbeResult.Ok(true)
+        }
+        viewModel.onUrlChanged("other.example.org")
+        viewModel.onConnectClicked()
+        advanceUntilIdle()
+        assertEquals(R.string.auth_server_tied_to_key, viewModel.uiState.value.error)
+        verify(exactly = 0) { tokenStorage.saveServerUrl(any()) }
     }
 }

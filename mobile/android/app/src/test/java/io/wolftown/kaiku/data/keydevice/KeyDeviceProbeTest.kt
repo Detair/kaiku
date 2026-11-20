@@ -64,9 +64,9 @@ class KeyDeviceProbeTest {
     @Test fun `no answer and a refusal of the server itself are told apart`() = runTest {
         for (x in listOf<Exception>(
             java.io.IOException("offline"), java.net.SocketTimeoutException("timeout"),
-            apiError(500, "INTERNAL_ERROR"), apiError(502, "KEY_DEVICE_UNKNOWN"), apiError(503, "SERVICE_UNAVAILABLE"),
-            apiError(429, "TOO_MANY_ATTEMPTS"),
-            // A captive portal's or a proxy's page: a status without the server's code.
+            // A captive portal's or a proxy's page, or a fault in front of the server: a status without the server's code.
+            io.wolftown.kaiku.data.api.ApiException(io.ktor.http.HttpStatusCode.BadGateway, "bad gateway"),
+            io.wolftown.kaiku.data.api.ApiException(io.ktor.http.HttpStatusCode.TooManyRequests, "slow down"),
             io.wolftown.kaiku.data.api.ApiException(io.ktor.http.HttpStatusCode.Forbidden, "blocked"),
             io.wolftown.kaiku.data.api.ApiException(io.ktor.http.HttpStatusCode.NotFound, "not found"),
             kotlinx.serialization.SerializationException("not json"),
@@ -77,6 +77,9 @@ class KeyDeviceProbeTest {
         for (x in listOf(
             apiError(403, "ACCOUNT_BANNED"), apiError(400, "VALIDATION_ERROR"), apiError(410, "APPROVAL_EXPIRED"),
             apiError(404, "NOT_FOUND"), apiError(409, "KEY_DEVICE_PENDING"),
+            // Any answer with the server's own code is an answer, also a fault or "too many" it reports.
+            apiError(500, "INTERNAL_ERROR"), apiError(502, "KEY_DEVICE_UNKNOWN"), apiError(503, "SERVICE_UNAVAILABLE"),
+            apiError(429, "TOO_MANY_ATTEMPTS"),
         )) {
             assertFalse(x.toString(), x.isNoAnswer())
             assertEquals(x.toString(), ServerKeyState.Refused, answer(x))

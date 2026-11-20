@@ -6,6 +6,7 @@ import io.wolftown.kaiku.approval.UvDecision
 import io.wolftown.kaiku.approval.UvPolicy
 import io.wolftown.kaiku.approval.keyId
 import io.wolftown.kaiku.data.local.AuthState
+import io.wolftown.kaiku.testutil.FakeBootClock
 import io.wolftown.kaiku.testutil.InMemoryKeyDeviceStore
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
@@ -24,21 +25,28 @@ import java.time.Instant
 class SetupDiscardTest {
 
     private val t0: Instant = Instant.parse("2026-11-20T09:00:00Z")
-    private var now: Instant = t0
+    /** The phone's running time; the claims below were recorded at its start ([written]). */
+    private val clock = FakeBootClock(boot = 3, elapsedMs = 0)
+    private val written = BootTime(3, 0)
+    private var now: Instant
+        get() = t0.plusMillis(clock.elapsedMs)
+        set(v) {
+            clock.elapsedMs = Duration.between(t0, v).toMillis()
+        }
     private val keyStore = SoftwareApprovalKeyStore().apply { generate(ByteArray(32), UvPolicy.choose(30, true, true) as UvDecision.Use) }
     private val store = InMemoryKeyDeviceStore()
     private val device = LocalKeyDevice(null, "u1", "https://chat.example.com", UvClass.PER_USE, "e1", null)
     /** Silent on three occasions over more than a day. */
-    private val silentForLong = Unanswered(t0, t0.plus(Duration.ofHours(25)), 3)
+    private val silentForLong = Unanswered(BootTime(3, Duration.ofHours(25).toMillis()), 3, Duration.ofHours(25))
 
     private fun TestScope.phone(rec: StoredKeyDevice): Pair<SetupDiscard, KeyDeviceRepository> {
         store.stored = rec.copy(keyId = keyStore.keyId())
         val repo = KeyDeviceRepository(store, keyStore, AuthState(backgroundScope), backgroundScope)
-        return SetupDiscard(repo, ServerSilence(repo) { now }) to repo
+        return SetupDiscard(repo, ServerSilence(repo, clock)) to repo
     }
 
     private fun lostCodeClaim(unanswered: Unanswered? = silentForLong) =
-        StoredKeyDevice(device, KeyDevicePhase.CLAIMING, since = t0, codeClaim = true, unanswered = unanswered, attemptId = "a1")
+        StoredKeyDevice(device, KeyDevicePhase.CLAIMING, since = t0, codeClaim = true, unanswered = unanswered, attemptId = "a1", written = written)
 
     @Test fun `a claim that needs a code and never got its answer may be discarded once all of it holds`() = runTest {
         now = t0.plus(Duration.ofHours(26))
@@ -91,11 +99,11 @@ class SetupDiscardTest {
         now = t0.plus(Duration.ofDays(400))
         for (u in listOf(
             null,
-            Unanswered(t0, t0, 1),
+            Unanswered(written, 1, Duration.ZERO),
             // Many occasions within a day.
-            Unanswered(t0, t0.plus(Duration.ofHours(23)), 20),
+            Unanswered(written, 20, Duration.ofHours(23)),
             // Two occasions, far apart.
-            Unanswered(t0, t0.plus(Duration.ofDays(300)), 2),
+            Unanswered(written, 2, Duration.ofDays(300)),
         )) {
             val (d, repo) = phone(lostCodeClaim(u))
             val stored = repo.record.value!!
@@ -106,7 +114,7 @@ class SetupDiscardTest {
     }
 
     @Test fun `it is not offered before the claim's own time is long past`() = runTest {
-        // The notes say "silent for long" (the phone's clock was moved about), the claim is 90 minutes old at most.
+        // The notes say "silent for long", the claim is 90 minutes old at most by the phone's running time.
         val (d, repo) = phone(lostCodeClaim())
         val stored = repo.record.value!!
         now = t0.plus(SetupDiscard.CLAIM_AFTER)
@@ -114,8 +122,8 @@ class SetupDiscardTest {
         assertEquals(Change.Mismatch, d.discard(stored))
         now = t0.plus(SetupDiscard.CLAIM_AFTER).plusSeconds(1)
         assertTrue(d.offered(stored))
-        // A claim that does not say when it was made is not offered at all.
-        val (d2, repo2) = phone(lostCodeClaim().copy(since = null))
+        // A claim that does not say when it was made (by the running time) is not offered at all.
+        val (d2, repo2) = phone(lostCodeClaim().copy(written = null))
         assertFalse(d2.offered(repo2.record.value!!))
     }
 
@@ -133,5 +141,17 @@ class SetupDiscardTest {
         repo.reload()
         assertEquals(Change.Unreadable, d.discard(stale))
         assertTrue(keyStore.hasKey())
+    }
+
+    /** Setting the phone's clock forward does not make a claim old: only its running time does. */
+    @Test fun `a clock set forward does not bring the offer early`() = runTest {
+        val (d, repo) = phone(lostCodeClaim().copy(since = t0.minus(Duration.ofDays(30))))
+        clock.elapsedMs = Duration.ofMinutes(30).toMillis()
+        assertFalse(d.offered(repo.record.value!!))
+        // After a reboot only the new boot's running time counts.
+        clock.reboot(Duration.ofMinutes(20))
+        assertFalse(d.offered(repo.record.value!!))
+        clock.advance(Duration.ofMinutes(71))
+        assertTrue(d.offered(repo.record.value!!))
     }
 }

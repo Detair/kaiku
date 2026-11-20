@@ -326,10 +326,10 @@ class KeyDeviceRepositoryTest {
     @Test fun `what is noted about the server's silence is kept beside the record and does not change which record it is`() = runTest {
         val repo = repo()
         val rec = (repo.create(claiming()) as Change.Done).record!!
-        val t = Instant.parse("2026-11-20T09:00:00Z")
-        val noted = (repo.update(rec) { it.copy(unanswered = Unanswered(t, t, 1)) } as Change.Done).record!!
+        val t = BootTime(1, 0)
+        val noted = (repo.update(rec) { it.copy(unanswered = Unanswered(t, 1, java.time.Duration.ZERO)) } as Change.Done).record!!
         assertTrue(noted sameAs rec)
-        assertEquals(Unanswered(t, t, 1), store.stored!!.unanswered)
+        assertEquals(Unanswered(t, 1, java.time.Duration.ZERO), store.stored!!.unanswered)
         // The holder of the older copy still names the stored record.
         assertTrue(repo.update(rec) { it.copy(unanswered = null) }.done)
         assertNull(store.stored!!.unanswered)

@@ -92,8 +92,8 @@ fun SetupPendingScreen(
                 CircularProgressIndicator()
                 KeyBody(stringResource(R.string.setup_checking))
             }
-            SetupUi.ClaimWaiting -> {
-                KeyNotice(stringResource(R.string.setup_claim_waiting), warning = false)
+            SetupUi.ClaimWaiting, SetupUi.CodeRanOut -> {
+                KeyNotice(stringResource(if (ui == SetupUi.CodeRanOut) R.string.setup_code_ran_out else R.string.setup_claim_waiting), warning = false)
                 KeyPrimaryButton(stringResource(R.string.common_try_again), onClick = viewModel::check)
             }
             else -> SetupStatus(ui = ui, onSignIn = { activity?.let(viewModel::signIn) }, onRetry = viewModel::check, onBack = onEnded)

@@ -26,6 +26,9 @@ sealed interface StepUpOutcome {
 /** The C26 device id of this install (the C19 push device id). */
 fun interface DeviceIdProvider {
     fun id(): String
+
+    /** The id this install has kept, without making one; null when there is none to read. */
+    fun storedId(): String? = id()
 }
 
 /**

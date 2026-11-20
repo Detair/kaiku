@@ -71,7 +71,11 @@ object ApprovalModule {
     fun provideKeyDevicePolicy(repo: KeyDeviceRepository): KeyDevicePolicy = repo
 
     @Provides
-    fun provideKeyStorageCheck(repo: KeyDeviceRepository): KeyStorageCheck = repo
+    fun provideKeyStorageCheck(gate: io.wolftown.kaiku.data.auth.KeyStorageGate): KeyStorageCheck = gate
+
+    @Provides
+    @Singleton
+    fun provideBootClock(clock: io.wolftown.kaiku.data.keydevice.AndroidBootClock): io.wolftown.kaiku.data.keydevice.BootClock = clock
 
     /** The C26 device id is the C19 push device id. */
     @Provides

@@ -72,8 +72,14 @@ class SetupOwnerTest {
     /** The install id the app has now. */
     private var appInstallId = SigFixtures.DEVICE_ID
     private val probe = KeyDeviceProbe(approval) { appInstallId }
-    /** The phone's own clock. */
-    private var now: Instant = Instant.parse("2026-11-20T09:00:00Z")
+    private val base: Instant = Instant.parse("2026-11-20T09:00:00Z")
+    /** The phone's running time; [now] moves it and the phone's clock together (the tests speak in clock times). */
+    private val boot = io.wolftown.kaiku.testutil.FakeBootClock(boot = 1, elapsedMs = 0)
+    private var now: Instant
+        get() = base.plusMillis(boot.elapsedMs)
+        set(v) {
+            boot.elapsedMs = java.time.Duration.between(base, v).toMillis()
+        }
     private val use = UvPolicy.choose(30, true, true) as UvDecision.Use
     private val activeChallenge = SigFixtures.challengeFor(SigKind.DEVICE_LOGIN, 3, SigFixtures.V03_CONTEXT)
 
@@ -92,7 +98,7 @@ class SetupOwnerTest {
 
     /** A setup owner on the phone [f]: the app as it runs now, or (a second one) after a restart. */
     private fun owner(f: KeyDeviceFixture): SetupOwner =
-        setupOwner(enroll.api, f.repo, f.signer, deviceSignIn, probe, env, clock = { now }, installId = { appInstallId })
+        setupOwner(enroll.api, f.repo, f.signer, deviceSignIn, probe, env, clock = { now }, boot = boot, installId = { appInstallId })
 
     private fun noKeyDeviceAt(t: Instant?) = apiError(404, "KEY_DEVICE_UNKNOWN", ApiErrorFields(serverTime = t))
 
@@ -168,7 +174,7 @@ class SetupOwnerTest {
         assertEquals(KeyDevicePhase.CLAIMED, f.repo.phase())
     }
 
-    /** The guide's remedy: once the waiting screen says the code ran out, the link opened again works. */
+    /** The guide's remedy: once the waiting screen says the setup ended, the link opened again works. */
     @Test fun `after the waiting screen reported the end, a link opened again starts`() = runTest {
         env.pinned = SigFixtures.ORIGIN
         val (owner, f) = phone()
@@ -178,12 +184,9 @@ class SetupOwnerTest {
         setupScreen.start(entry) // a claim is stored: the waiting screen takes over inside the setup screen
         assertEquals(SetupUi.Resume, setupScreen.ui.value)
         val waiting = SetupPendingViewModel(owner)
-        enroll.statuses += ClaimStatus(EnrollmentState.EXPIRED)
-        enroll.statuses += ClaimStatus(EnrollmentState.EXPIRED)
+        enroll.statuses += ClaimStatus(EnrollmentState.CANCELLED)
         waiting.check()
-        advanceTimeBy(SetupOwner.EXPIRED_RECHECK_MS + 1)
-        runCurrent()
-        assertEquals(SetupUi.Ended(R.string.setup_expired, canRetry = false), waiting.ui.value)
+        assertEquals(SetupUi.Ended(R.string.setup_cancelled, canRetry = false), waiting.ui.value)
         assertFalse(owner.held())
         assertNull(f.repo.local())
         // The link is opened again, without leaving the screen first.
@@ -280,34 +283,24 @@ class SetupOwnerTest {
         assertEquals(KeyDevicePhase.ACTIVE, f.repo.phase())
     }
 
-    @Test fun `a server adopted by one setup is not put back by a later one`() = runTest {
+    /**
+     * A setup talks to its link's server with absolute addresses and checks its challenges against
+     * that server; the app's server address is not read or changed by it, so a setup that is
+     * stopped, interrupted or never comes back leaves the sign-in where it was.
+     */
+    @Test fun `a setup never changes the app's server address`() = runTest {
         val (owner, f) = phone()
-        val first = SetupFlowViewModel(owner)
         env.stored = "https://typed.example.net" // a server the person had typed in before
-        first.start(entry)
-        first.confirmServer()
-        assertEquals(SigFixtures.ORIGIN, env.stored)
-        first.confirmSubject(activity) // claimed: the phone is tied to this server now
-        first.onCleared()
-        assertEquals(SigFixtures.ORIGIN, env.stored)
-        // A later setup screen that ends without anything of its own leaves the server alone.
-        env.pinned = SigFixtures.ORIGIN
-        val later = SetupFlowViewModel(owner)
-        later.start(entry.copy(origin = "https://evil.example.com"))
-        later.onCleared()
-        assertEquals(SigFixtures.ORIGIN, env.stored)
-        assertEquals(KeyDevicePhase.CLAIMED, f.repo.phase())
-    }
-
-    @Test fun `a setup that adopted a server and is abandoned puts the earlier one back`() = runTest {
-        val (owner, _) = phone()
         val v = SetupFlowViewModel(owner)
-        env.stored = "https://typed.example.net"
         v.start(entry)
         v.confirmServer()
-        assertEquals(SigFixtures.ORIGIN, env.stored)
+        v.confirmSubject(activity)
+        assertTrue(v.ui.value is SetupUi.ShowCode)
+        assertEquals(listOf(SigFixtures.ORIGIN), enroll.origins.distinct())
+        v.cancel()
         v.onCleared()
         assertEquals("https://typed.example.net", env.stored)
+        assertEquals(KeyDevicePhase.CLAIMED, f.repo.phase())
     }
 
     @Test fun `a store that cannot be read starts no setup and costs no key`() = runTest {
@@ -818,16 +811,25 @@ class SetupOwnerTest {
         assertFalse(waiting.lastResort.value)
         assertFalse(waiting.discardable.value)
         assertEquals(1, f.repo.record.value!!.unanswered!!.occasions)
-        // A server fault and "too many requests" are no answer either; a refusal of the server is one.
-        for (x in listOf(apiError(502, "BAD_GATEWAY"), apiError(429, "TOO_MANY_ATTEMPTS"))) {
+        // A fault in front of the server and "too many requests" without the server's code are no
+        // answer either; any answer with the server's own code is one, a refusal or "too many" too.
+        for (x in listOf(
+            io.wolftown.kaiku.data.api.ApiException(io.ktor.http.HttpStatusCode.BadGateway, "bad gateway"),
+            io.wolftown.kaiku.data.api.ApiException(io.ktor.http.HttpStatusCode.TooManyRequests, "slow down"),
+        )) {
             enroll.statusFailures += x
             waiting.check()
-            assertTrue(x.code, waiting.cannotAsk.value)
+            assertTrue(x.toString(), waiting.cannotAsk.value)
         }
-        enroll.statusFailures += apiError(403, "ACCOUNT_BANNED")
-        waiting.check()
-        assertFalse(waiting.cannotAsk.value)
-        assertNull(f.repo.record.value!!.unanswered)
+        for (x in listOf(apiError(429, "TOO_MANY_ATTEMPTS"), apiError(403, "ACCOUNT_BANNED"))) {
+            enroll.statusFailures += IOException("again offline")
+            waiting.check()
+            assertTrue(waiting.cannotAsk.value)
+            enroll.statusFailures += x
+            waiting.check()
+            assertFalse(x.code, waiting.cannotAsk.value)
+            assertNull(x.code, f.repo.record.value!!.unanswered)
+        }
     }
 
     @Test fun `the last resort is named in words once the silence has lasted, and taken back by the next answer`() = runTest {
@@ -943,30 +945,25 @@ class SetupOwnerTest {
         assertEquals(KeyDevicePhase.CLAIMING, f.repo.phase())
     }
 
-    /** "No key device" without the server's time cannot be counted by: it is not an answer the phone can use. */
-    @Test fun `a lost code claim whose server gives no time counts as not answered`() = runTest {
+    /**
+     * "No key device" without the server's time cannot be counted by, but it is the server's own
+     * answer: the server is there, nothing is noted as silence, and nothing is offered to be discarded.
+     */
+    @Test fun `a lost code claim whose server gives no time is still an answer`() = runTest {
         val (first, f, _) = lostClaim()
         assertTrue(f.repo.record.value!!.codeClaim)
         first.onCleared()
         val waiting = SetupPendingViewModel(owner(f))
         approval.failWith = noKeyDeviceAt(null)
-        now = now.plusSeconds(3 * 3600)
-        waiting.check()
-        assertEquals(SetupUi.Ended(R.string.setup_claim_unsure, canRetry = true), waiting.ui.value)
-        assertTrue(waiting.cannotAsk.value)
-        assertFalse(waiting.discardable.value)
-        assertFalse(waiting.lastResort.value)
-        for (hours in listOf(6L, 20)) {
+        for (hours in listOf(3L, 6, 20)) {
             now = now.plusSeconds(hours * 3600)
             waiting.check()
+            assertEquals(SetupUi.Ended(R.string.setup_claim_unsure, canRetry = true), waiting.ui.value)
+            assertFalse(waiting.cannotAsk.value)
+            assertFalse(waiting.discardable.value)
         }
-        assertTrue(waiting.discardable.value)
-        assertFalse(waiting.lastResort.value)
-        waiting.discard()
-        assertEquals(SetupUi.Ended(R.string.setup_discarded, canRetry = false), waiting.ui.value)
-        assertNull(f.repo.local())
-        assertFalse(f.keyStore.hasKey())
-        assertFalse(waiting.cannotAsk.value)
+        assertNull(f.repo.record.value!!.unanswered)
+        assertTrue(f.keyStore.hasKey())
     }
 
     // ── The server ────────────────────────────────────────────────────────────────────────────
@@ -1337,8 +1334,6 @@ class SetupOwnerTest {
         v.start(link)
         assertTrue(v.ui.value is SetupUi.ConfirmServer)
         assertFalse(rule.mayChange())
-        // The setup itself may still adopt its link's server.
-        assertTrue(rule.mayChange(forOwnSetup = true))
         v.confirmServer()
         assertTrue(v.ui.value is SetupUi.ConfirmSubject)
         assertFalse(rule.mayChange())
@@ -1346,6 +1341,102 @@ class SetupOwnerTest {
         v.cancel()
         v.onCleared()
         assertTrue(rule.mayChange())
+    }
+
+    // ── The claim's answer is about this claim, or it is not known ────────────────────────────
+
+    /**
+     * Only the answer this claim can have counts: for this very enrolment, of the kind the claim
+     * gets, with every part. Anything else leaves the stored claim exactly as it was, to be checked
+     * like a lost one; the record never takes another enrolment's id or secret.
+     */
+    @Test fun `a claim answer that is not this claim's leaves the claim as it was`() = runTest {
+        val good = enroll.claimResult
+        for (bad in listOf(
+            good.copy(enrollmentId = "66666666-6666-4666-8666-666666666666"),
+            good.copy(code = null),
+            good.copy(claimSecret = null),
+            good.copy(codeExpiresAt = null),
+            good.copy(state = "issued"),
+            // "Done" is the answer of the app's own registration, not of a setup code.
+            io.wolftown.kaiku.domain.model.ClaimResult(good.enrollmentId, "done", authenticatorState = "active"),
+        )) {
+            env.pinned = SigFixtures.ORIGIN
+            enroll.claimResult = bad
+            val (owner, f) = phone()
+            val v = SetupFlowViewModel(owner)
+            v.start(entry)
+            v.confirmSubject(activity)
+            assertEquals(bad.toString(), SetupUi.Ended(R.string.setup_claim_unsure, canRetry = true), v.ui.value)
+            val stored = f.repo.record.value!!
+            assertEquals(bad.toString(), KeyDevicePhase.CLAIMING, stored.phase)
+            assertEquals(bad.toString(), good.enrollmentId, stored.device.enrollmentId)
+            assertNull(bad.toString(), stored.device.claimSecret)
+            assertTrue(f.keyStore.hasKey())
+            assertFalse(enroll.calls.contains("status"))
+            v.onCleared()
+            enroll.calls.clear()
+        }
+    }
+
+    @Test fun `a claim answer of this claim keeps the code's own time with the record`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        val (owner, f) = phone()
+        val v = SetupFlowViewModel(owner)
+        v.start(entry)
+        v.confirmSubject(activity)
+        assertTrue(v.ui.value is SetupUi.ShowCode)
+        val stored = f.repo.record.value!!
+        assertEquals(KeyDevicePhase.CLAIMED, stored.phase)
+        assertEquals(Instant.parse(enroll.claimResult.codeExpiresAt).plus(io.wolftown.kaiku.data.keydevice.KeyAnswers.CLAIM_VOID_MARGIN), stored.claimVoidAfter)
+        assertEquals(boot.now().boot, stored.written!!.boot)
+    }
+
+    // ── "This install is a key device" is not "this key is" ───────────────────────────────────
+
+    /**
+     * The probe says the install is a key device. That may be an older key of this install: the
+     * record takes it only provisionally, and a refused signature of this key sends it back to the
+     * claim it was, which never takes that word again.
+     */
+    @Test fun `a key device found by the probe is provisional, and not taken again once refused`() = runTest {
+        val (first, f, _) = lostClaim()
+        first.onCleared()
+        val waiting = SetupPendingViewModel(owner(f))
+        approval.nextChallenge = activeChallenge
+        waiting.check()
+        assertEquals(SetupUi.SigningIn, waiting.ui.value)
+        val adopted = f.repo.record.value!!
+        assertEquals(KeyDevicePhase.ACTIVE, adopted.phase)
+        assertEquals(KeyDevicePhase.CLAIMING, adopted.provisionalFrom)
+        // The server refused this key's signature (DeviceSignInTest): the record is the claim it was again.
+        f.repo.replace(adopted, adopted.copy(phase = KeyDevicePhase.CLAIMING, provisionalFrom = null, notThisKey = true))
+        // Asked again, the probe's word is not taken a second time.
+        val again = SetupPendingViewModel(owner(f))
+        approval.nextChallenge = activeChallenge
+        again.check()
+        assertTrue(again.ui.value is SetupUi.Ended)
+        assertEquals(KeyDevicePhase.CLAIMING, f.repo.phase())
+        assertTrue(f.keyStore.hasKey())
+    }
+
+    // ── One link at a time on its way to the setup screen ─────────────────────────────────────
+
+    /** Two links before the first reached the setup screen: the first keeps its place, the second is noted. */
+    @Test fun `a link on its way to the setup screen is not replaced by a later one`() = runTest {
+        val (owner, _) = phone()
+        io.wolftown.kaiku.navigation.PendingSetupLinks.clear()
+        io.wolftown.kaiku.navigation.PendingSetupLinks.deliver(entry.copy(source = SetupEntry.Source.LINK), owner::offer)
+        io.wolftown.kaiku.navigation.PendingSetupLinks.deliver(link, owner::offer)
+        assertEquals(token, io.wolftown.kaiku.navigation.PendingSetupLinks.pending.value?.tokenB64u)
+        assertTrue(owner.linkIgnored.value)
+        // The same link again is not "another" link.
+        val again = phone().first
+        io.wolftown.kaiku.navigation.PendingSetupLinks.clear()
+        io.wolftown.kaiku.navigation.PendingSetupLinks.deliver(link, again::offer)
+        io.wolftown.kaiku.navigation.PendingSetupLinks.deliver(link, again::offer)
+        assertFalse(again.linkIgnored.value)
+        io.wolftown.kaiku.navigation.PendingSetupLinks.clear()
     }
 
     private companion object {

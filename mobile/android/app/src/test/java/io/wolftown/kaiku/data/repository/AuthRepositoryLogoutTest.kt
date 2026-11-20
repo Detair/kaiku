@@ -333,4 +333,24 @@ class AuthRepositoryLogoutTest {
             (sessionAtLastStep.single() as AuthSession.LoggedIn).userId == "user-b")
         assertEquals("user-b", (authState.session.value as AuthSession.LoggedIn).userId)
     }
+
+    /** The clean-up of a sign-in that did not stand ends only the session it installed, never a newer one. */
+    @Test
+    fun `a sign-out for one session leaves a newer session alone`() = runTest {
+        val authState = AuthState(backgroundScope)
+        authState.setLoggedIn("user-1")
+        val installed = authState.session.value as AuthSession.LoggedIn
+        authState.setLoggedOut()
+        authState.setLoggedIn("user-2")
+        val runner = SessionTeardownRunner(setOf(Step(10, log)), authState, appScope())
+        val repository = AuthRepository(authApi, tokenStorage, authState, pushRegistrar, runner)
+
+        repository.logoutIfCurrent(installed)
+
+        assertEquals(emptyList<String>(), log)
+        assertEquals("user-2", (authState.session.value as AuthSession.LoggedIn).userId)
+        // For the session that is current, it signs out as usual.
+        repository.logoutIfCurrent(authState.session.value as AuthSession.LoggedIn)
+        assertEquals(AuthSession.LoggedOut, authState.session.value)
+    }
 }

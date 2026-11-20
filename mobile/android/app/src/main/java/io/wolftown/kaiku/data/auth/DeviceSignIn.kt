@@ -14,6 +14,7 @@ import io.wolftown.kaiku.approval.UvPrompt
 import io.wolftown.kaiku.approval.UvResult
 import io.wolftown.kaiku.data.api.ApiException
 import io.wolftown.kaiku.data.api.ApprovalApi
+import io.wolftown.kaiku.data.local.AuthSession
 import io.wolftown.kaiku.data.keydevice.Ask
 import io.wolftown.kaiku.data.keydevice.Change
 import io.wolftown.kaiku.data.keydevice.KeyAnswers
@@ -120,7 +121,12 @@ class DeviceSignIn @Inject constructor(
                 is SignOutcome.Signed -> {
                     ask = Ask.DEVICE_LOGIN
                     val auth = approvalApi.deviceLogin(ch.challengeId, out.signatureB64u, origin)
-                    val user = authRepository.installDeviceSession(auth, local.userId, start) { keyDevices.record.value sameAsRecord rec }
+                    var installed: AuthSession.LoggedIn? = null
+                    val user = authRepository.installDeviceSession(
+                        auth, local.userId, start,
+                        stillThisKey = { keyDevices.record.value sameAsRecord rec },
+                        installedAs = { installed = it },
+                    )
                         .getOrElse {
                             logger.warning("Device session not installed: ${it.javaClass.simpleName}")
                             return if (keyDevices.record.value sameAsRecord rec) {
@@ -132,6 +138,8 @@ class DeviceSignIn @Inject constructor(
                     val cap = auth.absoluteExpiresAt?.let { runCatching { Instant.parse(it) }.getOrNull() }
                     val taken = keyDevices.update(rec) {
                         it.copy(
+                            // A signature of this very key was accepted: the record is a key device for good.
+                            provisionalFrom = null,
                             device = it.device.copy(keyDeviceId = user.session?.keyDeviceId ?: it.device.keyDeviceId, claimSecret = null),
                             readyAt = null,
                             sessionCap = cap,
@@ -145,8 +153,9 @@ class DeviceSignIn @Inject constructor(
                         is Change.Done -> Unit
                         Change.Mismatch -> {
                             // The key was forgotten or replaced while the session was being installed:
-                            // that session is not a sign-in of this phone's key any more.
-                            authRepository.logout()
+                            // that session is not a sign-in of this phone's key any more. Only that
+                            // session ends, never one that came after it.
+                            installed?.let { authRepository.logoutIfCurrent(it) }
                             return DeviceSignInResult.Failed("NO_KEY_DEVICE")
                         }
                         // The record is still this one; only what is kept beside it (the key-device
@@ -163,6 +172,15 @@ class DeviceSignIn @Inject constructor(
             // keeps it), asked on the key's server about the captured record.
             val settled = answers.settle(rec, origin, ask, ServerAnswer.of(e))
             if (settled.forgotten) return DeviceSignInResult.Revoked
+            // The server's word that this install is a key device was about another key: the
+            // record goes back to the unfinished setup it was, and never takes that word again.
+            val from = rec.provisionalFrom
+            if (from != null && (settled.verdict == Verdict.KEY_GONE || e.normalizedCode == "SIGNATURE_INVALID")) {
+                keyDevices.replace(rec, rec.copy(phase = from, provisionalFrom = null, notThisKey = true))
+                return DeviceSignInResult.Failed("NOT_THIS_KEY")
+            }
+            // "No key device for this install" for a key whose install id is not known: kept.
+            if (settled.verdict == Verdict.KEY_GONE && rec.installIdLost) return DeviceSignInResult.Failed("INSTALL_ID_LOST")
             if (settled.verdict == Verdict.KEY_GONE) return DeviceSignInResult.Failed("NO_KEY_DEVICE")
             when (e.normalizedCode) {
                 "KEY_DEVICE_PENDING" -> {

@@ -99,12 +99,12 @@ class SetupLinksTest {
         // Kept, not yet posted: it goes to the setup owner once the app has started.
         assertNull(PendingSetupLinks.pending.value)
         val offered = mutableListOf<SetupEntry>()
-        PendingSetupLinks.releaseKept { offered += it; true }
+        PendingSetupLinks.releaseKept { e, _ -> offered += e; true }
         assertEquals(listOf(SetupEntry("https://chat.example.com", token, SetupEntry.Source.LINK)), offered)
         assertEquals(SetupEntry("https://chat.example.com", token, SetupEntry.Source.LINK), PendingSetupLinks.take())
         assertNull(PendingSetupLinks.take())
         // Released once only.
-        PendingSetupLinks.releaseKept { offered += it; true }
+        PendingSetupLinks.releaseKept { e, _ -> offered += e; true }
         assertEquals(1, offered.size)
     }
 
@@ -112,9 +112,9 @@ class SetupLinksTest {
     @org.junit.Test fun `an opened link is posted only when the setup owner takes it`() {
         PendingSetupLinks.clear()
         val e = SetupEntry("https://chat.example.com", token, SetupEntry.Source.LINK)
-        PendingSetupLinks.deliver(e) { false }
+        PendingSetupLinks.deliver(e) { _, _ -> false }
         assertNull(PendingSetupLinks.pending.value)
-        PendingSetupLinks.deliver(e) { true }
+        PendingSetupLinks.deliver(e) { _, _ -> true }
         assertEquals(e, PendingSetupLinks.take())
     }
 
@@ -142,5 +142,18 @@ class SetupLinksTest {
         val gate = activity.substringAfter("if (keyStorage.unreadable()) {").substringBefore("return")
         org.junit.Assert.assertTrue(gate.contains("savedInstanceState == null && PendingSetupLinks.keep(intent?.data?.toString())"))
         org.junit.Assert.assertTrue(gate.contains("KeyStorageUnreadable("))
+    }
+
+    /** A link received while the unreadable screen is shown is only kept, and judged after the store was read again. */
+    @org.junit.Test fun `a link received on the unreadable screen is kept for after the reload`() {
+        val root = generateSequence(java.io.File("").absoluteFile) { it.parentFile }
+            .map { java.io.File(it, "src/main/java/io/wolftown/kaiku") }
+            .first { it.isDirectory }
+        val activity = java.io.File(root, "ui/MainActivity.kt").readText()
+        val newIntent = activity.substringAfter("override fun onNewIntent(intent: Intent) {").substringBefore("\n    }")
+        val gate = newIntent.substringAfter("if (keyStorage.unreadable()) {").substringBefore("}")
+        org.junit.Assert.assertTrue(gate.contains("PendingSetupLinks.keep(intent.data?.toString())"))
+        org.junit.Assert.assertTrue(gate.contains("return"))
+        org.junit.Assert.assertTrue(newIntent.indexOf("keyStorage.unreadable()") < newIntent.indexOf("handleIntent(intent)"))
     }
 }

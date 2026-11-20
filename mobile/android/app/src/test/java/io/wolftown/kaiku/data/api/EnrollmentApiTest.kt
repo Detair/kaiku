@@ -37,8 +37,9 @@ class EnrollmentApiTest {
 
     @Test fun `issue with ticket uses the registration issuer and the ticket header`() = runTest {
         rec.status = HttpStatusCode.Created; rec.body = res("enrollment_issued.json")
-        api.issueWithTicket("ticket-secret")
+        api.issueWithTicket("ticket-secret", "https://chat.example.com")
         assertEquals("/auth/registration/enrollments", rec.last.path)
+        assertEquals("https://chat.example.com/auth/registration/enrollments", rec.last.url)
         assertEquals("ticket-secret", rec.last.headers["X-Kaiku-Ticket"])
     }
 
@@ -84,7 +85,7 @@ class EnrollmentApiTest {
         assertNull(rec.last.headers["Authorization"])
         assertEquals("123456", r.code)
         rec.body = """{"enrollment_id":"e","state":"done","authenticator_state":"active","ready_at":null}"""
-        val done = api.claim(claim, ticket = "ticket-secret")
+        val done = api.claim(claim, ticket = "ticket-secret", origin = "https://chat.example.com")
         assertEquals("ticket-secret", rec.last.headers["X-Kaiku-Ticket"])
         assertEquals("done", done.state)
         assertNull(done.code)

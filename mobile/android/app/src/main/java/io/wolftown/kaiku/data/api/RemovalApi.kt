@@ -81,6 +81,7 @@ class RemovalApiImpl @Inject constructor(private val httpClient: HttpClient) : R
     ): AnswerResult {
         val r = httpClient.post(url(origin, "/api/approvals/$challengeId/answer")) {
             with(access)
+            sentOnce()
             setBody(RemovalAnswerRequest(decision, responseB64u, signatureB64u))
         }
         r.ensureExactly(HttpStatusCode.OK, "answer failed")

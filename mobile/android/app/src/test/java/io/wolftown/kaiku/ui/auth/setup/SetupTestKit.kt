@@ -29,15 +29,8 @@ class FakeSetupEnvironment : SetupEnvironment {
     var hasRecord: () -> Boolean = { false }
     override fun pinnedOrigin() = pinFrom?.invoke() ?: pinned
     override fun signedInUserId() = signedInUser
+    /** The app's server address as a test sets it; a setup never changes it. */
     var stored: String? = null
-    override fun adoptServer(origin: String): Boolean {
-        if (hasRecord() || pinnedOrigin() != null) return false
-        saved += origin
-        stored = origin
-        return true
-    }
-    override fun savedServer() = stored
-    override fun restoreServer(url: String?) { stored = url }
     override val deviceLabel = "Google Pixel 8"
     override val apiLevel = 35
 }
@@ -60,9 +53,11 @@ internal fun setupOwner(
     scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
     /** The phone's own clock. */
     clock: () -> Instant = Instant::now,
+    /** The phone's running time. */
+    boot: io.wolftown.kaiku.data.keydevice.BootClock = io.wolftown.kaiku.testutil.FakeBootClock(),
     /** The install id the app has now. */
     installId: () -> String = { SigFixtures.DEVICE_ID },
 ): SetupOwner = SetupOwner(
-    enroll, suitability, signer, repo, installId, deviceSignIn, env, probe, KeyAnswers(repo),
-    SetupDiscard(repo, ServerSilence(repo, clock)), scope, keyDispatcher, clock,
+    enroll, suitability, signer, repo, installId, deviceSignIn, env, probe, KeyAnswers(repo, boot),
+    SetupDiscard(repo, ServerSilence(repo, boot)), scope, keyDispatcher, clock, boot,
 )

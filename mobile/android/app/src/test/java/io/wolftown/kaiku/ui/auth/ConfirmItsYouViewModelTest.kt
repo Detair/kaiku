@@ -52,10 +52,17 @@ class ConfirmItsYouViewModelTest {
     @After fun tearDown() = Dispatchers.resetMain()
 
     /** The phone's own clock. */
-    private var now: Instant = Instant.parse("2026-11-20T09:00:00Z")
+    private val base: Instant = Instant.parse("2026-11-20T09:00:00Z")
+    /** The phone's running time; [now] moves it (the tests below speak in clock times). */
+    private val clock = io.wolftown.kaiku.testutil.FakeBootClock(boot = 1, elapsedMs = 0)
+    private var now: Instant
+        get() = base.plusMillis(clock.elapsedMs)
+        set(v) {
+            clock.elapsedMs = java.time.Duration.between(base, v).toMillis()
+        }
 
     private fun vm(f: KeyDeviceFixture) = ConfirmItsYouViewModel(
-        deviceSignIn, f.repo, signOut, SessionEndLog(), probe, f.answers, io.wolftown.kaiku.data.keydevice.ServerSilence(f.repo) { now },
+        deviceSignIn, f.repo, signOut, SessionEndLog(), probe, f.answers, io.wolftown.kaiku.data.keydevice.ServerSilence(f.repo, clock),
     )
 
     /**

@@ -6,27 +6,29 @@ import javax.inject.Inject
 import javax.inject.Provider
 
 /**
- * The one rule for whether the app's configured server address may change now. Both writers ask
- * it immediately before they write, with nothing in between: the server-address screen and a
- * setup adopting its link's server ([AndroidSetupEnvironment.adoptServer]).
+ * The one rule for whether the app's configured server address may change now, asked by the
+ * server-address screen immediately before it writes, with nothing in between. (A setup or a
+ * registration never writes it: they talk to the origin they started with.)
  *
  * Not while what the phone has saved about its key cannot be read, a key record is stored (a key,
- * or a setup that has not finished), the app is tied to a server ([OriginPin]), or the setup of
- * this phone holds an attempt ([SetupOwner.holdsAttempt]).
+ * or a setup that has not finished), the app is tied to a server ([OriginPin]), the setup of this
+ * phone holds an attempt ([SetupOwner.holdsAttempt]), or a registration is on its way
+ * ([io.wolftown.kaiku.ui.auth.Registrations]).
  */
 class ServerAddressRule internal constructor(
     private val keyDevices: KeyDeviceRepository,
     private val pinned: () -> String?,
     private val setupHolds: () -> Boolean,
+    private val registering: () -> Boolean = { false },
 ) {
     @Inject
-    constructor(keyDevices: KeyDeviceRepository, originPin: OriginPin, setupOwner: Provider<SetupOwner>) :
-        this(keyDevices, originPin::pinned, { setupOwner.get().holdsAttempt() })
+    constructor(
+        keyDevices: KeyDeviceRepository,
+        originPin: OriginPin,
+        setupOwner: Provider<SetupOwner>,
+        registrations: io.wolftown.kaiku.ui.auth.Registrations,
+    ) : this(keyDevices, originPin::pinned, { setupOwner.get().holdsAttempt() }, registrations::running)
 
-    /**
-     * [forOwnSetup]: asked by the setup for the attempt it is running, which does not count
-     * against itself (any other caller leaves it false).
-     */
-    fun mayChange(forOwnSetup: Boolean = false): Boolean =
-        !keyDevices.unreadable() && keyDevices.record.value == null && pinned() == null && (forOwnSetup || !setupHolds())
+    fun mayChange(): Boolean =
+        !keyDevices.unreadable() && keyDevices.record.value == null && pinned() == null && !setupHolds() && !registering()
 }

@@ -372,11 +372,13 @@ class AuthRepository @Inject constructor(
         username: String,
         password: String,
         email: String?,
-        displayName: String?
+        displayName: String?,
+        /** The server the registration is made on; its ticket belongs to it alone. */
+        origin: String? = null,
     ): Result<RegistrationTicket> {
         signedInRefusal()?.let { return Result.failure(it.exceptionOrNull()!!) }
         return try {
-            Result.success(authApi.register(username, password, email, displayName))
+            Result.success(authApi.register(username, password, email, displayName, origin))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -410,10 +412,20 @@ class AuthRepository @Inject constructor(
      * cleared); tokens are never logged.
      */
     suspend fun logout() {
-        withContext(NonCancellable) { logoutCaptured() }
+        withContext(NonCancellable) { logoutCaptured(null) }
     }
 
-    private suspend fun logoutCaptured() {
+    /**
+     * [logout], only if [installed] is still the current session: a sign-in that turned out not to
+     * stand ends the session it installed itself, never one that came after it.
+     */
+    suspend fun logoutIfCurrent(installed: AuthSession.LoggedIn) {
+        withContext(NonCancellable) { logoutCaptured(installed) }
+    }
+
+    private suspend fun logoutCaptured(only: AuthSession.LoggedIn?) {
+        // Captured and compared before anything else runs: nothing can come in between.
+        if (only != null && authState.session.value != only) return
         invalidateLogin()
         val session = authState.session.value as? AuthSession.LoggedIn
         val generation = tokenStorage.getSessionGeneration()
@@ -524,6 +536,8 @@ class AuthRepository @Inject constructor(
         expectedUserId: String,
         start: DeviceSignInStart,
         stillThisKey: () -> Boolean = { true },
+        /** Told the session it installed, as it was installed (before anything else could run). */
+        installedAs: (AuthSession.LoggedIn) -> Unit = {},
     ): Result<User> {
         val serverUrl = start.serverUrl
         // True once the session is installed or already ended: until then a failure ends it.
@@ -553,6 +567,7 @@ class AuthRepository @Inject constructor(
                     if (running != null) replacedAccess = tokenStorage.getAccessToken()
                     tokenStorage.saveTokens(auth.accessToken, auth.refreshToken, auth.expiresIn, user.id)
                     authState.setLoggedIn(user.id)
+                    (authState.session.value as? AuthSession.LoggedIn)?.let(installedAs)
                 }
                 unchanged
             }
