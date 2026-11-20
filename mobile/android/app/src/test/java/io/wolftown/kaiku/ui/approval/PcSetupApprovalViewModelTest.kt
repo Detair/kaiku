@@ -188,6 +188,7 @@ class PcSetupApprovalViewModelTest {
         advanceTimeBy(1_100)
         assertTrue(api.pcStatusWaits.isNotEmpty())
         assertTrue(api.pcStatusWaits.all { it == io.wolftown.kaiku.data.api.LongPoll.WAIT_SECONDS })
+        v.viewModelScope.coroutineContext[kotlinx.coroutines.Job]!!.cancel()
     }
 
     @Test fun `polls at most once a second`() = runTest {

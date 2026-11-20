@@ -310,7 +310,7 @@ class PcSetupApprovalViewModel @Inject constructor(
         if (e is IOException) return PcSetupUi.Error(R.string.pc_setup_answer_lost, rescan = false)
         if (e is ApiException && e.normalizedCode in setOf("APPROVAL_STATE", "APPROVAL_EXPIRED")) {
             val status = try {
-                approvalApi.pcSetupStatus(attemptId)
+                approvalApi.pcSetupStatus(attemptId, waitSeconds = 0)
             } catch (c: CancellationException) {
                 throw c
             } catch (_: Exception) {
