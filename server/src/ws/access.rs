@@ -894,9 +894,11 @@ pub enum AdminSubscription {
     /// It is not; a later elevation restores delivery.
     Refused,
     /// Not decided yet: the read failed or was not made (the socket is in
-    /// backoff after a failed one, or in the cooldown without a decision,
-    /// or the pool for these reads stayed busy), or the epoch kept moving.
-    /// The socket's next revalidation decides.
+    /// backoff after a failed one, or in the cooldown without an earlier
+    /// answer at this user epoch, or the socket's revalidation or the pool
+    /// for these reads stayed busy past the deadline), or the epoch kept
+    /// moving. Given on purpose in those cases: it does not take what a
+    /// frame's read settled meanwhile. Frames decide on their own reads.
     Undecided,
 }
 
@@ -3775,6 +3777,35 @@ mod tests {
             waiting.await,
             AdminSubscription::Allowed | AdminSubscription::Undecided
         ));
+    }
+
+    /// A subscribe that could not be decided in time says so: it answers
+    /// "not decided yet" and does not take the answer a frame's read
+    /// settled meanwhile (frames decide on their own reads).
+    #[tokio::test(start_paused = true)]
+    async fn a_subscribe_that_ran_out_of_time_answers_undecided() {
+        let u = Uuid::new_v4();
+        let access = SocketAccess::new(u, lazy_pool());
+        install(&access, &[], false, None);
+        // The socket's own revalidation is under way.
+        let gate = access.refresh_gate.lock().await;
+        let subscribe = access.subscribe_admin();
+        tokio::pin!(subscribe);
+        assert!(futures::poll!(&mut subscribe).is_pending());
+        // A frame is taken, and its own read, planned after the request,
+        // settles "not elevated".
+        assert!(access.admin_frame_taken());
+        let Planned::Run(plan) = access.plan() else {
+            panic!("nothing planned");
+        };
+        access.apply(&plan, admin_found(false));
+        assert_eq!(admin_decision(&access), Some(false));
+        tokio::time::advance(ADMIN_SUBSCRIBE_WAIT).await;
+        assert_eq!(
+            futures::poll!(&mut subscribe),
+            std::task::Poll::Ready(AdminSubscription::Undecided)
+        );
+        drop(gate);
     }
 
     /// A read that began before the admin frame was taken does not decide
