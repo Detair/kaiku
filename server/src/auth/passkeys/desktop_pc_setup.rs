@@ -265,7 +265,7 @@ pub async fn page(
     let Ok(flow_id) = Uuid::parse_str(&flow_id) else {
         return expired_page(lang);
     };
-    // A load the browser marks as coming from another site gets the expired
+    // A load the browser marks as coming from another origin gets the expired
     // page at every step and stores nothing.
     if !own_navigation(&headers) {
         return expired_page(lang);

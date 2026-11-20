@@ -1025,7 +1025,7 @@ Nothing below changes an existing contract entry; a client that does not know it
   hand-off page itself keeps `no-referrer`. Anything else is refused before the flow is read or changed:
   `code` and `options` with 403 `FORBIDDEN`, `finish` and `cancel` with a 403 page that sends the person
   back to the app. The `SameSite=Strict` cookie also travels with requests from other origins of the same
-  site. A page load that a browser marks as coming from another site (`Sec-Fetch-Site` other than `none`
+  site. A page load that a browser marks as coming from another origin (`Sec-Fetch-Site` other than `none`
   or `same-origin`) gets the expired page at every step and stores nothing in the flow. A load without
   `Sec-Fetch-Site` counts as the page's own.
 - **The code form** posts (`method="post"`, `action=…/code`) and is disabled in the markup until the
