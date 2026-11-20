@@ -381,6 +381,8 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
 
   /** The attempt a restart created, held back until the replaced attempt's end is read. */
   let pending: { mine: number; oldId: string; started: { attempt_id: string; qr_payload: string } } | null = null;
+  /** A replaced attempt whose end is still unknown because the start after it failed. */
+  let unresolved: string | null = null;
 
   const showStarted = (mine: number, started: { attempt_id: string; qr_payload: string }) => {
     setStatus({ attempt_id: started.attempt_id, state: "waiting", reason: null });
@@ -434,6 +436,7 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
     const previous = status();
     const unknownEnd =
       pending?.oldId ??
+      unresolved ??
       (previous && (["code", "enrolled"].includes(previous.state) || clientMade(previous))
         ? previous.attempt_id
         : null);
@@ -453,6 +456,7 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
         if (closed) void cancelPcSetup(started.attempt_id).catch(() => undefined);
         return;
       }
+      unresolved = null;
       if (unknownEnd) {
         pending = { mine, oldId: unknownEnd, started };
         await resolvePrevious();
@@ -460,6 +464,8 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
       }
       showStarted(mine, started);
     } catch (err) {
+      // The replaced attempt's end stays unknown until a later start reads it.
+      if (unknownEnd) unresolved = unknownEnd;
       if (mine !== generation) return;
       setStarting(false);
       setStartError(
@@ -538,7 +544,7 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
           fallback={<p role="status" class="text-text-secondary">{t("pcSetup.checkingPrevious")}</p>}
         >
           <div class="space-y-3">
-            <p role="alert" class="text-text-primary">{t("pcSetup.pollFailed")}</p>
+            <p role="alert" class="text-text-primary">{t("pcSetup.checkFailed")}</p>
             <button type="button" class="btn-primary min-h-11 text-base" onClick={() => void resolvePrevious()}>
               {t("common.tryAgain")}
             </button>

@@ -409,6 +409,25 @@ describe("on the desktop", () => {
     expect(setUpThisPcInBrowser).not.toHaveBeenCalled();
   });
 
+  it("a redeem that finishes after the step was left still shows completion", async () => {
+    let refuse: (e: unknown) => void = () => undefined;
+    pc.pollPcSetup.mockReset();
+    pc.pollPcSetup
+      .mockResolvedValueOnce(status("code"))
+      .mockImplementationOnce(() => new Promise((_, reject) => (refuse = reject)))
+      .mockImplementation(never);
+    render(() => <SetUpThisPc onClose={vi.fn()} />);
+    let finish: () => void = () => undefined;
+    setUpThisPcInBrowser.mockImplementation(() => new Promise<void>((r) => (finish = r)));
+    fireEvent.click(await screen.findByRole("button", { name: "Open the browser" }));
+    await waitFor(() => expect(pc.pollPcSetup).toHaveBeenCalledTimes(2), { timeout: 2_000 });
+    // A refused poll: the client ends the attempt on its own and the step goes.
+    refuse(http("FORBIDDEN", 403));
+    await screen.findByText("This didn't work. Start again.");
+    finish();
+    expect(await screen.findByRole("button", { name: "Sign in with your passkey" })).toBeTruthy();
+  });
+
   it("opening the browser drives the pc_setup flow and ends on the sign-in step", async () => {
     await openAt("code");
     let finish: () => void = () => undefined;
@@ -891,10 +910,56 @@ describe("a new code only once the earlier attempt's end is known", () => {
     nextStart();
     fireEvent.click(screen.getByRole("button", { name: "Start again" }));
     const retry = await screen.findByRole("button", { name: "Try again" }, { timeout: 5_000 });
+    expect(screen.getByText("Could not check the earlier setup.")).toBeTruthy();
+    expect(screen.queryByText(/Trying again/)).toBeNull();
     expect(screen.queryByRole("img", QR)).toBeNull();
     expect(reads).toBe(3);
     fireEvent.click(retry);
     expect(await screen.findByRole("img", QR)).toBeTruthy();
+  });
+
+  it("a failed start after Start again from enrolled still reads the old attempt before the next code", async () => {
+    oldReads("enrolled", null, () => Promise.resolve(status("completed")));
+    render(() => <SetUpThisPc onClose={vi.fn()} />);
+    await screen.findByRole("button", { name: "Create a passkey" });
+    pc.startPcSetup.mockRejectedValueOnce(new Error("offline"));
+    fireEvent.click(screen.getByRole("button", { name: "Start again" }));
+    await screen.findByText("Setting up this computer did not start. Please try again.");
+    pc.startPcSetup.mockResolvedValueOnce({ attempt_id: NEW, qr_payload: "kaiku://pcsetup/v1?o=x&t=z", rotates_at: "" });
+    fireEvent.click(screen.getByRole("button", { name: "Start again" }));
+    expect(await screen.findByRole("button", { name: "Sign in with your passkey" })).toBeTruthy();
+    expect(pc.pollPcSetup).toHaveBeenCalledWith(ID, 0);
+  });
+
+  it("a second Start again after failed reads still reads the original attempt", async () => {
+    const NEWER = "00000000-0000-4000-8000-000000000003";
+    let reads = 0;
+    oldReads("enrolled", null, () => {
+      reads += 1;
+      return reads <= 3 ? Promise.reject(new Error("offline")) : Promise.resolve(status("completed"));
+    });
+    render(() => <SetUpThisPc onClose={vi.fn()} />);
+    await screen.findByRole("button", { name: "Create a passkey" });
+    nextStart();
+    fireEvent.click(screen.getByRole("button", { name: "Start again" }));
+    await screen.findByRole("button", { name: "Try again" }, { timeout: 5_000 });
+    pc.startPcSetup.mockResolvedValue({ attempt_id: NEWER, qr_payload: "kaiku://pcsetup/v1?o=x&t=w", rotates_at: "" });
+    fireEvent.click(screen.getByRole("button", { name: "Start again" }));
+    expect(await screen.findByRole("button", { name: "Sign in with your passkey" })).toBeTruthy();
+    await waitFor(() => expect(pc.cancelPcSetup).toHaveBeenCalledWith(NEW));
+    await waitFor(() => expect(pc.cancelPcSetup).toHaveBeenCalledWith(NEWER));
+    expect(pc.cancelPcSetup).not.toHaveBeenCalledWith(ID);
+  });
+
+  it("closing the dialog while the earlier attempt is read gives up the attempt the restart made", async () => {
+    oldReads("enrolled", null, never);
+    render(() => <SetUpThisPc onClose={vi.fn()} />);
+    await screen.findByRole("button", { name: "Create a passkey" });
+    nextStart();
+    fireEvent.click(screen.getByRole("button", { name: "Start again" }));
+    await screen.findByText("Checking the earlier setup\u2026");
+    cleanup();
+    await waitFor(() => expect(pc.cancelPcSetup).toHaveBeenCalledWith(NEW));
   });
 
   it("Start again from an end the client made up reads the old attempt", async () => {

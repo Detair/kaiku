@@ -27,6 +27,7 @@ export const pcSetup = {
   "pcSetup.startFailed": "Setting up this computer did not start. Please try again.",
   "pcSetup.pollFailed": "Lost the connection. Trying again\u2026",
   "pcSetup.checkingPrevious": "Checking the earlier setup\u2026",
+  "pcSetup.checkFailed": "Could not check the earlier setup.",
   "pcSetup.unavailable": "Your phone can't confirm this yet. Ask your admin.",
   "pcSetup.ended.mayApproveOff": "Your phone can no longer confirm this. Ask your admin.",
   "pcSetup.ended.refused": "Your phone declined. Start again?",
