@@ -79,7 +79,18 @@ class CallWakeProcessorTest {
             return ShowResult.POSTED
         }
 
+        /** Runs as a removal begins (where another thread could end the session). */
+        var beforeCancel: () -> Unit = {}
+
         override fun cancelCall(channelId: String) {
+            beforeCancel()
+            cancelled += channelId
+            shown.remove(channelId)
+        }
+
+        override fun cancelCallIf(channelId: String, check: () -> Boolean) {
+            beforeCancel()
+            if (!check()) return
             cancelled += channelId
             shown.remove(channelId)
         }

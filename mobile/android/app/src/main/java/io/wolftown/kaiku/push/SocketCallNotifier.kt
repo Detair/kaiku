@@ -48,29 +48,34 @@ class SocketCallNotifier internal constructor(
         }
     }
 
+    // A removal is checked in one step with it, like a post: a session that ended removes
+    // nothing (the next account's notification of the same conversation stays).
+
     override fun stopRing(session: SessionGeneration.Ticket, channelId: String, callId: String) {
-        if (!session.alive) return
-        val user = session.userId
-        val stored = store.shown(user, channelId)
-        // What counts is the call that is live there (a ring whose end never came is none).
-        val live = CallRules.live(stored, now())
-        // Another, newer call of this DM keeps its notification.
-        if (live != null && live.callId != callId) return
-        if (live?.phase == CallPhase.MISSED) return
-        // Tombstone: a late or duplicate push ringing of this call is not accepted.
-        store.setShownIf(user, channelId, stored, ShownCall(callId, CallPhase.ENDED, now()))
-        sink.cancelCall(channelId)
+        sink.cancelCallIf(channelId) {
+            if (!session.alive) return@cancelCallIf false
+            val user = session.userId
+            val stored = store.shown(user, channelId)
+            // What counts is the call that is live there (a ring whose end never came is none).
+            val live = CallRules.live(stored, now())
+            // Another, newer call of this DM keeps its notification.
+            if (live != null && live.callId != callId) return@cancelCallIf false
+            if (live?.phase == CallPhase.MISSED) return@cancelCallIf false
+            // Tombstone: a late or duplicate push ringing of this call is not accepted.
+            store.setShownIf(user, channelId, stored, ShownCall(callId, CallPhase.ENDED, now()))
+            true
+        }
     }
 
     override fun silenceRing(session: SessionGeneration.Ticket, channelId: String, callId: String) {
-        if (!session.alive) return
-        val live = CallRules.live(store.shown(session.userId, channelId), now())
-        // Another, newer call of this DM keeps its notification.
-        if (live != null && live.callId != callId) return
-        if (live?.phase == CallPhase.MISSED) return
-        // No tombstone: the stored ring stays, so the `ended` wake of this call is still
-        // accepted and can say how it ended. A late ringing wake of it is too old to ring.
-        sink.cancelCall(channelId)
+        sink.cancelCallIf(channelId) {
+            if (!session.alive) return@cancelCallIf false
+            val live = CallRules.live(store.shown(session.userId, channelId), now())
+            // Another, newer call of this DM keeps its notification. No tombstone: the stored
+            // ring stays, so the `ended` wake of this call is still accepted and can say how it
+            // ended. A late ringing wake of it is too old to ring.
+            !(live != null && live.callId != callId) && live?.phase != CallPhase.MISSED
+        }
     }
 
     override fun missed(session: SessionGeneration.Ticket, channelId: String, callId: String, callerName: String?) {

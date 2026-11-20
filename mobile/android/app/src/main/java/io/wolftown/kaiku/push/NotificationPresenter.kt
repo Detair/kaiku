@@ -163,6 +163,11 @@ class AndroidNotificationPresenter internal constructor(
     }
 
     @Synchronized
+    override fun cancelCallIf(channelId: String, check: () -> Boolean) {
+        if (check()) cancelCall(channelId)
+    }
+
+    @Synchronized
     override fun cancelAllCalls() {
         postedCalls.clear()
         val manager = manager ?: return

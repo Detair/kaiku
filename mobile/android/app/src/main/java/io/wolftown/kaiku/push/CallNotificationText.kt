@@ -46,6 +46,16 @@ interface CallNotificationSink {
 
     fun cancelCall(channelId: String)
 
+    /**
+     * Removes the channel's call notification if [check] says so; [check] runs
+     * in the same critical section as the removal and as [cancelAllCalls] (and
+     * may record what the removal means), so what it checks cannot change in
+     * between.
+     */
+    fun cancelCallIf(channelId: String, check: () -> Boolean) {
+        if (check()) cancelCall(channelId)
+    }
+
     /** Removes every call notification (sign-out; message notifications stay for [NotificationSink.cancelAll]). */
     fun cancelAllCalls() {}
 }

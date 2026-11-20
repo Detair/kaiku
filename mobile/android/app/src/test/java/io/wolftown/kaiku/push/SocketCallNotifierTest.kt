@@ -63,6 +63,29 @@ class SocketCallNotifierTest {
     }
 
     @Test
+    fun `a ring stopped by a session that ends at that moment removes nothing of the next one`() {
+        val old = me
+        notifier.ring(old, "dm-1", "c-1", "anna", "Anna")
+        // The session ends while the stop is being carried out; the next account has its own
+        // ring in a conversation it shares with the old one.
+        sink.beforeCancel = {
+            sink.beforeCancel = {}
+            sessions.switchTo("bert")
+            sink.shown["dm-1"] = CallNotification("bert", "dm-1", "c-9", CallKind.INCOMING, "Anna")
+        }
+        notifier.stopRing(old, "dm-1", "c-1")
+        assertTrue("the ended session removed a notification: ${sink.cancelled}", sink.cancelled.isEmpty())
+        assertEquals("c-9", sink.shown["dm-1"]?.callId)
+
+        // The same for a ring that is only silenced.
+        val bert = me
+        notifier.ring(bert, "dm-2", "c-5", "anna", "Anna")
+        sink.beforeCancel = { sink.beforeCancel = {}; sessions.switchTo("carl") }
+        notifier.silenceRing(bert, "dm-2", "c-5")
+        assertTrue(sink.cancelled.isEmpty())
+    }
+
+    @Test
     fun `nothing is posted for a session that is over, and what it posted is removed`() {
         val old = me
         notifier.ring(old, "dm-1", "c-1", "anna", "Anna")
