@@ -1921,15 +1921,18 @@ where
                 if !active.load(Ordering::Relaxed) {
                     return;
                 }
-                // Muted frames still pass the front end so the capture's
-                // frame count (the RTP clock) keeps running.
                 let is_muted = muted.load(Ordering::Relaxed);
                 if is_muted {
                     processor.on_muted();
                 }
-                convert_in_chunks(data, channels, &mut converted, |chunk| {
-                    front_end.push(chunk, |frame| processor.process_frame(frame, is_muted));
-                });
+                capture_samples(
+                    data,
+                    is_muted,
+                    channels,
+                    &mut converted,
+                    &mut front_end,
+                    |frame, frame_muted| processor.process_frame(frame, frame_muted),
+                );
             },
             stream_error_callback(reporter),
             None,
@@ -1940,12 +1943,38 @@ where
     Ok(stream)
 }
 
+/// The capture callback's sample path: device samples → f32 → front end
+/// (downmix, resampling, 20 ms framing) → `on_frame(frame, muted)`.
+///
+/// While muted, the device's samples are replaced by silence right at the
+/// conversion, before any stage that keeps state: the resampler and the
+/// framer then only ever hold silence from the muted time, so no muted
+/// sample can reach a frame encoded after unmuting. The silence still
+/// passes the front end, so the capture's frame count (the RTP clock)
+/// keeps running.
+fn capture_samples<T>(
+    data: &[T],
+    muted: bool,
+    channels: u16,
+    converted: &mut Vec<f32>,
+    front_end: &mut CaptureFrontEnd,
+    mut on_frame: impl FnMut(&[f32], bool),
+) where
+    T: SizedSample,
+    f32: FromSample<T>,
+{
+    convert_in_chunks(data, channels, muted, converted, |chunk| {
+        front_end.push(chunk, |frame| on_frame(frame, muted));
+    });
+}
+
 /// Convert device samples to f32 in whole-frame chunks of at most
 /// [`MAX_PUSH_SAMPLES`], reusing `converted` (sized to that) so the audio
 /// callback never reallocates, however large the backend's period is.
 fn convert_in_chunks<T>(
     data: &[T],
     channels: u16,
+    silence: bool,
     converted: &mut Vec<f32>,
     mut sink: impl FnMut(&[f32]),
 ) where
@@ -1954,7 +1983,11 @@ fn convert_in_chunks<T>(
 {
     for chunk in data.chunks(push_chunk_len(channels)) {
         converted.clear();
-        converted.extend(chunk.iter().map(|&s| f32::from_sample(s)));
+        if silence {
+            converted.resize(chunk.len(), 0.0);
+        } else {
+            converted.extend(chunk.iter().map(|&s| f32::from_sample(s)));
+        }
         sink(converted);
     }
 }
@@ -2523,6 +2556,58 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+
+    /// Muted means nothing of the microphone reaches the encoder: not as a
+    /// partial frame held by the framer, not through the resampler's state,
+    /// not in the first frame after unmuting. Muted samples are marked +0.9,
+    /// spoken ones -0.3; no frame handed on as unmuted may contain anything
+    /// above zero.
+    #[test]
+    fn no_muted_sample_reaches_an_unmuted_frame() {
+        for (rate, channels) in [(48_000u32, 1u16), (44_100, 2), (16_000, 1)] {
+            for callback_ms in [5u32, 10, 20, 40] {
+                let format = CaptureFormat {
+                    sample_rate: rate,
+                    channels,
+                };
+                let mut front_end = CaptureFrontEnd::new(format);
+                let mut converted = Vec::with_capacity(MAX_PUSH_SAMPLES);
+                let per_callback = (rate / 1000 * callback_ms) as usize * usize::from(channels);
+                let mut frames = 0usize;
+                let mut leaked = 0usize;
+                // Mute toggles at odd moments: 1, 2 or 3 callbacks at a time.
+                let pattern = [
+                    true, false, true, true, false, false, true, false, false, false,
+                ];
+                for k in 0..400usize {
+                    let muted = pattern[k % pattern.len()];
+                    let value = if muted { 0.9f32 } else { -0.3 };
+                    let data = vec![value; per_callback];
+                    capture_samples(
+                        &data,
+                        muted,
+                        channels,
+                        &mut converted,
+                        &mut front_end,
+                        |frame, frame_muted| {
+                            frames += 1;
+                            if !frame_muted {
+                                leaked += frame.iter().filter(|s| **s > 1e-6).count();
+                            }
+                        },
+                    );
+                }
+                assert!(
+                    frames > 0,
+                    "{rate} Hz × {channels}, {callback_ms} ms: no frames"
+                );
+                assert_eq!(
+                    leaked, 0,
+                    "{rate} Hz × {channels}, {callback_ms} ms: muted samples encoded"
+                );
+            }
+        }
+    }
 
     /// The output callback must never wait for the PCM pusher, deafened or
     /// not: a pusher preempted mid-append would push it past its deadline.
@@ -3103,7 +3188,7 @@ mod tests {
             .map(|i| if i % 2 == 0 { i16::MAX } else { 0 })
             .collect();
         let mut seen = 0usize;
-        convert_in_chunks(&data, 2, &mut converted, |chunk| {
+        convert_in_chunks(&data, 2, false, &mut converted, |chunk| {
             assert_eq!(chunk.len() % 2, 0, "chunks keep whole frames");
             assert!((chunk[0] - 1.0).abs() < 1e-3);
             seen += chunk.len();
