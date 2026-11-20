@@ -1186,11 +1186,15 @@ fn parse_turn_servers(raw: Option<&str>) -> Result<Vec<String>> {
         .split(',')
         .map(str::trim)
         .filter(|url| !url.is_empty())
-        .map(|url| {
+        .enumerate()
+        .map(|(i, url)| {
+            // Named by position: the entry itself may hold a credential.
             anyhow::ensure!(
                 is_turn_uri(url),
-                "TURN_SERVER entry {url:?} is not a valid turn: or turns: URL \
-                 (host[:port][?transport=udp|tcp]; list several URLs separated by commas)"
+                "TURN_SERVER entry {} is not a valid turn: or turns: URL \
+                 (host[:port][?transport=udp|tcp], no user info; list several URLs separated \
+                 by commas)",
+                i + 1
             );
             Ok(url.to_owned())
         })
@@ -1329,6 +1333,19 @@ mod client_facing_voice_config_tests {
             parse_turn_servers(Some("turn:[2001:db8::1]:3478?transport=udp")).unwrap(),
             ["turn:[2001:db8::1]:3478?transport=udp"]
         );
+    }
+
+    /// A rejected entry is named by its position, never echoed (it may hold
+    /// a pasted credential).
+    #[test]
+    fn turn_server_error_does_not_echo_the_entry() {
+        let err = parse_turn_servers(Some(
+            "turn:ok.example.test,turn:user:hunter2@t.example.test",
+        ))
+        .unwrap_err()
+        .to_string();
+        assert!(!err.contains("hunter2"), "{err}");
+        assert!(err.contains("TURN_SERVER") && err.contains('2'), "{err}");
     }
 
     #[test]
