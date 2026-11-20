@@ -3940,12 +3940,13 @@ mod tests {
         install(&access, &[FAILS; 16], true, None);
         let began = Instant::now();
         loop {
-            let answer = access.subscribe_admin().await;
+            // Through the handler's reply: `Err` ends the socket.
+            let reply = reply_code(crate::ws::handlers::admin_subscribe_reply(&access).await);
             if began.elapsed() >= FAILURE_CLOSE_AFTER {
-                assert_eq!(answer, AdminSubscription::Failed, "the socket stays");
+                assert_eq!(reply, Some(ENDED), "the socket stays");
                 break;
             }
-            assert_eq!(answer, AdminSubscription::Undecided);
+            assert_eq!(reply, Some(UNAVAILABLE));
             access.unsubscribe_admin();
             assert!(access.failing_for().is_none());
             tokio::time::advance(ADMIN_SUBSCRIBE_COOLDOWN).await;
