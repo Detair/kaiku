@@ -165,14 +165,16 @@ const FRAME_US: u64 = 20_000;
 /// takes (from the queue's drop at each callback, over the last 5 s) and
 /// holds the low point at one frame plus the spread between the largest
 /// and the smallest block: before any callback the queue then holds at
-/// least the block that callback takes, however the sizes vary. Below the
-/// target it renders extra frames at once; above it by a frame or more at
-/// every low point of the last second, it skips one frame (at most one per
-/// second). Device clock drift thus becomes an occasional extra or skipped
-/// tick, which the jitter buffer absorbs like sender drift.
+/// least the block that callback takes, however the sizes vary. A frame
+/// below the target it renders one extra tick; further below it fills the
+/// queue with silence, after the ticks that are due. Above it by a frame or
+/// more at every low point of the last second, it skips one frame (at most
+/// one per second, one per 200 ms when far above). Device clock drift thus
+/// becomes an occasional extra or skipped tick, which the jitter buffer
+/// absorbs like sender drift.
 ///
-/// Rendering never runs more than the target plus the largest block plus
-/// two frames ahead. Before the first callback the largest supported block
+/// Rendering is bounded by the ring's capacity. Before the first callback
+/// the largest supported block
 /// is assumed for up to a second; when no callback comes for a second the
 /// device counts as absent: rendering stops three frames ahead and
 /// [`Pacer::take_went_absent`] tells the mixer to drop the stale audio.
@@ -368,8 +370,13 @@ impl Pacer {
                 due -= 1;
             }
         }
+        // Due ticks come first within the wake's budget, silence fills the
+        // rest: the tracks keep their even pace while the queue fills. A
+        // tick that does not fit follows at the next wake.
         let total = (due + silence).min(MAX_FRAMES_PER_WAKE);
-        self.silence = silence.min(total);
+        let ticks = due.min(total);
+        self.credit_us += (due - ticks) as u64 * FRAME_US;
+        self.silence = total - ticks;
         total
     }
 
@@ -1680,6 +1687,26 @@ mod tests {
         assert_eq!(due, 3, "capped at three per wake");
         let due = pacer.frames(5_000, 4 * f, Some((20 * 96, 100 * 96)), 2);
         assert_eq!(due, 1);
+    }
+
+    /// Silence that fills a whole wake does not swallow the ticks due in
+    /// it: they follow at the next wakes.
+    #[test]
+    fn pacer_keeps_due_ticks_when_silence_fills_a_wake() {
+        let f = FRAME_SAMPLES;
+        let mut pacer = Pacer::default();
+        let blocks = Some((20 * 96, 400 * 96));
+        let (mut queue, mut ticks) = (f, 0usize);
+        for callbacks in 1..=50 {
+            let n = pacer.frames(20_000, queue, blocks, callbacks);
+            ticks += n - pacer.silence();
+            queue += n * f;
+            queue -= f; // the device takes 20 ms per wake
+        }
+        assert!(queue >= 19 * f, "the shortfall was filled with silence");
+        // One tick per 20 ms, none lost to silence; the last frame of the
+        // shortfall may be topped up by one extra tick.
+        assert!((50..=51).contains(&ticks), "{ticks} ticks in 1 s");
     }
 
     /// With a queue a few frames too full, the pacer drains it by one frame
