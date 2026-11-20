@@ -869,9 +869,10 @@ struct AdminScope {
     /// [`Inner::admin_invalidations`] as of the plan of the read that wrote
     /// `allowed` (0: no read yet).
     decided: u64,
-    /// When an `admin_subscribe` last asked for this scope to be read
-    /// ([`ADMIN_SUBSCRIBE_COOLDOWN`]).
-    read_asked: Option<Instant>,
+    /// When an `admin_subscribe` last asked for this scope to be read, and
+    /// at which user epoch: the cooldown ([`ADMIN_SUBSCRIBE_COOLDOWN`])
+    /// holds only at that epoch, so a new epoch gets one read of its own.
+    read_asked: Option<(Instant, u64)>,
     /// The last `admin_subscribe`'s answer, and the user epoch it holds
     /// for.
     reply: Option<(u64, AdminSubscription)>,
@@ -1900,7 +1901,7 @@ impl SocketAccess {
         admin.requested = true;
         let cooling = admin
             .read_asked
-            .is_some_and(|at| now < at + ADMIN_SUBSCRIBE_COOLDOWN);
+            .is_some_and(|(at, asked)| asked == epoch && now < at + ADMIN_SUBSCRIBE_COOLDOWN);
         // Only this socket's own answers count here, never what a frame's
         // read wrote: a refusal stands for its user epoch, and within the
         // cooldown so does an earlier "yes".
@@ -1918,7 +1919,7 @@ impl SocketAccess {
             self.attention.notify_one();
             return AdminRequest::Later;
         }
-        admin.read_asked = Some(now);
+        admin.read_asked = Some((now, epoch));
         AdminRequest::Read(Self::invalidate_admin(&mut inner))
     }
 
@@ -3655,17 +3656,15 @@ mod tests {
         assert_eq!(ask(access.clone()).await, AdminSubscription::Refused);
         assert_eq!(reads(u), 1);
 
-        // Within the cooldown and without a current decision: no read
-        // here. The socket's own revalidation, due anyway, settles it.
+        // Within the cooldown at a new user epoch: one read of its own,
+        // then the answer at that epoch stands.
         let u = Uuid::new_v4();
         let access = admin_socket(u, true).await;
         crate::ws::test_hooks::count_access_reads(u);
         registry().bump_user(u);
-        assert_eq!(ask(access.clone()).await, AdminSubscription::Undecided);
-        assert_eq!(reads(u), 0);
-        assert!(access.is_stale());
-        assert!(access.refresh().await.is_ok());
-        assert_eq!(admin_decision(&access), Some(true));
+        assert_eq!(ask(access.clone()).await, AdminSubscription::Allowed);
+        assert_eq!(reads(u), 1);
+        assert_eq!(ask(access.clone()).await, AdminSubscription::Allowed);
         assert_eq!(reads(u), 1);
 
         // The periodic re-check invalidates the decision of a stream that
@@ -3965,6 +3964,35 @@ mod tests {
             answers.push(subscribe.await);
         }
         assert_eq!(answers, [AdminSubscription::Undecided; 2]);
+    }
+
+    /// A new user epoch gets one answer of its own: inside the cooldown, a
+    /// subscribe whose earlier answer is from an older epoch asks for its
+    /// own read, once per epoch. Refused, then elevated, then asked again:
+    /// allowed at once. Asked once more at that epoch: the earlier answer,
+    /// no read. An epoch move that changes nothing: one read, refused.
+    #[tokio::test(start_paused = true)]
+    async fn a_new_user_epoch_gets_one_answer_of_its_own() {
+        let reads = |u: Uuid| crate::ws::test_hooks::access_reads(u).0;
+        let u = Uuid::new_v4();
+        let access = admin_socket(u, false).await;
+        crate::ws::test_hooks::count_access_reads(u);
+        // The elevation commits and bumps the epoch, within the cooldown.
+        registry().bump_user(u);
+        install(&access, &[], true, None);
+        assert_eq!(access.subscribe_admin().await, AdminSubscription::Allowed);
+        assert_eq!(reads(u), 1);
+        install(&access, &[], false, None);
+        assert_eq!(access.subscribe_admin().await, AdminSubscription::Allowed);
+        assert_eq!(reads(u), 1, "read twice at one epoch within the cooldown");
+
+        let u = Uuid::new_v4();
+        let access = admin_socket(u, false).await;
+        crate::ws::test_hooks::count_access_reads(u);
+        registry().bump_user(u);
+        assert_eq!(access.subscribe_admin().await, AdminSubscription::Refused);
+        assert_eq!(access.subscribe_admin().await, AdminSubscription::Refused);
+        assert_eq!(reads(u), 1);
     }
 
     /// A read that began before the admin frame was taken does not decide
@@ -4663,8 +4691,8 @@ mod tests {
         reply: Option<&'static str>,
         /// What has to answer it at once, without a read, if anything: the
         /// socket's own earlier answer at the current user epoch (a refusal;
-        /// within the cooldown also a "yes"), or within the cooldown without
-        /// one "not decided yet".
+        /// within the cooldown also a "yes"). At a new user epoch it reads,
+        /// also within the cooldown.
         at_once: Option<AdminSubscription>,
     }
 
@@ -4960,7 +4988,6 @@ mod tests {
             let at_once = match standing_reply(&access) {
                 Some(AdminSubscription::Refused) => Some(AdminSubscription::Refused),
                 Some(AdminSubscription::Allowed) if soon => Some(AdminSubscription::Allowed),
-                _ if soon => Some(AdminSubscription::Undecided),
                 _ => None,
             };
             let reply = reply_code(crate::ws::handlers::admin_subscribe_reply(&access).await);
@@ -5212,6 +5239,7 @@ mod tests {
             family(false, 0, Subscribe, &[Bump]),
             family(false, 0, SubscribeSoon, &[Bump]),
             family(false, 0, Resubscribe, &[Bump]),
+            family(false, 0, SubscribeSoon, &[Elevate]),
         ];
         let mut schedules = 0_usize;
         let mut explored = Vec::new();

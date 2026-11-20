@@ -1479,10 +1479,9 @@ async fn admin_request(
 /// without a socket around the access state (other tests publish on the
 /// shared admin channel). Not elevated: `ADMIN_NOT_ELEVATED` with its
 /// message, read once however often the client asks; the request is kept
-/// and delivery starts with the elevation, without a new request; asked
-/// again within the cooldown at the new user epoch, the socket has no
-/// answer of its own yet (`SERVICE_UNAVAILABLE`). Elevated: no reply, and
-/// admin events are written. A check that cannot be made:
+/// and delivery starts with the elevation, without a new request. Elevated
+/// (a new user epoch, read for the request itself): no reply, and admin
+/// events are written. A check that cannot be made:
 /// `SERVICE_UNAVAILABLE`; the request is kept and the retry decides it.
 /// `admin_unsubscribe` ends the request.
 #[sqlx::test]
@@ -1537,23 +1536,16 @@ async fn admin_subscribe_answers_and_keeps_the_request(pool: PgPool) {
         "no delivery after the elevation"
     );
 
-    // Within the cooldown of its first request this socket has no answer
-    // of its own at the new user epoch: not decided yet (the frames above
-    // were decided by their own reads; the answer does not take theirs).
-    assert_eq!(
-        admin_request(&app, &access, admin, "admin_subscribe").await,
-        Some((
-            "SERVICE_UNAVAILABLE".to_string(),
-            "Admin access could not be checked yet; events follow once it is".to_string()
-        ))
-    );
-    assert!(access.admit_admin().await);
-
-    // Elevated, on another socket of the session: no reply.
-    let access = SocketAccess::for_session(admin, Some(sid), app.state.db.clone());
+    // Elevated: no reply. The new user epoch gets a read of its own, also
+    // within the cooldown of the first request.
     assert_eq!(
         admin_request(&app, &access, admin, "admin_subscribe").await,
         None
+    );
+    assert_eq!(
+        access_reads(admin).0,
+        3,
+        "one read for the frame, one for the request"
     );
     assert!(access.admin_allowed() && access.admit_admin().await);
 
