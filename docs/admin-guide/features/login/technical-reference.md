@@ -922,7 +922,9 @@ who became admin cannot confirm. `counts_from = confirmed_at + ACCOUNT_REQUEST_D
 → login attempts. Device-side transitions (claim, answer, deny, release) lock accounts → device →
 session → challenge → attempt; the PC side (collect, TOTP step) locks the attempt's account →
 attempt; poll, cancel and the sweep touch only attempt rows. Logout and refresh do not take the
-account lock and touch only sessions, grants and enrolments. **"Set up this PC" (SM5):** attempts stay
+account lock and touch only sessions, grants and enrolments; a logout that ends two sessions (bearer
+and refresh token) ends each in its own transaction, so it never holds two session rows. **"Set up this
+PC" (SM5):** attempts stay
 out of the session-ending cascade; every attempt transition (scan, approve, report, code entry, cancel,
 restart, finish, redeem) locks account → requesting session row → attempt → enrolment, holds the session
 lock through commit, and first re-checks that the session is live and the device active with

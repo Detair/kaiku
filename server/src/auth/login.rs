@@ -366,16 +366,21 @@ pub async fn logout(
 
     // End the sessions in the revocation order (B.4): `ended_at`, denylist,
     // NOTIFY, commit. Signing out the current session is always allowed.
-    let mut tx = state.db.begin().await?;
-    super::revocation::end_sessions_tx(
-        &mut tx,
-        &AuthCtx::from(&state),
-        auth_user.id,
-        &session_ids,
-        super::revocation::EndReason::Logout,
-    )
-    .await?;
-    tx.commit().await?;
+    // Each session ends in its own transaction: logout runs without the
+    // account lock, so it never holds two session rows at once (a
+    // transition under the account lock may hold both in another order).
+    for sid in &session_ids {
+        let mut tx = state.db.begin().await?;
+        super::revocation::end_sessions_tx(
+            &mut tx,
+            &AuthCtx::from(&state),
+            auth_user.id,
+            std::slice::from_ref(sid),
+            super::revocation::EndReason::Logout,
+        )
+        .await?;
+        tx.commit().await?;
+    }
 
     tracing::info!(user_id = %auth_user.id, "User logged out");
 

@@ -2680,3 +2680,41 @@ async fn long_polls_hold_no_slot_without_need(pool: PgPool) {
     assert_eq!((s, body["state"].as_str()), (200, Some("cancelled")), "{body}");
     assert!(t.elapsed() < std::time::Duration::from_secs(2), "{:?}", t.elapsed());
 }
+
+#[sqlx::test]
+async fn logout_of_two_sessions_never_holds_both_rows(pool: PgPool) {
+    let p = pc(&pool).await;
+    // A second session of the account, named by a refresh token.
+    let other = probation_session(&pool, p.user).await;
+    sqlx::query("UPDATE sessions SET token_hash = $2 WHERE id = $1")
+        .bind(other)
+        .bind(vc_server::auth::hash_token("refresh-of-the-other-session"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    // A transition holds the other session's row (as the phone side does).
+    let mut holder = pool.begin().await.unwrap();
+    sqlx::query("SELECT 1 FROM sessions WHERE id = $1 FOR UPDATE")
+        .bind(other)
+        .execute(&mut *holder)
+        .await
+        .unwrap();
+    let logout = call(
+        &p.app,
+        Method::POST,
+        "/auth/logout",
+        &p.token,
+        Some(json!({"refresh_token": "refresh-of-the-other-session"})),
+    );
+    let check = async {
+        super::helpers::wait_for_lock_waiters(&pool, 1).await;
+        // The bearer's own session is already ended: it was not held with the other.
+        let mine_ended = !session_live(&pool, p.sid).await;
+        holder.commit().await.unwrap();
+        mine_ended
+    };
+    let ((s, _), mine_ended) = tokio::join!(logout, check);
+    assert_eq!(s, 200);
+    assert!(mine_ended, "each session ends in its own transaction");
+    assert!(!session_live(&pool, other).await);
+}
