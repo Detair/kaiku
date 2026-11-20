@@ -1015,6 +1015,10 @@ class VoiceRepository @Inject constructor(
         }.asCoroutineDispatcher()
     )
 
+    /** Whether the [door] is held right now (tests: a teardown runs under it). */
+    @androidx.annotation.VisibleForTesting
+    internal val doorHeldForTest: Boolean get() = door.isLocked
+
     /** How long [endForSignOut] waits for the release; shortened by tests whose owner runs on the test thread. */
     @androidx.annotation.VisibleForTesting
     internal var releaseWaitMs = RELEASE_WAIT_MS

@@ -50,6 +50,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import kotlinx.coroutines.flow.first
 
 /**
  * Unit tests for [VoiceRepository]'s dual-PC signaling wiring.
@@ -1515,9 +1516,11 @@ class VoiceRepositoryTest {
         assertEquals(false, repository.isConnected.value)
     }
 
-    @Test
-    fun `sign-out releases the media on another thread, never under the caller's locks, before it returns`() {
-        // The owner on a thread of its own, as in the app: the sign-out can wait for it.
+    /** A teardown of the media as the test saw it: on which thread, and which locks were held. */
+    private class Release(val thread: Thread, val callerLockHeld: Boolean, val doorHeld: Boolean, val stack: String)
+
+    /** A repository whose owner runs on a thread of its own, as in the app; joined to ch-1 and up. */
+    private fun withOwnerThread(body: (releases: MutableList<Release>, storageLock: Any) -> Unit) {
         val ownerThread = java.util.concurrent.Executors.newSingleThreadExecutor()
         val realScope = CoroutineScope(SupervisorJob() + ownerThread.asCoroutineDispatcher())
         try {
@@ -1530,29 +1533,72 @@ class VoiceRepositoryTest {
                 context = context,
                 voiceScope = realScope,
             )
-            kotlinx.coroutines.runBlocking { kotlinx.coroutines.withTimeout(5_000) { repository.joinChannel("ch-1") } }
+            kotlinx.coroutines.runBlocking {
+                kotlinx.coroutines.withTimeout(5_000) {
+                    repository.joinChannel("ch-1")
+                    // The owner has finished the first join and waits, up: nothing of it is still running.
+                    repository.linkState.first { it == VoiceLinkState.Stable }
+                }
+            }
             val storageLock = Any()
-            val caller = Thread.currentThread()
-            var releasedOn: Thread? = null
-            var heldTheLock = true
+            val releases = java.util.Collections.synchronizedList(mutableListOf<Release>())
             every { webRtcManager.closePeerConnections() } answers {
-                releasedOn = Thread.currentThread()
-                heldTheLock = Thread.holdsLock(storageLock)
+                releases += Release(
+                    Thread.currentThread(),
+                    Thread.holdsLock(storageLock),
+                    repository.doorHeldForTest,
+                    Thread.currentThread().stackTrace.drop(2).take(25).joinToString("\n") { "    $it" },
+                )
                 rtcGen++
                 rtcGen
             }
-
-            synchronized(storageLock) { repository.endForSignOut() }
-
-            assertTrue("media not released before sign-out went on", releasedOn != null)
-            assertTrue("released on the caller's thread", releasedOn !== caller)
-            assertTrue("released on the owner's thread", releasedOn?.name == "voice-release")
-            assertEquals(false, heldTheLock)
+            body(releases, storageLock)
         } finally {
             realScope.cancel()
             ownerThread.shutdown()
         }
     }
+
+    private fun List<Release>.describe() = joinToString("\n----\n") { "${it.thread.name}\n${it.stack}" }
+
+    @Test
+    fun `sign-out releases the media on another thread, never under the caller's locks, before it returns`() =
+        withOwnerThread { releases, storageLock ->
+            // The session runs when the sign-out comes: the sign-out is the one that ends it.
+            assertEquals("ch-1", repository.currentChannelId.value)
+            val caller = Thread.currentThread()
+
+            synchronized(storageLock) { repository.endForSignOut() }
+
+            // Exactly once, behind the owner, under the door, on the release thread.
+            assertEquals("the media was not torn down exactly once:\n${releases.describe()}", 1, releases.size)
+            val release = releases.single()
+            assertTrue("released on the caller's thread", release.thread !== caller)
+            assertEquals("released by another thread than the sign-out's release:\n${releases.describe()}", "voice-release", release.thread.name)
+            assertEquals("released under the caller's lock", false, release.callerLockHeld)
+            assertTrue("released outside the door", release.doorHeld)
+        }
+
+    @Test
+    fun `a session that ended by itself before the sign-out is torn down once, under the door, and the sign-out adds nothing`() =
+        withOwnerThread { releases, storageLock ->
+            // Removed by the server: the session ends and is torn down by the session's side.
+            kotlinx.coroutines.runBlocking {
+                wsEvents.emit(ServerEvent.VoiceRemoved(channelId = "ch-1", reason = "kicked"))
+                kotlinx.coroutines.withTimeout(5_000) { repository.currentChannelId.first { it == null } }
+            }
+            val ended = java.util.concurrent.TimeUnit.SECONDS.toNanos(5) + System.nanoTime()
+            while (releases.isEmpty() && System.nanoTime() < ended) Thread.yield()
+            val caller = Thread.currentThread()
+
+            synchronized(storageLock) { repository.endForSignOut() }
+
+            assertEquals("the media was not torn down exactly once:\n${releases.describe()}", 1, releases.size)
+            val release = releases.single()
+            assertTrue("released on the caller's thread", release.thread !== caller)
+            assertEquals(false, release.callerLockHeld)
+            assertTrue("released outside the door", release.doorHeld)
+        }
 
     @Test
     fun `a DM call asks for the earpiece, a voice channel for the speaker`() = runTest {
