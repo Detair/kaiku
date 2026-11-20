@@ -60,9 +60,7 @@ pub async fn leave_voice_internal(
         None => (None, None),
     };
 
-    // The user is seated again (a new seat taken right after this removal):
-    // the room keeps showing them, so the others are not told they left.
-    let rejoined = session_peer.is_some() && room.get_peer(user_id).await.is_some();
+    crate::ws::test_hooks::voice_step(user_id, "leave").await;
 
     // Remove all screen shares for this user
     let (removed_shares, had_webcam) = match seat_media {
@@ -124,21 +122,19 @@ pub async fn leave_voice_internal(
         peer.close().await;
     }
 
-    // Free per-peer rate-limit buckets so they don't accumulate across
-    // reconnects (only when a seat really went away).
+    // Only announce a departure that actually happened, and only while the
+    // user is not seated again (decided when it is said: a new seat may have
+    // been taken during the steps above). The user's rate-limit buckets are
+    // freed in the same step, so a live seat keeps its limits.
     if removed {
-        sfu.voice_rate_limiter().forget_peer(user_id);
-    }
-
-    // Only announce a departure that actually happened; a leave for a user who
-    // is not in the room must not tell the others anything.
-    if removed && !rejoined {
-        room.broadcast_except(
+        let limiter = sfu.voice_rate_limiter();
+        room.announce_departure(
             user_id,
             ServerEvent::VoiceUserLeft {
                 channel_id,
                 user_id,
             },
+            || limiter.forget_peer(user_id),
         )
         .await;
     }

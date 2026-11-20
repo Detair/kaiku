@@ -587,6 +587,10 @@ async fn handle_publisher_offer(
 
     let peer = owned_peer(&room, user_id, tx).await?;
 
+    // Refused video transceiver bindings do not outlive an offer (it may
+    // reuse them).
+    peer.forget_refused_mids();
+
     match SfuServer::handle_publisher_offer(&peer, sdp.to_string()).await {
         Ok(answer_sdp) => {
             if let Err(e) = crate::ws::handlers::send_outbound(
@@ -941,18 +945,12 @@ async fn handle_screen_share_start(
     // Add to the room's screen shares; a concurrent start with the same
     // `stream_id` that won the race keeps its entry, and this one gives its
     // slot back.
-    if !room.try_add_screen_share(info.clone()).await {
+    // Registered in one step with the check that this is still the user's
+    // current seat: a seat replaced or gone during the checks above adds
+    // nothing and gives its slot back.
+    if let Err(e) = room.try_add_screen_share_for(&peer, info.clone()).await {
         limiter.stop(params.channel_id).await;
-        return Err(VoiceError::DuplicateStreamId);
-    }
-    // The participant left or was replaced during the checks above: its
-    // leave may have missed this share, so take it back here (only one of the
-    // two removes the entry and releases the slot).
-    if peer.is_retired() {
-        if room.remove_screen_share(stream_id).await.is_some() {
-            limiter.stop(params.channel_id).await;
-        }
-        return Err(VoiceError::ParticipantNotFound(params.user_id));
+        return Err(e);
     }
 
     // Queue pending track sources so setup_track_handler can identify them
@@ -972,18 +970,30 @@ async fn handle_screen_share_start(
         screen_share_limiter.cloned(),
     );
 
-    // Broadcast to room (including the sharer, so they get confirmation)
-    room.broadcast_all(ServerEvent::ScreenShareStarted {
-        channel_id: params.channel_id,
-        user_id: params.user_id,
-        stream_id,
-        username,
-        source_label: params.source_label.to_string(),
-        has_audio: params.has_audio,
-        quality: params.quality,
-        started_at: info.started_at.to_rfc3339(),
-    })
-    .await;
+    crate::ws::test_hooks::voice_step(params.user_id, "share_start").await;
+
+    // Broadcast to room (including the sharer, so they get confirmation),
+    // only while this is still the user's seat: a replacement in between
+    // took the share back and announced its end.
+    if !room
+        .broadcast_if_current(
+            &peer,
+            ServerEvent::ScreenShareStarted {
+                channel_id: params.channel_id,
+                user_id: params.user_id,
+                stream_id,
+                username,
+                source_label: params.source_label.to_string(),
+                has_audio: params.has_audio,
+                quality: params.quality,
+                started_at: info.started_at.to_rfc3339(),
+            },
+            true,
+        )
+        .await
+    {
+        return Err(VoiceError::ParticipantNotFound(params.user_id));
+    }
 
     info!(
         user_id = %params.user_id,
@@ -1066,7 +1076,8 @@ fn expire_unused_announcement(
 /// announcement, remove it from the room, release its slot, remove its
 /// tracks everywhere and tell the room (`screen_share_stopped` with
 /// `reason`). Shared by the client's stop and the expiry of an announcement
-/// whose track never came.
+/// whose track never came. Only a share that this seat owns is touched: a
+/// replaced seat's late stop or expiry ends nothing of a newer seat's.
 async fn end_screen_share(
     room: &Room,
     peer: &Arc<super::peer::Peer>,
@@ -1074,6 +1085,7 @@ async fn end_screen_share(
     screen_share_limiter: Option<&ScreenShareLimiter>,
     reason: &str,
 ) -> Result<(), VoiceError> {
+    crate::ws::test_hooks::voice_step(peer.user_id, "end_share").await;
     let user_id = peer.user_id;
     let channel_id = room.channel_id;
     // Serialized with a track being bound to this share (see `sfu.rs`): a
@@ -1083,26 +1095,22 @@ async fn end_screen_share(
     peer.remove_pending_sources(|s| s.stream_id() == Some(stream_id))
         .await;
 
-    // Look up the specific stream by stream_id and verify ownership.
-    let share_info = {
-        let shares = room.screen_shares.read().await;
-        shares.get(&stream_id).cloned()
-    };
-
-    if let Some(info) = share_info {
-        // Verify the requesting user owns this stream
-        if info.user_id != user_id {
-            warn!(user_id = %user_id, stream_id = %stream_id, "User tried to stop a screen share they don't own");
-            return Err(VoiceError::Signaling("Not your screen share".to_string()));
-        }
-        // Only the one who removes the entry releases the slot (a stop and
-        // the expiry may race).
-        if room.remove_screen_share(stream_id).await.is_none() {
-            return Ok(());
-        }
-    } else {
-        // User wasn't sharing, but that's okay - idempotent
-        debug!(user_id = %user_id, "User tried to stop screen share but wasn't sharing");
+    // Another user's stream is refused; a stream of another seat of this
+    // user (or none) is left alone.
+    let other_users = room
+        .screen_shares
+        .read()
+        .await
+        .get(&stream_id)
+        .is_some_and(|s| s.user_id != user_id);
+    if other_users {
+        warn!(user_id = %user_id, stream_id = %stream_id, "User tried to stop a screen share they don't own");
+        return Err(VoiceError::Signaling("Not your screen share".to_string()));
+    }
+    // Only the one who removes the entry releases the slot (a stop and the
+    // expiry may race).
+    if room.remove_screen_share_of(peer, stream_id).await.is_none() {
+        debug!(user_id = %user_id, "Screen share to stop is not this seat's (or already ended)");
         return Ok(());
     }
 
@@ -1113,50 +1121,7 @@ async fn end_screen_share(
         tracing::warn!("Screen share limiter unavailable during stop — counter not decremented");
     }
 
-    // Collect only the track sources belonging to this specific stream_id
-    let screen_sources: Vec<TrackSource> = {
-        let incoming = peer.incoming_tracks.read().await;
-        incoming
-            .keys()
-            .filter(|s| s.stream_id() == Some(stream_id))
-            .copied()
-            .collect()
-    };
-
-    // Clean up screen share tracks from the track router
-    for source in &screen_sources {
-        room.track_router
-            .remove_source_track(user_id, *source)
-            .await;
-    }
-
-    // Remove incoming tracks from the peer
-    {
-        let mut incoming = peer.incoming_tracks.write().await;
-        for source in &screen_sources {
-            incoming.remove(source);
-        }
-    }
-
-    // Remove outgoing tracks from all subscribers and renegotiate
-    let other_peers = room.get_other_peers(user_id).await;
-    for other_peer in &other_peers {
-        let mut any_removed = false;
-        for source in &screen_sources {
-            if other_peer.remove_outgoing_track(user_id, *source).await {
-                any_removed = true;
-            }
-        }
-        if any_removed {
-            if let Err(e) = SfuServer::renegotiate(other_peer).await {
-                warn!(
-                    subscriber = %other_peer.user_id,
-                    error = %e,
-                    "Failed to renegotiate after screen share track removal"
-                );
-            }
-        }
-    }
+    detach_sources(room, peer, |s| s.stream_id() == Some(stream_id)).await;
 
     // Broadcast to room
     room.broadcast_all(ServerEvent::ScreenShareStopped {
@@ -1175,6 +1140,50 @@ async fn end_screen_share(
     );
 
     Ok(())
+}
+
+/// Remove the media of `peer`'s sources matching `ended` (a share or webcam
+/// that ended) from the room: its incoming tracks, exactly the tracks it
+/// forwarded to the others (one renegotiation each), their router
+/// subscriptions and simulcast layers, and the transceiver bindings. Never
+/// touches another seat's media. The caller holds `peer.media`.
+async fn detach_sources(
+    room: &Room,
+    peer: &Arc<super::peer::Peer>,
+    ended: impl Fn(&TrackSource) -> bool,
+) {
+    peer.incoming_tracks.write().await.retain(|s, _| !ended(s));
+    peer.forget_video_mids(&ended);
+    let layers = peer.take_simulcast_layers(&ended);
+    room.track_router.remove_simulcast_tracks(&layers);
+    let forwarded = peer.take_forwarded_of(&ended);
+    let tracks: Vec<_> = forwarded.iter().map(|(_, _, t)| t.clone()).collect();
+    room.track_router.remove_subscriptions_into(&tracks);
+    let user_id = peer.user_id;
+    let others = room.get_other_peers(user_id).await;
+    let forwarded = &forwarded;
+    let updates = others.into_iter().map(|other| async move {
+        let mut removed = false;
+        for (subscriber, source, track) in forwarded {
+            if *subscriber == other.user_id
+                && other
+                    .remove_outgoing_track_if(user_id, *source, track)
+                    .await
+            {
+                removed = true;
+            }
+        }
+        if removed {
+            if let Err(e) = SfuServer::renegotiate(&other).await {
+                warn!(
+                    subscriber = %other.user_id,
+                    error = %e,
+                    "Failed to renegotiate after removing ended tracks"
+                );
+            }
+        }
+    });
+    futures::future::join_all(updates).await;
 }
 
 /// Handle starting a webcam.
@@ -1213,18 +1222,16 @@ async fn handle_webcam_start(
         }
     }
 
+    crate::ws::test_hooks::voice_step(user_id, "webcam_start").await;
+
     // Get username for the info
     let username = peer.username.clone();
 
-    // Register the webcam first (a track only binds to a live webcam).
+    // Register the webcam first (a track only binds to a live webcam), in
+    // one step with the check that this is still the user's current seat:
+    // a seat that was replaced meanwhile adds nothing.
     let info = WebcamInfo::new(user_id, username.clone(), quality);
-    room.add_webcam(info).await;
-    // The participant left or was replaced meanwhile: its leave may have
-    // missed this webcam, so take it back (a retired seat adds nothing).
-    if peer.is_retired() {
-        room.remove_webcam(user_id).await;
-        return Err(VoiceError::ParticipantNotFound(user_id));
-    }
+    room.add_webcam_for(&peer, info).await?;
 
     // Queue pending track source so setup_track_handler identifies it as Webcam
     peer.push_pending_source(TrackSource::Webcam).await;
@@ -1237,14 +1244,24 @@ async fn handle_webcam_start(
         None,
     );
 
-    // Broadcast to room (including the user, so they get confirmation)
-    room.broadcast_all(ServerEvent::WebcamStarted {
-        channel_id,
-        user_id,
-        username,
-        quality,
-    })
-    .await;
+    // Broadcast to room (including the user, so they get confirmation),
+    // only while this is still the user's seat: a replacement in between
+    // already announced the end of this seat's media.
+    if !room
+        .broadcast_if_current(
+            &peer,
+            ServerEvent::WebcamStarted {
+                channel_id,
+                user_id,
+                username,
+                quality,
+            },
+            true,
+        )
+        .await
+    {
+        return Err(VoiceError::ParticipantNotFound(user_id));
+    }
 
     info!(
         user_id = %user_id,
@@ -1277,12 +1294,14 @@ async fn handle_webcam_stop(
 /// End the webcam of `peer`: drop its queued announcement, remove it from
 /// the room and from every subscriber, and tell the room (`webcam_stopped`
 /// with `reason`). Shared by the client's stop and the expiry of an
-/// announcement whose track never came.
+/// announcement whose track never came. Only a webcam this seat owns is
+/// touched.
 async fn end_webcam(
     room: &Room,
     peer: &Arc<super::peer::Peer>,
     reason: &str,
 ) -> Result<(), VoiceError> {
+    crate::ws::test_hooks::voice_step(peer.user_id, "end_webcam").await;
     let user_id = peer.user_id;
     let channel_id = room.channel_id;
     // Serialized with a track being bound to the webcam (see `sfu.rs`).
@@ -1291,43 +1310,12 @@ async fn end_webcam(
     peer.remove_pending_sources(|s| *s == TrackSource::Webcam)
         .await;
 
-    // Remove webcam from room
-    if room.remove_webcam(user_id).await.is_none() {
-        // User didn't have webcam active, but that's okay - idempotent
-        debug!(user_id = %user_id, "User tried to stop webcam but wasn't active");
+    if room.remove_webcam_of(peer).await.is_none() {
+        debug!(user_id = %user_id, "Webcam to stop is not this seat's (or already ended)");
         return Ok(());
     }
 
-    // Clean up the webcam track from the track router
-    // This removes all subscribers of this user's Webcam track
-    room.track_router
-        .remove_source_track(user_id, TrackSource::Webcam)
-        .await;
-
-    // Remove the incoming webcam track from the peer and clean up outgoing tracks
-    // on all other peers
-    peer.incoming_tracks
-        .write()
-        .await
-        .remove(&TrackSource::Webcam);
-
-    // Remove outgoing tracks from all subscribers and renegotiate
-    let other_peers = room.get_other_peers(user_id).await;
-    for other_peer in &other_peers {
-        if other_peer
-            .remove_outgoing_track(user_id, TrackSource::Webcam)
-            .await
-        {
-            // Renegotiate so subscriber's SDP reflects the removed track
-            if let Err(e) = SfuServer::renegotiate(other_peer).await {
-                warn!(
-                    subscriber = %other_peer.user_id,
-                    error = %e,
-                    "Failed to renegotiate after webcam track removal"
-                );
-            }
-        }
-    }
+    detach_sources(room, peer, |s| *s == TrackSource::Webcam).await;
 
     // Broadcast to room
     room.broadcast_all(ServerEvent::WebcamStopped {

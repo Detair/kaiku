@@ -120,6 +120,7 @@ mod voice_mute_enforcement;
 mod voice_rate_limit;
 mod voice_rejoin;
 mod voice_screen_share;
+mod voice_seat_ownership;
 mod voice_sfu;
 mod voice_takeover;
 mod webhooks;

@@ -465,6 +465,38 @@ pub mod test_hooks {
         wait(track_pauses(), user_id).await;
     }
 
+    fn step_pauses() -> &'static Mutex<HashMap<(Uuid, &'static str), Pause>> {
+        static PAUSES: OnceLock<Mutex<HashMap<(Uuid, &'static str), Pause>>> = OnceLock::new();
+        PAUSES.get_or_init(Mutex::default)
+    }
+
+    /// Pause the next voice step `step` of `user_id` (one of `leave`,
+    /// `webcam_start`, `share_start`, `end_webcam`, `end_share`): the point
+    /// after its seat checks, before it changes room state.
+    pub fn pause_voice_step(user_id: Uuid, step: &'static str) -> Pause {
+        arm();
+        let pause = Pause::default();
+        step_pauses()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert((user_id, step), pause.clone());
+        pause
+    }
+
+    pub(crate) async fn voice_step(user_id: Uuid, step: &'static str) {
+        if !armed() {
+            return;
+        }
+        let pause = step_pauses()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&(user_id, step));
+        if let Some(pause) = pause {
+            pause.reached.notify_one();
+            pause.release.notified().await;
+        }
+    }
+
     fn access_counters() -> &'static Mutex<HashMap<Uuid, (usize, usize)>> {
         static COUNTERS: OnceLock<Mutex<HashMap<Uuid, (usize, usize)>>> = OnceLock::new();
         COUNTERS.get_or_init(Mutex::default)

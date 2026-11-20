@@ -188,6 +188,9 @@ pub(crate) async fn forward_to(
     subscriber: &Arc<Peer>,
 ) -> bool {
     let source_user = source_peer.user_id;
+    if subscriber.is_retired() {
+        return false;
+    }
     let Ok(local_track) =
         room.track_router
             .create_subscriber_track(source_user, source, subscriber, track)
@@ -199,6 +202,15 @@ pub(crate) async fn forward_to(
         .await
     {
         Ok(sender) => {
+            // The subscriber left meanwhile: take the add back (its own
+            // removal may already have run).
+            if subscriber.is_retired() {
+                subscriber
+                    .remove_outgoing_track_if(source_user, source, &local_track)
+                    .await;
+                room.track_router.remove_subscriptions_into(&[local_track]);
+                return false;
+            }
             source_peer.record_forwarded(subscriber.user_id, source, local_track);
             if source.is_video() {
                 spawn_subscriber_rtcp_reader(
@@ -226,6 +238,12 @@ pub(crate) async fn forward_to(
             false
         }
     }
+}
+
+/// Remove the simulcast layers `peer` published from the room's router.
+fn room_remove_layers(room: &Room, peer: &Peer) {
+    let layers = peer.take_simulcast_layers(&|_: &TrackSource| true);
+    room.track_router.remove_simulcast_tracks(&layers);
 }
 
 /// Number of media sections (`m=` lines) in a session description.
@@ -377,6 +395,7 @@ impl Room {
         let user_id = departed.user_id;
         // Only this peer instance's media: a newer peer of the same user may
         // already be in the room and keeps its own.
+        room_remove_layers(self, departed);
         let forwarded = departed.take_forwarded();
         let forwarded_tracks: Vec<_> = forwarded.iter().map(|(_, _, t)| t.clone()).collect();
         self.track_router
@@ -516,6 +535,142 @@ impl Room {
             return false;
         }
         shares.insert(info.stream_id, info);
+        true
+    }
+
+    /// Whether `peer` is the user's current seat in this room. Callers that
+    /// need the answer to hold while they change room state use the
+    /// `*_for` methods, which decide it under the same lock.
+    pub async fn is_current(&self, peer: &Peer) -> bool {
+        self.peers
+            .read()
+            .await
+            .get(&peer.user_id)
+            .is_some_and(|p| p.session_id == peer.session_id)
+    }
+
+    /// Register `info` as a screen share of `peer`, in one step with the
+    /// check that `peer` is the user's current seat (peers lock held while
+    /// the shares lock is taken) and that the stream id is free in the room.
+    pub async fn try_add_screen_share_for(
+        &self,
+        peer: &Peer,
+        mut info: ScreenShareInfo,
+    ) -> Result<(), VoiceError> {
+        let peers = self.peers.read().await;
+        if peers
+            .get(&peer.user_id)
+            .is_none_or(|p| p.session_id != peer.session_id)
+        {
+            return Err(VoiceError::ParticipantNotFound(peer.user_id));
+        }
+        let mut shares = self.screen_shares.write().await;
+        if shares.contains_key(&info.stream_id) {
+            return Err(VoiceError::DuplicateStreamId);
+        }
+        info.owner = peer.session_id;
+        shares.insert(info.stream_id, info);
+        Ok(())
+    }
+
+    /// Register `info` as the webcam of `peer`, in one step with the check
+    /// that `peer` is the user's current seat and has no webcam yet.
+    pub async fn add_webcam_for(
+        &self,
+        peer: &Peer,
+        mut info: WebcamInfo,
+    ) -> Result<(), VoiceError> {
+        let peers = self.peers.read().await;
+        if peers
+            .get(&peer.user_id)
+            .is_none_or(|p| p.session_id != peer.session_id)
+        {
+            return Err(VoiceError::ParticipantNotFound(peer.user_id));
+        }
+        let mut webcams = self.webcams.write().await;
+        if webcams.contains_key(&peer.user_id) {
+            return Err(VoiceError::Signaling("Webcam already active".to_string()));
+        }
+        info.owner = peer.session_id;
+        webcams.insert(peer.user_id, info);
+        Ok(())
+    }
+
+    /// Remove the screen share `stream_id` only if `peer`'s seat owns it.
+    pub async fn remove_screen_share_of(
+        &self,
+        peer: &Peer,
+        stream_id: Uuid,
+    ) -> Option<ScreenShareInfo> {
+        let mut shares = self.screen_shares.write().await;
+        if shares
+            .get(&stream_id)
+            .is_some_and(|s| s.user_id == peer.user_id && s.owner == peer.session_id)
+        {
+            shares.remove(&stream_id)
+        } else {
+            None
+        }
+    }
+
+    /// Remove the webcam only if `peer`'s seat owns it.
+    pub async fn remove_webcam_of(&self, peer: &Peer) -> Option<WebcamInfo> {
+        let mut webcams = self.webcams.write().await;
+        if webcams
+            .get(&peer.user_id)
+            .is_some_and(|w| w.owner == peer.session_id)
+        {
+            webcams.remove(&peer.user_id)
+        } else {
+            None
+        }
+    }
+
+    /// Send `event` to the room (all, or all but the user) only while
+    /// `peer` is the user's current seat; the decision and the queueing
+    /// happen under the peers lock, so a newer seat's join cannot slip in
+    /// between. Returns whether it was sent.
+    pub async fn broadcast_if_current(
+        &self,
+        peer: &Peer,
+        event: ServerEvent,
+        include_self: bool,
+    ) -> bool {
+        let peers = self.peers.read().await;
+        if peers
+            .get(&peer.user_id)
+            .is_none_or(|p| p.session_id != peer.session_id)
+        {
+            return false;
+        }
+        let senders: Vec<(Uuid, mpsc::Sender<OutboundMsg>)> = peers
+            .iter()
+            .filter(|(id, _)| include_self || **id != peer.user_id)
+            .map(|(id, p)| (*id, p.signal_tx.clone()))
+            .collect();
+        fan_out(self.channel_id, senders, &event).await;
+        true
+    }
+
+    /// Tell the others that `user_id` left, only while the user holds no
+    /// seat here (decided and queued under the peers lock), and run
+    /// `on_absent` in that same step. Returns whether the user was absent.
+    pub async fn announce_departure(
+        &self,
+        user_id: Uuid,
+        event: ServerEvent,
+        on_absent: impl FnOnce(),
+    ) -> bool {
+        let peers = self.peers.read().await;
+        if peers.contains_key(&user_id) {
+            return false;
+        }
+        on_absent();
+        let senders: Vec<(Uuid, mpsc::Sender<OutboundMsg>)> = peers
+            .iter()
+            .map(|(id, p)| (*id, p.signal_tx.clone()))
+            .collect();
+        fan_out(self.channel_id, senders, &event).await;
         true
     }
 
@@ -1159,14 +1314,11 @@ impl SfuServer {
                         (Some(p), Some(r)) => (p, r),
                         _ => return,
                     };
+                    // A seat that left or was replaced takes no new track.
+                    if peer.is_retired() {
+                        return;
+                    }
 
-                    // Determine source type: check pending queue first, fall back to defaults.
-                    //
-                    // For simulcast video: the browser sends 3 on_track calls (one per
-                    // RID layer) for the same logical source. We only pop from the
-                    // pending queue for the primary layer (High) or non-simulcast
-                    // tracks. Secondary layers (Medium, Low) look up the source type
-                    // from the already-registered High-layer entry in simulcast_tracks.
                     // A simulcast track arrives as one `on_track` per layer
                     // (rid), all on one publisher transceiver (`mid`). The first
                     // layer to arrive binds the transceiver to its announcement
@@ -1209,7 +1361,10 @@ impl SfuServer {
                             peer.bind_video_mid(&mid, resolved);
                         }
                         let Some(source) = resolved else {
-                            reject_unannounced_track(&peer, &track, video == Some(true)).await;
+                            // A retired seat's socket no longer cares.
+                            if !peer.is_retired() {
+                                reject_unannounced_track(&peer, &track, video == Some(true)).await;
+                            }
                             return;
                         };
                         source
@@ -1234,6 +1389,7 @@ impl SfuServer {
                     }
 
                     if simulcast {
+                        peer.record_simulcast_layer(source_type, layer, track.clone());
                         room.track_router.store_simulcast_track(
                             uid,
                             source_type,

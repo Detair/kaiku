@@ -22,7 +22,7 @@ use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_local::TrackLocal;
 use webrtc::track::track_remote::TrackRemote;
 
-use super::track_types::TrackSource;
+use super::track_types::{Layer, TrackSource};
 use crate::ws::OutboundMsg;
 
 /// Represents a user's WebRTC connection to the SFU.
@@ -104,6 +104,11 @@ pub struct Peer {
     /// When a key frame was last requested for each of this peer's video
     /// sources on behalf of its viewers.
     keyframe_requested: std::sync::Mutex<HashMap<TrackSource, tokio::time::Instant>>,
+    /// This seat's simulcast layers: `(source, layer, track)`.
+    simulcast_layers: std::sync::Mutex<Vec<(TrackSource, Layer, Arc<TrackRemote>)>>,
+    /// Media id of the microphone negotiated in the first publisher offer
+    /// (`None` inside: that offer had no audio).
+    microphone_mid: std::sync::OnceLock<Option<String>>,
     /// Whether an audio track was taken as this peer's microphone.
     microphone_claimed: AtomicBool,
     /// Login session of the socket that joined with this peer (set once by
@@ -185,6 +190,8 @@ impl Peer {
             negotiation: tokio::sync::Mutex::new(SubscriberNegotiation::default()),
             retired: AtomicBool::new(false),
             microphone_claimed: AtomicBool::new(false),
+            simulcast_layers: std::sync::Mutex::new(Vec::new()),
+            microphone_mid: std::sync::OnceLock::new(),
             forwarded: std::sync::Mutex::new(Vec::new()),
             video_mids: std::sync::Mutex::new(HashMap::new()),
             announcements: std::sync::Mutex::new(HashMap::new()),
@@ -209,6 +216,8 @@ impl Peer {
     pub fn retire(&self) {
         self.retired
             .store(true, std::sync::atomic::Ordering::Release);
+        // A track waiting for an announcement gives up at once.
+        self.announced.notify_waiters();
     }
 
     /// Whether the peer left its room or was replaced.
@@ -422,12 +431,89 @@ impl Peer {
         )
     }
 
-    /// Forget forwarded tracks of `source` (the source ended).
-    pub fn forget_forwarded(&self, source: TrackSource) {
-        self.forwarded
+    /// Take the forwarded tracks of the sources matching `ended`.
+    pub fn take_forwarded_of(
+        &self,
+        ended: &impl Fn(&TrackSource) -> bool,
+    ) -> Vec<(Uuid, TrackSource, Arc<TrackLocalStaticRTP>)> {
+        let mut list = self
+            .forwarded
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (taken, kept): (Vec<_>, Vec<_>) = list.drain(..).partition(|(_, s, _)| ended(s));
+        *list = kept;
+        taken
+    }
+
+    /// Record a simulcast layer this seat publishes for `source`.
+    pub fn record_simulcast_layer(
+        &self,
+        source: TrackSource,
+        layer: Layer,
+        track: Arc<TrackRemote>,
+    ) {
+        self.simulcast_layers
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .retain(|(_, s, _)| *s != source);
+            .push((source, layer, track));
+    }
+
+    /// Take the simulcast layers of the sources matching `ended`.
+    pub fn take_simulcast_layers(
+        &self,
+        ended: &impl Fn(&TrackSource) -> bool,
+    ) -> Vec<Arc<TrackRemote>> {
+        let mut list = self
+            .simulcast_layers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (taken, kept): (Vec<_>, Vec<_>) = list.drain(..).partition(|(s, _, _)| ended(s));
+        *list = kept;
+        taken.into_iter().map(|(_, _, t)| t).collect()
+    }
+
+    /// The SSRC of each simulcast layer this seat publishes for `source`.
+    pub fn simulcast_ssrcs(&self, source: TrackSource) -> Vec<(Layer, u32)> {
+        self.simulcast_layers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter(|(s, _, _)| *s == source)
+            .map(|(_, l, t)| (*l, t.ssrc()))
+            .collect()
+    }
+
+    /// Forget the transceiver bindings to the sources matching `ended` (a
+    /// reused transceiver binds afresh).
+    pub fn forget_video_mids(&self, ended: &impl Fn(&TrackSource) -> bool) {
+        self.video_mids
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|_, b| !matches!(b, MidBinding::Source(s) if ended(s)));
+    }
+
+    /// Forget refused transceiver bindings (a new offer may reuse the
+    /// transceiver for an announced source).
+    pub fn forget_refused_mids(&self) {
+        self.video_mids
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|_, b| *b != MidBinding::Refused);
+    }
+
+    /// Record the media id of the microphone: the first audio section of
+    /// the participant's first publisher offer (first call wins).
+    pub fn set_microphone_mid(&self, mid: Option<String>) {
+        let _ = self.microphone_mid.set(mid);
+    }
+
+    /// Whether the audio transceiver `mid` is the one negotiated as the
+    /// microphone when joining.
+    pub fn is_microphone_mid(&self, mid: Option<&str>) -> bool {
+        match (self.microphone_mid.get(), mid) {
+            (Some(Some(mic)), Some(mid)) => mic == mid,
+            _ => false,
+        }
     }
 
     /// Bind the simulcast publisher transceiver `mid` to `source` (`None`:
@@ -512,6 +598,11 @@ impl Peer {
             let notified = self.announced.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
+            // A seat that left or was replaced binds nothing (retiring wakes
+            // this wait).
+            if self.is_retired() {
+                return None;
+            }
             if let Some(source) = self.pop_pending(video).await {
                 return Some(source);
             }

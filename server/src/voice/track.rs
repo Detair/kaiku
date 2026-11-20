@@ -315,6 +315,31 @@ impl TrackRouter {
         self.subscriptions.retain(|_, v| !v.is_empty());
     }
 
+    /// Remove the simulcast layers that are exactly `tracks` (one seat's
+    /// layers; a newer seat of the same user keeps its own).
+    pub fn remove_simulcast_tracks(&self, tracks: &[Arc<TrackRemote>]) {
+        if tracks.is_empty() {
+            return;
+        }
+        self.simulcast_tracks
+            .retain(|_, t| !tracks.iter().any(|x| Arc::ptr_eq(x, t)));
+    }
+
+    /// The layer `subscriber_id` currently receives of `source_user_id`'s
+    /// `source_type`, if subscribed.
+    pub fn active_layer(
+        &self,
+        subscriber_id: Uuid,
+        source_user_id: Uuid,
+        source_type: TrackSource,
+    ) -> Option<Layer> {
+        self.subscriptions
+            .get(&(source_user_id, source_type))?
+            .iter()
+            .find(|s| s.subscriber_id == subscriber_id)
+            .map(|s| s.active_layer)
+    }
+
     /// Look up the `TrackSource` for a user from a specific simulcast layer.
     ///
     /// Used by the SFU `on_track` callback: when a secondary simulcast layer

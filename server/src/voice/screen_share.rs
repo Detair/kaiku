@@ -48,6 +48,10 @@ pub struct ScreenShareInfo {
     pub quality: Quality,
     /// When the screen share session started
     pub started_at: chrono::DateTime<chrono::Utc>,
+    /// The voice seat (peer session) the share belongs to. Server-side
+    /// only: a seat changes or removes only its own shares.
+    #[serde(skip)]
+    pub owner: Uuid,
 }
 
 impl ScreenShareInfo {
@@ -68,6 +72,7 @@ impl ScreenShareInfo {
             has_audio,
             quality,
             started_at: chrono::Utc::now(),
+            owner: Uuid::nil(),
         }
     }
 }
