@@ -98,8 +98,11 @@ impl VideoKind {
 pub struct PublisherNegotiation {
     outstanding: Option<Outstanding>,
     pending: bool,
-    next_id: u64,
 }
+
+/// Offer ids are unique for the whole process, so a deadline of an older
+/// session can never match an offer of a newer one.
+static NEXT_OFFER_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Outstanding {
@@ -119,19 +122,18 @@ pub enum OfferFailure {
 }
 
 impl PublisherNegotiation {
-    const fn take_id(&mut self) -> u64 {
-        self.next_id += 1;
-        self.next_id
+    fn take_id() -> u64 {
+        NEXT_OFFER_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
     }
 
     /// A track was added or removed (or the join's first offer).
     /// `Some(id)`: create and send an offer with this id now.
-    pub const fn request(&mut self) -> Option<u64> {
+    pub fn request(&mut self) -> Option<u64> {
         if self.outstanding.is_some() {
             self.pending = true;
             None
         } else {
-            let id = self.take_id();
+            let id = Self::take_id();
             self.outstanding = Some(Outstanding { id, retried: false });
             Some(id)
         }
@@ -139,10 +141,10 @@ impl PublisherNegotiation {
 
     /// The answer to the outstanding offer was applied. `Some(id)`: send
     /// the queued change now under this id.
-    pub const fn answered(&mut self) -> Option<u64> {
+    pub fn answered(&mut self) -> Option<u64> {
         if self.pending {
             self.pending = false;
-            let id = self.take_id();
+            let id = Self::take_id();
             self.outstanding = Some(Outstanding { id, retried: false });
             Some(id)
         } else {
@@ -152,10 +154,10 @@ impl PublisherNegotiation {
     }
 
     /// Offer `id` got no usable answer (or could not be sent).
-    pub const fn offer_failed(&mut self, id: u64) -> OfferFailure {
+    pub fn offer_failed(&mut self, id: u64) -> OfferFailure {
         match self.outstanding {
             Some(o) if o.id == id && !o.retried => {
-                let id = self.take_id();
+                let id = Self::take_id();
                 // A queued change is part of the new offer.
                 self.pending = false;
                 self.outstanding = Some(Outstanding { id, retried: true });
@@ -173,6 +175,11 @@ impl PublisherNegotiation {
     /// The id of the offer that waits for its answer.
     pub fn outstanding_id(&self) -> Option<u64> {
         self.outstanding.map(|o| o.id)
+    }
+
+    /// Whether the outstanding offer is already the retry.
+    pub fn is_retry(&self) -> bool {
+        self.outstanding.is_some_and(|o| o.retried)
     }
 
     /// Whether an offer of ours is out.
@@ -1227,6 +1234,18 @@ mod tests {
         assert_eq!(n.offer_failed(retry), OfferFailure::GiveUp);
         assert!(!n.is_awaiting_answer(), "nothing stays stuck");
         assert!(n.request().is_some(), "the next change offers at once");
+    }
+
+    #[test]
+    fn offer_ids_never_repeat_across_sessions() {
+        let mut first = PublisherNegotiation::default();
+        let a = first.request().unwrap();
+        // The next session starts a fresh guard: its offer has a new id, so
+        // the old session's deadline (id `a`) cannot match it.
+        let mut second = PublisherNegotiation::default();
+        let b = second.request().unwrap();
+        assert_ne!(a, b);
+        assert_eq!(second.offer_failed(a), OfferFailure::Stale);
     }
 
     #[test]

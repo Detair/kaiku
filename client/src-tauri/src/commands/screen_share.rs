@@ -355,7 +355,7 @@ pub async fn stop_screen_share(
         let mut voice = state.voice.write().await;
         let v = voice.as_mut().ok_or("Voice not initialized")?;
         v.unconfirmed
-            .retain(|u| *u != Unconfirmed::Screen(stream_uuid));
+            .retain(|w| w.item != Unconfirmed::Screen(stream_uuid));
         match v.shares.remove(stream_uuid) {
             Removed::Live(live) => (live, v.session_epoch),
             // Nothing, or prepared only (dropping closes a portal session).

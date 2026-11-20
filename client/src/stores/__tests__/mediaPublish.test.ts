@@ -115,7 +115,7 @@ describe("screen share start waits for the server", () => {
     ["SCREEN_SHARE_FORBIDDEN", "voice.screenShare.error.noPermission"],
     ["SCREEN_SHARE_LIMIT", "voice.screenShare.error.limitReached"],
     ["RATE_LIMITED", "voice.media.error.rateLimited"],
-    ["DUPLICATE_STREAM_ID", "voice.screenShare.error.refused"],
+    ["DUPLICATE_STREAM_ID", "voice.screenShare.error.tryAgain"],
     ["UNAUTHORIZED", "voice.screenShare.error.refused"],
     ["INTERNAL_ERROR", "voice.screenShare.error.refused"],
     ["VOICE_ERROR", "voice.screenShare.error.refused"],
@@ -718,5 +718,124 @@ describe("a share that ends by itself says why", () => {
       ok: false,
       error: "voice.screenShare.error.portalDenied",
     });
+  });
+});
+
+describe("the server ends an own share", () => {
+  const stopped = (stream_id: string, reason: string, user_id = ME) =>
+    ({ type: "screen_share_stopped", channel_id: CH, user_id, stream_id, reason }) as const;
+
+  async function sharing() {
+    const s = setup();
+    const start = s.pub.startScreenShare();
+    await flush();
+    s.pub.handleAnswer(started("s1"));
+    await start;
+    s.log.length = 0;
+    return s;
+  }
+
+  it("no_media: capture stopped, UI reset, text, nothing sent back", async () => {
+    const s = await sharing();
+    s.pub.handleAnswer(stopped("s1", "no_media"));
+    await flush();
+    expect(s.log).toEqual(["adapterStop:s1", "preview-:s1"]);
+    expect(s.flags.screenSharing).toBe(false);
+    expect(s.notify).toHaveBeenCalledWith("voice.screenShare.error.noMedia");
+  });
+
+  it("any other reason ends it too", async () => {
+    const s = await sharing();
+    s.pub.handleAnswer(stopped("s1", "permission_lost"));
+    await flush();
+    expect(s.log).toContain("adapterStop:s1");
+    expect(s.notify).toHaveBeenCalledWith("voice.screenShare.error.endedByServer");
+  });
+
+  it("the echo of our own stop and other people's stops change nothing", async () => {
+    const s = await sharing();
+    s.pub.handleAnswer(stopped("s1", "user_stopped", "u2"));
+    await flush();
+    expect(s.log).toEqual([]);
+    await s.pub.stopScreenShare("s1");
+    s.log.length = 0;
+    s.pub.handleAnswer(stopped("s1", "user_stopped"));
+    await flush();
+    expect(s.log).toEqual([]);
+    expect(s.notify).not.toHaveBeenCalled();
+  });
+
+  it("ended while still publishing: stopped, text, nothing sent back", async () => {
+    const s = setup();
+    let finish!: () => void;
+    s.adapter.publishScreenShare.mockImplementationOnce(
+      () => new Promise((r) => (finish = () => r({ ok: true, value: undefined }))) as never,
+    );
+    const start = s.pub.startScreenShare();
+    await flush();
+    s.pub.handleAnswer(started("s1"));
+    await flush();
+    s.pub.handleAnswer(stopped("s1", "no_media"));
+    finish();
+    expect(await start).toEqual({ ok: false, error: "voice.screenShare.error.endedByServer" });
+    expect(s.log).toContain("adapterStop:s1");
+    expect(s.log).not.toContain("sendStop:s1");
+  });
+
+  it("webcam ended by the server (no_media)", async () => {
+    const s = setup();
+    const start = s.pub.startWebcam();
+    await flush();
+    s.pub.handleAnswer({ type: "webcam_started", channel_id: CH, user_id: ME });
+    await start;
+    s.pub.handleAnswer({ type: "webcam_stopped", channel_id: CH, user_id: ME, reason: "no_media" });
+    await flush();
+    expect(s.log).toContain("adapterStopWebcam");
+    expect(s.log).not.toContain("sendWebcamStop");
+    expect(s.flags.webcamActive).toBe(false);
+    expect(s.notify).toHaveBeenCalledWith("voice.webcam.error.noMedia");
+  });
+});
+
+describe("voice_error codes (contract C30 table)", () => {
+  // Every code of the table, and whether it refuses a waiting start.
+  const TABLE: Array<[string, boolean]> = [
+    ["SCREEN_SHARE_FORBIDDEN", true],
+    ["SCREEN_SHARE_LIMIT", true],
+    ["VIDEO_SOURCE_UNANNOUNCED", false],
+    ["AUDIO_SOURCE_UNANNOUNCED", false],
+    ["CHANNEL_FULL", false],
+    ["JOIN_REFUSED", false],
+    ["UNAUTHORIZED", true],
+    ["RATE_LIMITED", true],
+    ["PARTICIPANT_NOT_FOUND", true],
+    ["ROOM_NOT_FOUND", true],
+    ["SIGNALING_ERROR", true],
+    ["WEBRTC_ERROR", false],
+    ["DUPLICATE_STREAM_ID", true],
+    ["INTERNAL_ERROR", true],
+    ["DATABASE_ERROR", true],
+    ["ALREADY_JOINED", false],
+    ["NOT_IN_CHANNEL", false],
+    ["CHANNEL_NOT_FOUND", false],
+    ["ICE_FAILED", false],
+    ["VOICE_ERROR", true], // rc.5
+  ];
+
+  it.each(TABLE)("%s refuses a start: %s", (code, refuses) => {
+    expect(isStartRefusal(code, "x")).toBe(refuses);
+  });
+
+  it("a duplicate stream id asks to try again", () => {
+    expect(refusalKey("screen", "DUPLICATE_STREAM_ID", "x")).toBe("voice.screenShare.error.tryAgain");
+  });
+
+  it("an error of the old seat after a takeover ends the waiting start without a text", async () => {
+    const s = setup();
+    const start = s.pub.startScreenShare();
+    await flush();
+    s.session.current = { token: 9, channelId: CH }; // the seat moved
+    s.pub.handleAnswer({ type: "voice_error", code: "PARTICIPANT_NOT_FOUND", message: "x" });
+    expect(await start).toEqual({ ok: false });
   });
 });

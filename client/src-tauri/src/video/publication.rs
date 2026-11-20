@@ -138,35 +138,16 @@ pub fn run_encode_loop<E: PublicationEncoder>(
     keyframe_period: Duration,
 ) -> EncodeLoopEnd {
     let mut last_keyframe = Instant::now();
+    // The last captured frame: a still screen delivers no new frames (the
+    // capture is damage-driven), but a late viewer still needs a key frame.
+    let mut last_frame: Option<I420Frame> = None;
     loop {
         if *shutdown.borrow() {
             return EncodeLoopEnd::Shutdown;
         }
-        match frames.recv_timeout(Duration::from_millis(16)) {
-            Ok(frame) => {
-                let now = Instant::now();
-                if now.duration_since(last_keyframe) >= keyframe_period {
-                    keyframes.request();
-                }
-                if keyframes.take_due(now) {
-                    if let Err(e) = encoder.force_keyframe() {
-                        warn!("Key frame could not be forced: {e}");
-                    }
-                }
-                match encoder.encode(&frame) {
-                    Ok(out) if out.is_empty() => {}
-                    Ok(out) => {
-                        if out.iter().any(|p| p.is_keyframe) {
-                            last_keyframe = now;
-                        }
-                        if packets.blocking_send(out).is_err() {
-                            return EncodeLoopEnd::SinkClosed;
-                        }
-                    }
-                    Err(e) => warn!("Encode error: {e}"),
-                }
-            }
-            Err(std_mpsc::RecvTimeoutError::Timeout) => {}
+        let (frame, fresh) = match frames.recv_timeout(Duration::from_millis(16)) {
+            Ok(frame) => (Some(frame), true),
+            Err(std_mpsc::RecvTimeoutError::Timeout) => (None, false),
             Err(std_mpsc::RecvTimeoutError::Disconnected) => {
                 return if *shutdown.borrow() {
                     EncodeLoopEnd::Shutdown
@@ -174,6 +155,41 @@ pub fn run_encode_loop<E: PublicationEncoder>(
                     EncodeLoopEnd::CaptureEnded
                 };
             }
+        };
+        let now = Instant::now();
+        if now.duration_since(last_keyframe) >= keyframe_period {
+            keyframes.request();
+        }
+        // No new frame: only a due key frame re-encodes the last one.
+        let force = if fresh {
+            keyframes.take_due(now)
+        } else if last_frame.is_some() && keyframes.take_due(now) {
+            true
+        } else {
+            continue;
+        };
+        if force {
+            if let Err(e) = encoder.force_keyframe() {
+                warn!("Key frame could not be forced: {e}");
+            }
+        }
+        if let Some(frame) = frame {
+            last_frame = Some(frame);
+        }
+        let Some(current) = last_frame.as_ref() else {
+            continue;
+        };
+        match encoder.encode(current) {
+            Ok(out) if out.is_empty() => {}
+            Ok(out) => {
+                if out.iter().any(|p| p.is_keyframe) {
+                    last_keyframe = now;
+                }
+                if packets.blocking_send(out).is_err() {
+                    return EncodeLoopEnd::SinkClosed;
+                }
+            }
+            Err(e) => warn!("Encode error: {e}"),
         }
     }
 }
@@ -472,6 +488,73 @@ mod tests {
             KEYFRAME_PERIOD,
         );
         assert_eq!(enc.forced, 0);
+    }
+
+    #[test]
+    fn a_still_screen_gets_key_frames_from_its_last_frame() {
+        let (frame_tx, frame_rx) = std_mpsc::sync_channel(4);
+        let (pkt_tx, mut pkt_rx) = mpsc::channel(64);
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let gate = KeyframeGate::new(Duration::from_millis(20));
+        // One captured frame, then nothing (a still, damage-driven screen).
+        frame_tx.send(frame()).unwrap();
+        let stop = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            shutdown_tx.send(true).unwrap();
+            drop(frame_tx);
+        });
+        let mut enc = FakeEncoder::default();
+        // A late viewer's request arrives while no frame comes.
+        gate.request();
+        let end = run_encode_loop(
+            &mut enc,
+            &frame_rx,
+            &pkt_tx,
+            &gate,
+            &shutdown_rx,
+            Duration::from_millis(50),
+        );
+        stop.join().unwrap();
+        assert_eq!(end, EncodeLoopEnd::Shutdown);
+        assert!(
+            enc.forced >= 2,
+            "request and periodic tick re-encode the last frame ({})",
+            enc.forced
+        );
+        assert_eq!(
+            enc.encoded, enc.forced,
+            "every re-encode is a forced key frame"
+        );
+        let mut sent = 0;
+        while pkt_rx.try_recv().is_ok() {
+            sent += 1;
+        }
+        assert_eq!(sent, enc.encoded);
+    }
+
+    #[test]
+    fn nothing_is_encoded_before_the_first_frame() {
+        let (frame_tx, frame_rx) = std_mpsc::sync_channel::<I420Frame>(1);
+        let (pkt_tx, _pkt_rx) = mpsc::channel(4);
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let gate = KeyframeGate::new(Duration::ZERO);
+        gate.request();
+        let stop = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(60));
+            shutdown_tx.send(true).unwrap();
+            drop(frame_tx);
+        });
+        let mut enc = FakeEncoder::default();
+        run_encode_loop(
+            &mut enc,
+            &frame_rx,
+            &pkt_tx,
+            &gate,
+            &shutdown_rx,
+            Duration::ZERO,
+        );
+        stop.join().unwrap();
+        assert_eq!((enc.encoded, enc.forced), (0, 0));
     }
 
     #[test]

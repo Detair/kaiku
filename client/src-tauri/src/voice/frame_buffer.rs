@@ -34,7 +34,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use tauri::ipc::{Channel, Response};
 use tokio::sync::{watch, Notify};
@@ -48,7 +48,7 @@ pub const MAX_EMIT_FPS: u32 = 30;
 pub const MAX_IN_FLIGHT_PER_VIEW: u32 = 2;
 /// Frames in flight to all views together, at most.
 pub const MAX_IN_FLIGHT_TOTAL: u32 = 4;
-/// A view that acknowledges nothing this long while frames wait is gone.
+/// Silence after which a view's unacknowledged slots count as free again.
 pub const ACK_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Header size of [`encode_frame`].
@@ -103,7 +103,8 @@ impl FrameBuffer {
 pub struct ViewFlow {
     in_flight: AtomicU32,
     acked: Notify,
-    last_ack: Mutex<Instant>,
+    /// Tokio time (pausable in tests).
+    last_ack: Mutex<tokio::time::Instant>,
     dead: AtomicBool,
 }
 
@@ -112,7 +113,7 @@ impl ViewFlow {
         Self {
             in_flight: AtomicU32::new(0),
             acked: Notify::new(),
-            last_ack: Mutex::new(Instant::now()),
+            last_ack: Mutex::new(tokio::time::Instant::now()),
             dead: AtomicBool::new(false),
         }
     }
@@ -142,6 +143,8 @@ pub struct FrameSinks {
     next_id: Arc<AtomicU64>,
     /// Frames in flight to all views.
     total_in_flight: Arc<AtomicU32>,
+    /// Wakes views waiting for the global budget when a slot frees.
+    global_freed: Arc<Notify>,
 }
 
 impl FrameSinks {
@@ -217,9 +220,10 @@ impl FrameSinks {
             let _ = self
                 .total_in_flight
                 .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1));
+            self.global_freed.notify_waiters();
         }
         if let Ok(mut at) = view.flow.last_ack.lock() {
-            *at = Instant::now();
+            *at = tokio::time::Instant::now();
         }
         view.flow.acked.notify_one();
     }
@@ -272,6 +276,7 @@ impl FrameSinks {
     {
         let interval = Duration::from_secs(1) / max_fps.max(1);
         let mut unsent: Option<Arc<DecodedFrame>> = None;
+        let mut last_sent: Option<Arc<DecodedFrame>> = None;
         loop {
             if flow.is_dead() {
                 break;
@@ -286,10 +291,13 @@ impl FrameSinks {
                     debug!("Frame channel closed; emitter ends");
                     break;
                 }
+                last_sent = Some(frame);
                 tokio::time::sleep(interval).await;
                 continue;
             }
-            // Waiting for an ack while frames wait: a silent page is gone.
+            // A silence while frames are out (GC pause, slow render, sleep,
+            // a lost acknowledgement): the window resets and the latest
+            // frame is offered again. The view never ends for this.
             let waiting = flow.in_flight() > 0;
             if waiting
                 && flow
@@ -297,9 +305,17 @@ impl FrameSinks {
                     .lock()
                     .is_ok_and(|at| at.elapsed() >= ACK_TIMEOUT)
             {
-                debug!("No frame acknowledgement; view ends");
-                break;
+                debug!("No frame acknowledgement for a while; window reset");
+                self.release(&flow);
+                if let Ok(mut at) = flow.last_ack.lock() {
+                    *at = tokio::time::Instant::now();
+                }
+                if unsent.is_none() {
+                    unsent.clone_from(&last_sent);
+                }
+                continue;
             }
+            let wants_global = unsent.is_some() && flow.in_flight() < MAX_IN_FLIGHT_PER_VIEW;
             tokio::select! {
                 changed = rx.changed() => {
                     if changed.is_err() {
@@ -308,16 +324,27 @@ impl FrameSinks {
                     unsent.clone_from(&rx.borrow_and_update());
                 }
                 () = flow.acked.notified() => {}
+                // Another view freed a slot of the global budget.
+                () = self.global_freed.notified(), if wants_global => {}
                 () = tokio::time::sleep(ACK_TIMEOUT), if waiting => {}
             }
         }
         flow.dead.store(true, Ordering::Release);
+        self.release(&flow);
+    }
+
+    /// Return every slot `flow` holds to the budget and wake views that
+    /// wait for the global budget.
+    fn release(&self, flow: &ViewFlow) {
         let left = flow.in_flight.swap(0, Ordering::AcqRel);
-        let _ = self
-            .total_in_flight
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
-                Some(n.saturating_sub(left))
-            });
+        if left > 0 {
+            let _ = self
+                .total_in_flight
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                    Some(n.saturating_sub(left))
+                });
+            self.global_freed.notify_waiters();
+        }
     }
 
     /// Take one slot of the global budget.
@@ -433,10 +460,10 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_page_that_does_not_take_frames_gets_at_most_two_then_the_view_ends() {
+    async fn a_page_that_does_not_take_frames_gets_at_most_two_and_the_view_stays() {
         let sinks = FrameSinks::default();
         let (fb, rx) = FrameBuffer::new();
-        let (_, flow) = sinks.subscribe("s1", "p", FrameBuffer::new().0);
+        let (id, flow) = sinks.subscribe("s1", "p", FrameBuffer::new().0);
         let (sent, send) = recorder();
         let task = tokio::spawn({
             let sinks = sinks.clone();
@@ -453,10 +480,78 @@ mod tests {
             "never more than two unacknowledged"
         );
         assert!(sinks.total_in_flight() <= MAX_IN_FLIGHT_TOTAL);
-        tokio::time::sleep(ACK_TIMEOUT * 2).await;
+        assert!(!flow.is_dead(), "a stall does not end the view");
+        sinks.unsubscribe("s1", id);
         task.await.unwrap();
-        assert!(flow.is_dead(), "a silent page's view ends");
         assert_eq!(sinks.total_in_flight(), 0, "its budget is returned");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_view_resumes_after_a_long_silence_with_the_latest_frame() {
+        let sinks = FrameSinks::default();
+        let (fb, rx) = FrameBuffer::new();
+        let (id, flow) = sinks.subscribe("s1", "p", FrameBuffer::new().0);
+        let (sent, send) = recorder();
+        let task = tokio::spawn({
+            let sinks = sinks.clone();
+            let flow = flow.clone();
+            async move { sinks.run_emitter(rx, flow, 1000, send).await }
+        });
+        fb.push(frame(2, 2, 1));
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        fb.push(frame(2, 2, 2));
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        // Both acknowledgements are lost (or the page slept); a still screen
+        // sends no new frame.
+        tokio::time::sleep(ACK_TIMEOUT + Duration::from_millis(100)).await;
+        let after_reset = sent.lock().unwrap().clone();
+        assert_eq!(
+            after_reset,
+            vec![1, 2, 2],
+            "the latest frame is offered again"
+        );
+        assert!(!flow.is_dead());
+        // The page acknowledges again: new frames flow.
+        sinks.ack("s1", id);
+        fb.push(frame(2, 2, 3));
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        assert_eq!(sent.lock().unwrap().last(), Some(&3));
+        sinks.unsubscribe("s1", id);
+        task.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_freed_global_slot_wakes_a_waiting_view() {
+        let sinks = FrameSinks::default();
+        // Two views hold the whole global budget (2 + 2).
+        let mut holders = Vec::new();
+        for n in 0..2 {
+            let (fb, rx) = FrameBuffer::new();
+            let (id, flow) = sinks.subscribe(&format!("h{n}"), "p", FrameBuffer::new().0);
+            let s2 = sinks.clone();
+            tokio::spawn(async move { s2.run_emitter(rx, flow, 1000, |_| true).await });
+            fb.push(frame(2, 2, 1));
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            fb.push(frame(2, 2, 2));
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            holders.push((id, fb));
+        }
+        assert_eq!(sinks.total_in_flight(), MAX_IN_FLIGHT_TOTAL);
+        // A third view has one frame (a still stream: no more will come).
+        let (fb, rx) = FrameBuffer::new();
+        let (_, flow) = sinks.subscribe("w", "p", FrameBuffer::new().0);
+        let (sent, send) = recorder();
+        let s2 = sinks.clone();
+        let waiting = tokio::spawn(async move { s2.run_emitter(rx, flow, 1000, send).await });
+        fb.push(frame(2, 2, 7));
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        assert!(sent.lock().unwrap().is_empty(), "no global slot yet");
+        // Another view's acknowledgement frees a slot: the waiting view sends.
+        sinks.ack("h0", holders[0].0);
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        assert_eq!(*sent.lock().unwrap(), vec![7]);
+        sinks.clear();
+        waiting.await.unwrap();
     }
 
     #[tokio::test(start_paused = true)]
@@ -562,13 +657,13 @@ mod tests {
             *b = (i * 7 % 251) as u8;
         }
         let rounds = 20u32;
-        let t = Instant::now();
+        let t = std::time::Instant::now();
         let mut json_len = 0;
         for _ in 0..rounds {
             json_len = serde_json::to_vec(&f).unwrap().len();
         }
         let json = t.elapsed() / rounds;
-        let t = Instant::now();
+        let t = std::time::Instant::now();
         let mut raw_len = 0;
         for _ in 0..rounds {
             raw_len = encode_frame(&f).len();

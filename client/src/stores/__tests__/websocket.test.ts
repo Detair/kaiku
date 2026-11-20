@@ -829,8 +829,27 @@ describe("websocket store", () => {
           code: "SCREEN_SHARE_FORBIDDEN",
           message: "m",
         });
+        await fire("ws:server_event", {
+          type: "screen_share_stopped",
+          channel_id: "x",
+          user_id: "u",
+          stream_id: "s",
+          reason: "no_media",
+        });
+        await fire("ws:server_event", {
+          type: "webcam_stopped",
+          channel_id: "x",
+          user_id: "u",
+          reason: "no_media",
+        });
         await vi.waitFor(() =>
-          expect(seen).toEqual(["screen_share_started", "webcam_started", "SCREEN_SHARE_FORBIDDEN"]),
+          expect(seen).toEqual([
+            "screen_share_started",
+            "webcam_started",
+            "SCREEN_SHARE_FORBIDDEN",
+            "screen_share_stopped",
+            "webcam_stopped",
+          ]),
         );
       } finally {
         setMediaAnswerListener(null);

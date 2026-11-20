@@ -226,8 +226,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Screen sharing and the camera start only after the server accepted them: a share that is not allowed or over the limit stops with a clear message instead of running unseen, and a start without an answer within 5 seconds is stopped too.
 - Stopping a screen share with the browser's own "Stop sharing" bar (or by closing the shared window) now ends it for everyone and frees the slot; the next share works right away.
-- Desktop app: a second screen share in the same call arrives, a camera turned on after a share is no longer shown as a share, and the sender makes a fresh key picture at least every 3 seconds, so viewers who join late see the picture within a few seconds.
-- Desktop app: a screen share tile that opens late or after a layout change shows the stream; watching a 1080p share uses far less CPU.
+- Desktop app: a second screen share in the same call arrives, a camera turned on after a share is no longer shown as a share, and viewers who join late see the picture within about a second on an up-to-date server (within a few seconds on older ones: the sender makes a key picture at least every 3 seconds, also of a still screen).
+- Desktop app: a screen share tile that opens late or after a layout change shows the stream, also when the shared window has an odd pixel height; a tile that stalls for a moment recovers by itself; watching a 1080p share uses far less CPU.
+- When the server ends your own screen share or camera (for example because no picture reached it), Kaiku stops it on your side too and says why.
 - Desktop app on Linux: screen sharing works (Wayland and X11). The system dialog chooses the screen or window; closing it or a missing portal shows a short note.
 - Cancelling the browser's screen picker no longer says the microphone is blocked; blocked screen or camera access says so in its own words.
 - The role editor shows "Share Screen" (on for everyone by default, can be turned off per channel) instead of a wrong "Manage Emojis" entry, offers the forum, announcement and event permissions, and shows a role's permissions correctly when it is opened.

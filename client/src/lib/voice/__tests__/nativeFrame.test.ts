@@ -53,4 +53,16 @@ describe("parseNativeFrame", () => {
       expect(() => parseNativeFrame(buf, "s")).not.toThrow();
     }
   });
+
+  it.each([
+    [5, 4],
+    [4, 5],
+    [5, 5],
+    [1, 1],
+    [1919, 1081],
+  ])("odd sizes follow the I420 rule (%i×%i)", (w, h) => {
+    const f = parseNativeFrame(rawFrame(w, h, 0), "s")!;
+    expect(f).not.toBeNull();
+    expect(f.u_plane.length).toBe(Math.ceil(w / 2) * Math.ceil(h / 2));
+  });
 });

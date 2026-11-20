@@ -8,9 +8,10 @@
 //! watches, packets are read and dropped without decoding (so the SFU does
 //! not see a stalled receiver). When the first view appears the decoder
 //! starts fresh and a key frame is requested on the subscriber connection.
-//! The picture appears with the next key frame: the sender makes one at
-//! least every 3 s (`video::publication::KEYFRAME_PERIOD`), and sooner once
-//! the server forwards the request to the sender.
+//! The server forwards the request to the sender (at most once per second
+//! per track), so the picture appears within about a second; with an older
+//! server it appears with the sender's periodic key frame (at least every
+//! 3 s, also of a still screen: `video::publication::KEYFRAME_PERIOD`).
 //!
 //! The native VP8 decoder + RTP depacketizer live in the `kaiku-vp8-decoder`
 //! sub-crate (under `client/src-tauri/vp8-decoder/`) so the unsafe libvpx FFI

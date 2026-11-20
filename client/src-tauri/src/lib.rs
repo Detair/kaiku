@@ -319,7 +319,7 @@ pub struct VoiceState {
     /// Publisher negotiation (one offer at a time, with a deadline).
     pub negotiation: webrtc::PublisherNegotiation,
     /// Publications whose track waits for an applied answer.
-    pub unconfirmed: Vec<commands::video_negotiation::Unconfirmed>,
+    pub unconfirmed: Vec<commands::video_negotiation::Waiting>,
     /// Audio mixer for combining remote subscriber tracks.
     pub audio_mixer: Option<voice::audio_mixer::AudioMixer>,
     /// Handles for active video decode tasks (aborted on leave).

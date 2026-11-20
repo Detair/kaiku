@@ -158,7 +158,8 @@ export class NativeYuvRenderer {
     }
 
     // I420: chroma planes are width/2 × height/2 (4:2:0 subsampling).
-    const chromaHeight = frame.height >> 1;
+    // I420 chroma has (h+1)/2 rows: odd heights keep their last row.
+    const chromaHeight = Math.ceil(frame.height / 2);
 
     this.uploadPlane(this.yTex, 0, frame.y_plane, frame.y_stride, frame.height);
     this.uploadPlane(this.uTex, 1, frame.u_plane, frame.uv_stride, chromaHeight);

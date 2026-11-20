@@ -174,6 +174,11 @@ impl Drop for Vp8VideoDecoder {
     }
 }
 
+/// Chroma rows of an I420 image of `height` luma rows: `(h + 1) / 2`.
+pub const fn chroma_rows(height: u32) -> u32 {
+    height.div_ceil(2)
+}
+
 /// Copy Y/U/V planes from a borrowed `vpx_image_t` into owned `Vec<u8>`s.
 /// The image is invalidated by the next `vpx_codec_get_frame`, so copying
 /// is mandatory.
@@ -186,12 +191,13 @@ unsafe fn copy_image_to_decoded_frame(img: *const vpx_image_t, stream_id: &str) 
     let width = img.d_w;
     let height = img.d_h;
 
-    // I420: Y is full-size, U/V are half-size (4:2:0 subsampling).
+    // I420: Y is full-size, U/V have (w+1)/2 x (h+1)/2 samples (4:2:0);
+    // libvpx allocates the rounded-up chroma rows for odd sizes.
     let y_stride = img.stride[0] as u32;
     let uv_stride = img.stride[1] as u32;
 
     let y_size = (y_stride * height) as usize;
-    let uv_size = (uv_stride * (height / 2)) as usize;
+    let uv_size = (uv_stride * chroma_rows(height)) as usize;
 
     let y_plane = std::slice::from_raw_parts(img.planes[0], y_size).to_vec();
     let u_plane = std::slice::from_raw_parts(img.planes[1], uv_size).to_vec();
@@ -207,5 +213,19 @@ unsafe fn copy_image_to_decoded_frame(img: *const vpx_image_t, stream_id: &str) 
         y_stride,
         uv_stride,
         pts_ms: 0,
+    }
+}
+
+#[cfg(test)]
+mod chroma_tests {
+    use super::chroma_rows;
+
+    #[test]
+    fn chroma_rows_round_up_for_odd_heights() {
+        assert_eq!(chroma_rows(1080), 540);
+        assert_eq!(chroma_rows(1081), 541);
+        assert_eq!(chroma_rows(1), 1);
+        assert_eq!(chroma_rows(2), 1);
+        assert_eq!(chroma_rows(3), 2);
     }
 }

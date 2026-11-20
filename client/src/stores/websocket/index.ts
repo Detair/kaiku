@@ -535,6 +535,8 @@ export async function handleServerEvent(event: ServerEvent): Promise<void> {
       break;
 
     case "screen_share_stopped":
+      // An own share ended by the server (e.g. no media arrived) ends here too.
+      noteMediaAnswer(event);
       await handleScreenShareStopped(event);
       break;
 
@@ -548,6 +550,7 @@ export async function handleServerEvent(event: ServerEvent): Promise<void> {
       break;
 
     case "webcam_stopped":
+      noteMediaAnswer(event);
       await handleWebcamStopped(event);
       break;
 

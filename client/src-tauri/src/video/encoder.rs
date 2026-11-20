@@ -207,6 +207,45 @@ mod tests {
         }
     }
 
+    /// Cost of a forced key frame at 1080p (re-created libvpx + intra
+    /// frame) against a delta frame. Run with `cargo test -p vc-client
+    /// --release --lib bench_forced_keyframe -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "measurement, not a test"]
+    fn bench_forced_keyframe() {
+        use std::time::Instant;
+        let params = QualityParams::from_tier("high").expect("tier");
+        let mut encoder = Vp8Encoder::new(&params).expect("encoder");
+        let mut f = gray_frame(1920, 1080);
+        let mut delta_time = std::time::Duration::ZERO;
+        let mut delta_bytes = 0;
+        let mut key_time = std::time::Duration::ZERO;
+        let mut key_bytes = 0;
+        let rounds = 10u32;
+        for i in 0..rounds {
+            // Some change per frame so deltas are not empty.
+            for (n, b) in f.y.iter_mut().enumerate().step_by(97) {
+                *b = ((n as u32 + i * 13) % 251) as u8;
+            }
+            let t = Instant::now();
+            let out = encoder.encode(&f).expect("delta");
+            delta_time += t.elapsed();
+            delta_bytes += out.iter().map(|p| p.data.len()).sum::<usize>();
+            let t = Instant::now();
+            encoder.force_keyframe().expect("force");
+            let out = encoder.encode(&f).expect("key");
+            key_time += t.elapsed();
+            key_bytes += out.iter().map(|p| p.data.len()).sum::<usize>();
+        }
+        println!(
+            "1080p: delta {:?} {} B; forced key (rebuild + encode) {:?} {} B",
+            delta_time / rounds,
+            delta_bytes / rounds as usize,
+            key_time / rounds,
+            key_bytes / rounds as usize
+        );
+    }
+
     #[test]
     fn forced_keyframe_makes_the_next_frame_a_keyframe() {
         let params = QualityParams {

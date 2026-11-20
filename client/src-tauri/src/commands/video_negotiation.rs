@@ -37,6 +37,34 @@ pub enum Unconfirmed {
     Webcam(String),
 }
 
+/// An unconfirmed publication and the offer that carries it (`None`: it
+/// waits for the next offer). An answer confirms exactly the publications
+/// of its offer; a give-up stops only those still waiting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Waiting {
+    pub item: Unconfirmed,
+    pub offer: Option<u64>,
+}
+
+/// Mark every publication without an offer as carried by `id`.
+pub fn ride_on(waiting: &mut [Waiting], id: u64) {
+    for w in waiting.iter_mut().filter(|w| w.offer.is_none()) {
+        w.offer = Some(id);
+    }
+}
+
+/// The answer to offer `id` was applied: its publications are confirmed.
+pub fn confirm(waiting: &mut Vec<Waiting>, id: u64) {
+    waiting.retain(|w| w.offer != Some(id));
+}
+
+/// A retry replaces the failed offer: what it carried rides on the retry.
+pub fn reoffer(waiting: &mut [Waiting], failed: u64) {
+    for w in waiting.iter_mut().filter(|w| w.offer == Some(failed)) {
+        w.offer = None;
+    }
+}
+
 /// What the deadline task needs to act on its own later.
 #[derive(Clone)]
 pub struct NegotiationCtx {
@@ -59,7 +87,10 @@ impl NegotiationCtx {
 /// `added` is a publication that waits for that answer.
 pub async fn renegotiate(v: &mut VoiceState, ctx: &NegotiationCtx, added: Option<Unconfirmed>) {
     if let Some(added) = added {
-        v.unconfirmed.push(added);
+        v.unconfirmed.push(Waiting {
+            item: added,
+            offer: None,
+        });
     }
     if let Some(id) = v.negotiation.request() {
         send_offer(v, ctx, id).await;
@@ -84,6 +115,7 @@ pub fn send_offer<'a>(
                 .await
         }
         .await;
+        ride_on(&mut v.unconfirmed, id);
         match sent {
             Ok(()) => arm_deadline(ctx, v.session_epoch, id),
             Err(e) => {
@@ -115,6 +147,7 @@ pub async fn offer_failed(v: &mut VoiceState, ctx: &NegotiationCtx, id: u64) {
         OfferFailure::Stale => {}
         OfferFailure::Retry(next) => {
             info!(offer = next, "Offering the publisher connection again");
+            reoffer(&mut v.unconfirmed, id);
             send_offer(v, ctx, next).await;
         }
         OfferFailure::GiveUp => give_up(v, ctx).await,
@@ -122,10 +155,12 @@ pub async fn offer_failed(v: &mut VoiceState, ctx: &NegotiationCtx, id: u64) {
 }
 
 /// Stop every publication still waiting for an applied answer and tell the
-/// frontend, which runs its normal stop with a text.
+/// frontend, which runs its normal stop with a text. Senders are removed
+/// under the voice lock (quick); the publications shut down in the
+/// background, so the lock is not held for their bounded wait.
 pub async fn give_up(v: &mut VoiceState, ctx: &NegotiationCtx) {
     let waiting = std::mem::take(&mut v.unconfirmed);
-    for item in waiting {
+    for Waiting { item, .. } in waiting {
         let (kind, stream_id, publication) = match &item {
             Unconfirmed::Screen(id) => match v.shares.remove(*id) {
                 Removed::Live(live) => (VideoKind::Screen, id.to_string(), Some(live.publication)),
@@ -146,9 +181,8 @@ pub async fn give_up(v: &mut VoiceState, ctx: &NegotiationCtx) {
         };
         warn!(?item, "Publication could not be sent; stopping it");
         if let Some(publication) = publication {
-            let sender = publication.sender.clone();
-            publication.shutdown().await;
-            let _ = v.webrtc.remove_video_sender(&sender).await;
+            let _ = v.webrtc.remove_video_sender(&publication.sender).await;
+            tokio::spawn(publication.shutdown());
         }
         if let Some(app) = &ctx.app {
             let _ = app.emit(
@@ -172,13 +206,72 @@ pub async fn apply_renegotiation_answer(v: &mut VoiceState, ctx: &NegotiationCtx
         return;
     };
     if let Err(e) = v.webrtc.set_remote_answer(sdp).await {
-        warn!(offer = id, "Publisher answer could not be applied: {e}");
+        // Answers carry no offer id: after a retry this may be the earlier
+        // offer's late answer (rare: it needs an answer slower than the
+        // deadline). It still counts as the retry failing.
+        let retry = v.negotiation.is_retry();
+        warn!(
+            offer = id,
+            retry, "Publisher answer could not be applied: {e}"
+        );
         offer_failed(v, ctx, id).await;
         return;
     }
-    match v.negotiation.answered() {
-        // A queued change: the waiting publications ride on the next offer.
-        Some(next) => send_offer(v, ctx, next).await,
-        None => v.unconfirmed.clear(),
+    confirm(&mut v.unconfirmed, id);
+    if let Some(next) = v.negotiation.answered() {
+        // A queued change: what waits rides on the next offer.
+        send_offer(v, ctx, next).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn screen(n: u128) -> Unconfirmed {
+        Unconfirmed::Screen(Uuid::from_u128(n))
+    }
+
+    #[test]
+    fn an_answer_confirms_only_the_publications_of_its_offer() {
+        let mut w = vec![Waiting {
+            item: screen(1),
+            offer: None,
+        }];
+        ride_on(&mut w, 10); // share A goes out with offer 10
+        w.push(Waiting {
+            item: screen(2),
+            offer: None,
+        }); // B queued behind it
+        confirm(&mut w, 10); // offer 10 answered: A confirmed
+        assert_eq!(
+            w,
+            vec![Waiting {
+                item: screen(2),
+                offer: None
+            }]
+        );
+        ride_on(&mut w, 11); // B rides on the next offer
+                             // A give-up of offer 11 may only stop B: A is no longer listed.
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].item, screen(2));
+    }
+
+    #[test]
+    fn a_retry_carries_what_the_failed_offer_carried() {
+        let mut w = vec![Waiting {
+            item: screen(1),
+            offer: None,
+        }];
+        ride_on(&mut w, 20);
+        w.push(Waiting {
+            item: screen(2),
+            offer: None,
+        });
+        reoffer(&mut w, 20);
+        ride_on(&mut w, 21);
+        assert!(w.iter().all(|x| x.offer == Some(21)));
+        confirm(&mut w, 21);
+        assert!(w.is_empty());
     }
 }

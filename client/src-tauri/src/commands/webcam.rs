@@ -158,7 +158,7 @@ pub async fn stop_webcam(state: State<'_, AppState>, app: AppHandle) -> Result<(
         };
         let id = pipeline.publication_id.clone();
         v.unconfirmed
-            .retain(|u| *u != Unconfirmed::Webcam(id.clone()));
+            .retain(|w| w.item != Unconfirmed::Webcam(id.clone()));
         (pipeline, v.session_epoch)
     };
     let sender = pipeline.publication.sender.clone();
