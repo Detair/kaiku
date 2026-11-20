@@ -18,12 +18,22 @@
 //! `media`, in the same critical section as the additions;
 //! `Room::detach_media` sets `retired` first and then takes `media` before it
 //! collects the seat's forwarded tracks, so it either sees every addition or
-//! the addition sees `retired`. Additions made under the room locks instead
-//! (registering a share in `try_add_screen_share`, a webcam in `add_webcam`)
-//! re-check `retired` right after and undo themselves. At most one seat's
-//! `media` is held at a time; it is taken with no room lock held; under it
-//! only other peers' leaf locks are taken (outgoing tracks, negotiation), and
-//! renegotiation sends happen after it is released where possible.
+//! the addition sees `retired`.
+//!
+//! Order: `media` → room locks → leaf locks, never the reverse. At most one
+//! seat's `media` is held at a time and it is never taken while a room lock
+//! is held. `detach_media` and the end of a share or webcam send the
+//! resulting offers while still holding `media`; each offer is bounded, so a
+//! concurrent leave of the same seat waits at most that long.
+//!
+//! Room state a seat adds (its webcam, its screen shares, its simulcast
+//! layers, the tracks it forwards) records that seat. Adding checks under the
+//! room lock that the seat is still the user's current one
+//! ([`Room::try_add_screen_share_for`], [`Room::add_webcam_for`]); removing on
+//! behalf of a seat removes only entries that seat owns
+//! ([`Room::remove_screen_share_of`], [`Room::remove_webcam_of`]). Events the
+//! others get about a seat are decided under the peers lock right before they
+//! are sent ([`Room::broadcast_if_current`], [`Room::announce_departure`]).
 //!
 //! `Peer::negotiation` (the subscriber offer/answer state) is a leaf lock: it
 //! is taken with no room lock held, nothing else of ours is locked while it is
