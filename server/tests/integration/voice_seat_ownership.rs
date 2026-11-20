@@ -98,15 +98,24 @@ impl Room {
         new
     }
 
+    /// The room's share counter key (none without a room).
+    async fn counter_key(&self) -> Option<String> {
+        let room = self.app.state.sfu.get_room(self.voice).await?;
+        Some(format!("screenshare:limit:{}", room.share_counter))
+    }
+
     async fn slots(&self) -> i64 {
-        let key = format!("screenshare:limit:{}", self.voice);
+        let Some(key) = self.counter_key().await else {
+            return 0;
+        };
         let n: Option<i64> = self.app.state.redis.get(&key).await.expect("get counter");
         n.unwrap_or(0)
     }
 
     async fn release_slots(&self) {
-        let key = format!("screenshare:limit:{}", self.voice);
-        let _: i64 = self.app.state.redis.del(&key).await.expect("del counter");
+        if let Some(key) = self.counter_key().await {
+            let _: i64 = self.app.state.redis.del(&key).await.expect("del counter");
+        }
     }
 
     async fn reached(pause: &Pause) {
@@ -372,29 +381,93 @@ async fn expiry_ends_only_the_start_it_was_armed_for(pool: PgPool) {
     r.assert_new_webcam_kept().await;
 }
 
-/// A channel's share counter goes with its room: when the last participant
-/// leaves and the room is removed, a count left behind (a release that
-/// failed earlier) does not hold slots for the next call.
+/// Removing a room waits for no store: with a store that never answers,
+/// the last participant's leave does not hold up a join in another channel.
 #[sqlx::test]
-async fn the_share_counter_goes_with_its_room(pool: PgPool) {
-    let mut r = room(pool).await;
-    let key = format!("screenshare:limit:{}", r.voice);
-    let _: () = r
-        .app
-        .state
-        .redis
-        .set(&key, 2, None, None, false)
+async fn removing_a_room_waits_for_no_store(pool: PgPool) {
+    use fred::interfaces::ClientLike;
+    let r = room(pool).await;
+    // A store that accepts connections and never answers.
+    let silent = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
-        .expect("set counter");
-    send(
-        &mut r.viewer,
-        serde_json::json!({ "type": "voice_leave", "channel_id": r.voice }),
-    )
-    .await;
-    let deadline = tokio::time::Instant::now() + WAIT;
-    while r.app.state.sfu.get_room(r.voice).await.is_some() {
-        assert!(tokio::time::Instant::now() < deadline, "the room stayed");
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    assert_eq!(r.slots().await, 0, "slots left behind");
+        .expect("bind");
+    let port = silent.local_addr().expect("addr").port();
+    let held = tokio::spawn(async move {
+        let mut open = Vec::new();
+        while let Ok((socket, _)) = silent.accept().await {
+            open.push(socket);
+        }
+    });
+    let config = fred::types::config::Config::from_url(&format!("redis://127.0.0.1:{port}"))
+        .expect("config");
+    let store = fred::clients::Client::new(config, None, None, None);
+    let _connecting = store.connect();
+    let limiter = vc_server::voice::ScreenShareLimiter::new(store);
+
+    let room = r.app.state.sfu.get_room(r.voice).await.expect("room");
+    let viewer = room
+        .peers
+        .read()
+        .await
+        .values()
+        .next()
+        .cloned()
+        .expect("seat");
+    let sfu = r.app.state.sfu.clone();
+    let pool = r.app.pool.clone();
+    let (user, voice) = (viewer.user_id, r.voice);
+    let leaving = tokio::spawn(async move {
+        vc_server::voice::leave::leave_voice_internal(
+            &sfu,
+            &pool,
+            user,
+            voice,
+            Some(&limiter),
+            Some(viewer.session_id),
+        )
+        .await
+    });
+    // Give the leave time to reach the room's removal.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let started = tokio::time::Instant::now();
+    let _other = r.app.state.sfu.get_or_create_room(Uuid::new_v4()).await;
+    assert!(
+        started.elapsed() < Duration::from_millis(150),
+        "a join elsewhere waited {:?} for the store",
+        started.elapsed()
+    );
+    leaving.await.expect("join").expect("leave");
+    held.abort();
+}
+
+/// A room created for a channel after its old room was removed counts its
+/// shares from zero, whatever the old room's count was (a release that
+/// failed) and whatever the old room's late calls do.
+#[sqlx::test]
+async fn a_new_room_counts_its_shares_from_zero(pool: PgPool) {
+    let r = room(pool).await;
+    let limiter = r.app.state.screen_share_limiter.clone().expect("limiter");
+    let sfu = r.app.state.sfu.clone();
+    let old = sfu.get_room(r.voice).await.expect("room");
+    // The old room's count is left too high (a release that failed).
+    limiter.start(&old.share_counter, 6).await.expect("slot");
+    limiter.start(&old.share_counter, 6).await.expect("slot");
+
+    // The room goes (its last participant left) and a new one comes.
+    old.peers.write().await.clear();
+    sfu.cleanup_room_if_empty(r.voice).await;
+    let new = sfu.get_or_create_room(r.voice).await;
+    assert!(!std::sync::Arc::ptr_eq(&old, &new), "a new room");
+
+    limiter
+        .start(&new.share_counter, 1)
+        .await
+        .expect("the new room starts from zero");
+    // A late release of the old room does not touch the new room's count.
+    limiter.stop_n(&old.share_counter, 2).await;
+    limiter.stop(&old.share_counter).await;
+    assert!(
+        limiter.start(&new.share_counter, 1).await.is_err(),
+        "the new room's share was released by the old room's late calls"
+    );
 }

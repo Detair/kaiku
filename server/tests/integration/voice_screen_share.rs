@@ -247,8 +247,11 @@ async fn rate_limited_start_is_answered(pool: PgPool) {
         "answers to starts 4-6"
     );
 
-    if let Some(limiter) = &app.state.screen_share_limiter {
-        limiter.stop_n(voice, 3).await;
+    if let (Some(limiter), Some(room)) = (
+        &app.state.screen_share_limiter,
+        app.state.sfu.get_room(voice).await,
+    ) {
+        limiter.stop_n(&room.share_counter, 3).await;
     }
 }
 

@@ -139,9 +139,6 @@ fn queue_now(
     full
 }
 
-/// How long removing an empty room waits for its share counter to clear.
-const COUNTER_CLEAR_TIMEOUT: Duration = Duration::from_millis(500);
-
 /// How long a peer connection may stay `Failed` before the peer is removed
 /// from its room. Gives ICE restarts and brief network switches a chance.
 pub const PEER_FAILED_GRACE: Duration = Duration::from_secs(15);
@@ -420,6 +417,12 @@ pub struct Room {
     pub screen_shares: RwLock<HashMap<Uuid, ScreenShareInfo>>,
     /// Active webcams.
     pub webcams: RwLock<HashMap<Uuid, WebcamInfo>>,
+    /// Name of this room's screen share counter in the store: the channel
+    /// plus a value made when the room is created, so a room that is gone
+    /// (and its late calls) never changes a newer room's count. The counter
+    /// expires by itself after a day without use; nothing clears it when the
+    /// room is removed.
+    pub share_counter: String,
 }
 
 impl Room {
@@ -433,6 +436,7 @@ impl Room {
             max_participants,
             screen_shares: RwLock::new(HashMap::new()),
             webcams: RwLock::new(HashMap::new()),
+            share_counter: format!("{channel_id}:{}", Uuid::new_v4()),
         }
     }
 
@@ -1384,33 +1388,12 @@ impl SfuServer {
 
     /// Remove a room if empty.
     pub async fn cleanup_room_if_empty(&self, channel_id: Uuid) {
-        self.cleanup_room_if_empty_with(channel_id, None).await;
-    }
-
-    /// Remove a room if empty, and with it the channel's share counter
-    /// (no share of the room is left; a count left behind by a release
-    /// that failed would hold slots for the next call). The counter is
-    /// cleared while the room list is held, so a new room of the channel
-    /// cannot count a share before (bounded wait).
-    pub async fn cleanup_room_if_empty_with(
-        &self,
-        channel_id: Uuid,
-        screen_share_limiter: Option<&super::screen_share::ScreenShareLimiter>,
-    ) {
         let mut rooms = self.rooms.write().await;
 
         if let Some(room) = rooms.get(&channel_id) {
             if room.is_empty().await {
                 rooms.remove(&channel_id);
                 debug!(channel_id = %channel_id, "Removed empty voice room");
-                if let Some(limiter) = screen_share_limiter {
-                    if tokio::time::timeout(COUNTER_CLEAR_TIMEOUT, limiter.clear(channel_id))
-                        .await
-                        .is_err()
-                    {
-                        warn!(channel_id = %channel_id, "Clearing the screen share counter timed out");
-                    }
-                }
             }
         }
     }

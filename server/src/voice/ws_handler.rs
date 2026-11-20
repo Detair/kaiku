@@ -308,8 +308,7 @@ async fn handle_join(
                 // Refused (room full, or removed again): the new
                 // connections are not used.
                 peer.close().await;
-                sfu.cleanup_room_if_empty_with(channel_id, screen_share_limiter)
-                    .await;
+                sfu.cleanup_room_if_empty(channel_id).await;
                 return Err(e);
             }
         }
@@ -483,7 +482,9 @@ async fn release_replaced_media(
     let channel_id = room.channel_id;
     if !screen_shares.is_empty() {
         if let Some(limiter) = screen_share_limiter {
-            limiter.stop_n(channel_id, screen_shares.len()).await;
+            limiter
+                .stop_n(&room.share_counter, screen_shares.len())
+                .await;
         } else {
             warn!("Screen share limiter unavailable — replaced shares not released");
         }
@@ -971,7 +972,7 @@ async fn handle_screen_share_start(
     // Try to reserve a slot via limiter
     let limiter = screen_share_limiter
         .ok_or_else(|| VoiceError::Signaling("Screen share limiter unavailable".to_string()))?;
-    if let Err(e) = limiter.start(params.channel_id, max_shares).await {
+    if let Err(e) = limiter.start(&room.share_counter, max_shares).await {
         warn!(user_id = %params.user_id, channel_id = %params.channel_id, error = ?e, "Screen share limit check failed");
         return Err(match e {
             ScreenShareError::LimitReached => {
@@ -1006,7 +1007,7 @@ async fn handle_screen_share_start(
     let media = peer.media.lock().await;
     if let Err(e) = room.try_add_screen_share_for(&peer, info.clone()).await {
         drop(media);
-        limiter.stop(params.channel_id).await;
+        limiter.stop(&room.share_counter).await;
         return Err(e);
     }
 
@@ -1199,7 +1200,7 @@ async fn end_screen_share(
 
     // Decrement Redis counter
     if let Some(limiter) = screen_share_limiter {
-        limiter.stop(channel_id).await;
+        limiter.stop(&room.share_counter).await;
     } else {
         tracing::warn!("Screen share limiter unavailable during stop — counter not decremented");
     }

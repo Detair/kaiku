@@ -126,7 +126,8 @@ const SCREEN_SHARE_LIMIT_SCRIPT: &str = include_str!("screen_share_limit.lua");
 pub struct ScreenShareLimiter {
     redis: Client,
     script_sha: Arc<RwLock<String>>,
-    /// Prefix of the per-channel counter keys (`{prefix}{channel_id}`).
+    /// Prefix of the counter keys (`{prefix}{counter}`, `counter` being a
+    /// room's [`crate::voice::sfu::Room::share_counter`]).
     key_prefix: Arc<str>,
 }
 
@@ -194,18 +195,18 @@ impl ScreenShareLimiter {
     /// Run the Lua script with retry on NOSCRIPT.
     async fn run_script(
         &self,
-        channel_id: Uuid,
+        channel_id: impl std::fmt::Display,
         max_shares: u32,
         op: &str,
     ) -> Result<(bool, i64), ScreenShareError> {
-        self.run_script_with_extra(channel_id, max_shares, op, &[])
+        self.run_script_with_extra(&channel_id, max_shares, op, &[])
             .await
     }
 
     /// Run the Lua script with optional extra ARGV arguments and retry on NOSCRIPT.
     async fn run_script_with_extra(
         &self,
-        channel_id: Uuid,
+        channel_id: impl std::fmt::Display,
         max_shares: u32,
         op: &str,
         extra_args: &[String],
@@ -264,8 +265,12 @@ impl ScreenShareLimiter {
     }
 
     /// Check if a screen share slot is available (does not reserve it).
-    pub async fn check(&self, channel_id: Uuid, max_shares: u32) -> Result<(), ScreenShareError> {
-        let (allowed, _) = self.run_script(channel_id, max_shares, "check").await?;
+    pub async fn check(
+        &self,
+        channel_id: impl std::fmt::Display,
+        max_shares: u32,
+    ) -> Result<(), ScreenShareError> {
+        let (allowed, _) = self.run_script(&channel_id, max_shares, "check").await?;
         if allowed {
             Ok(())
         } else {
@@ -274,8 +279,12 @@ impl ScreenShareLimiter {
     }
 
     /// Atomically reserve a screen share slot. Returns error if limit reached.
-    pub async fn start(&self, channel_id: Uuid, max_shares: u32) -> Result<(), ScreenShareError> {
-        let (allowed, _) = self.run_script(channel_id, max_shares, "start").await?;
+    pub async fn start(
+        &self,
+        channel_id: impl std::fmt::Display,
+        max_shares: u32,
+    ) -> Result<(), ScreenShareError> {
+        let (allowed, _) = self.run_script(&channel_id, max_shares, "start").await?;
         if allowed {
             Ok(())
         } else {
@@ -283,19 +292,10 @@ impl ScreenShareLimiter {
         }
     }
 
-    /// Delete the slot counter of `channel_id` (its room was removed: no
-    /// share of it is left). Errors are logged.
-    pub async fn clear(&self, channel_id: Uuid) {
-        let key = format!("{}{channel_id}", self.key_prefix);
-        if let Err(e) = self.redis.del::<i64, _>(key).await {
-            warn!(channel_id = %channel_id, error = ?e, "Failed to clear screen share counter");
-        }
-    }
-
     /// Release a screen share slot (decrements if count > 0).
-    pub async fn stop(&self, channel_id: Uuid) {
+    pub async fn stop(&self, channel_id: impl std::fmt::Display) {
         // max_shares arg is unused by "stop" op, pass 0
-        if let Err(e) = self.run_script(channel_id, 0, "stop").await {
+        if let Err(e) = self.run_script(&channel_id, 0, "stop").await {
             warn!(
                 channel_id = %channel_id,
                 error = ?e,
@@ -308,13 +308,13 @@ impl ScreenShareLimiter {
     ///
     /// Used when a user with multiple active screen shares leaves.
     /// Clamps to zero if `count` exceeds the current counter value.
-    pub async fn stop_n(&self, channel_id: Uuid, count: usize) {
+    pub async fn stop_n(&self, channel_id: impl std::fmt::Display, count: usize) {
         if count == 0 {
             return;
         }
         // max_shares arg is unused by "stop_n" op, pass 0
         if let Err(e) = self
-            .run_script_with_extra(channel_id, 0, "stop_n", &[count.to_string()])
+            .run_script_with_extra(&channel_id, 0, "stop_n", &[count.to_string()])
             .await
         {
             warn!(

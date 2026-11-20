@@ -93,7 +93,6 @@ async fn replacing_peer_frees_screen_share_slot(pool: PgPool) {
     let guild = create_guild(&pool, owner).await;
     let voice = create_voice_channel(&pool, guild, "voice").await;
     let token = generate_access_token(&app.config, owner);
-    let counter = format!("screenshare:limit:{voice}");
 
     let mut first = ws_connect(&server, &token).await;
     next_ws_event(&mut first, "ready", EVENT_TIMEOUT).await;
@@ -103,6 +102,8 @@ async fn replacing_peer_frees_screen_share_slot(pool: PgPool) {
     )
     .await;
     next_ws_event(&mut first, "voice_room_state", EVENT_TIMEOUT).await;
+    let room = app.state.sfu.get_room(voice).await.expect("room");
+    let counter = format!("screenshare:limit:{}", room.share_counter);
     let stream_id = Uuid::new_v4();
     send(
         &mut first,

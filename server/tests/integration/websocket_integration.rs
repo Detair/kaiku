@@ -530,7 +530,7 @@ async fn test_websocket_subscribe_owner_bypass(pool: PgPool) {
 // "cache key namespace checks" scope): every Redis/in-memory key is scoped
 // to its principal or resource by construction —
 //   - pubsub topics:    `channel_events(channel_id)` (per channel)
-//   - screen share:     `screenshare:limit:{channel_id}` (per channel)
+//   - screen share:     `screenshare:limit:{channel_id}:{room}` (per room of a channel)
 //   - rate limiting:    `ratelimit:{category}:{user|ip}` (per principal)
 //   - block cache:      `blocked_by:{user_id}` (per user)
 // There are no guild-level shared keys that could cross tenants; the tests
