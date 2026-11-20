@@ -1479,8 +1479,9 @@ async fn admin_request(
 /// without a socket around the access state (other tests publish on the
 /// shared admin channel). Not elevated: `ADMIN_NOT_ELEVATED` with its
 /// message, read once however often the client asks; the request is kept
-/// and delivery starts with the elevation, without a new request. Elevated:
-/// no reply, and admin events are written. A check that cannot be made:
+/// and delivery starts with the elevation, without a new request. Elevated
+/// (a new user epoch, read for the request itself): no reply, and admin
+/// events are written. A check that cannot be made:
 /// `SERVICE_UNAVAILABLE`; the request is kept and the retry decides it.
 /// `admin_unsubscribe` ends the request.
 #[sqlx::test]
@@ -1504,8 +1505,8 @@ async fn admin_subscribe_answers_and_keeps_the_request(pool: PgPool) {
     assert!(access.admin_subscribed() && !access.admin_allowed());
     assert!(!access.admit_admin().await);
     assert_eq!(access_reads(admin).0, 1);
-    // Asking again, also after an unsubscribe, is answered the same from
-    // that decision.
+    // Asking again, also after an unsubscribe, is answered the same: the
+    // socket's refusal stands for its user epoch.
     for _ in 0..3 {
         let again = admin_request(&app, &access, admin, "admin_subscribe").await;
         assert_eq!(again, not_elevated);
@@ -1535,10 +1536,16 @@ async fn admin_subscribe_answers_and_keeps_the_request(pool: PgPool) {
         "no delivery after the elevation"
     );
 
-    // Elevated: no reply.
+    // Elevated: no reply. The new user epoch gets a read of its own, also
+    // within the cooldown of the first request.
     assert_eq!(
         admin_request(&app, &access, admin, "admin_subscribe").await,
         None
+    );
+    assert_eq!(
+        access_reads(admin).0,
+        3,
+        "one read for the frame, one for the request"
     );
     assert!(access.admin_allowed() && access.admit_admin().await);
 

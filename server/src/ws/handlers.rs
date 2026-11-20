@@ -21,7 +21,8 @@ use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use super::access::{
-    AdminSubscription, ChannelScope, OwnedVoicePeer, SocketAccess, SubscribeCommit,
+    AccessCheckFailed, AdminSubscription, ChannelScope, OwnedVoicePeer, SocketAccess,
+    SubscribeCommit,
 };
 use super::connection_limit::{ConnectionPermit, TOO_MANY_CONNECTIONS};
 use super::events::{
@@ -1333,11 +1334,15 @@ pub(crate) async fn send_outbound_within(
     }
 }
 
-/// If a (boxed) handler error is a failed outbound send, the socket must end:
-/// returns the matching exit reason.
+/// If a (boxed) handler error means the socket must end — a failed outbound
+/// send, or access checks that kept failing for
+/// `access::FAILURE_CLOSE_AFTER` — returns the matching exit reason.
 fn outbound_failure(err: &(dyn std::error::Error + 'static)) -> Option<PubsubExit> {
     if let Some(e) = err.downcast_ref::<OutboundSendError>() {
         return Some(PubsubExit::from(*e));
+    }
+    if err.downcast_ref::<AccessCheckFailed>().is_some() {
+        return Some(PubsubExit::AccessCheckFailed);
     }
     match err.downcast_ref::<crate::voice::VoiceError>() {
         Some(crate::voice::VoiceError::Outbound(e)) => Some(PubsubExit::from(*e)),
@@ -1455,6 +1460,43 @@ async fn write_event(
             Ok(())
         }
     }
+}
+
+/// The reply to an `admin_subscribe`: nothing when admin events follow,
+/// otherwise the error event the client is sent; `Err` when the socket must
+/// end (its access checks have kept failing for
+/// `access::FAILURE_CLOSE_AFTER`, as on its own revalidation).
+///
+/// The request is recorded and answered by `ws::access`; the socket's
+/// revalidation is the one place that decides the admin stream: whether
+/// this socket's session is elevated (an elevation belongs to one session,
+/// C24), read from the committed rows. The answer depends on the user epoch,
+/// this socket's earlier answers and a read the request asks for. What
+/// asking can make the server read is bounded there (a refusal stands for
+/// its user epoch, a cooldown, a pool of its own). The request stays
+/// whatever the answer: a later elevation restores delivery, and frames
+/// decide on their own reads. This writes no state of its own.
+pub(crate) async fn admin_subscribe_reply(
+    access: &SocketAccess,
+) -> Result<Option<ServerEvent>, AccessCheckFailed> {
+    let error = |code: &str, message: &str| {
+        Some(ServerEvent::Error {
+            code: code.to_string(),
+            message: message.to_string(),
+        })
+    };
+    Ok(match access.subscribe_admin().await {
+        AdminSubscription::Allowed => None,
+        AdminSubscription::Refused => error(
+            "ADMIN_NOT_ELEVATED",
+            "Must be an elevated admin to subscribe to admin events",
+        ),
+        AdminSubscription::Undecided => error(
+            "SERVICE_UNAVAILABLE",
+            "Admin access could not be checked yet; events follow once it is",
+        ),
+        AdminSubscription::Failed => return Err(AccessCheckFailed),
+    })
 }
 
 /// Revalidate this socket after a bump (or, with `full`, on the backstop):
@@ -1883,45 +1925,10 @@ pub async fn handle_client_message(
             debug!("User {} updated custom status", user_id);
         }
 
-        ClientEvent::AdminSubscribe => {
-            // The request is recorded and answered from what the socket's
-            // revalidation wrote, the one place that decides the admin
-            // stream (`ws::access`): whether this socket's session is
-            // elevated (an elevation belongs to one session, C24), read
-            // from the committed rows. What asking can make the server
-            // read is bounded there (a "no" stands for its user epoch, a
-            // cooldown, a pool of its own). The request stays whatever the
-            // answer: a later elevation restores delivery, and a check that
-            // could not be made is repeated by the socket.
-            match access.subscribe_admin().await {
-                AdminSubscription::Allowed => {
-                    debug!("Admin {} subscribed to admin events", user_id);
-                }
-                AdminSubscription::Refused => {
-                    send_outbound(
-                        tx,
-                        OutboundMsg::Event(ServerEvent::Error {
-                            code: "ADMIN_NOT_ELEVATED".to_string(),
-                            message: "Must be an elevated admin to subscribe to admin events"
-                                .to_string(),
-                        }),
-                    )
-                    .await?;
-                }
-                AdminSubscription::Undecided => {
-                    send_outbound(
-                        tx,
-                        OutboundMsg::Event(ServerEvent::Error {
-                            code: "SERVICE_UNAVAILABLE".to_string(),
-                            message:
-                                "Admin access could not be checked yet; events follow once it is"
-                                    .to_string(),
-                        }),
-                    )
-                    .await?;
-                }
-            }
-        }
+        ClientEvent::AdminSubscribe => match admin_subscribe_reply(access).await? {
+            None => debug!("Admin {} subscribed to admin events", user_id),
+            Some(reply) => send_outbound(tx, OutboundMsg::Event(reply)).await?,
+        },
 
         ClientEvent::AdminUnsubscribe => {
             access.unsubscribe_admin();
@@ -3700,6 +3707,18 @@ mod pubsub_tests {
         assert_eq!(outbound_failure(&*boxed), Some(PubsubExit::SlowClient));
         let other: Box<dyn std::error::Error + Send + Sync> = "bad input".into();
         assert_eq!(outbound_failure(&*other), None);
+    }
+
+    /// An access check that kept failing for `FAILURE_CLOSE_AFTER`, reported
+    /// by a client request (`admin_subscribe`), ends the socket the way the
+    /// socket's own revalidation does.
+    #[test]
+    fn an_access_check_that_kept_failing_ends_the_socket() {
+        let boxed: Box<dyn std::error::Error + Send + Sync> = Box::new(AccessCheckFailed);
+        assert_eq!(
+            outbound_failure(&*boxed),
+            Some(PubsubExit::AccessCheckFailed)
+        );
     }
 
     #[tokio::test(start_paused = true)]
