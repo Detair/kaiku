@@ -98,4 +98,25 @@ class WakeDeferralTest {
         enqueuer.enqueueHeld(wake, null)
         assertEquals(wake to WakeOwner("u2", "https://chat.example.com"), sent.last())
     }
+
+    /** Wakes for one channel kept for different accounts (or for none) never take each other's account. */
+    @Test fun `a channel's wakes keep their own accounts in every order`() {
+        val a = WakeOwner("u1", "https://chat.example.com")
+        val b = WakeOwner("u2", "https://chat.example.com")
+        fun held(vararg wakes: Pair<Int, WakeOwner?>): Set<Pair<Int, WakeOwner?>> {
+            val d = WakeDeferral(InMemorySharedPreferences())
+            wakes.forEach { (count, owner) -> d.hold(WakeSignal(WakeKind.DM, "c1", count), owner) }
+            val out = mutableSetOf<Pair<Int, WakeOwner?>>()
+            d.release { s, o -> out += s.count to o }
+            return out
+        }
+        // Owned, then without an account.
+        assertEquals(setOf(3 to a, 1 to null), held(3 to a, 1 to null))
+        // Without an account, then owned.
+        assertEquals(setOf(1 to null, 3 to a), held(1 to null, 3 to a))
+        // Two accounts.
+        assertEquals(setOf(3 to a, 2 to b), held(3 to a, 2 to b))
+        // The same account twice: one wake, the higher count.
+        assertEquals(setOf(3 to a), held(3 to a, 1 to a))
+    }
 }

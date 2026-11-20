@@ -30,13 +30,18 @@ class WakeDeferral internal constructor(private val prefs: SharedPreferences) {
         const val MAX = 50
     }
 
-    /** Keeps [signal] (one per channel, the higher count) until [release]; [owner]: the account it was queued for, if known. */
+    /**
+     * Keeps [signal] until [release]; [owner]: the account it was queued for, if known. One wake is
+     * kept per channel and account (the higher count): wakes of one channel for different accounts,
+     * or for none, stay apart, so none takes another's account.
+     */
     @Synchronized
     fun hold(signal: WakeSignal, owner: WakeOwner? = null) {
         if (signal.kind == WakeKind.CALL) return
         val all = read()
-        val before = all.firstOrNull { it.signal.channelId == signal.channelId }
-        val kept = all.filterNot { it.signal.channelId == signal.channelId }.toMutableList()
+        fun same(h: Held) = h.signal.channelId == signal.channelId && h.owner == owner
+        val before = all.firstOrNull(::same)
+        val kept = all.filterNot(::same).toMutableList()
         kept += Held(signal.copy(count = maxOf(signal.count, before?.signal?.count ?: 0)), owner)
         write(kept.takeLast(MAX))
     }
