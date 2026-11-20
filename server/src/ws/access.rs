@@ -1027,6 +1027,9 @@ struct Script {
     bump_guild: Option<Uuid>,
     /// The last read that was answered.
     last_served: Option<ScriptStep>,
+    /// What that read said about the admin stream: `None` if it did not
+    /// cover it, `Some(None)` if it failed.
+    last_admin: Option<Option<bool>>,
     /// Set by a test that explores interleavings (see [`Seams`]).
     seams: Option<Arc<Seams>>,
 }
@@ -2198,6 +2201,7 @@ impl SocketAccess {
             outcome: Some(script.then),
         });
         script.last_served = Some(step);
+        script.last_admin = plan.admin.map(|_| step.outcome);
         if step.bump {
             match script.bump_guild {
                 Some(g) => registry().bump_guild(g),
@@ -2959,6 +2963,7 @@ mod tests {
             then,
             bump_guild,
             last_served: None,
+            last_admin: None,
             seams: None,
         });
     }
@@ -4398,6 +4403,9 @@ mod tests {
         DeElevate,
         /// The session is elevated: committed, and the epoch bumped.
         Elevate,
+        /// The user's epoch moves for a change that leaves the elevation as
+        /// it is (a role of the user's own).
+        Bump,
         /// The database stops answering.
         Down,
         /// It answers again, and the backoff has passed.
@@ -4420,10 +4428,101 @@ mod tests {
         NewDm,
     }
 
+    /// The error codes an `admin_subscribe` is answered with.
+    const NOT_ELEVATED: &str = "ADMIN_NOT_ELEVATED";
+    const UNAVAILABLE: &str = "SERVICE_UNAVAILABLE";
+    /// Not a code: the socket ended.
+    const ENDED: &str = "ended";
+
+    /// What the client gets for an `admin_subscribe` answered `answer`
+    /// (`None`: no reply, admin events follow).
+    const fn reply_of(answer: AdminSubscription) -> Option<&'static str> {
+        match answer {
+            AdminSubscription::Allowed => None,
+            AdminSubscription::Refused => Some(NOT_ELEVATED),
+            AdminSubscription::Undecided => Some(UNAVAILABLE),
+            AdminSubscription::Failed => Some(ENDED),
+        }
+    }
+
+    /// The code of what the handler's `admin_subscribe` arm gave.
+    fn reply_code(
+        reply: Result<Option<crate::ws::events::ServerEvent>, AccessCheckFailed>,
+    ) -> Option<&'static str> {
+        use crate::ws::events::ServerEvent;
+        match reply {
+            Ok(None) => None,
+            Ok(Some(ServerEvent::Error { code, .. })) if code == NOT_ELEVATED => Some(NOT_ELEVATED),
+            Ok(Some(ServerEvent::Error { code, .. })) if code == UNAVAILABLE => Some(UNAVAILABLE),
+            Ok(Some(other)) => panic!("an unexpected reply: {other:?}"),
+            Err(AccessCheckFailed) => Some(ENDED),
+        }
+    }
+
+    /// A scripted read says something about the admin stream only if it
+    /// covered it: a read for a new DM alone does not justify an admin
+    /// decision.
+    #[tokio::test(start_paused = true)]
+    async fn a_read_says_nothing_about_the_admin_stream_unless_it_covered_it() {
+        let u = Uuid::new_v4();
+        let access = admin_socket(u, true).await;
+        let said = |access: &SocketAccess| {
+            let script = access.script.lock().unwrap();
+            let script = script.as_ref().unwrap();
+            (script.last_served.is_some(), script.last_admin)
+        };
+        assert!(access.insert_direct(Uuid::new_v4()));
+        assert!(access.refresh().await.is_ok());
+        assert_eq!(said(&access), (true, None), "a DM read spoke for admin");
+        assert!(access.admin_frame_taken());
+        assert!(access.decide_admin().await);
+        assert_eq!(said(&access), (true, Some(Some(true))));
+    }
+
+    /// Whether the admin stream is allowed is assigned in one place in
+    /// `ws/`, the revalidation's `apply`: every assignment of a scope's
+    /// `allowed` or `decided` in the module is listed here.
+    #[test]
+    fn the_admin_decision_has_one_writer() {
+        let assignment = regex::Regex::new(r"\b(\w+)\.(allowed|decided)\s*=[^=]").unwrap();
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/ws");
+        let mut found = Vec::new();
+        let mut dirs = vec![dir.clone()];
+        while let Some(next) = dirs.pop() {
+            for entry in std::fs::read_dir(&next).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    dirs.push(path);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    let text = std::fs::read_to_string(&path).unwrap();
+                    let file = path
+                        .strip_prefix(&dir)
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned();
+                    for hit in assignment.captures_iter(&text) {
+                        found.push(format!("{file}: {}.{}", &hit[1], &hit[2]));
+                    }
+                }
+            }
+        }
+        found.sort();
+        assert_eq!(
+            found,
+            [
+                "access.rs: admin.allowed",
+                "access.rs: admin.decided",
+                "access.rs: voice.allowed",
+            ],
+            "a new writer of a scope decision"
+        );
+    }
+
     /// What one schedule did, in ticks (one per step).
     #[derive(Default)]
     struct Trace {
-        /// Per read: when it began, and what it said (`None`: it failed).
+        /// Per read that covered the admin stream: when it began, and what
+        /// it said (`None`: it failed).
         reads: Vec<(u64, Option<bool>)>,
         /// Per admin frame: when it was taken, when it was decided, and
         /// whether it was written.
@@ -4437,6 +4536,9 @@ mod tests {
         began: Option<u64>,
         /// The database failed at some point.
         failed: bool,
+        /// The socket task's `admin_subscribe`: how many world events had
+        /// happened when it arrived, and when it was answered.
+        world_around: Option<(usize, usize)>,
     }
 
     /// One `admin_subscribe` of a schedule.
@@ -4446,7 +4548,8 @@ mod tests {
         at: u64,
         /// When it was answered.
         answered: u64,
-        answer: AdminSubscription,
+        /// The code the client got (`None`: no reply).
+        reply: Option<&'static str>,
         /// What has to answer it at once, without a read, if anything: the
         /// socket's own earlier answer at the current user epoch (a refusal;
         /// within the cooldown also a "yes"), or within the cooldown without
@@ -4509,7 +4612,7 @@ mod tests {
                 let epoch = self.bumped.filter(|bumped| *bumped < asked.at);
                 let (since, until) = match asked.at_once {
                     Some(answer) => {
-                        if (asked.answer, asked.answered) != (answer, asked.at) {
+                        if (asked.reply, asked.answered) != (reply_of(answer), asked.at) {
                             return Err(
                                 "a subscribe that a decision in hand answers waited or read",
                             );
@@ -4518,11 +4621,11 @@ mod tests {
                     }
                     None => (asked.at, asked.answered),
                 };
-                let justified = match asked.answer {
-                    AdminSubscription::Allowed => self.read_between(since, until, true),
-                    AdminSubscription::Refused => self.read_between(since, until, false),
-                    AdminSubscription::Undecided => asked.at_once.is_some() || self.failed,
-                    AdminSubscription::Failed => self.failed,
+                let justified = match asked.reply {
+                    None => self.read_between(since, until, true),
+                    Some(NOT_ELEVATED) => self.read_between(since, until, false),
+                    Some(UNAVAILABLE) => asked.at_once.is_some() || self.failed,
+                    Some(_) => self.failed,
                 };
                 if !justified {
                     return Err("a subscribe was answered without a read to say so");
@@ -4573,7 +4676,7 @@ mod tests {
         let asked = Asked {
             at: 2,
             answered: 3,
-            answer: AdminSubscription::Allowed,
+            reply: None,
             at_once: None,
         };
         let early = Trace {
@@ -4602,7 +4705,7 @@ mod tests {
         let cached = Asked {
             at: 4,
             answered: 4,
-            answer: AdminSubscription::Refused,
+            reply: Some(NOT_ELEVATED),
             at_once: Some(AdminSubscription::Refused),
         };
         let in_hand = Trace {
@@ -4659,8 +4762,14 @@ mod tests {
     /// possible at the k-th decision (the first one beyond its end). A read
     /// has its answer when it begins and returns when its task is picked
     /// again. Returns how many steps were possible at each decision, after
-    /// checking what must hold in every schedule.
-    async fn explore(family: Family, choices: &[usize]) -> Vec<usize> {
+    /// checking what must hold in every schedule, and the socket task's
+    /// `admin_subscribe`, if any: the world events before it arrived and
+    /// before it was answered, and the reply code.
+    ///
+    /// The socket task's `admin_subscribe` goes through the handler's arm
+    /// (`handlers::admin_subscribe_reply`), and only reads that covered the
+    /// admin stream count as reads behind an admin decision.
+    async fn explore(family: Family, choices: &[usize]) -> Explored {
         #[derive(Clone, Copy, PartialEq, Eq)]
         enum Task {
             Ready,
@@ -4699,6 +4808,8 @@ mod tests {
         };
         script(&mut |script| script.seams = Some(seams.clone()));
         let tick = std::cell::Cell::new(1_u64);
+        // World events that have happened.
+        let happened = std::cell::Cell::new(0_usize);
         let trace = std::cell::RefCell::new(Trace {
             // The read behind the socket's first answer.
             reads: vec![(0, Some(elevated))],
@@ -4731,6 +4842,7 @@ mod tests {
                 access.seam().await;
             }
             let at = tick.get();
+            let world_at = happened.get();
             if let Some((_, again)) = trace.borrow_mut().withdrawn.as_mut() {
                 *again = Some(at);
             }
@@ -4740,18 +4852,21 @@ mod tests {
                 _ if soon => Some(AdminSubscription::Undecided),
                 _ => None,
             };
-            let answer = access.subscribe_admin().await;
-            trace.borrow_mut().answers.push(Asked {
+            let reply = reply_code(crate::ws::handlers::admin_subscribe_reply(&access).await);
+            let mut trace = trace.borrow_mut();
+            trace.answers.push(Asked {
                 at,
                 answered: tick.get(),
-                answer,
+                reply,
                 at_once,
             });
+            trace.world_around = Some((world_at, happened.get()));
         };
         let mut tasks: [std::pin::Pin<Box<dyn std::future::Future<Output = ()> + '_>>; 2] =
             [Box::pin(sender), Box::pin(socket)];
         let mut state = [Task::Ready; 2];
-        let mut happened = 0;
+        // Per task: whether the read it is in failed.
+        let mut failing = [false; 2];
         let mut widths = Vec::new();
         // A read failed and the backoff has not passed since (time only
         // moves with `Up`).
@@ -4765,7 +4880,7 @@ mod tests {
                 .filter(|i| matches!(state[*i], Task::Ready | Task::Reading | Task::Next))
                 .map(Some)
                 .collect();
-            if happened < world.len() && !(reading && world[happened] == World::Up) {
+            if happened.get() < world.len() && !(reading && world[happened.get()] == World::Up) {
                 steps.push(None);
             }
             assert!(!steps.is_empty(), "nothing can go on: {}", case());
@@ -4776,15 +4891,16 @@ mod tests {
             let now = tick.get();
             match steps[pick] {
                 None => {
-                    let event = world[happened];
-                    happened += 1;
+                    let event = world[happened.get()];
+                    happened.set(happened.get() + 1);
                     script(&mut |script| match event {
                         World::Expire | World::DeElevate => script.then = false,
                         World::Elevate => script.then = true,
+                        World::Bump => {}
                         World::Down => script.steps = vec![FAILS; 64].into(),
                         World::Up => script.steps.clear(),
                     });
-                    if matches!(event, World::DeElevate | World::Elevate) {
+                    if matches!(event, World::DeElevate | World::Elevate | World::Bump) {
                         registry().bump_user(u);
                         trace.borrow_mut().bumped = Some(now);
                     }
@@ -4794,6 +4910,7 @@ mod tests {
                     match event {
                         World::Expire | World::DeElevate => trace.borrow_mut().ended = Some(now),
                         World::Elevate => trace.borrow_mut().began = Some(now),
+                        World::Bump => {}
                         World::Down => trace.borrow_mut().failed = true,
                         World::Up => tokio::time::advance(later).await,
                     }
@@ -4816,10 +4933,14 @@ mod tests {
                             break Task::Waiting;
                         }
                         if seams.parked.load(Ordering::SeqCst) == 1 {
-                            let mut said = None;
-                            script(&mut |script| said = script.last_served);
-                            let said = said.expect("a read was served").outcome;
-                            trace.borrow_mut().reads.push((now, said));
+                            let mut served = (None, None);
+                            script(&mut |script| served = (script.last_served, script.last_admin));
+                            failing[i] = served.0.expect("a read was served").outcome.is_none();
+                            // Only a read that covered the admin stream
+                            // can be behind an admin decision.
+                            if let Some(said) = served.1 {
+                                trace.borrow_mut().reads.push((now, said));
+                            }
                             break Task::Reading;
                         }
                         // It waits for one of the process-wide permits,
@@ -4830,10 +4951,8 @@ mod tests {
                         state[1 - i] = Task::Next;
                     }
                     // Its read has returned; a new one may have begun.
-                    let reads = &trace.borrow().reads;
                     let began_now = state[i] == Task::Reading;
-                    let returned = reads.len() - usize::from(began_now);
-                    if was_reading && reads[returned - 1].1.is_none() {
+                    if was_reading && failing[i] {
                         backing_off = true;
                     }
                     assert!(
@@ -4881,25 +5000,70 @@ mod tests {
             "access came back, delivery did not: {}",
             case()
         );
-        widths
+        Explored {
+            widths,
+            subscribe: trace.world_around.map(|(arrived, answered)| {
+                let reply = trace.answers.last().expect("answered").reply;
+                (arrived, answered, reply)
+            }),
+        }
+    }
+
+    /// What [`explore`] returns for one schedule.
+    struct Explored {
+        widths: Vec<usize>,
+        subscribe: Option<(usize, usize, Option<&'static str>)>,
+    }
+
+    /// Every schedule of one family: how many, and what each one's
+    /// `admin_subscribe` saw and got ([`Explored::subscribe`]).
+    async fn explore_all(
+        family: Family,
+    ) -> (usize, Vec<Option<(usize, usize, Option<&'static str>)>>) {
+        let mut choices: Vec<usize> = Vec::new();
+        let mut subscribes = Vec::new();
+        loop {
+            let Explored { widths, subscribe } = explore(family, &choices).await;
+            subscribes.push(subscribe);
+            // The next schedule: at the last decision that had another
+            // step, take it.
+            choices.resize(widths.len(), 0);
+            while let Some(last) = choices.pop() {
+                if last + 1 < widths[choices.len()] {
+                    choices.push(last + 1);
+                    break;
+                }
+            }
+            if choices.is_empty() {
+                return (subscribes.len(), subscribes);
+            }
+        }
     }
 
     /// Every interleaving of the sender task (admin frames, each one taken,
-    /// pinned and decided) with the socket task (an `admin_subscribe`, an
-    /// unsubscribe and subscribe, or the periodic re-check), while at any
-    /// point between two steps the elevation ends without an epoch moving,
-    /// ends or begins with a bump, or the database fails and recovers.
+    /// pinned and decided) with the socket task (an `admin_subscribe`
+    /// through the handler's arm, an unsubscribe and subscribe, or the
+    /// periodic re-check), while at any point between two steps the
+    /// elevation ends without an epoch moving, ends or begins with a bump,
+    /// the epoch moves without a change, or the database fails and
+    /// recovers.
     ///
     /// In all of them: a frame is written only on a read that began after
     /// it was taken (and after the last bump), a subscribe is answered only
-    /// by a read that began after it arrived, nothing owed is lost, a
-    /// refused socket is never told to resynchronise, the backoff never
-    /// outlives the scopes that need it, and the stream comes back with the
-    /// next elevation.
+    /// by a read that began after it arrived or by the socket's own earlier
+    /// answer, nothing owed is lost, a refused socket is never told to
+    /// resynchronise, the backoff never outlives the scopes that need it,
+    /// and the stream comes back with the next elevation.
+    ///
+    /// And pairwise: the same schedule of the socket task and the world with
+    /// and without admin frames gives the same reply code, for a refused
+    /// socket whose epoch moves and for an admin whose elevation runs out
+    /// (compared where no world event happened while the subscribe was
+    /// under way).
     #[tokio::test(start_paused = true)]
     async fn every_interleaving_of_admin_frames_and_the_socket_task() {
         use Doing::{Backstop, NewDm, Resubscribe, Subscribe, SubscribeSoon};
-        use World::{DeElevate, Down, Elevate, Expire, Up};
+        use World::{Bump, DeElevate, Down, Elevate, Expire, Up};
         let user = Uuid::new_v4();
         let family = |elevated, frames, doing, world| Family {
             user,
@@ -4927,27 +5091,60 @@ mod tests {
             family(true, 1, NewDm, &[Down, Up]),
             family(false, 2, Resubscribe, &[Down, Up]),
             family(false, 2, Backstop, &[Down, Up]),
+            // Compared with and without frames below.
+            family(true, 0, Subscribe, &[Expire]),
+            family(true, 0, SubscribeSoon, &[Expire]),
+            family(true, 0, Resubscribe, &[Expire]),
+            family(false, 2, Subscribe, &[Bump]),
+            family(false, 2, SubscribeSoon, &[Bump]),
+            family(false, 2, Resubscribe, &[Bump]),
+            family(false, 0, Subscribe, &[Bump]),
+            family(false, 0, SubscribeSoon, &[Bump]),
+            family(false, 0, Resubscribe, &[Bump]),
         ];
         let mut schedules = 0_usize;
+        let mut explored = Vec::new();
         for family in families {
-            let mut choices: Vec<usize> = Vec::new();
-            loop {
-                let widths = explore(family, &choices).await;
-                schedules += 1;
-                // The next schedule: at the last decision that had another
-                // step, take it.
-                choices.resize(widths.len(), 0);
-                while let Some(last) = choices.pop() {
-                    if last + 1 < widths[choices.len()] {
-                        choices.push(last + 1);
-                        break;
-                    }
+            let (count, subscribes) = explore_all(family).await;
+            schedules += count;
+            explored.push((family, subscribes));
+        }
+        let mut pairs = 0;
+        for (alone, quiet) in explored.iter().filter(|(f, _)| f.frames == 0) {
+            let (_, busy) = explored
+                .iter()
+                .find(|(f, _)| {
+                    f.frames > 0
+                        && (f.elevated, f.doing, f.world)
+                            == (alone.elevated, alone.doing, alone.world)
+                })
+                .expect("a family with frames to compare with");
+            // Without frames: the reply per number of world events before
+            // a subscribe that no world event overtook.
+            let mut without = HashMap::new();
+            for &(arrived, answered, reply) in quiet.iter().flatten() {
+                if arrived == answered {
+                    let other = without.insert(arrived, reply);
+                    assert!(
+                        other.is_none_or(|other| other == reply),
+                        "without frames the reply differs between schedules: {alone:?}"
+                    );
                 }
-                if choices.is_empty() {
-                    break;
+            }
+            for &(arrived, answered, reply) in busy.iter().flatten() {
+                if arrived == answered {
+                    let expected = without
+                        .get(&arrived)
+                        .unwrap_or_else(|| panic!("nothing to compare with: {alone:?}"));
+                    assert_eq!(
+                        reply, *expected,
+                        "admin frames changed the reply: {alone:?}, world events before: {arrived}"
+                    );
+                    pairs += 1;
                 }
             }
         }
+        assert!(pairs > 0, "nothing was compared");
         assert!(schedules > 100_000, "only {schedules} schedules explored");
     }
 
