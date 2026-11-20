@@ -2269,7 +2269,11 @@ async fn a_code_typed_in_a_flow_registers_through_that_flow_only(pool: PgPool) {
     right_code(&p, &flow, &code).await;
     // The requesting session's web routes refuse the attempt.
     let (s, body) = passkey_start(&p, &p.token, &id).await;
-    assert_eq!((s, body["error"].as_str()), (409, Some("APPROVAL_STATE")), "{body}");
+    assert_eq!(
+        (s, body["error"].as_str()),
+        (409, Some("APPROVAL_STATE")),
+        "{body}"
+    );
     assert_eq!(passkeys_of(&pool, p.user).await, 0);
     assert_eq!(attempt_state(&pool, &id).await.0, "enrolled");
 }
@@ -2280,7 +2284,11 @@ async fn a_code_typed_on_the_web_cannot_be_used_by_a_flow(pool: PgPool) {
     let (id, code) = with_code(&p).await;
     let flow = pc_flow(&p, &id).await;
     let (s, body) = crate::pc_setup::enter(&p, &p.token, &id, &code).await;
-    assert_eq!((s, body["state"].as_str()), (200, Some("enrolled")), "{body}");
+    assert_eq!(
+        (s, body["state"].as_str()),
+        (200, Some("enrolled")),
+        "{body}"
+    );
     // The flow never gets a browser secret, so it has no ceremony to run.
     assert_eq!(type_code(&p, &flow, &code, None).await.status, 409);
     assert_eq!(pc_options(&p, &flow, None).await.status, 400);
@@ -2308,7 +2316,12 @@ async fn a_session_of_another_client_cannot_start_a_pc_setup_flow(pool: PgPool) 
             Some(&p.token),
         )
         .await;
-        assert_eq!((r.status, r.json()["error"].as_str()), (403, Some("FORBIDDEN")), "{}", r.body);
+        assert_eq!(
+            (r.status, r.json()["error"].as_str()),
+            (403, Some("FORBIDDEN")),
+            "{}",
+            r.body
+        );
     }
 }
 

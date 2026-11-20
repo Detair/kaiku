@@ -476,12 +476,11 @@ pub async fn cleanup_finished_approvals(pool: &PgPool) -> sqlx::Result<u64> {
     let mut tx = pool.begin().await?;
     // "Set up this PC" attempts first: each lives at most about 25 minutes,
     // so a 30-day-old one is long over, and its challenge and enrolment can go.
-    let attempts = sqlx::query(
-        "DELETE FROM pc_setup_attempts WHERE created_at < NOW() - INTERVAL '30 days'",
-    )
-    .execute(&mut *tx)
-    .await?
-    .rows_affected();
+    let attempts =
+        sqlx::query("DELETE FROM pc_setup_attempts WHERE created_at < NOW() - INTERVAL '30 days'")
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
     let challenges = sqlx::query(
         "DELETE FROM approvals
           WHERE state IN ('consumed', 'denied', 'reported', 'expired')

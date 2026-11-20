@@ -1169,7 +1169,10 @@ async fn a_refresh_cannot_change_the_description_the_phone_signs(pool: PgPool) {
     let (_, c, _) = claimed(&p).await;
     let desc = c["context"]["client_description"].as_str().unwrap();
     assert!(desc.contains("Firefox") && desc.contains("Linux"), "{desc}");
-    assert!(!desc.contains("Safari") && !desc.contains("macOS"), "{desc}");
+    assert!(
+        !desc.contains("Safari") && !desc.contains("macOS"),
+        "{desc}"
+    );
 }
 
 #[sqlx::test]
@@ -2551,7 +2554,14 @@ async fn device_removal_against_finish(pool: PgPool) {
 /// start, the phone once it shows the code. Any answer is fine, also 429.
 async fn ninety_seconds_of_polling(p: &Pc, id: &str, phone: bool) {
     for _ in 0..90 {
-        call(&p.app, Method::GET, &format!("/auth/pc-setups/{id}?wait=0"), &p.token, None).await;
+        call(
+            &p.app,
+            Method::GET,
+            &format!("/auth/pc-setups/{id}?wait=0"),
+            &p.token,
+            None,
+        )
+        .await;
         if phone {
             call(
                 &p.app,
@@ -2582,7 +2592,11 @@ async fn a_slow_person_finishes_with_the_real_rate_limiter(pool: PgPool) {
     assert_eq!(s, 200, "{ok}");
     ninety_seconds_of_polling(&p, &id, true).await;
     let (s, body) = enter(&p, &p.token, &id, ok["code"].as_str().unwrap()).await;
-    assert_eq!((s, body["state"].as_str()), (200, Some("enrolled")), "{body}");
+    assert_eq!(
+        (s, body["state"].as_str()),
+        (200, Some("enrolled")),
+        "{body}"
+    );
     ninety_seconds_of_polling(&p, &id, true).await;
     let body = ceremony(&p, &id).await;
     ninety_seconds_of_polling(&p, &id, true).await;
@@ -2596,32 +2610,46 @@ async fn starts_per_account_are_bounded(pool: PgPool) {
     // Ten starts in the last ten minutes, from any session of the account.
     for _ in 0..10 {
         let sid = probation_session(&pool, p.user).await;
-        insert_attempt(&pool, p.user, sid, "cancelled").await.unwrap();
+        insert_attempt(&pool, p.user, sid, "cancelled")
+            .await
+            .unwrap();
     }
     let (s, body) = start(&p.app, &p.token).await;
-    assert_eq!((s, body["error"].as_str()), (429, Some("TOO_MANY_ATTEMPTS")), "{body}");
+    assert_eq!(
+        (s, body["error"].as_str()),
+        (429, Some("TOO_MANY_ATTEMPTS")),
+        "{body}"
+    );
     // Older starts do not count.
-    sqlx::query("UPDATE pc_setup_attempts SET created_at = NOW() - INTERVAL '11 minutes',
-                        expires_at = NOW() - INTERVAL '1 minute' WHERE user_id = $1")
-        .bind(p.user)
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "UPDATE pc_setup_attempts SET created_at = NOW() - INTERVAL '11 minutes',
+                        expires_at = NOW() - INTERVAL '1 minute' WHERE user_id = $1",
+    )
+    .bind(p.user)
+    .execute(&pool)
+    .await
+    .unwrap();
     started(&p).await;
 }
 
 #[sqlx::test]
 async fn old_attempts_are_cleaned_up(pool: PgPool) {
     let p = pc(&pool).await;
-    let old = insert_attempt(&pool, p.user, p.sid, "cancelled").await.unwrap();
+    let old = insert_attempt(&pool, p.user, p.sid, "cancelled")
+        .await
+        .unwrap();
     sqlx::query("UPDATE pc_setup_attempts SET created_at = NOW() - INTERVAL '31 days',
                         expires_at = NOW() - INTERVAL '31 days' + INTERVAL '10 minutes' WHERE id = $1")
         .bind(old)
         .execute(&pool)
         .await
         .unwrap();
-    let recent = insert_attempt(&pool, p.user, p.sid, "expired").await.unwrap();
-    vc_server::db::cleanup_finished_approvals(&pool).await.unwrap();
+    let recent = insert_attempt(&pool, p.user, p.sid, "expired")
+        .await
+        .unwrap();
+    vc_server::db::cleanup_finished_approvals(&pool)
+        .await
+        .unwrap();
     let left: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM pc_setup_attempts WHERE user_id = $1")
         .bind(p.user)
         .fetch_all(&pool)
@@ -2649,7 +2677,10 @@ async fn a_stale_locked_value_never_advances_an_attempt(pool: PgPool) {
     let out = enter_code(&mut tx, &ctx, &locked, &code, CodePath::Web).await;
     // An internal error: `settle` rolls the whole transition back.
     assert!(
-        matches!(out, Err(vc_server::approvals::error::ApprovalError::Database(_))),
+        matches!(
+            out,
+            Err(vc_server::approvals::error::ApprovalError::Database(_))
+        ),
         "{out:?}"
     );
     drop(tx);
@@ -2682,14 +2713,32 @@ async fn long_polls_hold_no_slot_without_need(pool: PgPool) {
     };
     let ((s1, _), (s2, quick_took)) = tokio::join!(poll(3), quick);
     assert_eq!((s1, s2), (200, 200));
-    assert!(quick_took < std::time::Duration::from_secs(2), "{quick_took:?}");
+    assert!(
+        quick_took < std::time::Duration::from_secs(2),
+        "{quick_took:?}"
+    );
     // An attempt that has ended never changes: no wait at all.
-    let (s, _) = call(&p.app, Method::DELETE, &format!("/auth/pc-setups/{id}"), &p.token, None).await;
+    let (s, _) = call(
+        &p.app,
+        Method::DELETE,
+        &format!("/auth/pc-setups/{id}"),
+        &p.token,
+        None,
+    )
+    .await;
     assert_eq!(s, 204);
     let t = std::time::Instant::now();
     let (s, body) = poll(25).await;
-    assert_eq!((s, body["state"].as_str()), (200, Some("cancelled")), "{body}");
-    assert!(t.elapsed() < std::time::Duration::from_secs(2), "{:?}", t.elapsed());
+    assert_eq!(
+        (s, body["state"].as_str()),
+        (200, Some("cancelled")),
+        "{body}"
+    );
+    assert!(
+        t.elapsed() < std::time::Duration::from_secs(2),
+        "{:?}",
+        t.elapsed()
+    );
 }
 
 #[sqlx::test]
@@ -2738,7 +2787,11 @@ async fn a_second_scan_of_a_claimed_code_is_refused(pool: PgPool) {
     let (s, c) = claim(&p.app, &p.dev, &token).await;
     assert_eq!(s, 201, "{c}");
     let (s, b) = claim(&p.app, &p.dev, &token).await;
-    assert_eq!((s, b["error"].as_str()), (409, Some("LOGIN_ATTEMPT_CLAIMED")), "{b}");
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (409, Some("LOGIN_ATTEMPT_CLAIMED")),
+        "{b}"
+    );
     assert_eq!(attempt_state(&pool, &id_of(&a)).await.0, "claimed");
 }
 
@@ -2751,7 +2804,11 @@ async fn a_second_finish_adds_no_second_passkey(pool: PgPool) {
     let (s, pk) = passkey_finish(&p, &p.token, &id, first).await;
     assert_eq!(s, 201, "{pk}");
     let (s, b) = passkey_finish(&p, &p.token, &id, second).await;
-    assert_eq!((s, b["error"].as_str()), (409, Some("APPROVAL_STATE")), "{b}");
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (409, Some("APPROVAL_STATE")),
+        "{b}"
+    );
     assert_eq!(passkeys_of(&pool, p.user).await, 1);
 }
 
@@ -2777,7 +2834,11 @@ async fn a_code_after_cancel_is_refused(pool: PgPool) {
         holder.commit().await.unwrap();
     };
     let ((s, b), ()) = tokio::join!(enter(&p, &p.token, &id, &code), release);
-    assert_eq!((s, b["error"].as_str()), (409, Some("APPROVAL_STATE")), "{b}");
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (409, Some("APPROVAL_STATE")),
+        "{b}"
+    );
     assert_eq!(attempt_state(&pool, &id).await.0, "cancelled");
 }
 
@@ -2792,5 +2853,9 @@ async fn a_scan_in_the_attempts_last_instant_is_stale(pool: PgPool) {
         .unwrap();
     let (token, _) = qr_token(&a["qr_payload"]);
     let (s, b) = claim(&p.app, &p.dev, &token).await;
-    assert_eq!((s, b["error"].as_str()), (404, Some("LOGIN_CODE_STALE")), "{b}");
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (404, Some("LOGIN_CODE_STALE")),
+        "{b}"
+    );
 }

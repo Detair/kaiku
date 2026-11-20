@@ -65,7 +65,9 @@ struct WaitSlot {
 
 impl WaitSlot {
     fn take(attempt: Uuid, pc_side: bool, user: Uuid) -> Option<Self> {
-        let mut w = WAITING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut w = WAITING
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let held = w.users.get(&user).copied().unwrap_or(0);
         if held >= MAX_LONG_POLLS_PER_USER || !w.attempts.insert((attempt, pc_side)) {
             return None;
@@ -80,7 +82,9 @@ impl WaitSlot {
 
 impl Drop for WaitSlot {
     fn drop(&mut self) {
-        let mut w = WAITING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut w = WAITING
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         w.attempts.remove(&self.attempt);
         if let Some(n) = w.users.get_mut(&self.user) {
             *n -= 1;
@@ -772,15 +776,24 @@ mod tests {
         let user = Uuid::new_v4();
         let a = Uuid::new_v4();
         let pc = WaitSlot::take(a, true, user).expect("first");
-        assert!(WaitSlot::take(a, true, user).is_none(), "same attempt and side");
+        assert!(
+            WaitSlot::take(a, true, user).is_none(),
+            "same attempt and side"
+        );
         let phone = WaitSlot::take(a, false, user).expect("the phone's side");
         let more: Vec<_> = (0..2)
             .filter_map(|_| WaitSlot::take(Uuid::new_v4(), true, user))
             .collect();
         assert_eq!(more.len(), 2);
-        assert!(WaitSlot::take(Uuid::new_v4(), true, user).is_none(), "per user");
+        assert!(
+            WaitSlot::take(Uuid::new_v4(), true, user).is_none(),
+            "per user"
+        );
         drop(pc);
-        assert!(WaitSlot::take(a, true, user).is_some(), "given back on drop");
+        assert!(
+            WaitSlot::take(a, true, user).is_some(),
+            "given back on drop"
+        );
         drop((phone, more));
     }
 
