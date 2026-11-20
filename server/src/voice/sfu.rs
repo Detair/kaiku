@@ -1359,8 +1359,15 @@ impl SfuServer {
                         // audio needs an accepted share with audio, video an
                         // accepted share or webcam start. One that stays
                         // unannounced is never forwarded.
+                        // The microphone is the audio negotiated as such when
+                        // joining (the first audio section of the first
+                        // publisher offer), not whichever audio sends first.
                         let video = match track.kind() {
-                            RTPCodecType::Audio if peer.claim_microphone() => None,
+                            RTPCodecType::Audio
+                                if peer.is_microphone_mid(Some(&mid)) && peer.claim_microphone() =>
+                            {
+                                None
+                            }
                             RTPCodecType::Audio => Some(false),
                             RTPCodecType::Video => Some(true),
                             RTPCodecType::Unspecified => {

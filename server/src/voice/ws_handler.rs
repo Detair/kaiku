@@ -556,6 +556,25 @@ async fn handle_leave(
     .map(|_| ())
 }
 
+/// The media id (`a=mid`) of the first audio section of a session
+/// description, if it has one.
+fn first_audio_mid(sdp: &str) -> Option<String> {
+    let mut in_audio = false;
+    for line in sdp.lines() {
+        if let Some(media) = line.strip_prefix("m=") {
+            if in_audio {
+                return None;
+            }
+            in_audio = media.starts_with("audio");
+        } else if in_audio {
+            if let Some(mid) = line.strip_prefix("a=mid:") {
+                return Some(mid.trim().to_owned());
+            }
+        }
+    }
+    None
+}
+
 /// The peer of `user_id` in `room` that belongs to the socket `tx`. Every
 /// voice event except the join acts only on its own socket's peer: after
 /// the same user joined from another socket, the old socket's events find
@@ -591,8 +610,10 @@ async fn handle_publisher_offer(
 
     let peer = owned_peer(&room, user_id, tx).await?;
 
-    // Refused video transceiver bindings do not outlive an offer (it may
-    // reuse them).
+    // The first offer names the microphone: its first audio section (every
+    // client adds the microphone before it sends that offer). Refused video
+    // transceiver bindings do not outlive an offer (it may reuse them).
+    peer.set_microphone_mid(first_audio_mid(sdp));
     peer.forget_refused_mids();
 
     match SfuServer::handle_publisher_offer(&peer, sdp.to_string()).await {

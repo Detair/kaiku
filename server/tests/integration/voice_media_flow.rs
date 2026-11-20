@@ -781,3 +781,58 @@ async fn keyframe_request_reaches_the_watched_layer(pool: PgPool) {
         "the high layer got {got} key-frame requests; all: {all:?}"
     );
 }
+
+/// A participant whose microphone sends nothing yet (muted, push-to-talk)
+/// shares the screen with sound: the sound is the share's audio (not the
+/// microphone) and ends with the share.
+#[sqlx::test]
+async fn share_audio_before_any_microphone_audio_is_screen_audio(pool: PgPool) {
+    let f = fixture(pool).await;
+    let mut b = f.participant(SimOptions::default()).await;
+    b.join_and_publish_mic().await;
+    let mut a = f.participant(SimOptions::default()).await;
+    a.join().await;
+    a.add_silent_audio("mic").await;
+    a.publish().await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let stream = Uuid::new_v4();
+    let mut start = share_start(f.voice, stream);
+    start["has_audio"] = serde_json::json!(true);
+    a.send(start);
+    a.next_event("screen_share_started", WAIT).await;
+    a.add_track(true, "screen").await;
+    a.add_track(false, "screen-audio").await;
+    a.publish().await;
+
+    let audio = format!("{}:screen_audio:{stream}", a.user_id);
+    assert!(
+        b.wait_for_packets(&audio, 5, WAIT).await,
+        "the share's sound did not arrive as screen audio: {:?}",
+        b.seen_tracks()
+    );
+    assert!(
+        !b.seen_tracks().iter().any(|t| t == &mic_track(a.user_id)),
+        "the share's sound was taken as the microphone: {:?}",
+        b.seen_tracks()
+    );
+
+    a.send(serde_json::json!({
+        "type": "voice_screen_share_stop",
+        "channel_id": f.voice,
+        "stream_id": stream,
+    }));
+    b.next_event("screen_share_stopped", WAIT).await;
+    let deadline = tokio::time::Instant::now() + WAIT;
+    loop {
+        let (active, _) = subscriber_counts(&f.app, f.voice, b.user_id).await;
+        if active == 0 {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the share's sound outlived the share ({active} senders)"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
