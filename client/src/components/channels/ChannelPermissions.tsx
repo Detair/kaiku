@@ -26,6 +26,7 @@ import {
   CATEGORY_NAMES,
   PermissionCategory,
   hasPermission,
+  addPermission,
   mergeShownBits,
 } from "@/lib/permissionConstants";
 import type { ChannelOverride } from "@/lib/types";
@@ -123,10 +124,10 @@ const ChannelPermissions: Component<ChannelPermissionsProps> = (props) => {
       let editedDeny = 0;
       for (const perm of CHANNEL_OVERRIDE_PERMISSIONS) {
         if (!isPermissionVisible(perm.key)) continue;
-        shown |= perm.bit;
+        shown = addPermission(shown, perm.bit);
         const state = localOverrides()[perm.bit];
-        if (state === "allow") editedAllow |= perm.bit;
-        if (state === "deny") editedDeny |= perm.bit;
+        if (state === "allow") editedAllow = addPermission(editedAllow, perm.bit);
+        if (state === "deny") editedDeny = addPermission(editedDeny, perm.bit);
       }
       const stored = getOverride(roleId);
       const allow = mergeShownBits(stored?.allow_permissions ?? 0, shown, editedAllow);

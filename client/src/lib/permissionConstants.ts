@@ -390,11 +390,19 @@ export function getPermissionsByCategory(
 // mask into a high and a low 32-bit half; bits up to 52 are kept exactly.
 const TWO_32 = 2 ** 32;
 
+/**
+ * A negative mask is one that went through 32-bit math (`|`, `&`) with bit
+ * 31 set: it stands for its unsigned 32 bits, never for bits 31..63.
+ */
+const unsigned = (mask: number) => (mask < 0 ? mask >>> 0 : mask);
+
 function maskOp(
   a: number,
   b: number,
   op: (x: number, y: number) => number,
 ): number {
+  a = unsigned(a);
+  b = unsigned(b);
   const high = op(Math.floor(a / TWO_32) >>> 0, Math.floor(b / TWO_32) >>> 0);
   const low = op(a >>> 0, b >>> 0);
   return (high >>> 0) * TWO_32 + (low >>> 0);

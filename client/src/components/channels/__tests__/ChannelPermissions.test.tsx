@@ -9,6 +9,7 @@ type Override = { role_id: string; allow_permissions: number; deny_permissions: 
 const p = vi.hoisted(() => ({
   overrides: [] as Override[],
   setChannelOverride: vi.fn(),
+  hidden: new Set<string>(),
 }));
 
 vi.mock("@/stores/permissions", () => ({
@@ -22,7 +23,9 @@ vi.mock("@/stores/permissions", () => ({
   ],
   permissionsState: { isOverridesLoading: false },
 }));
-vi.mock("@/stores/serverFeatures", () => ({ isPermissionVisible: () => true }));
+vi.mock("@/stores/serverFeatures", () => ({
+  isPermissionVisible: (key: string) => !p.hidden.has(key),
+}));
 vi.mock("@/components/guilds/settingsAction", () => ({ reportFailure: vi.fn() }));
 
 import ChannelPermissions from "../ChannelPermissions";
@@ -32,7 +35,10 @@ const HIGH = 2 ** 40;
 // The server's SCREEN_SHARE bit (server/src/permissions/guild.rs).
 const SCREEN_SHARE = 1 << 22;
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  p.hidden.clear();
+});
 beforeEach(() => {
   p.setChannelOverride.mockReset();
   p.setChannelOverride.mockResolvedValue({});
@@ -47,7 +53,24 @@ function openEditorAndDenySending() {
 }
 
 describe("ChannelPermissions save", () => {
-  it("keeps a stored screen-share deny when another permission is changed", async () => {
+  it("keeps a stored allow and deny of permissions it does not list", async () => {
+    // Forum and event rights are not offered per channel; a deny and an
+    // allow stored for them survive an unrelated change.
+    p.overrides = [
+      {
+        role_id: "everyone",
+        allow_permissions: PermissionBits.MANAGE_EVENTS,
+        deny_permissions: PermissionBits.MANAGE_POSTS,
+      },
+    ];
+    openEditorAndDenySending();
+    await waitFor(() => expect(p.setChannelOverride).toHaveBeenCalled());
+    const [, , body] = p.setChannelOverride.mock.calls[0];
+    expect(body.allow).toBe(PermissionBits.MANAGE_EVENTS);
+    expect(body.deny).toBe(PermissionBits.MANAGE_POSTS + PermissionBits.SEND_MESSAGES);
+  });
+
+  it("round-trips a stored screen-share deny (a listed permission)", async () => {
     p.overrides = [
       { role_id: "everyone", allow_permissions: 0, deny_permissions: SCREEN_SHARE },
     ];
@@ -56,6 +79,24 @@ describe("ChannelPermissions save", () => {
     const [, , body] = p.setChannelOverride.mock.calls[0];
     expect(body.deny).toBe(SCREEN_SHARE | PermissionBits.SEND_MESSAGES);
     expect(body.allow).toBe(0);
+  });
+
+  it("a listed but hidden permission is neither cleared nor set on save", async () => {
+    // Hidden: stored in both masks (shown it would be read as "allow" and
+    // saved as allow only); a save must leave both copies as stored.
+    p.hidden.add("CREATE_INVITE");
+    p.overrides = [
+      {
+        role_id: "everyone",
+        allow_permissions: PermissionBits.CREATE_INVITE,
+        deny_permissions: PermissionBits.CREATE_INVITE,
+      },
+    ];
+    openEditorAndDenySending();
+    await waitFor(() => expect(p.setChannelOverride).toHaveBeenCalled());
+    const [, , body] = p.setChannelOverride.mock.calls[0];
+    expect(body.allow).toBe(PermissionBits.CREATE_INVITE);
+    expect(body.deny).toBe(PermissionBits.CREATE_INVITE + PermissionBits.SEND_MESSAGES);
   });
 
   it("keeps every stored bit the editor does not list, also above bit 31", async () => {

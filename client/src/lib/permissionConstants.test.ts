@@ -141,3 +141,37 @@ describe("permission mask helpers keep bits above 31", () => {
     expect(mergeShownBits(0, PermissionBits.SEND_MESSAGES, PermissionBits.MANAGE_GUILD)).toBe(0);
   });
 });
+
+describe("every permission has its own single bit", () => {
+  it("each bit is one positive power of two, written as 2 ** n above 30", () => {
+    for (const [name, bit] of Object.entries(PermissionBits)) {
+      const n = Math.log2(bit);
+      expect(
+        bit > 0 && Number.isInteger(n) && n <= 52,
+        `${name} = ${bit}: a permission is one bit; write bits above 30 as 2 ** n (1 << 31 is negative, 1 << 32 is 1)`,
+      ).toBe(true);
+    }
+  });
+
+  it("no two permissions share a bit", () => {
+    const seen = new Map<number, string>();
+    for (const [name, bit] of Object.entries(PermissionBits)) {
+      expect(seen.get(bit), `${name} uses the bit of ${seen.get(bit)}`).toBeUndefined();
+      seen.set(bit, name);
+    }
+  });
+});
+
+describe("a mask that went through 32-bit math", () => {
+  // A mask with bit 31 set that passed `|` arrives as -2^31: it means bit 31
+  // (and the low bits), never bits 31..63.
+  const bit31 = -(2 ** 31);
+
+  it("reads a negative value as its unsigned 32 bits", () => {
+    expect(hasPermission(bit31, 2 ** 32)).toBe(false);
+    expect(hasPermission(bit31, 2 ** 31)).toBe(true);
+    expect(addPermission(bit31, 1)).toBe(2 ** 31 + 1);
+    expect(removePermission(bit31, 2 ** 31)).toBe(0);
+    expect(mergeShownBits(bit31, 1, 0)).toBe(2 ** 31);
+  });
+});
