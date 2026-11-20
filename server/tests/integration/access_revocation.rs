@@ -1477,45 +1477,59 @@ async fn admin_request(
 
 /// The three answers to `admin_subscribe`, against the database and
 /// without a socket around the access state (other tests publish on the
-/// shared admin channel). Elevated: no reply, and admin events are written.
-/// Not elevated: `ADMIN_NOT_ELEVATED` with its message; the request is kept
-/// and delivery starts with the elevation, without a new request. A check
-/// that cannot be made: `SERVICE_UNAVAILABLE`; the request is kept and the
-/// retry decides it. `admin_unsubscribe` ends the request.
+/// shared admin channel). Not elevated: `ADMIN_NOT_ELEVATED` with its
+/// message, read once however often the client asks; the request is kept
+/// and delivery starts with the elevation, without a new request. Elevated:
+/// no reply, and admin events are written. A check that cannot be made:
+/// `SERVICE_UNAVAILABLE`; the request is kept and the retry decides it.
+/// `admin_unsubscribe` ends the request.
 #[sqlx::test]
 async fn admin_subscribe_answers_and_keeps_the_request(pool: PgPool) {
     use vc_server::ws::access::SocketAccess;
+    use vc_server::ws::test_hooks::{access_reads, count_access_reads, fail_access_reads};
     let app = TestApp::with_pool(pool.clone()).await;
     let (admin, _) = create_test_user(&pool).await;
     make_admin(&pool, admin).await;
     let (sid, _) = create_session_with_token(&pool, &app.config, admin).await;
     let access = SocketAccess::for_session(admin, Some(sid), app.state.db.clone());
-    let elevate = || async {
-        sqlx::query(
-            "INSERT INTO elevated_sessions (user_id, session_id, ip_address, expires_at, reason)
-             VALUES ($1, $2, '127.0.0.1', NOW() + INTERVAL '15 minutes', 'test')",
-        )
-        .bind(admin)
-        .bind(sid)
-        .execute(&pool)
-        .await
-        .unwrap();
-        user_bumped(Uuid::new_v4(), admin).await;
-    };
+    let not_elevated = Some((
+        "ADMIN_NOT_ELEVATED".to_string(),
+        "Must be an elevated admin to subscribe to admin events".to_string(),
+    ));
 
-    // Not elevated.
+    // Not elevated: read once.
+    count_access_reads(admin);
     let refused = admin_request(&app, &access, admin, "admin_subscribe").await;
-    assert_eq!(
-        refused,
-        Some((
-            "ADMIN_NOT_ELEVATED".to_string(),
-            "Must be an elevated admin to subscribe to admin events".to_string()
-        ))
-    );
+    assert_eq!(refused, not_elevated);
     assert!(access.admin_subscribed() && !access.admin_allowed());
     assert!(!access.admit_admin().await);
+    assert_eq!(access_reads(admin).0, 1);
+    // Asking again, also after an unsubscribe, is answered the same from
+    // that decision.
+    for _ in 0..3 {
+        let again = admin_request(&app, &access, admin, "admin_subscribe").await;
+        assert_eq!(again, not_elevated);
+    }
+    assert_eq!(
+        admin_request(&app, &access, admin, "admin_unsubscribe").await,
+        None
+    );
+    assert!(!access.admin_subscribed());
+    let again = admin_request(&app, &access, admin, "admin_subscribe").await;
+    assert_eq!(again, not_elevated);
+    assert_eq!(access_reads(admin).0, 1, "read again for a refused socket");
+
     // The elevation (committed, epoch bumped) is all it takes.
-    elevate().await;
+    sqlx::query(
+        "INSERT INTO elevated_sessions (user_id, session_id, ip_address, expires_at, reason)
+         VALUES ($1, $2, '127.0.0.1', NOW() + INTERVAL '15 minutes', 'test')",
+    )
+    .bind(admin)
+    .bind(sid)
+    .execute(&pool)
+    .await
+    .unwrap();
+    user_bumped(Uuid::new_v4(), admin).await;
     assert!(
         access.admit_admin().await,
         "no delivery after the elevation"
@@ -1535,8 +1549,9 @@ async fn admin_subscribe_answers_and_keeps_the_request(pool: PgPool) {
     );
     assert!(!access.admin_subscribed() && !access.admit_admin().await);
 
-    // The check cannot be made.
-    vc_server::ws::test_hooks::fail_access_reads(admin, 1);
+    // The check cannot be made (on another socket of the session).
+    let access = SocketAccess::for_session(admin, Some(sid), app.state.db.clone());
+    fail_access_reads(admin, 1);
     let undecided = admin_request(&app, &access, admin, "admin_subscribe").await;
     assert_eq!(
         undecided,
