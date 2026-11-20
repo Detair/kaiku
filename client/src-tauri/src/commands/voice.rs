@@ -457,7 +457,7 @@ pub async fn join_voice(
 
                 // Atomic check-and-increment to avoid TOCTOU race between
                 // load() and fetch_add() when multiple tracks arrive concurrently.
-                let was_under_cap = count.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |c| {
+                let was_under_cap = crate::audio::update_usize(&count, |c| {
                     if c < voice::video_decoder::MAX_VIDEO_STREAMS {
                         Some(c + 1)
                     } else {
@@ -496,7 +496,7 @@ pub async fn join_voice(
                     return;
                 }
 
-                // Count already incremented by fetch_update — proceed with decode.
+                // Count already incremented by the update above — proceed with decode.
                 let handle = voice::video_decoder::spawn_video_decode_task(
                     track,
                     user_id,
@@ -1550,6 +1550,7 @@ mod tests {
         log: Vec<&'static str>,
     }
 
+    #[allow(unknown_lints, clippy::unused_async_trait_impl)] // fakes match the trait
     impl CallAudio for FakeCallAudio {
         async fn start_capture(
             &mut self,
@@ -1711,7 +1712,7 @@ mod tests {
     async fn healthy_call_audio_reports_nothing() {
         let (_, started, events, sender_rx) = start(true, true).await;
         assert!(sender_rx.is_some());
-        assert!(events.is_empty());
+        assert_eq!(events.len(), 0);
         assert!(started.result.is_ok());
     }
 
@@ -1810,6 +1811,7 @@ mod tests {
         sent: std::sync::Mutex<Vec<String>>,
     }
 
+    #[allow(unknown_lints, clippy::unused_async_trait_impl)] // fakes match the trait
     impl VoiceSignal for FakeSignal {
         async fn send_event(&self, event: ClientEvent) -> Result<(), String> {
             let name = match event {
@@ -2050,7 +2052,7 @@ mod tests {
             Ok(())
         );
         assert_eq!(voice.read().await.as_ref().unwrap().epoch, None);
-        assert!(sent_by(&ws).is_empty());
+        assert_eq!(sent_by(&ws).len(), 0);
     }
 
     #[test]

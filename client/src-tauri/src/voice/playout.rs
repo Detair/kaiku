@@ -245,6 +245,14 @@ impl<D: FrameDecoder> TrackPlayout<D> {
         }
     }
 
+    /// The output was absent: drop held packets, decoded audio and decoder
+    /// state; playback starts afresh with the next packet.
+    pub fn flush(&mut self) {
+        self.buffer.flush();
+        self.carry_len = 0;
+        self.decoder.reset();
+    }
+
     /// A packet that waited too long to be worth buffering: count it.
     pub const fn expire(&mut self) {
         self.expired += 1;

@@ -2076,7 +2076,7 @@ impl CaptureProcessor {
             self.talkspurt_pending = true;
             return;
         }
-        for (half, original) in frame.chunks_exact(RNNOISE_FRAME_SIZE).enumerate() {
+        for (half, original) in frame.as_chunks::<RNNOISE_FRAME_SIZE>().0.iter().enumerate() {
             // RNNoise works in the i16 range.
             for (dst, &s) in self.rnnoise_input.iter_mut().zip(original) {
                 *dst = s * 32767.0;
@@ -2189,8 +2189,36 @@ impl PlaybackQueue {
 /// silence them when deafened (still taking them, so the device keeps pacing
 /// the mixer and no stale audio piles up), zero-fill the rest, and account
 /// for what was consumed. No allocation, no logging.
-fn fill_output(queue: &PlaybackQueue, generation: u32, deaf: bool, data: &mut [f32]) {
+fn fill_output(
+    queue: &PlaybackQueue,
+    generation: u32,
+    first: &mut bool,
+    deaf: bool,
+    data: &mut [f32],
+) {
+    // A stream replaced by a device switch plays silence and takes nothing:
+    // the mix belongs to the new device.
+    if generation != queue.level.active_stream() {
+        data.fill(0.0);
+        return;
+    }
     queue.level.note_request(generation, data.len());
+    // Stale audio (the device was absent) is dropped; so is, on a new
+    // stream's first callback, whatever lies beyond its block plus a frame
+    // (queued for a device with larger blocks).
+    let stale = if queue.level.take_flush() {
+        queue.samples.len()
+    } else if std::mem::take(first) {
+        let keep = data.len() + FRAME_SIZE * CHANNELS as usize;
+        queue.samples.len().saturating_sub(keep)
+    } else {
+        0
+    };
+    if stale > 0 {
+        if let Some(dropped) = queue.samples.discard(stale) {
+            queue.level.consumed(dropped);
+        }
+    }
     match queue.samples.pop_into(data, deaf) {
         Some(taken) => {
             data[taken..].fill(0.0);
@@ -2350,11 +2378,18 @@ fn build_buffer_output_stream(
     // This stream becomes the measured one; a failed start hands that back.
     let previous = queue.level.active_stream();
     let generation = queue.level.begin_stream();
+    let mut first = true;
 
     let stream = match device.build_output_stream(
         &config,
         move |data: &mut [f32], _| {
-            fill_output(&queue, generation, deafened.load(Ordering::Relaxed), data);
+            fill_output(
+                &queue,
+                generation,
+                &mut first,
+                deafened.load(Ordering::Relaxed),
+                data,
+            );
         },
         stream_error_callback(reporter.clone()),
         None,
@@ -2628,7 +2663,7 @@ mod tests {
         });
         std::thread::spawn(move || {
             let mut data = vec![1.0f32; 480];
-            fill_output(&q, 1, true, &mut data);
+            fill_output(&q, q.level.active_stream(), &mut false, true, &mut data);
             let _ = done_tx.send(data.iter().all(|s| *s == 0.0));
         });
         let finished = done_rx.recv_timeout(Duration::from_millis(500));
@@ -3289,6 +3324,7 @@ mod tests {
         }
     }
 
+    #[allow(unknown_lints, clippy::unused_async_trait_impl)] // fakes match the trait
     impl CaptureFactory for FakeFactory {
         type Task = FakeTask;
         async fn spawn(&self, device: Option<&str>) -> Result<FakeTask, AudioError> {
@@ -3468,7 +3504,7 @@ mod tests {
             .await
             .unwrap();
         assert!(!switched);
-        assert!(factory.log().is_empty());
+        assert_eq!(factory.log().len(), 0);
 
         let mut capture = Some(factory.task("A", true));
         let switched = switch_capture(&factory, &mut capture, &mut current, Some("A".into()))

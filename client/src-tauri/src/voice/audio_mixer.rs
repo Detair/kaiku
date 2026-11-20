@@ -155,65 +155,231 @@ const FRAME_US: u64 = 20_000;
 ///
 /// Frames are rendered evenly, one per 20 ms of elapsed time, so every
 /// track's jitter buffer is ticked at an even pace whatever the device's
-/// block size; the output queue absorbs the device's blocks. The pace is
-/// matched to the device at one fixed phase of its cycle: right after a
-/// callback, the queue is at its low point, which is held at one frame
-/// (one extra frame when below, one skipped when a frame above). Device
-/// clock drift thus becomes an occasional extra or skipped tick, which the
-/// jitter buffer absorbs like sender drift. Rendering never runs more than
-/// one device block plus three frames ahead of the device. Before the
-/// first callback that block is not known yet, so for up to a second the
-/// largest supported block is assumed (the first callback of a 400 ms
-/// device then finds its block); when no callback comes for a second
-/// (device stalled or gone), rendering stops three frames ahead.
-#[derive(Debug, Default)]
+/// block size; the output queue absorbs the device's blocks.
+///
+/// The pace is matched to the device at the queue's low points, right
+/// after each callback. The pacer learns the block sizes the device really
+/// takes (from the queue's drop at each callback, over the last 5 s) and
+/// holds the low point at one frame plus the spread between the largest
+/// and the smallest block: before any callback the queue then holds at
+/// least the block that callback takes, however the sizes vary. Below the
+/// target it renders extra frames at once; above it by a frame or more at
+/// every low point of the last second, it skips one frame (at most one per
+/// second). Device clock drift thus becomes an occasional extra or skipped
+/// tick, which the jitter buffer absorbs like sender drift.
+///
+/// Rendering never runs more than the target plus the largest block plus
+/// two frames ahead. Before the first callback the largest supported block
+/// is assumed for up to a second; when no callback comes for a second the
+/// device counts as absent: rendering stops three frames ahead and
+/// [`Pacer::take_went_absent`] tells the mixer to drop the stale audio.
+#[derive(Debug)]
+#[allow(clippy::struct_excessive_bools)] // independent flags of the pacing state
 pub struct Pacer {
     credit_us: u64,
+    now_us: u64,
     seen_callbacks: u64,
     since_callback_us: u64,
+    /// Observed blocks and low points: `(time, samples)`.
+    blocks: History,
+    lows: History,
+    target: usize,
+    last_skip_us: u64,
+    skip_pending: bool,
+    /// Frames of the last call that are silence.
+    silence: usize,
+    absent: bool,
+    went_absent: bool,
+    resumed: bool,
+}
+
+/// A small ring of timed samples.
+#[derive(Debug)]
+struct History {
+    items: [(u64, usize); HISTORY_LEN],
+    len: usize,
+    pos: usize,
+}
+
+const HISTORY_LEN: usize = 256;
+
+impl History {
+    const fn new() -> Self {
+        Self {
+            items: [(0, 0); HISTORY_LEN],
+            len: 0,
+            pos: 0,
+        }
+    }
+
+    fn push(&mut self, at: u64, value: usize) {
+        self.items[self.pos] = (at, value);
+        self.pos = (self.pos + 1) % HISTORY_LEN;
+        self.len = (self.len + 1).min(HISTORY_LEN);
+    }
+
+    /// `(min, max, oldest time)` of the entries since `since`.
+    fn range_since(&self, since: u64) -> Option<(usize, usize, u64)> {
+        self.items[..self.len]
+            .iter()
+            .filter(|(at, _)| *at >= since)
+            .fold(None, |acc, &(at, v)| match acc {
+                None => Some((v, v, at)),
+                Some((lo, hi, first)) => Some((lo.min(v), hi.max(v), first.min(at))),
+            })
+    }
+}
+
+impl Default for Pacer {
+    fn default() -> Self {
+        Self {
+            credit_us: 0,
+            now_us: 0,
+            seen_callbacks: 0,
+            since_callback_us: 0,
+            blocks: History::new(),
+            lows: History::new(),
+            target: OUTPUT_HEADROOM_SAMPLES,
+            last_skip_us: 0,
+            skip_pending: false,
+            silence: 0,
+            absent: false,
+            went_absent: false,
+            resumed: false,
+        }
+    }
 }
 
 /// Without a device callback for this long, the device counts as absent.
 const DEVICE_ABSENT_US: u64 = 1_000_000;
 
+/// How long observed block sizes are remembered.
+const BLOCK_MEMORY_US: u64 = 5_000_000;
+
+/// Low points that must all stay above the target before a frame is
+/// skipped, and the least time between two skips.
+const SKIP_WINDOW_US: u64 = 1_000_000;
+
+/// Least time between two skips while the queue is far (four frames or
+/// more) above its target.
+const FAST_SKIP_US: u64 = 200_000;
+
 impl Pacer {
     /// Frames to render now, `elapsed_us` after the previous wake, with
-    /// `queued` samples waiting for the device, its recent block size
-    /// `request` and its completed `callbacks`.
+    /// `queued` samples waiting for the device, the smallest and largest
+    /// block it asked for recently (`blocks`, from [`OutputLevel`]) and its
+    /// completed `callbacks`.
     pub fn frames(
         &mut self,
         elapsed_us: u64,
         queued: usize,
-        request: usize,
+        blocks: Option<(usize, usize)>,
         callbacks: u64,
     ) -> usize {
+        self.now_us += elapsed_us;
         let cap = MAX_FRAMES_PER_WAKE as u64 * FRAME_US;
         self.credit_us = (self.credit_us + elapsed_us).min(cap);
         let mut due = (self.credit_us / FRAME_US) as usize;
+        let mut silence = 0usize;
         self.credit_us %= FRAME_US;
         self.since_callback_us = self.since_callback_us.saturating_add(elapsed_us);
+        if !self.absent && callbacks > 0 && self.since_callback_us >= DEVICE_ABSENT_US {
+            self.absent = true;
+            self.went_absent = true;
+        }
+
         if callbacks != self.seen_callbacks {
+            let count = callbacks.wrapping_sub(self.seen_callbacks);
             self.seen_callbacks = callbacks;
             self.since_callback_us = 0;
+            let _ = count;
+            if std::mem::take(&mut self.absent) {
+                self.resumed = true;
+            }
+            if let Some((smallest, largest)) = blocks {
+                self.blocks.push(self.now_us, smallest);
+                self.blocks.push(self.now_us, largest);
+            }
             // The device has just taken its block: the queue's low point.
-            if queued < OUTPUT_HEADROOM_SAMPLES {
-                due += (OUTPUT_HEADROOM_SAMPLES - queued).div_ceil(FRAME_SAMPLES);
-            } else if queued >= OUTPUT_HEADROOM_SAMPLES + FRAME_SAMPLES {
-                due = due.saturating_sub(1);
+            self.lows.push(self.now_us, queued);
+            let since = self.now_us.saturating_sub(BLOCK_MEMORY_US);
+            let (smallest, largest, _) =
+                self.blocks
+                    .range_since(since)
+                    .unwrap_or((0, 0, self.now_us));
+            let room = crate::audio::MAX_QUEUE_SAMPLES - 2 * FRAME_SAMPLES;
+            self.target =
+                (OUTPUT_HEADROOM_SAMPLES + largest - smallest).min(room - largest.min(room));
+            self.target = self.target.max(OUTPUT_HEADROOM_SAMPLES.min(room));
+            if queued < self.target {
+                let extra = (self.target - queued).div_ceil(FRAME_SAMPLES);
+                if extra == 1 {
+                    // A frame short: the device clock runs a little fast.
+                    // An extra tick, which the jitter buffers absorb.
+                    due += 1;
+                } else {
+                    // Far short (start, a larger block than before, a new
+                    // device): fill the queue with silence. Ticking the
+                    // jitter buffers in a burst would starve them.
+                    silence += extra;
+                }
+            } else {
+                let window = self.now_us.saturating_sub(SKIP_WINDOW_US);
+                let lows = self.lows.range_since(window);
+                // A large excess (after the device's blocks got smaller)
+                // drains faster than drift.
+                let far =
+                    lows.is_some_and(|(lowest, ..)| lowest >= self.target + 4 * FRAME_SAMPLES);
+                let gap = if far { FAST_SKIP_US } else { SKIP_WINDOW_US };
+                let settled = self.now_us.saturating_sub(self.last_skip_us) >= gap;
+                let all_high = lows.is_some_and(|(lowest, _, first)| {
+                    lowest >= self.target + FRAME_SAMPLES && first <= window + 2 * FRAME_US
+                });
+                if settled && all_high {
+                    self.skip_pending = true;
+                    self.last_skip_us = self.now_us;
+                }
             }
         }
-        let block = if self.since_callback_us >= DEVICE_ABSENT_US {
-            0
-        } else if callbacks == 0 {
-            crate::audio::MAX_REQUEST_SAMPLES
-        } else {
-            request
-        };
-        let bound = block + 3 * FRAME_SAMPLES;
-        while due > 0 && queued + due * FRAME_SAMPLES > bound {
+
+        // A skip takes effect at the next frame that is due.
+        if self.skip_pending && due > 0 {
             due -= 1;
+            self.skip_pending = false;
         }
-        due.min(MAX_FRAMES_PER_WAKE)
+        // The ring's capacity bounds rendering; before the first callback
+        // the largest supported block plus a frame, without a device three
+        // frames. Excess is drained by skipping (above), never by stopping:
+        // the tracks keep their even pace.
+        let bound = if self.absent {
+            3 * FRAME_SAMPLES
+        } else if callbacks == 0 {
+            crate::audio::MAX_REQUEST_SAMPLES + 3 * FRAME_SAMPLES
+        } else {
+            crate::audio::MAX_QUEUE_SAMPLES - FRAME_SAMPLES
+        };
+        while due + silence > 0 && queued + (due + silence) * FRAME_SAMPLES > bound {
+            if silence > 0 {
+                silence -= 1;
+            } else {
+                due -= 1;
+            }
+        }
+        let total = (due + silence).min(MAX_FRAMES_PER_WAKE);
+        self.silence = silence.min(total);
+        total
+    }
+
+    /// How many of the frames the last [`Pacer::frames`] asked for are
+    /// silence (rendered first, without ticking the tracks).
+    pub const fn silence(&self) -> usize {
+        self.silence
+    }
+
+    /// The device just went absent (no callback for a second), or came
+    /// back after that: what is queued and buffered is stale.
+    pub fn take_went_absent(&mut self) -> bool {
+        std::mem::take(&mut self.went_absent) | std::mem::take(&mut self.resumed)
     }
 }
 
@@ -457,12 +623,24 @@ impl AudioMixer {
             let due = pacer.frames(
                 elapsed_us,
                 level.queued(),
-                level.request(),
+                level.request_range(),
                 level.callbacks(),
             );
-            for _ in 0..due {
-                let mut mixed = vec![0.0f32; FRAME_SAMPLES];
+            if pacer.take_went_absent() {
+                // The device stopped taking audio: what is queued and
+                // buffered will be stale when it comes back.
+                level.request_flush();
                 for track in tracks.values_mut() {
+                    track.playout.flush();
+                }
+            }
+            let quiet = pacer.silence();
+            for n in 0..due {
+                let mut mixed = vec![0.0f32; FRAME_SAMPLES];
+                // Filling the output queue with silence does not tick the
+                // tracks (see `Pacer`).
+                let tracks = tracks.values_mut().filter(|_| n >= quiet);
+                for track in tracks {
                     if track.playout.next_frame(now_ms, &mut frame) {
                         let gain = track.user_id.map_or(1.0, |user| gains.get(user));
                         for (out, sample) in mixed.iter_mut().zip(frame.iter()) {
@@ -731,7 +909,7 @@ mod tests {
     #[tokio::test]
     async fn zero_gain_is_silent() {
         let (muted, decodes) = mix_user(Some(0.0), 250).await;
-        assert!(!muted.is_empty());
+        assert_ne!(muted.len(), 0);
         // The track did play (decoded), it was only silenced.
         assert!(decodes >= 5, "{decodes} decodes");
         assert!(muted.iter().all(|s| *s == 0.0));
@@ -879,7 +1057,12 @@ mod tests {
         for t in 0..20_000usize {
             let steady = t >= 10_000;
             if t % 5 == 0 {
-                let n = pacer.frames(5_000, level.queued(), level.request(), level.callbacks());
+                let n = pacer.frames(
+                    5_000,
+                    level.queued(),
+                    level.request_range(),
+                    level.callbacks(),
+                );
                 for _ in 0..n {
                     level.produced(FRAME_SAMPLES);
                     queue += FRAME_SAMPLES;
@@ -928,16 +1111,15 @@ mod tests {
 
     #[test]
     fn blocks_beyond_the_supported_size_stay_real_time() {
-        // Larger than supported: each 500 ms callback finds 420 ms queued and
-        // plays a short gap. The mixer follows what is consumed and never
-        // runs ahead; nothing is discarded.
-        let (produced, discarded, missing, consumed) = device_run_consumed(500);
+        // Larger than the block estimate's cap: the pacer follows the blocks
+        // it observes, the queue holds them, the mixer never runs ahead and
+        // nothing is discarded.
+        let (produced, discarded, _missing, consumed) = device_run_consumed(500);
         assert!(
             produced.abs_diff(consumed / FRAME_SAMPLES) <= 30,
             "{produced}"
         );
         assert!(produced <= 505, "{produced}");
-        assert!(missing > 0);
         assert_eq!(discarded, 0);
     }
 
@@ -1019,7 +1201,7 @@ mod tests {
     fn play_run(
         block_ms: u64,
         period_us: u64,
-        mut pace: impl FnMut(u64, &OutputLevel) -> usize,
+        mut pace: impl FnMut(u64, &OutputLevel) -> (usize, usize),
     ) -> PlayRun {
         let conceals = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let decoder = CountingDecoder {
@@ -1052,8 +1234,11 @@ mod tests {
                 warm = playout.stats();
             }
             if t_ms % 5 == 0 {
-                for _ in 0..pace(t_ms, &level) {
-                    playout.next_frame(t_ms, &mut frame);
+                let (n, quiet) = pace(t_ms, &level);
+                for i in 0..n {
+                    if i >= quiet {
+                        playout.next_frame(t_ms, &mut frame);
+                    }
                     level.produced(FRAME_SAMPLES);
                     queue += FRAME_SAMPLES;
                 }
@@ -1127,7 +1312,13 @@ mod tests {
         for block_ms in SWEEP_BLOCKS {
             let mut pacer = Pacer::default();
             let run = play_run(block_ms, 20_000, |_, level| {
-                pacer.frames(5_000, level.queued(), level.request(), level.callbacks())
+                let n = pacer.frames(
+                    5_000,
+                    level.queued(),
+                    level.request_range(),
+                    level.callbacks(),
+                );
+                (n, pacer.silence())
             });
             let b = run.stats.buffer;
             assert_eq!(
@@ -1151,7 +1342,13 @@ mod tests {
             for block_ms in SWEEP_BLOCKS {
                 let mut pacer = Pacer::default();
                 let run = play_run(block_ms, period_us, |_, level| {
-                    pacer.frames(5_000, level.queued(), level.request(), level.callbacks())
+                    let n = pacer.frames(
+                        5_000,
+                        level.queued(),
+                        level.request_range(),
+                        level.callbacks(),
+                    );
+                    (n, pacer.silence())
                 });
                 let b = run.stats.buffer;
                 let (wanted, other) = if slow {
@@ -1269,28 +1466,114 @@ mod tests {
         assert_eq!(stats[0].1.expired, 8, "{stats:?}");
     }
 
+    /// A device asking for 20, 20, 20, then `big` ms, each callback after
+    /// the previous block's duration, at every phase of the 5 ms wake:
+    /// after warm-up it never finds the queue short.
+    #[test]
+    fn variable_device_blocks_never_find_the_queue_short() {
+        for big in [60u64, 100, 200, 400] {
+            for phase in 0..5u64 {
+                let level = OutputLevel::new();
+                let stream = level.begin_stream();
+                let mut pacer = Pacer::default();
+                let mut queue = 0usize;
+                let (mut pos, mut block_ms, mut next_cb, mut short) =
+                    (0usize, 20u64, 20u64, 0usize);
+                for t in 0..60_000u64 {
+                    if t % 5 == phase {
+                        let n = pacer.frames(
+                            5_000,
+                            level.queued(),
+                            level.request_range(),
+                            level.callbacks(),
+                        );
+                        level.produced(n * FRAME_SAMPLES);
+                        queue += n * FRAME_SAMPLES;
+                    }
+                    if t == next_cb {
+                        let block = block_ms as usize * 96;
+                        level.note_request(stream, block);
+                        let take = queue.min(block);
+                        queue -= take;
+                        level.consumed(take);
+                        level.callback_done(stream);
+                        if t > 5_000 {
+                            short += block - take;
+                        }
+                        next_cb = t + block_ms;
+                        pos = (pos + 1) % 4;
+                        block_ms = if pos == 3 { big } else { 20 };
+                    }
+                    if t % 1000 == 999 {
+                        level.roll_window();
+                    }
+                }
+                assert_eq!(short, 0, "20/20/20/{big} ms at wake phase {phase}");
+            }
+        }
+    }
+
     #[test]
     fn pacer_renders_evenly_and_meets_the_device_at_its_low_point() {
+        let f = FRAME_SAMPLES;
+        let b40 = Some((40 * 96, 40 * 96));
         let mut pacer = Pacer::default();
         // No callback yet: one frame per 20 ms, evenly.
-        assert_eq!(pacer.frames(20_000, 0, 0, 0), 1);
-        assert_eq!(pacer.frames(10_000, FRAME_SAMPLES, 0, 0), 0);
-        assert_eq!(pacer.frames(10_000, FRAME_SAMPLES, 0, 0), 1);
-        // Still none after a second: the device counts as absent, at most
-        // three frames ahead.
-        assert_eq!(pacer.frames(1_000_000, 3 * FRAME_SAMPLES, 0, 0), 0);
-        assert_eq!(pacer.frames(20_000, 2 * FRAME_SAMPLES, 0, 0), 1);
-        assert_eq!(pacer.frames(20_000, 3 * FRAME_SAMPLES, 0, 0), 0);
-        // A 100 ms device took its first block and left the queue empty:
-        // one frame to reach the headroom, plus the even pace.
-        let block = 100 * 96;
-        assert_eq!(pacer.frames(20_000, 0, block, 1), 2);
-        // Even pace between callbacks, however large the block.
-        assert_eq!(pacer.frames(20_000, 2 * FRAME_SAMPLES, block, 1), 1);
-        // At the next low point the queue is a frame too full (device
-        // clock slower): one frame is skipped.
-        assert_eq!(pacer.frames(20_000, 2 * FRAME_SAMPLES, block, 2), 0);
+        assert_eq!(pacer.frames(20_000, 0, None, 0), 1);
+        assert_eq!(pacer.frames(10_000, f, None, 0), 0);
+        assert_eq!(pacer.frames(10_000, f, None, 0), 1);
+        // A 40 ms device took its block and left the queue empty: one frame
+        // to the headroom, plus the even pace.
+        assert_eq!(pacer.frames(20_000, 0, b40, 1), 2);
+        // Even pace between callbacks.
+        assert_eq!(pacer.frames(20_000, 2 * f, b40, 1), 1);
         // Never more than three per wake, even after a long stall.
-        assert_eq!(pacer.frames(1_000_000, 0, block, 3), 3);
+        assert_eq!(pacer.frames(1_000_000, 0, b40, 2), 3);
+        // No callback for a second: absent, once; three frames ahead at most.
+        assert_eq!(pacer.frames(1_100_000, 3 * f, b40, 2), 0);
+        assert!(pacer.take_went_absent());
+        assert!(!pacer.take_went_absent());
+        assert_eq!(pacer.frames(20_000, 2 * f, b40, 2), 1);
+        assert_eq!(pacer.frames(20_000, 3 * f, b40, 2), 0);
+    }
+
+    /// Blocks of different sizes raise the low point by their spread.
+    #[test]
+    fn pacer_holds_the_spread_of_block_sizes_in_reserve() {
+        let f = FRAME_SAMPLES;
+        let mut pacer = Pacer::default();
+        // A device mixing 20 and 100 ms blocks; the queue's low point is one
+        // frame: the pacer tops it up to one frame + 80 ms at once.
+        let due = pacer.frames(5_000, f, Some((20 * 96, 100 * 96)), 1);
+        assert_eq!(due, 3, "capped at three per wake");
+        let due = pacer.frames(5_000, 4 * f, Some((20 * 96, 100 * 96)), 2);
+        assert_eq!(due, 1);
+    }
+
+    /// With a queue a few frames too full, the pacer drains it by one frame
+    /// per second, never faster, and stops at its target.
+    #[test]
+    fn pacer_skips_at_most_once_a_second_and_only_when_every_low_point_is_high() {
+        let f = FRAME_SAMPLES;
+        let mut pacer = Pacer::default();
+        let mut queue = 4 * f; // three frames above the target
+        let mut callbacks = 0u64;
+        let (mut rendered, mut skips) = (0u64, Vec::new());
+        for t in (0..10_000u64).step_by(5) {
+            if t % 20 == 0 {
+                callbacks += 1;
+                queue -= f.min(queue); // a 20 ms device
+            }
+            let due = pacer.frames(5_000, queue, Some((20 * 96, 20 * 96)), callbacks);
+            queue += due * f;
+            rendered += due as u64;
+            let expected = (t + 5) / 20;
+            if rendered + skips.len() as u64 + 1 == expected {
+                skips.push(t);
+            }
+        }
+        assert_eq!(queue, 2 * f, "settled one frame above the device's take");
+        assert!((2..=4).contains(&skips.len()), "{skips:?}");
+        assert!(skips.windows(2).all(|w| w[1] - w[0] >= 1_000), "{skips:?}");
     }
 }

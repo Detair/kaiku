@@ -88,11 +88,16 @@ pub fn voice_encoder() -> Result<opus::Encoder, AudioError> {
 #[derive(Clone, Default)]
 pub struct OutputLevel {
     queued: Arc<AtomicUsize>,
-    /// `(generation << 32) | samples`.
+    /// `(generation << 32) | samples`: largest and smallest request of the
+    /// current and the previous window.
     recent: Arc<AtomicU64>,
     previous: Arc<AtomicU64>,
+    recent_min: Arc<AtomicU64>,
+    previous_min: Arc<AtomicU64>,
     active: Arc<AtomicU32>,
     callbacks: Arc<AtomicU64>,
+    /// Set when the queued audio went stale (the device was absent).
+    flush: Arc<AtomicBool>,
 }
 
 /// One 20 ms stereo frame in interleaved samples.
@@ -104,9 +109,41 @@ const FRAME_SAMPLES: usize = FRAME_SIZE * CHANNELS as usize;
 pub const MAX_REQUEST_SAMPLES: usize = 400 * 96;
 
 /// Samples the playback queue holds at most: above the most the mixer ever
-/// queues (largest block + three frames), so in steady state nothing is
-/// discarded. A safety net only.
-pub const MAX_QUEUE_SAMPLES: usize = MAX_REQUEST_SAMPLES + 3 * FRAME_SAMPLES;
+/// queues (a low point covering the spread of block sizes, plus the largest
+/// block, plus two frames), so in steady state nothing is discarded.
+pub const MAX_QUEUE_SAMPLES: usize = 2 * MAX_REQUEST_SAMPLES + 3 * FRAME_SAMPLES;
+
+/// Replace the value of `atomic` by `f(value)` with a lock-free
+/// compare-and-swap loop (real-time safe). `Err` when `f` declines.
+pub fn update_usize(
+    atomic: &AtomicUsize,
+    mut f: impl FnMut(usize) -> Option<usize>,
+) -> Result<usize, usize> {
+    let mut current = atomic.load(Ordering::Acquire);
+    loop {
+        let Some(new) = f(current) else {
+            return Err(current);
+        };
+        match atomic.compare_exchange_weak(current, new, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(previous) => return Ok(previous),
+            Err(actual) => current = actual,
+        }
+    }
+}
+
+/// [`update_usize`] for `AtomicU64`.
+fn update_u64(atomic: &AtomicU64, mut f: impl FnMut(u64) -> Option<u64>) -> Result<u64, u64> {
+    let mut current = atomic.load(Ordering::Acquire);
+    loop {
+        let Some(new) = f(current) else {
+            return Err(current);
+        };
+        match atomic.compare_exchange_weak(current, new, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(previous) => return Ok(previous),
+            Err(actual) => current = actual,
+        }
+    }
+}
 
 const fn pack(generation: u32, samples: usize) -> u64 {
     ((generation as u64) << 32) | (samples as u64 & 0xFFFF_FFFF)
@@ -129,11 +166,7 @@ impl OutputLevel {
     /// The device consumed (or the queue discarded) `samples`.
     pub fn consumed(&self, samples: usize) {
         // Lock-free (a CAS loop); safe on the real-time thread.
-        let _ = self
-            .queued
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |q| {
-                Some(q.saturating_sub(samples))
-            });
+        let _ = update_usize(&self.queued, |q| Some(q.saturating_sub(samples)));
     }
 
     /// A new output stream starts: it becomes the measured one. Returns
@@ -159,17 +192,46 @@ impl OutputLevel {
         if generation != self.active.load(Ordering::Acquire) {
             return;
         }
-        let _ = self
-            .recent
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-                let (g, old) = unpack(value);
-                let max = if g == generation {
-                    old.max(samples)
-                } else {
-                    samples
-                };
-                Some(pack(generation, max))
-            });
+        let _ = update_u64(&self.recent, |value| {
+            let (g, old) = unpack(value);
+            let max = if g == generation {
+                old.max(samples)
+            } else {
+                samples
+            };
+            Some(pack(generation, max))
+        });
+        let _ = update_u64(&self.recent_min, |value| {
+            let (g, old) = unpack(value);
+            let min = if g == generation && old > 0 {
+                old.min(samples)
+            } else {
+                samples
+            };
+            Some(pack(generation, min))
+        });
+    }
+
+    /// Smallest and largest block of the measured stream over the last one
+    /// to two seconds (`None` before its first callback), each at most
+    /// twice [`MAX_REQUEST_SAMPLES`].
+    pub fn request_range(&self) -> Option<(usize, usize)> {
+        let active = self.active.load(Ordering::Acquire);
+        let of = |value: u64| match unpack(value) {
+            (g, samples) if g == active && samples > 0 => Some(samples),
+            _ => None,
+        };
+        let largest = [&self.recent, &self.previous]
+            .iter()
+            .filter_map(|v| of(v.load(Ordering::Relaxed)))
+            .max()?;
+        let smallest = [&self.recent_min, &self.previous_min]
+            .iter()
+            .filter_map(|v| of(v.load(Ordering::Relaxed)))
+            .min()
+            .unwrap_or(largest);
+        let cap = 2 * MAX_REQUEST_SAMPLES;
+        Some((smallest.min(cap), largest.min(cap)))
     }
 
     /// Stream `generation` finished a callback (after `consumed`).
@@ -177,6 +239,16 @@ impl OutputLevel {
         if generation == self.active.load(Ordering::Acquire) {
             self.callbacks.fetch_add(1, Ordering::Release);
         }
+    }
+
+    /// What is queued for the device went stale: the next callback drops it.
+    pub fn request_flush(&self) {
+        self.flush.store(true, Ordering::Release);
+    }
+
+    /// Whether the queue is to be dropped (once; real-time safe).
+    pub fn take_flush(&self) -> bool {
+        self.flush.swap(false, Ordering::AcqRel)
     }
 
     /// Completed callbacks of the measured streams so far.
@@ -208,6 +280,8 @@ impl OutputLevel {
         let last = self.recent.swap(pack(active, 0), Ordering::Relaxed);
         // A value of an older stream is ignored by `request`.
         self.previous.store(last, Ordering::Relaxed);
+        let last_min = self.recent_min.swap(pack(active, 0), Ordering::Relaxed);
+        self.previous_min.store(last_min, Ordering::Relaxed);
     }
 }
 

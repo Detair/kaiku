@@ -33,7 +33,6 @@ impl SampleRing {
     }
 
     /// Samples waiting to be read.
-    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.head
             .load(Ordering::Acquire)
@@ -58,6 +57,24 @@ impl SampleRing {
         }
         self.head.store(head.wrapping_add(n), Ordering::Release);
         n
+    }
+
+    /// Drop up to `count` of the oldest samples (consumer side; same rules
+    /// as [`SampleRing::pop_into`]). Returns how many were dropped.
+    pub fn discard(&self, count: usize) -> Option<usize> {
+        if self
+            .reading
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            return None;
+        }
+        let tail = self.tail.load(Ordering::Relaxed);
+        let head = self.head.load(Ordering::Acquire);
+        let n = head.wrapping_sub(tail).min(count);
+        self.tail.store(tail.wrapping_add(n), Ordering::Release);
+        self.reading.store(false, Ordering::Release);
+        Some(n)
     }
 
     /// Read up to `out.len()` samples into `out` (zeros instead when
