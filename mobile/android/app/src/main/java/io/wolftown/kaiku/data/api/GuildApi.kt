@@ -23,7 +23,9 @@ class GuildApiImpl @Inject constructor(
 ) : GuildApi {
 
     override suspend fun getGuilds(): List<Guild> {
-        val response = httpClient.get("/api/guilds")
+        // Bound to the caller's signed-in session, if it names one ([withRequestSession]).
+        val session = boundSession()
+        val response = httpClient.get("/api/guilds") { requireSession(session) }
 
         if (!response.status.isSuccess()) {
             val errorBody = runCatching { response.body<ApiErrorResponse>() }.getOrNull()
@@ -56,7 +58,8 @@ class GuildApiImpl @Inject constructor(
     }
 
     override suspend fun getMembers(guildId: String): List<GuildMember> {
-        val response = httpClient.get("/api/guilds/$guildId/members")
+        val session = boundSession()
+        val response = httpClient.get("/api/guilds/$guildId/members") { requireSession(session) }
         response.ensureSuccess("members failed")
         return response.body()
     }

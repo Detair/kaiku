@@ -52,4 +52,27 @@ class DmApiCreateTest {
         assertEquals(setOf("x"), api.getBlocked())
         assertEquals("/api/friends/blocked", rec.last.path)
     }
+
+    @Test
+    fun `requests made for a session are not sent once another session is current`() = runTest {
+        // Built for session 1; another account (session 2) is signed in by the time they would go out.
+        rec.session.value = io.wolftown.kaiku.data.local.AuthSession.LoggedIn("bert", 2L)
+        for (request in listOf<suspend () -> Any?>(
+            { api.getDms() },
+            { api.createDm("anna") },
+            { api.getBlocked() },
+            { api.markAsRead("dm-1", "m1") },
+        )) {
+            val failure = runCatching { withRequestSession(ApiRecorder.SESSION) { request() } }.exceptionOrNull()
+            org.junit.Assert.assertTrue("$failure", failure is SessionChangedException)
+        }
+        org.junit.Assert.assertTrue(rec.requests.isEmpty())
+    }
+
+    @Test
+    fun `a request made for the current session goes out`() = runTest {
+        rec.body = "[]"
+        withRequestSession(ApiRecorder.SESSION) { api.getDms() }
+        assertEquals("/api/dm", rec.last.path)
+    }
 }

@@ -3,6 +3,7 @@ package io.wolftown.kaiku.ui.dm
 import app.cash.turbine.test
 import io.ktor.http.HttpStatusCode
 import io.mockk.coEvery
+import io.mockk.every
 import io.mockk.coVerify
 import io.mockk.mockk
 import io.mockk.verify
@@ -32,7 +33,15 @@ import java.io.IOException
 @OptIn(ExperimentalCoroutinesApi::class)
 class NewMessageViewModelTest {
     private val dispatcher = StandardTestDispatcher()
-    private val people: PeopleRepository = mockk()
+    private val invalidated = kotlinx.coroutines.flow.MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    private val sessions = io.wolftown.kaiku.data.session.FakeSessions("me")
+    private val people: PeopleRepository = mockk {
+        every { invalidated } returns this@NewMessageViewModelTest.invalidated
+        // By default whoever is tapped is still someone to write to.
+        coEvery { confirm(any()) } answers {
+            io.wolftown.kaiku.data.repository.EligiblePerson(firstArg(), sessions.generation.enter()!!)
+        }
+    }
     private val dms: DmRepository = mockk(relaxed = true)
     private val anna = Person("anna", "Anna", "anna", null)
     private val bert = Person("bert", "Bert", "bert", null)
@@ -73,7 +82,7 @@ class NewMessageViewModelTest {
     fun `picking a person opens the conversation once, even on a double tap`() = runTest(dispatcher) {
         coEvery { people.load() } returns People(listOf(anna, bert), 0)
         val answer = CompletableDeferred<String>()
-        coEvery { dms.openDirectMessage("anna") } coAnswers { answer.await() }
+        coEvery { dms.openDirectMessage(match { it.userId == "anna" }) } coAnswers { answer.await() }
         val vm = NewMessageViewModel(people, dms)
         advanceUntilIdle()
 
@@ -95,7 +104,7 @@ class NewMessageViewModelTest {
     @Test
     fun `a blocked person gives the neutral message and the list stays usable`() = runTest(dispatcher) {
         coEvery { people.load() } returns People(listOf(anna), 0)
-        coEvery { dms.openDirectMessage("anna") } throws ApiException(HttpStatusCode.BadRequest, "Cannot create DM", code = "VALIDATION_ERROR")
+        coEvery { dms.openDirectMessage(match { it.userId == "anna" }) } throws ApiException(HttpStatusCode.BadRequest, "Cannot create DM", code = "VALIDATION_ERROR")
         val vm = NewMessageViewModel(people, dms)
         advanceUntilIdle()
 
@@ -111,7 +120,7 @@ class NewMessageViewModelTest {
     @Test
     fun `opening an existing conversation marks it read like the chat list`() = runTest(dispatcher) {
         coEvery { people.load() } returns People(listOf(anna), failedServers = 0)
-        coEvery { dms.openDirectMessage("anna") } returns "dm-anna"
+        coEvery { dms.openDirectMessage(match { it.userId == "anna" }) } returns "dm-anna"
         val vm = NewMessageViewModel(people, dms)
         advanceUntilIdle()
 
@@ -156,5 +165,53 @@ class NewMessageViewModelTest {
         advanceUntilIdle()
         assertEquals(emptyList<Person>(), vm.ui.value.people)
         assertEquals(true, vm.ui.value.loadError != null)
+    }
+
+    // -- The list is a look at one moment ------------------------------------------------------
+
+    @Test
+    fun `someone who can no longer be written to is not opened, also when the conversation exists`() = runTest(dispatcher) {
+        coEvery { people.load() } returns People(listOf(anna, bert), failedServers = 0)
+        // Since the list was shown, the user left Anna's server (or blocked her) on another device.
+        coEvery { people.confirm("anna") } returns null
+        val vm = NewMessageViewModel(people, dms)
+        advanceUntilIdle()
+
+        vm.open(anna)
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) { dms.openDirectMessage(any()) }
+        assertEquals(io.wolftown.kaiku.R.string.dm_new_not_possible, vm.ui.value.message)
+        assertEquals("gone from the list", listOf(bert), vm.ui.value.people)
+        assertEquals(null, vm.ui.value.openingUserId)
+    }
+
+    @Test
+    fun `a tap opens only who was just confirmed`() = runTest(dispatcher) {
+        coEvery { people.load() } returns People(listOf(anna), failedServers = 0)
+        coEvery { dms.openDirectMessage(any()) } returns "dm-anna"
+        val vm = NewMessageViewModel(people, dms)
+        advanceUntilIdle()
+
+        vm.open(anna)
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { people.confirm("anna") }
+        coVerify(exactly = 1) { dms.openDirectMessage(match { it.userId == "anna" }) }
+    }
+
+    @Test
+    fun `a block on another device or a new connection reloads the list that is shown`() = runTest(dispatcher) {
+        coEvery { people.load() } returns People(listOf(anna, bert), failedServers = 0)
+        val vm = NewMessageViewModel(people, dms)
+        advanceUntilIdle()
+        assertEquals(listOf(anna, bert), vm.ui.value.people)
+
+        // Anna was blocked on the PC.
+        coEvery { people.load() } returns People(listOf(bert), failedServers = 0)
+        invalidated.emit(Unit)
+        advanceUntilIdle()
+
+        assertEquals(listOf(bert), vm.ui.value.people)
     }
 }

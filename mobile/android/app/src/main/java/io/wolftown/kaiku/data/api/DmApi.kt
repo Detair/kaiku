@@ -15,6 +15,10 @@ private data class MarkReadRequest(val lastReadMessageId: String)
 @Serializable
 private data class CreateDmRequest(val participantIds: List<String>)
 
+/**
+ * The DM endpoints. A request made inside [withRequestSession] is bound to
+ * that signed-in session and is not sent once another one is current.
+ */
 interface DmApi {
     /** List the current user's DM conversations, newest activity first. */
     suspend fun getDms(): List<DmConversation>
@@ -39,7 +43,8 @@ class DmApiImpl @Inject constructor(
 ) : DmApi {
 
     override suspend fun getDms(): List<DmConversation> {
-        val response = httpClient.get("/api/dm")
+        val session = boundSession()
+        val response = httpClient.get("/api/dm") { requireSession(session) }
 
         if (!response.status.isSuccess()) {
             val errorBody = runCatching { response.body<ApiErrorResponse>() }.getOrNull()
@@ -50,13 +55,18 @@ class DmApiImpl @Inject constructor(
     }
 
     override suspend fun createDm(userId: String): DmConversation {
-        val response = httpClient.post("/api/dm") { setBody(CreateDmRequest(listOf(userId))) }
+        val session = boundSession()
+        val response = httpClient.post("/api/dm") {
+            requireSession(session)
+            setBody(CreateDmRequest(listOf(userId)))
+        }
         response.ensureSuccess("create dm failed")
         return withSystemFlag(response.body())
     }
 
     override suspend fun getBlocked(): Set<String> {
-        val response = httpClient.get("/api/friends/blocked")
+        val session = boundSession()
+        val response = httpClient.get("/api/friends/blocked") { requireSession(session) }
         response.ensureSuccess("blocked list failed")
         return response.body<List<BlockedUser>>().mapTo(HashSet()) { it.userId }
     }
@@ -66,7 +76,9 @@ class DmApiImpl @Inject constructor(
         if (dm.isSystem || dm.participants.none { it.isSystem }) dm else dm.copy(isSystem = true)
 
     override suspend fun markAsRead(channelId: String, lastReadMessageId: String) {
+        val session = boundSession()
         val response = httpClient.post("/api/dm/$channelId/read") {
+            requireSession(session)
             setBody(MarkReadRequest(lastReadMessageId))
         }
 

@@ -91,6 +91,16 @@ sealed class ServerEvent {
     @SerialName("dm_created")
     data class DmCreated(val channel: JsonObject) : ServerEvent()
 
+    /** This user blocked [userId] (on any of their devices): they can no longer be written to. */
+    @Serializable
+    @SerialName("user_blocked")
+    data class UserBlocked(val userId: String) : ServerEvent()
+
+    /** This user unblocked [userId]. */
+    @Serializable
+    @SerialName("user_unblocked")
+    data class UserUnblocked(val userId: String) : ServerEvent()
+
     // -- Login hints (C26–C28): refetch, never act on a hint alone -------------
 
     /** C26: an enrolment this user issued changed (claimed, done, …). */

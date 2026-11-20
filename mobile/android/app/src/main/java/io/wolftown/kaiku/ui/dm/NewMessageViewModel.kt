@@ -5,6 +5,7 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import io.wolftown.kaiku.R
 import io.wolftown.kaiku.data.repository.DmRepository
 import io.wolftown.kaiku.data.repository.PeopleRepository
 import io.wolftown.kaiku.domain.Person
@@ -45,6 +46,12 @@ data class NewMessageUi(
 /**
  * "New message": everyone on the user's servers, searchable; picking a person
  * opens the DM with them, created on the server if there is none yet.
+ *
+ * The list is a look at one moment. A tap therefore asks again whether the
+ * person can still be written to ([PeopleRepository.confirm]) before any
+ * conversation is opened, also one that already exists: someone who left
+ * the user's servers or was blocked meanwhile, on this or another device,
+ * is taken off the list instead.
  */
 @HiltViewModel
 class NewMessageViewModel @Inject constructor(
@@ -65,6 +72,9 @@ class NewMessageViewModel @Inject constructor(
 
     init {
         load()
+        // Who can be written to may have changed (a block on any device, or the connection was
+        // away): what is shown is loaded again.
+        viewModelScope.launch { peopleRepository.invalidated.collect { load() } }
     }
 
     fun load() {
@@ -103,7 +113,15 @@ class NewMessageViewModel @Inject constructor(
         if (!start) return
         viewModelScope.launch {
             try {
-                val channelId = dmRepository.openDirectMessage(person.userId)
+                val confirmed = peopleRepository.confirm(person.userId)
+                if (confirmed == null) {
+                    // No longer someone to write to: gone from the list, with the neutral sentence.
+                    _ui.update {
+                        it.copy(people = it.people.filter { p -> p.userId != person.userId }, message = R.string.dm_new_not_possible)
+                    }
+                    return@launch
+                }
+                val channelId = dmRepository.openDirectMessage(confirmed)
                 // Like a tap in the DM list: the open DM is read, and its new messages count as read.
                 dmRepository.setActiveChannel(channelId)
                 dmRepository.markReadInBackground(channelId)

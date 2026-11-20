@@ -62,7 +62,7 @@ class SessionTeardownTest {
 
     private fun TestScope.loadedRepositories(authState: AuthState): Pair<GuildRepository, DmRepository> {
         val guilds = GuildRepository(guildApi, channelApi, backgroundScope)
-        val dms = DmRepository(dmApi, webSocket, KaikuJson, authState, backgroundScope)
+        val dms = DmRepository(dmApi, webSocket, KaikuJson, authState, backgroundScope, io.wolftown.kaiku.data.session.SessionGeneration(authState))
         return guilds to dms
     }
 

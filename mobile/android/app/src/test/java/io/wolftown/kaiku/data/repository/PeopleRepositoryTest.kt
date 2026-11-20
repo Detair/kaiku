@@ -11,6 +11,8 @@ import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.domain.model.Guild
 import io.wolftown.kaiku.domain.model.GuildMember
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -22,7 +24,11 @@ class PeopleRepositoryTest {
     private val guildApi: GuildApi = mockk()
     private val dmApi: DmApi = mockk()
     private val authState: AuthState = mockk { every { currentUserId } returns MutableStateFlow<String?>("me") }
-    private val repo = PeopleRepository(guildApi, dmApi, authState)
+    private val sessions = io.wolftown.kaiku.data.session.FakeSessions("me")
+    private val events = kotlinx.coroutines.flow.MutableSharedFlow<io.wolftown.kaiku.data.ws.ServerEvent>(extraBufferCapacity = 8)
+    private val socket: io.wolftown.kaiku.data.ws.KaikuWebSocket = mockk(relaxed = true) { every { events } returns this@PeopleRepositoryTest.events }
+    private val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.test.UnconfinedTestDispatcher())
+    private val repo = PeopleRepository(guildApi, dmApi, authState, socket, scope, sessions.generation)
 
     private fun member(id: String) = GuildMember(userId = id, username = id, displayName = id.uppercase())
 
@@ -74,5 +80,62 @@ class PeopleRepositoryTest {
 
         coEvery { dmApi.getBlocked() } returns setOf("troll")
         assertEquals(listOf("anna"), repo.load().people.map { it.userId })
+    }
+
+    // -- Who can be written to, checked again -------------------------------------------------
+
+    @Test
+    fun `someone still on a shared server and not blocked is confirmed`() = runTest {
+        coEvery { guildApi.getGuilds() } returns listOf(Guild("g1", "Family"))
+        coEvery { guildApi.getMembers("g1") } returns listOf(member("me"), member("anna"))
+        coEvery { dmApi.getBlocked() } returns emptySet()
+        assertEquals("anna", repo.confirm("anna")?.userId)
+    }
+
+    @Test
+    fun `someone whose server the user has left since is not confirmed`() = runTest {
+        // The list was shown with Anna (server g1); the user left g1 on another device.
+        coEvery { guildApi.getGuilds() } returns emptyList()
+        coEvery { dmApi.getBlocked() } returns emptySet()
+        assertEquals(null, repo.confirm("anna"))
+    }
+
+    @Test
+    fun `someone blocked since on another device is not confirmed`() = runTest {
+        coEvery { guildApi.getGuilds() } returns listOf(Guild("g1", "Family"))
+        coEvery { guildApi.getMembers("g1") } returns listOf(member("me"), member("anna"))
+        coEvery { dmApi.getBlocked() } returns setOf("anna")
+        assertEquals(null, repo.confirm("anna"))
+    }
+
+    @Test
+    fun `a block or a new connection says the list may have changed`() = runTest {
+        val seen = mutableListOf<Unit>()
+        val job = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.test.UnconfinedTestDispatcher(testScheduler)).launch {
+            repo.invalidated.collect { seen += it }
+        }
+        events.emit(io.wolftown.kaiku.data.ws.ServerEvent.UserBlocked("anna"))
+        events.emit(io.wolftown.kaiku.data.ws.ServerEvent.UserUnblocked("anna"))
+        events.emit(io.wolftown.kaiku.data.ws.ServerEvent.Ready("me"))
+        events.emit(io.wolftown.kaiku.data.ws.ServerEvent.Pong)
+        assertEquals(3, seen.size)
+        job.cancel()
+    }
+
+    @Test
+    fun `nobody signed in loads nobody, and a list of the previous account is not handed out`() = runTest {
+        val members = kotlinx.coroutines.CompletableDeferred<List<GuildMember>>()
+        coEvery { guildApi.getGuilds() } returns listOf(Guild("g1", "Family"))
+        coEvery { guildApi.getMembers("g1") } coAnswers { members.await() }
+        coEvery { dmApi.getBlocked() } returns emptySet()
+        val load = async { runCatching { repo.load() } }
+        kotlinx.coroutines.yield()
+        // The account changes while the member list is on its way.
+        sessions.switchTo("bert")
+        members.complete(listOf(member("me"), member("anna")))
+        assertTrue(load.await().isFailure)
+
+        sessions.signOut()
+        assertTrue(runCatching { repo.load() }.isFailure)
     }
 }

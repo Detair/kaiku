@@ -1,7 +1,9 @@
 package io.wolftown.kaiku.data.repository
 
 import io.wolftown.kaiku.data.api.DmApi
+import io.wolftown.kaiku.data.api.withRequestSession
 import io.wolftown.kaiku.data.local.AuthState
+import io.wolftown.kaiku.data.session.SessionGeneration
 import io.wolftown.kaiku.data.ws.KaikuWebSocket
 import io.wolftown.kaiku.data.ws.ServerEvent
 import io.wolftown.kaiku.di.ChatCoroutineScope
@@ -36,6 +38,16 @@ import javax.inject.Singleton
  * A `dm_created` WebSocket event (C3) adds a new conversation without a
  * reload. The list is always ordered by last activity (last message, else
  * creation), newest first, and re-sorted when a message arrives or is sent.
+ *
+ * **The list belongs to the signed-in session.** Every piece of work (a
+ * list load, a "New message" request, a mark-read, a socket event) takes
+ * the session's ticket ([SessionGeneration]) when it starts: its requests
+ * are bound to that session, it runs in that session's scope and it
+ * publishes only while the ticket is open. The session-end hook's advance
+ * clears the list itself, and from the first step of a sign-out on the
+ * repository takes no work for the session that is ending, although its
+ * tokens are still stored until the server was told. So nothing of one
+ * account's chats reaches the next account.
  */
 @Singleton
 class DmRepository @Inject constructor(
@@ -44,22 +56,51 @@ class DmRepository @Inject constructor(
     private val json: Json,
     private val authState: AuthState,
     @ChatCoroutineScope private val scope: CoroutineScope,
+    private val sessions: SessionGeneration = SessionGeneration(authState),
 ) {
     private val _conversations = MutableStateFlow<List<DmConversation>>(emptyList())
     val conversations: StateFlow<List<DmConversation>> = _conversations.asStateFlow()
 
     init {
+        // Inside the session-end hook's advance: the list of the account that ends is gone
+        // before the stored session changes.
+        sessions.onAdvance { clearSession() }
         // UNDISPATCHED: subscribe to the replay-0 SharedFlow before init returns.
         scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            // The socket's events are those of the account it authenticated as (its Ready).
+            var socketAccount: String? = null
             webSocket.events.collect { event ->
+                if (event is ServerEvent.Ready) socketAccount = event.userId
                 when (event) {
-                    is ServerEvent.DmCreated -> onDmCreated(event)
-                    is ServerEvent.MessageNew -> onMessageNew(event)
-                    is ServerEvent.DmRead -> onDmRead(event)
+                    is ServerEvent.DmCreated -> forSocketAccount(socketAccount) { onDmCreated(event) }
+                    is ServerEvent.MessageNew -> forSocketAccount(socketAccount) { onMessageNew(event, it) }
+                    is ServerEvent.DmRead -> forSocketAccount(socketAccount) { onDmRead(event) }
                     else -> Unit
                 }
             }
         }
+    }
+
+    /** Runs [block] for an event of [account]'s socket only while that account's session is open. */
+    private inline fun forSocketAccount(account: String?, block: (SessionGeneration.Ticket) -> Unit) {
+        val session = sessions.enter(account ?: return)?.takeIf { it.open } ?: return
+        block(session)
+    }
+
+    /** The open session's ticket, or null: no work for nobody or for a session that is ending. */
+    private fun openSession(): SessionGeneration.Ticket? = sessions.enter()?.takeIf { it.open }
+
+    /** The scope of the signed-in session's background work (reloads, mark-read); ends with it. */
+    private val workLock = Any()
+    private var workSession: SessionGeneration.Ticket? = null
+    private var workScope: CoroutineScope? = null
+
+    private fun scopeOf(session: SessionGeneration.Ticket): CoroutineScope = synchronized(workLock) {
+        if (workSession != session) {
+            workSession = session
+            workScope = session.scope(scope)
+        }
+        workScope!!
     }
 
     /** The DM the user has open; its new messages count as read. */
@@ -96,6 +137,7 @@ class DmRepository @Inject constructor(
             epoch++
             activeChannelId.value = null
             liveCreatedAt.clear()
+            reads.clear()
             _conversations.value = emptyList()
             opening.values.toList().also { opening.clear() }
         }
@@ -113,18 +155,20 @@ class DmRepository @Inject constructor(
      * is missing from the server's list is dropped.
      */
     suspend fun loadDms() {
+        // For the signed-in session of this moment; nothing for nobody or for a session that is ending.
+        val session = openSession() ?: return
         val (startEpoch, load) = synchronized(epochLock) { epoch to ++loadsStarted }
         val startedAt = liveSeq.get()
-        val fetched = dmApi.getDms()
+        val fetched = withRequestSession(session.requestSession()) { dmApi.getDms() }
         val fetchedIds = fetched.mapTo(HashSet()) { it.id }
         synchronized(epochLock) {
-            if (epoch != startEpoch) return
+            if (epoch != startEpoch || !session.open) return
             // An older load answering after a newer one has nothing newer to say.
             if (load < newestPublished) return
             newestPublished = load
             publishFetched(fetched, fetchedIds, startedAt)
         }
-        activeChannelId.value?.let { markReadQuietly(it) }
+        activeChannelId.value?.let { markReadQuietly(it, session) }
     }
 
     private fun publishFetched(fetched: List<DmConversation>, fetchedIds: Set<String>, startedAt: Long) {
@@ -135,13 +179,27 @@ class DmRepository @Inject constructor(
             // A message that arrived after the server took its snapshot keeps its preview and count.
             val byId = current.associateBy { it.id }
             val kept = fetched.map { server -> byId[server.id]?.let { local -> newerOf(local, server) } ?: server }
-            val merged = sortByActivity(liveOnly + kept)
+            // A read that happened after this request was sent (here or on another device) is
+            // newer than the answer's count, as long as it reached the answer's last message.
+            val read = kept.map { dm ->
+                val mark = reads[dm.id]
+                if (mark != null && mark.seq > startedAt && dm.lastMessage?.id == mark.messageId) dm.copy(unreadCount = 0) else dm
+            }
+            val merged = sortByActivity(liveOnly + read)
             // The open DM is being read: the server's count does not apply.
             activeChannelId.value?.let { clearUnread(merged, it) } ?: merged
         }
         // The server knows these now; no need to remember them as live.
         fetchedIds.forEach { liveCreatedAt.remove(it) }
+        // A request sent after a read has that read in its answer.
+        reads.entries.removeIf { it.value.seq <= startedAt }
     }
+
+    /** A read up to [messageId], at position [seq] of the live events. */
+    private class ReadMark(val seq: Long, val messageId: String)
+
+    /** The latest read per conversation that a list answer may not know yet. */
+    private val reads = ConcurrentHashMap<String, ReadMark>()
 
     /** One "New message" request: of the session [epoch], to the person [userId]. */
     private data class OpenKey(val epoch: Long, val userId: String)
@@ -153,25 +211,31 @@ class DmRepository @Inject constructor(
     private class SessionEnded : CancellationException("session ended")
 
     /**
-     * Returns the id of the 1:1 DM with [userId], creating it if needed.
-     * A DM already in the list is returned without a request. Otherwise
-     * `POST /api/dm` (get-or-create on the server) runs once per person even
-     * when this is called again before it answered (double tap, slow
-     * network): later callers wait for the same answer. The request runs in
-     * the repository scope, so leaving the screen does not cancel it, and its
+     * Returns the id of the 1:1 DM with [person], creating it if needed.
+     * Only for someone a fresh look has just confirmed as writable
+     * ([PeopleRepository.confirm]): a conversation already in the list is
+     * then returned without a request. Otherwise `POST /api/dm`
+     * (get-or-create on the server) runs once per person even when this is
+     * called again before it answered (double tap, slow network): later
+     * callers wait for the same answer. The request runs in the signed-in
+     * session's scope, so leaving the screen does not cancel it, and its
      * answer is added to the list before this returns (unless the session
      * ended meanwhile). Throws what [DmApi.createDm] throws.
      */
-    suspend fun openDirectMessage(userId: String): String {
+    suspend fun openDirectMessage(person: EligiblePerson): String {
+        val session = person.session
+        val userId = person.userId
         var created: Deferred<Result<String>>? = null
         val (key, request) = synchronized(epochLock) {
+            // Confirmed for a session that is over or ending: nothing is opened for it.
+            if (!session.open) throw SessionEnded()
             // Looked up in the same step as the shared request: a request that just
             // published its answer and removed itself is found here, not sent again.
-            existingDirectMessage(_conversations.value, userId, authState.currentUserId.value)?.let { return it.id }
+            existingDirectMessage(_conversations.value, userId, session.userId)?.let { return it.id }
             val key = OpenKey(epoch, userId)
             key to opening.getOrPut(key) {
                 // Lazy: it cannot start before it is in the map, and sign-out can cancel it before it sends.
-                scope.async(start = CoroutineStart.LAZY) { create(key) }.also { created = it }
+                scopeOf(session).async(start = CoroutineStart.LAZY) { create(key, session) }.also { created = it }
             }
         }
         created?.let { mine ->
@@ -182,26 +246,26 @@ class DmRepository @Inject constructor(
         }
         val result = request.await()
         // An answer of an ended session never reaches the next one (or anyone).
-        if (synchronized(epochLock) { epoch } != key.epoch) throw SessionEnded()
+        if (synchronized(epochLock) { epoch } != key.epoch || !session.open) throw SessionEnded()
         return result.getOrThrow()
     }
 
-    /** The request of [key]: nothing goes out once its session ended. */
-    private suspend fun create(key: OpenKey): Result<String> {
-        if (synchronized(epochLock) { epoch } != key.epoch) throw SessionEnded()
+    /** The request of [key] for [session]: nothing goes out once that session ended. */
+    private suspend fun create(key: OpenKey, session: SessionGeneration.Ticket): Result<String> {
+        if (synchronized(epochLock) { epoch } != key.epoch || !session.open) throw SessionEnded()
         // The failure travels in the Result: a failed create must not fail the scope.
         return try {
-            val dm = dmApi.createDm(key.userId)
+            val dm = withRequestSession(session.requestSession()) { dmApi.createDm(key.userId) }
             var unknown = false
             synchronized(epochLock) {
-                if (epoch != key.epoch) throw SessionEnded()
+                if (epoch != key.epoch || !session.open) throw SessionEnded()
                 unknown = _conversations.value.none { it.id == dm.id }
                 // Kept by a list load that started before and answers without it.
                 liveCreatedAt[dm.id] = liveSeq.incrementAndGet()
                 _conversations.update { sortByActivity(upsertKeepingState(it, dm)) }
             }
             // A conversation the cached list did not have: its preview and unread count come from the server.
-            if (unknown) reloadQuietly()
+            if (unknown) reloadQuietly(session)
             Result.success(dm.id)
         } catch (e: CancellationException) {
             throw e
@@ -210,8 +274,8 @@ class DmRepository @Inject constructor(
         }
     }
 
-    private fun reloadQuietly() {
-        scope.launch {
+    private fun reloadQuietly(session: SessionGeneration.Ticket) {
+        scopeOf(session).launch {
             try {
                 loadDms()
             } catch (e: CancellationException) {
@@ -228,10 +292,15 @@ class DmRepository @Inject constructor(
      * a server failure is surfaced to the caller.
      */
     suspend fun markAsRead(channelId: String) {
+        val session = openSession() ?: return
         val lastMessageId = _conversations.value.find { it.id == channelId }?.lastMessage?.id
         _conversations.update { clearUnread(it, channelId) }
         // The server marks read up to a message id; with no message there is nothing to send.
-        if (lastMessageId != null) dmApi.markAsRead(channelId, lastMessageId)
+        if (lastMessageId != null) {
+            // Newer than a list answer whose request is already out.
+            reads[channelId] = ReadMark(liveSeq.incrementAndGet(), lastMessageId)
+            withRequestSession(session.requestSession()) { dmApi.markAsRead(channelId, lastMessageId) }
+        }
     }
 
     /**
@@ -239,7 +308,7 @@ class DmRepository @Inject constructor(
      * unless that DM is open: then it is marked read instead. Messages for
      * channels that are not DMs in the list are ignored.
      */
-    private fun onMessageNew(event: ServerEvent.MessageNew) {
+    private fun onMessageNew(event: ServerEvent.MessageNew, session: SessionGeneration.Ticket) {
         if (_conversations.value.none { it.id == event.channelId }) return
         val message = try {
             json.decodeFromJsonElement<Message>(event.message)
@@ -256,7 +325,7 @@ class DmRepository @Inject constructor(
             encrypted = message.encrypted,
         )
         val active = event.channelId == activeChannelId.value
-        val own = message.author.id == authState.currentUserId.value
+        val own = message.author.id == session.userId
         var duplicate = false
         _conversations.update { current ->
             val updated = current.map {
@@ -281,11 +350,13 @@ class DmRepository @Inject constructor(
             val (moved, rest) = if (duplicate) emptyList<DmConversation>() to updated else updated.partition { it.id == event.channelId }
             sortByActivity(moved + rest)
         }
-        if (active && !duplicate) markReadQuietly(event.channelId)
+        if (active && !duplicate) markReadQuietly(event.channelId, session)
     }
 
-    /** Marks [channelId] read in the repository scope (leaving the screen does not stop it); failures are logged. */
-    fun markReadInBackground(channelId: String) = markReadQuietly(channelId)
+    /** Marks [channelId] read in the signed-in session's scope (leaving the screen does not stop it); failures are logged. */
+    fun markReadInBackground(channelId: String) {
+        markReadQuietly(channelId, openSession() ?: return)
+    }
 
     /**
      * Read on another device: the count goes to zero when the read reaches
@@ -294,13 +365,15 @@ class DmRepository @Inject constructor(
      */
     private fun onDmRead(event: ServerEvent.DmRead) {
         val readUpTo = event.lastReadMessageId ?: return
+        // Kept for a list answer that is already on its way and still has the old count.
+        reads[event.channelId] = ReadMark(liveSeq.incrementAndGet(), readUpTo)
         _conversations.update { current ->
             current.map { if (it.id == event.channelId && it.lastMessage?.id == readUpTo) it.copy(unreadCount = 0) else it }
         }
     }
 
-    private fun markReadQuietly(channelId: String) {
-        scope.launch {
+    private fun markReadQuietly(channelId: String, session: SessionGeneration.Ticket) {
+        scopeOf(session).launch {
             try {
                 markAsRead(channelId)
             } catch (e: CancellationException) {

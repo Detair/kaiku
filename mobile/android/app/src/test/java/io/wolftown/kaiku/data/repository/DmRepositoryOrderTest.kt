@@ -34,7 +34,13 @@ class DmRepositoryOrderTest {
     private val api: DmApi = mockk(relaxed = true)
     private val authState: AuthState = mockk(relaxed = true) { every { currentUserId } returns MutableStateFlow<String?>("me") }
 
-    private fun TestScope.repository() = DmRepository(api, webSocket, KaikuJson, authState, backgroundScope)
+    private val sessions = io.wolftown.kaiku.data.session.FakeSessions("me")
+
+    private fun TestScope.repository() =
+        DmRepository(api, webSocket, KaikuJson, authState, backgroundScope, sessions.generation).also {
+            // The socket on the line is the signed-in account's: its Ready says so.
+            events.tryEmit(ServerEvent.Ready("me"))
+        }
 
     private fun dm(id: String, at: String, unread: Int = 0) =
         DmConversation(id = id, unreadCount = unread, lastMessage = LastMessagePreview("$id-last", "x", createdAt = at))
