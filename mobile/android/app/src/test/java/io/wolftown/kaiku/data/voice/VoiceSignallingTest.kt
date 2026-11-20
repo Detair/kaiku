@@ -89,7 +89,7 @@ class VoiceSignallingTest {
                 firstConnected.first { it }
             }
 
-            override suspend fun proveCarried(socket: Long) = true
+            override suspend fun proveCarried(socket: Long) = VoiceSignalling.Proof.Carried
 
             override suspend fun awaitConnectionFailed() {
                 connectionFailed.first { it }
@@ -407,7 +407,7 @@ class VoiceSignallingTest {
             override suspend fun join(socket: Long) = true.also { joinSocket.value = socket }
             override suspend fun awaitConnected() {}
 
-            override suspend fun proveCarried(socket: Long) = true
+            override suspend fun proveCarried(socket: Long) = VoiceSignalling.Proof.Carried
 
             override suspend fun awaitConnectionFailed() = awaitCancellation()
             override suspend fun rejoin(socket: Long): Attempt {
@@ -922,7 +922,7 @@ class VoiceSignallingTest {
             override suspend fun join(socket: Long) = true.also { joinSocket.value = socket }
             override suspend fun awaitConnected() {}
 
-            override suspend fun proveCarried(socket: Long) = true
+            override suspend fun proveCarried(socket: Long) = VoiceSignalling.Proof.Carried
 
             override suspend fun awaitConnectionFailed() = awaitCancellation()
             override suspend fun rejoin(socket: Long): Attempt {

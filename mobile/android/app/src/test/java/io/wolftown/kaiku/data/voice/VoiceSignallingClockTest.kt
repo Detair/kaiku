@@ -27,20 +27,19 @@ class VoiceSignallingClockTest {
         val socket = MutableStateFlow<Long?>(startSocket)
         var realMs = 0L
 
-        /** Wall clock, moved apart from [realMs] only where a test says so. */
-        var wallOffsetMs = 0L
         val joins = mutableListOf<Long>()
         val joinSocket = MutableStateFlow<Long?>(null)
         val gaveUp = CompletableDeferred<Unit>()
 
         /** What a proof after a gap answers, and on which sockets one was asked. */
-        var proof = true
+        var proof = VoiceSignalling.Proof.Carried
+
+        /** How long a proof takes before it answers. */
+        var proofTakesMs = 0L
+        var proofsFinished = 0
         val proofs = mutableListOf<Long>()
         var attempts = 0
-        val signalling = VoiceSignalling(socket, clock = object : ElapsedClock {
-            override fun nowMs() = realMs
-            override fun wallMs() = realMs + wallOffsetMs
-        })
+        val signalling = VoiceSignalling(socket, clock = { realMs })
 
         private val steps = object : VoiceSignalling.Steps {
             override val joinSocket: StateFlow<Long?> = this@Rig.joinSocket
@@ -52,8 +51,10 @@ class VoiceSignallingClockTest {
             }
             override suspend fun awaitConnected() {}
 
-            override suspend fun proveCarried(socket: Long): Boolean {
+            override suspend fun proveCarried(socket: Long): VoiceSignalling.Proof {
                 proofs += socket
+                if (proofTakesMs > 0) kotlinx.coroutines.delay(proofTakesMs)
+                proofsFinished++
                 return proof
             }
 
@@ -83,19 +84,6 @@ class VoiceSignallingClockTest {
         advanceTimeBy(2_000); runCurrent()
         assertFalse(rig.gaveUp.isCompleted)
         // The next wake-up of the deadline (at most 5 s) compares the real clock.
-        advanceTimeBy(VoiceSignalling.DEADLINE_CHECK_MS); runCurrent()
-        assertTrue(rig.gaveUp.isCompleted)
-    }
-
-    @Test
-    fun `the wall clock counts too, the larger difference wins`() = runTest {
-        val rig = Rig(this)
-        runCurrent()
-        rig.socket.value = null
-        runCurrent()
-        // The elapsed clock barely moves, the wall clock moves 70 s (the larger difference counts).
-        rig.realMs += 1_000
-        rig.wallOffsetMs = 69_000
         advanceTimeBy(VoiceSignalling.DEADLINE_CHECK_MS); runCurrent()
         assertTrue(rig.gaveUp.isCompleted)
     }
@@ -142,7 +130,7 @@ class VoiceSignallingClockTest {
     fun `a failed proof after a sleep longer than 60 s gives up at once instead of rejoining`() = runTest {
         val rig = Rig(this)
         runCurrent()
-        rig.proof = false
+        rig.proof = VoiceSignalling.Proof.SocketDead
         rig.realMs += 70_000 // slept 70 s; the socket still looks authenticated
         advanceTimeBy(VoiceSignalling.DEADLINE_CHECK_MS); runCurrent()
         advanceTimeBy(VoiceSignalling.DEADLINE_CHECK_MS); runCurrent()
@@ -154,7 +142,7 @@ class VoiceSignallingClockTest {
     fun `a failed proof after a short gap waits for another socket and counts 60 s from the last proof`() = runTest {
         val rig = Rig(this)
         runCurrent()
-        rig.proof = false
+        rig.proof = VoiceSignalling.Proof.SocketDead
         rig.realMs += 20_000 // slept 20 s
         advanceTimeBy(VoiceSignalling.DEADLINE_CHECK_MS); runCurrent()
         // Not carried since the last proof: "interrupted", no attempt on the unproven socket.
@@ -175,7 +163,7 @@ class VoiceSignallingClockTest {
     fun `a failed proof rejoins on the next socket`() = runTest {
         val rig = Rig(this)
         runCurrent()
-        rig.proof = false
+        rig.proof = VoiceSignalling.Proof.SocketDead
         rig.realMs += 20_000
         advanceTimeBy(VoiceSignalling.DEADLINE_CHECK_MS); runCurrent()
         rig.socket.value = 2L // the connection manager replaced the dead socket
@@ -265,5 +253,31 @@ class VoiceSignallingClockTest {
 
         assertEquals(0, rig.attempts)
         assertTrue(rig.gaveUp.isCompleted)
+    }
+
+    @Test
+    fun `a proof that uses its whole 5 s still finishes and reports`() = runTest {
+        val rig = Rig(this)
+        runCurrent()
+        rig.proof = VoiceSignalling.Proof.SocketDead
+        rig.proofTakesMs = VoiceSignalling.PROOF_TIMEOUT_MS // its own 5 s bound ran out
+        rig.realMs += 20_000
+        advanceTimeBy(VoiceSignalling.DEADLINE_CHECK_MS); runCurrent()
+        advanceTimeBy(VoiceSignalling.PROOF_TIMEOUT_MS); runCurrent()
+        assertEquals(1, rig.proofsFinished)
+        rig.owner.cancel()
+    }
+
+    @Test
+    fun `a socket that answers while the media is down rejoins on that same socket`() = runTest {
+        val rig = Rig(this)
+        runCurrent()
+        rig.proof = VoiceSignalling.Proof.MediaDown
+        rig.realMs += 20_000
+        advanceTimeBy(VoiceSignalling.DEADLINE_CHECK_MS); runCurrent()
+        advanceTimeBy(1_000); runCurrent()
+        assertEquals(1, rig.attempts)
+        assertFalse(rig.gaveUp.isCompleted)
+        rig.owner.cancel()
     }
 }

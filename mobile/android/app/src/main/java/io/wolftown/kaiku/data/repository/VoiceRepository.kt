@@ -102,6 +102,9 @@ class VoiceRepository @Inject constructor(
 ) : Closeable {
     companion object {
         private val logger = Logger.getLogger("VoiceRepository")
+
+        /** How long a sign-out waits for the microphone to be released. */
+        const val RELEASE_WAIT_MS = 2_000L
     }
 
     // Child of the injected voice scope (Dispatchers.IO in production, the test
@@ -549,11 +552,31 @@ class VoiceRepository @Inject constructor(
                 logger.log(Level.WARNING, "Failed to send VoiceLeave at sign-out", e)
             }
         }
-        _currentChannelId.value = null
-        webRtcManager.closePeerConnections()
-        audioRouteManager.abandonAudioFocus()
-        VoiceCallService.stop(context)
+        // Everything of the session that is not WebRTC, now: no collector, callback or state of
+        // it stays, even when no regular teardown follows (a renewal of the same user's session).
+        clearSessionState()
+        // The microphone and the connections are released on their own thread (never on the
+        // caller's, which may be the main thread holding the token store's lock), and the
+        // caller waits for that, at most RELEASE_WAIT_MS.
+        val released = java.util.concurrent.CountDownLatch(1)
+        releaseThread.execute {
+            try {
+                releaseMedia()
+            } catch (e: Exception) {
+                logger.log(Level.WARNING, "Releasing voice media at sign-out failed: ${e::class.simpleName}")
+            } finally {
+                released.countDown()
+            }
+        }
+        if (!released.await(RELEASE_WAIT_MS, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+            logger.warning("Voice media still being released at sign-out")
+        }
         logger.info("Voice session ended at sign-out")
+    }
+
+    /** Runs the WebRTC part of a sign-out ([endForSignOut]). */
+    private val releaseThread = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread(r, "voice-release").apply { isDaemon = true }
     }
 
     /**
@@ -749,6 +772,7 @@ class VoiceRepository @Inject constructor(
             // The call is up once the publisher PC is connected; the subscriber
             // is not required (an empty channel never gets a subscriber offer).
             // Same criterion for the first join and for a rejoin attempt.
+            iceConnectedJob?.cancel()
             iceConnectedJob = scope.launch {
                 webRtcManager.publisherLink.collect { link ->
                     _isConnected.value = link.connected
@@ -783,7 +807,8 @@ class VoiceRepository @Inject constructor(
             // onPublisherOffer when ready — which sends VoicePublisherOffer.
             if (!webRtcManager.createPublisherOffer(guardFor(session, job))) throw SessionEnded()
 
-            audioRouteManager.requestAudioFocus()
+            // A DM call starts on the earpiece (held to the ear), a voice channel on the speaker.
+            audioRouteManager.requestAudioFocus(preferEarpiece = session.call != null)
 
             session.firstJoin.complete(Unit)
             return true
@@ -808,6 +833,7 @@ class VoiceRepository @Inject constructor(
             // Collect service events first (so StartFailed cannot be missed), then
             // start the foreground service.
             // UNDISPATCHED: subscribe before the service can emit (replay is 0).
+            serviceEventJob?.cancel()
             serviceEventJob = scope.launch(start = CoroutineStart.UNDISPATCHED) {
                 voiceServiceEvents.events.collect { event ->
                     when (event) {
@@ -845,19 +871,19 @@ class VoiceRepository @Inject constructor(
          * connection, is connected and has not failed, and a fresh inbound
          * frame arrives on [socket] after a ping, within 5 s.
          */
-        override suspend fun proveCarried(socket: Long): Boolean {
+        override suspend fun proveCarried(socket: Long): VoiceSignalling.Proof {
             val generation = webRtcManager.currentGeneration
-            if (failedGeneration.value == generation) return false
+            if (failedGeneration.value == generation) return VoiceSignalling.Proof.MediaDown
             // Outside every lock: the read waits for WebRTC's thread.
-            if (!webRtcManager.publisherConnectedNow()) return false
+            if (!webRtcManager.publisherConnectedNow()) return VoiceSignalling.Proof.MediaDown
             val before = webSocket.inbound.value.takeIf { it.socket == socket }?.frames ?: 0L
-            if (!webSocket.sendOn(socket, ClientEvent.Ping)) return false
+            if (!webSocket.sendOn(socket, ClientEvent.Ping)) return VoiceSignalling.Proof.SocketDead
             val fresh = withTimeoutOrNull(VoiceSignalling.PROOF_TIMEOUT_MS) {
                 webSocket.inbound.first { it.socket == socket && it.frames > before }
             } != null
             // A socket that does not answer is dead: a new one now, not after the heartbeat watchdog.
             if (!fresh && webSocket.authenticatedSocket.value == socket) deadSocket.report()
-            return fresh
+            return if (fresh) VoiceSignalling.Proof.Carried else VoiceSignalling.Proof.SocketDead
         }
 
         /** The connections of the session as they are now reported ICE `FAILED`. */
@@ -1032,6 +1058,21 @@ class VoiceRepository @Inject constructor(
     // -- Internal -------------------------------------------------------------
 
     private fun cleanUp() {
+        clearSessionState()
+        releaseMedia()
+    }
+
+    /** The WebRTC, audio and service part of a teardown: microphone, connections, focus, service. */
+    private fun releaseMedia() {
+        webRtcManager.closePeerConnections()
+        audioRouteManager.abandonAudioFocus()
+        VoiceCallService.stop(context)
+        // Nothing is captured any more: both layers say "not muted" (the next join sets both again).
+        applyMuteToMicrophone()
+    }
+
+    /** Everything of a session that is not WebRTC: collectors, callbacks, state. No call into WebRTC. */
+    private fun clearSessionState() {
         // Stop event collection
         eventCollectionJob?.cancel()
         eventCollectionJob = null
@@ -1039,9 +1080,6 @@ class VoiceRepository @Inject constructor(
         serviceEventJob = null
         iceConnectedJob?.cancel()
         iceConnectedJob = null
-
-        // Close both PeerConnections
-        webRtcManager.closePeerConnections()
 
         // Clear all dual-PC callbacks
         webRtcManager.onPublisherOffer = null
@@ -1052,12 +1090,6 @@ class VoiceRepository @Inject constructor(
         webRtcManager.onIceTrouble = null
         attempt?.result?.complete(AttemptResult.Failed)
 
-        // Abandon audio focus
-        audioRouteManager.abandonAudioFocus()
-
-        // Stop foreground service
-        VoiceCallService.stop(context)
-
         // Clear state
         _currentChannelId.value = null
         _participants.value = emptyList()
@@ -1067,7 +1099,6 @@ class VoiceRepository @Inject constructor(
         // Nothing is captured any more: both layers say "not muted" (the next
         // join sets both again).
         _isMuted.value = false
-        applyMuteToMicrophone()
         _error.value = null
     }
 

@@ -1405,6 +1405,77 @@ class VoiceRepositoryTest {
         assertTrue(callJoin.isCancelled)
     }
 
+    @Test
+    fun `sign-out leaves nothing of the session behind even if no teardown follows`() = runTest {
+        val serviceEvents = MutableSharedFlow<VoiceServiceEvent>(extraBufferCapacity = 5)
+        every { voiceServiceEvents.events } returns serviceEvents
+        repository.joinChannel("ch-1")
+        advanceUntilIdle()
+        assertEquals(1, serviceEvents.subscriptionCount.value)
+
+        repository.endForSignOut()
+        advanceUntilIdle()
+
+        // No collector of the old session stays (a later Mute would fire twice), its callbacks are gone.
+        assertEquals(0, serviceEvents.subscriptionCount.value)
+        verify { webRtcManager.onPublisherOffer = null }
+        assertEquals(false, repository.isConnected.value)
+    }
+
+    @Test
+    fun `sign-out releases the media on another thread, never under the caller's locks, before it returns`() = runTest {
+        repository.joinChannel("ch-1")
+        advanceUntilIdle()
+        val storageLock = Any()
+        val caller = Thread.currentThread()
+        var releasedOn: Thread? = null
+        var heldTheLock = true
+        every { webRtcManager.closePeerConnections() } answers {
+            releasedOn = Thread.currentThread()
+            heldTheLock = Thread.holdsLock(storageLock)
+            rtcGen++
+            rtcGen
+        }
+
+        synchronized(storageLock) { repository.endForSignOut() }
+
+        assertTrue("media not released before sign-out went on", releasedOn != null)
+        assertTrue("released on the caller's thread", releasedOn !== caller)
+        assertEquals(false, heldTheLock)
+    }
+
+    @Test
+    fun `a DM call asks for the earpiece, a voice channel for the speaker`() = runTest {
+        repository.joinCall("ch-1", "Anna") { io.wolftown.kaiku.data.voice.RejoinVerdict.Allowed }
+        advanceUntilIdle()
+        verify { audioRouteManager.requestAudioFocus(true) }
+        repository.leaveChannel()
+        repository.joinChannel("ch-2")
+        advanceUntilIdle()
+        verify { audioRouteManager.requestAudioFocus(false) }
+    }
+
+    @Test
+    fun `after a gap a socket that answers while the publisher is down is not reported dead`() = runTest {
+        var real = 0L
+        repository = repositoryWithClock { real }
+        every { webRtcManager.publisherConnectedNow() } returns false
+        every { webSocket.send(ClientEvent.Ping) } answers {
+            inbound.value = KaikuWebSocket.Inbound(1L, inbound.value.frames + 1)
+            true
+        }
+        repository.joinChannel("ch-1")
+        runCurrent()
+
+        real += 30_000
+        advanceTimeBy(5_000); runCurrent()
+        advanceTimeBy(1_000); runCurrent()
+
+        assertEquals(0, deadSocketReports)
+        verifyJoins(2) // rejoined on the same, healthy socket
+        repository.leaveChannel()
+    }
+
     // -- DM call sessions ---------------------------------------
 
     private fun kotlinx.coroutines.test.TestScope.collectCallEnds(): MutableList<io.wolftown.kaiku.data.call.CallVoiceEnd> {

@@ -80,7 +80,7 @@ class VoiceSignallingThreadsTest {
             // The connections never fail by themselves: every rejoin is a socket change.
             override suspend fun awaitConnected() {}
 
-            override suspend fun proveCarried(socket: Long) = true
+            override suspend fun proveCarried(socket: Long) = VoiceSignalling.Proof.Carried
 
             override suspend fun awaitConnectionFailed() = awaitCancellation()
 

@@ -137,6 +137,9 @@ class VoiceSignalling(
 
         /** How long a proof may take: a fresh inbound frame within 5 s. */
         const val PROOF_TIMEOUT_MS = 5_000L
+
+        /** Headroom of the machine's own guard above [PROOF_TIMEOUT_MS]. */
+        const val PROOF_GUARD_MS = 2_000L
     }
 
     /** How a rejoin attempt ended. */
@@ -156,6 +159,18 @@ class VoiceSignalling(
          * at once with [GiveUp.Refused].
          */
         Refused,
+    }
+
+    /** What a proof of carried found. */
+    enum class Proof {
+        /** The socket answered and the publisher is live. */
+        Carried,
+
+        /** The socket did not answer: it is dead (and a new one is asked for). */
+        SocketDead,
+
+        /** The socket answered, but the publisher is down: rejoin on that same socket. */
+        MediaDown,
     }
 
     /** Why the machine gave the session up ([Steps.giveUp]). */
@@ -198,12 +213,11 @@ class VoiceSignalling(
         suspend fun awaitConnectionFailed()
 
         /**
-         * Proof of carried, after a gap: the publisher read from the
-         * connection is live and a fresh inbound frame arrives on [socket]
-         * (a ping is sent for it). Returns false if not, within
-         * [PROOF_TIMEOUT_MS] at most (the machine also bounds it).
+         * Proof of carried, after a gap: a fresh inbound frame arrives on
+         * [socket] after a ping, and the publisher read from the connection
+         * is live. Bounds itself to [PROOF_TIMEOUT_MS].
          */
-        suspend fun proveCarried(socket: Long): Boolean
+        suspend fun proveCarried(socket: Long): Proof
 
         /**
          * One rejoin attempt on [socket]: new connections, `voice_join`, wait
@@ -259,16 +273,17 @@ class VoiceSignalling(
         val deadlinePassed = AtomicBoolean(false)
     }
 
-    /** A moment on both clocks (the larger of the two differences counts). */
-    private data class Moment(val elapsedMs: Long, val wallMs: Long)
+    /**
+     * A moment on the clock that counts time asleep (`elapsedRealtime`). The
+     * wall clock is not consulted: a correction of it during a brief
+     * reconnect must not end a call.
+     */
+    private data class Moment(val elapsedMs: Long)
 
-    private fun now() = Moment(clock.nowMs(), clock.wallMs())
+    private fun now() = Moment(clock.nowMs())
 
-    /** Real time since [m]: the larger of the elapsed and the wall-clock difference. */
-    private fun since(m: Moment): Long {
-        val n = now()
-        return maxOf(n.elapsedMs - m.elapsedMs, n.wallMs - m.wallMs)
-    }
+    /** Real time since [m], device sleep included. */
+    private fun since(m: Moment): Long = clock.nowMs() - m.elapsedMs
 
     /** Thrown inside the machine when the 60 s are over: give up, send nothing. */
     private class DeadlinePassed : CancellationException("voice session not carried for too long")
@@ -406,7 +421,7 @@ class VoiceSignalling(
                 // authenticated one and the connections hold.
                 enter(session, Mode.Up(joined))
                 val lostAt = whileSocketIs(joined) {
-                    firstOf({ steps.awaitConnectionFailed(); UpEnd(null) }, { UpEnd(watchCarried(session, steps, joined)) })
+                    firstOf({ steps.awaitConnectionFailed(); UpEnd(null) }, { watchCarried(session, steps, joined) })
                 }?.notProvenSince
                 if (lostAt != null) {
                     // Not proven: the session is not carried since its last proof. The socket
@@ -457,7 +472,7 @@ class VoiceSignalling(
      * it is still carried; returns the clock time of the last proof once it
      * cannot. Otherwise runs until cancelled.
      */
-    private suspend fun watchCarried(session: Session, steps: Steps, socket: Long): Moment {
+    private suspend fun watchCarried(session: Session, steps: Steps, socket: Long): UpEnd {
         // A clock that never moves (unit tests) cannot show a gap: nothing to watch.
         if (clock === ElapsedClock.STOPPED) awaitCancellation()
         var lastProof = now()
@@ -465,8 +480,16 @@ class VoiceSignalling(
         while (true) {
             delay(DEADLINE_CHECK_MS)
             if (since(lastProof) > GAP_MS) {
-                val proven = withTimeoutOrNull(PROOF_TIMEOUT_MS) { steps.proveCarried(socket) } == true
-                if (!proven) return lastProof
+                // The step bounds itself to PROOF_TIMEOUT_MS; this guard only catches a step that
+                // hangs, and leaves it the time to finish (and report a dead socket) first.
+                val proof = withTimeoutOrNull(PROOF_TIMEOUT_MS + PROOF_GUARD_MS) { steps.proveCarried(socket) } ?: Proof.SocketDead
+                when (proof) {
+                    Proof.Carried -> Unit
+                    // Not carried since the last proof: the socket is gone for this session.
+                    Proof.SocketDead -> return UpEnd(lastProof)
+                    // The socket is fine, the media is not: rejoin on this same socket.
+                    Proof.MediaDown -> return UpEnd(null)
+                }
             }
             lastProof = now()
             session.lastCarried = lastProof

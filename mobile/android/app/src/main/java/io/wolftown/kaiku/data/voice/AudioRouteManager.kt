@@ -51,9 +51,11 @@ enum class AudioRoute {
  * The earpiece is never the default: family voice is group voice (as on Discord),
  * so the phone is not held to the ear. It stays selectable manually.
  */
-internal fun selectDefaultRoute(available: Set<AudioRoute>): AudioRoute = when {
+internal fun selectDefaultRoute(available: Set<AudioRoute>, preferEarpiece: Boolean = false): AudioRoute = when {
     AudioRoute.Bluetooth in available -> AudioRoute.Bluetooth
     AudioRoute.WiredHeadset in available -> AudioRoute.WiredHeadset
+    // A DM call is held to the ear, like a phone call.
+    preferEarpiece && AudioRoute.Earpiece in available -> AudioRoute.Earpiece
     else -> AudioRoute.Speaker
 }
 
@@ -124,7 +126,12 @@ class AudioRouteManager @Inject constructor(
      * Sets the audio mode to [AudioManager.MODE_IN_COMMUNICATION] and
      * registers broadcast receivers for headset/Bluetooth state changes.
      */
-    fun requestAudioFocus() {
+    /** Whether the session's default is the earpiece (a DM call) rather than the speaker. */
+    @Volatile
+    private var preferEarpiece = false
+
+    fun requestAudioFocus(preferEarpiece: Boolean = false) {
+        this.preferEarpiece = preferEarpiece
         val attributes = AudioAttributes.Builder()
             .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
             .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
@@ -237,7 +244,7 @@ class AudioRouteManager @Inject constructor(
         _availableRoutes.value = routes
 
         val current = _currentRoute.value
-        val default = selectDefaultRoute(routes)
+        val default = selectDefaultRoute(routes, preferEarpiece)
         val newlyConnected = (routes - previous).any {
             it == AudioRoute.Bluetooth || it == AudioRoute.WiredHeadset
         }
