@@ -290,7 +290,12 @@ async fn handle_join(
     peer.set_auth_session(auth_session);
 
     let replaced = match room.add_peer_with_limit(peer.clone(), user_limit).await {
-        Ok(replaced) => replaced,
+        Ok(replaced) => {
+            // Counted where the seat enters the room, so every way out
+            // (including a join rolled back below) balances it.
+            crate::observability::metrics::record_voice_session_start();
+            replaced
+        }
         Err(e) => {
             // Refused (room full): the new connections are not used.
             peer.close().await;
@@ -374,7 +379,6 @@ async fn handle_join(
         channel_id = %channel_id,
         "User joined voice channel"
     );
-    crate::observability::metrics::record_voice_session_start();
 
     Ok(())
 }
