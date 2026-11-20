@@ -108,8 +108,8 @@ class SetupOwnerTest {
 
     /**
      * A code is scanned and its question is open; a setup link is opened; later the person answers
-     * the first question. With two setups this ended with the second one's claim written over and
-     * its key deleted. There is one setup: the link is not used, nothing of it exists.
+     * the first question. There is one setup: the link is not used, nothing of it exists, and the
+     * scanned setup finishes with its own key.
      */
     @Test fun `a link opened while the scanned setup shows its question starts nothing`() = runTest {
         env.pinned = SigFixtures.ORIGIN

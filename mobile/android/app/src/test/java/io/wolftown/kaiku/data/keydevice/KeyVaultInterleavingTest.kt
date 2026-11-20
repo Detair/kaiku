@@ -204,7 +204,7 @@ class KeyVaultInterleavingTest {
         for (seed in 1..400) run(vault(), seed, steps = 80)
     }
 
-    /** The order that lost a key before the storage boundary compared what it changes. */
+    /** One fixed order: an older setup goes on from what it believed after a newer one claimed. */
     @Test fun `an older setup can neither write over nor forget a newer setup's claim`() = runTest {
         val vault = vault()
         val older = vault.generate()!!
