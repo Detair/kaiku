@@ -40,7 +40,9 @@ export const PermissionBits = {
 
   // Pages (bit 21)
   MANAGE_PAGES: 1 << 21,
-  MANAGE_EMOJIS_AND_STICKERS: 1 << 22,
+  // Screen sharing (bit 22). Was mislabelled "manage emojis" here; the
+  // server has always checked bit 22 as SCREEN_SHARE.
+  SCREEN_SHARE: 1 << 22,
 
   // Mentions (bit 23)
   MENTION_EVERYONE: 1 << 23,
@@ -97,6 +99,7 @@ export const CHANNEL_OVERRIDE_PERMISSION_KEYS = [
   "VOICE_MUTE_OTHERS",
   "VOICE_DEAFEN_OTHERS",
   "VOICE_MOVE_MEMBERS",
+  "SCREEN_SHARE",
   "CREATE_INVITE",
 ] as const;
 
@@ -298,10 +301,34 @@ export const PERMISSIONS: PermissionDefinition[] = [
     forbiddenForEveryone: true,
   },
   {
-    key: "MANAGE_EMOJIS_AND_STICKERS",
-    bit: PermissionBits.MANAGE_EMOJIS_AND_STICKERS,
-    name: "Manage Emojis",
-    description: "Allows managing custom guild emojis",
+    key: "SCREEN_SHARE",
+    bit: PermissionBits.SCREEN_SHARE,
+    name: "Share Screen",
+    description: "Allows sharing the screen in voice channels",
+    category: "voice",
+    forbiddenForEveryone: false,
+  },
+  {
+    key: "MANAGE_POSTS",
+    bit: PermissionBits.MANAGE_POSTS,
+    name: "Manage Posts",
+    description: "Allows pinning, locking and deleting other people's forum posts and managing tags",
+    category: "moderation",
+    forbiddenForEveryone: true,
+  },
+  {
+    key: "SEND_ANNOUNCEMENTS",
+    bit: PermissionBits.SEND_ANNOUNCEMENTS,
+    name: "Send Announcements",
+    description: "Allows publishing in announcement channels",
+    category: "content",
+    forbiddenForEveryone: true,
+  },
+  {
+    key: "MANAGE_EVENTS",
+    bit: PermissionBits.MANAGE_EVENTS,
+    name: "Manage Events",
+    description: "Allows creating, editing and cancelling scheduled events",
     category: "guild_management",
     forbiddenForEveryone: true,
   },
@@ -377,6 +404,7 @@ export function togglePermission(permissions: number, bit: number): number {
 
 // Default permission presets (matching server)
 export const EVERYONE_DEFAULT =
+  PermissionBits.VIEW_CHANNEL |
   PermissionBits.SEND_MESSAGES |
   PermissionBits.EMBED_LINKS |
   PermissionBits.ATTACH_FILES |
@@ -384,7 +412,8 @@ export const EVERYONE_DEFAULT =
   PermissionBits.ADD_REACTIONS |
   PermissionBits.VOICE_CONNECT |
   PermissionBits.VOICE_SPEAK |
-  PermissionBits.CREATE_INVITE;
+  PermissionBits.CREATE_INVITE |
+  PermissionBits.SCREEN_SHARE;
 
 export const MODERATOR_DEFAULT =
   EVERYONE_DEFAULT |
@@ -422,7 +451,11 @@ export const EVERYONE_FORBIDDEN =
   PermissionBits.MANAGE_INVITES |
   PermissionBits.MANAGE_PAGES |
   PermissionBits.MENTION_EVERYONE |
-  PermissionBits.PIN_MESSAGES;
+  PermissionBits.PIN_MESSAGES |
+  PermissionBits.MANAGE_POSTS |
+  PermissionBits.SEND_ANNOUNCEMENTS |
+  PermissionBits.MANAGE_EVENTS |
+  PermissionBits.MANAGE_WEBHOOKS;
 
 // Check if a permission is valid for @everyone role
 export function isValidForEveryone(permissions: number): boolean {

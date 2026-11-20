@@ -74,4 +74,21 @@ describe("RoleEditor", () => {
 
     expect(input.value).toBe("Helpers");
   });
+
+  it("@everyone shows screen sharing (on by default) and hides no-longer-emoji bit 22", () => {
+    const everyone = { ...role("e", "@everyone"), is_default: true, permissions: (1 << 22) | (1 << 5) };
+    render(() => <RoleEditor guildId="g1" role={everyone} onBack={() => {}} onSave={() => {}} />);
+    const box = screen.getByTestId("role-editor-perm-screen-share") as HTMLInputElement;
+    expect(box.checked).toBe(true);
+    expect(screen.queryByText(/Manage Emojis/)).toBeNull();
+    // Moderation-only permissions stay off the @everyone editor.
+    expect(screen.queryByTestId("role-editor-perm-manage-posts")).toBeNull();
+  });
+
+  it("a normal role offers forum, announcement and event permissions", () => {
+    render(() => <RoleEditor guildId="g1" role={role("r1", "Mods")} onBack={() => {}} onSave={() => {}} />);
+    expect(screen.getByTestId("role-editor-perm-manage-posts")).toBeTruthy();
+    expect(screen.getByTestId("role-editor-perm-send-announcements")).toBeTruthy();
+    expect(screen.getByTestId("role-editor-perm-manage-events")).toBeTruthy();
+  });
 });
