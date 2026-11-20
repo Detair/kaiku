@@ -95,6 +95,11 @@ sealed interface CallInput {
         override val account get() = call.account
     }
 
+    /** Mute or unmute this call (the call screen's switch). */
+    data class SetMuted(val call: CallRef, val muted: Boolean) : CallInput {
+        override val account get() = call.account
+    }
+
     /** The ended line of [channelId] was seen. */
     data class DismissEnded(override val account: String, val channelId: String) : CallInput
 
@@ -472,9 +477,17 @@ class CallController internal constructor(
         private var voiceJob: VoiceJob? = null
         private val busyCapJobs = HashMap<String, Job>()
 
-        /** The actor's state for readers on other threads (the rejoin gate). */
+        /** The actor's state for readers on other threads (the rejoin gate, the call's mute). */
         @Volatile
         private var shown: CallState = CallState.Idle
+
+        /** The mute of the call with [voiceId] as it is now (false for any other call). */
+        private fun mutedNow(voiceId: Long): Boolean = when (val s = shown) {
+            is CallState.Outgoing -> s.voiceId == voiceId && s.muted
+            is CallState.Connecting -> s.voiceId == voiceId && s.muted
+            is CallState.Connected -> s.voiceId == voiceId && s.muted
+            else -> false
+        }
 
         fun start() {
             scope.launch { for (envelope in inbox) handle(envelope) }
@@ -498,6 +511,7 @@ class CallController internal constructor(
             is CallInput.Accept -> input.call.callId?.let { CallEvent.Accept(input.call.channelId, known(it)) }
             is CallInput.Decline -> input.call.callId?.let { CallEvent.Decline(input.call.channelId, known(it)) }
             is CallInput.HangUp -> CallEvent.HangUp(input.call.channelId, input.call.callId?.let(::known))
+            is CallInput.SetMuted -> CallEvent.SetMuted(input.call.channelId, input.call.callId?.let(::known), input.muted)
             is CallInput.DismissEnded -> CallEvent.EndedShown(input.channelId)
             is CallInput.RingNotification -> input.call.callId?.let { callId ->
                 CallEvent.Rang(
@@ -603,6 +617,8 @@ class CallController internal constructor(
                 is CallEffect.Resync -> resync(effect.channelId, effect.askedFor)
                 is CallEffect.ArmBusyCap -> armBusyCap(effect.channelId, effect.callId, effect.startedAtMs)
                 is CallEffect.LeaveVoice -> leaveVoice(effect.voiceId)
+                // Only this call's session, if it is on; before that the session opens with it.
+                is CallEffect.ApplyMute -> voice.setCallMuted(tagBase + effect.voiceId, effect.muted)
                 is CallEffect.Ring -> notifier.ring(ticket, effect.channelId, effect.callId, effect.callerId, effect.callerName)
                 is CallEffect.StopRing -> notifier.stopRing(ticket, effect.channelId, effect.callId)
                 is CallEffect.Missed -> notifier.missed(ticket, effect.channelId, effect.callId, effect.callerName)
@@ -755,6 +771,9 @@ class CallController internal constructor(
                                     gate = { mayRejoin(it) },
                                     title = directory.titleOf(channelId),
                                     tag = tagBase + voiceId,
+                                    // The call's own mute, as it is when the session opens.
+                                    muted = { mutedNow(voiceId) },
+                                    onMuteToggle = { offer(CallEvent.MuteToggled(voiceId)) },
                                 ),
                             )
                             offer(CallEvent.VoiceJoined(channelId, clock.nowMs(), voiceId))

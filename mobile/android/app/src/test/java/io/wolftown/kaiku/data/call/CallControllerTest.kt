@@ -3,6 +3,7 @@ package io.wolftown.kaiku.data.call
 import io.ktor.http.HttpStatusCode
 import io.mockk.coEvery
 import io.mockk.coVerify
+import io.mockk.verify
 import io.mockk.every
 import io.mockk.mockk
 import io.wolftown.kaiku.data.api.ApiException
@@ -834,5 +835,52 @@ class CallControllerTest {
         assertEquals(CallState.Ended(r.dm, CallEndReason.Failed), r.state)
         assertEquals(listOf("join", "leave"), r.api.requests)
         coVerify(exactly = 0) { r.voice.joinCall(any(), any<VoiceRepository.CallSession>()) }
+    }
+
+    // -- The call's mute ------------------------------------------------------------------
+
+    @Test
+    fun `mute on the calling screen never touches the voice channel the user is still in`() = runTest {
+        val r = rig()
+        r.voiceChannel.value = "guild-voice" // still in a voice channel while the call starts
+        r.api.startGate = kotlinx.coroutines.CompletableDeferred()
+        r.startCall()
+        runCurrent()
+        r.setMuted(true)
+        runCurrent()
+
+        // Not the microphone that is on now (the channel's): only this call's session is named.
+        verify(exactly = 0) { r.voice.toggleMute() }
+        verify(exactly = 1) { r.voice.setCallMuted(any(), true) }
+        assertEquals(true, (r.state as CallState.Outgoing).muted)
+
+        // The call's session opens muted: the join does not reset the user's choice.
+        r.api.startGate!!.complete(Unit)
+        runCurrent()
+        assertEquals(true, r.openedMuted)
+    }
+
+    @Test
+    fun `a mute tapped right before the call's session opens is what it opens with`() = runTest {
+        val r = rig()
+        r.ring()
+        r.accept()
+        r.setMuted(true)
+        runCurrent()
+        assertEquals(true, r.openedMuted)
+        assertEquals(true, (r.state as CallState.Connected).muted)
+    }
+
+    @Test
+    fun `mute tapped on the call's notification goes through the call`() = runTest {
+        val r = rig()
+        r.ring()
+        r.accept()
+        runCurrent()
+        // The voice layer hands a Mute on its own controls to the call.
+        r.session!!.onMuteToggle!!.invoke()
+        runCurrent()
+        assertEquals(true, (r.state as CallState.Connected).muted)
+        verify(exactly = 1) { r.voice.setCallMuted(r.tag, true) }
     }
 }

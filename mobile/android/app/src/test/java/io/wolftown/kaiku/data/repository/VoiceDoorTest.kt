@@ -303,4 +303,50 @@ class VoiceDoorTest {
         while ("service:stop" !in rig.log && System.currentTimeMillis() < deadline) Thread.sleep(5)
         assertEquals(listOf("service:start", "service:stop"), rig.serviceLog())
     }
+
+    // -- A call's mute belongs to the call ----------------------------------------------------
+
+    @Test
+    fun `muting a call that has no session yet leaves the voice channel's microphone alone`() = rigTest { rig ->
+        rig.socket.ready()
+        rig.joinAndConnectFirst()
+        rig.repository.setCallMuted(1, true)
+        assertEquals(false, rig.repository.isMuted.value)
+        assertTrue(rig.socket.frames.none { it.second is ClientEvent.VoiceMute })
+    }
+
+    @Test
+    fun `a call's session opens with the call's mute and tells the server`() = rigTest { rig ->
+        rig.socket.ready()
+        var muted = true
+        launch(start = CoroutineStart.UNDISPATCHED) {
+            rig.repository.joinCall(dm, VoiceRepository.CallSession({ RejoinVerdict.Allowed }, "Anna", 1, muted = { muted }))
+        }
+        runCurrent()
+        assertEquals(true, rig.repository.isMuted.value)
+        // The mute follows the voice_join on the same socket.
+        val frames = rig.socket.frames.map { it.second }
+        assertTrue(frames.indexOfFirst { it is ClientEvent.VoiceMute } > frames.indexOfFirst { it is ClientEvent.VoiceJoin })
+
+        muted = false
+        rig.repository.setCallMuted(1, false)
+        assertEquals(false, rig.repository.isMuted.value)
+        assertTrue(rig.socket.frames.last().second is ClientEvent.VoiceUnmute)
+        // Another call's mute does not reach this session.
+        rig.repository.setCallMuted(2, true)
+        assertEquals(false, rig.repository.isMuted.value)
+    }
+
+    @Test
+    fun `mute on a call's notification asks the call instead of switching the microphone`() = rigTest { rig ->
+        rig.socket.ready()
+        var asked = 0
+        launch(start = CoroutineStart.UNDISPATCHED) {
+            rig.repository.joinCall(dm, VoiceRepository.CallSession({ RejoinVerdict.Allowed }, "Anna", 1, onMuteToggle = { asked++ }))
+        }
+        runCurrent()
+        rig.repository.toggleMute()
+        assertEquals(1, asked)
+        assertEquals("the call decides, not the control", false, rig.repository.isMuted.value)
+    }
 }

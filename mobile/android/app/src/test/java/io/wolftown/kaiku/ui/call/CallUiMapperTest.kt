@@ -13,7 +13,7 @@ class CallUiMapperTest {
     private val title = { _: String -> "Anna" }
 
     private fun map(state: CallState, link: VoiceLinkState = VoiceLinkState.Stable, now: Long = 0L, route: AudioRoute = AudioRoute.Speaker) =
-        CallUiMapper.map(state, link, muted = false, route = route, nowMs = now, titleOf = title)
+        CallUiMapper.map(state, link, route = route, nowMs = now, titleOf = title)
 
     @Test
     fun `ringing shows the caller and nothing else`() {
@@ -82,5 +82,14 @@ class CallUiMapperTest {
         assertEquals("0:05", CallUiMapper.formatDuration(5))
         assertEquals("12:34", CallUiMapper.formatDuration(754))
         assertEquals("1:02:03", CallUiMapper.formatDuration(3723))
+    }
+
+    @Test
+    fun `the mute switch shows the call's own mute from the first screen on`() {
+        // Calling, before the call has a microphone at all.
+        assertEquals(true, map(CallState.Outgoing("dm", null, 0L, muted = true)).muted)
+        assertEquals(true, map(CallState.Connecting("dm", "c", muted = true)).muted)
+        assertEquals(true, map(CallState.Connected("dm", "c", 0L, muted = true)).muted)
+        assertEquals(false, map(CallState.Connected("dm", "c", 0L)).muted)
     }
 }

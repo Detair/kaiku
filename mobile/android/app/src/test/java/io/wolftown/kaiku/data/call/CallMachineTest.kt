@@ -935,4 +935,58 @@ class CallMachineTest {
         send(JoinOk(dm, "c-1"))
         assertTrue(effects.isEmpty())
     }
+
+    // -- The call's mute ------------------------------------------------------------------
+
+    @Test
+    fun `mute on the calling screen is kept with the call until it has a microphone`() {
+        send(Start(dm, 0L))
+        send(CallEvent.SetMuted(dm, null, muted = true))
+        assertEquals(listOf(CallEffect.ApplyMute(voice, true)), effects)
+        assertEquals(true, (model.state as CallState.Outgoing).muted)
+        // The id arrives, the voice join is asked for, the other side answers: still muted.
+        send(StartOk(dm, "c-1", 0L))
+        assertEquals(true, (model.state as CallState.Outgoing).muted)
+        send(ParticipantJoined(dm, "c-1", "anna", 5L))
+        assertEquals(true, (model.state as CallState.Connected).muted)
+    }
+
+    @Test
+    fun `mute while answering stays through the join`() {
+        incoming()
+        send(accept())
+        send(CallEvent.SetMuted(dm, "c-1", muted = true))
+        send(JoinOk(dm, "c-1"))
+        assertEquals(true, (model.state as CallState.Connecting).muted)
+        send(VoiceJoined(dm, 1L, voice))
+        assertEquals(true, (model.state as CallState.Connected).muted)
+        send(CallEvent.SetMuted(dm, "c-1", muted = false))
+        assertEquals(listOf(CallEffect.ApplyMute(voice, false)), effects)
+        assertEquals(false, (model.state as CallState.Connected).muted)
+    }
+
+    @Test
+    fun `mute for another call or without a call changes nothing`() {
+        send(CallEvent.SetMuted(dm, "c-1", muted = true))
+        assertTrue(effects.isEmpty())
+        connectedAsCallee()
+        send(CallEvent.SetMuted(dm, "c-0", muted = true))
+        send(CallEvent.SetMuted("dm-2", "c-1", muted = true))
+        send(CallEvent.MuteToggled(voice + 3))
+        assertTrue(effects.isEmpty())
+        assertEquals(false, (model.state as CallState.Connected).muted)
+        // The same value again is no change.
+        send(CallEvent.SetMuted(dm, "c-1", muted = false))
+        assertTrue(effects.isEmpty())
+    }
+
+    @Test
+    fun `mute tapped on the call's notification toggles the call's mute`() {
+        connectedAsCallee()
+        send(CallEvent.MuteToggled(voice))
+        assertEquals(listOf(CallEffect.ApplyMute(voice, true)), effects)
+        assertEquals(true, (model.state as CallState.Connected).muted)
+        send(CallEvent.MuteToggled(voice))
+        assertEquals(false, (model.state as CallState.Connected).muted)
+    }
 }

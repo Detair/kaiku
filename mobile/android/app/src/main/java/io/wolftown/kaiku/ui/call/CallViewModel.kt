@@ -42,13 +42,12 @@ class CallViewModel @Inject constructor(
     val ui: StateFlow<CallUi> = combine(
         controller.state,
         voice.linkState,
-        voice.isMuted,
         audio.currentRoute,
         ticks,
-    ) { _, link, muted, route, now ->
+    ) { _, link, route, now ->
         // The call and the account it is for, read together: the controls name exactly this call.
         val shown = controller.shown()
-        CallUiMapper.map(shown.state, link, muted, route, now, directory::titleOf).copy(call = shown.ref())
+        CallUiMapper.map(shown.state, link, route, now, directory::titleOf).copy(call = shown.ref())
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), CallUi(CallPhase.None))
 
     private val _micNeeded = MutableStateFlow(false)
@@ -98,7 +97,10 @@ class CallViewModel @Inject constructor(
         controller.submit(CallInput.DismissEnded(call.account, call.channelId))
     }
 
-    fun toggleMute() = voice.toggleMute()
+    /** The Mute switch of [call]: this call's microphone, also before the call has one. */
+    fun setMuted(call: CallRef?, muted: Boolean) {
+        controller.submit(CallInput.SetMuted(call ?: return, muted))
+    }
 
     fun toggleSpeaker() {
         val on = audio.currentRoute.value != AudioRoute.Speaker

@@ -86,7 +86,7 @@ class CallActivity : ComponentActivity() {
                         onAccept = { requestAccept(ui.call) },
                         onDecline = { viewModel.decline(ui.call) },
                         onHangUp = { viewModel.hangUp(ui.call) },
-                        onToggleMute = viewModel::toggleMute,
+                        onToggleMute = { viewModel.setMuted(ui.call, !ui.muted) },
                         onToggleSpeaker = viewModel::toggleSpeaker,
                         onOpenSettings = ::openAppSettings,
                         onClose = {

@@ -176,6 +176,8 @@ class VoiceRepository @Inject constructor(
         val tag: Long = 0L,
         /** The call's mute, read when the session opens: a call brings its own. */
         val muted: () -> Boolean = { false },
+        /** Mute tapped on a control of this session outside the call screen: the call decides. */
+        val onMuteToggle: (() -> Unit)? = null,
     )
 
     /** Why a session ended; set by whoever closed it. */
@@ -964,6 +966,13 @@ class VoiceRepository @Inject constructor(
      */
     fun toggleMute() {
         if (_currentChannelId.value == null) return
+        // A call's mute belongs to the call: its controls outside the call screen (the ongoing
+        // notification, the voice bar) only ask the call, which answers with [setCallMuted].
+        val call = synchronized(sessionLock) { live?.call }
+        if (call?.onMuteToggle != null) {
+            call.onMuteToggle.invoke()
+            return
+        }
         // The decision and its frame are one step with [sendJoinOn]: a toggle
         // and the mute state that follows a voice_join can never cross, so the
         // server's view stays the local one.
@@ -980,6 +989,24 @@ class VoiceRepository @Inject constructor(
         }
         // The microphone follows outside the session lock: muting the track
         // waits for WebRTC's signalling thread, whose callbacks take that lock.
+        applyMuteToMicrophone()
+    }
+
+    /**
+     * Mutes or unmutes the voice session of the DM call [tag], and only that
+     * one: while another session is current (a voice channel the user is
+     * still in while the call starts) nothing changes, and the call's
+     * session later opens with the call's mute ([CallSession.muted], read in
+     * the same step as the session is opened).
+     */
+    fun setCallMuted(tag: Long, muted: Boolean) {
+        synchronized(sessionLock) {
+            val session = live?.takeIf { it.call != null && it.call.tag == tag } ?: return
+            if (_isMuted.value == muted) return
+            _isMuted.value = muted
+            val channelId = session.channelId
+            sendToPeer(session, if (muted) ClientEvent.VoiceMute(channelId) else ClientEvent.VoiceUnmute(channelId))
+        }
         applyMuteToMicrophone()
     }
 

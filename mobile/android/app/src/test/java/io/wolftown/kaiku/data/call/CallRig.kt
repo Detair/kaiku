@@ -116,6 +116,10 @@ internal class CallRig(val test: TestScope, val dm: String = "dm-1") {
     /** Whether Android lets the microphone service start. */
     var holdGranted = true
 
+    /** The call's voice session as asked for last, and the mute it was opened with. */
+    var session: VoiceRepository.CallSession? = null
+    var openedMuted: Boolean? = null
+
     val voice: VoiceRepository = mockk(relaxed = true) {
         every { callEnds } returns this@CallRig.callEnds
         every { currentChannelId } returns voiceChannel
@@ -123,6 +127,9 @@ internal class CallRig(val test: TestScope, val dm: String = "dm-1") {
             val call = secondArg<VoiceRepository.CallSession>()
             gate = call.gate
             tag = call.tag
+            session = call
+            // Like the voice layer: the session opens with the call's mute.
+            openedMuted = call.muted()
             voiceChannel.value = firstArg()
         }
         // The microphone service, asked for at the tap; in the order of the requests.
@@ -166,6 +173,7 @@ internal class CallRig(val test: TestScope, val dm: String = "dm-1") {
     fun startCall(account: String = "me") = controller.submit(CallInput.Start(account, dm))
     fun accept(callId: String? = null) = controller.submit(CallInput.Accept(callId?.let { CallRef("me", dm, it) } ?: shown()))
     fun decline() = controller.submit(CallInput.Decline(shown()))
+    fun setMuted(muted: Boolean) = controller.submit(CallInput.SetMuted(shown(), muted))
     fun hangUp() = controller.submit(CallInput.HangUp(controller.shown().ref() ?: CallRef("me", dm, null)))
     fun dismissEnded() = controller.submit(CallInput.DismissEnded("me", dm))
     fun ringNotification(callId: String = "c-1", account: String = "me", receivedAgoMs: Long? = null) =

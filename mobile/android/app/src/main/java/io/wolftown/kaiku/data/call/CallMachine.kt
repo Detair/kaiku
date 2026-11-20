@@ -56,6 +56,8 @@ sealed interface CallState {
         val voice: Boolean = false,
         /** This call's name for its voice session; what the voice layer says about it carries it. */
         val voiceId: Long = 0L,
+        /** The user's Mute for this call; applied to this call's microphone and to no other. */
+        val muted: Boolean = false,
     ) : CallState
 
     /** The call rings this user. [callerName] is the best known name (null: unknown). */
@@ -84,6 +86,7 @@ sealed interface CallState {
         /** The server accepted the answer and the voice join was asked for. */
         val voice: Boolean = false,
         val voiceId: Long = 0L,
+        val muted: Boolean = false,
     ) : CallState
 
     /** In the call since [sinceMs]; [others] are the other participants known to be in it. */
@@ -93,6 +96,7 @@ sealed interface CallState {
         val sinceMs: Long,
         val others: Set<String> = emptySet(),
         val voiceId: Long = 0L,
+        val muted: Boolean = false,
     ) : CallState
 
     /** Shown briefly with its [reason], then [Idle]. For new calls it counts as idle. */
@@ -177,6 +181,12 @@ sealed interface CallEvent {
     /** Hang up the shown call; [callId] is null while an outgoing call has no id yet. */
     data class HangUp(val channelId: String, val callId: String?) : CallEvent
 
+    /** Mute or unmute the shown call (the call screen's switch). */
+    data class SetMuted(val channelId: String, val callId: String?, val muted: Boolean) : CallEvent
+
+    /** Mute was tapped on a control of the call's voice session [voiceId] (its notification, the voice bar). */
+    data class MuteToggled(val voiceId: Long) : CallEvent
+
     data class ParticipantJoined(val channelId: String, val callId: String, val userId: String, val nowMs: Long) : CallEvent
     data class ParticipantLeft(val channelId: String, val callId: String, val userId: String) : CallEvent
     data class Declined(val channelId: String, val callId: String, val userId: String) : CallEvent
@@ -242,6 +252,9 @@ sealed interface CallEffect {
 
     /** End the voice session [voiceId] (and only that one). */
     data class LeaveVoice(val channelId: String, val voiceId: Long) : CallEffect
+
+    /** Mute or unmute the microphone of the voice session [voiceId], if it is on; no other session's. */
+    data class ApplyMute(val voiceId: Long, val muted: Boolean) : CallEffect
 
     /** Post the incoming-call notification (ringtone, full-screen where allowed). */
     data class Ring(
@@ -377,6 +390,8 @@ object CallMachine {
             is CallEvent.VoiceJoinFailed -> voiceJoinFailed(event)
             is CallEvent.Decline -> decline(event)
             is CallEvent.HangUp -> hangUp(event)
+            is CallEvent.SetMuted -> setMuted(event)
+            is CallEvent.MuteToggled -> if (shownVoiceId() == event.voiceId) mute(!shownMuted()) else same()
             is CallEvent.ParticipantJoined -> participantJoined(event)
             is CallEvent.ParticipantLeft -> participantLeft(event)
             is CallEvent.Declined -> declined(event)
@@ -439,7 +454,7 @@ object CallMachine {
         fun outgoingConnected(s: CallState.Outgoing, callId: String?, nowMs: Long, others: Set<String>): CallState.Connected {
             val id = s.callId ?: callId
             if (!s.voice) effects += CallEffect.JoinVoice(s.channelId, id, s.voiceId)
-            return CallState.Connected(s.channelId, id, nowMs, others, s.voiceId)
+            return CallState.Connected(s.channelId, id, nowMs, others, s.voiceId, s.muted)
         }
 
         fun startFailed(e: CallEvent.StartFailed): CallStep {
@@ -548,7 +563,7 @@ object CallMachine {
             if (s.channelId != e.channelId || e.voiceId != s.voiceId) return same()
             // Everyone else left while this phone was still joining: the call is over here.
             if (s.others.isEmpty()) return leaveCall(s.channelId, s.callId, s.voiceId, CallEndReason.Ended)
-            return to(CallState.Connected(s.channelId, s.callId, e.nowMs, s.others, s.voiceId))
+            return to(CallState.Connected(s.channelId, s.callId, e.nowMs, s.others, s.voiceId, s.muted))
         }
 
         fun voiceJoinFailed(e: CallEvent.VoiceJoinFailed): CallStep {
@@ -595,6 +610,37 @@ object CallMachine {
             is CallState.Connecting -> state.voiceId
             is CallState.Connected -> state.voiceId
             else -> null
+        }
+
+        fun shownMuted(): Boolean = when (state) {
+            is CallState.Outgoing -> state.muted
+            is CallState.Connecting -> state.muted
+            is CallState.Connected -> state.muted
+            else -> false
+        }
+
+        /** The call screen's Mute, for the call it was shown for. */
+        fun setMuted(e: CallEvent.SetMuted): CallStep {
+            if (state.channelId != e.channelId) return same()
+            val shown = shownCallId()
+            if (e.callId != null && shown != null && shown != e.callId) return same()
+            return mute(e.muted)
+        }
+
+        /**
+         * The call's mute: kept with the call from the first screen on (also before its voice
+         * session exists) and applied to that session's microphone only.
+         */
+        fun mute(muted: Boolean): CallStep {
+            val voiceId = shownVoiceId() ?: return same()
+            if (shownMuted() == muted) return same()
+            effects += CallEffect.ApplyMute(voiceId, muted)
+            return when (state) {
+                is CallState.Outgoing -> to(state.copy(muted = muted))
+                is CallState.Connecting -> to(state.copy(muted = muted))
+                is CallState.Connected -> to(state.copy(muted = muted))
+                else -> same()
+            }
         }
 
         fun hangUp(e: CallEvent.HangUp): CallStep {

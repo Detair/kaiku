@@ -34,11 +34,18 @@ object CallUiMapper {
     fun map(
         state: CallState,
         link: VoiceLinkState,
-        muted: Boolean,
         route: AudioRoute,
         nowMs: Long,
         titleOf: (String) -> String?,
     ): CallUi {
+        // The call's own mute: what the switch shows is what this call's microphone does (or
+        // will do once it is on), whatever another voice session is doing meanwhile.
+        val muted = when (state) {
+            is CallState.Outgoing -> state.muted
+            is CallState.Connecting -> state.muted
+            is CallState.Connected -> state.muted
+            else -> false
+        }
         val speaker = route == AudioRoute.Speaker
         val earpiece = route == AudioRoute.Earpiece
         return mapWithoutRoute(state, link, muted, speaker, nowMs, titleOf).let {
