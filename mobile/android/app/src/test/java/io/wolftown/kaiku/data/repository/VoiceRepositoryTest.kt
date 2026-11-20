@@ -1516,8 +1516,13 @@ class VoiceRepositoryTest {
         assertEquals(false, repository.isConnected.value)
     }
 
-    /** A teardown of the media as the test saw it: on which thread, and which locks were held. */
-    private class Release(val thread: Thread, val callerLockHeld: Boolean, val doorHeld: Boolean, val stack: String)
+    /**
+     * A teardown of the media as the test saw it: on which thread, and which locks were held.
+     * [threadName] is the thread's own name, read at the call: with coroutine debugging on (as
+     * in unit tests) a thread's name carries the running coroutine (" @coroutine#n") until that
+     * coroutine ends, so a name read later depends on timing.
+     */
+    private class Release(val thread: Thread, val threadName: String, val callerLockHeld: Boolean, val doorHeld: Boolean, val stack: String)
 
     /** A repository whose owner runs on a thread of its own, as in the app; joined to ch-1 and up. */
     private fun withOwnerThread(body: (releases: MutableList<Release>, storageLock: Any) -> Unit) {
@@ -1545,6 +1550,7 @@ class VoiceRepositoryTest {
             every { webRtcManager.closePeerConnections() } answers {
                 releases += Release(
                     Thread.currentThread(),
+                    Thread.currentThread().name.substringBefore(" @"),
                     Thread.holdsLock(storageLock),
                     repository.doorHeldForTest,
                     Thread.currentThread().stackTrace.drop(2).take(25).joinToString("\n") { "    $it" },
@@ -1559,7 +1565,7 @@ class VoiceRepositoryTest {
         }
     }
 
-    private fun List<Release>.describe() = joinToString("\n----\n") { "${it.thread.name}\n${it.stack}" }
+    private fun List<Release>.describe() = joinToString("\n----\n") { "${it.threadName}\n${it.stack}" }
 
     @Test
     fun `sign-out releases the media on another thread, never under the caller's locks, before it returns`() =
@@ -1574,7 +1580,7 @@ class VoiceRepositoryTest {
             assertEquals("the media was not torn down exactly once:\n${releases.describe()}", 1, releases.size)
             val release = releases.single()
             assertTrue("released on the caller's thread", release.thread !== caller)
-            assertEquals("released by another thread than the sign-out's release:\n${releases.describe()}", "voice-release", release.thread.name)
+            assertEquals("released by another thread than the sign-out's release:\n${releases.describe()}", "voice-release", release.threadName)
             assertEquals("released under the caller's lock", false, release.callerLockHeld)
             assertTrue("released outside the door", release.doorHeld)
         }
