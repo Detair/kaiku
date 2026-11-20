@@ -215,8 +215,9 @@ async fn same_socket_rejoin_is_not_told_it_was_replaced(pool: PgPool) {
     assert_eq!(room.participant_count().await, 1);
 }
 
-/// A channel's `user_limit` refuses one more member with `CHANNEL_FULL`;
-/// a member who is already in the room may still join again (replacement).
+/// A channel's `user_limit` refuses one more member with `CHANNEL_FULL`,
+/// the server owner included (no bypass); a member who is already in the
+/// room may still join again (replacement).
 #[sqlx::test]
 async fn user_limit_refuses_extra_member_but_not_a_rejoin(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
@@ -224,8 +225,8 @@ async fn user_limit_refuses_extra_member_but_not_a_rejoin(pool: PgPool) {
     let (owner, _) = create_test_user(&pool).await;
     let (a, _) = create_test_user(&pool).await;
     let (b, _) = create_test_user(&pool).await;
-    let guild =
-        create_guild_with_default_role(&pool, owner, GuildPermissions::EVERYONE_DEFAULT).await;
+    let guild = create_guild_with_default_role(&pool, owner, GuildPermissions::EVERYONE_DEFAULT)
+        .await;
     add_guild_member(&pool, guild, a).await;
     add_guild_member(&pool, guild, b).await;
     let voice = create_voice_channel(&pool, guild, "voice").await;
@@ -235,20 +236,20 @@ async fn user_limit_refuses_extra_member_but_not_a_rejoin(pool: PgPool) {
         .await
         .unwrap();
 
+    let mut seated = Vec::new();
+    for user in [a, b] {
+        let mut ws = ws_connect(&server, &generate_access_token(&app.config, user)).await;
+        next_ws_event(&mut ws, "ready", EVENT_TIMEOUT).await;
+        join_voice(&mut ws, voice).await;
+        next_ws_event(&mut ws, "voice_room_state", EVENT_TIMEOUT).await;
+        seated.push(ws);
+    }
+
+    // The server owner is the third: the room is full for them too.
     let mut owner_ws = ws_connect(&server, &generate_access_token(&app.config, owner)).await;
     next_ws_event(&mut owner_ws, "ready", EVENT_TIMEOUT).await;
     join_voice(&mut owner_ws, voice).await;
-    next_ws_event(&mut owner_ws, "voice_room_state", EVENT_TIMEOUT).await;
-    let mut a_ws = ws_connect(&server, &generate_access_token(&app.config, a)).await;
-    next_ws_event(&mut a_ws, "ready", EVENT_TIMEOUT).await;
-    join_voice(&mut a_ws, voice).await;
-    next_ws_event(&mut a_ws, "voice_room_state", EVENT_TIMEOUT).await;
-
-    // Third member, the server owner neither: the room is full.
-    let mut b_ws = ws_connect(&server, &generate_access_token(&app.config, b)).await;
-    next_ws_event(&mut b_ws, "ready", EVENT_TIMEOUT).await;
-    join_voice(&mut b_ws, voice).await;
-    let err = next_ws_event(&mut b_ws, "voice_error", EVENT_TIMEOUT).await;
+    let err = next_ws_event(&mut owner_ws, "voice_error", EVENT_TIMEOUT).await;
     assert_eq!(err["code"], "CHANNEL_FULL", "{err}");
 
     // A member already in the room joins again from another socket.
