@@ -226,9 +226,8 @@ bearer secret is issued at all. Registration is bound to the requesting session 
   authorisation belongs to the browser that typed the code, never to the URL.
   - The hand-off then works as in F1, and **nothing takes effect before `redeem`**, with the one-time
     code, the verifier and the starting session's bearer.
-  - The flow URL alone is therefore worthless, before and after the legitimate code entry. Whoever has
-    it but neither the code nor the cookie reaches no ceremony and produces no hand-off for the app to
-    redeem. Before the code is entered, wrong entries on the page count on the attempt; the third ends it,
+  - The flow URL alone is therefore worthless, before and after the legitimate code entry. Without the
+    code or the cookie, the URL leads to no ceremony and no hand-off for the app to redeem. Before the code is entered, wrong entries on the page count on the attempt; the third ends it,
     and the PC and the phone both say so.
   - F1 today supports assertions only. Registration needs a new ceremony kind, pending result and
     redemption handling, which holds the verified credential until `redeem`.

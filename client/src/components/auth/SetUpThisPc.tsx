@@ -106,7 +106,7 @@ export const WebCodeStep: Component<PcSetupStepProps> = (props) => {
   return (
     <div class="space-y-3">
       <p>{t("pcSetup.codeIntro")}</p>
-      <p class="text-sm text-text-primary">{t("pcSetup.codeWarning")}</p>
+      <p class="text-sm text-text-primary">{t("pcSetup.codeOwnPhoneOnly")}</p>
       <CodeEntry
         length={6}
         value={code()}
@@ -143,7 +143,9 @@ export const WebPasskeyStep: Component<PcSetupStepProps> = (props) => {
       if (!mine.signal.aborted) props.onState(id, { state: "completed", reason: null });
     } catch (err) {
       if (!mine.signal.aborted) {
-        setError(passkeyFailureText(err, "pcSetup.registerFailed", PASSKEY_ERRORS) || null);
+        // The attempt cannot take a passkey this way: only Start again helps.
+        if (err instanceof HttpError && codeIs(err.code, "APPROVAL_STATE")) setError(t("pcSetup.ended.generic"));
+        else setError(passkeyFailureText(err, "pcSetup.registerFailed", PASSKEY_ERRORS) || null);
       }
     } finally {
       if (ctl === mine) {
@@ -287,7 +289,14 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
           return;
         }
         // A refusal that waiting does not change: end with the generic text.
-        if (err instanceof HttpError && err.status >= 400 && err.status < 500 && err.status !== 408 && err.status !== 429) {
+        // (401: a refresh that failed for now; a real session end signs out
+        // and closes the dialog on its own.)
+        if (
+          err instanceof HttpError &&
+          err.status >= 400 &&
+          err.status < 500 &&
+          ![401, 408, 429].includes(err.status)
+        ) {
           apply({ attempt_id: current.attempt_id, state: "expired", reason: "poll_refused" });
           return;
         }

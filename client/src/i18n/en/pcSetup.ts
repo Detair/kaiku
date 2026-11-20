@@ -6,7 +6,7 @@ export const pcSetup = {
   "pcSetup.waiting": "Open the Kaiku app on your phone, scan this code and confirm with your screen lock. The code changes every minute.",
   "pcSetup.claimed": "Your phone has the code. Confirm on your phone to continue.",
   "pcSetup.codeIntro": "Your phone now shows a 6-digit code. Type it here.",
-  "pcSetup.codeWarning": "Only type a code from your own phone. Never type one that someone sent or told you.",
+  "pcSetup.codeOwnPhoneOnly": "Only type a code from your own phone. Never type one that someone sent or told you.",
   "pcSetup.codeLabel": "Code from your phone",
   "pcSetup.codeWrong.one": "That code is wrong. {{count}} try left.",
   "pcSetup.codeWrong.other": "That code is wrong. {{count}} tries left.",
