@@ -136,11 +136,17 @@ class DeviceSignIn @Inject constructor(
                             sessionCap = cap,
                         )
                     }
-                    if (taken == Change.Mismatch) {
-                        // The key was forgotten or replaced while the session was being installed:
-                        // that session is not a sign-in of this phone's key any more.
-                        authRepository.logout()
-                        return DeviceSignInResult.Failed("NO_KEY_DEVICE")
+                    when (taken) {
+                        is Change.Done -> Unit
+                        Change.Mismatch -> {
+                            // The key was forgotten or replaced while the session was being installed:
+                            // that session is not a sign-in of this phone's key any more.
+                            authRepository.logout()
+                            return DeviceSignInResult.Failed("NO_KEY_DEVICE")
+                        }
+                        // The record is still this one; only what is kept beside it (the key-device
+                        // id, the session's cap) did not reach storage. The sign-in stands.
+                        Change.WriteFailed, Change.Unreadable -> logger.warning("Sign-in not noted on the key record: ${taken.javaClass.simpleName}")
                     }
                     DeviceSignInResult.Success
                 }

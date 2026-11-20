@@ -1,5 +1,6 @@
 package io.wolftown.kaiku.data.keydevice
 
+import android.annotation.SuppressLint
 import android.content.SharedPreferences
 import io.wolftown.kaiku.approval.UvClass
 import java.time.Instant
@@ -65,7 +66,9 @@ interface KeyDeviceStore {
 /**
  * [KeyDeviceStore] on Keystore-wrapped preferences (file `kaiku_key_device`).
  * Separate from the session store, so it outlives sign-outs and lapses.
+ * Every write is committed, not applied: the caller is told whether it reached storage.
  */
+@SuppressLint("ApplySharedPref")
 class PrefsKeyDeviceStore(private val prefs: SharedPreferences) : KeyDeviceStore {
 
     private companion object {

@@ -130,7 +130,8 @@ class MainActivity : FragmentActivity() {
         val prompt = renewalGate.shouldPrompt(now, keyDevices.sessionCap(), keyDevices.lastRenewalPromptAt())
         if (keyDevices.current() !is KeyDeviceState.Active) return
         if (prompt) {
-            keyDevices.markRenewalPrompted(now)
+            // If the time does not reach storage the prompt comes once more at the next open; nothing else depends on it.
+            keyDevices.record.value?.let { keyDevices.markRenewalPrompted(it, now) }
             pendingRoute.value = CONFIRM_RENEW_ROUTE
         }
     }

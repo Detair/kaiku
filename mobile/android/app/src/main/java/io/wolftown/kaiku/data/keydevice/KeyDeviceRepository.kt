@@ -256,18 +256,8 @@ class KeyDeviceRepository @Inject constructor(
         return replace(now, change(now))
     }
 
-    /** Times kept beside the record (session cap, renewal prompt): written onto whatever record is stored. */
-    @Synchronized
-    fun note(change: (StoredKeyDevice) -> StoredKeyDevice): Change {
-        val now = stored() ?: return if (unreadable()) Change.Unreadable else Change.Mismatch
-        val next = change(now)
-        require(next sameAs now) { "a note changes no part of what the record is" }
-        return write(next)
-    }
-
-    fun recordSessionCap(expected: StoredKeyDevice, cap: Instant?): Change = update(expected) { it.copy(sessionCap = cap) }
-
-    fun markRenewalPrompted(at: Instant): Change = note { it.copy(lastRenewalPromptAt = at) }
+    /** The time of the last "stay signed in" prompt, kept beside [expected]. */
+    fun markRenewalPrompted(expected: StoredKeyDevice, at: Instant): Change = update(expected) { it.copy(lastRenewalPromptAt = at) }
 
     /**
      * Forgets [expected] and its key, only while [expected] is the stored record. The record is

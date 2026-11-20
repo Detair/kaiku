@@ -190,8 +190,9 @@ class KeyAnswers @Inject constructor(private val keyDevices: KeyDeviceRepository
         val now = serverTime ?: return Settled.Kept(v)
         val until = expected.claimVoidAfter
         if (until == null) {
-            keyDevices.update(expected) { it.copy(claimVoidAfter = now.plus(CLAIM_VOID_UNKNOWN)) }
-            return Settled.Kept(v, askAgainIn = CLAIM_VOID_UNKNOWN)
+            // Only a time that reached storage counts; otherwise the next answer sets it.
+            val noted = keyDevices.update(expected) { it.copy(claimVoidAfter = now.plus(CLAIM_VOID_UNKNOWN)) }.done
+            return Settled.Kept(v, askAgainIn = if (noted) CLAIM_VOID_UNKNOWN else null)
         }
         return if (now.isAfter(until)) drop(expected, v) else Settled.Kept(v, askAgainIn = Duration.between(now, until))
     }

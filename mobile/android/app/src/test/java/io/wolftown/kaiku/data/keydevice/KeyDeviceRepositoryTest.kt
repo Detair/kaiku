@@ -118,7 +118,9 @@ class KeyDeviceRepositoryTest {
         val mine = claiming().copy(phase = KeyDevicePhase.ACTIVE)
         store.stored = mine
         repo.reload()
-        repo.markRenewalPrompted(Instant.parse("2026-11-20T10:00:00Z"))
+        assertTrue(repo.markRenewalPrompted(mine, Instant.parse("2026-11-20T10:00:00Z")).done)
+        assertEquals(Instant.parse("2026-11-20T10:00:00Z"), repo.lastRenewalPromptAt())
+        // Held from before the time was noted: still that very record.
         assertEquals(Change.Done(null), repo.forget(mine, Forget.SERVER_ANSWER))
     }
 
@@ -191,7 +193,7 @@ class KeyDeviceRepositoryTest {
         assertEquals(Change.Unreadable, repo.create(claiming()))
         assertEquals(Change.Unreadable, repo.replace(store.stored!!, store.stored!!.copy(phase = KeyDevicePhase.PENDING)))
         assertEquals(Change.Unreadable, repo.forget(store.stored!!, Forget.SERVER_ANSWER))
-        assertEquals(Change.Unreadable, repo.markRenewalPrompted(Instant.now()))
+        assertEquals(Change.Unreadable, repo.markRenewalPrompted(store.stored!!, Instant.now()))
         // The key is not an unclaimed left-over just because its record cannot be read.
         assertEquals(NewKey.Unreadable, repo.generateKey(ByteArray(32), use))
         assertFalse(repo.deleteUnclaimedKey(key))

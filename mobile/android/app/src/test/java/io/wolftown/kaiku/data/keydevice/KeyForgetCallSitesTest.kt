@@ -74,7 +74,7 @@ class KeyForgetCallSitesTest {
                 "ui/auth/setup/SetupOwner.kt",
                 "ui/MainActivity.kt",
             ),
-            filesWith(Regex("""keyDevices\.(create|replace|update|note|markRenewalPrompted|recordSessionCap)\(""")) + "data/keydevice/KeyDeviceRepository.kt",
+            filesWith(Regex("""keyDevices\.(create|replace|update|markRenewalPrompted)\(""")) + "data/keydevice/KeyDeviceRepository.kt",
         )
     }
 
