@@ -2613,7 +2613,9 @@ async fn starts_are_bounded_per_session_and_per_account(pool: PgPool) {
     // Ten starts of other sessions of the account do not block this one.
     for _ in 0..10 {
         let sid = probation_session(&pool, p.user).await;
-        insert_attempt(&pool, p.user, sid, "cancelled").await.unwrap();
+        insert_attempt(&pool, p.user, sid, "cancelled")
+            .await
+            .unwrap();
     }
     started(&p).await;
     // Ten starts of this session within ten minutes are its limit.
@@ -2623,10 +2625,16 @@ async fn starts_are_bounded_per_session_and_per_account(pool: PgPool) {
         .await
         .unwrap();
     for _ in 0..9 {
-        insert_attempt(&pool, p.user, p.sid, "cancelled").await.unwrap();
+        insert_attempt(&pool, p.user, p.sid, "cancelled")
+            .await
+            .unwrap();
     }
     let (s, body) = start(&p.app, &p.token).await;
-    assert_eq!((s, body["error"].as_str()), (429, Some("TOO_MANY_ATTEMPTS")), "{body}");
+    assert_eq!(
+        (s, body["error"].as_str()),
+        (429, Some("TOO_MANY_ATTEMPTS")),
+        "{body}"
+    );
     // Older starts do not count.
     sqlx::query(
         "UPDATE pc_setup_attempts SET created_at = NOW() - INTERVAL '11 minutes',
@@ -2640,10 +2648,16 @@ async fn starts_are_bounded_per_session_and_per_account(pool: PgPool) {
     // Thirty starts of the account within ten minutes are the account's ceiling.
     for _ in 0..29 {
         let sid = probation_session(&pool, p.user).await;
-        insert_attempt(&pool, p.user, sid, "cancelled").await.unwrap();
+        insert_attempt(&pool, p.user, sid, "cancelled")
+            .await
+            .unwrap();
     }
     let (s, body) = start(&p.app, &p.token).await;
-    assert_eq!((s, body["error"].as_str()), (429, Some("TOO_MANY_ATTEMPTS")), "{body}");
+    assert_eq!(
+        (s, body["error"].as_str()),
+        (429, Some("TOO_MANY_ATTEMPTS")),
+        "{body}"
+    );
 }
 
 #[sqlx::test]
@@ -2795,7 +2809,10 @@ async fn logout_of_two_sessions_ends_the_bearers_own_last(pool: PgPool) {
     };
     let ((s, _), (other_ended, mine_live)) = tokio::join!(logout, check);
     assert_eq!(s, 200);
-    assert!(other_ended && mine_live, "the other session first, one transaction each");
+    assert!(
+        other_ended && mine_live,
+        "the other session first, one transaction each"
+    );
     assert!(!session_live(&pool, p.sid).await);
 }
 
@@ -3088,7 +3105,8 @@ async fn a_finish_committed_before_logout_keeps_its_passkey(pool: PgPool) {
         super::helpers::wait_for_lock_waiters(&pool, 1).await;
         logout(&p).await
     };
-    let ((s, pk), out, ()) = tokio::join!(finish, logout_second, release_in_order(&pool, holder, 2));
+    let ((s, pk), out, ()) =
+        tokio::join!(finish, logout_second, release_in_order(&pool, holder, 2));
     assert_eq!(s, 201, "{pk}");
     assert_eq!(out, 200);
     // The logout's cascade left the finished enrolment and the passkey alone.
