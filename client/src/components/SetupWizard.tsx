@@ -469,7 +469,10 @@ const SetupCheckFailed: Component<{ onRetry: () => void }> = (props) => (
 const SetupWizard: Component = () => {
   const [admin, { refetch }] = createResource(async (): Promise<"admin" | "member" | "unknown"> => {
     try {
-      return (await checkAdminStatus()).is_admin ? "admin" : "member";
+      const isAdmin: unknown = (await checkAdminStatus()).is_admin;
+      // Only a real yes or no counts; anything else is "could not check".
+      if (typeof isAdmin !== "boolean") return "unknown";
+      return isAdmin ? "admin" : "member";
     } catch {
       return "unknown";
     }

@@ -19,6 +19,7 @@ vi.mock("@tauri-apps/api/core", async (orig) => ({
 }));
 
 import { pollPcSetup, startPcSetup } from "../pcSetup";
+import { isServerSetupComplete } from "../auth";
 import { setUpThisPcInBrowser, PasskeyError } from "../passkeys";
 import { browserState, clearBrowserTokens, setNativeAuthInfo } from "../common";
 
@@ -143,5 +144,16 @@ describe("an unreadable success answer", () => {
     expect(text).not.toContain("SECRETTOKEN");
     expect(text).not.toContain("qr_payload");
     logged.mockRestore();
+  });
+});
+
+describe("isServerSetupComplete", () => {
+  it("rejects an answer without a yes or no, so the could-not-check path runs", async () => {
+    for (const body of [{}, { setup_complete: "true" }, null]) {
+      fetchMock.mockResolvedValueOnce(json(200, body));
+      await expect(isServerSetupComplete()).rejects.toThrow();
+    }
+    fetchMock.mockResolvedValueOnce(json(200, { setup_complete: false }));
+    await expect(isServerSetupComplete()).resolves.toBe(false);
   });
 });

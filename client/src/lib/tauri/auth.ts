@@ -308,8 +308,10 @@ export async function isPasswordChangePending(): Promise<boolean> {
  * restored session asks here. Rejects when the request fails.
  */
 export async function isServerSetupComplete(): Promise<boolean> {
-  const status = await httpRequest<{ setup_complete?: boolean }>("GET", "/api/setup/status");
-  return status?.setup_complete !== false;
+  const status = await httpRequest<{ setup_complete?: unknown }>("GET", "/api/setup/status");
+  // Only a real yes or no counts; anything else is "could not check".
+  if (typeof status?.setup_complete !== "boolean") throw new Error("unreadable setup status");
+  return status.setup_complete;
 }
 
 export async function getCurrentUser(): Promise<SessionRestoreResult> {

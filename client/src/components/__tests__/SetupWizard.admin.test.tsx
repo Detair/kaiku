@@ -66,6 +66,13 @@ describe("SetupWizard", () => {
     expect(await screen.findByTestId("setup-wizard")).toBeTruthy();
   });
 
+  it("an admin status that is not a yes or no counts as could not check", async () => {
+    admin.checkAdminStatus.mockResolvedValue({ is_admin: "false" } as unknown as { is_admin: boolean });
+    mount();
+    expect(await screen.findByText("Kaiku could not check whether you can set up this server.")).toBeTruthy();
+    expect(screen.queryByTestId("setup-wizard")).toBeNull();
+  });
+
   it("closing the could-not-check state hides it", async () => {
     admin.checkAdminStatus.mockRejectedValue(new Error("offline"));
     mount();
