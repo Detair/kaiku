@@ -50,21 +50,26 @@ const TauriVideoFrame: Component<TauriVideoFrameProps> = (props) => {
   const isScreenShare = () =>
     props.streamId !== "webcam" && props.streamId !== "default";
 
-  /** A native call whose failure is logged, never unhandled. */
-  const call = (
-    invoke: (cmd: string, args: Record<string, unknown>) => Promise<unknown>,
-    cmd: string,
-    id: number,
-  ) => {
-    invoke(cmd, { streamId: props.streamId, subscriptionId: id }).catch((err: unknown) =>
-      console.debug(`[TauriVideoFrame] ${cmd} failed:`, err),
+  type Invoke = (cmd: string, args: Record<string, unknown>) => Promise<unknown>;
+  const logFailure = (what: string) => (err: unknown) =>
+    console.debug(`[TauriVideoFrame] ${what} failed:`, err);
+
+  /** Native calls whose failure is logged, never unhandled. */
+  const ack = (invoke: Invoke, id: number) => {
+    invoke("ack_video_frame", { streamId: props.streamId, subscriptionId: id }).catch(
+      logFailure("ack"),
+    );
+  };
+  const unsubscribe = (invoke: Invoke, id: number) => {
+    invoke("unsubscribe_video_frames", { streamId: props.streamId, subscriptionId: id }).catch(
+      logFailure("unsubscribe"),
     );
   };
 
   /** The view goes: native stops sending and decoding for it. */
   const release = () => {
     if (subscription) {
-      call(subscription.invoke, "unsubscribe_video_frames", subscription.id);
+      unsubscribe(subscription.invoke, subscription.id);
       subscription = null;
     }
   };
@@ -88,7 +93,7 @@ const TauriVideoFrame: Component<TauriVideoFrameProps> = (props) => {
         // Taken: the next frame may come (flow control; also for frames
         // that cannot be shown).
         if (subscription) {
-          call(subscription.invoke, "ack_video_frame", subscription.id);
+          ack(subscription.invoke, subscription.id);
         } else if (!failed) {
           earlyFrames += 1; // acknowledged once the subscription id is known
         }
@@ -116,10 +121,10 @@ const TauriVideoFrame: Component<TauriVideoFrameProps> = (props) => {
         onFrame: channel,
       });
       if (disposed || failed) {
-        call(invoke, "unsubscribe_video_frames", id);
+        unsubscribe(invoke, id);
       } else {
         subscription = { invoke, id };
-        for (; earlyFrames > 0; earlyFrames--) call(invoke, "ack_video_frame", id);
+        for (; earlyFrames > 0; earlyFrames--) ack(invoke, id);
       }
     } catch (err) {
       console.error("[TauriVideoFrame] subscribe failed:", err);
