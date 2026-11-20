@@ -60,7 +60,7 @@ class CallMachineTest {
     private fun connectedAsCallee() {
         incoming()
         send(Accept(dm))
-        send(JoinOk(dm))
+        send(JoinOk(dm, "c-1"))
         send(VoiceJoined(dm, 1_000L, "c-1"))
     }
 
@@ -75,7 +75,7 @@ class CallMachineTest {
     @Test
     fun `the server's answer joins voice`() {
         send(Start(dm, 0L))
-        assertEquals(CallState.Outgoing(dm, "c-1", 0L), send(StartOk(dm, "c-1", 0L)))
+        assertEquals(CallState.Outgoing(dm, "c-1", 0L, voice = true), send(StartOk(dm, "c-1", 0L)))
         assertEquals(listOf(JoinVoice(dm, "c-1")), effects)
     }
 
@@ -179,8 +179,8 @@ class CallMachineTest {
     fun `accept stops the ring and answers`() {
         incoming()
         assertEquals(CallState.Connecting(dm, "c-1", setOf("anna")), send(Accept(dm)))
-        assertEquals(listOf(StopRing(dm, "c-1"), RestJoin(dm)), effects)
-        send(JoinOk(dm))
+        assertEquals(listOf(StopRing(dm, "c-1"), RestJoin(dm, "c-1")), effects)
+        send(JoinOk(dm, "c-1"))
         assertEquals(listOf(JoinVoice(dm, "c-1")), effects)
         assertEquals(CallState.Connected(dm, "c-1", 1_000L, setOf("anna")), send(VoiceJoined(dm, 1_000L, "c-1")))
     }
@@ -197,7 +197,7 @@ class CallMachineTest {
     fun `an answer the server refuses ends without leaving`() {
         incoming()
         send(Accept(dm))
-        assertEquals(CallState.Ended(dm, CallEndReason.Gone), send(JoinFailed(dm, gone = true)))
+        assertEquals(CallState.Ended(dm, CallEndReason.Gone), send(JoinFailed(dm, "c-1", gone = true)))
         assertEquals(listOf(ArmEndedTimer), effects)
     }
 
@@ -205,7 +205,7 @@ class CallMachineTest {
     fun `a voice join that fails after the answer leaves the call on the server`() {
         incoming()
         send(Accept(dm))
-        send(JoinOk(dm))
+        send(JoinOk(dm, "c-1"))
         assertEquals(CallState.Ended(dm, CallEndReason.Failed), send(VoiceJoinFailed(dm, "c-1")))
         assertEquals(listOf(RestLeave(dm), ArmEndedTimer), effects)
     }
@@ -436,13 +436,13 @@ class CallMachineTest {
     @Test
     fun `a call may rejoin only while the server still has this user in it`() {
         val connected = CallState.Connected(dm, "c-1", 0L)
-        assertTrue(CallMachine.mayRejoin(connected, snapshot(), me))
-        assertFalse(CallMachine.mayRejoin(connected, null, me))
-        assertFalse(CallMachine.mayRejoin(connected, snapshot(callId = "c-2"), me))
-        assertFalse(CallMachine.mayRejoin(connected, snapshot(participants = setOf("anna")), me))
+        assertTrue(CallMachine.mayRejoin(connected, dm, snapshot(), me))
+        assertFalse(CallMachine.mayRejoin(connected, dm, null, me))
+        assertFalse(CallMachine.mayRejoin(connected, dm, snapshot(callId = "c-2"), me))
+        assertFalse(CallMachine.mayRejoin(connected, dm, snapshot(participants = setOf("anna")), me))
         val ringingOut = CallState.Outgoing(dm, "c-1", 0L)
-        assertTrue(CallMachine.mayRejoin(ringingOut, snapshot(ringing = true, active = false, startedBy = me), me))
-        assertFalse(CallMachine.mayRejoin(CallState.Idle, snapshot(), me))
+        assertTrue(CallMachine.mayRejoin(ringingOut, dm, snapshot(ringing = true, active = false, startedBy = me), me))
+        assertFalse(CallMachine.mayRejoin(CallState.Idle, dm, snapshot(), me))
     }
 
     // -- Signed-in user ------------------------------------------------------------------
@@ -571,7 +571,7 @@ class CallMachineTest {
         incoming()
         send(ParticipantJoined(dm, "c-1", "carl", 0L))
         send(Accept(dm))
-        send(JoinOk(dm))
+        send(JoinOk(dm, "c-1"))
         send(VoiceJoined(dm, 1_000L, "c-1"))
         // The caller leaves first: Carl is still in the call.
         send(ParticipantLeft(dm, "c-1", "anna"))
@@ -582,7 +582,7 @@ class CallMachineTest {
     fun `the server's participants after answering are known`() {
         incoming()
         send(Accept(dm))
-        send(JoinOk(dm, setOf("anna", "carl", me)))
+        send(JoinOk(dm, "c-1", setOf("anna", "carl", me)))
         send(VoiceJoined(dm, 1_000L, "c-1"))
         assertEquals(setOf("anna", "carl"), (model.state as CallState.Connected).others)
     }
@@ -611,5 +611,133 @@ class CallMachineTest {
         // A cap of a ring that already ended does nothing.
         send(CallEvent.BusyCap("dm-2", "c-7"))
         assertTrue(effects.isEmpty())
+    }
+
+    // -- Order and identity (answers arriving in any order) --------------------------
+
+    @Test
+    fun `the other side answering before the start's answer still joins voice once`() {
+        send(Start(dm, 0L))
+        assertEquals(CallState.Connected(dm, "c-1", 3L, setOf("anna")), send(ParticipantJoined(dm, "c-1", "anna", 3L)))
+        assertEquals(listOf(JoinVoice(dm, "c-1")), effects)
+        send(StartOk(dm, "c-1", 0L))
+        assertTrue(effects.isEmpty())
+    }
+
+    @Test
+    fun `a resync that learns the id before the start's answer joins voice once`() {
+        send(Start(dm, 0L))
+        val asked = model.state
+        send(Resynced(dm, snapshot(ringing = true, active = false, startedBy = me, participants = emptySet()), 0L, asked))
+        assertEquals(listOf(JoinVoice(dm, "c-1")), effects)
+        send(StartOk(dm, "c-1", 0L))
+        assertTrue(effects.isEmpty())
+    }
+
+    @Test
+    fun `a resync during the start never adopts someone else's call`() {
+        send(Start(dm, 0L))
+        val asked = model.state
+        // The other side called first.
+        send(Resynced(dm, snapshot(callId = "c-9", ringing = true, active = false, startedBy = "anna", participants = emptySet()), 0L, asked))
+        assertEquals(CallState.Outgoing(dm, null, 0L), model.state)
+        // A group call already running without this user.
+        send(Resynced(dm, snapshot(callId = "c-8", participants = setOf("anna", "bob")), 0L, model.state))
+        assertEquals(CallState.Outgoing(dm, null, 0L), model.state)
+        assertEquals(CallState.Idle, send(StartFailed(dm, glare = true, blocked = false, startedAtMs = 0L)))
+    }
+
+    @Test
+    fun `a voice join that fails after the caller's call connected ends it and leaves`() {
+        send(Start(dm, 0L))
+        send(StartOk(dm, "c-1", 0L))
+        send(ParticipantJoined(dm, "c-1", "anna", 1L))
+        assertEquals(CallState.Ended(dm, CallEndReason.Failed), send(VoiceJoinFailed(dm, "c-1")))
+        assertEquals(listOf(RestLeave(dm), ArmEndedTimer), effects)
+    }
+
+    @Test
+    fun `hang up before the answer was accepted leaves only after the late acceptance, once`() {
+        incoming()
+        send(Accept(dm))
+        assertEquals(CallState.Ended(dm, CallEndReason.Left), send(CallEvent.HangUp))
+        assertTrue(effects.none { it is RestLeave })
+        send(JoinOk(dm, "c-1"))
+        assertEquals(listOf(RestLeave(dm)), effects)
+        send(JoinOk(dm, "c-1"))
+        assertTrue(effects.isEmpty())
+    }
+
+    @Test
+    fun `an answer result of another call is ignored`() {
+        incoming("c-2")
+        send(Accept(dm))
+        send(JoinFailed(dm, "c-1", gone = true))
+        assertTrue(model.state is CallState.Connecting)
+        send(JoinOk(dm, "c-1"))
+        assertTrue(effects.none { it is RestLeave || it is JoinVoice })
+    }
+
+    @Test
+    fun `someone leaving while this phone joins is gone after the join, and alone means over`() {
+        incoming()
+        send(Accept(dm))
+        send(JoinOk(dm, "c-1", setOf("anna", me)))
+        send(ParticipantLeft(dm, "c-1", "anna"))
+        assertEquals(CallState.Ended(dm, CallEndReason.Ended), send(VoiceJoined(dm, 1L, "c-1")))
+        assertTrue(effects.contains(RestLeave(dm)))
+    }
+
+    @Test
+    fun `a caller who left a group call while it rang here is not counted after answering`() {
+        incoming()
+        send(ParticipantJoined(dm, "c-1", "carl", 0L))
+        send(ParticipantLeft(dm, "c-1", "anna"))
+        assertEquals(setOf("carl"), (send(Accept(dm)) as CallState.Connecting).others)
+    }
+
+    @Test
+    fun `the server's participants replace what was known while ringing`() {
+        incoming()
+        send(ParticipantJoined(dm, "c-1", "carl", 0L))
+        send(Accept(dm))
+        send(JoinOk(dm, "c-1", setOf("bob", me)))
+        assertEquals(setOf("bob"), (model.state as CallState.Connecting).others)
+    }
+
+    @Test
+    fun `the rejoin permission is only for the conversation shown`() {
+        val connected = CallState.Connected(dm, "c-1", 0L)
+        assertFalse(CallMachine.mayRejoin(connected, "dm-2", snapshot(), me))
+        assertFalse(CallMachine.mayRejoin(CallState.Outgoing("dm-2", null, 0L), dm, snapshot(ringing = true, active = false, startedBy = me), me))
+    }
+
+    @Test
+    fun `a call that ended while another was on never rings later`() {
+        connectedAsCallee()
+        send(ServerEnded("dm-2", "c-7", "no_answer"))
+        send(CallEvent.HangUp)
+        send(CallEvent.EndedShown)
+        assertEquals(CallState.Idle, send(Rang("dm-2", "c-7", "bob", "Bob", 0L)))
+    }
+
+    @Test
+    fun `a busy ring that rings later is no longer busy`() {
+        incoming()
+        send(Rang("dm-2", "c-7", "bob", "Bob", 0L))
+        send(Decline(dm))
+        send(Rang("dm-2", "c-7", "bob", "Bob", 1L))
+        assertTrue(model.state is CallState.Incoming)
+        assertTrue(model.busy.isEmpty())
+        send(Decline("dm-2"))
+        send(CallEvent.BusyCap("dm-2", "c-7"))
+        assertTrue(effects.none { it is Missed })
+    }
+
+    @Test
+    fun `a ring from a notification that is already up is not posted again`() {
+        send(Rang(dm, "c-1", "anna", "Anna", 0L, fromNotification = true))
+        assertTrue(model.state is CallState.Incoming)
+        assertEquals(listOf(ArmRingCap(dm, 0L)), effects)
     }
 }

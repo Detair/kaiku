@@ -8,10 +8,12 @@ import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.repository.VoiceRepository
 import io.wolftown.kaiku.data.voice.ElapsedClock
 import io.wolftown.kaiku.data.voice.RejoinVerdict
+import io.wolftown.kaiku.data.voice.VoiceRemovedException
 import io.wolftown.kaiku.data.ws.KaikuWebSocket
 import io.wolftown.kaiku.data.ws.ServerEvent
 import io.wolftown.kaiku.di.VoiceCoroutineScope
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
@@ -92,9 +94,8 @@ class CallController @Inject constructor(
     private var model = CallModel()
     private var ringCapJob: Job? = null
     private var endedJob: Job? = null
-    /** The voice join of the call in [voiceJobChannel]; cancelled on every way out of that call. */
-    private var voiceJob: Job? = null
-    private var voiceJobChannel: String? = null
+    /** The voice join of the shown call; cancelled on every way out of that call. */
+    private var voiceTicket: VoiceTicket? = null
     private val busyCapJobs = HashMap<String, Job>()
 
     private val _state = MutableStateFlow<CallState>(CallState.Idle)
@@ -139,7 +140,7 @@ class CallController @Inject constructor(
      * call unless it already ended.
      */
     fun onRingNotification(channelId: String, callId: String, callerId: String, callerName: String?) =
-        send(CallEvent.Rang(channelId, known(callId), callerId, callerName, clock.nowMs()))
+        send(CallEvent.Rang(channelId, known(callId), callerId, callerName, clock.nowMs(), fromNotification = true))
 
     /**
      * Decline from the notification's action. If this process does not show
@@ -148,13 +149,20 @@ class CallController @Inject constructor(
      */
     suspend fun declineFromNotification(channelId: String, callId: String) {
         val shown = _state.value
-        if (shown is CallState.Incoming && shown.channelId == channelId) {
+        if (shown is CallState.Incoming && shown.channelId == channelId && shown.callId == known(callId)) {
+            // Through the call owner; returns once the server was told (or nothing was to tell).
+            val done = CompletableDeferred<Unit>()
+            pendingDeclines.put(channelId, done)?.complete(Unit)
             decline(channelId)
+            done.await()
             return
         }
         notifier.stopRing(channelId, callId)
         quietly("decline") { api.decline(channelId) }
     }
+
+    /** Declines from a notification waiting for their request, by DM. */
+    private val pendingDeclines = java.util.concurrent.ConcurrentHashMap<String, CompletableDeferred<Unit>>()
 
     /**
      * Signed-in user: runs synchronously before the account state is
@@ -174,16 +182,17 @@ class CallController @Inject constructor(
      */
     suspend fun mayRejoin(channelId: String): RejoinVerdict {
         val me = authState.signedInUserId() ?: return RejoinVerdict.Refused
+        // The state the question is asked for, before the answer: what changes meanwhile drops it.
+        val askedFor = _state.value
         val answer = try {
-            api.get(channelId)?.toSnapshot()
+            getCall(channelId)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             logger.info("call check before a rejoin failed: ${e::class.simpleName}")
             return RejoinVerdict.Unknown
         }
-        val askedFor = _state.value
-        if (!CallMachine.mayRejoin(askedFor, answer, me)) return RejoinVerdict.Refused
+        if (!CallMachine.mayRejoin(askedFor, channelId, answer, me)) return RejoinVerdict.Refused
         send(CallEvent.Resynced(channelId, answer, clock.nowMs(), askedFor))
         return RejoinVerdict.Allowed
     }
@@ -220,7 +229,7 @@ class CallController @Inject constructor(
     private fun resync(channelId: String, askedFor: CallState) {
         scope.launch {
             try {
-                val answer = api.get(channelId)?.toSnapshot()
+                val answer = getCall(channelId)
                 send(CallEvent.Resynced(channelId, answer, clock.nowMs(), askedFor))
             } catch (e: CancellationException) {
                 throw e
@@ -228,6 +237,56 @@ class CallController @Inject constructor(
                 // Unchanged; the next socket asks again, and the ring cap still applies.
                 logger.info("call resync failed: ${e::class.simpleName}")
             }
+        }
+    }
+
+    /**
+     * The DM's call as the server sees it. 403 (no longer in the conversation)
+     * and 404 (it is gone) are a definite "no call for this user", not a
+     * passing failure; anything else throws.
+     */
+    private suspend fun getCall(channelId: String): CallSnapshot? = try {
+        api.get(channelId)?.toSnapshot()
+    } catch (e: ApiException) {
+        if (e.status == HttpStatusCode.Forbidden || e.status == HttpStatusCode.NotFound) null else throw e
+    }
+
+    // -- Serial lanes --------------------------------------------------------------
+    //
+    // The side effects of the calls run in the order the machine emitted them:
+    // the requests of one conversation one after the other (a leave never
+    // overtakes its start or join), and every voice join and leave in one lane
+    // (an old call's leave never ends a newer call's voice).
+
+    private val restLanes = HashMap<String, Channel<suspend () -> Unit>>()
+
+    /** Runs [task] in the request lane of [channelId], after everything sent there before. */
+    private fun inRestLane(channelId: String, task: suspend () -> Unit) {
+        val lane = synchronized(restLanes) {
+            restLanes.getOrPut(channelId) {
+                Channel<suspend () -> Unit>(Channel.UNLIMITED).also { ch -> scope.launch { for (t in ch) t() } }
+            }
+        }
+        lane.trySend(task)
+    }
+
+    private val voiceLane = Channel<suspend () -> Unit>(Channel.UNLIMITED).also { ch ->
+        scope.launch { for (t in ch) t() }
+    }
+
+    /** One voice join of a call: cancelled by that call's leave, also before it started. */
+    private class VoiceTicket(val channelId: String) {
+        private val lock = Any()
+        private var job: Job? = null
+        private var cancelled = false
+
+        /** Starts [start] unless the ticket was cancelled first. */
+        fun launch(start: () -> Job) = synchronized(lock) { if (!cancelled) job = start() }
+
+        /** Cancels the join (now or before it starts) and returns it to wait for. */
+        fun cancel(): Job? = synchronized(lock) {
+            cancelled = true
+            job?.also { it.cancel() }
         }
     }
 
@@ -239,6 +298,9 @@ class CallController @Inject constructor(
         model = step.model
         _state.value = step.model.state
         step.effects.forEach(::run)
+        if (event is CallEvent.Decline && step.effects.none { it is CallEffect.RestDecline }) {
+            pendingDeclines.remove(event.channelId)?.complete(Unit) // nothing to tell the server
+        }
         // Every way out of a call (end, removal, sign-out, a resync) also ends its voice join,
         // wherever that join is: the microphone never stays on for a call that is over.
         val left = inVoiceCall(before)
@@ -255,10 +317,16 @@ class CallController @Inject constructor(
 
     private fun run(effect: CallEffect) {
         when (effect) {
-            is CallEffect.RestStart -> scope.launch { restStart(effect.channelId, effect.startedAtMs) }
-            is CallEffect.RestJoin -> scope.launch { restJoin(effect.channelId) }
-            is CallEffect.RestDecline -> scope.launch { quietly("decline") { api.decline(effect.channelId) } }
-            is CallEffect.RestLeave -> scope.launch { quietly("leave") { api.leave(effect.channelId) } }
+            is CallEffect.RestStart -> inRestLane(effect.channelId) { restStart(effect.channelId, effect.startedAtMs) }
+            is CallEffect.RestJoin -> inRestLane(effect.channelId) { restJoin(effect.channelId, effect.callId) }
+            is CallEffect.RestDecline -> inRestLane(effect.channelId) {
+                try {
+                    quietly("decline") { api.decline(effect.channelId) }
+                } finally {
+                    pendingDeclines.remove(effect.channelId)?.complete(Unit)
+                }
+            }
+            is CallEffect.RestLeave -> inRestLane(effect.channelId) { quietly("leave") { api.leave(effect.channelId) } }
             is CallEffect.JoinVoice -> joinVoice(effect.channelId, effect.callId)
             is CallEffect.Resync -> resync(effect.channelId, effect.askedFor)
             is CallEffect.ArmBusyCap -> armBusyCap(effect.channelId, effect.callId, effect.startedAtMs)
@@ -303,55 +371,62 @@ class CallController @Inject constructor(
         send(event)
     }
 
-    private suspend fun restJoin(channelId: String) {
+    private suspend fun restJoin(channelId: String, callId: String) {
         val event = try {
             val joined = api.join(channelId)
-            CallEvent.JoinOk(channelId, joined.participants.toSet())
+            CallEvent.JoinOk(channelId, callId, joined.participants.toSet())
         } catch (e: CancellationException) {
             throw e
         } catch (e: ApiException) {
             logger.info("call join refused: ${e.status.value} ${e.normalizedCode}")
             val gone = e.status == HttpStatusCode.NotFound || e.status == HttpStatusCode.Conflict
-            CallEvent.JoinFailed(channelId, gone)
+            CallEvent.JoinFailed(channelId, callId, gone)
         } catch (e: Exception) {
             logger.info("call join failed: ${e::class.simpleName}")
-            CallEvent.JoinFailed(channelId, gone = false)
+            CallEvent.JoinFailed(channelId, callId, gone = false)
         }
         send(event)
     }
 
     private fun joinVoice(channelId: String, callId: String?) {
-        voiceJob?.cancel()
-        voiceJobChannel = channelId
-        voiceJob = scope.launch {
-            try {
-                voice.joinCall(channelId, directory.titleOf(channelId)) { mayRejoin(it) }
-                send(CallEvent.VoiceJoined(channelId, clock.nowMs(), callId))
-            } catch (e: CancellationException) {
-                // Cancelled by a leave of this call: nothing to report. Otherwise the
-                // session ended before it was set up (a removal): the join failed.
-                if (!currentCoroutineContext().isActive) throw e
-                send(CallEvent.VoiceJoinFailed(channelId, callId))
-            } catch (e: Exception) {
-                logger.log(Level.INFO, "call voice join failed: ${e::class.simpleName}")
-                send(CallEvent.VoiceJoinFailed(channelId, callId))
+        voiceTicket?.cancel()
+        val ticket = VoiceTicket(channelId)
+        voiceTicket = ticket
+        voiceLane.trySend {
+            ticket.launch {
+                scope.launch {
+                    try {
+                        voice.joinCall(channelId, directory.titleOf(channelId)) { mayRejoin(it) }
+                        send(CallEvent.VoiceJoined(channelId, clock.nowMs(), callId))
+                    } catch (e: VoiceRemovedException) {
+                        // Removed by the server before the join was set up: an end, not a failure.
+                        send(CallEvent.VoiceEnded(channelId, VoiceEnd.Removed(e.reason)))
+                    } catch (e: CancellationException) {
+                        // Cancelled by a leave of this call: nothing to report. Otherwise the
+                        // session ended before it was set up: the join failed.
+                        if (!currentCoroutineContext().isActive) throw e
+                        send(CallEvent.VoiceJoinFailed(channelId, callId))
+                    } catch (e: Exception) {
+                        logger.log(Level.INFO, "call voice join failed: ${e::class.simpleName}")
+                        send(CallEvent.VoiceJoinFailed(channelId, callId))
+                    }
+                }
             }
         }
     }
 
     /**
-     * Ends the call's voice: first its join, wherever it is (also while it is
-     * still leaving another voice channel), then the session if voice is in
-     * the call's room. Never touches a guild channel the user moved to.
+     * Ends the call's voice, in the voice lane after its join: first the join,
+     * wherever it is (also before it started, or while it is still leaving
+     * another voice channel), then the session if voice is in the call's
+     * room. Never touches a guild channel the user moved to.
      */
     private fun leaveVoice(channelId: String) {
-        val job = voiceJob.takeIf { voiceJobChannel == channelId }
-        if (job != null) {
-            voiceJob = null
-            voiceJobChannel = null
-        }
-        scope.launch {
-            job?.cancelAndJoin()
+        val ticket = voiceTicket?.takeIf { it.channelId == channelId }
+        if (ticket != null) voiceTicket = null
+        val job = ticket?.cancel()
+        voiceLane.trySend {
+            (job ?: ticket?.cancel())?.cancelAndJoin()
             if (voice.currentChannelId.value == channelId) voice.leaveChannel()
         }
     }

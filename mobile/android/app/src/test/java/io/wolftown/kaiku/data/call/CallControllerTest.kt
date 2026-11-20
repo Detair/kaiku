@@ -16,6 +16,7 @@ import io.wolftown.kaiku.data.ws.KaikuWebSocket
 import io.wolftown.kaiku.data.ws.ServerEvent
 import io.wolftown.kaiku.data.ws.VoiceRemovedReason
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.TestScope
@@ -41,9 +42,12 @@ class CallControllerTest {
         var current: CallStateDto? = null
         var startError: Exception? = null
         var getError: Exception? = null
+        var getGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+        var declineGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
 
         override suspend fun get(channelId: String): CallStateDto? {
             calls += "get"
+            getGate?.await()
             getError?.let { throw it }
             return current
         }
@@ -60,6 +64,7 @@ class CallControllerTest {
         }
 
         override suspend fun decline(channelId: String): CallStateDto {
+            declineGate?.await()
             calls += "decline"
             return CallStateDto(channelId, "c-1", "ended")
         }
@@ -188,7 +193,7 @@ class CallControllerTest {
         r.controller.startCall(dm)
         runCurrent()
         assertEquals(listOf("start"), r.api.calls)
-        assertEquals(CallState.Outgoing(dm, "c-1", 0L), r.state)
+        assertEquals(CallState.Outgoing(dm, "c-1", 0L, voice = true), r.state)
         coVerify(exactly = 1) { r.voice.joinCall(dm, "Anna", any()) }
 
         advanceTimeBy(100_000); runCurrent()
@@ -492,5 +497,110 @@ class CallControllerTest {
         r.server(ServerEvent.IncomingCall("dm-2", "c-9", "bob", "bob"))
         advanceTimeBy(100_000); runCurrent()
         assertTrue("missed:c-9" in r.notifier.log)
+    }
+
+    // -- Order, identity and lanes ---------------------------------------------------
+
+    @Test
+    fun `a removal before the voice join was set up ends the call without telling the server`() = runTest {
+        val r = rig()
+        coEvery { r.voice.joinCall(any(), any(), any()) } throws
+            io.wolftown.kaiku.data.voice.VoiceRemovedException(VoiceRemovedReason.SessionReplaced)
+        r.ring()
+        r.controller.accept(dm)
+        runCurrent()
+        assertEquals(CallState.Ended(dm, CallEndReason.Removed, VoiceRemovedReason.SessionReplaced), r.state)
+        assertEquals(listOf("join"), r.api.calls)
+    }
+
+    @Test
+    fun `a conversation that is gone or left is a definite no call for the resync and the rejoin`() = runTest {
+        val r = rig()
+        r.ring()
+        r.api.getError = ApiException(HttpStatusCode.Forbidden, "not a participant", code = "FORBIDDEN")
+        r.server(ServerEvent.Ready("me"))
+        runCurrent()
+        assertEquals(CallState.Idle, r.state)
+        assertTrue("missed:c-1" in r.notifier.log)
+
+        r.api.getError = ApiException(HttpStatusCode.NotFound, "gone", code = "NOT_FOUND")
+        assertEquals(RejoinVerdict.Refused, r.controller.mayRejoin(dm))
+    }
+
+    @Test
+    fun `the rejoin check is for the state when it asked, not when the answer came`() = runTest {
+        val r = rig()
+        r.ring()
+        r.controller.accept(dm)
+        runCurrent()
+        val gate = r.gate!!
+        r.api.current = CallStateDto(dm, "c-1", "active", participants = listOf("anna", "me"))
+        r.api.getGate = kotlinx.coroutines.CompletableDeferred()
+        val verdict = backgroundScope.async { gate.mayRejoin(dm) }
+        runCurrent()
+        // Carl joins while the check is on its way; the older answer must not drop him.
+        r.server(ServerEvent.CallParticipantJoined(dm, "c-1", "carl", "carl"))
+        r.api.getGate!!.complete(Unit)
+        assertEquals(RejoinVerdict.Allowed, verdict.await())
+        runCurrent()
+        assertEquals(setOf("anna", "carl"), (r.state as CallState.Connected).others)
+    }
+
+    @Test
+    fun `decline from the notification of the shown ring returns only after the server was told`() = runTest {
+        val r = rig()
+        r.ring()
+        r.api.declineGate = kotlinx.coroutines.CompletableDeferred()
+        val done = backgroundScope.async { r.controller.declineFromNotification(dm, "c-1") }
+        runCurrent()
+        assertTrue("returned before the request", !done.isCompleted)
+        r.api.declineGate!!.complete(Unit)
+        runCurrent()
+        assertTrue(done.isCompleted)
+        assertEquals(listOf("decline"), r.api.calls)
+    }
+
+    @Test
+    fun `decline from a notification of another call than the shown one is sent directly`() = runTest {
+        val r = rig()
+        r.ring("c-2")
+        r.controller.declineFromNotification(dm, "c-1")
+        runCurrent()
+        assertTrue(r.state is CallState.Incoming) // the shown ring is another call
+        assertEquals(listOf("decline"), r.api.calls)
+    }
+
+    @Test
+    fun `an ended call's voice leave never ends the next call's voice in the same conversation`() = runTest {
+        val r = rig()
+        val leaving = kotlinx.coroutines.CompletableDeferred<Unit>()
+        coEvery { r.voice.leaveChannel() } coAnswers {
+            leaving.await() // the first call's leave takes its time
+            r.voiceChannel.value = null
+        }
+        r.ring("c-1")
+        r.controller.accept(dm)
+        runCurrent()
+        r.controller.hangUp()
+        runCurrent()
+        // A new call of the same conversation is answered at once.
+        r.controller.dismissEnded()
+        r.ring("c-2")
+        r.controller.accept(dm)
+        runCurrent()
+        leaving.complete(Unit)
+        runCurrent()
+
+        assertEquals(dm, r.voiceChannel.value)
+        assertTrue(r.state is CallState.Connected)
+    }
+
+    @Test
+    fun `a ring known from its notification is not posted again`() = runTest {
+        val r = rig()
+        r.controller.onRingNotification(dm, "c-1", "anna", "Anna")
+        runCurrent()
+        assertTrue(r.state is CallState.Incoming)
+        assertTrue(r.notifier.log.none { it.startsWith("ring:") })
     }
 }

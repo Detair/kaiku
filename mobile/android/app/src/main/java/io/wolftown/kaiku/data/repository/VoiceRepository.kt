@@ -18,6 +18,7 @@ import io.wolftown.kaiku.data.voice.MissingMicPermissionException
 import io.wolftown.kaiku.data.voice.SessionGuard
 import io.wolftown.kaiku.data.voice.VoiceEndNotice
 import io.wolftown.kaiku.data.voice.VoiceLinkState
+import io.wolftown.kaiku.data.voice.VoiceRemovedException
 import io.wolftown.kaiku.data.voice.VoiceServiceEvent
 import io.wolftown.kaiku.data.voice.VoiceServiceEvents
 import io.wolftown.kaiku.data.voice.VoiceServiceStartException
@@ -49,6 +50,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -166,6 +168,10 @@ class VoiceRepository @Inject constructor(
 
         /** Whether [tearDown] ran for this session. Guarded by [leaveMutex]. */
         var tornDown = false
+
+        /** Set when the server removed the peer; a join still being set up reports it. */
+        @Volatile
+        var removedReason: VoiceRemovedReason? = null
     }
 
     private val sessionLock = Any()
@@ -423,6 +429,9 @@ class VoiceRepository @Inject constructor(
                     tearDown(session, sendLeave = true)
                 }
             }
+            // Not cancelled ourselves: the server removed the peer before the join was set up.
+            val removed = session.removedReason
+            if (removed != null && currentCoroutineContext().isActive) throw VoiceRemovedException(removed)
             throw e
         }
     }
@@ -997,6 +1006,7 @@ class VoiceRepository @Inject constructor(
     private fun onRemovedByServer(session: Session, reason: VoiceRemovedReason) {
         // At once, on the event's thread: no voice_join or new connection after this.
         if (!closeSession(session)) return
+        session.removedReason = reason
         session.owner.cancel()
         // Own job: the teardown cancels the collector this event arrived on.
         scope.launch {
