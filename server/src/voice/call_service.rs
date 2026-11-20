@@ -913,7 +913,15 @@ pub async fn end_calls_left_ringing(
 ) -> Result<Vec<LeftCall>, CallError> {
     let mut active = Vec::new();
     for channel_id in channels {
-        let Some((state, meta)) = calls.get_call(channel_id).await? else {
+        // One unreadable entry must not stop the clean-up of the others.
+        let loaded = match calls.get_call(channel_id).await {
+            Ok(loaded) => loaded,
+            Err(e) => {
+                tracing::warn!(%channel_id, error = %e, "Skipping an unreadable call left by the previous process");
+                continue;
+            }
+        };
+        let Some((state, meta)) = loaded else {
             continue;
         };
         // A call this process started meanwhile is not left over.
@@ -982,29 +990,28 @@ pub async fn end_abandoned_calls(
     ended
 }
 
-/// The start-up clean-up of DM calls, in the background: ringing calls
-/// of the previous process end at once, answered ones after
-/// [`RESTART_REJOIN_GRACE`] if nobody rejoined their room.
-pub fn spawn_restart_cleanup(
+/// The start-up clean-up of DM calls. Ringing calls of the previous
+/// process end before this returns (call it before the server accepts
+/// connections); answered ones are checked in the returned background task
+/// after [`RESTART_REJOIN_GRACE`] and end if nobody rejoined their room.
+pub async fn restart_cleanup(
     calls: CallService,
     sfu: std::sync::Weak<crate::voice::SfuServer>,
 ) -> tokio::task::JoinHandle<()> {
     let process_start = Utc::now();
-    tokio::spawn(async move {
-        let channels = match channels_with_calls(&calls.redis).await {
-            Ok(channels) => channels,
-            Err(e) => {
-                tracing::warn!(error = %e, "Could not list calls left by the previous process");
-                return;
-            }
-        };
-        let left = match end_calls_left_ringing(&calls, channels, process_start).await {
-            Ok(left) => left,
-            Err(e) => {
+    let left = match channels_with_calls(&calls.redis).await {
+        Ok(channels) => end_calls_left_ringing(&calls, channels, process_start)
+            .await
+            .unwrap_or_else(|e| {
                 tracing::warn!(error = %e, "Could not end calls left by the previous process");
-                return;
-            }
-        };
+                Vec::new()
+            }),
+        Err(e) => {
+            tracing::warn!(error = %e, "Could not list calls left by the previous process");
+            Vec::new()
+        }
+    };
+    tokio::spawn(async move {
         if left.is_empty() {
             return;
         }

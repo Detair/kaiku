@@ -469,10 +469,13 @@ async fn main() -> Result<()> {
 
     // DM calls the previous process left: ringing ones end now (their ring
     // timer is gone), answered ones after a grace if nobody rejoined.
-    let call_cleanup_handle = vc_server::voice::call_service::spawn_restart_cleanup(
+    // Runs before the listener accepts connections, so no new call can be
+    // mistaken for a leftover.
+    let call_cleanup_handle = vc_server::voice::call_service::restart_cleanup(
         vc_server::voice::call_service::CallService::for_state(&state),
         std::sync::Arc::downgrade(&state.sfu),
-    );
+    )
+    .await;
 
     // Kept for the shutdown of the open WebSockets (the router owns `state`).
     let mut socket_drain = vc_server::shutdown::SocketDrain::from_state(&state);

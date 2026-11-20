@@ -833,6 +833,33 @@ async fn restart_ends_active_call_without_rejoin(pool: PgPool) {
     assert!(call_state(&fx).await.is_null());
 }
 
+/// One unreadable call entry does not stop the start-up clean-up: the
+/// ringing call after it still ends.
+#[sqlx::test]
+async fn restart_cleanup_continues_past_an_unreadable_entry(pool: PgPool) {
+    use vc_server::voice::call_service::end_calls_left_ringing;
+
+    let fx = setup(&pool).await;
+    assert_eq!(start(&fx, &fx.caller_token).await, StatusCode::CREATED);
+    let broken = Uuid::new_v4();
+    let key = format!("call_events:{broken}");
+    let _: () = fx
+        .app
+        .state
+        .redis
+        .set(&key, "not a stream", None, None, false)
+        .await
+        .expect("set");
+    let calls = CallService::new(fx.app.state.redis.clone(), pool.clone());
+    let result = end_calls_left_ringing(&calls, [broken, fx.dm], chrono::Utc::now()).await;
+    let _: i64 = fx.app.state.redis.del(&key).await.expect("del");
+    assert!(result.is_ok(), "{result:?}");
+    assert!(
+        call_state(&fx).await.is_null(),
+        "the ringing call after it survived"
+    );
+}
+
 /// A call started after this process started is not "left over": the
 /// start-up clean-up leaves it ringing.
 #[sqlx::test]
