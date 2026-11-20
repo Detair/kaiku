@@ -78,28 +78,30 @@ pub async fn leave_voice_internal(
         }
 
         for share in &removed_shares {
-            room.broadcast_except(
-                user_id,
+            room.announce_stopped(
                 ServerEvent::ScreenShareStopped {
                     channel_id,
                     user_id,
                     stream_id: share.stream_id,
                     reason: "disconnected".to_string(),
                 },
+                false,
             )
             .await;
         }
     }
 
-    // Check if webcam is active and stop it
+    // The stops are not sent when the user's webcam or that share is live
+    // again by now (a new seat's, already announced): see
+    // `Room::announce_stopped`.
     if had_webcam {
-        room.broadcast_except(
-            user_id,
+        room.announce_stopped(
             ServerEvent::WebcamStopped {
                 channel_id,
                 user_id,
                 reason: "disconnected".to_string(),
             },
+            false,
         )
         .await;
     }

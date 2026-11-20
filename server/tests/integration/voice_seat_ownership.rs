@@ -282,3 +282,31 @@ async fn expiry_of_a_replaced_seat_keeps_the_new_webcam(pool: PgPool) {
 
     r.assert_new_webcam_kept().await;
 }
+
+/// Leave, then a fresh join (the old seat is already gone, nothing is
+/// replaced): the old seat's webcam stop, sent after the new seat started
+/// its webcam, would hide the new webcam on the clients, so it is not sent.
+#[sqlx::test]
+async fn leave_stop_after_a_fresh_join_keeps_the_new_webcam(pool: PgPool) {
+    let mut r = room(pool).await;
+    let mut old = joined(&r.server, &r.token, r.voice).await;
+    next_ws_event(&mut r.viewer, "voice_user_joined", WAIT).await;
+    send(&mut old, webcam_start(r.voice)).await;
+    next_ws_event(&mut old, "webcam_started", WAIT).await;
+    next_ws_event(&mut r.viewer, "webcam_started", WAIT).await;
+
+    let pause = pause_voice_step(r.user, "leave");
+    send(
+        &mut old,
+        serde_json::json!({ "type": "voice_leave", "channel_id": r.voice }),
+    )
+    .await;
+    Room::reached(&pause).await;
+    let mut new = r.take_over().await;
+    send(&mut new, webcam_start(r.voice)).await;
+    next_ws_event(&mut new, "webcam_started", WAIT).await;
+    next_ws_event(&mut r.viewer, "webcam_started", WAIT).await;
+    pause.release.notify_one();
+
+    r.assert_new_webcam_kept().await;
+}

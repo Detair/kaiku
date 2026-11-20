@@ -32,8 +32,12 @@
 //! ([`Room::try_add_screen_share_for`], [`Room::add_webcam_for`]); removing on
 //! behalf of a seat removes only entries that seat owns
 //! ([`Room::remove_screen_share_of`], [`Room::remove_webcam_of`]). Events the
-//! others get about a seat are decided under the peers lock right before they
-//! are sent ([`Room::broadcast_if_current`], [`Room::announce_departure`]).
+//! others get about a seat are decided under the peers lock and queued in
+//! that same section without waiting ([`Room::broadcast_if_current`],
+//! [`Room::announce_departure`], [`Room::announce_stopped`]), so they reach
+//! every healthy queue in the order they were decided. A participant whose
+//! queue is full gets the event after the lock is released (bounded wait,
+//! order not guaranteed for that participant).
 //!
 //! `Peer::negotiation` (the subscriber offer/answer state) is a leaf lock: it
 //! is taken with no room lock held, nothing else of ours is locked while it is
@@ -106,6 +110,28 @@ async fn fan_out(
         }
     });
     futures::future::join_all(sends).await;
+}
+
+/// Queue `event` for each of `senders` without waiting (called under the
+/// room's peers lock, so the order of events decided under it is the order
+/// in every healthy queue). Returns the participants whose queue is full:
+/// the caller sends to them with [`fan_out`] after releasing the lock.
+fn queue_now(
+    channel_id: Uuid,
+    senders: impl Iterator<Item = (Uuid, mpsc::Sender<OutboundMsg>)>,
+    event: &ServerEvent,
+) -> Vec<(Uuid, mpsc::Sender<OutboundMsg>)> {
+    let mut full = Vec::new();
+    for (user_id, tx) in senders {
+        match tx.try_send(OutboundMsg::voice(channel_id, event.clone())) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(_)) => full.push((user_id, tx)),
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                debug!(user_id = %user_id, "Skipping voice event for closed peer");
+            }
+        }
+    }
+    full
 }
 
 /// How long a peer connection may stay `Failed` before the peer is removed
@@ -693,19 +719,21 @@ impl Room {
         event: ServerEvent,
         include_self: bool,
     ) -> bool {
-        let peers = self.peers.read().await;
-        if peers
-            .get(&peer.user_id)
-            .is_none_or(|p| p.session_id != peer.session_id)
-        {
-            return false;
-        }
-        let senders: Vec<(Uuid, mpsc::Sender<OutboundMsg>)> = peers
-            .iter()
-            .filter(|(id, _)| include_self || **id != peer.user_id)
-            .map(|(id, p)| (*id, p.signal_tx.clone()))
-            .collect();
-        fan_out(self.channel_id, senders, &event).await;
+        let full = {
+            let peers = self.peers.read().await;
+            if peers
+                .get(&peer.user_id)
+                .is_none_or(|p| p.session_id != peer.session_id)
+            {
+                return false;
+            }
+            let senders = peers
+                .iter()
+                .filter(|(id, _)| include_self || **id != peer.user_id)
+                .map(|(id, p)| (*id, p.signal_tx.clone()));
+            queue_now(self.channel_id, senders, &event)
+        };
+        fan_out(self.channel_id, full, &event).await;
         true
     }
 
@@ -718,16 +746,49 @@ impl Room {
         event: ServerEvent,
         on_absent: impl FnOnce(),
     ) -> bool {
-        let peers = self.peers.read().await;
-        if peers.contains_key(&user_id) {
-            return false;
-        }
-        on_absent();
-        let senders: Vec<(Uuid, mpsc::Sender<OutboundMsg>)> = peers
-            .iter()
-            .map(|(id, p)| (*id, p.signal_tx.clone()))
-            .collect();
-        fan_out(self.channel_id, senders, &event).await;
+        let full = {
+            let peers = self.peers.read().await;
+            if peers.contains_key(&user_id) {
+                return false;
+            }
+            on_absent();
+            let senders = peers.iter().map(|(id, p)| (*id, p.signal_tx.clone()));
+            queue_now(self.channel_id, senders, &event)
+        };
+        fan_out(self.channel_id, full, &event).await;
+        true
+    }
+
+    /// Tell the room (with or without the user) that a webcam or screen
+    /// share of one of the user's seats ended, unless that webcam (by user) or share
+    /// (by stream id) is live again: then it belongs to a newer seat whose
+    /// start was announced, and the stop would hide it. Decided and queued
+    /// under the peers lock, like the starts. Returns whether it was sent.
+    pub async fn announce_stopped(&self, event: ServerEvent, include_self: bool) -> bool {
+        let full = {
+            let peers = self.peers.read().await;
+            let (user_id, live_again) = match &event {
+                ServerEvent::WebcamStopped { user_id, .. } => {
+                    (*user_id, self.webcams.read().await.contains_key(user_id))
+                }
+                ServerEvent::ScreenShareStopped {
+                    user_id, stream_id, ..
+                } => (
+                    *user_id,
+                    self.screen_shares.read().await.contains_key(stream_id),
+                ),
+                _ => return false,
+            };
+            if live_again {
+                return false;
+            }
+            let senders = peers
+                .iter()
+                .filter(|(id, _)| include_self || **id != user_id)
+                .map(|(id, p)| (*id, p.signal_tx.clone()));
+            queue_now(self.channel_id, senders, &event)
+        };
+        fan_out(self.channel_id, full, &event).await;
         true
     }
 
@@ -2377,6 +2438,41 @@ mod negotiation_tests {
         let next = offer_sdp(rx.try_recv().expect("the change was offered"));
         assert_eq!(next.matches("m=audio").count(), 2, "{next}");
         peer.close().await;
+    }
+
+    /// Telling the room about a seat never holds the room's peer list while
+    /// a participant's queue is full: a join or leave is not held up.
+    #[tokio::test]
+    async fn room_events_do_not_hold_the_peer_list_for_a_full_queue() {
+        let (sfu, me, mut rx, _client) = setup().await;
+        let room = Room::new(me.channel_id, 10);
+        let (slow_tx, _slow_rx) = mpsc::channel(1);
+        slow_tx.try_send(OutboundMsg::Ping).expect("fill the queue");
+        let slow = sfu
+            .create_peer(
+                Uuid::from_u128(3),
+                "s".into(),
+                "S".into(),
+                me.channel_id,
+                slow_tx,
+            )
+            .await
+            .expect("peer");
+        room.add_peer(slow).await.expect("add");
+        room.add_peer(me.clone()).await.expect("add");
+        let event = ServerEvent::VoiceUserLeft {
+            channel_id: me.channel_id,
+            user_id: Uuid::from_u128(9),
+        };
+        let (sent, free) = tokio::join!(room.broadcast_if_current(&me, event, true), async {
+            tokio::task::yield_now().await;
+            tokio::time::timeout(PEER_SIGNAL_SEND_TIMEOUT / 5, room.peers.write())
+                .await
+                .map(drop)
+        });
+        assert!(sent);
+        assert!(free.is_ok(), "the peer list was held for the full queue");
+        assert!(rx.try_recv().is_ok(), "the seat's own queue got the event");
     }
 
     /// A refused simulcast transceiver stays refused across a new offer

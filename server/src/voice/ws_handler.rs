@@ -468,25 +468,25 @@ async fn release_replaced_media(
         }
     }
     for share in screen_shares {
-        room.broadcast_except(
-            user_id,
+        room.announce_stopped(
             ServerEvent::ScreenShareStopped {
                 channel_id,
                 user_id,
                 stream_id: share.stream_id,
                 reason: "replaced".to_string(),
             },
+            false,
         )
         .await;
     }
     if had_webcam {
-        room.broadcast_except(
-            user_id,
+        room.announce_stopped(
             ServerEvent::WebcamStopped {
                 channel_id,
                 user_id,
                 reason: "replaced".to_string(),
             },
+            false,
         )
         .await;
     }
@@ -1149,12 +1149,15 @@ async fn end_screen_share(
     detach_sources(room, peer, |s| s.stream_id() == Some(stream_id)).await;
 
     // Broadcast to room
-    room.broadcast_all(ServerEvent::ScreenShareStopped {
-        channel_id,
-        user_id,
-        stream_id,
-        reason: reason.to_string(),
-    })
+    room.announce_stopped(
+        ServerEvent::ScreenShareStopped {
+            channel_id,
+            user_id,
+            stream_id,
+            reason: reason.to_string(),
+        },
+        true,
+    )
     .await;
 
     info!(
@@ -1341,11 +1344,14 @@ async fn end_webcam(
     detach_sources(room, peer, |s| *s == TrackSource::Webcam).await;
 
     // Broadcast to room
-    room.broadcast_all(ServerEvent::WebcamStopped {
-        channel_id,
-        user_id,
-        reason: reason.to_string(),
-    })
+    room.announce_stopped(
+        ServerEvent::WebcamStopped {
+            channel_id,
+            user_id,
+            reason: reason.to_string(),
+        },
+        true,
+    )
     .await;
 
     info!(
