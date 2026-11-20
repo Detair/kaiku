@@ -8,24 +8,14 @@
 
 import { Component, createSignal } from "solid-js";
 import { t } from "@/i18n";
-import { authState, isProbation, sessionInfo } from "@/stores/auth";
+import { isProbation, sessionInfo } from "@/stores/auth";
 import { meSecurity } from "@/stores/security";
 
 /** The session the dialog was opened for; `null` when it is closed. */
 const [openFor, setOpenFor] = createSignal<string | null>(null);
 
-/**
- * Whether the dialog is open (read by `SetUpThisPcHost`): only for the
- * signed-in chat-only session it was opened for. A sign-out, a session end
- * or another user or session closes it for good; it never reopens by itself.
- */
-export const setUpThisPcOpen = (): boolean => {
-  const id = openFor();
-  return id !== null && id === sessionInfo()?.id && authState.user !== null && isProbation();
-};
-
-/** Whether an open flag is left from a session that is no longer this one. */
-export const setUpThisPcStale = (): boolean => openFor() !== null && !setUpThisPcOpen();
+/** The session the dialog was opened for (read by `SetUpThisPcHost`). */
+export const setUpThisPcOpenFor = openFor;
 
 /** Close the dialog (its cleanup gives a live attempt up). */
 export function closeSetUpThisPc(): void {

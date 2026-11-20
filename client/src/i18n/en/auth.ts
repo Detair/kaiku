@@ -146,8 +146,6 @@ export const auth = {
   "auth.setup.wrongCodes": "The code was typed wrong three times. Ask for a new setup link.",
   "auth.setup.signIn": "Sign in",
   "auth.probation.text": "Signed in for chat only. To change sign-in settings or do admin work, sign in with a passkey.",
-  "auth.probation.textSetUpThisPc": "Signed in for chat only. To change sign-in settings or do admin work on this computer, choose Set up this PC to get a passkey here.",
-  "auth.probation.textNoPasskey": "Signed in for chat only. Changing sign-in settings and admin work need a passkey on this computer.",
   "auth.probation.signIn": "Sign in with a passkey",
   "auth.probation.addPasskeyHint": "Your phone can't confirm this yet. Ask your admin.",
   "auth.probation.chip": "Chat only",

@@ -46,7 +46,7 @@ const ProbationBanner: Component = () => {
   // "Set up this PC", or neither (then the hint below says to ask the admin).
   const text = (): MessageKey => {
     if (!meSecurity() || canSignIn()) return "auth.probation.text";
-    return canSetUpThisPc() ? "auth.probation.textSetUpThisPc" : "auth.probation.textNoPasskey";
+    return canSetUpThisPc() ? "pcSetup.banner.setUp" : "pcSetup.banner.noPasskey";
   };
 
   const signIn = async () => {

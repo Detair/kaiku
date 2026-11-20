@@ -36,4 +36,6 @@ export const pcSetup = {
   "pcSetup.ended.sessionEnded": "This session has ended. Sign in again.",
   "pcSetup.ended.gone": "This setup is no longer active. Start again?",
   "pcSetup.ended.generic": "This didn't work. Start again.",
+  "pcSetup.banner.setUp": "Signed in for chat only. To change sign-in settings or do admin work on this computer, choose Set up this PC to get a passkey here.",
+  "pcSetup.banner.noPasskey": "Signed in for chat only. Changing sign-in settings and admin work need a passkey on this computer.",
 } as const satisfies Record<`pcSetup.${string}`, string>;
