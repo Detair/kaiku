@@ -928,7 +928,9 @@ PC" (SM5):** attempts stay
 out of the session-ending cascade; every attempt transition (scan, approve, report, code entry, cancel,
 restart, finish, redeem) locks account → requesting session row → attempt → enrolment, holds the session
 lock through commit, and first re-checks that the session is live and the device active with
-`may_approve` on, else the attempt becomes `expired`. Phone-side transitions (scan, answer, refuse,
+`may_approve` on, else the attempt becomes `expired`. Reads added under these locks (no new lock): the
+start counts the account's attempts of the last 10 minutes, and registration (web `passkey/start|finish`,
+desktop `options`, `finish`, `redeem`) checks the attempt's recorded code path. Phone-side transitions (scan, answer, refuse,
 release) then lock the key device, its own session and the challenge, all still under the account lock,
 which serialises them against device removal and reports. The sweep expires what no transition reaches. The
 enrolment rides both cascades. Restart runs under the account lock and voids the old ceremonies because
