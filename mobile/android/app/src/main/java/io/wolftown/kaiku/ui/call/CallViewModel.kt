@@ -103,6 +103,8 @@ class CallViewModel @Inject constructor(
     }
 
     fun toggleSpeaker() {
+        // Only while the call's own session has the audio (the button is off before that).
+        if (!ui.value.speakerEnabled) return
         val on = audio.currentRoute.value != AudioRoute.Speaker
         audio.switchRoute(CallUiMapper.speakerTarget(on, audio.availableRoutes.value))
     }

@@ -32,7 +32,7 @@ class CallUiMapperTest {
         assertEquals(R.string.voice_call_connecting, map(CallState.Connecting("dm", "c")).status)
         // In the call, but voice is still connecting: no running time yet.
         val connecting = map(CallState.Connected("dm", "c", 0L), link = VoiceLinkState.Connecting, now = 5_000L)
-        assertEquals(CallUi(CallPhase.Connecting, "Anna", R.string.voice_call_connecting, null, false, true), connecting)
+        assertEquals(CallUi(CallPhase.Connecting, "Anna", R.string.voice_call_connecting, null, false, true, speakerEnabled = true), connecting)
     }
 
     @Test
@@ -91,5 +91,15 @@ class CallUiMapperTest {
         assertEquals(true, map(CallState.Connecting("dm", "c", muted = true)).muted)
         assertEquals(true, map(CallState.Connected("dm", "c", 0L, muted = true)).muted)
         assertEquals(false, map(CallState.Connected("dm", "c", 0L)).muted)
+    }
+
+    @Test
+    fun `speaker can be switched only once the call's own session has the audio`() {
+        val link = io.wolftown.kaiku.data.voice.VoiceLinkState.Stable
+        val route = io.wolftown.kaiku.data.voice.AudioRoute.Earpiece
+        fun enabled(state: io.wolftown.kaiku.data.call.CallState) = CallUiMapper.map(state, link, route, 0L) { null }.speakerEnabled
+        org.junit.Assert.assertFalse(enabled(io.wolftown.kaiku.data.call.CallState.Outgoing("dm-1", null, 0L, voiceId = 1L)))
+        org.junit.Assert.assertFalse(enabled(io.wolftown.kaiku.data.call.CallState.Connecting("dm-1", "c-1", setOf("anna"), voiceId = 1L)))
+        org.junit.Assert.assertTrue(enabled(io.wolftown.kaiku.data.call.CallState.Connected("dm-1", "c-1", 0L, setOf("anna"), voiceId = 1L)))
     }
 }

@@ -27,6 +27,11 @@ data class CallUi(
     val earpiece: Boolean = false,
     /** The call these controls are for: a tap acts on this call and on no other. */
     val call: CallRef? = null,
+    /**
+     * Speaker can be switched: the call's own voice session has the audio. Before that the
+     * route belongs to whatever else is on, and the call's session sets its own when it opens.
+     */
+    val speakerEnabled: Boolean = false,
 )
 
 /** Pure mapping from the call, the voice link and the audio route to [CallUi]. */
@@ -50,7 +55,7 @@ object CallUiMapper {
         val earpiece = route == AudioRoute.Earpiece
         return mapWithoutRoute(state, link, muted, speaker, nowMs, titleOf).let {
             if (it.phase == CallPhase.None || it.phase == CallPhase.Ringing || it.phase == CallPhase.Ended) it else it.copy(earpiece = earpiece)
-        }
+        }.copy(speakerEnabled = state is CallState.Connected)
     }
 
     private fun mapWithoutRoute(

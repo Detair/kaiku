@@ -144,14 +144,14 @@ private fun RingingActions(onAccept: () -> Unit, onDecline: () -> Unit) {
 
 /** A whole-row switch, at least 56 dp high. */
 @Composable
-private fun ToggleRow(label: String, checked: Boolean, onToggle: () -> Unit) {
+private fun ToggleRow(label: String, checked: Boolean, onToggle: () -> Unit, enabled: Boolean = true) {
     Surface(
         shape = MaterialTheme.shapes.medium,
         color = MaterialTheme.colorScheme.secondaryContainer,
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(min = 56.dp)
-            .toggleable(value = checked, role = Role.Switch, onValueChange = { onToggle() }),
+            .toggleable(value = checked, enabled = enabled, role = Role.Switch, onValueChange = { onToggle() }),
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
@@ -163,7 +163,7 @@ private fun ToggleRow(label: String, checked: Boolean, onToggle: () -> Unit) {
                 color = MaterialTheme.colorScheme.onSecondaryContainer,
                 modifier = Modifier.weight(1f),
             )
-            Switch(checked = checked, onCheckedChange = null)
+            Switch(checked = checked, onCheckedChange = null, enabled = enabled)
         }
     }
 }
@@ -211,7 +211,7 @@ private fun InCallActions(
     ) {
         // Switches: TalkBack reads "Mute, switch, on" (the label is the setting, the switch its state).
         ToggleRow(stringResource(R.string.voice_call_mute), checked = ui.muted, onToggle = onToggleMute)
-        ToggleRow(stringResource(R.string.voice_call_speaker), checked = ui.speaker, onToggle = onToggleSpeaker)
+        ToggleRow(stringResource(R.string.voice_call_speaker), checked = ui.speaker, onToggle = onToggleSpeaker, enabled = ui.speakerEnabled)
         Button(
             onClick = onHangUp,
             modifier = Modifier
