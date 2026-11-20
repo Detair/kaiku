@@ -937,6 +937,15 @@ Media of a participant reaches others only under a source the server accepted.
   sender (`replaceTrack`), not add a second audio track.
 - An announcement dies with its share or webcam: a stop (or the end of the share) removes it, and a track never
   binds to a share or webcam that has ended.
+- An accepted start whose track has not arrived 10 s after the acknowledgement ends by itself: the slot is
+  released and the room gets the normal `screen_share_stopped` / `webcam_stopped` with `reason: "no_media"`.
+- `voice_screen_share_stop` and `voice_webcam_stop` are never rate-limited: a stop is always applied.
+- A `stream_id` is unique in a room: a start with an id that is in use (by anyone) answers `DUPLICATE_STREAM_ID`.
+- Simulcast: further layers (`rid`) of a video track belong to that track's transceiver and its announcement;
+  they never bind to another announcement. A layer that arrives before its first layer waits for it.
+- Key frames: a viewer's PLI or FIR for a forwarded video track is passed to the publisher as a PLI, at most once
+  per second per track across all viewers (the server also asks for one every 3 s). Viewers may send PLI/FIR
+  freely when they need a key frame (late join, decoder error).
 - Permission: `SCREEN_SHARE` is part of the @everyone default (since 2026-11-20, existing servers migrated).
   Admins can deny it per channel with an override.
 - Compatibility: rc.5 clients add the track right before they send the start and do not wait. An accepted

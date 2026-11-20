@@ -269,6 +269,12 @@ async fn two_joins_within_200ms_hear_each_other(pool: PgPool) {
             listener.seen_tracks()
         );
     }
+    // Each listener gets every other participant's microphone exactly once
+    // (no duplicate sender from overlapping subscribe paths).
+    for p in [&a, &b, &c] {
+        let (active, _) = subscriber_counts(&f.app, f.voice, p.user_id).await;
+        assert_eq!(active, 2, "{}: senders with a track", p.user_id);
+    }
     // Every subscriber answer fit the offer it answered: no signaling error.
     for p in [&mut a, &mut b, &mut c] {
         let mut offers = 0;
@@ -528,4 +534,49 @@ async fn stopped_share_does_not_bind_a_later_webcam(pool: PgPool) {
         "{:?}",
         b.seen_tracks()
     );
+}
+
+/// Viewers' key-frame requests reach the publisher, coalesced to at most
+/// one per second per track however many viewers ask.
+#[sqlx::test]
+async fn viewer_keyframe_requests_reach_the_publisher_rate_limited(pool: PgPool) {
+    let f = fixture(pool).await;
+    let (mut a, b) = two_in_call(&f).await;
+    let mut c = f.participant(SimOptions::default()).await;
+    c.join_and_publish_mic().await;
+
+    let stream = Uuid::new_v4();
+    a.send(share_start(f.voice, stream));
+    a.next_event("screen_share_started", WAIT).await;
+    a.add_track(true, "screen").await;
+    a.publish().await;
+    let id = format!("{}:screen_video:{stream}", a.user_id);
+    assert!(
+        b.wait_for_packets(&id, 5, WAIT).await,
+        "{:?}",
+        b.seen_tracks()
+    );
+    assert!(
+        c.wait_for_packets(&id, 5, WAIT).await,
+        "{:?}",
+        c.seen_tracks()
+    );
+
+    // Both viewers ask ten times a second for 2.5 s.
+    let before = a.keyframe_requests("screen");
+    let started = tokio::time::Instant::now();
+    while started.elapsed() < Duration::from_millis(2500) {
+        b.request_keyframe(&id).await;
+        c.request_keyframe(&id).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let got = a.keyframe_requests("screen") - before;
+    // Forwarded at most once per second (3 in 2.5 s), plus at most one of
+    // the server's own periodic requests.
+    assert!(
+        got >= 2,
+        "viewer requests did not reach the publisher: {got}"
+    );
+    assert!(got <= 4, "requests were not coalesced: {got}");
 }

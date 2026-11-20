@@ -18,7 +18,7 @@ use super::screen_share::{
 };
 use super::sfu::{ReplacedMedia, Room, SfuServer};
 use super::stats::VoiceStats;
-use super::track::spawn_subscriber_remb_reader;
+use super::track::spawn_subscriber_rtcp_reader;
 use super::track_types::{LayerPreference, TrackSource};
 use super::webcam::WebcamInfo;
 use super::{queries, Quality};
@@ -660,8 +660,11 @@ async fn subscribe_to_existing_tracks(
                         .await
                     {
                         Ok(sender) => {
+                            other_peer.record_forwarded(user_id, *source_type, local_track.clone());
                             if source_type.is_video() {
-                                spawn_subscriber_remb_reader(
+                                spawn_subscriber_rtcp_reader(
+                                    Arc::downgrade(other_peer),
+                                    track.ssrc(),
                                     room.track_router.clone(),
                                     user_id,
                                     *other_id,
@@ -977,6 +980,15 @@ async fn handle_screen_share_start(
         limiter.stop(params.channel_id).await;
         return Err(VoiceError::DuplicateStreamId);
     }
+    // The participant left or was replaced during the checks above: its
+    // leave may have missed this share, so take it back here (only one of the
+    // two removes the entry and releases the slot).
+    if peer.is_retired() {
+        if room.remove_screen_share(stream_id).await.is_some() {
+            limiter.stop(params.channel_id).await;
+        }
+        return Err(VoiceError::ParticipantNotFound(params.user_id));
+    }
 
     // Queue pending track sources so setup_track_handler can identify them
     // (only once the share is live; a track never binds to a dead share).
@@ -1105,7 +1117,11 @@ async fn end_screen_share(
             warn!(user_id = %user_id, stream_id = %stream_id, "User tried to stop a screen share they don't own");
             return Err(VoiceError::Signaling("Not your screen share".to_string()));
         }
-        room.remove_screen_share(stream_id).await;
+        // Only the one who removes the entry releases the slot (a stop and
+        // the expiry may race).
+        if room.remove_screen_share(stream_id).await.is_none() {
+            return Ok(());
+        }
     } else {
         // User wasn't sharing, but that's okay - idempotent
         debug!(user_id = %user_id, "User tried to stop screen share but wasn't sharing");
@@ -1169,7 +1185,7 @@ async fn end_screen_share(
         channel_id,
         user_id,
         stream_id,
-        reason: "user_stopped".to_string(),
+        reason: reason.to_string(),
     })
     .await;
 
@@ -1327,7 +1343,7 @@ async fn end_webcam(
     room.broadcast_all(ServerEvent::WebcamStopped {
         channel_id,
         user_id,
-        reason: "user_stopped".to_string(),
+        reason: reason.to_string(),
     })
     .await;
 

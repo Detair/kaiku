@@ -47,7 +47,7 @@ use super::error::VoiceError;
 use super::peer::Peer;
 use super::rate_limit::{VoiceRateLimiter, VoiceStatsLimiter};
 use super::screen_share::{ScreenShareInfo, ScreenShareLimiter};
-use super::track::{spawn_rtp_forwarder, spawn_subscriber_remb_reader, TrackRouter};
+use super::track::{spawn_rtp_forwarder, spawn_subscriber_rtcp_reader, TrackRouter};
 use super::track_types::{Layer, TrackSource};
 use super::webcam::WebcamInfo;
 use crate::config::{Config, IceIpFamily};
@@ -297,12 +297,31 @@ impl Room {
         // From now on its late track callbacks and forwarders do nothing.
         departed.retire();
         let user_id = departed.user_id;
-        self.track_router.remove_source(user_id).await;
+        // Only this peer instance's media: a newer peer of the same user may
+        // already be in the room and keeps its own.
+        let forwarded = departed.take_forwarded();
+        let forwarded_tracks: Vec<_> = forwarded.iter().map(|(_, _, t)| t.clone()).collect();
+        self.track_router
+            .remove_subscriptions_into(&forwarded_tracks);
         self.track_router
             .remove_subscriptions_into(&departed.outgoing_track_list().await);
+        if self.get_peer(user_id).await.is_none() {
+            self.track_router.remove_source(user_id).await;
+        }
         let others = self.get_other_peers(user_id).await;
+        let forwarded = &forwarded;
         let updates = others.into_iter().map(|other| async move {
-            if other.remove_outgoing_tracks_from(user_id).await > 0 {
+            let mut removed = 0;
+            for (subscriber, source, track) in forwarded {
+                if *subscriber == other.user_id
+                    && other
+                        .remove_outgoing_track_if(user_id, *source, track)
+                        .await
+                {
+                    removed += 1;
+                }
+            }
+            if removed > 0 {
                 if let Err(e) = SfuServer::renegotiate(&other).await {
                     warn!(
                         subscriber = %other.user_id,
@@ -981,7 +1000,7 @@ impl SfuServer {
         let channel_id = peer.channel_id;
 
         peer.publisher_pc
-            .on_track(Box::new(move |track, _receiver, _transceiver| {
+            .on_track(Box::new(move |track, _receiver, transceiver| {
                 let pw = peer_weak.clone();
                 let rw = room_weak.clone();
                 let uid = user_id;
@@ -1019,20 +1038,16 @@ impl SfuServer {
                         && layer != Layer::High
                         && track.kind() == RTPCodecType::Video;
 
+                    // The publisher transceiver: further simulcast layers of a
+                    // track bind to its announcement, never to another one.
+                    let mid = transceiver.mid().map(|m| m.to_string()).unwrap_or_default();
                     let source_type = if is_secondary_simulcast {
-                        // Find the source type from the High layer already stored.
-                        if let Some(st) = room
-                            .track_router
-                            .find_source_type_for_user(uid, Layer::High)
-                        {
-                            st
-                        } else {
-                            // High layer hasn't arrived yet — stash and skip.
-                            // When High arrives, store_simulcast_track will drain this.
-                            room.track_router
-                                .stash_pending_secondary(uid, layer, track.clone());
+                        let Some(st) = peer.video_source_for_layer(&mid, layer, &track) else {
+                            // Its first layer has not been bound yet: kept
+                            // until it is (dropped with the peer otherwise).
                             return;
-                        }
+                        };
+                        st
                     } else {
                         // Every track needs a source the server accepted
                         // (contract C30): the first audio track is the
@@ -1105,6 +1120,27 @@ impl SfuServer {
                         peer.clone(),
                     );
 
+                    // The first layer of a simulcast transceiver binds it to its
+                    // source; layers of it that arrived earlier start now.
+                    if is_simulcast && !is_secondary_simulcast {
+                        for (early_layer, early) in peer.bind_video_mid(&mid, source_type) {
+                            room.track_router.store_simulcast_track(
+                                uid,
+                                source_type,
+                                early_layer,
+                                early.clone(),
+                            );
+                            spawn_rtp_forwarder(
+                                uid,
+                                source_type,
+                                early_layer,
+                                early,
+                                room.track_router.clone(),
+                                peer.clone(),
+                            );
+                        }
+                    }
+
                     // For video tracks: send PLI every 3 seconds so subscribers
                     // always get a fresh keyframe. This is the standard Pion SFU
                     // pattern — webrtc-rs doesn't include an interval PLI interceptor
@@ -1161,8 +1197,15 @@ impl SfuServer {
                                 .await
                             {
                                 Ok(sender) => {
+                                    peer.record_forwarded(
+                                        other_peer.user_id,
+                                        source_type,
+                                        local_track.clone(),
+                                    );
                                     if source_type.is_video() {
-                                        spawn_subscriber_remb_reader(
+                                        spawn_subscriber_rtcp_reader(
+                                            Arc::downgrade(&peer),
+                                            track.ssrc(),
                                             room.track_router.clone(),
                                             other_peer.user_id,
                                             uid,
@@ -1451,6 +1494,23 @@ impl SfuServer {
         });
     }
 
+    /// Offer once more after a short pause if a change is still pending and
+    /// no offer is open.
+    fn retry_offer_later(peer: &Arc<Peer>) {
+        let peer = Arc::downgrade(peer);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            let Some(peer) = peer.upgrade() else { return };
+            let pending = {
+                let state = peer.negotiation.lock().await;
+                state.again && state.awaiting_answer_since.is_none()
+            };
+            if pending && !peer.is_retired() {
+                let _ = Self::negotiate(&peer, Some(PEER_SIGNAL_SEND_TIMEOUT)).await;
+            }
+        });
+    }
+
     /// Send an offer created under the negotiation lock and watch it. If it
     /// cannot be queued, the client never answers it: forget that it is
     /// outstanding, so the next change offers again.
@@ -1468,6 +1528,11 @@ impl SfuServer {
             let mut state = peer.negotiation.lock().await;
             if state.offer_seq == seq {
                 state.awaiting_answer_since = None;
+                // A change that waited for this offer must not be lost: try
+                // again shortly (the queue may only have been busy).
+                if state.again {
+                    Self::retry_offer_later(peer);
+                }
             }
         } else {
             Self::watch_offer(peer, seq);

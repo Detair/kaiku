@@ -532,12 +532,15 @@ pub fn spawn_rtp_forwarder(
     });
 }
 
-/// Spawn a task to read REMB feedback from a subscriber's outgoing sender.
-///
-/// When the subscriber's browser reports its available bandwidth via REMB,
-/// this updates the corresponding subscription in the track router and
-/// notifies the subscriber if the active layer changes.
-pub fn spawn_subscriber_remb_reader(
+/// Spawn a task that reads the RTCP feedback of a subscriber's outgoing
+/// sender: REMB updates the subscription's layer (and tells the subscriber
+/// when it changes); a key-frame request (PLI or FIR) goes to the publisher
+/// of the track as a PLI for `media_ssrc`, at most once per second per track
+/// across all its viewers.
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_subscriber_rtcp_reader(
+    publisher: std::sync::Weak<Peer>,
+    media_ssrc: u32,
     track_router: Arc<TrackRouter>,
     subscriber_id: Uuid,
     source_user_id: Uuid,
@@ -547,9 +550,27 @@ pub fn spawn_subscriber_remb_reader(
     channel_id: Uuid,
 ) {
     tokio::spawn(async move {
+        use webrtc::rtcp::payload_feedbacks::full_intra_request::FullIntraRequest;
+        use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
         use webrtc::rtcp::payload_feedbacks::receiver_estimated_maximum_bitrate::ReceiverEstimatedMaximumBitrate;
 
         while let Ok((packets, _)) = sender.read_rtcp().await {
+            let wants_keyframe = packets.iter().any(|p| {
+                let any = p.as_any();
+                any.downcast_ref::<PictureLossIndication>().is_some()
+                    || any.downcast_ref::<FullIntraRequest>().is_some()
+            });
+            if wants_keyframe {
+                if let Some(publisher) = publisher.upgrade() {
+                    if !publisher.is_retired() && publisher.allow_keyframe_request(source_type) {
+                        let pli = PictureLossIndication {
+                            sender_ssrc: 0,
+                            media_ssrc,
+                        };
+                        let _ = publisher.publisher_pc.write_rtcp(&[Box::new(pli)]).await;
+                    }
+                }
+            }
             for pkt in &packets {
                 if let Some(remb) = pkt
                     .as_any()
@@ -602,7 +623,7 @@ pub fn spawn_subscriber_remb_reader(
             subscriber = %subscriber_id,
             source = %source_user_id,
             source_type = ?source_type,
-            "Subscriber REMB reader stopped"
+            "Subscriber RTCP reader stopped"
         );
     });
 }

@@ -57,8 +57,17 @@ pub async fn leave_voice_internal(
         None => None,
     };
 
+    // The user joined again (new seat) right after this seat was removed:
+    // the screen shares, webcam and presence in the room now belong to that
+    // seat (the replacement already ended this one's media), so leave them.
+    let rejoined = session_peer.is_some() && room.get_peer(user_id).await.is_some();
+
     // Remove all screen shares for this user
-    let removed_shares = room.remove_user_screen_shares(user_id).await;
+    let removed_shares = if rejoined {
+        Vec::new()
+    } else {
+        room.remove_user_screen_shares(user_id).await
+    };
     if !removed_shares.is_empty() {
         if let Some(limiter) = screen_share_limiter {
             limiter.stop_n(channel_id, removed_shares.len()).await;
@@ -81,7 +90,7 @@ pub async fn leave_voice_internal(
     }
 
     // Check if webcam is active and stop it
-    if room.remove_webcam(user_id).await.is_some() {
+    if !rejoined && room.remove_webcam(user_id).await.is_some() {
         room.broadcast_except(
             user_id,
             ServerEvent::WebcamStopped {
@@ -111,12 +120,15 @@ pub async fn leave_voice_internal(
         peer.close().await;
     }
 
-    // Free per-peer rate-limit buckets so they don't accumulate across reconnects.
-    sfu.voice_rate_limiter().forget_peer(user_id);
+    // Free per-peer rate-limit buckets so they don't accumulate across
+    // reconnects (only when a seat really went away).
+    if removed {
+        sfu.voice_rate_limiter().forget_peer(user_id);
+    }
 
     // Only announce a departure that actually happened; a leave for a user who
     // is not in the room must not tell the others anything.
-    if removed {
+    if removed && !rejoined {
         room.broadcast_except(
             user_id,
             ServerEvent::VoiceUserLeft {

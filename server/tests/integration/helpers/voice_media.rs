@@ -53,6 +53,10 @@ pub async fn media_app(pool: sqlx::PgPool) -> TestApp {
 /// Packets received per remote track id.
 pub type Received = Arc<Mutex<HashMap<String, u64>>>;
 
+/// Key-frame requests (PLI/FIR) the server sent to this participant's
+/// publisher, per local track id.
+pub type KeyframeRequests = Arc<Mutex<HashMap<String, u64>>>;
+
 /// Options for a simulated participant.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SimOptions {
@@ -69,6 +73,10 @@ pub struct SimParticipant {
     pub subscriber: Arc<RTCPeerConnection>,
     /// Packets received on the subscriber PC, per track id.
     pub received: Received,
+    /// SSRC of each remote track id (for sending feedback about it).
+    pub ssrcs: Arc<Mutex<HashMap<String, u32>>>,
+    /// Key-frame requests the server sent for this participant's tracks.
+    pub keyframe_requests: KeyframeRequests,
     /// Every server event (JSON), in order.
     pub events: mpsc::UnboundedReceiver<serde_json::Value>,
     out: mpsc::UnboundedSender<serde_json::Value>,
@@ -154,11 +162,15 @@ impl SimParticipant {
         );
 
         let received: Received = Arc::new(Mutex::new(HashMap::new()));
+        let ssrcs: Arc<Mutex<HashMap<String, u32>>> = Arc::new(Mutex::new(HashMap::new()));
         let counts = received.clone();
+        let ssrc_map = ssrcs.clone();
         subscriber.on_track(Box::new(move |track, _, _| {
             let counts = counts.clone();
+            let ssrc_map = ssrc_map.clone();
             Box::pin(async move {
                 let id = track.id();
+                ssrc_map.lock().unwrap().insert(id.clone(), track.ssrc());
                 counts.lock().unwrap().entry(id.clone()).or_insert(0);
                 tokio::spawn(async move {
                     while track.read_rtp().await.is_ok() {
@@ -187,6 +199,8 @@ impl SimParticipant {
             publisher,
             subscriber,
             received,
+            ssrcs,
+            keyframe_requests: Arc::new(Mutex::new(HashMap::new())),
             events: events_rx,
             out: out_tx,
             tasks: vec![pump],
@@ -274,9 +288,27 @@ impl SimParticipant {
             .add_track(track.clone() as Arc<dyn TrackLocal + Send + Sync>)
             .await
             .expect("add track");
-        // Drain RTCP so the interceptors keep running.
+        // Drain RTCP so the interceptors keep running; count key-frame
+        // requests.
+        let requests = self.keyframe_requests.clone();
+        let track_id = id.to_owned();
         self.tasks.push(tokio::spawn(async move {
-            while sender.read_rtcp().await.is_ok() {}
+            use webrtc::rtcp::payload_feedbacks::full_intra_request::FullIntraRequest;
+            use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
+            while let Ok((packets, _)) = sender.read_rtcp().await {
+                for p in &packets {
+                    let any = p.as_any();
+                    if any.downcast_ref::<PictureLossIndication>().is_some()
+                        || any.downcast_ref::<FullIntraRequest>().is_some()
+                    {
+                        *requests
+                            .lock()
+                            .unwrap()
+                            .entry(track_id.clone())
+                            .or_insert(0) += 1;
+                    }
+                }
+            }
         }));
         let writer = track.clone();
         self.tasks.push(tokio::spawn(async move {
@@ -339,6 +371,31 @@ impl SimParticipant {
         self.add_track(false, "mic").await;
         self.publish().await;
         state
+    }
+
+    /// Ask the server for a key frame of the remote track `track_id` (PLI).
+    pub async fn request_keyframe(&self, track_id: &str) {
+        use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
+        let Some(ssrc) = self.ssrcs.lock().unwrap().get(track_id).copied() else {
+            return;
+        };
+        let _ = self
+            .subscriber
+            .write_rtcp(&[Box::new(PictureLossIndication {
+                sender_ssrc: 0,
+                media_ssrc: ssrc,
+            })])
+            .await;
+    }
+
+    /// Key-frame requests received so far for the local track `id`.
+    pub fn keyframe_requests(&self, id: &str) -> u64 {
+        self.keyframe_requests
+            .lock()
+            .unwrap()
+            .get(id)
+            .copied()
+            .unwrap_or(0)
     }
 
     /// Packets received so far on track `track_id`.

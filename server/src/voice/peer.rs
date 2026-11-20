@@ -86,6 +86,19 @@ pub struct Peer {
     /// Inactive m-lines on `subscriber_pc`: transceivers of removed tracks,
     /// which webrtc-rs keeps (see [`Peer::add_outgoing_track`]).
     inactive_mlines: std::sync::atomic::AtomicUsize,
+    /// Local tracks that forward this peer's media to others:
+    /// `(subscriber, source, track)`. Removal of this peer's media touches
+    /// exactly these, never a newer peer of the same user.
+    forwarded: std::sync::Mutex<Vec<(Uuid, TrackSource, Arc<TrackLocalStaticRTP>)>>,
+    /// Video source bound to each publisher transceiver (`mid`): further
+    /// simulcast layers of that transceiver use it, nothing else does.
+    video_mids: std::sync::Mutex<HashMap<String, TrackSource>>,
+    /// Simulcast layers that arrived before their transceiver's first layer
+    /// was bound to a source.
+    stashed_layers: std::sync::Mutex<Vec<(String, super::track_types::Layer, Arc<TrackRemote>)>>,
+    /// When a key frame was last requested for each of this peer's video
+    /// sources on behalf of its viewers.
+    keyframe_requested: std::sync::Mutex<HashMap<TrackSource, tokio::time::Instant>>,
     /// Whether an audio track was taken as this peer's microphone.
     microphone_claimed: AtomicBool,
     /// Login session of the socket that joined with this peer (set once by
@@ -158,6 +171,10 @@ impl Peer {
             negotiation: tokio::sync::Mutex::new(SubscriberNegotiation::default()),
             retired: AtomicBool::new(false),
             microphone_claimed: AtomicBool::new(false),
+            forwarded: std::sync::Mutex::new(Vec::new()),
+            video_mids: std::sync::Mutex::new(HashMap::new()),
+            stashed_layers: std::sync::Mutex::new(Vec::new()),
+            keyframe_requested: std::sync::Mutex::new(HashMap::new()),
             inactive_mlines: std::sync::atomic::AtomicUsize::new(0),
             auth_session: std::sync::OnceLock::new(),
         }
@@ -209,6 +226,17 @@ impl Peer {
         source_type: TrackSource,
         track: Arc<TrackLocalStaticRTP>,
     ) -> Result<Arc<RTCRtpSender>, super::error::VoiceError> {
+        // One forwarded track per source: the track handler and the
+        // first-offer subscribe path may race to add the same source; the
+        // second one is refused (its caller drops its router subscription).
+        let mut tracks = self.outgoing_tracks.write().await;
+        if tracks.contains_key(&(source_user_id, source_type)) {
+            return Err(super::error::VoiceError::Internal(format!(
+                "{source_user_id}:{source_type} is already forwarded to {}",
+                self.user_id
+            )));
+        }
+
         // Always a new transceiver: `add_track` would reuse the transceiver
         // of a removed track with the same id (the same user rejoining), and
         // in webrtc-rs a removed (stopped) sender cannot take a track again,
@@ -225,9 +253,6 @@ impl Peer {
             )
             .await?;
         let sender = transceiver.sender().await;
-
-        // Store reference
-        let mut tracks = self.outgoing_tracks.write().await;
         tracks.insert((source_user_id, source_type), track);
 
         Ok(sender)
@@ -263,6 +288,23 @@ impl Peer {
         } else {
             false
         }
+    }
+
+    /// Remove the outgoing track of `(source_user_id, source)` only if it is
+    /// exactly `track` (a newer peer of the same user keeps its own).
+    pub async fn remove_outgoing_track_if(
+        &self,
+        source_user_id: Uuid,
+        source: TrackSource,
+        track: &Arc<TrackLocalStaticRTP>,
+    ) -> bool {
+        let same = self
+            .outgoing_tracks
+            .read()
+            .await
+            .get(&(source_user_id, source))
+            .is_some_and(|t| Arc::ptr_eq(t, track));
+        same && self.remove_outgoing_track(source_user_id, source).await
     }
 
     /// Remove every outgoing track that forwards media of `source_user_id`
@@ -340,6 +382,98 @@ impl Peer {
             .write()
             .await
             .retain(|s| !pred(s));
+    }
+
+    /// Record that `track` forwards this peer's `source` to `subscriber`.
+    pub fn record_forwarded(
+        &self,
+        subscriber: Uuid,
+        source: TrackSource,
+        track: Arc<TrackLocalStaticRTP>,
+    ) {
+        self.forwarded
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((subscriber, source, track));
+    }
+
+    /// Take the list of tracks forwarding this peer's media (on removal).
+    pub fn take_forwarded(&self) -> Vec<(Uuid, TrackSource, Arc<TrackLocalStaticRTP>)> {
+        std::mem::take(
+            &mut *self
+                .forwarded
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
+    /// Forget forwarded tracks of `source` (the source ended).
+    pub fn forget_forwarded(&self, source: TrackSource) {
+        self.forwarded
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|(_, s, _)| *s != source);
+    }
+
+    /// Bind the publisher transceiver `mid` to `source` and return the
+    /// simulcast layers of it that arrived earlier.
+    pub fn bind_video_mid(
+        &self,
+        mid: &str,
+        source: TrackSource,
+    ) -> Vec<(super::track_types::Layer, Arc<TrackRemote>)> {
+        self.video_mids
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(mid.to_owned(), source);
+        let mut stashed = self
+            .stashed_layers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (mine, rest): (Vec<_>, Vec<_>) = stashed.drain(..).partition(|(m, _, _)| m == mid);
+        *stashed = rest;
+        mine.into_iter().map(|(_, l, t)| (l, t)).collect()
+    }
+
+    /// The source bound to transceiver `mid`, or stash the layer until it is.
+    pub fn video_source_for_layer(
+        &self,
+        mid: &str,
+        layer: super::track_types::Layer,
+        track: &Arc<TrackRemote>,
+    ) -> Option<TrackSource> {
+        if let Some(source) = self
+            .video_mids
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(mid)
+            .copied()
+        {
+            return Some(source);
+        }
+        self.stashed_layers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((mid.to_owned(), layer, track.clone()));
+        None
+    }
+
+    /// Whether a viewer's key-frame request for `source` may go to the
+    /// publisher now (at most one per second per source, all viewers
+    /// together).
+    pub fn allow_keyframe_request(&self, source: TrackSource) -> bool {
+        let now = tokio::time::Instant::now();
+        let mut last = self
+            .keyframe_requested
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match last.get(&source) {
+            Some(at) if now.duration_since(*at) < std::time::Duration::from_secs(1) => false,
+            _ => {
+                last.insert(source, now);
+                true
+            }
+        }
     }
 
     /// Claim the microphone: `true` for the first audio track of this peer

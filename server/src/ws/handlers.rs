@@ -1253,10 +1253,8 @@ async fn handle_socket(
         presence_socket_down(&state, user_id, socket_id).await;
     }
 
-    // Free per-peer voice rate-limit buckets in case the socket dropped without
-    // an explicit VoiceLeave (ping timeout, TCP drop, app crash). The explicit
-    // VoiceLeave path also calls `forget_peer`; calling it here too is idempotent.
-    state.sfu.voice_rate_limiter().forget_peer(user_id);
+    // Voice rate-limit buckets are freed by the leave below when this socket
+    // held the seat; another socket of the user keeps its buckets.
 
     // Remove this socket's voice peer so the room never keeps a ghost
     // participant. Runs before presence goes offline.
