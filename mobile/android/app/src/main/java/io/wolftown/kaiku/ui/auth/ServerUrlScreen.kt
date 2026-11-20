@@ -72,13 +72,19 @@ class ServerUrlViewModel @Inject constructor(
         _uiState.update { it.copy(url = url, error = null) }
     }
 
+    @StringRes
+    private fun refusalText(why: ServerAddressRule.Refusal): Int = when (why) {
+        ServerAddressRule.Refusal.TIED -> R.string.auth_server_tied_to_key
+        ServerAddressRule.Refusal.REGISTRATION -> R.string.auth_server_registration_running
+    }
+
     fun onConnectClicked() {
         if (_uiState.value.isChecking) return
         // A key, a setup that is not finished or running, or a session ties this phone to its
         // server: the address is not changed under it (also while what the phone has saved about
         // its key cannot be read). One rule, asked again right before the write below.
-        if (!serverAddress.mayChange()) {
-            _uiState.update { it.copy(error = R.string.auth_server_tied_to_key) }
+        serverAddress.refusal()?.let { why ->
+            _uiState.update { it.copy(error = refusalText(why)) }
             return
         }
         val address = normalizeServerAddress(_uiState.value.url).getOrElse {
@@ -92,8 +98,8 @@ class ServerUrlViewModel @Inject constructor(
                 is ProbeResult.Ok -> {
                     // Asked again now that the server answered, with nothing between it and the write:
                     // a setup may have opened, or a key record come, meanwhile.
-                    if (!serverAddress.mayChange()) {
-                        _uiState.update { it.copy(isChecking = false, error = R.string.auth_server_tied_to_key) }
+                    serverAddress.refusal()?.let { why ->
+                        _uiState.update { it.copy(isChecking = false, error = refusalText(why)) }
                         return@launch
                     }
                     // Nothing from the old server may carry over: drop its pending

@@ -80,6 +80,13 @@ data class StoredKeyDevice(
      * a key device again.
      */
     val notThisKey: Boolean = false,
+    /**
+     * [KeyDevicePhase.CLAIMED] with its code's time known: the phone's running time when the code
+     * arrived ([codeReceived]) and how long, from then, until the code has run out with the margin
+     * ([codeWait]: its remaining life by the server's own time at that moment, plus the margin).
+     */
+    val codeReceived: BootTime? = null,
+    val codeWait: java.time.Duration? = null,
 ) {
     /**
      * Whether [other] is this very record: same server, account, key device, enrolment, key, setup
@@ -149,6 +156,9 @@ class PrefsKeyDeviceStore(private val prefs: SharedPreferences) : KeyDeviceStore
         const val PROVISIONAL_FROM = "provisional_from"
         const val INSTALL_ID_LOST = "install_id_lost"
         const val NOT_THIS_KEY = "not_this_key"
+        const val CODE_RECEIVED_ELAPSED = "code_received_elapsed"
+        const val CODE_RECEIVED_BOOT = "code_received_boot"
+        const val CODE_WAIT = "code_wait_ms"
         const val LEGACY_REMOVAL_SIGN_IN = "removal_sign_in"
         val REQUIRED = listOf(PHASE, USER_ID, ORIGIN, ENROLLMENT_ID)
     }
@@ -207,6 +217,9 @@ class PrefsKeyDeviceStore(private val prefs: SharedPreferences) : KeyDeviceStore
                         },
                         installIdLost = prefs.getString(INSTALL_ID_LOST, null) == "true",
                         notThisKey = prefs.getString(NOT_THIS_KEY, null) == "true",
+                        // Both parts or none.
+                        codeReceived = prefs.getString(CODE_RECEIVED_ELAPSED, null)?.let { BootTime(prefs.getString(CODE_RECEIVED_BOOT, null)?.toInt(), it.toLong()) },
+                        codeWait = prefs.getString(CODE_RECEIVED_ELAPSED, null)?.let { java.time.Duration.ofMillis(prefs.getString(CODE_WAIT, null)!!.toLong()) },
                     ),
                 )
             }
@@ -248,6 +261,9 @@ class PrefsKeyDeviceStore(private val prefs: SharedPreferences) : KeyDeviceStore
             .putString(PROVISIONAL_FROM, s.provisionalFrom?.name)
             .putString(INSTALL_ID_LOST, if (s.installIdLost) "true" else null)
             .putString(NOT_THIS_KEY, if (s.notThisKey) "true" else null)
+            .putString(CODE_RECEIVED_ELAPSED, s.codeReceived?.takeIf { s.codeWait != null }?.elapsedMs?.toString())
+            .putString(CODE_RECEIVED_BOOT, s.codeReceived?.takeIf { s.codeWait != null }?.boot?.toString())
+            .putString(CODE_WAIT, s.codeWait?.takeIf { s.codeReceived != null }?.toMillis()?.toString())
             .commit()
     } catch (e: Exception) {
         logger.warning("Key-device store not written: ${e.javaClass.simpleName}")
@@ -258,7 +274,7 @@ class PrefsKeyDeviceStore(private val prefs: SharedPreferences) : KeyDeviceStore
     override fun clear(): Boolean = try {
         // The legacy flag is not part of the record and has its own clean-up.
         val editor = prefs.edit()
-        (REQUIRED + listOf(KEY_DEVICE_ID, UV_CLASS, CLAIM_SECRET, ACCOUNT_NAME, READY_AT, SESSION_CAP, RENEWAL_PROMPT, KEY_ID, ATTEMPT_ID, CLAIM_VOID_AFTER, INSTALL_ID, SINCE, CODE_CLAIM, UNANSWERED_LAST_ELAPSED, UNANSWERED_LAST_BOOT, UNANSWERED_SPAN, UNANSWERED_OCCASIONS, WRITTEN_ELAPSED, WRITTEN_BOOT, PROVISIONAL_FROM, INSTALL_ID_LOST, NOT_THIS_KEY, "unanswered_since", "unanswered_last"))
+        (REQUIRED + listOf(KEY_DEVICE_ID, UV_CLASS, CLAIM_SECRET, ACCOUNT_NAME, READY_AT, SESSION_CAP, RENEWAL_PROMPT, KEY_ID, ATTEMPT_ID, CLAIM_VOID_AFTER, INSTALL_ID, SINCE, CODE_CLAIM, UNANSWERED_LAST_ELAPSED, UNANSWERED_LAST_BOOT, UNANSWERED_SPAN, UNANSWERED_OCCASIONS, WRITTEN_ELAPSED, WRITTEN_BOOT, PROVISIONAL_FROM, INSTALL_ID_LOST, NOT_THIS_KEY, CODE_RECEIVED_ELAPSED, CODE_RECEIVED_BOOT, CODE_WAIT, "unanswered_since", "unanswered_last"))
             .forEach { editor.remove(it) }
         editor.commit()
     } catch (e: Exception) {

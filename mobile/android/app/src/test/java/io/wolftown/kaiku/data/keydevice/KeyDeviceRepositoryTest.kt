@@ -11,10 +11,12 @@ import io.wolftown.kaiku.testutil.InMemoryKeyDeviceStore
 import io.wolftown.kaiku.testutil.markActive
 import io.wolftown.kaiku.testutil.markPending
 import io.wolftown.kaiku.testutil.saveClaimed
+import io.wolftown.kaiku.testutil.seedAsIs
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -260,7 +262,7 @@ class KeyDeviceRepositoryTest {
 
     @Test fun `a record from before it named its install id takes the app's, once`() = runTest {
         val repo = repo()
-        repo.saveClaimed(device)
+        repo.seedAsIs(StoredKeyDevice(device, KeyDevicePhase.CLAIMED))
         assertNull(repo.record.value!!.installId)
         assertTrue(repo.bindInstallId("install-1").done)
         assertEquals("install-1", repo.record.value!!.installId)
@@ -275,7 +277,7 @@ class KeyDeviceRepositoryTest {
         val repo = repo()
         assertEquals(Change.Mismatch, repo.bindInstallId("install-1"))
         assertTrue(store.writes.isEmpty())
-        repo.saveClaimed(device)
+        repo.seedAsIs(StoredKeyDevice(device, KeyDevicePhase.CLAIMED))
         store.failWrites = true
         assertEquals(Change.WriteFailed, repo.bindInstallId("install-1"))
         assertNull(repo.record.value!!.installId)
@@ -333,5 +335,22 @@ class KeyDeviceRepositoryTest {
         // The holder of the older copy still names the stored record.
         assertTrue(repo.update(rec) { it.copy(unanswered = null) }.done)
         assertNull(store.stored!!.unanswered)
+    }
+
+    /** A decision made on one form of the record never forgets another form of it. */
+    @Test fun `a record is forgotten only as it was when the decision was made`() = runTest {
+        val repo = repo()
+        val rec = (repo.create(claiming()) as Change.Done).record!!
+        for (other in listOf(
+            rec.copy(provisionalFrom = KeyDevicePhase.CLAIMING),
+            rec.copy(notThisKey = true),
+            rec.copy(installIdLost = true),
+            rec.copy(installId = "another-install"),
+        )) {
+            assertEquals(other.toString(), Change.Mismatch, repo.forget(other, Forget.SERVER_ANSWER))
+            assertNotNull(repo.record.value)
+            assertTrue(keyStore.hasKey())
+        }
+        assertEquals(Change.Done(null), repo.forget(rec, Forget.SERVER_ANSWER))
     }
 }

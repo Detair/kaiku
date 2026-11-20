@@ -74,7 +74,7 @@ class RegisterViewModel @Inject constructor(
     /**
      * The ticket of an account this screen already created (30 min, C27), with the name and the
      * server it was created on: a retry after a failed issuance only issues again, it never
-     * registers the same name twice (Argon part6 #2), and the ticket only ever goes to its server.
+     * registers the same name twice, and the ticket only ever goes to its server.
      */
     private class Created(val username: String, val origin: String, val ticket: String)
 

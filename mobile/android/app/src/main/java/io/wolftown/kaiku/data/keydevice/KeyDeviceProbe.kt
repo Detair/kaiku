@@ -74,7 +74,9 @@ class KeyDeviceProbe @Inject constructor(
     suspend fun probe(rec: StoredKeyDevice): ServerKeyState {
         // Taken before the request leaves: the answer belongs to a question sent at this point.
         val sent = Sent(AskOrder.next())
-        return ask(rec.device.userId, rec.installId ?: deviceIds.id(), rec.device.origin, sent)
+        // Without the record's own id nothing is asked: an id the app has now may have been made later.
+        val installId = rec.installId ?: return ServerKeyState.Unknown
+        return ask(rec.device.userId, installId, rec.device.origin, sent)
     }
 
     private suspend fun ask(userId: String, installId: String, origin: String, sent: ProbeSent): ServerKeyState = try {

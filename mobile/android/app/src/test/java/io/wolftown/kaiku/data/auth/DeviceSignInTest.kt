@@ -39,6 +39,7 @@ import org.junit.Assert.assertNull
 import io.wolftown.kaiku.data.keydevice.KeyDevicePhase
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import io.wolftown.kaiku.testutil.seedAsIs
 import org.junit.Test
 import java.time.Instant
 
@@ -120,12 +121,18 @@ class DeviceSignInTest {
         assertEquals(null, store.stored!!.unanswered)
     }
 
-    @Test fun `a sign-in that worked records the install id it was made under`() = runTest {
+    /**
+     * A record that names no install id (its binding never reached storage): nothing is asked,
+     * since an id the app has now may have been made later and the server would honestly say it
+     * does not know it. The key stays.
+     */
+    @Test fun `a record without its install id asks nothing and keeps the key`() = runTest {
         val (signIn, repo) = setUp()
-        assertEquals(null, repo.record.value!!.installId)
-        assertEquals(DeviceSignInResult.Success, signIn.signIn(activity))
-        assertEquals(SigFixtures.DEVICE_ID, repo.record.value!!.installId)
-        assertEquals(SigFixtures.DEVICE_ID, store.stored!!.installId)
+        repo.seedAsIs(repo.record.value!!.copy(installId = null))
+        assertEquals(DeviceSignInResult.Failed("INSTALL_ID_LOST"), signIn.signIn(activity))
+        assertTrue(api.calls.isEmpty())
+        assertTrue(keyStore.hasKey())
+        assertEquals(KeyDevicePhase.ACTIVE, repo.phase())
     }
 
     @Test fun `device sign-in installs a full session`() = runTest {
@@ -370,5 +377,15 @@ class DeviceSignInTest {
         assertEquals(DeviceSignInResult.Failed("INSTALL_ID_LOST"), signIn.signIn(activity))
         assertEquals(KeyDevicePhase.ACTIVE, repo.phase())
         assertTrue(keyStore.hasKey())
+    }
+
+    /** The record could not be sent back (the write failed): no "different key" claim, a plain failure. */
+    @Test fun `a revert that did not happen is not reported as one`() = runTest {
+        val (signIn, repo) = setUp()
+        repo.update(repo.record.value!!) { it.copy(provisionalFrom = KeyDevicePhase.CLAIMING) }
+        api.deviceLoginFailure = apiError(400, "SIGNATURE_INVALID")
+        store.failWrites = true
+        assertEquals(DeviceSignInResult.Failed("SIGNATURE_INVALID"), signIn.signIn(activity))
+        assertEquals(KeyDevicePhase.ACTIVE, repo.phase())
     }
 }

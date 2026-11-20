@@ -40,12 +40,13 @@ class KeyAnswersTest {
         voidAfter: Instant? = null,
         codeClaim: Boolean = false,
         written: BootTime? = null,
+        installId: String? = "22222222-2222-4222-8222-222222222222",
     ): Pair<Phone, StoredKeyDevice> {
         val keyStore = SoftwareApprovalKeyStore().apply { generate(ByteArray(32), use) }
         val store = InMemoryKeyDeviceStore()
         val rec = StoredKeyDevice(
             LocalKeyDevice(if (phase == KeyDevicePhase.ACTIVE) "kd1" else null, "u1", origin, UvClass.PER_USE, "e1", secret),
-            phase, keyId = keyStore.keyId(), attemptId = "a1", claimVoidAfter = voidAfter, codeClaim = codeClaim, written = written,
+            phase, keyId = keyStore.keyId(), attemptId = "a1", claimVoidAfter = voidAfter, codeClaim = codeClaim, written = written, installId = installId,
         )
         store.stored = rec
         val repo = KeyDeviceRepository(store, keyStore, AuthState(backgroundScope), backgroundScope)
@@ -383,14 +384,14 @@ class KeyAnswersTest {
         val (p, rec) = phone(KeyDevicePhase.CLAIMING, voidAfter = until, codeClaim = false, written = boot.now())
         // 1. The server's time not past (or not said at all).
         boot.advance(Duration.ofHours(5))
-        assertEquals(KeyAnswers.Settled.Kept(Verdict.KEY_GONE, askAgainIn = Duration.ofSeconds(120)), p.answers.settle(rec, origin, probeAt(rec, until.minusSeconds(120))))
+        assertEquals(KeyAnswers.Settled.Kept(Verdict.KEY_GONE, askAgainIn = Duration.ofSeconds(120), left = Duration.ofSeconds(120)), p.answers.settle(rec, origin, probeAt(rec, until.minusSeconds(120))))
         assertEquals(KeyAnswers.Settled.Kept(Verdict.KEY_GONE), p.answers.settle(rec, origin, probeAt(rec, null)))
         // 2. The phone's running time not past, whatever the server's time says (a clock ahead).
         val (q, rec2) = phone(KeyDevicePhase.CLAIMING, voidAfter = until, codeClaim = false, written = boot.now())
         boot.advance(Duration.ofMinutes(2))
         val early = q.answers.settle(rec2, origin, probeAt(rec2, until.plus(Duration.ofDays(3))))
         // Asked again every few minutes meanwhile (a late claim is taken over at once).
-        assertEquals(KeyAnswers.Settled.Kept(Verdict.KEY_GONE, askAgainIn = KeyAnswers.ASK_AGAIN_WHILE_WAITING), early)
+        assertEquals(KeyAnswers.Settled.Kept(Verdict.KEY_GONE, askAgainIn = KeyAnswers.ASK_AGAIN_WHILE_WAITING, left = Duration.ofMinutes(23)), early)
         // 3. No probe after the proof: the proof's own probe, or one sent before it, does not count.
         boot.advance(Duration.ofMinutes(30))
         val before = probeAt(rec2, until.plusSeconds(60))
@@ -438,7 +439,7 @@ class KeyAnswersTest {
         assertEquals(t.plus(Duration.ofMinutes(20)), p.repo.record.value!!.claimVoidAfter)
         val noted = p.repo.record.value!!
         val second = p.answers.settle(noted, origin, probeAt(noted, t.plus(Duration.ofMinutes(21))))
-        assertEquals(KeyAnswers.Settled.Kept(Verdict.KEY_GONE, askAgainIn = KeyAnswers.ASK_AGAIN_WHILE_WAITING), second)
+        assertEquals(KeyAnswers.Settled.Kept(Verdict.KEY_GONE, askAgainIn = KeyAnswers.ASK_AGAIN_WHILE_WAITING, left = KeyAnswers.CLAIM_LIFE_WITH_MARGIN), second)
         assertEquals(boot.now(), p.repo.record.value!!.written)
         assertTrue(p.keyStore.hasKey())
     }
@@ -464,6 +465,44 @@ class KeyAnswersTest {
             assertFalse(p.answers.settle(provisional, origin, ask, ServerAnswer(404, "KEY_DEVICE_UNKNOWN")).forgotten)
         }
         assertTrue(p.keyStore.hasKey())
+    }
+
+    /**
+     * A code that arrived with its time: the claim is given up from the code's expiry with a margin
+     * of 2 minutes on both clocks (not the 25 minutes since the claim was sent), once a later
+     * probe still finds no key device.
+     */
+    @Test fun `a code that ran out lets go 2 minutes after its own time`() = runTest {
+        val codeExpires = Instant.parse("2026-11-20T10:05:00Z")
+        boot.elapsedMs = 0
+        val (p, base) = phone(KeyDevicePhase.CLAIMED, secret = "s", voidAfter = codeExpires.plus(KeyAnswers.CODE_MARGIN), written = boot.now())
+        // The code arrived with 5 minutes left by the server's time: 7 minutes of running time to wait.
+        val rec = base.copy(codeReceived = boot.now(), codeWait = Duration.ofMinutes(7)).also { p.repo.seedForTest(it) }
+        val serverPast = codeExpires.plus(Duration.ofMinutes(3))
+        // Server's time past, phone's not yet: kept, about 4 minutes left.
+        boot.advance(Duration.ofMinutes(3))
+        val early = p.answers.settle(rec, origin, probeAt(rec, serverPast)) as KeyAnswers.Settled.Kept
+        assertNull(early.over)
+        assertEquals(Duration.ofMinutes(4), early.left)
+        // The server's time is not past yet (1 minute after the expiry): kept.
+        boot.advance(Duration.ofMinutes(4))
+        assertNull((p.answers.settle(rec, origin, probeAt(rec, codeExpires.plusSeconds(60))) as KeyAnswers.Settled.Kept).over)
+        // Both past: the proof; a probe sent after it gives the claim up, 7 minutes after the code arrived.
+        val proof = (p.answers.settle(rec, origin, probeAt(rec, serverPast)) as KeyAnswers.Settled.Kept).over
+        assertNotNull(proof)
+        assertTrue(p.answers.settle(rec, origin, probeAt(rec, serverPast), over = proof).forgotten)
+    }
+
+    /** A key whose install id was never recorded: "no key device for this install" forgets nothing either. */
+    @Test fun `a key without its install id is never forgotten on no key device`() = runTest {
+        for (phase in listOf(KeyDevicePhase.ACTIVE, KeyDevicePhase.PENDING)) {
+            val (p, rec) = phone(phase, installId = null)
+            for (ask in listOf(Ask.DEVICE_LOGIN_CHALLENGE, Ask.DEVICE_LOGIN, Ask.KEY_DEVICE_REMOVE)) {
+                assertFalse(p.answers.settle(rec, origin, ask, ServerAnswer(404, "KEY_DEVICE_UNKNOWN")).forgotten)
+                assertFalse(p.answers.settle(rec, origin, ask, ServerAnswer(403, "KEY_DEVICE_REVOKED")).forgotten)
+            }
+            assertTrue(p.keyStore.hasKey())
+        }
     }
 
     private fun KeyDeviceRepository.seedForTest(r: StoredKeyDevice) {

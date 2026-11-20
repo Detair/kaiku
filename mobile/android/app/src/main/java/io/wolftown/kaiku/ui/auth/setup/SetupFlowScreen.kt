@@ -59,6 +59,7 @@ fun SetupFlowScreen(
 ) {
     val ui by viewModel.ui.collectAsState()
     val linkIgnored by viewModel.linkIgnored.collectAsState()
+    val linkKept by viewModel.linkKept.collectAsState()
     val waiting by viewModel.waiting.collectAsState()
     val cannotAsk by viewModel.cannotAsk.collectAsState()
     val discardable by viewModel.discardable.collectAsState()
@@ -76,7 +77,7 @@ fun SetupFlowScreen(
         return
     }
     SetupFlowSteps(
-        ui = u0, viewModel = viewModel, linkIgnored = linkIgnored, cannotAsk = cannotAsk, lastResort = lastResort,
+        ui = u0, viewModel = viewModel, linkIgnored = linkIgnored, linkKept = linkKept, cannotAsk = cannotAsk, lastResort = lastResort,
         discardable = discardable, onSignedIn = onSignedIn, onBack = onBack, onRescan = onRescan,
     )
 }
@@ -86,6 +87,7 @@ private fun SetupFlowSteps(
     ui: SetupUi,
     viewModel: SetupFlowViewModel,
     linkIgnored: Boolean,
+    linkKept: Int?,
     cannotAsk: Boolean,
     lastResort: Boolean,
     discardable: Boolean,
@@ -127,7 +129,7 @@ private fun SetupFlowSteps(
     }
 
     KeyScreen {
-        if (linkIgnored) KeyNotice(stringResource(R.string.setup_link_ignored), warning = false)
+        SetupLinkNotice(linkIgnored, linkKept)
         when (val u = ui) {
             SetupUi.Opening, SetupUi.Claiming -> Progress(stringResource(R.string.approval_checking))
             is SetupUi.ConfirmServer -> {
@@ -148,8 +150,8 @@ private fun SetupFlowSteps(
                 KeySecondaryButton(stringResource(R.string.common_cancel), onClick = viewModel::cancel)
             }
             is SetupUi.ShowCode -> SetupCode(u.code)
-            SetupUi.ClaimWaiting, SetupUi.CodeRanOut -> {
-                KeyNotice(stringResource(if (u == SetupUi.CodeRanOut) R.string.setup_code_ran_out else R.string.setup_claim_waiting), warning = false)
+            SetupUi.ClaimWaiting, is SetupUi.CodeRanOut -> {
+                KeyNotice(if (u is SetupUi.CodeRanOut) stringResource(R.string.setup_code_ran_out, u.minutes) else stringResource(R.string.setup_claim_waiting), warning = false)
                 KeyPrimaryButton(stringResource(R.string.common_try_again), onClick = viewModel::retry)
                 if (onBack != null) KeySecondaryButton(stringResource(R.string.common_back), onClick = onBack)
             }
@@ -232,6 +234,18 @@ internal fun deliverSetupLink(
         taken(link)
     } else if (!started) {
         resumeWithoutEntry()
+    }
+}
+
+/**
+ * What became of a setup link opened while this setup runs: kept for after a claim whose code ran
+ * out ([linkKept], about that many minutes), or not used ([linkIgnored]).
+ */
+@Composable
+internal fun SetupLinkNotice(linkIgnored: Boolean, linkKept: Int?) {
+    when {
+        linkKept != null -> KeyNotice(stringResource(R.string.setup_link_kept, linkKept), warning = false)
+        linkIgnored -> KeyNotice(stringResource(R.string.setup_link_ignored), warning = false)
     }
 }
 

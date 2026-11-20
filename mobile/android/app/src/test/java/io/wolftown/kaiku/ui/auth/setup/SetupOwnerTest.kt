@@ -27,6 +27,7 @@ import io.wolftown.kaiku.testutil.apiError
 import io.wolftown.kaiku.testutil.markEnrolled
 import io.wolftown.kaiku.testutil.saveClaimed
 import io.wolftown.kaiku.testutil.seed
+import io.wolftown.kaiku.testutil.seedAsIs
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -1388,7 +1389,7 @@ class SetupOwnerTest {
         assertTrue(v.ui.value is SetupUi.ShowCode)
         val stored = f.repo.record.value!!
         assertEquals(KeyDevicePhase.CLAIMED, stored.phase)
-        assertEquals(Instant.parse(enroll.claimResult.codeExpiresAt).plus(io.wolftown.kaiku.data.keydevice.KeyAnswers.CLAIM_VOID_MARGIN), stored.claimVoidAfter)
+        assertEquals(Instant.parse(enroll.claimResult.codeExpiresAt).plus(io.wolftown.kaiku.data.keydevice.KeyAnswers.CODE_MARGIN), stored.claimVoidAfter)
         assertEquals(boot.now().boot, stored.written!!.boot)
     }
 
@@ -1450,5 +1451,55 @@ class SetupOwnerTest {
 
     private companion object {
         const val ORIGIN_SETUP = "https://chat.example.com/setup"
+    }
+
+    // ── A code that ran out: the phone says how long it holds on, and keeps a new link ────────
+
+    @Test fun `a code that ran out says how long it waits, keeps a new link, and starts it afterwards`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        val codeExpires = Instant.parse(enroll.claimResult.codeExpiresAt)
+        // The server answered the claim 5 minutes before the code's expiry.
+        enroll.claimResult = enroll.claimResult.copy(serverTime = codeExpires.minusSeconds(300))
+        val (owner, f) = phone()
+        val v = SetupFlowViewModel(owner)
+        v.start(entry)
+        enroll.statuses += ClaimStatus(EnrollmentState.EXPIRED)
+        approval.failWith = noKeyDeviceAt(codeExpires.plusSeconds(180))
+        v.confirmSubject(activity)
+        runCurrent()
+        // 5 minutes of the code's life and 2 more, by the phone's running time.
+        assertEquals(SetupUi.CodeRanOut(7), v.ui.value)
+        assertTrue(f.keyStore.hasKey())
+        // A new link for the same server is kept for afterwards, and the screen says so.
+        val next = SetupEntry(SigFixtures.ORIGIN, token2, SetupEntry.Source.LINK)
+        assertFalse(owner.offer(next))
+        assertEquals(7, owner.linkKept.value)
+        assertFalse(owner.linkIgnored.value)
+        // A link for another server is not kept.
+        assertFalse(owner.offer(SetupEntry("https://other.example.org", token, SetupEntry.Source.LINK)))
+        assertEquals(7, owner.linkKept.value)
+        io.wolftown.kaiku.navigation.PendingSetupLinks.clear()
+        // The time passes; the claim is given up and says why; the kept link goes to the setup screen.
+        boot.advance(java.time.Duration.ofMinutes(7))
+        advanceTimeBy(5 * 60_000L + 6_000)
+        runCurrent()
+        advanceTimeBy(6_000)
+        runCurrent()
+        assertEquals(SetupUi.Ended(R.string.setup_code_not_confirmed, canRetry = false), v.ui.value)
+        assertFalse(f.keyStore.hasKey())
+        assertEquals(token2, io.wolftown.kaiku.navigation.PendingSetupLinks.pending.value?.tokenB64u)
+        assertNull(owner.linkKept.value)
+        io.wolftown.kaiku.navigation.PendingSetupLinks.clear()
+    }
+
+    /** A legacy waiting key device whose install id is lost: nothing can be asked; the screen names the way out. */
+    @Test fun `a waiting key device whose install id is lost names the way out`() = runTest {
+        val (owner, f) = storedSetup(KeyDevicePhase.PENDING)
+        f.repo.seedAsIs(f.repo.record.value!!.copy(installId = null, installIdLost = true))
+        val waiting = SetupPendingViewModel(owner)
+        waiting.check()
+        assertEquals(SetupUi.Ended(R.string.confirm_install_unknown, canRetry = false), waiting.ui.value)
+        assertTrue(approval.calls.isEmpty())
+        assertTrue(f.keyStore.hasKey())
     }
 }

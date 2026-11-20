@@ -94,7 +94,10 @@ class KeyStorageGate @Inject constructor(
     /** At the start of every process, before anything reads the stored session. True when readable. */
     fun start(): Boolean {
         settled = legacy.endIfLeft()
-        return !unreadable()
+        if (unreadable()) return false
+        // Here, where every process starts and before anything (push) can make an install id.
+        bindInstallId()
+        return true
     }
 
     /**

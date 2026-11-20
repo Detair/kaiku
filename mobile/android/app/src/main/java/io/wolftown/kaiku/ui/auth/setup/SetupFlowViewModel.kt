@@ -46,9 +46,10 @@ sealed interface SetupUi {
     data object ClaimWaiting : SetupUi
     /**
      * The code ran out before the server said it was confirmed. The key stays until the server's
-     * and the phone's time say a confirmation can no longer arrive; it is asked again by itself.
+     * and the phone's time say a confirmation can no longer arrive (about [minutes] more); it is
+     * asked again by itself.
      */
-    data object CodeRanOut : SetupUi
+    data class CodeRanOut(val minutes: Int) : SetupUi
     /** The UV prompt of the final sign-in was cancelled: one button to try again. */
     data object SignInPaused : SetupUi
     /** The final sign-in's prompt stayed open past its challenge: say so, one button for a fresh one. */
@@ -95,6 +96,7 @@ class SetupFlowViewModel @Inject constructor(private val owner: SetupOwner) : Vi
 
     val ui: StateFlow<SetupUi> = owner.ui
     val linkIgnored: StateFlow<Boolean> = owner.linkIgnored
+    val linkKept: StateFlow<Int?> = owner.linkKept
     val waiting: StateFlow<Boolean> = owner.waiting
     val scanReady: StateFlow<UvDecision?> = owner.scanReady
     val cannotAsk: StateFlow<Boolean> = owner.cannotAsk

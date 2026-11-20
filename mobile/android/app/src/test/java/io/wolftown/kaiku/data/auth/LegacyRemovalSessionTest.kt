@@ -237,4 +237,34 @@ class LegacyRemovalSessionTest {
         assertNull(store.stored!!.installId)
         assertTrue(store.stored!!.installIdLost)
     }
+
+    /**
+     * An older key record without its install id, and no install id kept: a background process
+     * (push registration) makes one before the first screen opens. The record never takes it, and
+     * the server's honest "no key device" for that new id costs no key.
+     */
+    @Test fun `an install id made by background work before the first screen is never taken for the key's`() = runTest {
+        store.stored = StoredKeyDevice(device, KeyDevicePhase.ACTIVE, keyId = null)
+        val keys = keyStore()
+        val repo = KeyDeviceRepository(store, keys, AuthState(backgroundScope), backgroundScope)
+        var kept: String? = null
+        val ids = object : io.wolftown.kaiku.approval.DeviceIdProvider {
+            override fun id(): String = (kept ?: "made-by-push").also { kept = it }
+            override fun storedId(): String? = kept
+        }
+        // A background process starts: the gate runs first, as in every process.
+        KeyStorageGate(repo, LegacyRemovalSession(store, tokenStorage, authApi, backgroundScope), ids).start()
+        // Then its push registration makes an id.
+        ids.id()
+        // Later the app is opened (a new process: the gate runs again).
+        KeyStorageGate(repo, LegacyRemovalSession(store, tokenStorage, authApi, backgroundScope), ids).start()
+        val rec = repo.record.value!!
+        assertTrue(rec.installIdLost)
+        assertNull(rec.installId)
+        // "No key device" for whatever id is asked about keeps the key.
+        val answers = io.wolftown.kaiku.data.keydevice.KeyAnswers(repo)
+        val settled = answers.settle(rec, "https://chat.example.com", io.wolftown.kaiku.data.keydevice.Ask.DEVICE_LOGIN, io.wolftown.kaiku.data.keydevice.ServerAnswer(404, "KEY_DEVICE_UNKNOWN"))
+        assertFalse(settled.forgotten)
+        assertTrue(keys.hasKey())
+    }
 }

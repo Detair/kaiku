@@ -41,6 +41,7 @@ fun SetupPendingScreen(
     val ui by viewModel.ui.collectAsState()
     // A setup link opened while this setup waits was not used; the screen says so wherever it is shown.
     val linkIgnored by viewModel.linkIgnored.collectAsState()
+    val linkKept by viewModel.linkKept.collectAsState()
     val cannotAsk by viewModel.cannotAsk.collectAsState()
     val discardable by viewModel.discardable.collectAsState()
     val lastResort by viewModel.lastResort.collectAsState()
@@ -86,14 +87,15 @@ fun SetupPendingScreen(
         }
     }
     KeyScreen {
-        if (linkIgnored) KeyNotice(stringResource(R.string.setup_link_ignored), warning = false)
+        SetupLinkNotice(linkIgnored, linkKept)
         when (ui) {
             SetupUi.Opening, SetupUi.Resume -> {
                 CircularProgressIndicator()
                 KeyBody(stringResource(R.string.setup_checking))
             }
-            SetupUi.ClaimWaiting, SetupUi.CodeRanOut -> {
-                KeyNotice(stringResource(if (ui == SetupUi.CodeRanOut) R.string.setup_code_ran_out else R.string.setup_claim_waiting), warning = false)
+            SetupUi.ClaimWaiting, is SetupUi.CodeRanOut -> {
+                val u = ui
+                KeyNotice(if (u is SetupUi.CodeRanOut) stringResource(R.string.setup_code_ran_out, u.minutes) else stringResource(R.string.setup_claim_waiting), warning = false)
                 KeyPrimaryButton(stringResource(R.string.common_try_again), onClick = viewModel::check)
             }
             else -> SetupStatus(ui = ui, onSignIn = { activity?.let(viewModel::signIn) }, onRetry = viewModel::check, onBack = onEnded)

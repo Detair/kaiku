@@ -28,6 +28,7 @@ class KeyDeviceFixture(scope: CoroutineScope, uv: UvResult? = null, active: Bool
             stored = StoredKeyDevice(
                 LocalKeyDevice("kd1", SigFixtures.USER_ID, SigFixtures.ORIGIN, UvClass.PER_USE, "e1", null, "Alice"),
                 KeyDevicePhase.ACTIVE,
+                installId = SigFixtures.DEVICE_ID,
             )
         }
     }

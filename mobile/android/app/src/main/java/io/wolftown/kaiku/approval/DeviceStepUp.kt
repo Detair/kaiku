@@ -72,12 +72,14 @@ class DeviceStepUp @Inject constructor(
         val rec = keyDevices.record.value
         val local = rec?.device
         if (local == null || keyDevices.current() !is KeyDeviceState.Active) return StepUpOutcome.NotKeyDevice
+        // The install id the key device was enrolled under; without it nothing is asked.
+        val installId = rec.installId ?: return StepUpOutcome.Failed("INSTALL_ID_LOST")
         return try {
             val session = authApi.getMe().session ?: return StepUpOutcome.ProbationSession
             if (session.assurance != "full") return StepUpOutcome.ProbationSession
             val ch = approvalApi.stepUp(action.wire, target)
             val verified = try {
-                signer.check(ch, SigKind.DEVICE_STEPUP, local.userId, rec.installId ?: deviceIds.id())
+                signer.check(ch, SigKind.DEVICE_STEPUP, local.userId, installId)
             } catch (e: ChallengeRejected) {
                 return StepUpOutcome.Failed("CHALLENGE_${e.reason}")
             }
@@ -90,7 +92,7 @@ class DeviceStepUp @Inject constructor(
             val label = ctx.targetLabel
             val subtitle = if (takesLabel) activity.getString(res, label) else activity.getString(res)
             val out = signer.sign(
-                activity, ch, SigKind.DEVICE_STEPUP, local.userId, rec.installId ?: deviceIds.id(), Decision.APPROVE, ByteArray(0),
+                activity, ch, SigKind.DEVICE_STEPUP, local.userId, installId, Decision.APPROVE, ByteArray(0),
                 UvPrompt(R.string.security_uv_title, subtitle),
                 rec.keyId,
             )

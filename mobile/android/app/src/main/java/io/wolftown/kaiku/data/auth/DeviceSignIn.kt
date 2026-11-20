@@ -94,9 +94,10 @@ class DeviceSignIn @Inject constructor(
             ?: return DeviceSignInResult.Failed("OTHER_SERVER")
         // Captured before anything is sent: a logout, a server change or another session meanwhile
         // means the answer is not installed (and is ended on the server).
+        // The install id the key device was enrolled under, whatever id the app has now; without
+        // it nothing is asked (an id the app has now may have been made later).
+        val deviceId = rec.installId ?: return DeviceSignInResult.Failed("INSTALL_ID_LOST")
         val start = authRepository.beginDeviceSignIn(local.origin) ?: return DeviceSignInResult.Failed("OTHER_SERVER")
-        // The install id the key device was enrolled under, whatever id the app has now.
-        val deviceId = rec.installId ?: deviceIds.id()
         var ask = Ask.DEVICE_LOGIN_CHALLENGE
         return try {
             val ch = approvalApi.deviceLoginChallenge(local.userId, deviceId, origin)
@@ -176,8 +177,9 @@ class DeviceSignIn @Inject constructor(
             // record goes back to the unfinished setup it was, and never takes that word again.
             val from = rec.provisionalFrom
             if (from != null && (settled.verdict == Verdict.KEY_GONE || e.normalizedCode == "SIGNATURE_INVALID")) {
-                keyDevices.replace(rec, rec.copy(phase = from, provisionalFrom = null, notThisKey = true))
-                return DeviceSignInResult.Failed("NOT_THIS_KEY")
+                // Only said once the record really went back (it may have changed meanwhile).
+                val back = keyDevices.update(rec) { it.copy(phase = from, provisionalFrom = null, notThisKey = true) }
+                return if (back.done) DeviceSignInResult.Failed("NOT_THIS_KEY") else DeviceSignInResult.Failed(e.normalizedCode ?: "HTTP_${e.status.value}")
             }
             // "No key device for this install" for a key whose install id is not known: kept.
             if (settled.verdict == Verdict.KEY_GONE && rec.installIdLost) return DeviceSignInResult.Failed("INSTALL_ID_LOST")

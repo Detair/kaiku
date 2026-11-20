@@ -327,6 +327,15 @@ class KeyDeviceRepository @Inject constructor(
         // A person's decision ends only a setup that can never finish: a claim that needs a code and
         // never got its answer. Never a record whose code was shown, a waiting or an active key.
         if (why == Forget.DISCARDED_BY_PERSON && !(now.phase == KeyDevicePhase.CLAIMING && now.codeClaim)) return Change.Mismatch
+        // The decision was made on [expected]: it forgets only a record that is the same in
+        // everything such a decision rests on, not merely the same record.
+        if ((
+                now.provisionalFrom != expected.provisionalFrom || now.notThisKey != expected.notThisKey ||
+                    now.installIdLost != expected.installIdLost || now.installId != expected.installId
+                )
+        ) {
+            return Change.Mismatch
+        }
         if (!store.clear()) return Change.WriteFailed
         set(KeyStorage.Absent)
         logger.info("Key device forgotten: $why")

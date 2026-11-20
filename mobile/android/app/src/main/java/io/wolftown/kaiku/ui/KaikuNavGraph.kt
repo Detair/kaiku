@@ -96,8 +96,8 @@ fun KaikuNavGraph(
     }
 
     // While signed out the phone's entry decides at every route: a lapsed key device confirms
-    // with its screen lock (L2-A11), a stored setup that has not finished keeps its waiting screen
-    // (L2-A13) whatever led away from it (Back, a redirect, a link).
+    // with its screen lock, a stored setup that has not finished keeps its waiting screen whatever
+    // led away from it (Back, a redirect, a link).
     LaunchedEffect(isLoggedIn, entry, currentRoute) {
         if (!isLoggedIn) {
             signedOutRedirect(entry, currentRoute)?.let { navController.navigate(it) { popUpTo(0) { inclusive = true } } }

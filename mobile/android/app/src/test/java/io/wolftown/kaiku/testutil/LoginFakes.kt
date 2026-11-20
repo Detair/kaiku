@@ -65,9 +65,14 @@ class InMemoryKeyDeviceStore : KeyDeviceStore {
 /**
  * Test seam: puts the phone into the state [record] (what an install in that state has stored),
  * whatever was stored before, and lets the repository read it. A record without a key id takes
- * the key in the alias, as a record of an earlier version does.
+ * the key in the alias, as a record of an earlier version does. A record that names no install id
+ * (and is not marked as having lost it) is given the fixture's one, as every record written by this
+ * version is; [seedAsIs] stores a record of an earlier version exactly as given.
  */
-fun KeyDeviceRepository.seed(record: StoredKeyDevice?) {
+fun KeyDeviceRepository.seed(record: StoredKeyDevice?) =
+    seedAsIs(record?.let { if (it.installId == null && !it.installIdLost) it.copy(installId = SigFixtures.DEVICE_ID) else it })
+
+fun KeyDeviceRepository.seedAsIs(record: StoredKeyDevice?) {
     val f = KeyDeviceRepository::class.java.getDeclaredField("store").apply { isAccessible = true }
     (f.get(this) as InMemoryKeyDeviceStore).stored = record
     reload()

@@ -144,4 +144,30 @@ class RegisterViewModelTest {
         advanceUntilIdle()
         io.mockk.coVerify(exactly = 2) { authRepository.register(any(), any(), any(), any(), any()) }
     }
+
+    /**
+     * A ticket is kept only for the server it was issued by: after the address changed, "Create
+     * account" registers anew on the new server and the old ticket is never sent there.
+     */
+    @Test
+    fun `a kept ticket is not used for another server`() = runTest {
+        var configured = "https://chat.example.com"
+        val tokens: TokenStorage = mockk { every { getServerUrl() } answers { configured } }
+        val vm = RegisterViewModel(authRepository, enrollmentApi, tokens, Registrations())
+        coEvery { authRepository.register("anna", "pw", null, null, any()) } returnsMany listOf(
+            Result.success(RegistrationTicket("u1", "anna", "2026-11-03T12:30:00Z", "ticket-a")),
+            Result.success(RegistrationTicket("u2", "anna", "2026-11-03T12:30:00Z", "ticket-b")),
+        )
+        coEvery { enrollmentApi.issueWithTicket(any(), any()) } throws java.io.IOException("offline")
+        vm.onUsernameChanged("anna")
+        vm.onPasswordChanged("pw")
+        vm.onRegisterClicked()
+        advanceUntilIdle()
+        configured = "https://other.example.org"
+        vm.onRegisterClicked()
+        advanceUntilIdle()
+        coVerify(exactly = 1) { authRepository.register("anna", "pw", null, null, "https://other.example.org") }
+        coVerify(exactly = 0) { enrollmentApi.issueWithTicket("ticket-a", "https://other.example.org") }
+        coVerify { enrollmentApi.issueWithTicket("ticket-b", "https://other.example.org") }
+    }
 }

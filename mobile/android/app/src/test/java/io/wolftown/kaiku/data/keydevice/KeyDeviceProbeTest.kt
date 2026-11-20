@@ -98,10 +98,11 @@ class KeyDeviceProbeTest {
         assertEquals(SigFixtures.ORIGIN, api.deviceLoginOrigin)
     }
 
-    @Test fun `a record from before it named its install id is asked about with the app's id`() = runTest {
+    /** Without the record's own install id nothing is asked: an id the app has now may have been made later. */
+    @Test fun `a record without its install id is not asked about`() = runTest {
         api.failWith = apiError(404, "KEY_DEVICE_UNKNOWN")
-        probe.probe(rec.copy(installId = null))
-        assertEquals(listOf("deviceLoginChallenge:${SigFixtures.USER_ID}:${SigFixtures.DEVICE_ID}"), api.calls)
+        assertEquals(ServerKeyState.Unknown, probe.probe(rec.copy(installId = null)))
+        assertTrue(api.calls.isEmpty())
     }
 
     @Test fun `every 'no key device' of the probe says when its question was sent`() = runTest {

@@ -113,10 +113,10 @@ class AuthFlowTest {
     @Test
     fun `register returns the ticket and installs no session`() = runTest {
         coEvery {
-            authApi.register("newuser", "pass", null, null)
+            authApi.register("newuser", "pass", null, null, any())
         } returns io.wolftown.kaiku.domain.model.RegistrationTicket("u", "newuser", "2026-11-03T12:30:00Z", "ticket")
 
-        val result = authRepository.register("newuser", "pass", null, null)
+        val result = authRepository.register("newuser", "pass", null, null, "https://chat.example.com")
 
         assertEquals("ticket", result.getOrThrow().ticket)
         verify(exactly = 0) { tokenStorage.saveTokens(any(), any(), any(), any()) }

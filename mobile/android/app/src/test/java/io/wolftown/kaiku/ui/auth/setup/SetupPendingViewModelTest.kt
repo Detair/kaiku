@@ -243,12 +243,12 @@ class SetupPendingViewModelTest {
         approval.failWith = noKeyDeviceAt(Instant.parse("2026-11-04T12:00:00Z"))
         val v = pendingVm(repo)
         v.check()
-        assertEquals(SetupUi.CodeRanOut, v.ui.value)
+        assertTrue(v.ui.value is SetupUi.CodeRanOut)
         assertEquals(KeyDevicePhase.CLAIMED, repo.phase())
         assertTrue(f.keyStore.hasKey())
         // Said again: still nothing forgotten.
         v.check()
-        assertEquals(SetupUi.CodeRanOut, v.ui.value)
+        assertTrue(v.ui.value is SetupUi.CodeRanOut)
         assertTrue(f.keyStore.hasKey())
         // The confirmation did commit: the key device is there now.
         approval.failWith = null
@@ -276,12 +276,12 @@ class SetupPendingViewModelTest {
         approval.failWith = noKeyDeviceAt(Instant.parse("2026-11-04T13:00:00Z"))
         val v = pendingVm(repo)
         v.check()
-        assertEquals(SetupUi.CodeRanOut, v.ui.value)
+        assertTrue(v.ui.value is SetupUi.CodeRanOut)
         assertTrue(f.keyStore.hasKey())
         // Asked again a few minutes later: the phone's running time is still not past.
         advanceTimeBy(5 * 60_000L + 6_000)
         runCurrent()
-        assertEquals(SetupUi.CodeRanOut, v.ui.value)
+        assertTrue(v.ui.value is SetupUi.CodeRanOut)
         assertTrue(f.keyStore.hasKey())
         // The phone's running time passes too: the next probe finds both over, keeps the key, and
         // one more probe sent after that confirms.
@@ -291,7 +291,8 @@ class SetupPendingViewModelTest {
         assertTrue(f.keyStore.hasKey())
         advanceTimeBy(6_000)
         runCurrent()
-        assertEquals(SetupUi.Ended(R.string.setup_cancelled, canRetry = false), v.ui.value)
+        // The code ran out unconfirmed: that is what the screen says.
+        assertEquals(SetupUi.Ended(R.string.setup_code_not_confirmed, canRetry = false), v.ui.value)
         assertFalse(f.keyStore.hasKey())
     }
 

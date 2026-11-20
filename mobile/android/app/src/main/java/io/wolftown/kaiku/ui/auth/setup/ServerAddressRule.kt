@@ -29,6 +29,19 @@ class ServerAddressRule internal constructor(
         registrations: io.wolftown.kaiku.ui.auth.Registrations,
     ) : this(keyDevices, originPin::pinned, { setupOwner.get().holdsAttempt() }, registrations::running)
 
-    fun mayChange(): Boolean =
-        !keyDevices.unreadable() && keyDevices.record.value == null && pinned() == null && !setupHolds() && !registering()
+    /** Why the address may not change now; null when it may. */
+    enum class Refusal {
+        /** A key, a setup, a session or what the phone saved about its key ties the app to its server. */
+        TIED,
+        /** A registration is on its way. */
+        REGISTRATION,
+    }
+
+    fun refusal(): Refusal? = when {
+        keyDevices.unreadable() || keyDevices.record.value != null || pinned() != null || setupHolds() -> Refusal.TIED
+        registering() -> Refusal.REGISTRATION
+        else -> null
+    }
+
+    fun mayChange(): Boolean = refusal() == null
 }

@@ -11,7 +11,7 @@ import javax.inject.Inject
  * may still make, such a key a key device.
  *
  * Even for that one case this is the person's decision, not a server answer, and the last step:
- * it is offered only when the claim's own time is long past by the phone's clock and the server
+ * it is offered only when the claim's own time is long past by the phone's running time and the server
  * has stayed silent for long ([ServerSilence.lasting]: several separate occasions over at least a
  * day, never a single failed request), and the screen asks before it happens.
  */

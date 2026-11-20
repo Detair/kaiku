@@ -692,9 +692,11 @@ with a listed code, an unknown code, an unreadable body) keeps the key.
 Taken together, the phone forgets a key or a record only in these cases: (1) the five refusals of
 the claim; (2) the claim check's new challenge for this enrolment and key (the earlier claim can no
 longer land); (3) the lost-claim rule below; (4) a stored `cancelled` or `failed` of the enrolment;
-(5) an unfinished claim once its time is over by the server's and the phone's measure and a later
+(5) an unfinished claim once its time is over by the server's and the phone's measure (for a code
+that ran out: its expiry plus 2 minutes on both clocks) and a later
 probe still finds no key device; (6) "no key device" or "removed" for an active or pending key device
-(not one that took the probe's word only provisionally, not one whose install id is lost); (7) the
+(not one that took the probe's word only provisionally, not one whose install id is lost or was
+never recorded); (7) the
 answer to its own removal; (8) Android invalidated the key; (9) the person discarded a setup that can
 never finish.
 
@@ -722,14 +724,20 @@ opened while such a claim is stored starts by itself once the claim is given up.
 Otherwise (without the link, after a restart, for a code that ran out, or for an enrolment the server
 no longer knows) only the probe is left, and "no key device" or "not known" is never final by itself.
 An unfinished claim is given up on it only when all three hold: the server's own time (the answer's
-`Date`) is past the claim's time with a margin of 10 minutes (the claim challenge's expiry, or the
-code's expiry once a code was received); the phone's running time since the claim was recorded is
-past the longest life of a claim with that margin (25 minutes; measured with the phone's running time
-and its boot count, so setting the clock changes nothing and a restart of the phone counts from its
-new start, never shortening it); and a probe sent after both were found still says "no key device".
-Until then the key stays, the screen says what is going on ("The setup code has run out …" for a code
-that ran out), and the phone asks again by itself ("Try again" asks at once): a confirmation that was
-stored late is taken over. The probe identifies account and install, not the key: "active" or
+`Date`) is past the claim's time with its margin; the phone's running time is past the same span
+(measured with the phone's running time and its boot count, so setting the clock changes nothing and a
+restart of the phone counts from its new start, never shortening it); and a probe sent after both
+were found still says "no key device". For a code that arrived with the server's time, the span is the
+code's own: its expiry plus 2 minutes on the server's clock, and its remaining life when it arrived
+plus 2 minutes on the phone's running time (the 2 minutes cover a confirmation that passed the
+server's expiry check just in time and is stored late). For a claim without an answer, and for one
+whose code came without the server's time, it stays the claim's longest life: the challenge's expiry
+plus 10 minutes, and 25 minutes since the claim was recorded. Until then the key stays, the screen
+says what is going on ("The setup code has run out. Kaiku keeps this phone's key for about N more min
+…" for a code that ran out), and the phone asks again by itself ("Try again" asks at once): a
+confirmation that was stored late is taken over. A setup link for the same server opened meanwhile is
+kept (the newest, in memory) and started once the earlier setup has ended; a code given up this way
+ends with "The setup code was not confirmed in time. Ask for a new setup code." The probe identifies account and install, not the key: "active" or
 "pending" from it is taken only provisionally, until a signature of this key was accepted by the
 device-key sign-in; if the server refuses that signature, the record goes back to the claim it was and
 never takes that word again. There is no public route to ask whether a given public key is the one

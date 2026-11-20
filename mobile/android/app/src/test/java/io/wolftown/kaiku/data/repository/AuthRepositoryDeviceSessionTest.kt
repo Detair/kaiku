@@ -117,8 +117,26 @@ class AuthRepositoryDeviceSessionTest {
         val start = repository.beginDeviceSignIn(origin)
 
         assertNotNull(start)
-        assertEquals(origin, serverUrl)
         assertEquals(origin, start!!.serverUrl)
+        // The app's address follows the key only once its signature was accepted and the session installed.
+        assertNull(serverUrl)
+        coEvery { authApi.authenticatedGetMe("device-access", origin) } returns alice
+        assertTrue(repository.installDeviceSession(auth, "u1", start).isSuccess)
+        assertEquals(origin, serverUrl)
+    }
+
+    /**
+     * A sign-in whose signature is refused (a key the server does not hold for this phone) leaves
+     * the app's address as it was: the sign-in form later still points at the server it pointed at.
+     */
+    @Test fun `a sign-in that never installs leaves the app's address as it was`() = runTest {
+        serverUrl = "https://typed.example.net"
+        val start = repository.beginDeviceSignIn(origin)
+        assertNotNull(start)
+        assertEquals(origin, start!!.serverUrl)
+        // The signature is refused: nothing is installed, nothing written.
+        assertEquals("https://typed.example.net", serverUrl)
+        verify(exactly = 0) { tokenStorage.saveServerUrl(any()) }
     }
 
     @Test fun `a running session on another server refuses the device sign-in`() = runTest {

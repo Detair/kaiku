@@ -65,7 +65,9 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import java.time.Duration
 import java.time.Instant
+import io.wolftown.kaiku.navigation.PendingSetupLinks
 import java.util.Base64
 import java.util.UUID
 import java.util.logging.Logger
@@ -74,7 +76,7 @@ import javax.inject.Singleton
 import kotlin.coroutines.cancellation.CancellationException
 
 /**
- * The one setup of this phone, for the whole app (SM2 on the new phone, F5a/F5c, L2-A1, L2-A13):
+ * The one setup of this phone, for the whole app (SM2 on the new phone, F5a/F5c):
  * origin check, open (shows the server name to an unconfigured app), suitability, K_approve with
  * the enrolment nonce as attestation challenge, PoP challenge, the subject question, the signed
  * claim, the code, the status long-poll, then device-key sign-in (full) or the 24-hour wait; and,
@@ -264,6 +266,12 @@ class SetupOwner internal constructor(
      * starts once that claim is given up. In memory only, and gone when the setup is cleared.
      */
     private var nextLink: SetupEntry? = null
+    /**
+     * A link for the same server that was opened while a claim whose code ran out waits for its
+     * time ([SetupUi.CodeRanOut]): the newest one, in memory only. It is started once that claim
+     * is given up ([PendingSetupLinks]), and dropped if the claim finishes after all.
+     */
+    private var keptLink: SetupEntry? = null
     /** The stored unfinished setup whose server could not be asked just now (see [discard]). */
     private var stuckOn: StoredKeyDevice? = null
     private var running: Step? = null
@@ -286,6 +294,10 @@ class SetupOwner internal constructor(
     private val _linkIgnored = MutableStateFlow(false)
     /** A setup link arrived while this setup was running and was not used (the screen says so). */
     val linkIgnored: StateFlow<Boolean> = _linkIgnored.asStateFlow()
+
+    private val _linkKept = MutableStateFlow<Int?>(null)
+    /** A link was kept for after the claim whose code ran out ([keptLink]): about this many minutes. */
+    val linkKept: StateFlow<Int?> = _linkKept.asStateFlow()
 
     private val _cannotAsk = MutableStateFlow(false)
     /** The stored setup's server could not be asked just now; the screen names what is left to do. */
@@ -375,6 +387,8 @@ class SetupOwner internal constructor(
         // The link of a claim without an answer is kept only while that claim is the stored record.
         if (claimKeeper?.rec?.let { it.phase == KeyDevicePhase.CLAIMING && it sameAs keyDevices.record.value } != true) claimKeeper = null
         nextLink = null
+        // A link kept behind a claim whose code ran out stays while that claim is the stored record.
+        if (keyDevices.record.value?.phase != KeyDevicePhase.CLAIMED) dropKeptLink()
         asking()
         handed = false
         _waiting.value = false
@@ -393,6 +407,7 @@ class SetupOwner internal constructor(
      * with it first and starts this link only if the claim is given up ([nextLink]).
      */
     fun offer(e: SetupEntry, waiting: SetupEntry? = null): Boolean {
+        if (keepForLater(e)) return false
         if (held()) {
             if (!e.sameCodeAs(attempt?.entry)) _linkIgnored.value = true
             return false
@@ -473,6 +488,7 @@ class SetupOwner internal constructor(
         val wasHeld = held()
         handed = true
         _startedFlow.value = true
+        if (keepForLater(e)) return
         if (wasHeld) {
             if (!e.sameCodeAs(attempt?.entry)) _linkIgnored.value = true
             return
@@ -490,6 +506,31 @@ class SetupOwner internal constructor(
             return
         }
         begin(e, o)
+    }
+
+    /**
+     * A claim whose code ran out waits for its time ([SetupUi.CodeRanOut]): a link for the same
+     * server is kept (the newest one) and started once that claim is given up. True when kept.
+     */
+    private fun keepForLater(e: SetupEntry): Boolean {
+        val now = _ui.value as? SetupUi.CodeRanOut ?: return false
+        val rec = keyDevices.record.value?.takeIf { it.phase == KeyDevicePhase.CLAIMED } ?: return false
+        if (KaikuPayloads.canonicalOrigin(e.origin) != originOf(rec)) return false
+        keptLink = e
+        _linkKept.value = now.minutes
+        return true
+    }
+
+    private fun dropKeptLink() {
+        keptLink = null
+        _linkKept.value = null
+    }
+
+    /** Shows that a claim's code ran out, with about how many minutes the phone still holds on. */
+    private suspend fun showRanOut(a: Attempt?, left: java.time.Duration?) {
+        val minutes = left?.let { ((it.seconds + 59) / 60).toInt().coerceAtLeast(1) } ?: 1
+        show(a, SetupUi.CodeRanOut(minutes))
+        if (keptLink != null) _linkKept.value = minutes
     }
 
     /** A new attempt for an accepted link (from [start], or the same link looked at again). */
@@ -604,7 +645,7 @@ class SetupOwner internal constructor(
     }
 
     /**
-     * The setup screen was restored without its setup code (L2-A1; the code never goes into
+     * The setup screen was restored without its setup code (the code never goes into
      * saved state): a stored setup continues on the waiting screen, which reconciles it with the
      * server; a finished one goes on; otherwise the person scans (or opens) the code again.
      */
@@ -623,7 +664,7 @@ class SetupOwner internal constructor(
     }
 
     /**
-     * The waiting screen opens (L2-A13: a setup that waits 24 h, a claim whose code was not
+     * The waiting screen opens (a setup that waits 24 h, a claim whose code was not
      * confirmed before the app closed, or a claim whose answer never arrived). The state lives in
      * [KeyDeviceRepository]; [check] asks the server. A setup this object already shows stays.
      */
@@ -670,11 +711,11 @@ class SetupOwner internal constructor(
         ) return
         // A check that is under way is left alone, except while it only waits to ask again: then
         // "Try again" (and coming back to the app) asks at once.
-        if (checkJob?.isActive == true && now != SetupUi.ClaimWaiting && now != SetupUi.CodeRanOut) return
+        if (checkJob?.isActive == true && now != SetupUi.ClaimWaiting && now !is SetupUi.CodeRanOut) return
         val a = attempt ?: makerOf(rec)?.also { attempt = it }
         // The waiting screen shows no setup steps: a link noted earlier does not start from here.
         nextLink = null
-        if (now == SetupUi.Resume || now is SetupUi.Ended || now == SetupUi.ClaimWaiting || now == SetupUi.CodeRanOut) _ui.value = storedUi()
+        if (now == SetupUi.Resume || now is SetupUi.Ended || now == SetupUi.ClaimWaiting || now is SetupUi.CodeRanOut) _ui.value = storedUi()
         checkJob = step(a) {
             when {
                 rec.phase == KeyDevicePhase.CLAIMED && rec.device.claimSecret != null -> awaitCode(a, rec)
@@ -939,7 +980,11 @@ class SetupOwner internal constructor(
                 device = rec.device.copy(claimSecret = res.claimSecret),
                 phase = KeyDevicePhase.CLAIMED,
                 // The code's own time, with the margin: until then a confirmation may still arrive.
-                claimVoidAfter = codeExpires.plus(KeyAnswers.CLAIM_VOID_MARGIN),
+                claimVoidAfter = codeExpires.plus(KeyAnswers.CODE_MARGIN),
+                // The same span by the phone's running time, from now: the code's remaining life by
+                // the server's own time (when it said it), and the margin.
+                codeReceived = res.serverTime?.let { boot.now() },
+                codeWait = res.serverTime?.let { Duration.between(it, codeExpires).coerceAtLeast(Duration.ZERO).plus(KeyAnswers.CODE_MARGIN) },
             )
             // The code is shown only once storage says it was received. A stored `CLAIMING` therefore
             // always means: no code of this claim was ever on this phone's screen, in this run of
@@ -1071,6 +1116,10 @@ class SetupOwner internal constructor(
         while (true) {
             // What is stored now (times noted meanwhile), as long as it is still this record.
             rec = keyDevices.record.value?.takeIf { it sameAs rec } ?: rec
+            // Without the install id it was enrolled under nothing can be asked about this key.
+            if (rec.installIdLost || rec.installId == null) {
+                return show(a, SetupUi.Ended(R.string.confirm_install_unknown, canRetry = false))
+            }
             val st = probe.probe(rec)
             live(a)
             when (st) {
@@ -1095,6 +1144,14 @@ class SetupOwner internal constructor(
                         nextLink?.let { return startFresh(it) }
                         // Given up because its enrolment is claimed and made no key device here: a new code is needed.
                         if (taken != null) return show(a, SetupUi.Ended(R.string.setup_already_used, canRetry = false))
+                        if (rec.phase == KeyDevicePhase.CLAIMED && about == null) {
+                            // The code ran out unconfirmed; a link opened meanwhile starts now.
+                            val next = keptLink
+                            dropKeptLink()
+                            show(a, SetupUi.Ended(R.string.setup_code_not_confirmed, canRetry = false))
+                            next?.let(PendingSetupLinks::post)
+                            return
+                        }
                         return show(a, about?.let(::setupErrorFor) ?: SetupUi.Ended(overText(rec), canRetry = false))
                     }
                     // The server answered; it is there.
@@ -1106,7 +1163,7 @@ class SetupOwner internal constructor(
                         return show(a, SetupUi.Ended(R.string.setup_claim_unsure, canRetry = true))
                     }
                     kept.over?.let { over = it }
-                    show(a, if (rec.phase == KeyDevicePhase.CLAIMED) SetupUi.CodeRanOut else SetupUi.ClaimWaiting)
+                    if (rec.phase == KeyDevicePhase.CLAIMED) showRanOut(a, kept.left) else show(a, SetupUi.ClaimWaiting)
                     delay(again.toMillis() + ASK_AGAIN_SLACK_MS)
                     live(a)
                 }
@@ -1218,7 +1275,7 @@ class SetupOwner internal constructor(
                 // and the key-device probe goes on asking; a late confirmation is taken over.
                 EnrollmentState.EXPIRED -> {
                     answers.settle(start, originOf(start), Ask.ENROLMENT_STATUS, ServerAnswer(200, state = s.state.wire), askedEnrolment = enrolment)
-                    show(a, SetupUi.CodeRanOut)
+                    showRanOut(a, answers.ownWaitLeft(keyDevices.record.value?.takeIf { it sameAs start } ?: start))
                     return askKeyDevice(a, start, null, null)
                 }
                 else -> null
@@ -1262,6 +1319,8 @@ class SetupOwner internal constructor(
         }
         if (next !is Change.Done) return notRecorded(a, next)
         a?.rec = next.record
+        // The setup finished after all: a link kept for after it is not needed.
+        dropKeptLink()
         show(a, SetupUi.SigningIn)
     }
 

@@ -250,7 +250,7 @@ class ServerUrlViewModelTest {
             .first { it.isDirectory }
         val screen = java.io.File(root, "ui/auth/ServerUrlScreen.kt").readText()
             .substringAfter("class ServerUrlViewModel").substringBefore("@Composable")
-        assertEquals(2, Regex("""serverAddress\.mayChange\(\)""").findAll(screen).count())
+        assertEquals(2, Regex("""serverAddress\.refusal\(\)""").findAll(screen).count())
         for (own in listOf("record.value", "unreadable()", "pinned()", "holdsAttempt()")) assertFalse(own, screen.contains(own))
         for (f in listOf("ui/auth/setup/SetupOwner.kt", "ui/auth/setup/SetupFlowViewModel.kt", "ui/auth/RegisterScreen.kt")) {
             val src = java.io.File(root, f).readText()
@@ -292,7 +292,7 @@ class ServerUrlViewModelTest {
         viewModel.onUrlChanged("other.example.org")
         viewModel.onConnectClicked()
         advanceUntilIdle()
-        assertEquals(R.string.auth_server_tied_to_key, viewModel.uiState.value.error)
+        assertEquals(R.string.auth_server_registration_running, viewModel.uiState.value.error)
         verify(exactly = 0) { tokenStorage.saveServerUrl(any()) }
     }
 }

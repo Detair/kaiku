@@ -374,7 +374,7 @@ class AuthRepository @Inject constructor(
         email: String?,
         displayName: String?,
         /** The server the registration is made on; its ticket belongs to it alone. */
-        origin: String? = null,
+        origin: String,
     ): Result<RegistrationTicket> {
         signedInRefusal()?.let { return Result.failure(it.exceptionOrNull()!!) }
         return try {
@@ -505,20 +505,20 @@ class AuthRepository @Inject constructor(
      * [installDeviceSession] checks again before it installs anything. The key
      * ties the app to its server (B.1, coordinator call 6): without a running
      * session the app's server becomes the key's (a reset session store loses the
-     * saved server, the key's metadata survives); with a session on another
-     * server the sign-in is refused (null).
+     * saved server, the key's metadata survives), but only once the key's signature
+     * was accepted and its session is installed ([installDeviceSession]); with a
+     * session on another server the sign-in is refused (null).
      */
     fun beginDeviceSignIn(keyOrigin: String): DeviceSignInStart? = synchronized(pendingLock) {
         val session = authState.session.value
-        if (tokenStorage.getServerUrl()?.let(KaikuPayloads::canonicalOrigin) != keyOrigin) {
-            if (session is AuthSession.LoggedIn) return null
-            tokenStorage.saveServerUrl(keyOrigin)
-        }
-        val serverUrl = tokenStorage.getServerUrl() ?: return null
+        val saved = tokenStorage.getServerUrl()
+        val sameServer = saved?.let(KaikuPayloads::canonicalOrigin) == keyOrigin
+        if (!sameServer && session is AuthSession.LoggedIn) return null
+        val serverUrl = if (sameServer) saved!! else keyOrigin
         // A sign-in of its own: an older sign-in still in flight can no longer install or
         // clear anything, and two overlapping device sign-ins never both install.
         pendingPasswordChange = null
-        DeviceSignInStart(++loginAttempt, serverUrl, session)
+        DeviceSignInStart(++loginAttempt, serverUrl, session, addressBefore = saved)
     }
 
     /**
@@ -560,10 +560,12 @@ class AuthRepository @Inject constructor(
             var replacedAccess: String? = null
             val installed = synchronized(pendingLock) {
                 val unchanged = loginAttempt == start.attempt &&
-                    tokenStorage.getServerUrl() == serverUrl &&
+                    tokenStorage.getServerUrl() == start.addressBefore &&
                     authState.session.value == start.session &&
                     stillThisKey()
                 if (unchanged) {
+                    // The key's signature was accepted: only now does the app's address follow the key.
+                    if (start.addressBefore != serverUrl) tokenStorage.saveServerUrl(serverUrl)
                     if (running != null) replacedAccess = tokenStorage.getAccessToken()
                     tokenStorage.saveTokens(auth.accessToken, auth.refreshToken, auth.expiresIn, user.id)
                     authState.setLoggedIn(user.id)
@@ -610,6 +612,8 @@ class DeviceSignInStart internal constructor(
     internal val attempt: Long,
     val serverUrl: String,
     internal val session: AuthSession,
+    /** The app's saved server address when the sign-in started; it changes only at the install. */
+    internal val addressBefore: String? = serverUrl,
 ) {
     override fun toString(): String = "DeviceSignInStart(serverUrl=$serverUrl)"
 }

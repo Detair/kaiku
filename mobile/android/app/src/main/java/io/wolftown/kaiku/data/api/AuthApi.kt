@@ -27,8 +27,8 @@ interface AuthApi {
         password: String,
         email: String? = null,
         displayName: String? = null,
-        /** The server the registration is made on (absolute); null: the configured one. */
-        origin: String? = null,
+        /** The server the registration is made on (absolute). */
+        origin: String,
     ): RegistrationTicket
     suspend fun refresh(refreshToken: String): AuthResponse
     /**
@@ -106,7 +106,7 @@ class AuthApiImpl @Inject constructor(
         password: String,
         email: String?,
         displayName: String?,
-        origin: String?,
+        origin: String,
     ): RegistrationTicket {
         // Pre-session: no stored bearer, no refresh on a 401; the error keeps its fields
         // (`Retry-After`, `PASSWORD_REJECTED {reason}`).

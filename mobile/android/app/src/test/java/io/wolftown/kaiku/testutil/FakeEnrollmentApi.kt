@@ -83,13 +83,13 @@ class FakeEnrollmentApi {
             return enrollment ?: Enrollment(id, "own", EnrollmentState.ISSUED, subject)
         }
         override suspend fun cancel(id: String) { calls += "cancel:$id" }
-        override suspend fun open(setupToken: String, origin: String?): EnrollmentOpen {
+        override suspend fun open(setupToken: String, origin: String): EnrollmentOpen {
             openStarts++
             openGate?.await()
             calls += "open"; lastOrigin = origin; origins += origin; openTokens += setupToken
             return EnrollmentOpen(serverName, SigFixtures.b64u(nonce), "2026-11-03T12:10:00Z")
         }
-        override suspend fun popChallenge(setupToken: String, deviceId: String, publicKeyB64u: String, origin: String?): PopChallenge {
+        override suspend fun popChallenge(setupToken: String, deviceId: String, publicKeyB64u: String, origin: String): PopChallenge {
             popGate?.await()
             calls += "popChallenge"; origins += origin
             popCalls++
@@ -97,13 +97,13 @@ class FakeEnrollmentApi {
             if (popAnswers.isNotEmpty()) popAnswers.removeFirst().let { if (it !== GIVEN) throw it }
             return PopChallenge(popChallengeFor(publicKeyB64u), subject)
         }
-        override suspend fun claim(req: EnrollmentClaim, ticket: String?, origin: String?): ClaimResult {
+        override suspend fun claim(req: EnrollmentClaim, ticket: String?, origin: String): ClaimResult {
             claimGate?.await()
             calls += "claim"; lastClaim = req; lastTicket = ticket; origins += origin
             claimFailure?.let { throw it }
             return claimResult
         }
-        override suspend fun status(enrollmentId: String, claimSecret: String, waitSeconds: Int, origin: String?): ClaimStatus {
+        override suspend fun status(enrollmentId: String, claimSecret: String, waitSeconds: Int, origin: String): ClaimStatus {
             statusGate?.await()
             calls += "status"; origins += origin
             statusIds += enrollmentId

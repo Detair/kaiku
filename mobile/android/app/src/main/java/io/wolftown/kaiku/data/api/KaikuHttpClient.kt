@@ -204,6 +204,9 @@ class KaikuHttpClient @Inject constructor(
                 return@intercept originalCall
             }
             request.headers[HttpHeaders.Authorization] = "Bearer $newToken"
+            // A 401 says the request was not processed: a request that is sent once goes out
+            // again as a new request, under a new mark.
+            if (request.headers.contains(OneShotRequests.HEADER)) request.headers[OneShotRequests.HEADER] = java.util.UUID.randomUUID().toString()
             val retryCall = execute(request)
             // The retry is terminal too: a C4 refusal ends the session, no further retry.
             handledPasswordChangeRequired(retryCall.response, generationAtRequest, serverUrlAtRequest)

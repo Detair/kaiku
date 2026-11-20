@@ -96,7 +96,6 @@ class MainActivity : FragmentActivity() {
             setContent { KeyStorageUnreadable(onRetry = { if (keyStorage.retry()) recreate() }) }
             return
         }
-        keyStorage.bindInstallId()
         authState.initialize(tokenStorage)
         // Message wakes kept while the key storage could not be read go to the account signed in now.
         wakeDeferral.release(wakeEnqueuer::enqueue)
@@ -211,8 +210,8 @@ class MainActivity : FragmentActivity() {
 
     /**
      * The initial navigation destination: the phone's entry ([io.wolftown.kaiku.data.keydevice.appEntry]).
-     * A key device outlives its session and signs in again with its screen lock (L2-A11); a stored
-     * setup that has not finished resumes its wait (L2-A13); without a saved server the sign-in
+     * A key device outlives its session and signs in again with its screen lock; a stored setup
+     * that has not finished resumes its wait; without a saved server the sign-in
      * starts on the built-in default one, and only a build without a default asks for the address.
      */
     private fun resolveStartDestination(): String {

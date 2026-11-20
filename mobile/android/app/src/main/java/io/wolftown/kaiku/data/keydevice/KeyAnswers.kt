@@ -143,6 +143,8 @@ class KeyAnswers @Inject constructor(
             val taken: ClaimTaken? = null,
             /** The claim's time is over by both measures; pass it with the answer of a probe asked afterwards. */
             val over: TimeOver? = null,
+            /** How long until an unfinished claim may be given up, as far as known now (both measures). */
+            val left: Duration? = null,
         ) : Settled
         data class Forgotten(override val verdict: Verdict) : Settled
 
@@ -161,6 +163,13 @@ class KeyAnswers @Inject constructor(
          * (10 min): by the phone's running time since the claim was recorded.
          */
         val CLAIM_LIFE_WITH_MARGIN: Duration = Duration.ofMinutes(25)
+
+        /**
+         * For a claim whose code arrived and whose time the server stated: the margin after the
+         * code's expiry, on the server's clock and on the phone's running time. It covers a
+         * confirmation that passed the server's expiry check just in time and is stored late.
+         */
+        val CODE_MARGIN: Duration = Duration.ofMinutes(2)
 
         /** While only the phone's own time is left to pass, the probe is asked again at least this often. */
         val ASK_AGAIN_WHILE_WAITING: Duration = Duration.ofMinutes(5)
@@ -257,8 +266,9 @@ class KeyAnswers @Inject constructor(
             taken is TakenFor && taken.about sameAs expected && sent != null && sent.isAfter(taken.at)
         return when (v) {
             Verdict.KEY_GONE -> when {
-                // "No key device for this install" says nothing about a key whose install id is not known.
-                expected.installIdLost -> Settled.Kept(v)
+                // "No key device for this install" says nothing about a key whose install id is not
+                // known: lost, or never recorded (an id the app has now may have been made later).
+                expected.installIdLost || expected.installId == null -> Settled.Kept(v)
                 phase == KeyDevicePhase.ACTIVE || phase == KeyDevicePhase.PENDING || claimLost -> drop(expected, v)
                 unfinished && sent != null -> afterItsTime(expected, answer.serverTime, v, over, sent)
                 else -> Settled.Kept(v)
@@ -278,8 +288,12 @@ class KeyAnswers @Inject constructor(
     /**
      * An unfinished claim (`CLAIMING`, or `CLAIMED` whose code ran out) about which only the
      * key-device probe is left to ask: "no key device" forgets it only when all three hold:
-     * 1. the server's own time ([serverTime], its `Date`) is past the claim's time with its margin;
-     * 2. the phone's running time since the claim was recorded is past [CLAIM_LIFE_WITH_MARGIN];
+     * 1. the server's own time ([serverTime], its `Date`) is past the claim's time with its margin
+     *    ([StoredKeyDevice.claimVoidAfter]: for a code that arrived with its time, the code's
+     *    expiry plus [CODE_MARGIN]; otherwise the challenge's expiry plus [CLAIM_VOID_MARGIN]);
+     * 2. the phone's running time is past the same span: since the code arrived, the code's
+     *    remaining life then plus [CODE_MARGIN] ([StoredKeyDevice.codeWait]); otherwise, since the
+     *    claim was recorded, [CLAIM_LIFE_WITH_MARGIN];
      * 3. this probe was sent after 1 and 2 were found ([over], made by an earlier call here).
      * Until then the key stays and the probe is asked again. A record without its time gets one
      * from this answer, one without its running time gets it now; both count from there.
@@ -295,10 +309,16 @@ class KeyAnswers @Inject constructor(
         }
         val serverLeft = if (now.isAfter(until)) Duration.ZERO else Duration.between(now, until)
         val ownLeft = ownTimeLeft(expected) ?: return Settled.Kept(v)
-        if (serverLeft.isZero && ownLeft.isZero) return Settled.Kept(v, askAgainIn = Duration.ZERO, over = OverFor(expected, AskOrder.next()))
+        if (serverLeft.isZero && ownLeft.isZero) {
+            return Settled.Kept(v, askAgainIn = Duration.ZERO, over = OverFor(expected, AskOrder.next()), left = Duration.ZERO)
+        }
         // Asked again when the server's time is over, and then every few minutes while the
         // phone's own time runs: a claim that completed late is taken over as soon as it shows.
-        return Settled.Kept(v, askAgainIn = if (!serverLeft.isZero) serverLeft else minOf(ownLeft, ASK_AGAIN_WHILE_WAITING))
+        return Settled.Kept(
+            v,
+            askAgainIn = if (!serverLeft.isZero) serverLeft else minOf(ownLeft, ASK_AGAIN_WHILE_WAITING),
+            left = maxOf(serverLeft, ownLeft),
+        )
     }
 
     /**
@@ -307,11 +327,31 @@ class KeyAnswers @Inject constructor(
      * is noted now and has the whole span left (null when the note did not reach storage).
      */
     private fun ownTimeLeft(expected: StoredKeyDevice): Duration? {
+        codeTimeLeft(expected)?.let { return it }
         val written = expected.written
             ?: return if (keyDevices.update(expected) { it.copy(written = boot.now()) }.done) CLAIM_LIFE_WITH_MARGIN else null
         val passed = boot.since(written)
         return if (passed >= CLAIM_LIFE_WITH_MARGIN) Duration.ZERO else CLAIM_LIFE_WITH_MARGIN.minus(passed)
     }
+
+    /**
+     * A claim whose code arrived with its time: how much of [StoredKeyDevice.codeWait] is still
+     * left by the phone's running time since the code arrived; null for any other record.
+     */
+    private fun codeTimeLeft(expected: StoredKeyDevice): Duration? {
+        if (expected.phase != KeyDevicePhase.CLAIMED) return null
+        val received = expected.codeReceived ?: return null
+        val wait = expected.codeWait ?: return null
+        val passed = boot.since(received)
+        return if (passed >= wait) Duration.ZERO else wait.minus(passed)
+    }
+
+    /**
+     * About how long until an unfinished claim may be given up, by the phone's running time alone
+     * (the server's time is known only from an answer); null when nothing is known yet.
+     */
+    fun ownWaitLeft(record: StoredKeyDevice): Duration? = codeTimeLeft(record)
+        ?: record.written?.let { w -> CLAIM_LIFE_WITH_MARGIN.minus(boot.since(w)).coerceAtLeast(Duration.ZERO) }
 
     private fun drop(expected: StoredKeyDevice, v: Verdict): Settled =
         if (keyDevices.forget(expected, Forget.SERVER_ANSWER).done) Settled.Forgotten(v) else Settled.Kept(v)
