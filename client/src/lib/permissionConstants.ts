@@ -385,17 +385,48 @@ export function getPermissionsByCategory(
   return PERMISSIONS.filter((p) => p.category === category);
 }
 
+// Permission masks are u64 on the server and arrive as JS numbers. The
+// bitwise operators of JS work on 32 bits only, so the helpers below split a
+// mask into a high and a low 32-bit half; bits up to 52 are kept exactly.
+const TWO_32 = 2 ** 32;
+
+function maskOp(
+  a: number,
+  b: number,
+  op: (x: number, y: number) => number,
+): number {
+  const high = op(Math.floor(a / TWO_32) >>> 0, Math.floor(b / TWO_32) >>> 0);
+  const low = op(a >>> 0, b >>> 0);
+  return (high >>> 0) * TWO_32 + (low >>> 0);
+}
+
+const and = (a: number, b: number) => maskOp(a, b, (x, y) => x & y);
+const or = (a: number, b: number) => maskOp(a, b, (x, y) => x | y);
+const andNot = (a: number, b: number) => maskOp(a, b, (x, y) => x & ~y);
+
 // Permission helper functions
 export function hasPermission(permissions: number, bit: number): boolean {
-  return (permissions & bit) === bit;
+  return and(permissions, bit) === bit;
 }
 
 export function addPermission(permissions: number, bit: number): number {
-  return permissions | bit;
+  return or(permissions, bit);
 }
 
 export function removePermission(permissions: number, bit: number): number {
-  return permissions & ~bit;
+  return andNot(permissions, bit);
+}
+
+/**
+ * The mask an editor saves: the bits it shows come from `edited`, every other
+ * bit stays as stored. `(stored & ~shown) | (edited & shown)`.
+ */
+export function mergeShownBits(
+  stored: number,
+  shown: number,
+  edited: number,
+): number {
+  return or(andNot(stored, shown), and(edited, shown));
 }
 
 export function togglePermission(permissions: number, bit: number): number {

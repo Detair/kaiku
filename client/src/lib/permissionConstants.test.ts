@@ -7,7 +7,11 @@ import {
   EVERYONE_FORBIDDEN,
   PERMISSIONS,
   PermissionBits,
+  addPermission,
+  hasPermission,
   isValidForEveryone,
+  mergeShownBits,
+  removePermission,
 } from "./permissionConstants";
 
 describe("channel override permission constants", () => {
@@ -109,5 +113,31 @@ describe("permission bits stay inside 32-bit integer math", () => {
       expect(bit, name).toBeGreaterThan(0);
       expect(bit, name).toBeLessThanOrEqual(1 << 30);
     }
+  });
+});
+
+describe("permission mask helpers keep bits above 31", () => {
+  const high = 2 ** 40;
+
+  it("adds and removes one bit without touching the others", () => {
+    const stored = high + PermissionBits.SCREEN_SHARE;
+    expect(addPermission(stored, PermissionBits.SEND_MESSAGES)).toBe(
+      stored + PermissionBits.SEND_MESSAGES,
+    );
+    expect(removePermission(stored, PermissionBits.SCREEN_SHARE)).toBe(high);
+    expect(hasPermission(stored, high)).toBe(true);
+    expect(hasPermission(stored, PermissionBits.SEND_MESSAGES)).toBe(false);
+  });
+
+  it("replaces only the shown bits of a mask", () => {
+    const shown = PermissionBits.SEND_MESSAGES | PermissionBits.VIEW_CHANNEL;
+    const stored = high + PermissionBits.SCREEN_SHARE + PermissionBits.SEND_MESSAGES;
+    expect(mergeShownBits(stored, shown, PermissionBits.VIEW_CHANNEL)).toBe(
+      high + PermissionBits.SCREEN_SHARE + PermissionBits.VIEW_CHANNEL,
+    );
+  });
+
+  it("ignores edited bits that are not shown", () => {
+    expect(mergeShownBits(0, PermissionBits.SEND_MESSAGES, PermissionBits.MANAGE_GUILD)).toBe(0);
   });
 });

@@ -26,6 +26,7 @@ import {
   CATEGORY_NAMES,
   PermissionCategory,
   hasPermission,
+  mergeShownBits,
 } from "@/lib/permissionConstants";
 import type { ChannelOverride } from "@/lib/types";
 import { reportFailure } from "@/components/guilds/settingsAction";
@@ -115,13 +116,21 @@ const ChannelPermissions: Component<ChannelPermissionsProps> = (props) => {
 
     setIsSaving(true);
     try {
-      let allow = 0;
-      let deny = 0;
-      for (const [bitStr, state] of Object.entries(localOverrides())) {
-        const bit = parseInt(bitStr);
-        if (state === "allow") allow |= bit;
-        if (state === "deny") deny |= bit;
+      // Only the bits this editor shows change; every other stored bit
+      // (unlisted or hidden permissions) is sent back unchanged.
+      let shown = 0;
+      let editedAllow = 0;
+      let editedDeny = 0;
+      for (const perm of CHANNEL_OVERRIDE_PERMISSIONS) {
+        if (!isPermissionVisible(perm.key)) continue;
+        shown |= perm.bit;
+        const state = localOverrides()[perm.bit];
+        if (state === "allow") editedAllow |= perm.bit;
+        if (state === "deny") editedDeny |= perm.bit;
       }
+      const stored = getOverride(roleId);
+      const allow = mergeShownBits(stored?.allow_permissions ?? 0, shown, editedAllow);
+      const deny = mergeShownBits(stored?.deny_permissions ?? 0, shown, editedDeny);
       await setChannelOverride(props.channelId, roleId, { allow, deny });
       setEditingRoleId(null);
     } catch (err) {
