@@ -72,9 +72,8 @@
 //! 1. **One writer.** Whether the stream is allowed is written in one place, the revalidation
 //!    (`apply`), from a read of the committed rows: live full session, system-admin role, an active
 //!    elevation of this session, not banned. Revalidations are serialised, so answers are applied
-//!    in the order they were read. `admin_subscribe` ([`SocketAccess::subscribe_admin`]) reads and
-//!    decides nothing itself: it records the request and answers from what a revalidation wrote —
-//!    the decision in hand, or the one it asks for.
+//!    in the order they were read. `admin_subscribe` ([`SocketAccess::subscribe_admin`]) decides
+//!    nothing itself: it records the request and answers it as (6) says.
 //! 2. **An answer counts only if it is the newest.** It is applied only if the user epoch is
 //!    unchanged and nothing invalidated the admin scope since the read was planned
 //!    (`admin_invalidations`, counted for this scope alone: an admin frame taken, an
@@ -92,14 +91,18 @@
 //!    for a stream that is not requested), so asking again does not start from nothing.
 //! 5. **A refused socket is told nothing.** A read that fails drops the frame and makes the scope
 //!    failing; the recovery asks for a resync only if it finds the stream allowed.
-//! 6. **Asking costs a bounded number of reads.** An `admin_subscribe` on a scope that is a current
-//!    "no" is answered from that decision: no read, for as long as the user epoch stands. One that
-//!    would read a current "yes" again (for a fresh answer; frames are read anyway) does so at most
-//!    once per [`ADMIN_SUBSCRIBE_COOLDOWN`] and socket, and meanwhile is answered from the decision
-//!    in hand, or "not decided yet" if there is none. The reads it asks for run in a pool of their
-//!    own ([`ADMIN_SUBSCRIBE_CONCURRENCY`]) and never take one of the permits other revalidations
-//!    wait for; it waits a bounded time for that pool and otherwise leaves the request to the
-//!    socket's own revalidation, like any scope that is not current.
+//! 6. **The answer is the socket's own, and asking costs a bounded number of reads.** The answer to
+//!    `admin_subscribe` depends on the user epoch, this socket's earlier answers and the result of
+//!    a read the request itself asked for — never on what a frame's read wrote. A refusal stands
+//!    for its user epoch: asking again is answered without a read. A request that would read a
+//!    "yes" again (for a fresh answer; frames are read anyway) does so at most once per
+//!    [`ADMIN_SUBSCRIBE_COOLDOWN`] and socket; meanwhile the socket's earlier answer at the same
+//!    user epoch stands, and without one it is "not decided yet". So within the cooldown an
+//!    elevation that ran out keeps its earlier "yes": nothing is written on it, every frame is read
+//!    on its own. The reads it asks for run in a pool of their own
+//!    ([`ADMIN_SUBSCRIBE_CONCURRENCY`]) and never take one of the permits other revalidations wait
+//!    for; it waits a bounded time for that pool and otherwise leaves the request to the socket's
+//!    own revalidation, like any scope that is not current.
 //!
 //! # Revalidation cost
 //!
@@ -219,8 +222,9 @@ const ADMIN_SUBSCRIBE_WAIT: Duration = Duration::from_secs(1);
 /// How soon after an `admin_subscribe` had the admin stream read, the next
 /// one on the same socket may do so again.
 ///
-/// Until then it is answered from the decision in hand (every admin frame
-/// is read on its own anyway), or "not decided yet" if there is none.
+/// Until then it is answered as the socket was answered before at the same
+/// user epoch (every admin frame is read on its own anyway), or "not
+/// decided yet" without such an answer.
 pub const ADMIN_SUBSCRIBE_COOLDOWN: Duration = Duration::from_secs(10);
 
 /// The pool the reads of one socket's `admin_subscribe` run in.
@@ -843,6 +847,11 @@ impl VoiceScope {
 /// changes whether it is requested (see the module docs, The admin stream).
 /// The decision is kept while the stream is not requested: nothing is read
 /// or written for it then, and a new request starts from it.
+///
+/// `reply` is not a decision: it is what this socket's last
+/// `admin_subscribe` was answered, written by
+/// [`SocketAccess::subscribe_admin`] only, and the one thing besides the
+/// user epoch and a read of its own that the next answer depends on.
 struct AdminScope {
     requested: bool,
     seen: u64,
@@ -854,18 +863,22 @@ struct AdminScope {
     /// When an `admin_subscribe` last asked for this scope to be read
     /// ([`ADMIN_SUBSCRIBE_COOLDOWN`]).
     read_asked: Option<Instant>,
+    /// The last `admin_subscribe`'s answer, and the user epoch it holds
+    /// for.
+    reply: Option<(u64, AdminSubscription)>,
 }
 
 /// What an `admin_subscribe` needs ([`SocketAccess::request_admin`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AdminRequest {
-    /// Answered from the decision in hand.
-    Answered(bool),
+    /// Answered as this socket was answered before, at the same user
+    /// epoch: a refusal, or within the cooldown an earlier answer.
+    Answered(AdminSubscription),
     /// A read: an answer planned at or after this invalidation count
     /// answers it.
     Read(u64),
     /// Not decided, and no read now (cooldown, or the socket is in
-    /// backoff): the socket's revalidation decides.
+    /// backoff).
     Later,
 }
 
@@ -1767,20 +1780,22 @@ impl SocketAccess {
 
     /// The client asked for the admin stream (`admin_subscribe`).
     ///
-    /// Records the request and answers from what a revalidation wrote; it
-    /// reads and decides nothing itself. The request stays whatever the
-    /// answer (like a refused `subscribe`): a later elevation restores
+    /// Records the request and answers it; it decides nothing itself (the
+    /// revalidation writes the decision). The answer depends on the user
+    /// epoch, this socket's earlier answers and a read this request asks
+    /// for, never on what a frame's read wrote. The request stays whatever
+    /// the answer (like a refused `subscribe`): a later elevation restores
     /// delivery.
     ///
     /// What it costs is bounded (see the module docs, The admin stream): a
-    /// current "no" answers at once; otherwise a read planned after the
-    /// request answers it, at most one such read per socket and
-    /// [`ADMIN_SUBSCRIBE_COOLDOWN`], in a pool of its own.
+    /// refusal at the current user epoch answers at once; otherwise a read
+    /// planned after the request answers it, at most one such read per
+    /// socket and [`ADMIN_SUBSCRIBE_COOLDOWN`], in a pool of its own.
     pub async fn subscribe_admin(&self) -> AdminSubscription {
+        let epoch = self.user_epoch.load(Ordering::SeqCst);
         let asked = match self.request_admin() {
-            AdminRequest::Answered(true) => return AdminSubscription::Allowed,
-            AdminRequest::Answered(false) => return AdminSubscription::Refused,
-            AdminRequest::Later => return AdminSubscription::Undecided,
+            AdminRequest::Answered(reply) => return reply,
+            AdminRequest::Later => return self.reply_admin(epoch, AdminSubscription::Undecided),
             AdminRequest::Read(asked) => asked,
         };
         for _ in 0..DECISION_REVALIDATIONS {
@@ -1796,8 +1811,8 @@ impl SocketAccess {
             #[cfg(test)]
             self.seam().await;
             match self.admin_answer(asked) {
-                Some(true) => return AdminSubscription::Allowed,
-                Some(false) => return AdminSubscription::Refused,
+                Some((at, true)) => return self.reply_admin(at, AdminSubscription::Allowed),
+                Some((at, false)) => return self.reply_admin(at, AdminSubscription::Refused),
                 None => {}
             }
             // Failed or in backoff: the socket's retry decides.
@@ -1806,17 +1821,27 @@ impl SocketAccess {
             }
         }
         self.attention.notify_one();
-        AdminSubscription::Undecided
+        self.reply_admin(epoch, AdminSubscription::Undecided)
+    }
+
+    /// Remember `reply` as this socket's answer at user epoch `epoch` (the
+    /// one place that writes it) and return it.
+    fn reply_admin(&self, epoch: u64, reply: AdminSubscription) -> AdminSubscription {
+        if let Some(admin) = self.lock().admin.as_mut() {
+            admin.reply = Some((epoch, reply));
+        }
+        reply
     }
 
     /// Record the request for the admin stream and say what answers it.
     ///
-    /// A current "no" does (it stands for its user epoch), and within the
-    /// cooldown a current "yes" does. Otherwise the scope is to be read:
-    /// not now while the cooldown or a backoff runs (the socket's
-    /// revalidation settles it), else by a read asked for here — the scope
-    /// is invalidated, so that an answer planned earlier does not count (a
-    /// failing scope stays failing, drops kept).
+    /// The socket's own earlier answer at the current user epoch does if it
+    /// was a refusal (it stands for its epoch), or within the cooldown.
+    /// Otherwise the scope is to be read: not now while the cooldown or a
+    /// backoff runs ("not decided yet"), else by a read asked for here —
+    /// the scope is invalidated, so that an answer planned earlier does not
+    /// count (a failing scope stays failing, drops kept). What frames'
+    /// reads settled is not looked at.
     fn request_admin(&self) -> AdminRequest {
         let mut inner = self.lock();
         let now = Instant::now();
@@ -1829,14 +1854,23 @@ impl SocketAccess {
             allowed: false,
             decided: 0,
             read_asked: None,
+            reply: None,
         });
         admin.requested = true;
-        let current = admin.state.phase(admin.seen == epoch) == Phase::Current;
         let cooling = admin
             .read_asked
             .is_some_and(|at| now < at + ADMIN_SUBSCRIBE_COOLDOWN);
-        if current && (cooling || !admin.allowed) {
-            return AdminRequest::Answered(admin.allowed);
+        // Only this socket's own answers count here, never what a frame's
+        // read wrote: a refusal stands for its user epoch, and within the
+        // cooldown so does an earlier "yes".
+        match admin.reply.filter(|(at, _)| *at == epoch).map(|(_, r)| r) {
+            Some(AdminSubscription::Refused) => {
+                return AdminRequest::Answered(AdminSubscription::Refused);
+            }
+            Some(AdminSubscription::Allowed) if cooling => {
+                return AdminRequest::Answered(AdminSubscription::Allowed);
+            }
+            _ => {}
         }
         if cooling || backing_off {
             drop(inner);
@@ -1848,14 +1882,14 @@ impl SocketAccess {
     }
 
     /// What a revalidation planned at or after `asked` wrote for the admin
-    /// stream (`None`: none has yet).
-    fn admin_answer(&self, asked: u64) -> Option<bool> {
+    /// stream, and the user epoch it was read at (`None`: none has yet).
+    fn admin_answer(&self, asked: u64) -> Option<(u64, bool)> {
         let inner = self.lock();
         inner
             .admin
             .as_ref()
             .filter(|admin| admin.decided >= asked)
-            .map(|admin| admin.allowed)
+            .map(|admin| (admin.seen, admin.allowed))
     }
 
     /// The client unsubscribed from admin events: the stream is no longer
@@ -2937,6 +2971,19 @@ mod tests {
         }
     }
 
+    /// What the socket's last `admin_subscribe` was answered, if that was
+    /// at the current user epoch.
+    fn standing_reply(access: &SocketAccess) -> Option<AdminSubscription> {
+        let epoch = access.user_epoch.load(Ordering::SeqCst);
+        let inner = access.lock();
+        inner
+            .admin
+            .as_ref()
+            .and_then(|admin| admin.reply)
+            .filter(|(at, _)| *at == epoch)
+            .map(|(_, reply)| reply)
+    }
+
     /// `Some(allowed)` if the admin scope is current.
     fn admin_decision(access: &SocketAccess) -> Option<bool> {
         let inner = access.lock();
@@ -3492,12 +3539,12 @@ mod tests {
         assert_eq!(crate::ws::test_hooks::access_reads(u), (0, 0));
     }
 
-    /// What asking costs. Nothing while the socket is a current "no",
-    /// however often the client asks and also after an unsubscribe; for a
-    /// "yes", one read per cooldown, and in between the decision in hand
-    /// answers (nothing is written on it: every frame is read on its own).
-    /// A new user epoch, or the periodic re-check, makes the next request
-    /// read again.
+    /// What asking costs. Nothing while the socket's answer is a refusal at
+    /// the current user epoch, however often the client asks, also after an
+    /// unsubscribe and the periodic re-check; for a "yes", one read per
+    /// cooldown, and in between the earlier answer stands (nothing is
+    /// written on it: every frame is read on its own). A new user epoch
+    /// makes the next request read again.
     #[tokio::test(start_paused = true)]
     async fn an_admin_subscribe_reads_only_when_it_must() {
         let reads = |u: Uuid| crate::ws::test_hooks::access_reads(u).0;
@@ -3523,8 +3570,10 @@ mod tests {
         assert_eq!(ask(access.clone()).await, AdminSubscription::Allowed);
         assert_eq!(reads(u), 1);
 
-        // Allowed: within the cooldown the decision in hand answers, also
-        // across an unsubscribe, and also when the rows no longer agree.
+        // Allowed: within the cooldown the socket's earlier answer stands,
+        // also across an unsubscribe, also when the rows no longer agree,
+        // and also once a frame's own read found that (the frame is not
+        // written; the answer is the socket's own).
         for _ in 0..3 {
             assert_eq!(ask(access.clone()).await, AdminSubscription::Allowed);
         }
@@ -3533,9 +3582,19 @@ mod tests {
         install(&access, &[], false, None);
         assert_eq!(ask(access.clone()).await, AdminSubscription::Allowed);
         assert_eq!(reads(u), 1, "read again within the cooldown");
-        // Nothing is written on that answer: the frame is read.
-        assert!(!access.admit_admin().await);
-        assert_eq!(reads(u), 2);
+        // A frame's read, made here step by step: waiting for a permit of
+        // the other revalidations could let the paused clock run past the
+        // cooldown.
+        assert!(access.admin_frame_taken());
+        let Planned::Run(plan) = access.plan() else {
+            panic!("nothing planned");
+        };
+        access.apply(&plan, admin_found(false));
+        assert_eq!(admin_decision(&access), Some(false));
+        assert_eq!(ask(access.clone()).await, AdminSubscription::Allowed);
+        assert_eq!(reads(u), 1);
+        // After the cooldown the next request reads, and reports it.
+        cooled_down().await;
         assert_eq!(ask(access.clone()).await, AdminSubscription::Refused);
         assert_eq!(reads(u), 2);
 
@@ -3563,8 +3622,9 @@ mod tests {
         assert_eq!(reads(u), 1);
 
         // The periodic re-check invalidates the decision of a stream that
-        // is not requested as well (and does not read it): the next
-        // request reads.
+        // is not requested as well (and does not read it); the socket's
+        // refusal still stands for its user epoch: the next request does
+        // not read.
         let u = Uuid::new_v4();
         let access = admin_socket(u, false).await;
         crate::ws::test_hooks::count_access_reads(u);
@@ -3577,7 +3637,7 @@ mod tests {
         access.apply(&plan, all_found(&[]));
         cooled_down().await;
         assert_eq!(ask(access.clone()).await, AdminSubscription::Refused);
-        assert_eq!(reads(u), 1);
+        assert_eq!(reads(u), 0);
     }
 
     /// The reads an `admin_subscribe` asks for run in a pool of their own:
@@ -3714,13 +3774,16 @@ mod tests {
                 None,
                 "resubscribed={resubscribed}: an answer older than the frame was applied"
             );
-            assert_eq!(access.admin_answer(asked), None);
+            assert_eq!(access.admin_answer(asked).map(|(_, allowed)| allowed), None);
             drop(gate);
             assert!(!frame.await, "written on a read older than the frame");
             assert_eq!(admin_decision(&access), Some(false));
             // The frame's read began after the request was recorded: it is
             // the subscribe's answer too.
-            assert_eq!(access.admin_answer(asked), Some(false));
+            assert_eq!(
+                access.admin_answer(asked).map(|(_, allowed)| allowed),
+                Some(false)
+            );
             assert_eq!(crate::ws::test_hooks::access_reads(u).0, 1);
         }
     }
@@ -3742,7 +3805,10 @@ mod tests {
         install(&access, &[], false, None);
         // One read, planned after both, answers both.
         assert!(!access.decide_admin().await);
-        assert_eq!(access.admin_answer(asked), Some(false));
+        assert_eq!(
+            access.admin_answer(asked).map(|(_, allowed)| allowed),
+            Some(false)
+        );
         assert_eq!(crate::ws::test_hooks::access_reads(u).0, 1);
 
         // Frame 2 meets a current "no".
@@ -3829,7 +3895,7 @@ mod tests {
         // ...and the answer counts for the admin stream.
         access.apply(&plan, admin_found(true));
         assert_eq!(
-            access.admin_answer(asked),
+            access.admin_answer(asked).map(|(_, allowed)| allowed),
             Some(true),
             "a new DM made the admin read not count"
         );
@@ -3886,15 +3952,18 @@ mod tests {
         tokio::pin!(frame);
         assert!(futures::poll!(&mut frame).is_pending());
         access.apply(&first, admin_found(true));
-        assert_eq!(access.admin_answer(asked), None);
+        assert_eq!(access.admin_answer(asked).map(|(_, allowed)| allowed), None);
         drop(gate);
         // ...the frame's read does, for both.
         assert!(frame.await);
-        assert_eq!(access.admin_answer(asked), Some(true));
+        assert_eq!(
+            access.admin_answer(asked).map(|(_, allowed)| allowed),
+            Some(true)
+        );
         // The next frame is taken before the subscribe has looked.
         assert!(access.admin_frame_taken());
         assert_eq!(
-            access.admin_answer(asked),
+            access.admin_answer(asked).map(|(_, allowed)| allowed),
             Some(true),
             "the next frame took the subscribe's answer away"
         );
@@ -3979,6 +4048,44 @@ mod tests {
         tokio::time::advance(RETRY_MAX + Duration::from_millis(1)).await;
         assert!(access.admit_admin().await);
         assert!(access.take_resync());
+    }
+
+    /// The answer to a repeated `admin_subscribe` is the socket's own: it
+    /// depends on the user epoch, this socket's earlier answers and a read
+    /// the subscribe asks for, never on whether an admin frame was decided
+    /// in between. For a refused user whose epoch moved (a role of their
+    /// own) and for an admin whose elevation ran out, within the cooldown.
+    #[tokio::test(start_paused = true)]
+    async fn the_answer_to_admin_subscribe_is_the_sockets_own() {
+        for elevated in [false, true] {
+            let mut answers = Vec::new();
+            for frame in [false, true] {
+                let u = Uuid::new_v4();
+                let access = admin_socket(u, elevated).await;
+                install(&access, &[], false, None);
+                if !elevated {
+                    // A change of the user's own that leaves them refused.
+                    registry().bump_user(u);
+                }
+                if frame {
+                    // An admin frame taken and decided by its own read,
+                    // step by step (waiting for a permit of the other
+                    // revalidations could let the paused clock run past the
+                    // cooldown).
+                    assert!(access.admin_frame_taken());
+                    let Planned::Run(plan) = access.plan() else {
+                        panic!("nothing planned");
+                    };
+                    access.apply(&plan, admin_found(false));
+                    assert_eq!(admin_decision(&access), Some(false));
+                }
+                answers.push(access.subscribe_admin().await);
+            }
+            assert_eq!(
+                answers[0], answers[1],
+                "elevated={elevated}: an admin frame changed the answer"
+            );
+        }
     }
 
     fn voice_peer(u: Uuid, g: Uuid) -> OwnedVoicePeer {
@@ -4195,8 +4302,9 @@ mod tests {
         answered: u64,
         answer: AdminSubscription,
         /// What has to answer it at once, without a read, if anything: the
-        /// decision in hand (a current "no"; within the cooldown a current
-        /// "yes"), or within the cooldown without one "not decided yet".
+        /// socket's own earlier answer at the current user epoch (a refusal;
+        /// within the cooldown also a "yes"), or within the cooldown without
+        /// one "not decided yet".
         at_once: Option<AdminSubscription>,
     }
 
@@ -4479,10 +4587,10 @@ mod tests {
             if let Some((_, again)) = trace.borrow_mut().withdrawn.as_mut() {
                 *again = Some(at);
             }
-            let at_once = match admin_decision(&access) {
-                Some(false) => Some(AdminSubscription::Refused),
-                Some(true) if soon => Some(AdminSubscription::Allowed),
-                None if soon => Some(AdminSubscription::Undecided),
+            let at_once = match standing_reply(&access) {
+                Some(AdminSubscription::Refused) => Some(AdminSubscription::Refused),
+                Some(AdminSubscription::Allowed) if soon => Some(AdminSubscription::Allowed),
+                _ if soon => Some(AdminSubscription::Undecided),
                 _ => None,
             };
             let answer = access.subscribe_admin().await;

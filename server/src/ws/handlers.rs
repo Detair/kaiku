@@ -1874,15 +1874,17 @@ pub async fn handle_client_message(
         }
 
         ClientEvent::AdminSubscribe => {
-            // The request is recorded and answered from what the socket's
-            // revalidation wrote, the one place that decides the admin
-            // stream (`ws::access`): whether this socket's session is
-            // elevated (an elevation belongs to one session, C24), read
-            // from the committed rows. What asking can make the server
-            // read is bounded there (a "no" stands for its user epoch, a
-            // cooldown, a pool of its own). The request stays whatever the
-            // answer: a later elevation restores delivery, and a check that
-            // could not be made is repeated by the socket.
+            // The request is recorded and answered by `ws::access`; the
+            // socket's revalidation is the one place that decides the admin
+            // stream: whether this socket's session is elevated (an
+            // elevation belongs to one session, C24), read from the
+            // committed rows. The answer depends on the user epoch, this
+            // socket's earlier answers and a read the request asks for.
+            // What asking can make the server read is bounded there (a
+            // refusal stands for its user epoch, a cooldown, a pool of its
+            // own). The request stays whatever the answer: a later
+            // elevation restores delivery, and frames decide on their own
+            // reads.
             match access.subscribe_admin().await {
                 AdminSubscription::Allowed => {
                     debug!("Admin {} subscribed to admin events", user_id);
