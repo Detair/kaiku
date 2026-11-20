@@ -1783,11 +1783,13 @@ async fn enrolment_challenges_never_outlive_their_deadlines(pool: PgPool) {
     let dev = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
     // `enroll`: capped by the code's deadline.
     let (issued, _, _) = own_claimed(&app, &dev).await;
-    sqlx::query("UPDATE enrollments SET code_expires_at = NOW() + INTERVAL '30.7 seconds' WHERE id = $1")
-        .bind(issued.enrollment_id)
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "UPDATE enrollments SET code_expires_at = NOW() + INTERVAL '30.7 seconds' WHERE id = $1",
+    )
+    .bind(issued.enrollment_id)
+    .execute(&pool)
+    .await
+    .unwrap();
     let (s, c) = enroll_challenge(&app, &dev, issued.enrollment_id).await;
     assert_eq!(s, 201, "{c}");
     let within: bool = sqlx::query_scalar(
@@ -1801,13 +1803,25 @@ async fn enrolment_challenges_never_outlive_their_deadlines(pool: PgPool) {
     assert!(within, "enroll: capped by the code's deadline");
 
     // `enroll_pop`: capped by the enrolment's deadline.
-    let issued = issue(&app, user, EnrollmentVariant::Cli, Issuer::Cli).await.unwrap();
-    sqlx::query("UPDATE enrollments SET expires_at = NOW() + INTERVAL '30.7 seconds' WHERE id = $1")
-        .bind(issued.enrollment_id)
-        .execute(&pool)
+    let issued = issue(&app, user, EnrollmentVariant::Cli, Issuer::Cli)
         .await
         .unwrap();
-    let (s, b) = claim_with(&app, &issued.setup_token, &Phone::new(), "A", good(), "per_use").await;
+    sqlx::query(
+        "UPDATE enrollments SET expires_at = NOW() + INTERVAL '30.7 seconds' WHERE id = $1",
+    )
+    .bind(issued.enrollment_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let (s, b) = claim_with(
+        &app,
+        &issued.setup_token,
+        &Phone::new(),
+        "A",
+        good(),
+        "per_use",
+    )
+    .await;
     assert_eq!(s, 201, "{b}");
     let within: bool = sqlx::query_scalar(
         "SELECT bool_and(c.expires_at <= e.expires_at) FROM approvals c
