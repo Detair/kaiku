@@ -493,6 +493,13 @@ impl SimParticipant {
 
     /// Create a publisher offer (after gathering) and send it.
     pub async fn publish(&self) {
+        self.publish_edited(|sdp| sdp).await;
+    }
+
+    /// Like [`Self::publish`], but send the offer as `edit` changes it (the
+    /// local description stays as created), to imitate another sender's
+    /// offer.
+    pub async fn publish_edited(&self, edit: impl FnOnce(String) -> String) {
         let offer = self.publisher.create_offer(None).await.expect("offer");
         let gather = self.publisher.gathering_complete_promise().await;
         self.publisher
@@ -509,7 +516,7 @@ impl SimParticipant {
         self.send(serde_json::json!({
             "type": "voice_publisher_offer",
             "channel_id": self.channel_id,
-            "sdp": sdp,
+            "sdp": edit(sdp),
         }));
     }
 

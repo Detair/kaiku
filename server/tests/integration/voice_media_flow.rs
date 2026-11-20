@@ -840,17 +840,18 @@ async fn share_audio_before_any_microphone_audio_is_screen_audio(pool: PgPool) {
 }
 
 /// A sender that offers a webcam with three encodings (layer ids) gets an
-/// answer whose video section offers no layer-id, repaired-stream-id or
-/// media-id header extension: the server cannot tell layers apart, so no
-/// simulcast source is set up. (The answer still lists the offered layers
-/// and `a=simulcast`; webrtc-rs answers them from the offer.)
+/// answer without simulcast: its video section has no `a=simulcast`, no
+/// `a=rid` and no layer-id or media-id header extension. The sender then
+/// sends one stream (its first encoding), and that stream reaches the
+/// viewers.
 #[sqlx::test]
-async fn three_encoding_offer_is_answered_without_layer_ids(pool: PgPool) {
+async fn three_encoding_offer_falls_back_to_one_stream(pool: PgPool) {
     let f = fixture(pool).await;
-    let (mut a, _b) = two_in_call(&f).await;
+    let (mut a, b) = two_in_call(&f).await;
     a.send(serde_json::json!({ "type": "voice_webcam_start", "channel_id": f.voice, "quality": "medium" }));
     a.next_event("webcam_started", WAIT).await;
-    a.add_simulcast_video("cam", &["l", "m", "h"], &[]).await;
+    // Like a browser after such an answer: only the first encoding sends.
+    a.add_simulcast_video("cam", &["h", "m", "l"], &["h"]).await;
     a.publish().await;
 
     let deadline = tokio::time::Instant::now() + WAIT;
@@ -873,6 +874,8 @@ async fn three_encoding_offer_is_answered_without_layer_ids(pool: PgPool) {
     let video = &answer[answer.find("m=video").expect("video section")..];
     let video = video[1..].find("\nm=").map_or(video, |end| &video[..=end]);
     for refused in [
+        "a=simulcast",
+        "a=rid:",
         "urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id",
         "urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id",
         "urn:ietf:params:rtp-hdrext:sdes:mid",
@@ -882,4 +885,47 @@ async fn three_encoding_offer_is_answered_without_layer_ids(pool: PgPool) {
             "the answer's video section has {refused}:\n{video}"
         );
     }
+
+    let id = format!("{}:webcam", a.user_id);
+    let offer = a
+        .publisher
+        .local_description()
+        .await
+        .map(|d| d.sdp)
+        .unwrap_or_default();
+    assert!(
+        b.wait_for_packets(&id, 5, WAIT).await,
+        "viewer did not get the one stream: {:?}\noffer:\n{offer}",
+        b.seen_tracks()
+    );
+}
+
+/// Like a browser: a webcam offered with three encodings declares no SSRC
+/// for its video section (only layer ids). After the answer without
+/// simulcast the sender sends its first encoding as one stream, and that
+/// stream reaches the viewers.
+#[sqlx::test]
+#[ignore = "fails: the server cannot map a stream whose SSRC the offer does not declare without the media-id and layer-id extensions"]
+async fn three_encoding_offer_without_ssrcs_falls_back_to_one_stream(pool: PgPool) {
+    let f = fixture(pool).await;
+    let (mut a, b) = two_in_call(&f).await;
+    a.send(serde_json::json!({ "type": "voice_webcam_start", "channel_id": f.voice, "quality": "medium" }));
+    a.next_event("webcam_started", WAIT).await;
+    a.add_simulcast_video("cam", &["h", "m", "l"], &["h"]).await;
+    a.publish_edited(|sdp| {
+        let video = sdp.find("m=video").unwrap_or(sdp.len());
+        let (head, tail) = sdp.split_at(video);
+        let tail: String = tail
+            .split_inclusive('\n')
+            .filter(|l| !l.starts_with("a=ssrc"))
+            .collect();
+        format!("{head}{tail}")
+    })
+    .await;
+    let id = format!("{}:webcam", a.user_id);
+    assert!(
+        b.wait_for_packets(&id, 5, WAIT).await,
+        "viewer did not get the one stream: {:?}",
+        b.seen_tracks()
+    );
 }

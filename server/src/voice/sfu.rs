@@ -303,6 +303,20 @@ pub(crate) async fn request_keyframe(peer: &Peer, ssrcs: &[u32]) -> Result<(), w
     peer.publisher_pc.write_rtcp(&packets).await.map(|_| ())
 }
 
+/// A session description without its simulcast lines (`a=simulcast`,
+/// `a=rid`): the answer to it then accepts one stream per section.
+fn without_simulcast(sdp: &str) -> String {
+    let mut out = String::with_capacity(sdp.len());
+    for line in sdp.split_inclusive('\n') {
+        let bare = line.trim_end_matches(['\r', '\n']);
+        if bare.starts_with("a=simulcast:") || bare.starts_with("a=rid:") {
+            continue;
+        }
+        out.push_str(line);
+    }
+    out
+}
+
 /// The direction of each media section of a session description, in order
 /// (`sendrecv` when a section names none).
 fn section_directions(sdp: &str) -> Vec<&'static str> {
@@ -1714,8 +1728,11 @@ impl SfuServer {
         peer: &Arc<Peer>,
         sdp: String,
     ) -> Result<String, VoiceError> {
-        let offer =
-            RTCSessionDescription::offer(sdp).map_err(|e| VoiceError::Signaling(e.to_string()))?;
+        // Simulcast is not accepted (the server cannot receive it): without
+        // the layer lines in the offer, the answer has none either, so the
+        // sender falls back to one stream (its first encoding).
+        let offer = RTCSessionDescription::offer(without_simulcast(&sdp))
+            .map_err(|e| VoiceError::Signaling(e.to_string()))?;
         peer.publisher_pc.set_remote_description(offer).await?;
         let answer = peer.publisher_pc.create_answer(None).await?;
         peer.publisher_pc
