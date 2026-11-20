@@ -168,6 +168,20 @@ class PcSetupApprovalViewModelTest {
         w.viewModelScope.coroutineContext[kotlinx.coroutines.Job]!!.cancel()
     }
 
+    @Test fun `back on the code screen asks before the code is gone`() = runTest {
+        val (v, _) = vm()
+        v.start(payload)
+        assertTrue(v.requestBack()) // before a decision: leave at once
+        v.approve(activity)
+        assertFalse(v.requestBack())
+        assertTrue(v.leaveAsked.value)
+        assertEquals(PcSetupUi.Code("123456"), v.ui.value)
+        v.stay()
+        assertFalse(v.leaveAsked.value)
+        assertEquals(PcSetupUi.Code("123456"), v.ui.value)
+        v.viewModelScope.coroutineContext[kotlinx.coroutines.Job]!!.cancel()
+    }
+
     @Test fun `code survives lifecycle stop`() = runTest {
         val (v, _) = vm()
         v.start(payload)

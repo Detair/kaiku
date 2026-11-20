@@ -411,6 +411,10 @@
     <string name="pc_setup_cancelled">Cancelled. Start again on the computer if you want to continue.</string>
     <string name="pc_setup_answer_lost">The answer may not have arrived. Press Start again on the computer.</string>
     <string name="pc_setup_failed">That didn\'t work. Start again on the computer.</string>
+    <string name="pc_setup_leave_title">Leave the code?</string>
+    <string name="pc_setup_leave_body">The code will be gone. To finish, press Start again on the computer and scan again.</string>
+    <string name="pc_setup_leave_yes">Leave</string>
+    <string name="pc_setup_leave_no">Stay</string>
 
     <!-- Setting up this phone as a key (F5a, F5c, SM2) -->
     <string name="setup_title">Set up this phone</string>

@@ -225,6 +225,27 @@ class PcSetupApprovalViewModel @Inject constructor(
     }
 
     /** System back or leaving the screen: an undecided claim goes back to the PC. */
+    private val _leaveAsked = MutableStateFlow(false)
+    /** The code screen asked "Leave the code?" after Back. */
+    val leaveAsked: StateFlow<Boolean> = _leaveAsked.asStateFlow()
+
+    /**
+     * Back: true when the screen may close now. While the code is shown it asks first, because
+     * leaving throws the code away and the computer can then only start again.
+     */
+    fun requestBack(): Boolean {
+        if (_ui.value is PcSetupUi.Code) {
+            _leaveAsked.value = true
+            return false
+        }
+        return true
+    }
+
+    /** "Stay" on the question: the code stays on screen. */
+    fun stay() {
+        _leaveAsked.value = false
+    }
+
     fun back() {
         val ch = challenge ?: return
         if (!open) return

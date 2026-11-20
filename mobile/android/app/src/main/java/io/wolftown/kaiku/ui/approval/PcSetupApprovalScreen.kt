@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -65,10 +66,29 @@ fun PcSetupApprovalScreen(
             if (payload != null) viewModel.start(payload) else onDone()
         }
     }
-    // No Back while a decision is being sent: it would cut the answer short.
+    // No Back while a decision is being sent: it would cut the answer short. On the code screen
+    // Back asks first: leaving throws the code away.
     BackHandler(enabled = ui != PcSetupUi.Working) {
-        viewModel.back()
-        onDone()
+        if (viewModel.requestBack()) {
+            viewModel.back()
+            onDone()
+        }
+    }
+    val leaveAsked by viewModel.leaveAsked.collectAsState()
+    if (leaveAsked) {
+        AlertDialog(
+            onDismissRequest = viewModel::stay,
+            title = { Text(stringResource(R.string.pc_setup_leave_title)) },
+            text = { Text(stringResource(R.string.pc_setup_leave_body)) },
+            confirmButton = {
+                TextButton(onClick = { viewModel.stay(); viewModel.back(); onDone() }) {
+                    Text(stringResource(R.string.pc_setup_leave_yes))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = viewModel::stay) { Text(stringResource(R.string.pc_setup_leave_no)) }
+            },
+        )
     }
 
     KeyScreen {
