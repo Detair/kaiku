@@ -137,6 +137,28 @@ describe("screen share start waits for the server", () => {
     expect(log).toEqual(["capture:s1", "sendStart:s1", "adapterStop:s1", "sendStop:s1"]);
   });
 
+  it("a picker open longer than 5 s still starts: the wait begins when the start is sent", async () => {
+    const { pub, adapter, log } = setup();
+    let pick!: () => void;
+    adapter.captureScreen.mockImplementationOnce(
+      ({ streamId }: { streamId: string }) =>
+        new Promise((resolve) => {
+          pick = () => {
+            log.push(`capture:${streamId}`);
+            resolve({ ok: true, value: { hasAudio: false, sourceLabel: "W" } });
+          };
+        }) as never,
+    );
+    const start = pub.startScreenShare();
+    await flush();
+    vi.advanceTimersByTime(20_000); // the user looks for the right window
+    pick();
+    await flush();
+    expect(log).toEqual(["capture:s1", "sendStart:s1"]);
+    pub.handleAnswer(started("s1"));
+    expect(await start).toEqual({ ok: true });
+  });
+
   it("a late acceptance after the timeout publishes nothing", async () => {
     const { pub, log } = setup();
     const start = pub.startScreenShare();

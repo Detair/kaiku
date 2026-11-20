@@ -168,24 +168,36 @@ export function createMediaPublisher(ctx: MediaContext) {
     ctx.setFlags({ screenSharing: screens.size > 0, webcamActive: webcam !== null });
   }
 
+  /**
+   * Reserve the one start in flight. The 5 s for the server's answer start
+   * with `arm()`, right after the start was sent (a browser picker may stay
+   * open much longer than that).
+   */
   function waitForAnswer(kind: MediaKind, streamId: string | null): {
     answer: Promise<Answer>;
     abort: () => void;
+    arm: () => void;
   } {
     let settle!: (a: Answer) => void;
+    let timer: ReturnType<typeof setTimeout> | null = null;
     const answer = new Promise<Answer>((resolve) => {
       let done = false;
-      const timer = setTimeout(() => settle({ kind: "timeout" }), MEDIA_START_TIMEOUT_MS);
       settle = (a) => {
         if (done) return;
         done = true;
-        clearTimeout(timer);
+        if (timer) clearTimeout(timer);
         if (inFlight?.settle === settle) inFlight = null;
         resolve(a);
       };
     });
     inFlight = { kind, streamId, channelId: ctx.channelId(), settle };
-    return { answer, abort: () => settle({ kind: "aborted" }) };
+    return {
+      answer,
+      abort: () => settle({ kind: "aborted" }),
+      arm: () => {
+        timer ??= setTimeout(() => settle({ kind: "timeout" }), MEDIA_START_TIMEOUT_MS);
+      },
+    };
   }
 
   function handleAnswer(answer: MediaAnswer): void {
@@ -270,6 +282,7 @@ export function createMediaPublisher(ctx: MediaContext) {
       await adapter.stopScreenShare(streamId);
       return { ok: false, error: ctx.t("voice.error.notifyFailed") };
     }
+    wait.arm();
 
     const answer = await wait.answer;
     if (answer.kind !== "accepted") {
@@ -367,6 +380,7 @@ export function createMediaPublisher(ctx: MediaContext) {
       await adapter.stopWebcam();
       return { ok: false, error: ctx.t("voice.error.notifyFailed") };
     }
+    wait.arm();
     const answer = await wait.answer;
     if (answer.kind !== "accepted") {
       await adapter.stopWebcam();
