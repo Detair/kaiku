@@ -107,9 +107,16 @@ pub async fn handle_voice_event_for_session(
 
     match event {
         ClientEvent::VoiceJoin { channel_id } => {
-            let result =
-                handle_join(sfu, pool, user_id, channel_id, tx, screen_share_limiter, auth_session)
-                    .await;
+            let result = handle_join(
+                sfu,
+                pool,
+                user_id,
+                channel_id,
+                tx,
+                screen_share_limiter,
+                auth_session,
+            )
+            .await;
             crate::observability::metrics::record_voice_join(result.is_ok());
             result
         }
@@ -179,8 +186,15 @@ pub async fn handle_voice_event_for_session(
             channel_id,
             stream_id,
         } => {
-            handle_screen_share_stop(sfu, user_id, channel_id, stream_id, screen_share_limiter, tx)
-                .await
+            handle_screen_share_stop(
+                sfu,
+                user_id,
+                channel_id,
+                stream_id,
+                screen_share_limiter,
+                tx,
+            )
+            .await
         }
         ClientEvent::VoiceWebcamStart {
             channel_id,

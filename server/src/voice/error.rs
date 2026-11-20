@@ -147,9 +147,7 @@ impl IntoResponse for VoiceError {
             Self::Signaling(_)
             | Self::NotInChannel
             | Self::VideoSourceUnannounced
-            | Self::AudioSourceUnannounced => {
-                StatusCode::BAD_REQUEST
-            }
+            | Self::AudioSourceUnannounced => StatusCode::BAD_REQUEST,
             Self::DuplicateStreamId
             | Self::ChannelFull { .. }
             | Self::AlreadyJoined

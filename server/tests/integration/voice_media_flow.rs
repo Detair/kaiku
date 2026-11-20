@@ -486,7 +486,10 @@ async fn accepted_share_audio_is_forwarded_as_screen_audio(pool: PgPool) {
     );
     let mic = mic_track(a.user_id);
     let before = b.packets(&mic);
-    assert!(b.wait_for_packets(&mic, before + 5, WAIT).await, "mic stopped");
+    assert!(
+        b.wait_for_packets(&mic, before + 5, WAIT).await,
+        "mic stopped"
+    );
 }
 
 /// A share that was stopped before its track came leaves no announcement:

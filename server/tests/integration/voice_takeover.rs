@@ -10,9 +10,9 @@ use uuid::Uuid;
 use vc_server::permissions::GuildPermissions;
 
 use super::helpers::{
-    add_guild_member, create_guild_with_default_role, create_test_user,
-    create_voice_channel, expect_no_ws_event, generate_access_token, next_ws_event,
-    spawn_test_server, ws_connect, TestApp, TestServer, WsClient,
+    add_guild_member, create_guild_with_default_role, create_test_user, create_voice_channel,
+    expect_no_ws_event, generate_access_token, next_ws_event, spawn_test_server, ws_connect,
+    TestApp, TestServer, WsClient,
 };
 
 const EVENT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -83,7 +83,8 @@ async fn takeover(pool: PgPool) -> Takeover {
     let token = generate_access_token(&app.config, user);
 
     let mut old = connect_and_join(&server, &token, voice).await;
-    let mut other = connect_and_join(&server, &generate_access_token(&app.config, owner), voice).await;
+    let mut other =
+        connect_and_join(&server, &generate_access_token(&app.config, owner), voice).await;
     let new = connect_and_join(&server, &token, voice).await;
     let removed = next_ws_event(&mut old, "voice_removed", EVENT_TIMEOUT).await;
     assert_eq!(removed["reason"], "session_replaced");
@@ -103,7 +104,10 @@ async fn takeover(pool: PgPool) -> Takeover {
 impl Takeover {
     async fn new_session_still_seated(&self) {
         let room = self.app.state.sfu.get_room(self.voice).await.expect("room");
-        assert!(room.get_peer(self.user).await.is_some(), "user no longer in the room");
+        assert!(
+            room.get_peer(self.user).await.is_some(),
+            "user no longer in the room"
+        );
         assert_eq!(room.participant_count().await, 2);
     }
 }

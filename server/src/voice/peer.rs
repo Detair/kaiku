@@ -336,7 +336,10 @@ impl Peer {
     /// Drop queued announcements matching `pred` (their share or webcam
     /// ended before a track came).
     pub async fn remove_pending_sources(&self, pred: impl Fn(&TrackSource) -> bool) {
-        self.pending_track_sources.write().await.retain(|s| !pred(s));
+        self.pending_track_sources
+            .write()
+            .await
+            .retain(|s| !pred(s));
     }
 
     /// Claim the microphone: `true` for the first audio track of this peer

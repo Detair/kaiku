@@ -1213,7 +1213,9 @@ fn parse_min_client_version(name: &str, raw: Option<&str>) -> Result<Option<Stri
     // Numbers without leading zeros (semantic versioning).
     let core_ok = numbers.len() == 3
         && numbers.iter().all(|n| {
-            !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) && (n.len() == 1 || !n.starts_with('0'))
+            !n.is_empty()
+                && n.bytes().all(|b| b.is_ascii_digit())
+                && (n.len() == 1 || !n.starts_with('0'))
         });
     let pre_ok = pre.is_none_or(|p| {
         !p.is_empty()

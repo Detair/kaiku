@@ -225,8 +225,8 @@ async fn user_limit_refuses_extra_member_but_not_a_rejoin(pool: PgPool) {
     let (owner, _) = create_test_user(&pool).await;
     let (a, _) = create_test_user(&pool).await;
     let (b, _) = create_test_user(&pool).await;
-    let guild = create_guild_with_default_role(&pool, owner, GuildPermissions::EVERYONE_DEFAULT)
-        .await;
+    let guild =
+        create_guild_with_default_role(&pool, owner, GuildPermissions::EVERYONE_DEFAULT).await;
     add_guild_member(&pool, guild, a).await;
     add_guild_member(&pool, guild, b).await;
     let voice = create_voice_channel(&pool, guild, "voice").await;
@@ -244,6 +244,8 @@ async fn user_limit_refuses_extra_member_but_not_a_rejoin(pool: PgPool) {
         next_ws_event(&mut ws, "voice_room_state", EVENT_TIMEOUT).await;
         seated.push(ws);
     }
+
+    assert_eq!(seated.len(), 2, "both members hold a seat");
 
     // The server owner is the third: the room is full for them too.
     let mut owner_ws = ws_connect(&server, &generate_access_token(&app.config, owner)).await;

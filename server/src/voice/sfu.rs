@@ -568,7 +568,7 @@ fn ice_network_plan(family: IceIpFamily, public_ip: Option<&str>) -> IceNetworkP
 
 /// Whether `ip` cannot be reached from the internet (loopback, private,
 /// link-local, shared address space, unique local).
-fn is_private_or_local(ip: std::net::IpAddr) -> bool {
+const fn is_private_or_local(ip: std::net::IpAddr) -> bool {
     match ip {
         std::net::IpAddr::V4(v4) => {
             let o = v4.octets();
@@ -1807,13 +1807,24 @@ mod negotiation_tests {
         peer.close().await;
     }
 
-    async fn setup() -> (SfuServer, Arc<Peer>, mpsc::Receiver<OutboundMsg>, Arc<RTCPeerConnection>) {
+    async fn setup() -> (
+        SfuServer,
+        Arc<Peer>,
+        mpsc::Receiver<OutboundMsg>,
+        Arc<RTCPeerConnection>,
+    ) {
         let mut config = Config::default_for_test();
         config.stun_server = "stun:127.0.0.1:3478".into();
         let sfu = SfuServer::new(Arc::new(config), None).expect("sfu");
         let (tx, rx) = mpsc::channel(16);
         let peer = sfu
-            .create_peer(Uuid::from_u128(1), "a".into(), "A".into(), Uuid::from_u128(2), tx)
+            .create_peer(
+                Uuid::from_u128(1),
+                "a".into(),
+                "A".into(),
+                Uuid::from_u128(2),
+                tx,
+            )
             .await
             .expect("peer");
         let client = Arc::new(
@@ -1843,9 +1854,13 @@ mod negotiation_tests {
     #[tokio::test]
     async fn stray_answer_is_ignored() {
         let (_sfu, peer, mut rx, client) = setup().await;
-        peer.add_outgoing_track(Uuid::from_u128(3), TrackSource::Microphone, audio_track("u3"))
-            .await
-            .expect("track");
+        peer.add_outgoing_track(
+            Uuid::from_u128(3),
+            TrackSource::Microphone,
+            audio_track("u3"),
+        )
+        .await
+        .expect("track");
         SfuServer::renegotiate(&peer).await.expect("offer");
         let offer = offer_sdp(rx.try_recv().expect("offer sent"));
         let answer = answer_for(&client, offer).await;
@@ -1866,16 +1881,24 @@ mod negotiation_tests {
     async fn answer_to_a_superseded_offer_is_ignored() {
         let (_sfu, peer, mut rx, client) = setup().await;
         let old_client = setup().await.3;
-        peer.add_outgoing_track(Uuid::from_u128(3), TrackSource::Microphone, audio_track("u3"))
-            .await
-            .expect("track");
+        peer.add_outgoing_track(
+            Uuid::from_u128(3),
+            TrackSource::Microphone,
+            audio_track("u3"),
+        )
+        .await
+        .expect("track");
         SfuServer::renegotiate(&peer).await.expect("offer");
         let first = offer_sdp(rx.try_recv().expect("offer sent"));
         // The open offer is replaced (as after the answer timeout) by one
         // with two m-lines.
-        peer.add_outgoing_track(Uuid::from_u128(4), TrackSource::Microphone, audio_track("u4"))
-            .await
-            .expect("track 2");
+        peer.add_outgoing_track(
+            Uuid::from_u128(4),
+            TrackSource::Microphone,
+            audio_track("u4"),
+        )
+        .await
+        .expect("track 2");
         peer.negotiation.lock().await.awaiting_answer_since =
             Some(tokio::time::Instant::now() - SUBSCRIBER_ANSWER_TIMEOUT);
         SfuServer::renegotiate(&peer).await.expect("re-offer");
@@ -1885,13 +1908,23 @@ mod negotiation_tests {
         SfuServer::handle_subscriber_answer(&peer, stale)
             .await
             .expect("stale answer ignored");
-        assert!(peer.negotiation.lock().await.awaiting_answer_since.is_some());
+        assert!(peer
+            .negotiation
+            .lock()
+            .await
+            .awaiting_answer_since
+            .is_some());
 
         let answer = answer_for(&client, second).await;
         SfuServer::handle_subscriber_answer(&peer, answer)
             .await
             .expect("current answer applied");
-        assert!(peer.negotiation.lock().await.awaiting_answer_since.is_none());
+        assert!(peer
+            .negotiation
+            .lock()
+            .await
+            .awaiting_answer_since
+            .is_none());
         let _ = client.close().await;
         let _ = old_client.close().await;
         peer.close().await;
@@ -1903,9 +1936,13 @@ mod negotiation_tests {
     #[tokio::test(start_paused = true)]
     async fn unanswered_offer_is_repeated_once_then_released() {
         let (_sfu, peer, mut rx, _client) = setup().await;
-        peer.add_outgoing_track(Uuid::from_u128(3), TrackSource::Microphone, audio_track("u3"))
-            .await
-            .expect("track");
+        peer.add_outgoing_track(
+            Uuid::from_u128(3),
+            TrackSource::Microphone,
+            audio_track("u3"),
+        )
+        .await
+        .expect("track");
         SfuServer::renegotiate(&peer).await.expect("offer");
         offer_sdp(rx.try_recv().expect("offer sent"));
 
@@ -1914,7 +1951,12 @@ mod negotiation_tests {
 
         tokio::time::sleep(SUBSCRIBER_ANSWER_TIMEOUT + Duration::from_secs(1)).await;
         assert!(rx.try_recv().is_err(), "repeated more than once");
-        assert!(peer.negotiation.lock().await.awaiting_answer_since.is_none());
+        assert!(peer
+            .negotiation
+            .lock()
+            .await
+            .awaiting_answer_since
+            .is_none());
 
         SfuServer::renegotiate(&peer).await.expect("next change");
         offer_sdp(rx.try_recv().expect("next change offers at once"));

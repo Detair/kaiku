@@ -104,8 +104,15 @@ async fn old_session_rest_leave_keeps_the_call(pool: PgPool) {
     post(&f.server, f.dm, &f.callee_old_token, "leave").await;
     let state = call_state(&f.server, f.dm, &f.caller_token).await;
     assert_eq!(state["status"], "active", "{state}");
-    let participants = state["participants"].as_array().cloned().unwrap_or_default();
-    assert_eq!(participants.len(), 2, "callee dropped from the call: {state}");
+    let participants = state["participants"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(
+        participants.len(),
+        2,
+        "callee dropped from the call: {state}"
+    );
     let _ = f.caller;
     let _ = &f.app;
 }
@@ -122,13 +129,20 @@ async fn owning_session_or_seatless_user_rest_leave_works(pool: PgPool) {
     // The caller holds no seat: their leave counts.
     post(&f.server, f.dm, &f.caller_token, "leave").await;
     let state = call_state(&f.server, f.dm, &f.callee_new_token).await;
-    let participants = state["participants"].as_array().cloned().unwrap_or_default();
+    let participants = state["participants"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
     assert!(
-        !participants.iter().any(|p| p == &serde_json::json!(f.caller.to_string())),
+        !participants
+            .iter()
+            .any(|p| p == &serde_json::json!(f.caller.to_string())),
         "seatless leave ignored: {state}"
     );
 
     // The callee's seat-holding session leaves: the call ends.
     post(&f.server, f.dm, &f.callee_new_token, "leave").await;
-    assert!(call_state(&f.server, f.dm, &f.callee_new_token).await.is_null());
+    assert!(call_state(&f.server, f.dm, &f.callee_new_token)
+        .await
+        .is_null());
 }
