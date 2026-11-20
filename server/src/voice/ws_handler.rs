@@ -426,31 +426,37 @@ async fn retire_replaced_peer(
     let channel_id = room.channel_id;
     let user_id = old.user_id;
 
-    release_replaced_media(
-        room,
-        user_id,
-        &screen_shares,
-        webcam.is_some(),
-        screen_share_limiter,
-    )
-    .await;
-    room.detach_media(&old).await;
-
-    if !old.signal_tx.same_channel(new_tx) {
-        let notice = OutboundMsg::Event(ServerEvent::VoiceRemoved {
-            channel_id,
-            reason: crate::ws::VoiceRemovedReason::SessionReplaced,
-        });
-        if let Err(e) = crate::ws::handlers::send_outbound_within(
-            &old.signal_tx,
-            notice,
-            REPLACED_NOTICE_TIMEOUT,
-        )
-        .await
-        {
-            debug!(user_id = %user_id, error = %e, "Could not tell the replaced session");
+    // The stops and the notice to the replaced socket go out together; the
+    // old seat's media is detached before the new seat's join answers (its
+    // tracks must be gone before the new seat publishes).
+    let notice = async {
+        if !old.signal_tx.same_channel(new_tx) {
+            let notice = OutboundMsg::Event(ServerEvent::VoiceRemoved {
+                channel_id,
+                reason: crate::ws::VoiceRemovedReason::SessionReplaced,
+            });
+            if let Err(e) = crate::ws::handlers::send_outbound_within(
+                &old.signal_tx,
+                notice,
+                REPLACED_NOTICE_TIMEOUT,
+            )
+            .await
+            {
+                debug!(user_id = %user_id, error = %e, "Could not tell the replaced session");
+            }
         }
-    }
+    };
+    tokio::join!(
+        release_replaced_media(
+            room,
+            user_id,
+            &screen_shares,
+            webcam.is_some(),
+            screen_share_limiter,
+        ),
+        notice
+    );
+    room.detach_media(&old).await;
 
     super::leave::end_session_records(pool, &old, guild_id);
     tokio::spawn(async move {
@@ -481,7 +487,9 @@ async fn release_replaced_media(
             warn!("Screen share limiter unavailable — replaced shares not released");
         }
     }
-    for share in screen_shares {
+    // All stops go out together (each waits at most one send bound for a
+    // participant with a full queue).
+    let share_stops = screen_shares.iter().map(|share| {
         room.announce_stopped(
             ServerEvent::ScreenShareStopped {
                 channel_id,
@@ -491,19 +499,21 @@ async fn release_replaced_media(
             },
             false,
         )
-        .await;
-    }
-    if had_webcam {
-        room.announce_stopped(
-            ServerEvent::WebcamStopped {
-                channel_id,
-                user_id,
-                reason: "replaced".to_string(),
-            },
-            false,
-        )
-        .await;
-    }
+    });
+    let webcam_stop = async {
+        if had_webcam {
+            room.announce_stopped(
+                ServerEvent::WebcamStopped {
+                    channel_id,
+                    user_id,
+                    reason: "replaced".to_string(),
+                },
+                false,
+            )
+            .await;
+        }
+    };
+    tokio::join!(futures::future::join_all(share_stops), webcam_stop);
 }
 
 /// Refuse a join to a DM call when the user and any other participant of
@@ -1473,3 +1483,48 @@ async fn handle_set_layer_preference(
 #[cfg(test)]
 #[path = "ws_handler_test.rs"]
 mod ws_handler_test;
+
+#[cfg(test)]
+mod replaced_media_tests {
+    use std::time::{Duration, Instant};
+
+    use super::*;
+    use crate::config::Config;
+
+    /// The stops of a replaced seat's media go out together: a participant
+    /// with a full queue delays them by one send bound, not one per stop.
+    #[tokio::test]
+    async fn a_replaced_seats_stops_are_sent_together() {
+        let sfu = SfuServer::new(Arc::new(Config::default_for_test()), None).expect("sfu");
+        let channel = Uuid::from_u128(1);
+        let room = Room::new(channel, 10);
+        let (slow_tx, _slow_rx) = mpsc::channel(1);
+        slow_tx.try_send(OutboundMsg::Ping).expect("fill the queue");
+        let slow = sfu
+            .create_peer(Uuid::from_u128(2), "s".into(), "S".into(), channel, slow_tx)
+            .await
+            .expect("peer");
+        room.add_peer(slow).await.expect("add");
+
+        let user = Uuid::from_u128(3);
+        let shares: Vec<ScreenShareInfo> = (10..12)
+            .map(|n| {
+                ScreenShareInfo::new(
+                    Uuid::from_u128(n),
+                    user,
+                    "u".into(),
+                    "Display".into(),
+                    false,
+                    super::super::Quality::Medium,
+                )
+            })
+            .collect();
+        let started = Instant::now();
+        release_replaced_media(&room, user, &shares, true, None).await;
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "three stops took {:?}",
+            started.elapsed()
+        );
+    }
+}

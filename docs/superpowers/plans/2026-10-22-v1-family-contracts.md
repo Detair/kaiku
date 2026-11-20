@@ -1007,7 +1007,8 @@ Server → client event, sent only to the socket that owned the removed voice pe
   `screen_share_stopped` / `webcam_stopped` with reason `replaced`, then a subscriber offer without the old
   tracks). The others see one participant throughout: no `voice_user_left`, a fresh `voice_user_joined` for
   the same `user_id` (upsert). A second `voice_join` on the **same** socket also replaces the peer but sends no
-  `voice_removed`.
+  `voice_removed`. The new join's answer is not delayed by closing the old connections; the old seat's media
+  leaves the room before it.
 - Server: every voice event other than `voice_join` acts only on the seat of the socket that sends it. After a
   replacement the old socket holds none: its `voice_leave` is a silent no-op, its publisher offers, subscriber
   answers, ICE candidates, share/webcam starts and stops answer `voice_error` `PARTICIPANT_NOT_FOUND`, its mute
