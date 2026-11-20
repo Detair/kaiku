@@ -35,11 +35,26 @@ fn map_permission_error(e: crate::permissions::PermissionError, context: &str) -
     }
 }
 
-/// Handle a voice-related client event.
+/// Handle a voice-related client event (socket without a known login
+/// session; see [`handle_voice_event_for_session`]).
 pub async fn handle_voice_event(
     sfu: &Arc<SfuServer>,
     pool: &PgPool,
     user_id: Uuid,
+    event: ClientEvent,
+    tx: &mpsc::Sender<OutboundMsg>,
+    screen_share_limiter: Option<&ScreenShareLimiter>,
+) -> Result<(), VoiceError> {
+    handle_voice_event_for_session(sfu, pool, user_id, None, event, tx, screen_share_limiter).await
+}
+
+/// Handle a voice-related client event from a socket that authenticated
+/// with login session `auth_session` (recorded on a seat it joins).
+pub async fn handle_voice_event_for_session(
+    sfu: &Arc<SfuServer>,
+    pool: &PgPool,
+    user_id: Uuid,
+    auth_session: Option<Uuid>,
     event: ClientEvent,
     tx: &mpsc::Sender<OutboundMsg>,
     screen_share_limiter: Option<&ScreenShareLimiter>,
@@ -89,7 +104,8 @@ pub async fn handle_voice_event(
     match event {
         ClientEvent::VoiceJoin { channel_id } => {
             let result =
-                handle_join(sfu, pool, user_id, channel_id, tx, screen_share_limiter).await;
+                handle_join(sfu, pool, user_id, channel_id, tx, screen_share_limiter, auth_session)
+                    .await;
             crate::observability::metrics::record_voice_join(result.is_ok());
             result
         }
@@ -198,6 +214,7 @@ async fn handle_join(
     channel_id: Uuid,
     tx: &mpsc::Sender<OutboundMsg>,
     screen_share_limiter: Option<&ScreenShareLimiter>,
+    auth_session: Option<Uuid>,
 ) -> Result<(), VoiceError> {
     info!(user_id = %user_id, channel_id = %channel_id, "User joining voice channel");
 
@@ -254,6 +271,7 @@ async fn handle_join(
     // What the owning socket's writes are fenced by: room content reaches it
     // only while these epochs hold, or after a new check.
     peer.set_admission(crate::ws::access::VoiceAdmission { guild_id, epochs });
+    peer.set_auth_session(auth_session);
 
     if let Some(replaced) = room.add_peer_with_limit(peer.clone(), user_limit).await? {
         retire_replaced_peer(pool, &room, guild_id, tx, replaced, screen_share_limiter).await;

@@ -941,7 +941,10 @@ async fn handle_socket(
 
     if exit.is_none() {
         // Per-connection mutable state for rate limiting and deduplication
-        let mut msg_state = ClientMessageState::default();
+        let mut msg_state = ClientMessageState {
+            auth_session: session_id,
+            ..ClientMessageState::default()
+        };
 
         // Server-side heartbeat: detect dead connections via Ping/Pong
         let mut ping_interval = tokio::time::interval(Duration::from_secs(30));
@@ -1725,10 +1728,11 @@ pub async fn handle_client_message(
         | ClientEvent::VoiceWebcamStart { .. }
         | ClientEvent::VoiceWebcamStop { .. }
         | ClientEvent::VoiceSetLayerPreference { .. } => {
-            if let Err(e) = crate::voice::ws_handler::handle_voice_event(
+            if let Err(e) = crate::voice::ws_handler::handle_voice_event_for_session(
                 &state.sfu,
                 &state.db,
                 user_id,
+                msg_state.auth_session,
                 event,
                 tx,
                 state.screen_share_limiter.as_ref(),

@@ -987,6 +987,11 @@ Server → client event, sent only to the socket that owned the removed voice pe
   answers, ICE candidates, share/webcam starts and stops answer `voice_error` `PARTICIPANT_NOT_FOUND`, its mute
   and stats are ignored, and its disconnect removes nothing. Media the old connections still send is not
   forwarded.
+- Client: after `voice_removed` with `session_replaced`, a client sends neither `voice_leave` nor a REST
+  `/call/leave` or `/call/decline` for that call. Server guard for older clients: `POST /api/dm/{id}/call/leave`
+  and `/call/decline` answer 200 with the unchanged call state, and change nothing, while the user's seat in that
+  DM's voice room belongs to another login session (the user is in the call on another device). From the
+  session that holds the seat, or when the user holds no seat, they work as before.
 - Client: tear down both peer connections, stop capture, clear voice state, show one line of text for the
   reason. The client must not rejoin on its own (C32) after `voice_removed`. For `session_replaced` the text
   says that the call continues on another device; a ringing UI for that call stops too.

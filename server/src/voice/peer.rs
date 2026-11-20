@@ -83,6 +83,9 @@ pub struct Peer {
     /// Set once the peer left its room or was replaced: its late track
     /// callbacks and forwarders must not touch the room any more.
     retired: AtomicBool,
+    /// Login session of the socket that joined with this peer (set once by
+    /// the join; `None` when unknown).
+    auth_session: std::sync::OnceLock<Option<Uuid>>,
 }
 
 /// Offer/answer state of a peer's subscriber connection.
@@ -131,7 +134,18 @@ impl Peer {
             admission: std::sync::OnceLock::new(),
             negotiation: tokio::sync::Mutex::new(SubscriberNegotiation::default()),
             retired: AtomicBool::new(false),
+            auth_session: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Record the login session of the joining socket (first call wins).
+    pub fn set_auth_session(&self, session: Option<Uuid>) {
+        let _ = self.auth_session.set(session);
+    }
+
+    /// Login session of the socket that holds this seat, if known.
+    pub fn auth_session(&self) -> Option<Uuid> {
+        self.auth_session.get().copied().flatten()
     }
 
     /// Mark the peer as gone from its room (left or replaced).

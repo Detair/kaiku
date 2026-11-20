@@ -102,6 +102,9 @@ pub struct ClientMessageState {
     pub last_typing: HashMap<Uuid, Instant>,
     /// Per-connection flood ceiling across all inbound message types.
     pub flood: FloodBucket,
+    /// Login session of the token this socket authenticated with (its voice
+    /// seat records it, so REST call actions can tell devices apart).
+    pub auth_session: Option<Uuid>,
 }
 
 /// Default `pc_type` for backward compatibility with old clients.

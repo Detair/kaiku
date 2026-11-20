@@ -357,7 +357,7 @@ pub async fn join_call(
     tag = "voice",
     params(("id" = Uuid, Path, description = "DM conversation ID")),
     responses(
-        (status = 200, description = "Call declined", body = CallStateResponse),
+        (status = 200, description = "Call declined; unchanged call state when the user is in the call on another device", body = CallStateResponse),
         (status = 403, description = "Not a participant of this DM"),
         (status = 404, description = "DM channel or call not found"),
         (status = 409, description = "Invalid state transition"),
@@ -373,6 +373,9 @@ pub async fn decline_call(
     verify_dm_participant(&state, channel_id, auth.id).await?;
 
     let calls = CallService::for_state(&state);
+    if seat_held_by_another_session(&state, channel_id, &auth).await {
+        return current_state(&calls, channel_id).await;
+    }
     let declined = calls.decline_call(channel_id, auth.id).await?;
     Ok(Json(response(channel_id, declined)))
 }
@@ -384,7 +387,7 @@ pub async fn decline_call(
     tag = "voice",
     params(("id" = Uuid, Path, description = "DM conversation ID")),
     responses(
-        (status = 200, description = "Left call (may end call if last participant)", body = CallStateResponse),
+        (status = 200, description = "Left call (may end call if last participant); unchanged call state when the user is in the call on another device", body = CallStateResponse),
         (status = 403, description = "Not a participant of this DM"),
         (status = 404, description = "DM channel or call not found"),
         (status = 409, description = "Invalid state transition"),
@@ -400,8 +403,39 @@ pub async fn leave_call(
     verify_dm_participant(&state, channel_id, auth.id).await?;
 
     let calls = CallService::for_state(&state);
+    if seat_held_by_another_session(&state, channel_id, &auth).await {
+        return current_state(&calls, channel_id).await;
+    }
     let left = calls.leave_call(channel_id, auth.id).await?;
     Ok(Json(response(channel_id, left)))
+}
+
+/// Whether the user is in this DM's voice room on another device: their seat
+/// there belongs to a different login session than this request's. A leave
+/// or decline from that other session must not end the call the seat is in.
+async fn seat_held_by_another_session(state: &AppState, channel_id: Uuid, auth: &AuthUser) -> bool {
+    let Some(room) = state.sfu.get_room(channel_id).await else {
+        return false;
+    };
+    let Some(peer) = room.get_peer(auth.id).await else {
+        return false;
+    };
+    matches!(
+        (peer.auth_session(), auth.session_id),
+        (Some(owner), Some(caller)) if owner != caller
+    )
+}
+
+/// The call as it is, for a leave or decline that changes nothing.
+async fn current_state(
+    calls: &CallService,
+    channel_id: Uuid,
+) -> Result<Json<CallStateResponse>, CallHandlerError> {
+    let (state, meta) = calls
+        .get_call(channel_id)
+        .await?
+        .ok_or(CallError::CallNotFound)?;
+    Ok(Json(response(channel_id, Transition { state, meta })))
 }
 
 /// Build the call router (to be nested under /api/dm)
