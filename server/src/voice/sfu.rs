@@ -654,9 +654,10 @@ impl Room {
         stream_id: Uuid,
     ) -> Option<ScreenShareInfo> {
         let mut shares = self.screen_shares.write().await;
+        // The seat's session id is unique, so it alone names the owner.
         if shares
             .get(&stream_id)
-            .is_some_and(|s| s.user_id == peer.user_id && s.owner == peer.session_id)
+            .is_some_and(|s| s.owner == peer.session_id)
         {
             shares.remove(&stream_id)
         } else {
