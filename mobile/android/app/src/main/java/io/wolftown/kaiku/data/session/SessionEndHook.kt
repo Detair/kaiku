@@ -11,8 +11,10 @@ import java.util.logging.Logger
  * the old account is still capturing when the account state is cleared.
  *
  * Dependency-free on purpose: the token store knows nothing about voice. The
- * app installs the block once at start. The block must be quick and must not
- * wait for other threads. A failing block never stops the sign-out: its
+ * app installs the blocks once at start. A block runs on the caller's thread
+ * (which may hold the token store's lock): it must not call into WebRTC
+ * there and may wait for another thread only for a short, bounded time
+ * (voice waits at most 2 s for the microphone to be released). A failing block never stops the sign-out: its
  * exception is logged and the session is removed all the same. The regular
  * teardown ([SessionTeardownRunner]) still runs afterwards.
  */
