@@ -197,6 +197,15 @@ fn from_the_page(state: &AppState, headers: &HeaderMap) -> bool {
     }
 }
 
+/// A page load the browser made on its own or from the page itself
+/// (`Sec-Fetch-Site: none` or `same-origin`, or a browser that sends none).
+fn own_navigation(headers: &HeaderMap) -> bool {
+    headers
+        .get("sec-fetch-site")
+        .and_then(|v| v.to_str().ok())
+        .is_none_or(|site| matches!(site, "none" | "same-origin"))
+}
+
 /// `Set-Cookie` for the browser secret: host-only, session lifetime (the
 /// flow lives at most 15 minutes), scoped to the flow's routes.
 fn secret_cookie(state: &AppState, flow_id: Uuid, secret: &Secret256) -> AuthResult<HeaderValue> {
@@ -267,9 +276,12 @@ pub async fn page(
         // ended attempt) hands its refusal to the app instead of offering a
         // ceremony that cannot work.
         match registration_open(&state, flow_id, &stored.flow).await {
-            Err(e) if is_refusal(&e) => {
+            // Stored as the flow's result only for the browser's own
+            // navigation (a load from another site gets the expired page).
+            Err(e) if is_refusal(&e) && own_navigation(&headers) => {
                 return fail_with(&state, lang, flow_id, &stored, refusal_code(&e)).await;
             }
+            Err(e) if is_refusal(&e) => return expired_page(lang),
             _ => {}
         }
         let failed = query.as_deref() == Some("failed");

@@ -2709,3 +2709,44 @@ async fn a_refused_finish_or_cancel_is_a_page_that_sends_back_to_the_app(pool: P
         );
     }
 }
+
+#[sqlx::test]
+async fn only_the_browsers_own_navigation_hands_a_refusal_to_the_app(pool: PgPool) {
+    let p = desktop_pc(&pool).await;
+    let (id, code) = with_code(&p).await;
+    let flow = pc_flow(&p, &id).await;
+    let cookie = right_code(&p, &flow, &code).await;
+    // The attempt ends: the flow can no longer register.
+    let (s, _) = crate::pc_setup::call(
+        &p.app,
+        Method::DELETE,
+        &format!("/auth/pc-setups/{id}"),
+        &p.token,
+        None,
+    )
+    .await;
+    assert_eq!(s, 204);
+    let r = &p.app.router;
+    let sibling = Sender {
+        origin: None,
+        site: Some("same-site"),
+    };
+    let g = browser_from(
+        r,
+        sibling,
+        Method::GET,
+        &flow.path,
+        None,
+        None,
+        Some(&cookie),
+    )
+    .await;
+    assert!(hidden(&g.body, "error").is_none(), "{}", g.body);
+    // The person's own navigation still hands the refusal to the app.
+    let own = Sender {
+        origin: None,
+        site: Some("none"),
+    };
+    let g = browser_from(r, own, Method::GET, &flow.path, None, None, Some(&cookie)).await;
+    assert!(hidden(&g.body, "error").is_some(), "{}", g.body);
+}
