@@ -72,6 +72,9 @@ class VoiceCallService : Service() {
         )
     }
 
+    /** The start this service runs for (its notification's actions carry it). */
+    private var startGeneration = 0L
+
     override fun onCreate() {
         super.onCreate()  // REQUIRED: Hilt injects fields here
     }
@@ -125,16 +128,19 @@ class VoiceCallService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         // Handle notification action intents
+        // An action acts only on the start whose notification showed it.
+        val actionGeneration = intent?.getLongExtra(EXTRA_GENERATION, -1L) ?: -1L
         when (intent?.getStringExtra(EXTRA_ACTION)) {
             ACTION_MUTE_TOGGLE -> {
-                voiceServiceEvents.emit(VoiceServiceEvent.MuteToggle)
+                if (notificationGate.actionApplies(actionGeneration)) voiceServiceEvents.emit(VoiceServiceEvent.MuteToggle)
                 return START_NOT_STICKY
             }
             ACTION_DISCONNECT -> {
-                voiceServiceEvents.emit(VoiceServiceEvent.Disconnect)
+                if (notificationGate.actionApplies(actionGeneration)) voiceServiceEvents.emit(VoiceServiceEvent.Disconnect)
                 return START_NOT_STICKY
             }
         }
+        startGeneration = actionGeneration
 
         val channelName = intent?.getStringExtra(EXTRA_CHANNEL_NAME)
             ?: getString(R.string.voice_default_channel_name)
@@ -178,7 +184,7 @@ class VoiceCallService : Service() {
             throw e
         }
 
-        ongoingNotification.follow(intent?.getLongExtra(EXTRA_GENERATION, 0L) ?: 0L)
+        ongoingNotification.follow(startGeneration)
         logger.info("VoiceCallService started")
         return START_NOT_STICKY
     }
@@ -226,13 +232,15 @@ class VoiceCallService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        // Mute toggle action — delivered as a service intent
+        // Mute toggle action — delivered as a service intent, for this start only (its request
+        // code too, so the intent of an earlier start is not changed into this one's).
         val muteIntent = Intent(this, VoiceCallService::class.java).apply {
             putExtra(EXTRA_ACTION, ACTION_MUTE_TOGGLE)
+            putExtra(EXTRA_GENERATION, startGeneration)
         }
         val mutePendingIntent = PendingIntent.getService(
             this,
-            1,
+            (startGeneration * 2 + 1).toInt(),
             muteIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
@@ -240,10 +248,11 @@ class VoiceCallService : Service() {
         // Disconnect action — delivered as a service intent
         val disconnectIntent = Intent(this, VoiceCallService::class.java).apply {
             putExtra(EXTRA_ACTION, ACTION_DISCONNECT)
+            putExtra(EXTRA_GENERATION, startGeneration)
         }
         val disconnectPendingIntent = PendingIntent.getService(
             this,
-            2,
+            (startGeneration * 2 + 2).toInt(),
             disconnectIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )

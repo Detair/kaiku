@@ -71,4 +71,12 @@ class CallIntentsTest {
     fun `an unknown broadcast is nothing`() {
         assertNull(CallIntents.inputOf("something.else", ring, nowMs = 1_100_000L))
     }
+
+    @Test
+    fun `the intents of two calls' rings in one conversation never share a request code`() {
+        val first = CallIntents.ringRequestBase("dm-1", "c-1")
+        val second = CallIntents.ringRequestBase("dm-1", "c-2")
+        org.junit.Assert.assertTrue((first..first + 3).intersect(second..second + 3).isEmpty())
+        org.junit.Assert.assertEquals(first, CallIntents.ringRequestBase("dm-1", "c-1"))
+    }
 }

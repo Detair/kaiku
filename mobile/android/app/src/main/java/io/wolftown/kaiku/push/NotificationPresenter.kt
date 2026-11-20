@@ -193,7 +193,7 @@ class AndroidNotificationPresenter internal constructor(
         val text = CallNotificationText.of(n)
         val content = if (text.name != null) context.getString(text.res, text.name) else context.getString(text.res)
         val ring = CallIntents.Ring(n.userId, n.channelId, n.callId, callerId, n.callerName, n.ringingSinceMs)
-        val requestBase = "ring-${n.channelId}".hashCode()
+        val requestBase = CallIntents.ringRequestBase(n.channelId, n.callId)
         val show = PendingIntent.getActivity(
             context, requestBase, CallIntents.screen(context, ring, CallIntents.ACTION_SHOW),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,

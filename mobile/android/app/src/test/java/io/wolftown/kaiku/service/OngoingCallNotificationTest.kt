@@ -241,4 +241,18 @@ class OngoingCallNotificationTest {
 
         assertEquals(before, h.notifications.calls)
     }
+
+    @Test
+    fun `an action of the ongoing notification applies only to the start it was shown for`() {
+        val gate = CallNotificationGate()
+        val first = gate.open()
+        org.junit.Assert.assertTrue(gate.actionApplies(first))
+        // The next call started the service again: the earlier notification's buttons do nothing.
+        val second = gate.open()
+        org.junit.Assert.assertFalse(gate.actionApplies(first))
+        org.junit.Assert.assertTrue(gate.actionApplies(second))
+        // Stopped: nothing applies.
+        gate.retire()
+        org.junit.Assert.assertFalse(gate.actionApplies(second))
+    }
 }

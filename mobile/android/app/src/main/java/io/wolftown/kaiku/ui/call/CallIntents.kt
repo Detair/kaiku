@@ -59,6 +59,12 @@ object CallIntents {
      * or declined it here or elsewhere), going away earlier was the user's
      * swipe and changes nothing.
      */
+    /**
+     * The first of the four request codes of a ring notification's intents: per conversation
+     * and call, so the intents of a ring are never changed into another call's.
+     */
+    fun ringRequestBase(channelId: String, callId: String): Int = "ring-$channelId-$callId".hashCode() * 4
+
     fun inputOf(action: String?, ring: Ring, nowMs: Long): CallInput? = when (action) {
         ACTION_DECLINE -> CallInput.Decline(ring.ref())
         ACTION_RING_GONE -> {

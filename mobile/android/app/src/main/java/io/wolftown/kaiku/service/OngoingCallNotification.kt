@@ -113,4 +113,11 @@ internal class CallNotificationGate {
     fun ifOpen(generation: Long, block: () -> Unit) = synchronized(lock) {
         if (open && generation == this.generation) block()
     }
+
+    /**
+     * Whether an action of the ongoing-call notification posted for the start [generation]
+     * applies now: only while that start is the open one. A tap on the notification of an
+     * earlier start (another call, or one that ended) does nothing.
+     */
+    fun actionApplies(generation: Long): Boolean = synchronized(lock) { open && generation == this.generation }
 }
