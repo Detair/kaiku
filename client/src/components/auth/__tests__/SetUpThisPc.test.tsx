@@ -436,11 +436,18 @@ describe("on the desktop", () => {
     expect(signal?.aborted).toBe(true);
   });
 
-  it("a refused redeem shows the existing passkey error text", async () => {
-    await openAt("code");
-    setUpThisPcInBrowser.mockRejectedValueOnce(new PasskeyError("PASSKEY_LIMIT"));
+  it("a refused redeem after the code shows the existing passkey error text", async () => {
+    // A redeem refusal arrives when the code was typed: the step is `enrolled`.
+    polls(status("code"), status("enrolled"));
+    let refuse: (e: unknown) => void = () => undefined;
+    setUpThisPcInBrowser.mockImplementation(() => new Promise((_, reject) => (refuse = reject)));
+    render(() => <SetUpThisPc onClose={vi.fn()} />);
     fireEvent.click(await screen.findByRole("button", { name: "Open the browser" }));
+    await screen.findByText("The code was right. Now create a passkey on this computer.");
+    refuse(new PasskeyError("PASSKEY_LIMIT"));
     expect(await screen.findByText("You already have 10 passkeys. Remove one first.")).toBeTruthy();
+    // One line: the passkey text, not the "interrupted" line as well.
+    expect(screen.queryByText("The browser step was interrupted. Use Start again.")).toBeNull();
   });
 
   it("a flow that failed in state code can be opened again", async () => {

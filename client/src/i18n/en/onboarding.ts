@@ -52,4 +52,5 @@ export const onboarding = {
   "onboarding.saveName.failed": "Your display name wasn't saved. You can update it later in settings.",
   "onboarding.serverSetupPending.title": "This server is still being set up",
   "onboarding.serverSetupPending.text": "An admin has to finish the first setup. Until then some things may not work yet.",
+  "onboarding.serverSetupCheckFailed.text": "Kaiku could not check whether you can set up this server.",
 } as const satisfies Record<`onboarding.${string}`, string>;

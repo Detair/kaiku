@@ -11,7 +11,7 @@
  * - setup_required flag is true in auth response
  */
 
-import { Component, createResource, createSignal, createEffect, Show } from "solid-js";
+import { Component, createResource, createSignal, createEffect, Match, Show, Switch } from "solid-js";
 import { t } from "@/i18n";
 import { checkAdminStatus } from "@/lib/tauri/admin";
 import { codeIs } from "@/lib/errorCode";
@@ -416,9 +416,7 @@ const SetupForm: Component = () => {
 
 /**
  * A user who is not a system admin cannot complete the setup (the server
- * answers 403), so they get a closable notice instead of the wizard; so does
- * anyone whose admin status cannot be read (an admin gets the wizard after a
- * reload).
+ * answers 403), so they get a closable notice instead of the wizard.
  */
 const SetupPendingNotice: Component = () => (
   <Modal
@@ -439,21 +437,55 @@ const SetupPendingNotice: Component = () => (
   </Modal>
 );
 
+/**
+ * The admin status could not be read: say so, with Retry and Close, never
+ * the form (only an admin can send it) and never the text for non-admins.
+ */
+const SetupCheckFailed: Component<{ onRetry: () => void }> = (props) => (
+  <Modal
+    onClose={() => clearSetupRequired()}
+    labelledBy="setup-check-failed-title"
+    class="bg-surface-layer2 rounded-xl p-6 w-[28rem] max-w-full shadow-2xl border border-white/10 space-y-4"
+    testId="setup-check-failed"
+  >
+    <h2 id="setup-check-failed-title" class="text-lg font-semibold text-text-primary">
+      {t("onboarding.serverSetupCheckFailed.text")}
+    </h2>
+    <div class="flex justify-end gap-2">
+      <button
+        type="button"
+        class="min-h-11 px-3 rounded-lg text-base text-text-primary hover:bg-white/10"
+        onClick={() => clearSetupRequired()}
+      >
+        {t("common.close")}
+      </button>
+      <button type="button" class="btn-primary min-h-11 text-base" onClick={() => props.onRetry()}>
+        {t("common.retry")}
+      </button>
+    </div>
+  </Modal>
+);
+
 const SetupWizard: Component = () => {
-  const [admin] = createResource(async () => {
+  const [admin, { refetch }] = createResource(async (): Promise<"admin" | "member" | "unknown"> => {
     try {
-      return (await checkAdminStatus()).is_admin;
+      return (await checkAdminStatus()).is_admin ? "admin" : "member";
     } catch {
-      // Unknown: the closable notice, never a form that only an admin can send.
-      return false;
+      return "unknown";
     }
   });
   return (
-    <Show when={admin() !== undefined}>
-      <Show when={admin()} fallback={<SetupPendingNotice />}>
+    <Switch>
+      <Match when={admin() === "admin"}>
         <SetupForm />
-      </Show>
-    </Show>
+      </Match>
+      <Match when={admin() === "member"}>
+        <SetupPendingNotice />
+      </Match>
+      <Match when={admin() === "unknown"}>
+        <SetupCheckFailed onRetry={() => void refetch()} />
+      </Match>
+    </Switch>
   );
 };
 

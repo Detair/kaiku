@@ -21,6 +21,8 @@ import LinuxPasskeyHint from "./LinuxPasskeyHint";
 interface BrowserFlow {
   ctl: AbortController;
   error: () => string | null;
+  /** The failure has its own passkey text (limit, already added, …). */
+  passkeyText: () => boolean;
   /** The command has returned (nothing left to cancel). */
   done: boolean;
 }
@@ -42,12 +44,22 @@ function desktopFailureText(err: unknown): string {
   return passkeyFailureText(err, "pcSetup.desktop.failed", PASSKEY_ERRORS) || t("pcSetup.desktop.failed");
 }
 
+/** Whether a failure has its own passkey text, which stays true after the code. */
+function hasPasskeyText(err: unknown): boolean {
+  return (
+    err instanceof PasskeyError &&
+    err.code !== "PASSKEY_FAILED" &&
+    Object.prototype.hasOwnProperty.call(PASSKEY_ERRORS, err.code)
+  );
+}
+
 function startFlow(attemptId: string, onState: PcSetupStepProps["onState"]) {
   const old = flows.get(attemptId);
   if (old && !old.done) old.ctl.abort();
   const ctl = new AbortController();
   const [error, setError] = createSignal<string | null>(null);
-  const flow: BrowserFlow = { ctl, error, done: false };
+  const [passkeyText, setPasskeyText] = createSignal(false);
+  const flow: BrowserFlow = { ctl, error, passkeyText, done: false };
   flows.set(attemptId, flow);
   setVersion((v) => v + 1);
   setUpThisPcInBrowser(attemptId, ctl.signal).then(
@@ -60,6 +72,7 @@ function startFlow(attemptId: string, onState: PcSetupStepProps["onState"]) {
       flow.done = true;
       setVersion((v) => v + 1);
       if (ctl.signal.aborted) return;
+      setPasskeyText(hasPasskeyText(err));
       setError(desktopFailureText(err));
     },
   );
@@ -92,6 +105,13 @@ const running = (attemptId: string): boolean => {
 const failure = (attemptId: string): string | null => {
   version();
   return flows.get(attemptId)?.error() ?? null;
+};
+
+/** The failure text when it is one of the passkey texts, else null. */
+const passkeyFailure = (attemptId: string): string | null => {
+  version();
+  const f = flows.get(attemptId);
+  return f?.passkeyText() ? f.error() : null;
 };
 
 /** State `code`: open the browser, where the code is typed. */
@@ -138,9 +158,9 @@ export const DesktopPasskeyStep: Component<PcSetupStepProps> = (props) => {
         when={running(attemptId)}
         fallback={
           <>
-            {/* After the code only Start again can help: one line that says so. */}
+            {/* After the code one line: the passkey text (limit, already added, …), else Start again. */}
             <p role="alert" class="text-sm text-text-primary">
-              {t("pcSetup.desktop.interrupted")}
+              {passkeyFailure(attemptId) ?? t("pcSetup.desktop.interrupted")}
             </p>
           </>
         }

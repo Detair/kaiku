@@ -55,10 +55,22 @@ describe("SetupWizard", () => {
     expect(await screen.findByTestId("setup-wizard")).toBeTruthy();
   });
 
-  it("an admin status that cannot be read shows the notice, not the form", async () => {
+  it("an admin status that cannot be read offers Retry and Close, not the form", async () => {
+    admin.checkAdminStatus.mockRejectedValueOnce(new Error("offline"));
+    mount();
+    expect(await screen.findByText("Kaiku could not check whether you can set up this server.")).toBeTruthy();
+    expect(screen.queryByTestId("setup-wizard")).toBeNull();
+    expect(screen.queryByText("This server is still being set up")).toBeNull();
+    admin.checkAdminStatus.mockResolvedValue({ is_admin: true, is_elevated: false, elevation_expires_at: null });
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByTestId("setup-wizard")).toBeTruthy();
+  });
+
+  it("closing the could-not-check state hides it", async () => {
     admin.checkAdminStatus.mockRejectedValue(new Error("offline"));
     mount();
-    expect(await screen.findByText("This server is still being set up")).toBeTruthy();
-    expect(screen.queryByTestId("setup-wizard")).toBeNull();
+    await screen.findByText("Kaiku could not check whether you can set up this server.");
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(authState.setupRequired).toBe(false);
   });
 });
