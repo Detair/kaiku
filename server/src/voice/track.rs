@@ -195,27 +195,32 @@ impl TrackRouter {
                     Layer::Medium,
                 ));
 
-        // DashMap::get returns a guard that provides lock-free concurrent read access.
-        // Record the metric outside the guard scope to avoid holding it during I/O.
-        let forwarded = if let Some(subscribers) = self.subscriptions.get(&key) {
-            let mut count = 0u32;
-            for sub in subscribers.value() {
-                if sub.active_layer == layer || !is_simulcast {
-                    count += 1;
-                    // Write RTP packet to local track (forwards to subscriber)
-                    if let Err(e) = sub.local_track.write_rtp(rtp_packet).await {
-                        warn!(
-                            subscriber = %sub.subscriber_id,
-                            error = %e,
-                            "Failed to forward RTP packet"
-                        );
-                    }
-                }
+        // Collect the tracks to write while the map's guard is held, and
+        // write after it is released: a slow write must not hold the shard
+        // (a subscribe or removal on it would block its worker thread).
+        let targets: Vec<(Uuid, Arc<TrackLocalStaticRTP>)> = self
+            .subscriptions
+            .get(&key)
+            .map(|subscribers| {
+                subscribers
+                    .value()
+                    .iter()
+                    .filter(|sub| sub.active_layer == layer || !is_simulcast)
+                    .map(|sub| (sub.subscriber_id, sub.local_track.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let forwarded = targets.len();
+        for (subscriber_id, local_track) in targets {
+            // Write RTP packet to local track (forwards to subscriber)
+            if let Err(e) = local_track.write_rtp(rtp_packet).await {
+                warn!(
+                    subscriber = %subscriber_id,
+                    error = %e,
+                    "Failed to forward RTP packet"
+                );
             }
-            count
-        } else {
-            0
-        };
+        }
         if forwarded > 0 {
             crate::observability::metrics::record_rtp_packet_forwarded();
         }
