@@ -37,6 +37,24 @@ class TokenStorageTest {
     }
 
     @Test
+    fun `a session and its address are kept together or not at all`() {
+        val prefs = InMemorySharedPreferences()
+        val store = TokenStorage(prefs)
+        store.saveServerUrl("https://old.example.com")
+        prefs.failingCommits = 1
+
+        assertFalse(store.saveSession("https://new.example.com", "access-2", "refresh-2", 900, "user-2"))
+        assertEquals("https://old.example.com", store.getServerUrl())
+        assertNull(store.getAccessToken())
+        assertNull(store.getUserId())
+
+        assertTrue(store.saveSession("https://new.example.com", "access-2", "refresh-2", 900, "user-2"))
+        assertEquals("https://new.example.com", store.getServerUrl())
+        assertEquals("access-2", store.getAccessToken())
+        assertEquals("user-2", store.getUserId())
+    }
+
+    @Test
     fun `conditional save writes nothing after clear`() {
         storage.clear()
 

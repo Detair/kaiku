@@ -1468,6 +1468,44 @@ class SetupOwnerTest {
      * leave the code 2 minutes. The phone still waits the server's code lifetime and the margin
      * (5 + 2 minutes of its own time) before it lets go.
      */
+    // ── The claim is made for the session that was checked ──────────────────────────────────────
+
+    /** Someone signs in while the question is on screen: confirming sends no claim and keeps nothing. */
+    @Test fun `a sign-in that completes while the question is shown stops the claim`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        val (owner, f) = phone()
+        val v = SetupFlowViewModel(owner)
+        v.start(entry)
+        assertTrue(v.ui.value is SetupUi.ConfirmSubject)
+        env.signedInUser = "someone-else"
+
+        v.confirmSubject(activity)
+
+        assertEquals(SetupUi.Ended(R.string.setup_for_someone_else, canRetry = false, arg = "Oma"), v.ui.value)
+        assertEquals(0, enroll.calls.count { it == "claim" })
+        assertNull(f.repo.local())
+        assertTrue(f.store.writes.none { it != "clear" })
+        assertFalse(f.keyStore.hasKey())
+    }
+
+    /** The app is tied to another server meanwhile: confirming sends no claim and keeps nothing. */
+    @Test fun `a sign-in on another server while the question is shown stops the claim`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        val (owner, f) = phone()
+        val v = SetupFlowViewModel(owner)
+        v.start(entry)
+        assertTrue(v.ui.value is SetupUi.ConfirmSubject)
+        env.pinned = "https://other.example.org"
+        env.signedInUser = FakeEnrollmentApi.SUBJECT_ID
+
+        v.confirmSubject(activity)
+
+        assertEquals(SetupUi.Ended(R.string.setup_other_server, canRetry = false), v.ui.value)
+        assertEquals(0, enroll.calls.count { it == "claim" })
+        assertNull(f.repo.local())
+        assertFalse(f.keyStore.hasKey())
+    }
+
     @Test fun `a server time running ahead never shortens the wait after a code`() = runTest {
         env.pinned = SigFixtures.ORIGIN
         val codeExpires = Instant.parse(enroll.claimResult.codeExpiresAt)

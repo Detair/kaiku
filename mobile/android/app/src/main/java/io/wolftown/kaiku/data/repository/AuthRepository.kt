@@ -132,6 +132,18 @@ class AuthRepository @Inject constructor(
         precondition: () -> Boolean = { true },
         onInstalled: () -> Unit = {},
     ): Boolean = synchronized(pendingLock) {
+        // Not while a setup creates its key record for the session it checked (see SessionKeyLock).
+        synchronized(io.wolftown.kaiku.data.keydevice.SessionKeyLock) { installLocked(accessToken, refreshToken, expiresIn, userId, precondition, onInstalled) }
+    }
+
+    private fun installLocked(
+        accessToken: String,
+        refreshToken: String?,
+        expiresIn: Int,
+        userId: String,
+        precondition: () -> Boolean,
+        onInstalled: () -> Unit,
+    ): Boolean {
         if (authState.session.value is AuthSession.LoggedIn || keyDevicePolicy.refusesOtherSignIn() || !precondition()) return false
         tokenStorage.saveTokens(
             accessToken = accessToken,
@@ -141,7 +153,7 @@ class AuthRepository @Inject constructor(
         )
         onInstalled()
         authState.setLoggedIn(userId)
-        true
+        return true
     }
 
     /**
@@ -558,25 +570,31 @@ class AuthRepository @Inject constructor(
             // The previous session's teardown finishes before a new one starts.
             if (running == null) sessionTeardown.awaitIdle()
             var replacedAccess: String? = null
-            val installed = synchronized(pendingLock) {
+            var stored = true
+            // Not while a setup creates its key record for the session it checked (see SessionKeyLock).
+            val installed = synchronized(pendingLock) { synchronized(io.wolftown.kaiku.data.keydevice.SessionKeyLock) {
                 val unchanged = loginAttempt == start.attempt &&
                     tokenStorage.getServerUrl() == start.addressBefore &&
                     authState.session.value == start.session &&
                     stillThisKey()
                 if (unchanged) {
-                    // The key's signature was accepted: only now does the app's address follow the key.
-                    if (start.addressBefore != serverUrl) tokenStorage.saveServerUrl(serverUrl)
                     if (running != null) replacedAccess = tokenStorage.getAccessToken()
-                    tokenStorage.saveTokens(auth.accessToken, auth.refreshToken, auth.expiresIn, user.id)
-                    authState.setLoggedIn(user.id)
-                    (authState.session.value as? AuthSession.LoggedIn)?.let(installedAs)
+                    // The key's signature was accepted: only now does the app's address follow the
+                    // key, in the same durable write as the session; signed in only once it is stored.
+                    stored = tokenStorage.saveSession(
+                        serverUrl.takeIf { start.addressBefore != it }, auth.accessToken, auth.refreshToken, auth.expiresIn, user.id,
+                    )
+                    if (stored) {
+                        authState.setLoggedIn(user.id)
+                        (authState.session.value as? AuthSession.LoggedIn)?.let(installedAs)
+                    }
                 }
-                unchanged
-            }
+                unchanged && stored
+            } }
             settled = true
             if (!installed) {
                 endUnused(serverUrl, auth)
-                return Result.failure(IllegalStateException("Device sign-in was cancelled or superseded"))
+                return Result.failure(IllegalStateException(if (stored) "Device sign-in was cancelled or superseded" else "Device session not stored"))
             }
             // The new session is installed: ending the replaced one runs to the end even if the
             // caller is cancelled now, and never turns the installed sign-in into a failure.

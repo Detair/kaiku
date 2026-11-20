@@ -74,6 +74,12 @@ fun interface KeyStorageCheck {
     }
 }
 
+/**
+ * Creating the first key record and installing a session exclude each other: a setup's check of
+ * who is signed in, on which server, and the record it then creates see the same session.
+ */
+object SessionKeyLock
+
 /** What a change of the stored record did. Only [Done] changed anything. */
 sealed interface Change {
     /** Written ([record]) or forgotten (null). */
@@ -251,9 +257,18 @@ class KeyDeviceRepository @Inject constructor(
         }
     }
 
-    /** The first record of a setup: only where none is stored, and only for the key in the alias. */
+    /**
+     * The first record of a setup: only where none is stored, and only for the key in the alias.
+     * [refuse] is asked under [SessionKeyLock], right before the write, with no session being
+     * installed meanwhile: true refuses ([Change.Mismatch], nothing written).
+     */
     @Synchronized
-    fun create(record: StoredKeyDevice): Change {
+    fun create(record: StoredKeyDevice, refuse: () -> Boolean = { false }): Change = synchronized(SessionKeyLock) {
+        if (refuse()) return Change.Mismatch
+        createLocked(record)
+    }
+
+    private fun createLocked(record: StoredKeyDevice): Change {
         when (storage) {
             KeyStorage.Unreadable -> return Change.Unreadable
             is KeyStorage.Present -> return Change.Mismatch

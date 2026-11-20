@@ -922,6 +922,9 @@ class SetupOwner internal constructor(
             uvClass = k.uvClass.wire,
             apiLevel = env.apiLevel,
         )
+        // Checked again where the record is made, with no session being installed meanwhile: the
+        // question was answered for the person and server signed in then (or for nobody).
+        @StringRes var refused: Int? = null
         val created = keyDevices.create(
             StoredKeyDevice(
                 device = LocalKeyDevice(
@@ -941,8 +944,21 @@ class SetupOwner internal constructor(
                 // A setup link or a scanned code: the claim completes only through the code it gets.
                 codeClaim = a.entry.ticket == null,
             ),
-        )
+        ) {
+            val signedIn = env.signedInUserId()
+            val pinned = env.pinnedOrigin()
+            refused = when {
+                signedIn != null && signedIn != s.userId -> R.string.setup_for_someone_else
+                pinned != null && pinned != a.origin -> R.string.setup_other_server
+                else -> null
+            }
+            refused != null
+        }
         val rec = (created as? Change.Done)?.record
+        refused?.let { why ->
+            dropKey(a)
+            return show(a, SetupUi.Ended(why, canRetry = false, arg = if (why == R.string.setup_for_someone_else) nameOf(s) else null))
+        }
         if (rec == null) {
             logger.warning("Claim not recorded: ${created.javaClass.simpleName}")
             dropKey(a)

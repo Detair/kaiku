@@ -40,7 +40,15 @@ class AuthRepositoryDeviceSessionTest {
     private val tokenStorage: TokenStorage = mockk(relaxed = true) {
         every { getServerUrl() } answers { serverUrl }
         every { saveServerUrl(any()) } answers { serverUrl = firstArg() }
+        every { saveSession(any(), any(), any(), any(), any()) } answers {
+            if (saveFails) return@answers false
+            firstArg<String?>()?.let { serverUrl = it }
+            savedAccess = secondArg()
+            true
+        }
     }
+    private var saveFails = false
+    private var savedAccess: String? = null
     private val authState = AuthState(CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher()))
     private val repository = AuthRepository(authApi, tokenStorage, authState, mockk<PushRegistrar>(relaxed = true), noTeardown(authState))
     private val auth = AuthResponse(accessToken = "device-access", refreshToken = "device-refresh", expiresIn = 900, tokenType = "Bearer")
@@ -52,8 +60,25 @@ class AuthRepositoryDeviceSessionTest {
 
         assertTrue(repository.installDeviceSession(auth, "u1", start).isSuccess)
 
-        verify { tokenStorage.saveTokens("device-access", "device-refresh", 900, "u1") }
+        verify { tokenStorage.saveSession(any(), "device-access", "device-refresh", 900, "u1") }
         assertEquals("u1", (authState.session.value as AuthSession.LoggedIn).userId)
+    }
+
+    /** The address and the session are one write: when it does not land, nothing is signed in. */
+    @Test fun `a device session whose write fails is not signed in and is ended`() = runTest {
+        serverUrl = null
+        saveFails = true
+        coEvery { authApi.authenticatedGetMe("device-access", origin) } returns alice
+        val start = repository.beginDeviceSignIn(origin)!!
+
+        assertTrue(repository.installDeviceSession(auth, "u1", start).isFailure)
+
+        assertEquals(AuthSession.LoggedOut, authState.session.value)
+        assertNull(serverUrl)
+        assertNull(savedAccess)
+        verify(exactly = 0) { tokenStorage.saveTokens(any(), any(), any(), any()) }
+        verify(exactly = 0) { tokenStorage.saveServerUrl(any()) }
+        coVerify { authApi.logoutSession(origin, "device-access", "device-refresh") }
     }
 
     @Test fun `a device session landing after a logout installs nothing and is ended`() = runTest {
@@ -65,7 +90,7 @@ class AuthRepositoryDeviceSessionTest {
 
         assertTrue(repository.installDeviceSession(auth, "u1", start).isFailure)
 
-        verify(exactly = 0) { tokenStorage.saveTokens("device-access", any(), any(), any()) }
+        verify(exactly = 0) { tokenStorage.saveSession(any(), "device-access", any(), any(), any()) }
         coVerify { authApi.logoutSession(origin, "device-access", "device-refresh") }
         assertEquals(AuthSession.LoggedOut, authState.session.value)
     }
@@ -80,7 +105,7 @@ class AuthRepositoryDeviceSessionTest {
 
         assertTrue(repository.installDeviceSession(auth, "u1", start).isFailure)
 
-        verify(exactly = 0) { tokenStorage.saveTokens("device-access", any(), any(), any()) }
+        verify(exactly = 0) { tokenStorage.saveSession(any(), "device-access", any(), any(), any()) }
         coVerify { authApi.logoutSession(origin, "device-access", "device-refresh") }
         assertEquals(AuthSession.LoggedOut, authState.session.value)
     }
@@ -94,7 +119,7 @@ class AuthRepositoryDeviceSessionTest {
 
         assertTrue(repository.installDeviceSession(auth, "u1", start).isFailure)
 
-        verify(exactly = 0) { tokenStorage.saveTokens("device-access", any(), any(), any()) }
+        verify(exactly = 0) { tokenStorage.saveSession(any(), "device-access", any(), any(), any()) }
         coVerify { authApi.logoutSession(origin, "device-access", "device-refresh") }
     }
 
@@ -106,7 +131,7 @@ class AuthRepositoryDeviceSessionTest {
 
         assertTrue(repository.installDeviceSession(auth, "u1", start).exceptionOrNull() is AlreadySignedInException)
 
-        verify(exactly = 0) { tokenStorage.saveTokens("device-access", any(), any(), any()) }
+        verify(exactly = 0) { tokenStorage.saveSession(any(), "device-access", any(), any(), any()) }
         coVerify { authApi.logoutSession(origin, "device-access", "device-refresh") }
         assertEquals(running, authState.session.value)
     }
@@ -193,7 +218,7 @@ class AuthRepositoryDeviceSessionTest {
         started.await()
         job.cancel()
         testScheduler.advanceUntilIdle()
-        verify { tokenStorage.saveTokens("device-access", "device-refresh", 900, "u1") }
+        verify { tokenStorage.saveSession(any(), "device-access", "device-refresh", 900, "u1") }
         coVerify(exactly = 1) { authApi.logoutSession(origin, "old-access", null) }
         // The installed session itself is never ended by the cancellation.
         coVerify(exactly = 0) { authApi.logoutSession(origin, "device-access", any()) }
@@ -243,7 +268,7 @@ class AuthRepositoryDeviceSessionTest {
         assertTrue(repository.installDeviceSession(auth, "u1", start).exceptionOrNull() is IOException)
 
         coVerify(exactly = 1) { authApi.logoutSession(origin, "device-access", "device-refresh") }
-        verify(exactly = 0) { tokenStorage.saveTokens("device-access", any(), any(), any()) }
+        verify(exactly = 0) { tokenStorage.saveSession(any(), "device-access", any(), any(), any()) }
     }
 
     @Test fun `a device sign-in cancelled while its profile loads ends its session`() = runTest {
@@ -260,7 +285,7 @@ class AuthRepositoryDeviceSessionTest {
         job.join()
 
         coVerify(exactly = 1) { authApi.logoutSession(origin, "device-access", "device-refresh") }
-        verify(exactly = 0) { tokenStorage.saveTokens("device-access", any(), any(), any()) }
+        verify(exactly = 0) { tokenStorage.saveSession(any(), "device-access", any(), any(), any()) }
         assertEquals(AuthSession.LoggedOut, authState.session.value)
     }
 }

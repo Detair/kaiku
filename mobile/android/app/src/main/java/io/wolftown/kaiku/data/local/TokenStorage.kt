@@ -175,6 +175,46 @@ class TokenStorage internal constructor(
     }
 
     /**
+     * Stores a new session together with the server it belongs to ([serverUrl]; null: the saved
+     * one stays) in one durable write. True when it reached storage; false when it did not, and
+     * then nothing of it is kept (the earlier values are put back), so tokens of one server never
+     * sit beside the address of another. Starts a new session generation.
+     */
+    @Synchronized
+    fun saveSession(serverUrl: String?, accessToken: String, refreshToken: String?, expiresIn: Int, userId: String): Boolean {
+        val before = listOf(KEY_SERVER_URL, KEY_ACCESS_TOKEN, KEY_REFRESH_TOKEN, KEY_USER_ID).associateWith { k ->
+            readOr(null) { prefs.getString(k, null) }
+        }
+        val expiresBefore = getAccessTokenExpiresAtMillis()
+        sessionGeneration++
+        val expiresAt = System.currentTimeMillis() + expiresIn * 1000L
+        val written = try {
+            prefs.edit()
+                .apply { if (serverUrl != null) putString(KEY_SERVER_URL, serverUrl) }
+                .putString(KEY_ACCESS_TOKEN, accessToken)
+                .apply { if (refreshToken != null) putString(KEY_REFRESH_TOKEN, refreshToken) else remove(KEY_REFRESH_TOKEN) }
+                .putLong(KEY_EXPIRES_AT, expiresAt)
+                .putString(KEY_USER_ID, userId)
+                .commit()
+        } catch (e: RuntimeException) {
+            false
+        }
+        if (!written) {
+            logger.warning("Failed to persist the session; nothing of it is kept")
+            try {
+                prefs.edit().apply {
+                    before.forEach { (k, v) -> if (v != null) putString(k, v) else remove(k) }
+                    if (expiresBefore != 0L) putLong(KEY_EXPIRES_AT, expiresBefore) else remove(KEY_EXPIRES_AT)
+                }.commit()
+            } catch (_: RuntimeException) {
+            }
+            return false
+        }
+        sessionChanged()
+        return true
+    }
+
+    /**
      * Stores rotated tokens only if the stored refresh token is still
      * [expectedRefreshToken], i.e. the session was neither logged out nor
      * replaced while the refresh was in flight. Keeps the session generation.
