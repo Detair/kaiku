@@ -447,15 +447,23 @@ pub async fn join_voice(
 
                 // Atomic check-and-increment to avoid TOCTOU race between
                 // load() and fetch_add() when multiple tracks arrive concurrently.
-                let was_under_cap = count.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |c| {
-                    if c < voice::video_decoder::MAX_VIDEO_STREAMS {
-                        Some(c + 1)
-                    } else {
-                        None
+                let mut current = count.load(Ordering::SeqCst);
+                let was_under_cap = loop {
+                    if current >= voice::video_decoder::MAX_VIDEO_STREAMS {
+                        break false;
                     }
-                });
+                    match count.compare_exchange_weak(
+                        current,
+                        current + 1,
+                        Ordering::SeqCst,
+                        Ordering::SeqCst,
+                    ) {
+                        Ok(_) => break true,
+                        Err(seen) => current = seen,
+                    }
+                };
 
-                if was_under_cap.is_err() {
+                if !was_under_cap {
                     // Cap reached — emit metadata only so the UI knows the track exists.
                     info!(
                         user_id = %user_id,
@@ -1305,21 +1313,24 @@ pub async fn subscribe_video_frames(
         .ok_or_else(|| "Voice state not initialized".to_string())?;
     let (frame_buffer, frame_rx) = FrameBuffer::new();
     let sinks = voice.video_frame_sinks.clone();
-    let (id, flow) = sinks.subscribe(&stream_id, &page_id, frame_buffer);
+    let (id, flow) = sinks.subscribe(&stream_id, &page_id, frame_buffer)?;
     spawn_frame_emitter(sinks, on_frame, frame_rx, flow);
     info!(stream_id = %stream_id, subscription = id, "Registered video frame subscription");
     Ok(id)
 }
 
-/// The page has taken (rendered) a frame of this view.
+/// The page has taken (rendered) frame `seq` of this view.
 #[command]
 pub async fn ack_video_frame(
     stream_id: String,
     subscription_id: u64,
+    seq: u32,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     if let Some(voice) = state.voice.read().await.as_ref() {
-        voice.video_frame_sinks.ack(&stream_id, subscription_id);
+        voice
+            .video_frame_sinks
+            .ack(&stream_id, subscription_id, seq);
     }
     Ok(())
 }
@@ -1506,25 +1517,28 @@ mod tests {
     }
 
     impl CallAudio for FakeCallAudio {
-        async fn start_capture(&mut self, _tx: mpsc::Sender<Vec<u8>>) -> Result<(), AudioError> {
+        fn start_capture(
+            &mut self,
+            _tx: mpsc::Sender<Vec<u8>>,
+        ) -> impl std::future::Future<Output = Result<(), AudioError>> + Send {
             self.log.push("capture");
-            if self.capture_ok {
+            std::future::ready(if self.capture_ok {
                 Ok(())
             } else {
                 Err(AudioError::StreamError("mic gone".into()))
-            }
+            })
         }
 
-        async fn start_pcm_playback(
+        fn start_pcm_playback(
             &mut self,
             _rx: mpsc::Receiver<Vec<f32>>,
-        ) -> Result<(), AudioError> {
+        ) -> impl std::future::Future<Output = Result<(), AudioError>> + Send {
             self.log.push("playback");
-            if self.playback_ok {
+            std::future::ready(if self.playback_ok {
                 Ok(())
             } else {
                 Err(AudioError::DeviceNotFound("Headset".into()))
-            }
+            })
         }
 
         fn device_label(&self, kind: AudioErrorKind) -> String {
@@ -1609,7 +1623,7 @@ mod tests {
     async fn healthy_call_audio_reports_nothing() {
         let (_, started, events, sender_rx) = start(true, true).await;
         assert!(sender_rx.is_some());
-        assert!(events.is_empty());
+        assert_eq!(events, []);
         assert!(started.result.is_ok());
     }
 
@@ -1709,7 +1723,10 @@ mod tests {
     }
 
     impl VoiceSignal for FakeSignal {
-        async fn send_event(&self, event: ClientEvent) -> Result<(), String> {
+        fn send_event(
+            &self,
+            event: ClientEvent,
+        ) -> impl std::future::Future<Output = Result<(), String>> + Send {
             let name = match event {
                 ClientEvent::VoiceJoin { .. } => "join",
                 ClientEvent::VoicePublisherOffer { .. } => "offer",
@@ -1717,7 +1734,7 @@ mod tests {
                 _ => "other",
             };
             self.sent.lock().unwrap().push(name.to_string());
-            Ok(())
+            std::future::ready(Ok(()))
         }
     }
 
@@ -1948,7 +1965,7 @@ mod tests {
             Ok(())
         );
         assert_eq!(voice.read().await.as_ref().unwrap().epoch, None);
-        assert!(sent_by(&ws).is_empty());
+        assert_eq!(sent_by(&ws), Vec::<String>::new());
     }
 
     #[test]

@@ -6,7 +6,12 @@
 //! every publication still waiting for an applied answer is stopped and the
 //! frontend is told (`voice:local_capture_ended`, reason `not_sent`), so it
 //! runs its normal stop (server told, text shown). Nothing stays stuck: the
-//! next change offers again at once.
+//! connection is offered again right after a give-up that removed a track
+//! or dropped a queued change, and the next change offers at once.
+//!
+//! An answer is applied only to the offer whose media sections it names
+//! (answers carry no offer id): a late answer of an earlier offer with
+//! other sections is ignored, and the outstanding offer keeps its deadline.
 //!
 //! The server may drop a publisher offer silently (its offer rate limit)
 //! or answer it with a `voice_error`; both end at the deadline.
@@ -22,7 +27,7 @@ use uuid::Uuid;
 use super::screen_share::{LocalCaptureEnded, Removed, LOCAL_CAPTURE_ENDED_EVENT};
 use crate::network::{ClientEvent, WebSocketManager};
 use crate::video::publication::end_reason;
-use crate::webrtc::{OfferFailure, VideoKind};
+use crate::webrtc::{sdp_mids, OfferFailure, VideoKind};
 use crate::VoiceState;
 
 /// How long an offer waits for its answer. The server answers within a
@@ -108,16 +113,21 @@ pub fn send_offer<'a>(
         let sent = async {
             let channel_id = v.channel_id.clone().ok_or("Not in a voice channel")?;
             let sdp = v.webrtc.create_offer().await.map_err(|e| e.to_string())?;
+            let mids = sdp_mids(&sdp);
             let guard = ctx.ws.read().await;
             let sender = guard.as_ref().ok_or("WebSocket not connected")?;
             sender
                 .send(ClientEvent::VoicePublisherOffer { channel_id, sdp })
                 .await
+                .map(|()| mids)
         }
         .await;
         ride_on(&mut v.unconfirmed, id);
         match sent {
-            Ok(()) => arm_deadline(ctx, v.session_epoch, id),
+            Ok(mids) => {
+                v.negotiation.sent(id, mids);
+                arm_deadline(ctx, v.session_epoch, id);
+            }
             Err(e) => {
                 warn!(offer = id, "Publisher offer could not be sent: {e}");
                 offer_failed(v, ctx, id).await;
@@ -150,16 +160,21 @@ pub async fn offer_failed(v: &mut VoiceState, ctx: &NegotiationCtx, id: u64) {
             reoffer(&mut v.unconfirmed, id);
             send_offer(v, ctx, next).await;
         }
-        OfferFailure::GiveUp => give_up(v, ctx).await,
+        OfferFailure::GiveUp { reoffer } => give_up(v, ctx, reoffer).await,
     }
 }
 
 /// Stop every publication still waiting for an applied answer and tell the
 /// frontend, which runs its normal stop with a text. Senders are removed
 /// under the voice lock (quick); the publications shut down in the
-/// background, so the lock is not held for their bounded wait.
-pub async fn give_up(v: &mut VoiceState, ctx: &NegotiationCtx) {
+/// background, so the lock is not held for their bounded wait. When a
+/// sender was removed or a queued change was dropped (`reoffer`), the
+/// connection is offered once more, so the server learns of it (that
+/// offer has its own deadline and retry; it carries no new publication,
+/// so a failing one ends without another offer).
+pub async fn give_up(v: &mut VoiceState, ctx: &NegotiationCtx, reoffer: bool) {
     let waiting = std::mem::take(&mut v.unconfirmed);
+    let mut removed = false;
     for Waiting { item, .. } in waiting {
         let (kind, stream_id, publication) = match &item {
             Unconfirmed::Screen(id) => match v.shares.remove(*id) {
@@ -183,6 +198,7 @@ pub async fn give_up(v: &mut VoiceState, ctx: &NegotiationCtx) {
         if let Some(publication) = publication {
             let _ = v.webrtc.remove_video_sender(&publication.sender).await;
             tokio::spawn(publication.shutdown());
+            removed = true;
         }
         if let Some(app) = &ctx.app {
             let _ = app.emit(
@@ -195,6 +211,9 @@ pub async fn give_up(v: &mut VoiceState, ctx: &NegotiationCtx) {
             );
         }
     }
+    if removed || reoffer {
+        renegotiate(v, ctx, None).await;
+    }
 }
 
 /// Apply the answer to a renegotiation offer. A failing answer counts as a
@@ -205,10 +224,15 @@ pub async fn apply_renegotiation_answer(v: &mut VoiceState, ctx: &NegotiationCtx
         warn!("Publisher answer without an outstanding offer; ignored");
         return;
     };
+    if !v.negotiation.answer_matches(&sdp_mids(sdp)) {
+        // A late answer of an earlier offer (other media sections): not
+        // this offer's. Its own answer, or its deadline, decides.
+        warn!(offer = id, "Publisher answer for another offer; ignored");
+        return;
+    }
     if let Err(e) = v.webrtc.set_remote_answer(sdp).await {
-        // Answers carry no offer id: after a retry this may be the earlier
-        // offer's late answer (rare: it needs an answer slower than the
-        // deadline). It still counts as the retry failing.
+        // Same sections as the outstanding offer, but not applicable: it
+        // counts as that offer failing.
         let retry = v.negotiation.is_retry();
         warn!(
             offer = id,
@@ -272,6 +296,6 @@ mod tests {
         ride_on(&mut w, 21);
         assert!(w.iter().all(|x| x.offer == Some(21)));
         confirm(&mut w, 21);
-        assert!(w.is_empty());
+        assert_eq!(w, []);
     }
 }

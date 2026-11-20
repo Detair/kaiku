@@ -145,14 +145,39 @@ pub async fn start_webcam(
     Ok(())
 }
 
-/// Stop the camera, prepared or live (shut down outside the voice lock).
+/// Whether a stop for `wanted` (`None`: every camera, for a teardown)
+/// means the camera publication `current`.
+pub fn stop_names(wanted: Option<&str>, current: &str) -> bool {
+    wanted.is_none_or(|w| w == current)
+}
+
+/// Stop the camera `publication_id`, prepared or live (shut down outside
+/// the voice lock). A stop for another publication (a late stop of an
+/// earlier camera) changes nothing; `None` stops whatever camera there is.
 #[command]
 #[tracing::instrument(skip(state, app))]
-pub async fn stop_webcam(state: State<'_, AppState>, app: AppHandle) -> Result<(), String> {
+pub async fn stop_webcam(
+    publication_id: Option<String>,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<(), String> {
+    let wanted = publication_id.as_deref();
     let (pipeline, epoch) = {
         let mut voice = state.voice.write().await;
         let v = voice.as_mut().ok_or("Voice not initialized")?;
-        v.prepared_webcam = None;
+        if v.prepared_webcam
+            .as_ref()
+            .is_some_and(|p| stop_names(wanted, &p.publication_id))
+        {
+            v.prepared_webcam = None;
+        }
+        if !v
+            .webcam
+            .as_ref()
+            .is_some_and(|w| stop_names(wanted, &w.publication_id))
+        {
+            return Ok(());
+        }
         let Some(pipeline) = v.webcam.take() else {
             return Ok(());
         };
@@ -186,4 +211,19 @@ pub async fn enumerate_webcam_devices_cmd() -> Result<Vec<WebcamDevice>, String>
         .map_err(|e| e.to_string())??;
     info!(count = devices.len(), "Found webcam devices");
     Ok(devices)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_stop_names_its_own_camera_only() {
+        assert!(stop_names(Some("cam-2"), "cam-2"));
+        assert!(
+            !stop_names(Some("cam-1"), "cam-2"),
+            "a late stop of an earlier camera"
+        );
+        assert!(stop_names(None, "cam-2"), "teardown stops any camera");
+    }
 }

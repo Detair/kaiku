@@ -1971,6 +1971,7 @@
   "voice.tile.screenOf": "",
   "voice.tile.stopSharing": "",
   "voice.tile.videoActive": "",
+  "voice.tile.videoEnded": "",
   "voice.tile.videoError": "",
   "voice.tile.you": "",
   "voice.toast.degraded": "",

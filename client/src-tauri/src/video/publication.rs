@@ -37,8 +37,38 @@ pub const KEYFRAME_MIN_INTERVAL: Duration = Duration::from_secs(1);
 pub const KEYFRAME_PERIOD: Duration = Duration::from_secs(3);
 
 /// Why a capture ended by itself (set by the capture thread before it
-/// drops its frame sender; `None` = the source simply ended).
+/// drops its frame sender; `None` = the source simply ended). Capture
+/// threads hand it over with [`run_capture`].
 pub type EndReason = Arc<Mutex<Option<&'static str>>>;
+
+/// Run a capture `body` that gets the frame sender and returns why it
+/// ended. The reason is stored before the last frame sender is dropped:
+/// the encoder is woken by the closed channel and must find it there,
+/// whatever the body still tears down after it let its sender go.
+pub fn run_capture<F>(frames: std_mpsc::SyncSender<I420Frame>, reason: &EndReason, body: F)
+where
+    F: FnOnce(std_mpsc::SyncSender<I420Frame>) -> Option<&'static str>,
+{
+    let keep_open = frames.clone();
+    let why = body(frames);
+    if let (Some(why), Ok(mut slot)) = (why, reason.lock()) {
+        *slot = Some(why);
+    }
+    drop(keep_open);
+}
+
+/// Hand a captured frame to the encoder. `false`: the encoder is gone and
+/// the capture should end (a full channel just drops the frame).
+pub fn offer_frame(frames: &std_mpsc::SyncSender<I420Frame>, frame: I420Frame) -> bool {
+    match frames.try_send(frame) {
+        Ok(()) => true,
+        Err(std_mpsc::TrySendError::Full(_)) => {
+            debug!("Frame dropped (encoder behind)");
+            true
+        }
+        Err(std_mpsc::TrySendError::Disconnected(_)) => false,
+    }
+}
 
 /// Reason codes sent to the frontend with `voice:local_capture_ended`.
 pub mod end_reason {
@@ -46,7 +76,7 @@ pub mod end_reason {
     pub const ENDED: &str = "ended";
     /// The capture delivered no usable picture.
     pub const NO_FRAMES: &str = "no_frames";
-    /// The video encoder could not start.
+    /// The video encoder could not start or could not hand on its packets.
     pub const ENCODER_FAILED: &str = "encoder_failed";
     /// The connection could not be renegotiated for the new track.
     pub const NOT_SENT: &str = "not_sent";
@@ -126,6 +156,23 @@ pub enum EncodeLoopEnd {
     CaptureEnded,
     /// The packet channel closed (RTP task gone).
     SinkClosed,
+}
+
+/// What the frontend is told when the encoder loop ended (`None`: a
+/// shutdown, nothing to report). Every other end ends the publication.
+pub fn end_report(end: &EncodeLoopEnd, reason: &EndReason) -> Option<&'static str> {
+    match end {
+        EncodeLoopEnd::Shutdown => None,
+        EncodeLoopEnd::CaptureEnded => Some(
+            reason
+                .lock()
+                .ok()
+                .and_then(|r| *r)
+                .unwrap_or(end_reason::ENDED),
+        ),
+        // Packets can no longer be sent: the video cannot go out.
+        EncodeLoopEnd::SinkClosed => Some(end_reason::ENCODER_FAILED),
+    }
 }
 
 /// The encoder thread's loop: frames in, packets out, key frames on request.
@@ -255,12 +302,8 @@ impl VideoPublication {
                     KEYFRAME_PERIOD,
                 );
                 info!(?end, "Video encoder stopped");
-                if end == EncodeLoopEnd::CaptureEnded {
-                    let why = reason
-                        .lock()
-                        .ok()
-                        .and_then(|r| *r)
-                        .unwrap_or(end_reason::ENDED);
+                // `frame_rx` goes with this thread: the capture sees it and ends.
+                if let Some(why) = end_report(&end, &reason) {
                     on_capture_end(why);
                 }
             })
@@ -555,6 +598,57 @@ mod tests {
         );
         stop.join().unwrap();
         assert_eq!((enc.encoded, enc.forced), (0, 0));
+    }
+
+    #[test]
+    fn the_end_reason_is_there_when_the_encoder_wakes() {
+        let (frame_tx, frame_rx) = std_mpsc::sync_channel::<I420Frame>(2);
+        let reason: EndReason = Arc::new(Mutex::new(None));
+        // The encoder side: woken by the closed channel, reads the reason.
+        let encoder = {
+            let reason = reason.clone();
+            std::thread::spawn(move || {
+                while frame_rx.recv().is_ok() {}
+                end_report(&EncodeLoopEnd::CaptureEnded, &reason)
+            })
+        };
+        // A capture that lets its sender go, then still tears down (as
+        // `PipeWire` does) before it returns its reason.
+        run_capture(frame_tx, &reason, |frames| {
+            drop(frames);
+            std::thread::sleep(Duration::from_millis(100));
+            Some(end_reason::NO_FRAMES)
+        });
+        assert_eq!(encoder.join().unwrap(), Some(end_reason::NO_FRAMES));
+    }
+
+    #[test]
+    fn a_capture_ends_when_the_encoder_is_gone() {
+        let (frame_tx, frame_rx) = std_mpsc::sync_channel::<I420Frame>(1);
+        assert!(offer_frame(&frame_tx, frame()));
+        assert!(offer_frame(&frame_tx, frame()), "full: dropped, go on");
+        drop(frame_rx);
+        assert!(!offer_frame(&frame_tx, frame()), "encoder gone: end");
+    }
+
+    #[test]
+    fn every_end_but_a_shutdown_is_reported() {
+        let reason: EndReason = Arc::new(Mutex::new(None));
+        assert_eq!(end_report(&EncodeLoopEnd::Shutdown, &reason), None);
+        assert_eq!(
+            end_report(&EncodeLoopEnd::CaptureEnded, &reason),
+            Some(end_reason::ENDED)
+        );
+        assert_eq!(
+            end_report(&EncodeLoopEnd::SinkClosed, &reason),
+            Some(end_reason::ENCODER_FAILED),
+            "nothing can be sent any more"
+        );
+        *reason.lock().unwrap() = Some(end_reason::NO_FRAMES);
+        assert_eq!(
+            end_report(&EncodeLoopEnd::CaptureEnded, &reason),
+            Some(end_reason::NO_FRAMES)
+        );
     }
 
     #[test]

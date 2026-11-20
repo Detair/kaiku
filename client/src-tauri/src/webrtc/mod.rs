@@ -94,6 +94,11 @@ impl VideoKind {
 /// An offer that gets no usable answer (deadline, a rejected or failing
 /// answer, a failed send) is offered again once; if that fails too the
 /// caller gives up visibly ([`OfferFailure::GiveUp`]).
+///
+/// Answers carry no offer id on the wire. Each sent offer keeps its media
+/// section ids (`a=mid`), and an answer is taken as the outstanding
+/// offer's only when it names the same sections ([`Self::answer_matches`]):
+/// a late answer of an earlier offer with other sections is not applied.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct PublisherNegotiation {
     outstanding: Option<Outstanding>,
@@ -104,10 +109,31 @@ pub struct PublisherNegotiation {
 /// session can never match an offer of a newer one.
 static NEXT_OFFER_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Outstanding {
     id: u64,
     retried: bool,
+    /// The offer's media section ids, once it was created (`None`: any
+    /// answer is taken, as for the join's offer).
+    mids: Option<Vec<String>>,
+}
+
+impl Outstanding {
+    const fn new(id: u64, retried: bool) -> Self {
+        Self {
+            id,
+            retried,
+            mids: None,
+        }
+    }
+}
+
+/// The media section ids (`a=mid:`) of an SDP, in order.
+pub fn sdp_mids(sdp: &str) -> Vec<String> {
+    sdp.lines()
+        .filter_map(|l| l.trim_end().strip_prefix("a=mid:"))
+        .map(str::to_string)
+        .collect()
 }
 
 /// What to do after an offer failed.
@@ -118,7 +144,8 @@ pub enum OfferFailure {
     /// Offer again under this id (the only retry).
     Retry(u64),
     /// The retry failed too: the changes waiting for it must fail.
-    GiveUp,
+    /// `reoffer`: a change was queued meanwhile and still needs an offer.
+    GiveUp { reoffer: bool },
 }
 
 impl PublisherNegotiation {
@@ -134,9 +161,23 @@ impl PublisherNegotiation {
             None
         } else {
             let id = Self::take_id();
-            self.outstanding = Some(Outstanding { id, retried: false });
+            self.outstanding = Some(Outstanding::new(id, false));
             Some(id)
         }
+    }
+
+    /// Offer `id` was created with these media section ids.
+    pub fn sent(&mut self, id: u64, mids: Vec<String>) {
+        if let Some(o) = self.outstanding.as_mut().filter(|o| o.id == id) {
+            o.mids = Some(mids);
+        }
+    }
+
+    /// Whether an answer naming `mids` answers the outstanding offer.
+    pub fn answer_matches(&self, mids: &[String]) -> bool {
+        self.outstanding
+            .as_ref()
+            .is_some_and(|o| o.mids.as_deref().is_none_or(|m| m == mids))
     }
 
     /// The answer to the outstanding offer was applied. `Some(id)`: send
@@ -145,7 +186,7 @@ impl PublisherNegotiation {
         if self.pending {
             self.pending = false;
             let id = Self::take_id();
-            self.outstanding = Some(Outstanding { id, retried: false });
+            self.outstanding = Some(Outstanding::new(id, false));
             Some(id)
         } else {
             self.outstanding = None;
@@ -155,18 +196,20 @@ impl PublisherNegotiation {
 
     /// Offer `id` got no usable answer (or could not be sent).
     pub fn offer_failed(&mut self, id: u64) -> OfferFailure {
-        match self.outstanding {
+        match &self.outstanding {
             Some(o) if o.id == id && !o.retried => {
                 let id = Self::take_id();
                 // A queued change is part of the new offer.
                 self.pending = false;
-                self.outstanding = Some(Outstanding { id, retried: true });
+                self.outstanding = Some(Outstanding::new(id, true));
                 OfferFailure::Retry(id)
             }
             Some(o) if o.id == id => {
                 self.outstanding = None;
-                self.pending = false;
-                OfferFailure::GiveUp
+                // A change queued while the retry was out (a stopped share)
+                // still has to reach the server.
+                let reoffer = std::mem::take(&mut self.pending);
+                OfferFailure::GiveUp { reoffer }
             }
             _ => OfferFailure::Stale,
         }
@@ -174,12 +217,12 @@ impl PublisherNegotiation {
 
     /// The id of the offer that waits for its answer.
     pub fn outstanding_id(&self) -> Option<u64> {
-        self.outstanding.map(|o| o.id)
+        self.outstanding.as_ref().map(|o| o.id)
     }
 
     /// Whether the outstanding offer is already the retry.
     pub fn is_retry(&self) -> bool {
-        self.outstanding.is_some_and(|o| o.retried)
+        self.outstanding.as_ref().is_some_and(|o| o.retried)
     }
 
     /// Whether an offer of ours is out.
@@ -580,7 +623,7 @@ impl WebRtcClient {
         let pc = Arc::new(peer_connection);
 
         // Set up event handlers
-        self.setup_event_handlers(pc.clone()).await?;
+        self.setup_event_handlers(pc.clone())?;
 
         // Create local audio track
         let local_track = Arc::new(TrackLocalStaticRTP::new(
@@ -611,7 +654,7 @@ impl WebRtcClient {
         let sub_pc = Arc::new(subscriber_connection);
 
         // Wire subscriber event handlers
-        self.setup_subscriber_event_handlers(sub_pc.clone()).await?;
+        self.setup_subscriber_event_handlers(sub_pc.clone())?;
 
         // Store references
         *self.peer_connection.write().await = Some(pc);
@@ -627,7 +670,7 @@ impl WebRtcClient {
     }
 
     /// Set up peer connection event handlers
-    async fn setup_event_handlers(&self, pc: Arc<RTCPeerConnection>) -> Result<(), WebRtcError> {
+    fn setup_event_handlers(&self, pc: Arc<RTCPeerConnection>) -> Result<(), WebRtcError> {
         // ICE candidate handler
         let on_ice_candidate = self.on_ice_candidate.clone();
         pc.on_ice_candidate(Box::new(move |candidate: Option<RTCIceCandidate>| {
@@ -699,7 +742,7 @@ impl WebRtcClient {
     }
 
     /// Set up subscriber peer connection event handlers
-    async fn setup_subscriber_event_handlers(
+    fn setup_subscriber_event_handlers(
         &self,
         pc: Arc<RTCPeerConnection>,
     ) -> Result<(), WebRtcError> {
@@ -1231,9 +1274,45 @@ mod tests {
             OfferFailure::Stale,
             "the old id is gone"
         );
-        assert_eq!(n.offer_failed(retry), OfferFailure::GiveUp);
+        assert_eq!(
+            n.offer_failed(retry),
+            OfferFailure::GiveUp { reoffer: false },
+            "the queued change rode on the retry"
+        );
         assert!(!n.is_awaiting_answer(), "nothing stays stuck");
         assert!(n.request().is_some(), "the next change offers at once");
+    }
+
+    #[test]
+    fn a_change_queued_behind_the_retry_survives_the_give_up() {
+        let mut n = PublisherNegotiation::default();
+        let id = n.request().unwrap();
+        let OfferFailure::Retry(retry) = n.offer_failed(id) else {
+            panic!("retry")
+        };
+        // A share is stopped while the retry is out: its removal is queued.
+        assert_eq!(n.request(), None);
+        assert_eq!(
+            n.offer_failed(retry),
+            OfferFailure::GiveUp { reoffer: true },
+            "the stop still needs its own offer"
+        );
+    }
+
+    #[test]
+    fn an_answer_is_taken_only_for_the_offer_with_its_sections() {
+        let mut n = PublisherNegotiation::default();
+        let id = n.request().unwrap();
+        assert!(n.answer_matches(&[]), "before it was created: any answer");
+        n.sent(
+            id,
+            sdp_mids("v=0\r\nm=audio 9\r\na=mid:0\r\nm=video 9\r\na=mid:1\r\n"),
+        );
+        assert!(n.answer_matches(&["0".into(), "1".into()]));
+        // A late answer of an earlier offer that had one section less.
+        assert!(!n.answer_matches(&["0".into()]));
+        n.answered();
+        assert!(!n.answer_matches(&["0".into(), "1".into()]), "nothing out");
     }
 
     #[test]

@@ -136,6 +136,20 @@ describe("TauriVoiceAdapter native events", () => {
     adapter.dispose();
   });
 
+  it("stops the camera it prepared by its publication id", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockImplementation((async (cmd: string) =>
+      cmd === "prepare_webcam" ? "cam-1" : undefined) as typeof invoke);
+    const adapter = new TauriVoiceAdapter();
+    await flushListen();
+    await adapter.captureWebcam();
+    await adapter.stopWebcam();
+    expect(invoke).toHaveBeenCalledWith("stop_webcam", { publicationId: "cam-1" });
+    vi.mocked(invoke).mockReset();
+    vi.mocked(invoke).mockResolvedValue(undefined);
+    adapter.dispose();
+  });
+
   it("forwards per-person volume to the native mixer", async () => {
     const { invoke } = await import("@tauri-apps/api/core");
     const adapter = new TauriVoiceAdapter();

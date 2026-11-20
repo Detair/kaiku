@@ -4,8 +4,8 @@
 //! capture thread converts each buffer to I420 and `try_send`s it (dropped
 //! when the encoder is behind). It ends on shutdown or when the stream goes
 //! away (the user stopped sharing in the system's indicator, the window
-//! closed): then the frame sender is dropped and the publication reports
-//! the end to the frontend.
+//! closed) or the encoder is gone: then its reason is stored, the frame
+//! sender is dropped and the publication reports the end to the frontend.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -23,12 +23,12 @@ use pw::spa::pod::Pod;
 use pw::spa::utils::{Direction, SpaTypes};
 use pw::stream::{StreamFlags, StreamState};
 use tokio::sync::watch;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use super::convert::{infer_row_stride, I420Converter, PixelLayout};
 use super::portal::PortalStream;
 use super::I420Frame;
-use crate::video::publication::{end_reason, EndReason};
+use crate::video::publication::{end_reason, offer_frame, run_capture, EndReason};
 use crate::video::QualityParams;
 
 /// Our converter's layout for a negotiated `PipeWire` format.
@@ -225,6 +225,8 @@ fn run(
     let ended_cb = ended.clone();
     let delivered = Rc::new(Cell::new(false));
     let delivered_cb = delivered.clone();
+    let sink_gone = Rc::new(Cell::new(false));
+    let sink_gone_cb = sink_gone.clone();
     let mut converter: Option<I420Converter> = None;
     let mut warned_type = false;
     let max = (params.width, params.height);
@@ -297,8 +299,8 @@ fn run(
             }
             if let Some(i420) = conv.convert(bytes, size.width, size.height, stride) {
                 delivered_cb.set(true);
-                if frames.try_send(i420).is_err() {
-                    debug!("Screen frame dropped (encoder behind)");
+                if !offer_frame(&frames, i420) {
+                    sink_gone_cb.set(true);
                 }
             }
         })
@@ -333,6 +335,11 @@ fn run(
             info!("Screen cast stream ended");
             break Some(end_reason::ENDED);
         }
+        if sink_gone.get() {
+            // The encoder ended (and said why): nothing takes frames.
+            info!("Screen cast capture ends: the encoder is gone");
+            break None;
+        }
         if let Some(reason) = watchdog.check(now, closed.load(Ordering::Acquire)) {
             info!(reason, "Screen cast capture ends");
             break Some(reason);
@@ -343,8 +350,9 @@ fn run(
 }
 
 /// Start the capture thread for a portal stream. Its end reason (no
-/// picture, stream over) is written to `reason` before the frame sender
-/// is dropped.
+/// picture, stream over) is written to `reason` before the last frame
+/// sender is dropped ([`run_capture`]); the `PipeWire` teardown inside
+/// `run` happens after its own sender is gone.
 pub fn start(
     stream: PortalStream,
     params: QualityParams,
@@ -353,16 +361,15 @@ pub fn start(
     reason: EndReason,
 ) -> tokio::task::JoinHandle<()> {
     tokio::task::spawn_blocking(move || {
-        let why = match run(stream, params, frames, &shutdown) {
-            Ok(why) => why,
-            Err(e) => {
-                warn!("Screen cast capture failed: {e}");
-                Some(end_reason::NO_FRAMES)
+        run_capture(frames, &reason, |frames| {
+            match run(stream, params, frames, &shutdown) {
+                Ok(why) => why,
+                Err(e) => {
+                    warn!("Screen cast capture failed: {e}");
+                    Some(end_reason::NO_FRAMES)
+                }
             }
-        };
-        if let (Some(why), Ok(mut slot)) = (why, reason.lock()) {
-            *slot = Some(why);
-        }
+        });
     })
 }
 

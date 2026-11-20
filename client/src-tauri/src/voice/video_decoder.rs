@@ -271,14 +271,14 @@ mod tests {
 
         // The tile opens: decoder starts, one key frame request.
         let (fb, rx) = FrameBuffer::new();
-        let (first, _) = sinks.subscribe("s1", "page", fb);
+        let (first, _) = sinks.subscribe("s1", "page", fb).unwrap();
         assert_eq!(router.on_packet(&packet(2)), 1);
         assert_eq!(latest(&rx), Some(2));
         assert_eq!((made.get(), keyframes.get()), (1, 1));
 
         // Layout change: a second view of the same stream gets frames at once.
         let (fb2, rx2) = FrameBuffer::new();
-        let (second, _) = sinks.subscribe("s1", "page", fb2);
+        let (second, _) = sinks.subscribe("s1", "page", fb2).unwrap();
         router.on_packet(&packet(3));
         assert_eq!(latest(&rx2), Some(3));
         assert_eq!(keyframes.get(), 1, "no new request while watched");
@@ -293,7 +293,7 @@ mod tests {
         assert!(sinks.unsubscribe("s1", second));
         assert_eq!(router.on_packet(&packet(5)), 0);
         let (fb3, rx3) = FrameBuffer::new();
-        sinks.subscribe("s1", "page", fb3);
+        sinks.subscribe("s1", "page", fb3).unwrap();
         router.on_packet(&packet(6));
         assert_eq!(latest(&rx3), Some(6));
         assert_eq!((made.get(), keyframes.get()), (2, 2));
@@ -303,7 +303,7 @@ mod tests {
     fn views_of_another_stream_get_nothing() {
         let sinks = FrameSinks::default();
         let (fb, rx) = FrameBuffer::new();
-        sinks.subscribe("other", "page", fb);
+        sinks.subscribe("other", "page", fb).unwrap();
         let mut router = DecodeRouter::new("s1".into(), sinks, || Some(OneFramePerPacket), || {});
         assert_eq!(router.on_packet(&packet(1)), 0);
         assert_eq!(latest(&rx), None);

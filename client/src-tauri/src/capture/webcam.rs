@@ -8,7 +8,7 @@ use nokhwa::utils::{CameraIndex, RequestedFormat, RequestedFormatType};
 use nokhwa::Camera;
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 use super::convert::{I420Converter, PixelLayout};
 use super::I420Frame;
@@ -149,8 +149,13 @@ impl WebcamCapturer {
                             let stride = frame_w as usize * PixelLayout::RGB.bytes_per_pixel();
                             match converter.convert(decoded.as_raw(), frame_w, frame_h, stride) {
                                 Some(i420) => {
-                                    if frame_tx.try_send(i420).is_err() {
-                                        debug!("Webcam frame dropped (receiver behind)");
+                                    // Dropped when the encoder is behind; gone: end.
+                                    if !crate::video::publication::offer_frame(&frame_tx, i420) {
+                                        info!(
+                                            device = device_index,
+                                            "Encoder gone; webcam capture ends"
+                                        );
+                                        break;
                                     }
                                 }
                                 None => {

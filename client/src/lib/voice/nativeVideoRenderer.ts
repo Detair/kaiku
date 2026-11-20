@@ -24,13 +24,31 @@ export interface DecodedFrame {
 }
 
 /** Header of a raw frame (see `voice/frame_buffer.rs`). */
-const FRAME_HEADER_LEN = 40;
+const FRAME_HEADER_LEN = 44;
 const FRAME_MAGIC = 0x3146564b; // "KVF1" little endian
+/** The whole last message of a view the desktop app ended ("KVF0"). */
+const FRAME_END_MAGIC = 0x3046564b;
+
+/** Whether a message says the desktop app ended this view. */
+export function isNativeFrameEnd(buffer: ArrayBuffer): boolean {
+  return buffer.byteLength === 4 && new DataView(buffer).getUint32(0, true) === FRAME_END_MAGIC;
+}
 
 /**
- * Read one raw frame: 40-byte little-endian header (magic, width, height,
- * y_stride, uv_stride, y/u/v lengths, pts) followed by the planes. Returns
- * null for anything malformed.
+ * The sequence number of a raw frame (what `ack_video_frame` names), or
+ * null when the buffer is not a frame.
+ */
+export function nativeFrameSeq(buffer: ArrayBuffer): number | null {
+  if (buffer.byteLength < FRAME_HEADER_LEN) return null;
+  const view = new DataView(buffer);
+  if (view.getUint32(0, true) !== FRAME_MAGIC) return null;
+  return view.getUint32(40, true);
+}
+
+/**
+ * Read one raw frame: 44-byte little-endian header (magic, width, height,
+ * y_stride, uv_stride, y/u/v lengths, pts, sequence number) followed by
+ * the planes. Returns null for anything malformed.
  */
 export function parseNativeFrame(buffer: ArrayBuffer, streamId: string): DecodedFrame | null {
   if (buffer.byteLength < FRAME_HEADER_LEN) return null;
@@ -157,13 +175,14 @@ export class NativeYuvRenderer {
       gl.viewport(0, 0, frame.width, frame.height);
     }
 
-    // I420: chroma planes are width/2 × height/2 (4:2:0 subsampling).
-    // I420 chroma has (h+1)/2 rows: odd heights keep their last row.
+    // I420 chroma is ceil(w/2) × ceil(h/2): odd sizes keep their last
+    // column and row.
+    const chromaWidth = Math.ceil(frame.width / 2);
     const chromaHeight = Math.ceil(frame.height / 2);
 
-    this.uploadPlane(this.yTex, 0, frame.y_plane, frame.y_stride, frame.height);
-    this.uploadPlane(this.uTex, 1, frame.u_plane, frame.uv_stride, chromaHeight);
-    this.uploadPlane(this.vTex, 2, frame.v_plane, frame.uv_stride, chromaHeight);
+    this.uploadPlane(this.yTex, 0, frame.y_plane, frame.y_stride, frame.width, frame.height);
+    this.uploadPlane(this.uTex, 1, frame.u_plane, frame.uv_stride, chromaWidth, chromaHeight);
+    this.uploadPlane(this.vTex, 2, frame.v_plane, frame.uv_stride, chromaWidth, chromaHeight);
 
     gl.useProgram(this.program);
     gl.uniform1i(this.uYLoc, 0);
@@ -280,21 +299,18 @@ export class NativeYuvRenderer {
   }
 
   /**
-   * Upload a YUV plane to a single-channel R8 texture.
+   * Upload a YUV plane to a single-channel R8 texture of the visible size.
    *
-   * NOTE on stride: libvpx may pad each row out to `stride` bytes (stride ≥
-   * width). The clean WebGL2 way to handle this is `UNPACK_ROW_LENGTH = stride`
-   * + uploading only `width × height`, which crops the padding away. We
-   * intentionally do NOT do that here: this renderer assumes
-   * `stride === width` for both luma and chroma planes, which holds for
-   * common screen-share dimensions (multiples of 16) produced by the SFU
-   * publisher. If non-aligned strides ever cause a stretched/wrong-pitch
-   * picture, switch to the row-length crop here.
+   * libvpx pads each row out to `stride` bytes (e.g. 1984 for a width of
+   * 1920). `UNPACK_ROW_LENGTH = stride` reads the rows at that pitch and
+   * uploads only `width` columns, so the padding never reaches the picture
+   * (it would show as a border and squeeze the picture).
    *
    * @param tex          Destination texture handle.
    * @param textureUnit  Active texture unit index (0..2).
-   * @param data         Raw plane bytes (`Uint8Array`, length = stride × height).
-   * @param stride       Row stride in bytes (used as the texture width).
+   * @param data         Raw plane bytes (`Uint8Array`, length ≥ stride × height).
+   * @param stride       Row stride in bytes.
+   * @param width        Visible plane width in pixels.
    * @param height       Plane height in rows.
    */
   private uploadPlane(
@@ -302,6 +318,7 @@ export class NativeYuvRenderer {
     textureUnit: number,
     data: Uint8Array,
     stride: number,
+    width: number,
     height: number,
   ): void {
     const { gl } = this;
@@ -310,16 +327,18 @@ export class NativeYuvRenderer {
     // Default unpack alignment is 4; R8 single-byte rows of arbitrary width
     // need 1, otherwise odd-width frames produce a slanted picture.
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.pixelStorei(gl.UNPACK_ROW_LENGTH, stride);
     gl.texImage2D(
       gl.TEXTURE_2D,
       0,
       gl.R8,
-      stride,
+      width,
       height,
       0,
       gl.RED,
       gl.UNSIGNED_BYTE,
       data,
     );
+    gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
   }
 }

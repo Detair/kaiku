@@ -70,8 +70,10 @@ pub enum Removed<P, L> {
     Live(L),
 }
 
-/// One share at a time: prepared (waiting for the server) or live.
+/// One share at a time: being chosen (the system dialog is open),
+/// prepared (waiting for the server) or live.
 pub struct ShareSlot<P, L> {
+    choosing: Option<Uuid>,
     prepared: Option<(Uuid, P)>,
     live: Option<(Uuid, L)>,
 }
@@ -79,6 +81,7 @@ pub struct ShareSlot<P, L> {
 impl<P, L> Default for ShareSlot<P, L> {
     fn default() -> Self {
         Self {
+            choosing: None,
             prepared: None,
             live: None,
         }
@@ -86,13 +89,33 @@ impl<P, L> Default for ShareSlot<P, L> {
 }
 
 impl<P, L> ShareSlot<P, L> {
-    /// Whether a share is prepared or live.
+    /// Whether a share is being chosen, prepared or live.
     pub const fn is_busy(&self) -> bool {
-        self.prepared.is_some() || self.live.is_some()
+        self.choosing.is_some() || self.prepared.is_some() || self.live.is_some()
     }
 
-    /// Hold a prepared share (fails while one is prepared or live).
+    /// Mark share `id` as being chosen (before the source dialog opens), so
+    /// a second prepare (a double click) fails at once instead of opening
+    /// a second dialog.
+    pub const fn begin_choosing(&mut self, id: Uuid) -> Result<(), &'static str> {
+        if self.is_busy() {
+            return Err("SHARE_ACTIVE: already sharing");
+        }
+        self.choosing = Some(id);
+        Ok(())
+    }
+
+    /// The dialog for `id` closed without a share (cancel, error).
+    pub fn end_choosing(&mut self, id: Uuid) {
+        if self.choosing == Some(id) {
+            self.choosing = None;
+        }
+    }
+
+    /// Hold a prepared share (fails while another one is chosen, prepared
+    /// or live; the share being chosen under `id` becomes it).
     pub fn prepare(&mut self, id: Uuid, prepared: P) -> Result<(), &'static str> {
+        self.end_choosing(id);
         if self.is_busy() {
             return Err("SHARE_ACTIVE: already sharing");
         }
@@ -127,6 +150,7 @@ impl<P, L> ShareSlot<P, L> {
 
     /// Everything, for a session teardown.
     pub fn drain(&mut self) -> (Option<P>, Option<L>) {
+        self.choosing = None;
         (
             self.prepared.take().map(|(_, p)| p),
             self.live.take().map(|(_, l)| l),
@@ -183,20 +207,26 @@ pub async fn prepare_screen_share(
     QualityParams::from_tier(&quality)?;
     let _ = with_audio; // screen audio is not captured natively yet
 
-    // Check first, without holding the voice lock across the dialog.
+    // Check and mark first, without holding the voice lock across the dialog.
     let epoch = {
-        let voice = state.voice.read().await;
-        let v = voice.as_ref().ok_or("Voice not initialized")?;
+        let mut voice = state.voice.write().await;
+        let v = voice.as_mut().ok_or("Voice not initialized")?;
         if v.channel_id.is_none() {
             return Err("Not in a voice channel".into());
         }
-        if v.shares.is_busy() {
-            return Err("SHARE_ACTIVE: already sharing".into());
-        }
+        v.shares.begin_choosing(stream_uuid)?;
         v.session_epoch
     };
 
-    let prepared = choose_source(source_id, quality).await?;
+    let prepared = match choose_source(source_id, quality).await {
+        Ok(prepared) => prepared,
+        Err(e) => {
+            if let Some(v) = state.voice.write().await.as_mut() {
+                v.shares.end_choosing(stream_uuid);
+            }
+            return Err(e);
+        }
+    };
     let info = PreparedShareInfo {
         source_name: prepared.source_name.clone(),
         has_audio: false,
@@ -206,6 +236,7 @@ pub async fn prepare_screen_share(
     let v = voice.as_mut().ok_or("Voice not initialized")?;
     // The call may have ended (or another begun) while the dialog was open.
     if v.channel_id.is_none() || v.session_epoch != epoch {
+        v.shares.end_choosing(stream_uuid);
         return Err("Not in a voice channel".into());
     }
     v.shares.prepare(stream_uuid, prepared)?;
@@ -433,6 +464,30 @@ mod tests {
             live.prepare(Uuid::new_v4(), ()).is_err(),
             "second share while live"
         );
+    }
+
+    #[test]
+    fn a_second_prepare_while_the_dialog_is_open_fails_at_once() {
+        let mut slot: ShareSlot<&str, &str> = ShareSlot::default();
+        let a = Uuid::new_v4();
+        slot.begin_choosing(a).unwrap();
+        assert!(
+            slot.begin_choosing(Uuid::new_v4()).is_err(),
+            "double click: no second dialog"
+        );
+        slot.prepare(a, "prep-a").unwrap();
+        assert_eq!(slot.take_prepared(a), Some("prep-a"));
+        // A cancelled dialog frees the slot; a stale end changes nothing.
+        let b = Uuid::new_v4();
+        slot.begin_choosing(b).unwrap();
+        slot.end_choosing(Uuid::new_v4());
+        assert!(slot.is_busy());
+        slot.end_choosing(b);
+        assert!(!slot.is_busy());
+        // A teardown while the dialog is open frees it too.
+        slot.begin_choosing(b).unwrap();
+        slot.drain();
+        assert!(!slot.is_busy());
     }
 
     #[test]

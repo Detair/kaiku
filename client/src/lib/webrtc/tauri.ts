@@ -701,10 +701,12 @@ export class TauriVoiceAdapter implements VoiceAdapter {
       };
     }
 
+    const publicationId = this.webcamId;
     this.webcamActive = false;
     this.webcamId = null;
     try {
-      await invoke("stop_webcam");
+      // Names this camera: a late stop never ends a newer one.
+      await invoke("stop_webcam", { publicationId });
       console.log("[TauriVoiceAdapter] Webcam stopped");
       return { ok: true, value: undefined };
     } catch (err) {
@@ -720,8 +722,9 @@ export class TauriVoiceAdapter implements VoiceAdapter {
 
     // Clean up webcam if active (fire-and-forget)
     if (this.webcamActive) {
-      invoke("stop_webcam").catch(() => {});
+      invoke("stop_webcam", { publicationId: this.webcamId }).catch(() => {});
       this.webcamActive = false;
+      this.webcamId = null;
     }
 
     // Clean up all screen shares (fire-and-forget)

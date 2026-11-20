@@ -52,6 +52,7 @@ export const voice = {
   "voice.media.error.unannounced": "The server did not accept your video, so it was stopped.",
   "voice.tile.you": "You",
   "voice.tile.videoActive": "Video stream active",
+  "voice.tile.videoEnded": "The video stopped here. Open the share again to watch it.",
   "voice.tile.videoError": "The video cannot be shown: {{message}}",
   "voice.ptt.plainKeyRefused": "Choose a key with Ctrl, Alt or ⌘, or F13–F24, so your game still gets the key.",
   "voice.ptt.conflict": "PTT and PTM keys must be different",

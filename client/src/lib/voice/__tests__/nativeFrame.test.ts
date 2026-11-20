@@ -1,18 +1,24 @@
 import { describe, expect, it } from "vitest";
-import { parseNativeFrame } from "../nativeVideoRenderer";
+import {
+  NativeYuvRenderer,
+  isNativeFrameEnd,
+  nativeFrameSeq,
+  parseNativeFrame,
+} from "../nativeVideoRenderer";
 
 /** Build a frame exactly as `encode_frame` in voice/frame_buffer.rs does. */
-function rawFrame(w: number, h: number, pts: number): ArrayBuffer {
+function rawFrame(w: number, h: number, pts: number, seq = 1): ArrayBuffer {
   const yLen = w * h;
   const uvLen = Math.ceil(w / 2) * Math.ceil(h / 2);
-  const buf = new ArrayBuffer(40 + yLen + 2 * uvLen);
+  const buf = new ArrayBuffer(44 + yLen + 2 * uvLen);
   const v = new DataView(buf);
   [0x4b, 0x56, 0x46, 0x31].forEach((b, i) => v.setUint8(i, b)); // "KVF1"
   [w, h, w, Math.ceil(w / 2), yLen, uvLen, uvLen].forEach((n, i) => v.setUint32(4 + i * 4, n, true));
   v.setBigUint64(32, BigInt(pts), true);
-  new Uint8Array(buf, 40, yLen).fill(1);
-  new Uint8Array(buf, 40 + yLen, uvLen).fill(2);
-  new Uint8Array(buf, 40 + yLen + uvLen, uvLen).fill(3);
+  v.setUint32(40, seq, true);
+  new Uint8Array(buf, 44, yLen).fill(1);
+  new Uint8Array(buf, 44 + yLen, uvLen).fill(2);
+  new Uint8Array(buf, 44 + yLen + uvLen, uvLen).fill(3);
   return buf;
 }
 
@@ -64,5 +70,62 @@ describe("parseNativeFrame", () => {
     const f = parseNativeFrame(rawFrame(w, h, 0), "s")!;
     expect(f).not.toBeNull();
     expect(f.u_plane.length).toBe(Math.ceil(w / 2) * Math.ceil(h / 2));
+  });
+});
+
+describe("frame sequence and the end of a view", () => {
+  it("reads the sequence number the acknowledgement names", () => {
+    expect(nativeFrameSeq(rawFrame(4, 2, 0, 42))).toBe(42);
+    expect(nativeFrameSeq(new ArrayBuffer(8))).toBeNull();
+  });
+
+  it("tells the end message apart from frames", () => {
+    expect(isNativeFrameEnd(new Uint8Array([0x4b, 0x56, 0x46, 0x30]).buffer)).toBe(true);
+    expect(isNativeFrameEnd(rawFrame(2, 2, 0))).toBe(false);
+    expect(parseNativeFrame(new Uint8Array([0x4b, 0x56, 0x46, 0x30]).buffer, "s")).toBeNull();
+  });
+});
+
+describe("NativeYuvRenderer upload", () => {
+  it("uploads the visible width and reads rows at the decoder's stride", () => {
+    const calls: Array<[string, ...unknown[]]> = [];
+    const gl = new Proxy(
+      { canvas: { width: 0, height: 0 }, UNPACK_ROW_LENGTH: 3314, UNPACK_ALIGNMENT: 3317 },
+      {
+        get(target, prop: string) {
+          if (prop in target) return (target as Record<string, unknown>)[prop];
+          return (...args: unknown[]) => {
+            calls.push([prop, ...args]);
+            return prop.startsWith("get") && prop.endsWith("Parameter") ? true : {};
+          };
+        },
+      },
+    );
+    const canvas = { getContext: () => gl } as unknown as HTMLCanvasElement;
+    const renderer = new NativeYuvRenderer(canvas);
+    // 6×4 with libvpx-style padding: luma stride 8, chroma stride 4.
+    const y = new Uint8Array(8 * 4);
+    const uv = new Uint8Array(4 * 2);
+    renderer.renderFrame({
+      stream_id: "s",
+      width: 6,
+      height: 4,
+      y_stride: 8,
+      uv_stride: 4,
+      y_plane: y,
+      u_plane: uv,
+      v_plane: uv,
+      pts_ms: 0,
+    });
+    const uploads = calls.filter(([c]) => c === "texImage2D").map((c) => [c[4], c[5]]);
+    expect(uploads).toEqual([
+      [6, 4],
+      [3, 2],
+      [3, 2],
+    ]);
+    const rowLengths = calls
+      .filter(([c, p]) => c === "pixelStorei" && p === 3314)
+      .map((c) => c[2]);
+    expect(rowLengths).toEqual([8, 0, 4, 0, 4, 0]);
   });
 });
