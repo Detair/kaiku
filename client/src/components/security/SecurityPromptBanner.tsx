@@ -10,7 +10,7 @@ import { ShieldCheck } from "lucide-solid";
 import { t, type MessageKey } from "@/i18n";
 import type { SecurityPrompt } from "@/lib/types";
 import { currentUser, isProbation, replaceSessionWithPasskey } from "@/stores/auth";
-import { currentPrompt, snoozePrompt } from "@/stores/security";
+import { addPasskeyHintKey, currentPrompt, snoozePrompt } from "@/stores/security";
 import { requestSettings } from "@/stores/settingsNav";
 import { canUsePasskeys } from "@/lib/tauri/passkeys";
 import { passkeyFailureText } from "@/lib/authErrors";
@@ -94,7 +94,7 @@ const SecurityPromptBanner: Component = () => {
               <Match when={p() === "add_passkey"}>
                 <Show
                   when={!isProbation()}
-                  fallback={<p class="text-sm text-text-primary">{t("auth.probation.addPasskeyHint")}</p>}
+                  fallback={<p class="text-sm text-text-primary">{t(addPasskeyHintKey())}</p>}
                 >
                   {/* LP's "Add a passkey" needs the user's click on it (WebAuthn), so the prompt opens the section. */}
                   <button type="button" class={action} onClick={() => requestSettings("security")}>

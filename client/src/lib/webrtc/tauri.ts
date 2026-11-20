@@ -22,6 +22,12 @@ import type {
   RawConnectionStats,
 } from "./types";
 import { buildConnectionMetrics, deltaLossPercent } from "./types";
+import {
+  isNativeJoinCancelled,
+  VOICE_JOIN_CANCELLED,
+  type VoiceSessionHandle,
+} from "./voiceSession";
+
 import * as Sentry from "@sentry/browser";
 
 /** Audio device as returned by the `get_audio_devices` command. */
@@ -41,9 +47,54 @@ interface NativeAudioDeviceList {
   outputs: NativeAudioDevice[];
 }
 
+/** Payload of the native `voice:session_state` event (wire format). */
+interface NativeSessionState {
+  /** Native epoch of the session the state belongs to. */
+  epoch: number | null;
+  /** Rust `ConnectionState` name. */
+  state: string;
+}
+
+/**
+ * One voice session of the adapter and the epoch the native process gave
+ * it. Native ends a session only when told its epoch.
+ */
+interface NativeSession {
+  readonly handle: VoiceSessionHandle;
+  /** Null until `begin_voice_session` answered. */
+  nativeEpoch: number | null;
+  /** Ended: a join step that resumes now stops. */
+  ended: boolean;
+}
+
+/**
+ * Adapter state for a native publisher state (Rust `ConnectionState`,
+ * payload of `voice:session_state`). `Reconnecting` is a short ICE outage (A8); `Failed`
+ * also shows reconnecting and sets `lost` so the store rejoins (C32).
+ */
+export function mapNativeVoiceState(payload: string): {
+  state: VoiceConnectionState;
+  lost: boolean;
+} {
+  switch (payload) {
+    case "Connected":
+      return { state: "connected", lost: false };
+    case "Connecting":
+      return { state: "connecting", lost: false };
+    case "Reconnecting":
+      return { state: "reconnecting", lost: false };
+    case "Failed":
+      return { state: "reconnecting", lost: true };
+    default:
+      return { state: "disconnected", lost: false };
+  }
+}
+
 export class TauriVoiceAdapter implements VoiceAdapter {
   private state: VoiceConnectionState = "disconnected";
   private channelId: string | null = null;
+  /** The open session (its join may still be running). */
+  private session: NativeSession | null = null;
   private muted = false;
   private deafened = false;
   private noiseSuppression = false;
@@ -74,38 +125,100 @@ export class TauriVoiceAdapter implements VoiceAdapter {
 
   // Lifecycle methods
 
-  async join(channelId: string): Promise<VoiceResult<void>> {
+  async join(handle: VoiceSessionHandle): Promise<VoiceResult<VoiceSessionHandle>> {
+    const channelId = handle.channelId;
     console.log(`[TauriVoiceAdapter] Joining channel: ${channelId}`);
+    const cancelled = (): VoiceResult<VoiceSessionHandle> => ({
+      ok: false,
+      error: { ...VOICE_JOIN_CANCELLED },
+    });
 
+    // A session of this window that is still open ends first, by its own
+    // handle and native epoch, without a message to the server.
+    while (this.session) await this.end(this.session.handle, false);
+
+    const session: NativeSession = { handle, nativeEpoch: null, ended: false };
+    this.session = session;
     try {
-      await invoke("join_voice", { channelId });
+      // The native process allocates the session epoch (one order across
+      // reloads and windows); `join_voice` checks it after every await and
+      // before each message, and the leave of this session names it.
+      const nativeEpoch = await invoke<number>("begin_voice_session");
+      // Ended before native knew the epoch: nothing native exists for it.
+      if (session.ended) return cancelled();
+      session.nativeEpoch = nativeEpoch;
+      await invoke("join_voice", { channelId, epoch: nativeEpoch });
+      // Ended after native finished: the leave that ended it named this
+      // epoch and runs after this join on the native side.
+      if (session.ended) return cancelled();
       this.channelId = channelId;
-      this.setState("connecting");
-      return { ok: true, value: undefined };
+      this.setState("connecting", handle);
+      return { ok: true, value: handle };
     } catch (err) {
+      if (session.ended) return cancelled();
+      // The join failed: its session ends here, including whatever native
+      // set up before the error. Native tells the server only if it had
+      // got as far as entering the channel.
+      await this.end(handle, true);
+      if (isNativeJoinCancelled(err)) {
+        // Native cancelled a join this window still wants (e.g. a leave in
+        // another window): a failure the user sees, not a silent cancel.
+        return {
+          ok: false,
+          error: { type: "connection_failed", reason: "voice session ended", retriable: true },
+        };
+      }
       return { ok: false, error: this.mapTauriError(err) };
     }
   }
 
-  async leave(): Promise<VoiceResult<void>> {
+  async leave(handle: VoiceSessionHandle): Promise<VoiceResult<void>> {
     console.log("[TauriVoiceAdapter] Leaving voice");
+    return this.end(handle, true);
+  }
 
-    // Clean up all screen shares (native capture is stopped via Rust command)
-    if (this.activeScreenShares.size > 0) {
-      for (const streamId of [...this.activeScreenShares.keys()]) {
-        try {
-          await invoke("stop_screen_share", { streamId });
-        } catch {
-          // Best effort — leave_voice will also clean up
-        }
-      }
-      this.activeScreenShares.clear();
-    }
+  async teardown(handle: VoiceSessionHandle): Promise<VoiceResult<void>> {
+    console.log("[TauriVoiceAdapter] Tearing down voice without signalling");
+    return this.end(handle, false);
+  }
 
+  async probePublisher(handle: VoiceSessionHandle): Promise<boolean> {
+    const session = this.session;
+    if (!session || session.ended || session.handle.token !== handle.token) return false;
+    if (session.nativeEpoch === null) return false;
     try {
-      await invoke("leave_voice");
-      this.channelId = null;
-      this.setState("disconnected");
+      // Native reads the peer connection's own state for this epoch.
+      return await invoke<boolean>("voice_probe", { epoch: session.nativeEpoch });
+    } catch (err) {
+      console.warn("[TauriVoiceAdapter] Probing the voice connection failed:", err);
+      return false;
+    }
+  }
+
+  /**
+   * End the session `handle` names: local state at once, then the native
+   * session by its epoch (native leaves a newer session alone). `notify`
+   * sends `VoiceLeave`. A session this adapter no longer has is a no-op.
+   */
+  private async end(handle: VoiceSessionHandle, notify: boolean): Promise<VoiceResult<void>> {
+    const session = this.session;
+    if (!session || session.ended || session.handle.token !== handle.token) {
+      return { ok: true, value: undefined };
+    }
+    session.ended = true;
+    this.session = null;
+    this.channelId = null;
+    this.prevStats = null;
+    // Native leave_voice also stops every share and the webcam.
+    this.activeScreenShares.clear();
+    this.webcamActive = false;
+    this.state = "disconnected";
+    this.eventHandlers.onStateChange?.("disconnected", handle);
+
+    // Native never heard of a session whose epoch was still being allocated.
+    if (session.nativeEpoch === null) return { ok: true, value: undefined };
+    try {
+      await invoke("leave_voice", { silent: !notify, epoch: session.nativeEpoch });
       return { ok: true, value: undefined };
     } catch (err) {
       return { ok: false, error: this.mapTauriError(err) };
@@ -616,20 +729,19 @@ export class TauriVoiceAdapter implements VoiceAdapter {
    */
   private async setupEventListeners() {
     const settled = await Promise.allSettled([
-      listen<string>("voice:state_change", (event) => {
-        console.log(`[TauriVoiceAdapter] State change: ${event.payload}`);
-        // Map Rust ConnectionState to VoiceConnectionState
-        const stateMap: Record<string, VoiceConnectionState> = {
-          Disconnected: "disconnected",
-          Connecting: "connecting",
-          Connected: "connected",
-          Failed: "disconnected",
-        };
-        const newState = stateMap[event.payload] || "disconnected";
-        if (event.payload === "Connected") {
+      listen<NativeSessionState>("voice:session_state", (event) => {
+        const { epoch, state } = event.payload;
+        console.log(`[TauriVoiceAdapter] State change: ${state} (session ${epoch})`);
+        // Only the open session's own state counts: a late state of an
+        // ended session (its connection closing) is not this one's.
+        const session = this.session;
+        if (!session || session.ended || session.nativeEpoch !== epoch) return;
+        const next = mapNativeVoiceState(state);
+        if (state === "Connected") {
           Sentry.addBreadcrumb({ category: "voice", message: "voice_connected_native", data: { channel_id: this.channelId ?? "" }, level: "info" });
         }
-        this.setState(newState);
+        this.setState(next.state, session.handle);
+        if (next.lost) this.eventHandlers.onConnectionLost?.(session.handle);
       }),
 
       // Remote audio track events
@@ -705,9 +817,11 @@ export class TauriVoiceAdapter implements VoiceAdapter {
     this.unlisteners.push(...handles);
   }
 
-  private setState(state: VoiceConnectionState) {
+  /** Report `state` for `session` (ignored once that session has ended). */
+  private setState(state: VoiceConnectionState, session: VoiceSessionHandle) {
+    if (this.session?.handle.token !== session.token) return;
     this.state = state;
-    this.eventHandlers.onStateChange?.(state);
+    this.eventHandlers.onStateChange?.(state, session);
   }
 
   private mapTauriError(err: unknown): VoiceError {

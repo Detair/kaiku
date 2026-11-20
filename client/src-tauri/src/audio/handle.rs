@@ -19,8 +19,8 @@ use super::format::{
     negotiate_capture_format, push_chunk_len, CaptureFormat, CaptureFrontEnd, MAX_PUSH_SAMPLES,
 };
 use super::{
-    devices, AudioDevice, AudioDeviceList, AudioError, VadConfig, CHANNELS, FRAME_SIZE,
-    RNNOISE_FRAME_SIZE, SAMPLE_RATE,
+    devices, AudioDevice, AudioDeviceList, AudioError, EncodedFrame, OutputLevel, VadConfig,
+    CHANNELS, FRAME_SIZE, RNNOISE_FRAME_SIZE, SAMPLE_RATE,
 };
 
 /// Tauri event emitted when an audio stream dies at runtime; payload is an
@@ -262,9 +262,163 @@ impl StreamOwner {
     /// Stop the stream and wait until it has been dropped (the device is
     /// released when this returns).
     async fn stop(self) {
+        self.request_stop();
+        self.released().await;
+    }
+}
+
+/// Longest `stop_all` waits for one stream to confirm that its device is
+/// released. Shorter than a voice teardown step, so `stop_all` always gets
+/// to keep track of a stream that is slow.
+const RELEASE_LIMIT: Duration = Duration::from_secs(2);
+/// Longest a new stream waits for an earlier stream of its kind that has
+/// not released its device yet, before it fails instead of opening the
+/// device a second time.
+const RELEASE_WAIT_LIMIT: Duration = Duration::from_secs(5);
+
+/// An audio stream that is stopped in two steps: it is asked to stop (this
+/// never waits), and its release is awaited separately. So one stream that
+/// is slow to let go of its device never keeps another from being stopped.
+trait StopInTwoSteps: Send + 'static {
+    /// Ask the stream to stop. Returns at once.
+    fn request_stop(&self);
+    /// Resolves once the stream is gone and its device released.
+    fn released(self) -> impl std::future::Future<Output = ()> + Send;
+}
+
+impl StopInTwoSteps for StreamOwner {
+    fn request_stop(&self) {
         let _ = self.control.send(CaptureControl::Stop);
+    }
+
+    async fn released(self) {
         let thread = self.thread;
         let _ = tokio::task::spawn_blocking(move || thread.join()).await;
+    }
+}
+
+/// A stream that was told to stop. It stays owned here until its device is
+/// released, however long that takes.
+struct Releasing {
+    what: &'static str,
+    done: tokio::task::JoinHandle<()>,
+}
+
+impl Releasing {
+    /// Ask `stream` to stop now and follow its release in the background.
+    fn begin<S: StopInTwoSteps>(what: &'static str, stream: Option<S>) -> Option<Self> {
+        let stream = stream?;
+        stream.request_stop();
+        Some(Self {
+            what,
+            done: tokio::spawn(stream.released()),
+        })
+    }
+
+    /// Wait for the release until `deadline`. `None`: released. Otherwise
+    /// the stream is handed back, still releasing.
+    async fn confirm_by(mut self, deadline: tokio::time::Instant) -> Option<Self> {
+        if tokio::time::timeout_at(deadline, &mut self.done)
+            .await
+            .is_ok()
+        {
+            None
+        } else {
+            warn!(
+                stream = self.what,
+                "Audio stream has not released its device in time; it stays tracked"
+            );
+            Some(self)
+        }
+    }
+}
+
+/// Streams of one kind (capture, microphone test) that were stopped but
+/// still hold their device. A new stream of that kind waits for them, for a
+/// bounded time, and fails rather than open the device a second time.
+#[derive(Default)]
+struct StillHeld {
+    pending: Vec<Releasing>,
+}
+
+impl StillHeld {
+    fn keep(&mut self, releasing: Option<Releasing>) {
+        self.pending.extend(releasing);
+    }
+
+    /// Wait until every earlier stream has released its device.
+    async fn wait_free(&mut self, limit: Duration) -> Result<(), AudioError> {
+        let deadline = tokio::time::Instant::now() + limit;
+        let mut still = Vec::new();
+        for releasing in self.pending.drain(..) {
+            still.extend(releasing.confirm_by(deadline).await);
+        }
+        self.pending = still;
+        if self.pending.is_empty() {
+            Ok(())
+        } else {
+            Err(AudioError::StillReleasing)
+        }
+    }
+}
+
+/// A running playback: the control channel of its task and the task itself,
+/// which owns the output stream until it ends.
+struct PlaybackStream {
+    control: mpsc::Sender<PlaybackControl>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl StopInTwoSteps for PlaybackStream {
+    fn request_stop(&self) {
+        // Never waits: a full control queue gets the stop a moment later.
+        if let Err(mpsc::error::TrySendError::Full(stop)) =
+            self.control.try_send(PlaybackControl::Stop)
+        {
+            let control = self.control.clone();
+            tokio::spawn(async move {
+                let _ = control.send(stop).await;
+            });
+        }
+    }
+
+    async fn released(self) {
+        let _ = self.task.await;
+    }
+}
+
+/// The streams of a call that have not confirmed their release in time.
+struct NotReleased {
+    capture: Option<Releasing>,
+    mic_test: Option<Releasing>,
+    playback: Option<Releasing>,
+}
+
+/// Stop every audio stream of a call: each one is asked to stop before any
+/// release is waited for, then each release is awaited with its own bound
+/// (`limit` from now, for each). Returns the streams that have not
+/// confirmed their release in time; the caller keeps them.
+async fn stop_streams<C: StopInTwoSteps, M: StopInTwoSteps, P: StopInTwoSteps>(
+    capture: Option<C>,
+    mic_test: Option<M>,
+    playback: Option<P>,
+    limit: Duration,
+) -> NotReleased {
+    let capture = Releasing::begin("capture", capture);
+    let mic_test = Releasing::begin("microphone test", mic_test);
+    let playback = Releasing::begin("playback", playback);
+
+    let deadline = tokio::time::Instant::now() + limit;
+    let within = |releasing: Option<Releasing>| async move {
+        match releasing {
+            Some(releasing) => releasing.confirm_by(deadline).await,
+            None => None,
+        }
+    };
+    NotReleased {
+        capture: within(capture).await,
+        mic_test: within(mic_test).await,
+        playback: within(playback).await,
     }
 }
 
@@ -356,8 +510,19 @@ impl CaptureStream for CaptureTask {
     }
 
     async fn stop(self) {
+        self.request_stop();
+        self.released().await;
+    }
+}
+
+impl StopInTwoSteps for CaptureTask {
+    fn request_stop(&self) {
         self.active.store(false, Ordering::SeqCst);
-        self.owner.stop().await;
+        self.owner.request_stop();
+    }
+
+    async fn released(self) {
+        self.owner.released().await;
     }
 }
 
@@ -479,13 +644,27 @@ pub struct AudioHandle {
     capture: Option<CaptureTask>,
 
     /// Where captured Opus frames go; kept to rebuild capture on a new device
-    capture_output_tx: Option<mpsc::Sender<Vec<u8>>>,
+    capture_output_tx: Option<mpsc::Sender<EncodedFrame>>,
 
     /// Control channel for playback task
     playback_control: Option<mpsc::Sender<PlaybackControl>>,
 
     /// Running mic test stream, if any
     mic_test: Option<StreamOwner>,
+
+    /// Capture streams that were stopped but have not released the
+    /// microphone yet; a new capture waits for them.
+    capture_still_held: StillHeld,
+
+    /// The same for microphone tests.
+    mic_test_still_held: StillHeld,
+
+    /// The task that owns the running playback stream, if any.
+    playback_task: Option<tokio::task::JoinHandle<()>>,
+
+    /// Playback streams that were stopped but have not released the speaker
+    /// yet; a new playback waits for them.
+    playback_still_held: StillHeld,
 
     /// Selected input device id
     input_device_id: Option<String>,
@@ -908,7 +1087,7 @@ struct CaptureSpawner {
     muted: Arc<AtomicBool>,
     vad_config: VadConfig,
     app_handle: Option<tauri::AppHandle>,
-    output_tx: mpsc::Sender<Vec<u8>>,
+    output_tx: mpsc::Sender<EncodedFrame>,
     /// Fall back to the default microphone when the named one is gone
     /// (call start), instead of failing (explicit switch).
     fallback_to_default: bool,
@@ -1015,6 +1194,10 @@ impl AudioHandle {
             capture_output_tx: None,
             playback_control: None,
             mic_test: None,
+            capture_still_held: StillHeld::default(),
+            mic_test_still_held: StillHeld::default(),
+            playback_task: None,
+            playback_still_held: StillHeld::default(),
             input_device_id: None,
             output_device_id: None,
             active_output: ActiveLabel::default(),
@@ -1139,28 +1322,41 @@ impl AudioHandle {
             let device = LabelledDevice::new(&self.host, device, false);
             let label = device.label.clone();
             let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel(1);
-            if control
-                .send(PlaybackControl::SwitchDevice(Box::new(device), reply_tx))
-                .await
-                .is_err()
+            // Both waits are bounded: a playback thread that does not answer
+            // must not keep the caller (and the voice lock it holds) forever.
+            let no_answer = || {
+                AudioError::StreamError(format!(
+                    "output device {label} did not answer in time; audio stays on the previous speaker"
+                ))
+            };
+            match tokio::time::timeout(
+                PLAYBACK_READY_TIMEOUT,
+                control.send(PlaybackControl::SwitchDevice(Box::new(device), reply_tx)),
+            )
+            .await
             {
-                debug!("Playback task not running; output device applies on next start");
-                return Ok(());
+                Err(_) => return Err(no_answer()),
+                Ok(Err(_)) => {
+                    debug!("Playback task not running; output device applies on next start");
+                    return Ok(());
+                }
+                Ok(Ok(())) => {}
             }
             // The playback thread answers right after trying to open it.
-            let opened = tokio::task::spawn_blocking(move || reply_rx.recv())
-                .await
-                .ok()
-                .and_then(Result::ok);
+            let opened =
+                tokio::task::spawn_blocking(move || reply_rx.recv_timeout(PLAYBACK_READY_TIMEOUT))
+                    .await
+                    .ok();
             // Audio stays on the previous speaker; tell the caller.
             match opened {
-                Some(Err(AudioError::DeviceInUse)) => return Err(AudioError::DeviceInUse),
-                Some(Err(e)) => {
+                Some(Err(std_mpsc::RecvTimeoutError::Timeout)) => return Err(no_answer()),
+                Some(Ok(Err(AudioError::DeviceInUse))) => return Err(AudioError::DeviceInUse),
+                Some(Ok(Err(e))) => {
                     return Err(AudioError::StreamError(format!(
                         "could not open output device {label}: {e}"
                     )))
                 }
-                Some(Ok(())) | None => {}
+                Some(Ok(Ok(())) | Err(std_mpsc::RecvTimeoutError::Disconnected)) | None => {}
             }
         }
         Ok(())
@@ -1265,7 +1461,7 @@ impl AudioHandle {
     /// What is needed to open capture streams feeding `output_tx`.
     fn capture_spawner(
         &self,
-        output_tx: mpsc::Sender<Vec<u8>>,
+        output_tx: mpsc::Sender<EncodedFrame>,
         fallback_to_default: bool,
     ) -> CaptureSpawner {
         CaptureSpawner {
@@ -1291,10 +1487,15 @@ impl AudioHandle {
     /// [`AUDIO_ERROR_EVENT`].
     pub async fn start_capture(
         &mut self,
-        output_tx: mpsc::Sender<Vec<u8>>,
+        output_tx: mpsc::Sender<EncodedFrame>,
     ) -> Result<(), AudioError> {
         // Stop existing capture if running
         self.stop_capture().await;
+        // A capture of an earlier call that is still letting go of the
+        // microphone: wait for it (bounded) instead of opening it twice.
+        self.capture_still_held
+            .wait_free(RELEASE_WAIT_LIMIT)
+            .await?;
 
         // Kept even if the build fails: choosing another microphone during
         // the call then starts capture (see `set_input_device`).
@@ -1362,6 +1563,11 @@ impl AudioHandle {
     ) -> Result<(), AudioError> {
         // Stop existing playback if running
         self.stop_playback().await;
+        // A playback of an earlier call that is still letting go of the
+        // speaker: wait for it (bounded) instead of opening it twice.
+        self.playback_still_held
+            .wait_free(RELEASE_WAIT_LIMIT)
+            .await?;
 
         let fell_back = self.begin_playback_generation();
         let device = self.get_device_or_default(self.output_device_id.as_deref(), false)?;
@@ -1377,7 +1583,8 @@ impl AudioHandle {
         self.playback_control = Some(control_tx);
 
         // Spawn playback task that owns the Stream
-        tokio::task::spawn_blocking(move || {
+        // The task owns the output stream: when it ends, the device is free.
+        self.playback_task = Some(tokio::task::spawn_blocking(move || {
             run_playback_task(
                 PlaybackOpen {
                     device,
@@ -1391,7 +1598,7 @@ impl AudioHandle {
                 &mut control_rx,
                 sink,
             );
-        });
+        }));
 
         self.await_playback_ready(ready_rx).await;
         info!("Audio playback started");
@@ -1405,9 +1612,15 @@ impl AudioHandle {
     pub async fn start_pcm_playback(
         &mut self,
         input_rx: mpsc::Receiver<Vec<f32>>,
+        level: OutputLevel,
     ) -> Result<(), AudioError> {
         // Stop existing playback if running
         self.stop_playback().await;
+        // A playback of an earlier call that is still letting go of the
+        // speaker: wait for it (bounded) instead of opening it twice.
+        self.playback_still_held
+            .wait_free(RELEASE_WAIT_LIMIT)
+            .await?;
 
         let fell_back = self.begin_playback_generation();
         let device = self.get_device_or_default(self.output_device_id.as_deref(), false)?;
@@ -1423,7 +1636,8 @@ impl AudioHandle {
         self.playback_control = Some(control_tx);
 
         // Spawn PCM playback task that owns the Stream
-        tokio::task::spawn_blocking(move || {
+        // The task owns the output stream: when it ends, the device is free.
+        self.playback_task = Some(tokio::task::spawn_blocking(move || {
             run_pcm_playback_task(
                 PlaybackOpen {
                     device,
@@ -1434,10 +1648,11 @@ impl AudioHandle {
                 },
                 deafened,
                 input_rx,
+                level,
                 &mut control_rx,
                 sink,
             );
-        });
+        }));
 
         self.await_playback_ready(ready_rx).await;
         info!("PCM playback started (mixer output)");
@@ -1451,6 +1666,12 @@ impl AudioHandle {
             set_active(&self.active_output, None);
             debug!("Audio playback stopped");
         }
+        // Its task still owns the stream until it has ended: keep track.
+        self.playback_still_held
+            .keep(self.playback_task.take().map(|done| Releasing {
+                what: "playback",
+                done,
+            }));
     }
 
     /// Set muted state
@@ -1508,6 +1729,9 @@ impl AudioHandle {
     pub async fn start_mic_test(&mut self, device_id: Option<String>) -> Result<(), AudioError> {
         // Stop existing test if running
         self.stop_mic_test().await;
+        self.mic_test_still_held
+            .wait_free(RELEASE_WAIT_LIMIT)
+            .await?;
 
         let device = self.get_device(device_id.as_deref(), true)?;
         let mic_level = self.mic_test_level.clone();
@@ -1539,11 +1763,30 @@ impl AudioHandle {
         self.mic_test.is_some()
     }
 
-    /// Stop all audio streams
+    /// Stop all audio streams. Every stream is asked to stop first; then
+    /// each release is awaited with its own bound. A stream that has not
+    /// released its device by then stays tracked, and a later stream of its
+    /// kind waits for it.
     pub async fn stop_all(&mut self) {
-        self.stop_capture().await;
-        self.stop_playback().await;
-        self.stop_mic_test().await;
+        self.capture_output_tx = None;
+        let playback = match (self.playback_control.take(), self.playback_task.take()) {
+            (Some(control), Some(task)) => Some(PlaybackStream { control, task }),
+            _ => None,
+        };
+        if playback.is_some() {
+            set_active(&self.active_output, None);
+        }
+        let not_released = stop_streams(
+            self.capture.take(),
+            self.mic_test.take(),
+            playback,
+            RELEASE_LIMIT,
+        )
+        .await;
+        self.mic_test_level.store(0, Ordering::Relaxed);
+        self.capture_still_held.keep(not_released.capture);
+        self.mic_test_still_held.keep(not_released.mic_test);
+        self.playback_still_held.keep(not_released.playback);
         info!("All audio streams stopped");
     }
 }
@@ -1604,10 +1847,13 @@ fn capture_config(device: &Device) -> (CaptureFormat, SampleFormat) {
     (format, sample_format)
 }
 
+/// Source of capture stream ids (a restarted microphone gets a new one).
+static NEXT_CAPTURE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+
 /// What the capture callback needs besides the device format.
 struct CaptureContext {
     muted: Arc<AtomicBool>,
-    output_tx: mpsc::Sender<Vec<u8>>,
+    output_tx: mpsc::Sender<EncodedFrame>,
     vad_config: VadConfig,
     app_handle: Option<tauri::AppHandle>,
     active: Arc<AtomicBool>,
@@ -1675,13 +1921,18 @@ where
                 if !active.load(Ordering::Relaxed) {
                     return;
                 }
-                if muted.load(Ordering::Relaxed) {
+                let is_muted = muted.load(Ordering::Relaxed);
+                if is_muted {
                     processor.on_muted();
-                    return;
                 }
-                convert_in_chunks(data, channels, &mut converted, |chunk| {
-                    front_end.push(chunk, |frame| processor.process_frame(frame));
-                });
+                capture_samples(
+                    data,
+                    is_muted,
+                    channels,
+                    &mut converted,
+                    &mut front_end,
+                    |frame, frame_muted| processor.process_frame(frame, frame_muted),
+                );
             },
             stream_error_callback(reporter),
             None,
@@ -1692,12 +1943,38 @@ where
     Ok(stream)
 }
 
+/// The capture callback's sample path: device samples → f32 → front end
+/// (downmix, resampling, 20 ms framing) → `on_frame(frame, muted)`.
+///
+/// While muted, the device's samples are replaced by silence right at the
+/// conversion, before any stage that keeps state: the resampler and the
+/// framer then only ever hold silence from the muted time, so no muted
+/// sample can reach a frame encoded after unmuting. The silence still
+/// passes the front end, so the capture's frame count (the RTP clock)
+/// keeps running.
+fn capture_samples<T>(
+    data: &[T],
+    muted: bool,
+    channels: u16,
+    converted: &mut Vec<f32>,
+    front_end: &mut CaptureFrontEnd,
+    mut on_frame: impl FnMut(&[f32], bool),
+) where
+    T: SizedSample,
+    f32: FromSample<T>,
+{
+    convert_in_chunks(data, channels, muted, converted, |chunk| {
+        front_end.push(chunk, |frame| on_frame(frame, muted));
+    });
+}
+
 /// Convert device samples to f32 in whole-frame chunks of at most
 /// [`MAX_PUSH_SAMPLES`], reusing `converted` (sized to that) so the audio
 /// callback never reallocates, however large the backend's period is.
 fn convert_in_chunks<T>(
     data: &[T],
     channels: u16,
+    silence: bool,
     converted: &mut Vec<f32>,
     mut sink: impl FnMut(&[f32]),
 ) where
@@ -1706,7 +1983,11 @@ fn convert_in_chunks<T>(
 {
     for chunk in data.chunks(push_chunk_len(channels)) {
         converted.clear();
-        converted.extend(chunk.iter().map(|&s| f32::from_sample(s)));
+        if silence {
+            converted.resize(chunk.len(), 0.0);
+        } else {
+            converted.extend(chunk.iter().map(|&s| f32::from_sample(s)));
+        }
         sink(converted);
     }
 }
@@ -1718,6 +1999,7 @@ const SPEECH_HOLD_MS: u128 = 300;
 /// Per-frame capture processing on 48 kHz mono 20 ms frames: `RNNoise` on
 /// each 480-sample (10 ms) half for VAD probability + denoising, VAD gating,
 /// Opus encoding. All buffers are allocated once, before the stream starts.
+#[allow(clippy::struct_excessive_bools)] // independent flags of the capture state
 struct CaptureProcessor {
     encoder: Encoder,
     denoiser: Box<nnnoiseless::DenoiseState<'static>>,
@@ -1728,22 +2010,27 @@ struct CaptureProcessor {
     samples_i16: [i16; FRAME_SIZE],
     encode_buf: Vec<u8>,
     gate_open: bool,
+    /// This capture stream's id and the index of the next 20 ms frame.
+    capture: u32,
+    frame_index: u64,
+    /// Gated or muted frames since the last sent one.
+    talkspurt_pending: bool,
     indicator_speaking: bool,
     last_speech_time: Instant,
     vad_config: VadConfig,
-    output_tx: mpsc::Sender<Vec<u8>>,
+    output_tx: mpsc::Sender<EncodedFrame>,
     app_handle: Option<tauri::AppHandle>,
 }
 
 impl CaptureProcessor {
     fn new(
-        output_tx: mpsc::Sender<Vec<u8>>,
+        output_tx: mpsc::Sender<EncodedFrame>,
         vad_config: VadConfig,
         app_handle: Option<tauri::AppHandle>,
     ) -> Result<Self, AudioError> {
-        // Mono Opus encoder — capture is mono, playback remains stereo
-        let encoder = Encoder::new(SAMPLE_RATE, OpusChannels::Mono, opus::Application::Voip)
-            .map_err(|e| AudioError::EncoderError(e.to_string()))?;
+        // Mono Opus encoder with in-band FEC — capture is mono, playback
+        // remains stereo.
+        let encoder = super::voice_encoder()?;
         Ok(Self {
             encoder,
             denoiser: nnnoiseless::DenoiseState::new(),
@@ -1754,6 +2041,9 @@ impl CaptureProcessor {
             samples_i16: [0; FRAME_SIZE],
             encode_buf: vec![0u8; 4000],
             gate_open: false,
+            capture: NEXT_CAPTURE.fetch_add(1, Ordering::Relaxed),
+            frame_index: 0,
+            talkspurt_pending: false,
             indicator_speaking: false,
             last_speech_time: Instant::now(),
             vad_config,
@@ -1777,9 +2067,16 @@ impl CaptureProcessor {
         }
     }
 
-    /// Process one 960-sample 48 kHz mono frame.
-    fn process_frame(&mut self, frame: &[f32]) {
-        for (half, original) in frame.chunks_exact(RNNOISE_FRAME_SIZE).enumerate() {
+    /// Process one 960-sample 48 kHz mono frame. Every frame counts in the
+    /// capture's timeline; a muted one goes no further.
+    fn process_frame(&mut self, frame: &[f32], muted: bool) {
+        let index = self.frame_index;
+        self.frame_index += 1;
+        if muted {
+            self.talkspurt_pending = true;
+            return;
+        }
+        for (half, original) in frame.as_chunks::<RNNOISE_FRAME_SIZE>().0.iter().enumerate() {
             // RNNoise works in the i16 range.
             for (dst, &s) in self.rnnoise_input.iter_mut().zip(original) {
                 *dst = s * 32767.0;
@@ -1822,6 +2119,8 @@ impl CaptureProcessor {
         }
 
         if !self.gate_open {
+            // Not sent; the RTP timestamp still advances over it.
+            self.talkspurt_pending = true;
             return;
         }
 
@@ -1837,9 +2136,19 @@ impl CaptureProcessor {
 
         match self.encoder.encode(&self.samples_i16, &mut self.encode_buf) {
             Ok(len) => {
-                let encoded = self.encode_buf[..len].to_vec();
+                let encoded = EncodedFrame {
+                    capture: self.capture,
+                    frame: index,
+                    captured_at: Instant::now(),
+                    talkspurt: self.talkspurt_pending,
+                    opus: self.encode_buf[..len].to_vec(),
+                };
                 if let Err(e) = self.output_tx.try_send(encoded) {
+                    // Lost here: the next frame's index covers the time;
+                    // no talk spurt starts.
                     warn!("Failed to send encoded audio: {}", e);
+                } else {
+                    self.talkspurt_pending = false;
                 }
             }
             Err(e) => {
@@ -1847,6 +2156,78 @@ impl CaptureProcessor {
             }
         }
     }
+}
+
+/// Samples waiting for the output device, and the level the mixer paces by.
+#[derive(Clone)]
+struct PlaybackQueue {
+    samples: Arc<super::ring::SampleRing>,
+    level: OutputLevel,
+}
+
+impl PlaybackQueue {
+    fn new(level: OutputLevel) -> Self {
+        Self {
+            samples: Arc::new(super::ring::SampleRing::with_capacity(
+                super::MAX_QUEUE_SAMPLES,
+            )),
+            level,
+        }
+    }
+
+    /// Producer side (one thread): append, and account for what did not
+    /// fit (never in steady state; the cap is above what the mixer queues).
+    fn push(&self, samples: &[f32]) {
+        let written = self.samples.push(samples);
+        if written < samples.len() {
+            self.level.consumed(samples.len() - written);
+        }
+    }
+}
+
+/// The output callback's work (real-time thread): take queued samples,
+/// silence them when deafened (still taking them, so the device keeps pacing
+/// the mixer and no stale audio piles up), zero-fill the rest, and account
+/// for what was consumed. No allocation, no logging.
+fn fill_output(
+    queue: &PlaybackQueue,
+    generation: u32,
+    first: &mut bool,
+    deaf: bool,
+    data: &mut [f32],
+) {
+    // A stream replaced by a device switch plays silence and takes nothing:
+    // the mix belongs to the new device.
+    if generation != queue.level.active_stream() {
+        data.fill(0.0);
+        return;
+    }
+    queue.level.note_request(generation, data.len());
+    // Stale audio (the device was absent) is dropped; so is, on a new
+    // stream's first callback, whatever lies beyond its block plus a frame
+    // (queued for a device with larger blocks).
+    let stale = if queue.level.take_flush() {
+        queue.samples.len()
+    } else if std::mem::take(first) {
+        let keep = data.len() + FRAME_SIZE * CHANNELS as usize;
+        queue.samples.len().saturating_sub(keep)
+    } else {
+        0
+    };
+    if stale > 0 {
+        if let Some(dropped) = queue.samples.discard(stale) {
+            queue.level.consumed(dropped);
+        }
+    }
+    match queue.samples.pop_into(data, deaf) {
+        Some(taken) => {
+            data[taken..].fill(0.0);
+            queue.level.consumed(taken);
+        }
+        // The other stream of a device switch is reading: play silence.
+        None => data.fill(0.0),
+    }
+    queue.level.callback_done(generation);
 }
 
 /// Run playback task (owns the Stream)
@@ -1865,7 +2246,8 @@ fn run_playback_task(
         }
     };
 
-    let playback_buffer = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
+    // Not paced by a mixer: the level is kept but nobody reads it.
+    let playback_buffer = PlaybackQueue::new(OutputLevel::new());
 
     // Spawn decoding task
     let decoder_clone = decoder;
@@ -1881,9 +2263,7 @@ fn run_playback_task(
                             .map(|&s| f32::from(s) / 32768.0)
                             .collect();
 
-                        if let Ok(mut buffer) = playback_buffer_clone.lock() {
-                            buffer.extend(samples_f32);
-                        }
+                        playback_buffer_clone.push(&samples_f32);
                     }
                     Err(e) => {
                         error!("Opus decode error: {}", e);
@@ -1933,7 +2313,7 @@ fn open_playback_stream(
     fallback: Option<LabelledDevice>,
     active: &ActiveLabel,
     deafened: &Arc<AtomicBool>,
-    playback_buffer: &Arc<std::sync::Mutex<std::collections::VecDeque<f32>>>,
+    playback_buffer: &PlaybackQueue,
     sink: Option<&AudioErrorSink>,
 ) -> (Option<cpal::Stream>, FailureReporter, PlaybackStart) {
     let reporter_for = |device: &LabelledDevice| {
@@ -1981,7 +2361,7 @@ fn open_playback_stream(
 fn build_buffer_output_stream(
     device: &Device,
     deafened: &Arc<AtomicBool>,
-    playback_buffer: &Arc<std::sync::Mutex<std::collections::VecDeque<f32>>>,
+    playback_buffer: &PlaybackQueue,
     reporter: &FailureReporter,
 ) -> Result<cpal::Stream, AudioError> {
     use cpal::traits::StreamTrait;
@@ -1993,30 +2373,23 @@ fn build_buffer_output_stream(
         buffer_size: BufferSize::Default,
     };
 
-    let playback_buffer = playback_buffer.clone();
+    let queue = playback_buffer.clone();
     let deafened = deafened.clone();
+    // This stream becomes the measured one; a failed start hands that back.
+    let previous = queue.level.active_stream();
+    let generation = queue.level.begin_stream();
+    let mut first = true;
 
     let stream = match device.build_output_stream(
         &config,
         move |data: &mut [f32], _| {
-            if deafened.load(Ordering::Relaxed) {
-                data.fill(0.0);
-                return;
-            }
-
-            if let Ok(mut buffer) = playback_buffer.lock() {
-                let available = buffer.len().min(data.len());
-                #[allow(clippy::needless_range_loop)]
-                for i in 0..available {
-                    data[i] = buffer.pop_front().unwrap();
-                }
-                #[allow(clippy::needless_range_loop)]
-                for i in available..data.len() {
-                    data[i] = 0.0;
-                }
-            } else {
-                data.fill(0.0);
-            }
+            fill_output(
+                &queue,
+                generation,
+                &mut first,
+                deafened.load(Ordering::Relaxed),
+                data,
+            );
         },
         stream_error_callback(reporter.clone()),
         None,
@@ -2024,12 +2397,14 @@ fn build_buffer_output_stream(
         Ok(s) => s,
         Err(e) => {
             error!("Failed to build playback stream: {}", e);
+            playback_buffer.level.activate(previous);
             return Err(map_build_error(&e));
         }
     };
 
     if let Err(e) = stream.play() {
         error!("Failed to start playback stream: {}", e);
+        playback_buffer.level.activate(previous);
         return Err(map_play_error(&e));
     }
 
@@ -2047,7 +2422,7 @@ fn playback_control_loop(
     mut reporter: FailureReporter,
     active: &ActiveLabel,
     deafened: &Arc<AtomicBool>,
-    playback_buffer: &Arc<std::sync::Mutex<std::collections::VecDeque<f32>>>,
+    playback_buffer: &PlaybackQueue,
     control_rx: &mut mpsc::Receiver<PlaybackControl>,
     sink: Option<AudioErrorSink>,
 ) {
@@ -2094,27 +2469,22 @@ fn run_pcm_playback_task(
     open: PlaybackOpen,
     deafened: Arc<AtomicBool>,
     mut input_rx: mpsc::Receiver<Vec<f32>>,
+    level: OutputLevel,
     control_rx: &mut mpsc::Receiver<PlaybackControl>,
     sink: Option<AudioErrorSink>,
 ) {
-    let playback_buffer = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
+    let playback_buffer = PlaybackQueue::new(level);
 
     // Spawn thread to receive PCM frames and push into the ring buffer.
+    // The mixer only sends what the device consumes (`OutputLevel`), so the
+    // queue normally holds one device block plus a frame; the cap is a
+    // safety net. The thread ends when the mixer drops its sender.
     let playback_buffer_clone = playback_buffer.clone();
     std::thread::spawn(move || {
-        // ~200ms at 48 kHz stereo (48000 * 2 channels * 0.2s)
-        const MAX_BUFFER_SAMPLES: usize = 19200;
-
         while let Some(pcm_f32) = input_rx.blocking_recv() {
-            if let Ok(mut buffer) = playback_buffer_clone.lock() {
-                buffer.extend(pcm_f32);
-
-                // Cap buffer to prevent unbounded growth under sustained backpressure.
-                if buffer.len() > MAX_BUFFER_SAMPLES {
-                    let excess = buffer.len() - MAX_BUFFER_SAMPLES;
-                    buffer.drain(..excess);
-                }
-            }
+            // The ring's capacity is the safety cap (above anything the
+            // mixer queues); the frame is freed here, outside any lock.
+            playback_buffer_clone.push(&pcm_f32);
         }
     });
 
@@ -2221,6 +2591,358 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+
+    /// Muted means nothing of the microphone reaches the encoder: not as a
+    /// partial frame held by the framer, not through the resampler's state,
+    /// not in the first frame after unmuting. Muted samples are marked +0.9,
+    /// spoken ones -0.3; no frame handed on as unmuted may contain anything
+    /// above zero.
+    #[test]
+    fn no_muted_sample_reaches_an_unmuted_frame() {
+        for (rate, channels) in [(48_000u32, 1u16), (44_100, 2), (16_000, 1)] {
+            for callback_ms in [5u32, 10, 20, 40] {
+                let format = CaptureFormat {
+                    sample_rate: rate,
+                    channels,
+                };
+                let mut front_end = CaptureFrontEnd::new(format);
+                let mut converted = Vec::with_capacity(MAX_PUSH_SAMPLES);
+                let per_callback = (rate / 1000 * callback_ms) as usize * usize::from(channels);
+                let mut frames = 0usize;
+                let mut leaked = 0usize;
+                // Mute toggles at odd moments: 1, 2 or 3 callbacks at a time.
+                let pattern = [
+                    true, false, true, true, false, false, true, false, false, false,
+                ];
+                for k in 0..400usize {
+                    let muted = pattern[k % pattern.len()];
+                    let value = if muted { 0.9f32 } else { -0.3 };
+                    let data = vec![value; per_callback];
+                    capture_samples(
+                        &data,
+                        muted,
+                        channels,
+                        &mut converted,
+                        &mut front_end,
+                        |frame, frame_muted| {
+                            frames += 1;
+                            if !frame_muted {
+                                leaked += frame.iter().filter(|s| **s > 1e-6).count();
+                            }
+                        },
+                    );
+                }
+                assert!(
+                    frames > 0,
+                    "{rate} Hz × {channels}, {callback_ms} ms: no frames"
+                );
+                assert_eq!(
+                    leaked, 0,
+                    "{rate} Hz × {channels}, {callback_ms} ms: muted samples encoded"
+                );
+            }
+        }
+    }
+
+    /// During a device switch the replaced stream plays silence and takes
+    /// nothing: the mix belongs to the new device.
+    #[test]
+    fn a_replaced_output_stream_plays_silence_and_takes_nothing() {
+        let queue = PlaybackQueue::new(OutputLevel::new());
+        let old = queue.level.begin_stream();
+        let new = queue.level.begin_stream();
+        queue.push(&[0.5; 960]);
+        let mut data = vec![1.0f32; 480];
+        fill_output(&queue, old, &mut false, false, &mut data);
+        assert!(data.iter().all(|s| *s == 0.0));
+        assert_eq!(queue.samples.len(), 960, "the old stream took samples");
+        fill_output(&queue, new, &mut false, false, &mut data);
+        assert!(data.iter().all(|s| (*s - 0.5).abs() < 1e-6));
+        assert_eq!(queue.samples.len(), 480);
+    }
+
+    /// After the device was absent, the next callback drops what was queued
+    /// (stale) instead of playing it.
+    #[test]
+    fn stale_audio_is_dropped_when_the_device_comes_back() {
+        let queue = PlaybackQueue::new(OutputLevel::new());
+        let stream = queue.level.begin_stream();
+        queue.level.produced(1920);
+        queue.push(&[0.5; 1920]);
+        queue.level.request_flush();
+        let mut data = vec![1.0f32; 480];
+        fill_output(&queue, stream, &mut false, false, &mut data);
+        assert!(data.iter().all(|s| *s == 0.0), "stale audio played");
+        assert_eq!(queue.samples.len(), 0);
+        assert_eq!(queue.level.queued(), 0);
+    }
+
+    /// A new stream's first callback keeps only its block plus a frame of
+    /// what was queued for a device with larger blocks.
+    #[test]
+    fn a_new_streams_first_callback_drops_the_excess() {
+        let queue = PlaybackQueue::new(OutputLevel::new());
+        let stream = queue.level.begin_stream();
+        queue.push(&vec![0.5; 40_000]);
+        let mut data = vec![0.0f32; 960];
+        let mut first = true;
+        fill_output(&queue, stream, &mut first, false, &mut data);
+        assert!(!first);
+        assert_eq!(queue.samples.len(), FRAME_SIZE * CHANNELS as usize);
+    }
+
+    #[test]
+    fn gated_frames_are_counted_for_the_next_packet() {
+        let (tx, mut rx) = mpsc::channel(16);
+        let vad = VadConfig::new();
+        vad.set_enabled(true);
+        vad.set_threshold(1.0); // nothing counts as speech: gate stays closed
+        let mut processor = CaptureProcessor::new(tx, vad.clone(), None).unwrap();
+        let frame = [0.1f32; FRAME_SIZE];
+        for _ in 0..7 {
+            processor.process_frame(&frame, false);
+        }
+        assert!(rx.try_recv().is_err(), "a gated frame was sent");
+        vad.set_enabled(false); // gate open
+        processor.process_frame(&frame, false);
+        let sent = rx.try_recv().unwrap();
+        assert_eq!((sent.frame, sent.talkspurt), (7, true));
+        processor.process_frame(&frame, false);
+        let sent = rx.try_recv().unwrap();
+        assert_eq!((sent.frame, sent.talkspurt), (8, false));
+        // Muted frames count too and start a talk spurt.
+        for _ in 0..3 {
+            processor.process_frame(&frame, true);
+        }
+        processor.process_frame(&frame, false);
+        let sent = rx.try_recv().unwrap();
+        assert_eq!((sent.frame, sent.talkspurt), (12, true));
+        assert_eq!(sent.capture, processor.capture);
+    }
+
+    #[test]
+    fn a_frame_that_cannot_be_queued_starts_no_talk_spurt() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let mut processor = CaptureProcessor::new(tx, VadConfig::new(), None).unwrap();
+        let frame = [0.1f32; FRAME_SIZE];
+        processor.process_frame(&frame, false); // queued
+        processor.process_frame(&frame, false); // queue full: lost
+        assert_eq!(rx.try_recv().unwrap().frame, 0);
+        processor.process_frame(&frame, false);
+        let sent = rx.try_recv().unwrap();
+        assert_eq!((sent.frame, sent.talkspurt), (2, false));
+    }
+
+    /// What the fake audio streams did, in order.
+    type StopLog = Arc<std::sync::Mutex<Vec<String>>>;
+
+    /// A fake stream: records when it is asked to stop and when it has let
+    /// go of its device. `release` decides how long that takes (`None`:
+    /// never, like a device whose driver hangs).
+    struct FakeStream {
+        name: &'static str,
+        log: StopLog,
+        release: Option<Arc<tokio::sync::Notify>>,
+        release_after: Duration,
+    }
+
+    impl FakeStream {
+        fn quick(name: &'static str, log: &StopLog) -> Self {
+            Self {
+                name,
+                log: log.clone(),
+                release: None,
+                release_after: Duration::ZERO,
+            }
+        }
+
+        /// Lets go only when `gate` is notified.
+        fn held_until(name: &'static str, log: &StopLog, gate: &Arc<tokio::sync::Notify>) -> Self {
+            Self {
+                name,
+                log: log.clone(),
+                release: Some(gate.clone()),
+                release_after: Duration::ZERO,
+            }
+        }
+    }
+
+    impl StopInTwoSteps for FakeStream {
+        fn request_stop(&self) {
+            self.log
+                .lock()
+                .unwrap()
+                .push(format!("{}: stop requested", self.name));
+        }
+
+        async fn released(self) {
+            if let Some(gate) = &self.release {
+                gate.notified().await;
+            }
+            tokio::time::sleep(self.release_after).await;
+            self.log
+                .lock()
+                .unwrap()
+                .push(format!("{}: released", self.name));
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_capture_that_does_not_let_go_does_not_keep_the_others_from_stopping() {
+        let log = StopLog::default();
+        let never = Arc::new(tokio::sync::Notify::new());
+        let started = tokio::time::Instant::now();
+
+        let not_released = stop_streams(
+            Some(FakeStream::held_until("capture", &log, &never)),
+            Some(FakeStream::quick("mic test", &log)),
+            Some(FakeStream::quick("playback", &log)),
+            RELEASE_LIMIT,
+        )
+        .await;
+
+        // Everything was asked to stop before anything was waited for, and
+        // the microphone test did stop although capture never let go.
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec![
+                "capture: stop requested",
+                "mic test: stop requested",
+                "playback: stop requested",
+                "mic test: released",
+                "playback: released",
+            ]
+        );
+        // The wait was bounded, and the capture is still owned.
+        assert_eq!(started.elapsed(), RELEASE_LIMIT);
+        assert!(not_released.capture.is_some());
+        assert!(not_released.mic_test.is_none());
+        assert!(not_released.playback.is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_playback_that_does_not_let_go_is_tracked_like_the_others() {
+        let log = StopLog::default();
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let started = tokio::time::Instant::now();
+
+        let not_released = stop_streams(
+            Some(FakeStream::quick("capture", &log)),
+            Some(FakeStream::quick("mic test", &log)),
+            Some(FakeStream::held_until("playback", &log, &gate)),
+            RELEASE_LIMIT,
+        )
+        .await;
+
+        // Capture and the microphone test were released although playback hangs.
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec![
+                "capture: stop requested",
+                "mic test: stop requested",
+                "playback: stop requested",
+                "capture: released",
+                "mic test: released",
+            ]
+        );
+        assert_eq!(started.elapsed(), RELEASE_LIMIT);
+        assert!(not_released.capture.is_none());
+        assert!(not_released.mic_test.is_none());
+        let mut playback_still_held = StillHeld::default();
+        playback_still_held.keep(not_released.playback);
+
+        // The next join's playback waits at most 5 s, then fails cleanly.
+        let waiting = tokio::time::Instant::now();
+        assert!(matches!(
+            playback_still_held.wait_free(RELEASE_WAIT_LIMIT).await,
+            Err(AudioError::StillReleasing)
+        ));
+        assert_eq!(waiting.elapsed(), RELEASE_WAIT_LIMIT);
+
+        // Once the old playback has let go, a later join gets the speaker.
+        gate.notify_one();
+        assert!(playback_still_held
+            .wait_free(RELEASE_WAIT_LIMIT)
+            .await
+            .is_ok());
+        assert_eq!(log.lock().unwrap().last().unwrap(), "playback: released");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn every_stream_gets_its_own_bound() {
+        let log = StopLog::default();
+        // Both take 1.5 s: together more than the limit, each one less.
+        let slow = |name| FakeStream {
+            name,
+            log: log.clone(),
+            release: None,
+            release_after: Duration::from_millis(1500),
+        };
+        let not_released = stop_streams(
+            Some(slow("capture")),
+            Some(slow("mic test")),
+            Some(slow("playback")),
+            RELEASE_LIMIT,
+        )
+        .await;
+        assert!(not_released.capture.is_none());
+        assert!(not_released.mic_test.is_none());
+        assert!(not_released.playback.is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_next_capture_waits_for_the_old_one_within_its_bound() {
+        let log = StopLog::default();
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let not_released = stop_streams(
+            Some(FakeStream::held_until("capture", &log, &gate)),
+            None::<FakeStream>,
+            None::<FakeStream>,
+            RELEASE_LIMIT,
+        )
+        .await;
+        let mut still_held = StillHeld::default();
+        still_held.keep(not_released.capture);
+
+        // The old capture lets go one second into the next call's wait.
+        tokio::spawn({
+            let gate = gate.clone();
+            async move {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                gate.notify_one();
+            }
+        });
+        let waiting = tokio::time::Instant::now();
+        assert!(still_held.wait_free(RELEASE_WAIT_LIMIT).await.is_ok());
+        assert_eq!(waiting.elapsed(), Duration::from_secs(1));
+        assert_eq!(log.lock().unwrap().last().unwrap(), "capture: released");
+        // Nothing is left to wait for afterwards.
+        assert!(still_held.wait_free(Duration::ZERO).await.is_ok());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_next_capture_fails_cleanly_while_the_old_one_still_holds_the_device() {
+        let log = StopLog::default();
+        let never = Arc::new(tokio::sync::Notify::new());
+        let not_released = stop_streams(
+            Some(FakeStream::held_until("capture", &log, &never)),
+            None::<FakeStream>,
+            None::<FakeStream>,
+            RELEASE_LIMIT,
+        )
+        .await;
+        let mut still_held = StillHeld::default();
+        still_held.keep(not_released.capture);
+
+        let waiting = tokio::time::Instant::now();
+        let refused = still_held.wait_free(RELEASE_WAIT_LIMIT).await;
+        assert!(matches!(refused, Err(AudioError::StillReleasing)));
+        assert_eq!(waiting.elapsed(), RELEASE_WAIT_LIMIT);
+        // It stays tracked: a later call is refused too, until it lets go.
+        assert!(still_held.wait_free(Duration::ZERO).await.is_err());
+        never.notify_one();
+        assert!(still_held.wait_free(RELEASE_WAIT_LIMIT).await.is_ok());
+    }
 
     /// Records when the "stream" it stands in for is dropped.
     struct Guard(Arc<AtomicBool>);
@@ -2522,7 +3244,7 @@ mod tests {
             .map(|i| if i % 2 == 0 { i16::MAX } else { 0 })
             .collect();
         let mut seen = 0usize;
-        convert_in_chunks(&data, 2, &mut converted, |chunk| {
+        convert_in_chunks(&data, 2, false, &mut converted, |chunk| {
             assert_eq!(chunk.len() % 2, 0, "chunks keep whole frames");
             assert!((chunk[0] - 1.0).abs() < 1e-3);
             seen += chunk.len();
@@ -2623,6 +3345,7 @@ mod tests {
         }
     }
 
+    #[allow(unknown_lints, clippy::unused_async_trait_impl)] // fakes match the trait
     impl CaptureFactory for FakeFactory {
         type Task = FakeTask;
         async fn spawn(&self, device: Option<&str>) -> Result<FakeTask, AudioError> {
@@ -2802,7 +3525,7 @@ mod tests {
             .await
             .unwrap();
         assert!(!switched);
-        assert!(factory.log().is_empty());
+        assert_eq!(factory.log().len(), 0);
 
         let mut capture = Some(factory.task("A", true));
         let switched = switch_capture(&factory, &mut capture, &mut current, Some("A".into()))

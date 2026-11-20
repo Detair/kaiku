@@ -6,10 +6,12 @@ import {
   onMount,
   onCleanup,
 } from "solid-js";
-import { PhoneOff, Signal, MonitorUp } from "lucide-solid";
+import { PhoneOff, Signal, MonitorUp, X } from "lucide-solid";
 import {
   voiceState,
   leaveVoice,
+  joinVoice,
+  dismissVoiceRejoin,
   getParticipants,
   getLocalMetrics,
 } from "@/stores/voice";
@@ -39,7 +41,13 @@ const VoicePanel: Component = () => {
   };
 
   const isConnected = () => voiceState.state === "connected";
-  const isConnecting = () => voiceState.state === "connecting";
+  const isConnecting = () =>
+    voiceState.state === "connecting" || voiceState.state === "reconnecting";
+  const statusText = () => {
+    if (voiceState.state === "connected") return t("voice.panel.connected");
+    if (voiceState.state === "reconnecting") return t("voice.status.reconnecting");
+    return t("voice.status.connecting");
+  };
 
   // Elapsed timer — uses the store's authoritative connectedAt timestamp
   const [elapsedTime, setElapsedTime] = createSignal("00:00");
@@ -59,7 +67,49 @@ const VoicePanel: Component = () => {
     return typeof m === "object" && m !== null ? m : null;
   };
 
+  const lostChannel = () =>
+    voiceState.lostChannelId ? getChannel(voiceState.lostChannelId) : null;
+  const rejoin = () => {
+    const id = voiceState.lostChannelId;
+    if (id) void joinVoice(id).catch((err) => console.error("[Voice] Rejoin failed:", err));
+  };
+
   return (
+    <>
+    {/* The rejoin flow gave up (C32): offer to join again. */}
+    <Show when={voiceState.state === "disconnected" && voiceState.lostChannelId}>
+      <div
+        data-testid="voice-rejoin"
+        role="status"
+        class="bg-surface-base/50 border-t border-white/10 px-3 py-2 flex items-center justify-between gap-2"
+      >
+        <div class="min-w-0">
+          <div class="text-xs font-semibold text-text-primary">{t("voice.rejoin.lost")}</div>
+          <div class="text-xs text-text-secondary truncate">
+            {lostChannel()?.name || t("voice.panel.fallbackChannel")}
+          </div>
+        </div>
+        <div class="flex items-center gap-1 shrink-0">
+          <button
+            type="button"
+            data-testid="voice-rejoin-button"
+            class="px-2 py-1 rounded text-xs text-text-primary bg-accent-primary/20 hover:bg-accent-primary/30 transition-colors"
+            onClick={rejoin}
+          >
+            {t("voice.rejoin.button")}
+          </button>
+          <button
+            type="button"
+            class="p-1.5 text-text-secondary hover:text-text-primary hover:bg-white/10 rounded transition-colors"
+            title={t("common.dismiss")}
+            aria-label={t("common.dismiss")}
+            onClick={() => dismissVoiceRejoin()}
+          >
+            <X class="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+    </Show>
     <Show when={(isConnected() || isConnecting()) && voiceState.channelId}>
       <div
         data-testid="voice-panel"
@@ -91,10 +141,11 @@ const VoicePanel: Component = () => {
                 class="text-xs font-semibold hover:underline"
                 classList={{
                   "text-accent-success": isConnected(),
-                  "text-amber-400 animate-pulse": isConnecting(),
+                  // Readable text keeps the text colour; the icon carries the amber.
+                  "text-text-primary animate-pulse": isConnecting(),
                 }}
               >
-                {isConnected() ? t("voice.panel.connected") : t("voice.status.connecting")}
+                {statusText()}
               </div>
               <div class="text-xs text-text-secondary truncate flex items-center gap-1.5">
                 <span class="hover:text-text-primary transition-colors">{channel()?.name || t("voice.panel.fallbackChannel")}</span>
@@ -208,6 +259,7 @@ const VoicePanel: Component = () => {
         </Show>
       </div>
     </Show>
+    </>
   );
 };
 

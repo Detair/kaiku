@@ -18,6 +18,7 @@ import type {
   ConnectionMetrics,
 } from "./types";
 import { buildConnectionMetrics, deltaLossPercent } from "./types";
+import { VOICE_JOIN_CANCELLED, type VoiceSessionHandle } from "./voiceSession";
 import * as Sentry from "@sentry/browser";
 
 /** Bitrate for the highest simulcast layer, keyed by screen-share quality. */
@@ -54,6 +55,30 @@ type AudioElementWithSinkId = HTMLAudioElement & {
 const MAX_PENDING_CANDIDATES = 100;
 
 /**
+ * Adapter state for a publisher `connectionState` (A8). A short ICE outage
+ * (`disconnected`) keeps every media element and reports `reconnecting`;
+ * only `closed` ends the call. `failed` also reports `reconnecting`, with
+ * `lost` set so the store starts the rejoin flow (C32).
+ */
+export function mapPublisherState(state: RTCPeerConnectionState): {
+  state: VoiceConnectionState;
+  lost: boolean;
+} {
+  switch (state) {
+    case "connected":
+      return { state: "connected", lost: false };
+    case "disconnected":
+      return { state: "reconnecting", lost: false };
+    case "failed":
+      return { state: "reconnecting", lost: true };
+    case "closed":
+      return { state: "disconnected", lost: false };
+    default:
+      return { state: "connecting", lost: false };
+  }
+}
+
+/**
  * Bundled peer-connection state: the PC itself plus the flag/queue needed to
  * buffer ICE candidates that arrive before the remote description is applied.
  *
@@ -68,9 +93,31 @@ interface PcState {
   pendingCandidates: RTCIceCandidateInit[];
 }
 
+/**
+ * One voice session of the adapter: what the join with `handle` acquired.
+ * Only that join adds to it, and only `leave`/`teardown` with the same
+ * handle (or a failing join itself) releases it.
+ */
+interface BrowserSession {
+  readonly handle: VoiceSessionHandle;
+  stream: MediaStream | null;
+  publisher: PcState | null;
+  subscriber: PcState | null;
+  /** `voice_join` was handed to the socket: ending it owes a `voice_leave`. */
+  joinSent: boolean;
+  /** Ended: a join step that resumes now releases what it got and stops. */
+  ended: boolean;
+}
+
 export class BrowserVoiceAdapter implements VoiceAdapter {
   private state: VoiceConnectionState = "disconnected";
   private channelId: string | null = null;
+  /**
+   * The open session. The fields below (`localStream`, the peer
+   * connections, VAD, shares, webcam) are this session's and are only
+   * installed while it is open.
+   */
+  private session: BrowserSession | null = null;
   private muted = false;
   private deafened = false;
   private noiseSuppression = true;
@@ -139,55 +186,85 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
 
   // Lifecycle methods
 
-  async join(channelId: string): Promise<VoiceResult<void>> {
+  async join(handle: VoiceSessionHandle): Promise<VoiceResult<VoiceSessionHandle>> {
+    const channelId = handle.channelId;
     console.log(`[BrowserVoiceAdapter] Joining channel: ${channelId}`);
 
-    // Clean up any stale connection (e.g., from WebSocket reconnect)
-    if (this.publisherState || this.subscriberState) {
-      console.log("[BrowserVoiceAdapter] Cleaning up stale connection");
-      this.cleanup();
+    // A session that is still open is not this join's to reuse or clobber:
+    // it ends first, by its own handle, without a message to the server.
+    if (this.session) {
+      console.log("[BrowserVoiceAdapter] Ending the previous session first");
+      this.endSession(this.session);
     }
+
+    const session: BrowserSession = {
+      handle,
+      stream: null,
+      publisher: null,
+      subscriber: null,
+      joinSent: false,
+      ended: false,
+    };
+    this.session = session;
+    const cancelled = (): VoiceResult<VoiceSessionHandle> => {
+      console.log("[BrowserVoiceAdapter] Join cancelled (session ended)");
+      return { ok: false, error: { ...VOICE_JOIN_CANCELLED } };
+    };
 
     try {
       this.joinStartTime = Date.now();
       this.channelId = channelId;
-      this.setState("requesting_media");
+      this.setState("requesting_media", handle);
 
-      // Get microphone access
+      // Get microphone access. The prompt can stay open for any length of
+      // time: a stream granted after the session ended is stopped at once.
+      let stream: MediaStream;
       try {
-        this.localStream = await this.getMicStream(this.inputDeviceId);
+        stream = await this.getMicStream(this.inputDeviceId);
       } catch (err) {
+        if (session.ended) return cancelled();
         if (!this.inputDeviceId || !this.isDeviceGoneError(err)) throw err;
         // The remembered device is unplugged or its id rotated: forget it
         // and use the system default so the call still has a microphone.
         console.warn("[BrowserVoiceAdapter] Input device unavailable, using default:", err);
         this.inputDeviceId = null;
-        this.localStream = await this.getMicStream(null);
+        stream = await this.getMicStream(null);
       }
+      if (session.ended) {
+        stream.getTracks().forEach((track) => track.stop());
+        return cancelled();
+      }
+      session.stream = stream;
+      this.localStream = stream;
       console.log("[BrowserVoiceAdapter] Got local stream");
       // The adapter is reused across calls and keeps its mute state (and
       // push-to-talk rests muted); a fresh track starts enabled, so apply the
       // gating before the track is published.
       this.updateTrackEnabled();
 
-      this.setState("connecting");
+      this.setState("connecting", handle);
 
       // Fetch ICE servers (STUN + TURN) from the API
       const config = await this.fetchIceConfig();
+      if (session.ended) return cancelled();
 
       // Create dual PeerConnections with bundled state for ICE buffering
-      this.publisherState = {
+      const publisher: PcState = {
         pc: new RTCPeerConnection(config),
         remoteDescriptionSet: false,
         pendingCandidates: [],
       };
-      this.subscriberState = {
+      const subscriber: PcState = {
         pc: new RTCPeerConnection(config),
         remoteDescriptionSet: false,
         pendingCandidates: [],
       };
-      this.setupPublisherPC(channelId);
-      this.setupSubscriberPC(channelId);
+      session.publisher = publisher;
+      session.subscriber = subscriber;
+      this.publisherState = publisher;
+      this.subscriberState = subscriber;
+      this.setupPublisherPC(session);
+      this.setupSubscriberPC(session);
 
       console.log(
         "[BrowserVoiceAdapter] Dual PeerConnections created, sending voice_join",
@@ -195,9 +272,11 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
 
       // Ensure WebSocket is connected before sending
       const { wsSend, wsStatus, wsConnect } = await import("@/lib/tauri");
+      if (session.ended) return cancelled();
 
       // Check WebSocket status
       let status = await wsStatus();
+      if (session.ended) return cancelled();
       console.log("[BrowserVoiceAdapter] WebSocket status:", status);
 
       // If disconnected, try to connect
@@ -210,6 +289,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
           status = await wsStatus();
           console.log("[BrowserVoiceAdapter] WebSocket reconnected:", status);
         } catch (err) {
+          if (session.ended) return cancelled();
           console.error(
             "[BrowserVoiceAdapter] Failed to connect WebSocket:",
             err,
@@ -219,6 +299,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
             { cause: err },
           );
         }
+        if (session.ended) return cancelled();
       }
 
       // Wait for WebSocket to be connected (with timeout)
@@ -229,7 +310,9 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
           throw new Error("WebSocket disconnected unexpectedly.");
         }
         await new Promise((resolve) => setTimeout(resolve, 100));
+        if (session.ended) return cancelled();
         status = await wsStatus();
+        if (session.ended) return cancelled();
         attempts++;
       }
 
@@ -237,58 +320,124 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
         throw new Error("WebSocket connection timeout. Status: " + status.type);
       }
 
+      // Last check before anything reaches the server: no voice_join may
+      // leave this window for a session that was ended.
+      if (session.ended) return cancelled();
       console.log("[BrowserVoiceAdapter] WebSocket ready, sending voice_join");
 
-      // Send voice_join message to server
+      // Send voice_join message to server. Marked before the send, so a
+      // session ended while it is on its way still owes the server a leave.
+      session.joinSent = true;
       await wsSend({
         type: "voice_join",
         channel_id: channelId,
       });
+      // Ended while sending: the leave that ended it follows the join on
+      // the same socket, and it already released the local resources.
+      if (session.ended) return cancelled();
 
       // Add mic track to publisherPC — this triggers onnegotiationneeded
       // which creates and sends the publisher offer automatically
-      this.localStream.getTracks().forEach((track) => {
-        this.publisherState!.pc.addTrack(track, this.localStream!);
+      stream.getTracks().forEach((track) => {
+        publisher.pc.addTrack(track, stream);
       });
 
       console.log("[BrowserVoiceAdapter] Mic tracks added, publisher offer will be sent via onnegotiationneeded");
 
-      return { ok: true, value: undefined };
+      return { ok: true, value: handle };
     } catch (err) {
+      if (session.ended) return cancelled();
       console.error("[BrowserVoiceAdapter] Error during join:", err);
-      this.cleanup();
-      this.setState("disconnected");
-      this.channelId = null;
+      // The join failed: its own session ends here, nothing is left of it.
+      this.endSession(session);
       return { ok: false, error: this.mapMediaError(err) };
     }
   }
 
-  async leave(): Promise<VoiceResult<void>> {
+  async leave(handle: VoiceSessionHandle): Promise<VoiceResult<void>> {
     console.log("[BrowserVoiceAdapter] Leaving voice");
+    const session = this.sessionOf(handle);
+    if (!session) return { ok: true, value: undefined };
 
-    // Clean up all screen shares and webcam first
-    if (this.screenShares.size > 0) {
-      await this.stopAllScreenShares();
+    // Everything local is released first and in one go; what follows only
+    // tells the server and reads nothing but the ended session's own data.
+    const owesLeave = session.joinSent;
+    this.endSession(session);
+    if (owesLeave) {
+      try {
+        // Best effort: with the socket down the server already dropped the
+        // peer with the old socket.
+        const { wsSend } = await import("@/lib/tauri");
+        await wsSend({
+          type: "voice_leave",
+          channel_id: handle.channelId,
+        });
+      } catch (err) {
+        console.warn("[BrowserVoiceAdapter] voice_leave not sent:", err);
+      }
     }
-    if (this.webcamStream) {
-      this.cleanupWebcamState();
-    }
-
-    // Send voice_leave message to server
-    if (this.channelId) {
-      const { wsSend } = await import("@/lib/tauri");
-      await wsSend({
-        type: "voice_leave",
-        channel_id: this.channelId,
-      });
-    }
-
-    this.cleanup();
-    this.setState("disconnected");
-    this.channelId = null;
-    this.prevStats = null;
-
     return { ok: true, value: undefined };
+  }
+
+  async teardown(handle: VoiceSessionHandle): Promise<VoiceResult<void>> {
+    console.log("[BrowserVoiceAdapter] Tearing down voice without signalling");
+    const session = this.sessionOf(handle);
+    if (session) this.endSession(session);
+    return { ok: true, value: undefined };
+  }
+
+  async probePublisher(handle: VoiceSessionHandle): Promise<boolean> {
+    const pc = this.sessionOf(handle)?.publisher?.pc;
+    if (!pc) return false;
+    // The object's own state, not the last event this adapter saw.
+    const ice = pc.iceConnectionState as RTCIceConnectionState | undefined;
+    return (
+      pc.connectionState === "connected" &&
+      (ice === undefined || ice === "connected" || ice === "completed")
+    );
+  }
+
+  /** Whether `session` is still the adapter's open session. */
+  private holds(session: BrowserSession): boolean {
+    return !session.ended && this.session === session;
+  }
+
+  /** The open session `handle` names, if this adapter still has it. */
+  private sessionOf(handle: VoiceSessionHandle): BrowserSession | null {
+    const session = this.session;
+    return session && !session.ended && session.handle.token === handle.token
+      ? session
+      : null;
+  }
+
+  /**
+   * End `session`: release exactly what it holds, synchronously. A join
+   * step of this session that is still waiting stops when it resumes.
+   * Reports `disconnected` for this session only.
+   */
+  private endSession(session: BrowserSession): void {
+    if (session.ended) return;
+    session.ended = true;
+    if (this.session === session) {
+      // The adapter-wide fields (stream, connections, VAD, shares, webcam)
+      // are this session's: they go with it.
+      if (this.webcamStream) this.cleanupWebcamState();
+      this.cleanup();
+      this.session = null;
+      this.channelId = null;
+      this.prevStats = null;
+      this.state = "disconnected";
+    } else {
+      // Not installed in the adapter (never the case for an open session,
+      // kept so a session can always release what it recorded).
+      session.stream?.getTracks().forEach((track) => track.stop());
+      session.publisher?.pc.close();
+      session.subscriber?.pc.close();
+    }
+    session.stream = null;
+    session.publisher = null;
+    session.subscriber = null;
+    this.eventHandlers.onStateChange?.("disconnected", session.handle);
   }
 
   // Audio control
@@ -860,11 +1009,18 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
 
     // If already in a call, restart the stream with the new device
     if (this.localStream && this.publisherState) {
+      const session = this.session;
       try {
         // Open the new microphone BEFORE touching the current one, so a
         // stale device id leaves the working microphone (and the remembered
         // id) untouched.
         const newStream = await this.getMicStream(deviceId);
+        // The call ended (or another began) while the device opened: the
+        // new stream belongs to nobody and is released again.
+        if (!session || !this.holds(session) || !this.localStream) {
+          newStream.getTracks().forEach((track) => track.stop());
+          return { ok: false, error: { type: "not_connected" } };
+        }
 
         // Stop VAD before replacing the stream — the cloned monitor track
         // references the old mic and would go stale (deliver silence).
@@ -874,6 +1030,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
         // Stop old tracks
         this.localStream.getTracks().forEach((track) => track.stop());
         this.localStream = newStream;
+        session.stream = newStream;
         this.inputDeviceId = deviceId;
         // New tracks start enabled: apply mute/VAD gating before the track
         // reaches the peer, or a muted user would be audible after switching.
@@ -1064,7 +1221,8 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     options?: ScreenShareOptions,
   ): Promise<VoiceResult<void>> {
     const publisher = this.publisherState;
-    if (!publisher) {
+    const session = this.session;
+    if (!publisher || !session) {
       return { ok: false, error: { type: "not_connected" } };
     }
 
@@ -1079,6 +1237,12 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
         video: constraints.video,
         audio: options?.withAudio ?? false,
       });
+      // The picker can stay open for any length of time: a capture granted
+      // after the call ended (or another began) is stopped at once.
+      if (!this.holds(session)) {
+        stream.getTracks().forEach((track) => track.stop());
+        return { ok: false, error: { type: "not_connected" } };
+      }
 
       // Add video track to publisher PC
       const videoTrack = stream.getVideoTracks()[0];
@@ -1177,7 +1341,8 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
 
   async startWebcam(options?: WebcamOptions): Promise<VoiceResult<void>> {
     const publisher = this.publisherState;
-    if (!publisher) {
+    const session = this.session;
+    if (!publisher || !session) {
       return { ok: false, error: { type: "not_connected" } };
     }
 
@@ -1199,6 +1364,11 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
       };
 
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      // A camera granted after the call ended (or another began) is stopped.
+      if (!this.holds(session)) {
+        stream.getTracks().forEach((track) => track.stop());
+        return { ok: false, error: { type: "not_connected" } };
+      }
       const videoTrack = stream.getVideoTracks()[0];
       if (!videoTrack) {
         stream.getTracks().forEach((t) => t.stop());
@@ -1257,6 +1427,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
 
   dispose(): void {
     console.log("[BrowserVoiceAdapter] Disposing");
+    if (this.session) this.endSession(this.session);
     this.cleanup();
   }
 
@@ -1325,9 +1496,11 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     }
   }
 
-  private setState(state: VoiceConnectionState) {
+  /** Report `state` for `session` (ignored once that session has ended). */
+  private setState(state: VoiceConnectionState, session: VoiceSessionHandle) {
+    if (this.session?.handle.token !== session.token) return;
     this.state = state;
-    this.eventHandlers.onStateChange?.(state);
+    this.eventHandlers.onStateChange?.(state, session);
   }
 
   private getDisplayMediaConstraints(
@@ -1404,16 +1577,17 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     this.webcamSender = null;
   }
 
-  private setupPublisherPC(channelId: string) {
-    const publisher = this.publisherState;
+  private setupPublisherPC(session: BrowserSession) {
+    const publisher = session.publisher;
     if (!publisher) return;
+    const channelId = session.handle.channelId;
 
     // Client-initiated negotiation: create offer and send to server
     // Uses a negotiation lock to prevent concurrent offers when multiple
     // tracks are added in quick succession (e.g., mic + screen share).
     publisher.pc.onnegotiationneeded = async () => {
       const current = this.publisherState;
-      if (!current) return;
+      if (!current || session.ended) return;
 
       if (this.isNegotiating) {
         this.pendingNegotiation = true;
@@ -1459,44 +1633,41 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
 
     // Connection state change — publisher PC determines connected state
     publisher.pc.onconnectionstatechange = () => {
-      const state = this.publisherState?.pc.connectionState;
+      // A connection of an ended session has nothing to report any more.
+      if (session.ended) return;
+      const state = publisher.pc.connectionState;
       console.log(`[BrowserVoiceAdapter] Publisher connection state: ${state}`);
 
-      switch (state) {
-        case "connected":
-          this.setState("connected");
+      const next = mapPublisherState(state);
+      this.setState(next.state, session.handle);
+      if (state === "connected") {
+        const elapsed = Date.now() - this.joinStartTime;
+        Sentry.addBreadcrumb({ category: "voice", message: "voice_connected", data: { channel_id: this.channelId ?? "", duration_ms: elapsed }, level: "info" });
+        // After a short ICE outage the VAD is still running.
+        if (this.vadInterval === null) this.startVAD();
+      }
+      if (next.lost) {
+        this.eventHandlers.onError?.(
           {
-            const elapsed = Date.now() - this.joinStartTime;
-            Sentry.addBreadcrumb({ category: "voice", message: "voice_connected", data: { channel_id: this.channelId ?? "", duration_ms: elapsed }, level: "info" });
-          }
-          this.startVAD(); // Start Voice Activity Detection
-          break;
-        case "disconnected":
-        case "closed":
-          this.setState("disconnected");
-          break;
-        case "failed":
-          this.setState("disconnected");
-          this.eventHandlers.onError?.({
             type: "connection_failed",
             reason: "Publisher peer connection failed",
             retriable: true,
-          });
-          break;
-        case "connecting":
-        case "new":
-          this.setState("connecting");
-          break;
+          },
+          session.handle,
+        );
+        this.eventHandlers.onConnectionLost?.(session.handle);
       }
     };
   }
 
-  private setupSubscriberPC(channelId: string) {
-    const subscriber = this.subscriberState;
+  private setupSubscriberPC(session: BrowserSession) {
+    const subscriber = session.subscriber;
     if (!subscriber) return;
+    const channelId = session.handle.channelId;
 
     // Remote track handler — all remote tracks arrive on subscriberPC
     subscriber.pc.ontrack = (event) => {
+      if (session.ended) return;
       const track = event.track;
       const stream = event.streams[0];
 
@@ -1548,6 +1719,8 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
       } else {
         // Audio track = voice (Microphone) or screen audio (ScreenAudio)
         this.remoteStreams.set(userId, stream);
+        // Tracks that arrive while deafened (e.g. after a rejoin) stay silent.
+        track.enabled = !this.deafened;
 
         const remoteTrack: RemoteTrack = {
           trackId: track.id,
@@ -1556,7 +1729,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
           muted: false,
         };
 
-        this.eventHandlers.onRemoteTrack?.(remoteTrack);
+        this.eventHandlers.onRemoteTrack?.(remoteTrack, session.handle);
 
         track.onended = () => {
           console.log("[BrowserVoiceAdapter] Remote audio track ended");
@@ -1587,15 +1760,19 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
 
     // Subscriber connection state (log only, publisher determines main state)
     subscriber.pc.onconnectionstatechange = () => {
-      const state = this.subscriberState?.pc.connectionState;
+      if (session.ended) return;
+      const state = subscriber.pc.connectionState;
       console.log(`[BrowserVoiceAdapter] Subscriber connection state: ${state}`);
 
       if (state === "failed") {
-        this.eventHandlers.onError?.({
-          type: "connection_failed",
-          reason: "Subscriber connection failed — you may not hear other participants",
-          retriable: true,
-        });
+        this.eventHandlers.onError?.(
+          {
+            type: "connection_failed",
+            reason: "Subscriber connection failed — you may not hear other participants",
+            retriable: true,
+          },
+          session.handle,
+        );
       }
     };
   }

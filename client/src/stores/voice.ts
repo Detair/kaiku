@@ -20,6 +20,7 @@ import type {
   ScreenShareInfo,
   ScreenShareQuality,
   VoiceAdapter,
+  VoiceConnectionState,
 } from "@/lib/webrtc/types";
 import type { VoiceParticipant, WebcamServerInfo } from "@/lib/types";
 import { channelsState } from "@/stores/channels";
@@ -31,11 +32,20 @@ import { t } from "@/i18n";
 import { voiceErrorText } from "@/lib/webrtc/voiceErrorText";
 import { PttController, createTauriPttListeners, type PttFullConfig } from "@/lib/pttManager";
 import { isTauri } from "@/lib/tauri/common";
+import { isSameSession, type VoiceSessionHandle } from "@/lib/webrtc/voiceSession";
+import {
+  voiceOwner,
+  RECOVERY_ATTEMPT_TIMEOUT_MS,
+  type StillMine,
+  type VoiceHooks,
+  type VoiceWish,
+} from "./voiceOwner";
 
 const getErrorMessage = voiceErrorText;
 
-// Voice connection state
-type VoiceState = "disconnected" | "connecting" | "connected";
+// Voice connection state. "reconnecting": the media connection had a short
+// outage or the rejoin flow (C32) is running; the call is still on screen.
+type VoiceState = "disconnected" | "connecting" | "connected" | "reconnecting";
 
 interface VoiceStoreState {
   // Current state
@@ -50,6 +60,11 @@ interface VoiceStoreState {
   participants: Record<string, VoiceParticipant>;
   // Error
   error: VoiceError | null;
+  /**
+   * The rejoin flow (C32) gave up for this channel: the voice UI offers a
+   * "Rejoin" action. Cleared by any own join or leave.
+   */
+  lostChannelId: string | null;
 
   // Screen sharing
   screenSharing: boolean;
@@ -77,6 +92,7 @@ const [voiceState, setVoiceState] = createStore<VoiceStoreState>({
   speaking: false,
   participants: {},
   error: null,
+  lostChannelId: null,
   screenSharing: false,
   screenShares: [],
   webcamActive: false,
@@ -87,15 +103,94 @@ const [voiceState, setVoiceState] = createStore<VoiceStoreState>({
   participantMetrics: new Map(),
 });
 
-// PTT/PTM controller instance
-let pttController: PttController | null = null;
-let pttCleanup: (() => void) | null = null;
+/**
+ * Push-to-talk / push-to-mute of ONE voice session: its own controller and
+ * its own shortcut listeners. Nothing of it is shared with another session,
+ * so a step that finishes late can only release these.
+ */
+interface PttBinding {
+  controller: PttController;
+  /** Takes the shortcut listeners away again (once they are registered). */
+  unregister: (() => void | Promise<void>) | null;
+  /** Released: whatever still arrives for this binding is dropped. */
+  released: boolean;
+}
+
+/** What one channel session owns besides its adapter session. */
+interface ChannelSessionOwn {
+  /**
+   * Changes to this session's push-to-talk run one after the other (set-up,
+   * a settings change, release), so no two bindings exist side by side and
+   * none is left behind.
+   */
+  pttQueue: Promise<void>;
+  ptt: PttBinding | null;
+  adapter: VoiceAdapter | null;
+  /** Whether this session is still the one the voice owner holds. */
+  mine: StillMine;
+}
+
+/** The binding of the session the user is in (null: none, or PTT/PTM off). */
+let activePtt: PttBinding | null = null;
+/** The channel session the user is in (for a settings change during the call). */
+let liveChannel: ChannelSessionOwn | null = null;
 
 // Metrics collection interval
 let metricsInterval: number | null = null;
 
-// Guard against concurrent join calls from rapid clicks
-let isJoining = false;
+/**
+ * The channel voice session this store last asked the voice owner for. It
+ * may have been replaced since (a DM call, give-up); `voiceOwner.wants`
+ * says whether it is still the intent. The store never touches the
+ * adapter's session itself: joining, leaving and recovery are the owner's.
+ */
+let channelWish: VoiceWish | null = null;
+
+// The owner uses the same adapter instance as this store (already loaded
+// here, so the owner does not wait for a module to load before a join).
+voiceOwner.useAdapter(createVoiceAdapter);
+
+// The signed-in session ends: nothing of its voice stays on screen, and
+// the offer to rejoin does not reach whoever signs in next.
+voiceOwner.onShutdown(() => {
+  showVoiceLeft();
+  setVoiceState({ lostChannelId: null, error: null });
+});
+
+/** The adapter session of the channel voice the user is in, if any. */
+function heldSession(): VoiceSessionHandle | null {
+  return voiceOwner.sessionOf(channelWish);
+}
+
+/** Remote `<audio>` elements per user (browser mode), for cleanup. */
+const remoteAudioElements = new Map<string, HTMLAudioElement>();
+
+function removeRemoteAudioElements(): void {
+  for (const [, el] of remoteAudioElements) {
+    el.srcObject = null;
+    el.remove();
+  }
+  remoteAudioElements.clear();
+}
+
+/** Number of remote audio elements currently playing (exported for tests). */
+export function remoteAudioElementCount(): number {
+  return remoteAudioElements.size;
+}
+
+/** Store state for an adapter state. */
+function storeStateFor(state: VoiceConnectionState): VoiceState {
+  switch (state) {
+    case "connected":
+      return "connected";
+    case "reconnecting":
+      return "reconnecting";
+    case "disconnected":
+      return "disconnected";
+    default:
+      return "connecting";
+  }
+}
 
 // Notification state for packet loss incidents
 let currentIncidentStart: number | null = null;
@@ -272,10 +367,18 @@ if (typeof document !== "undefined") {
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) {
       stopMetricsLoop();
-    } else if (voiceState.state === "connected" && !metricsInterval) {
+      return;
+    }
+    // The device may have slept: let the owner compare the clocks first.
+    voiceOwner.wake();
+    if (voiceState.state === "connected" && !metricsInterval) {
       startMetricsLoop();
     }
   });
+  window.addEventListener("online", () => voiceOwner.wake());
+  // The window goes away (closed, reloaded, app quit): the voice session
+  // ends with it, the microphone is released before the page is gone.
+  window.addEventListener("pagehide", () => voiceOwner.shutdown());
 }
 
 /**
@@ -330,6 +433,7 @@ export async function applyStoredNoiseSuppression(
  */
 export async function applyStoredAudioDevices(
   adapter: VoiceAdapter,
+  still: StillMine = () => true,
 ): Promise<void> {
   const audio = appSettings()?.audio;
   if (!audio) return;
@@ -346,7 +450,8 @@ export async function applyStoredAudioDevices(
       }
     }
   }
-  if (audio.output_device) {
+  // A session that ended meanwhile no longer chooses devices.
+  if (audio.output_device && still()) {
     const result = await adapter.setOutputDevice(audio.output_device);
     if (!result.ok) {
       console.warn(
@@ -361,241 +466,317 @@ export async function applyStoredAudioDevices(
 }
 
 /**
- * Join a voice channel.
+ * Route the adapter's events into this store (every join). The connection
+ * state and its loss go to the voice owner, which reports them per session
+ * (`channelHooks`); events that name a session count only for the one held.
  */
-export async function joinVoice(channelId: string): Promise<void> {
-  if (isJoining) {
-    console.warn("[Voice] Join already in progress, ignoring duplicate call");
-    return;
-  }
-  isJoining = true;
+function installAdapterHandlers(adapter: VoiceAdapter): void {
+  adapter.setEventHandlers({
+    onError: (error, session) => {
+      if (session && !isSameSession(session, heldSession())) return;
+      setVoiceState({ error });
+    },
+    onRemoteTrack: (remoteTrack, session) => {
+      // Tauri mode — audio plays natively via CPAL, no browser Audio needed
+      if (!remoteTrack.stream) return;
+      // Audio of a session this store is not in is not played.
+      if (session && !isSameSession(session, heldSession())) return;
 
-  try {
-    // Leave current channel if connected (client-side)
-    if (voiceState.state !== "disconnected") {
-      await leaveVoice();
-    }
-
-    setVoiceState({ state: "connecting", channelId, error: null });
-
-    const adapter = await createVoiceAdapter();
-
-    // Set up adapter event handlers
-    // Track remote audio elements for cleanup
-    const remoteAudioElements = new Map<string, HTMLAudioElement>();
-
-    adapter.setEventHandlers({
-      onStateChange: (state) => {
-        const stateMap = {
-          disconnected: "disconnected" as const,
-          requesting_media: "connecting" as const,
-          connecting: "connecting" as const,
-          connected: "connected" as const,
-          reconnecting: "connecting" as const,
-        };
-        setVoiceState({ state: stateMap[state] });
-        // Clean up audio elements on disconnect
-        if (state === "disconnected") {
-          for (const [, el] of remoteAudioElements) {
-            el.srcObject = null;
-            el.remove();
-          }
-          remoteAudioElements.clear();
+      console.log("[Voice] Remote audio track received:", remoteTrack.userId);
+      // Create an audio element to play the remote user's audio.
+      // It must be in the DOM with data-stream-id so the browser
+      // adapter's setOutputDevice() can find it for setSinkId.
+      const audio = new Audio();
+      audio.srcObject = remoteTrack.stream;
+      audio.autoplay = true;
+      audio.dataset.streamId = remoteTrack.stream.id;
+      audio.style.display = "none";
+      document.body.appendChild(audio);
+      // Route to the speaker the adapter remembers (default otherwise);
+      // a speaker that no longer exists is forgotten in settings too.
+      void adapter.applyOutputDeviceTo?.(audio).then(async (result) => {
+        if (!result.ok && result.error.type === "device_not_found") {
+          await forgetStoredDevice("output_device");
         }
-      },
-      onError: (error) => {
-        setVoiceState({ error });
-      },
-      onRemoteTrack: (remoteTrack) => {
-        // Tauri mode — audio plays natively via CPAL, no browser Audio needed
-        if (!remoteTrack.stream) return;
-
-        console.log("[Voice] Remote audio track received:", remoteTrack.userId);
-        // Create an audio element to play the remote user's audio.
-        // It must be in the DOM with data-stream-id so the browser
-        // adapter's setOutputDevice() can find it for setSinkId.
-        const audio = new Audio();
-        audio.srcObject = remoteTrack.stream;
-        audio.autoplay = true;
-        audio.dataset.streamId = remoteTrack.stream.id;
-        audio.style.display = "none";
-        document.body.appendChild(audio);
-        // Route to the speaker the adapter remembers (default otherwise);
-        // a speaker that no longer exists is forgotten in settings too.
-        void adapter.applyOutputDeviceTo?.(audio).then(async (result) => {
-          if (!result.ok && result.error.type === "device_not_found") {
-            await forgetStoredDevice("output_device");
-          }
-        });
-        // Remove old element for this user if exists
-        const old = remoteAudioElements.get(remoteTrack.userId);
-        if (old) {
-          old.srcObject = null;
-          old.remove();
-        }
-        remoteAudioElements.set(remoteTrack.userId, audio);
-        audio.play().catch((err) => {
-          console.warn("[Voice] Audio autoplay blocked:", err);
-        });
-      },
-      onRemoteTrackRemoved: (userId) => {
-        console.log("[Voice] Remote audio track removed:", userId);
-        const el = remoteAudioElements.get(userId);
-        if (el) {
-          el.srcObject = null;
-          el.remove();
-          remoteAudioElements.delete(userId);
-        }
-      },
-      onLocalMuteChange: (muted) => {
-        setVoiceState({ muted });
-      },
-      onSpeakingChange: (speaking) => {
-        setVoiceState({ speaking });
-      },
-      onAudioError: (audioError) => {
-        // A stream stopping while leaving is not news.
-        if (voiceState.state === "disconnected") return;
-        // Native stream died (unplugged, stalled, could not open): never let
-        // the call look healthy with a dead mic. Stays until audio works
-        // again (onAudioRecovered), it is dismissed, or the call ends.
-        const capture = audioError.kind === "capture_failed";
-        showToast({
-          type: "error",
-          title: t(capture ? "voice.audio.captureFailed" : "voice.audio.playbackFailed"),
-          message: audioError.device,
-          duration: 0,
-          id: capture ? AUDIO_CAPTURE_TOAST_ID : AUDIO_PLAYBACK_TOAST_ID,
-        });
-      },
-      onAudioRecovered: (recovered) => {
-        dismissToast(
-          recovered.kind === "capture_failed" ? AUDIO_CAPTURE_TOAST_ID : AUDIO_PLAYBACK_TOAST_ID,
-        );
-      },
-      onScreenShareTrack: (userId, streamId, track) => {
-        console.log("[Voice] Screen share track received:", userId, streamId);
-        // Import and call viewer store — register track (auto-views if nothing active)
-        import("@/stores/screenShareViewer").then(
-          ({ addAvailableTrack }) => {
-            const shareInfo = voiceState.screenShares.find(
-              (s) => s.stream_id === streamId,
-            );
-            const username = shareInfo?.username || userId.slice(0, 8);
-            const sourceLabel = shareInfo?.source_label || "Screen";
-            addAvailableTrack(streamId, track, userId, username, sourceLabel);
-          },
-        );
-      },
-      onScreenShareTrackRemoved: (userId, streamId) => {
-        console.log("[Voice] Screen share track removed:", userId, streamId);
-        import("@/stores/screenShareViewer").then(
-          ({ removeAvailableTrack }) => {
-            removeAvailableTrack(streamId);
-          },
-        );
-      },
-      onScreenShareStopped: (_userId, _streamId, reason) => {
-        console.log("[Voice] Screen share stopped:", reason);
-        // Sync local state only when no more streams remain
-        if (!adapter.isScreenSharing()) {
-          setVoiceState({ screenSharing: false });
-        }
-      },
-      onWebcamTrack: (userId, track) => {
-        console.log("[Voice] Webcam track received:", userId);
-        import("@/stores/webcamViewer").then(({ addAvailableTrack }) => {
-          addAvailableTrack(userId, track);
-        });
-      },
-      onWebcamTrackRemoved: (userId) => {
-        console.log("[Voice] Webcam track removed:", userId);
-        import("@/stores/webcamViewer").then(({ removeAvailableTrack }) => {
-          removeAvailableTrack(userId);
-        });
-      },
-    });
-
-    await applyStoredNoiseSuppression(adapter);
-
-    // Browser mode: hand the stored devices over BEFORE joining. Outside a
-    // call the adapter only records them, so join opens the stored mic
-    // directly (falling back to the default mic if it is gone) and remote
-    // audio arriving later uses the stored speaker.
-    const storedInput = isTauri() ? null : (appSettings()?.audio?.input_device ?? null);
-    if (!isTauri()) {
-      await applyStoredAudioDevices(adapter);
-    }
-
-    const result = await adapter.join(channelId);
-    if (!result.ok) {
-      setVoiceState({
-        state: "disconnected",
-        channelId: null,
-        error: result.error,
       });
-      throw new Error(getErrorMessage(result.error));
-    }
-
-    if (isTauri()) {
-      // Native: apply the audio devices configured in settings — without
-      // this the stored selection never reaches the adapter and voice
-      // always uses the system default devices.
-      await applyStoredAudioDevices(adapter);
-    } else if (
-      storedInput &&
-      typeof adapter.getInputDevice === "function" &&
-      adapter.getInputDevice() === null
-    ) {
-      // Join found the stored mic gone and used the default instead.
-      await forgetStoredDevice("input_device");
-    }
-
-    // Start session tracking and metrics collection
-    setVoiceState("sessionId", crypto.randomUUID());
-    setVoiceState("connectedAt", Date.now());
-    startMetricsLoop();
-
-    // Activate PTT/PTM if configured (also handles VAD disable when PTT active)
-    await activatePtt();
-
-    // Apply VAD config only if PTT didn't take over
-    if (!isPttActive()) {
-      syncVadConfig(adapter);
-    }
-  } finally {
-    isJoining = false;
-  }
+      // Remove old element for this user if exists
+      const old = remoteAudioElements.get(remoteTrack.userId);
+      if (old) {
+        old.srcObject = null;
+        old.remove();
+      }
+      remoteAudioElements.set(remoteTrack.userId, audio);
+      audio.play().catch((err) => {
+        console.warn("[Voice] Audio autoplay blocked:", err);
+      });
+    },
+    onRemoteTrackRemoved: (userId) => {
+      console.log("[Voice] Remote audio track removed:", userId);
+      const el = remoteAudioElements.get(userId);
+      if (el) {
+        el.srcObject = null;
+        el.remove();
+        remoteAudioElements.delete(userId);
+      }
+    },
+    onLocalMuteChange: (muted) => {
+      setVoiceState({ muted });
+    },
+    onSpeakingChange: (speaking) => {
+      setVoiceState({ speaking });
+    },
+    onAudioError: (audioError) => {
+      // A stream stopping while leaving or while the recovery drops the
+      // old connection is not news.
+      if (voiceState.state === "disconnected" || voiceOwner.isRecovering(channelWish)) return;
+      // Native stream died (unplugged, stalled, could not open): never let
+      // the call look healthy with a dead mic. Stays until audio works
+      // again (onAudioRecovered), it is dismissed, or the call ends.
+      const capture = audioError.kind === "capture_failed";
+      showToast({
+        type: "error",
+        title: t(capture ? "voice.audio.captureFailed" : "voice.audio.playbackFailed"),
+        message: audioError.device,
+        duration: 0,
+        id: capture ? AUDIO_CAPTURE_TOAST_ID : AUDIO_PLAYBACK_TOAST_ID,
+      });
+    },
+    onAudioRecovered: (recovered) => {
+      dismissToast(
+        recovered.kind === "capture_failed" ? AUDIO_CAPTURE_TOAST_ID : AUDIO_PLAYBACK_TOAST_ID,
+      );
+    },
+    onScreenShareTrack: (userId, streamId, track) => {
+      console.log("[Voice] Screen share track received:", userId, streamId);
+      // Import and call viewer store — register track (auto-views if nothing active)
+      import("@/stores/screenShareViewer").then(
+        ({ addAvailableTrack }) => {
+          const shareInfo = voiceState.screenShares.find(
+            (s) => s.stream_id === streamId,
+          );
+          const username = shareInfo?.username || userId.slice(0, 8);
+          const sourceLabel = shareInfo?.source_label || "Screen";
+          addAvailableTrack(streamId, track, userId, username, sourceLabel);
+        },
+      );
+    },
+    onScreenShareTrackRemoved: (userId, streamId) => {
+      console.log("[Voice] Screen share track removed:", userId, streamId);
+      import("@/stores/screenShareViewer").then(
+        ({ removeAvailableTrack }) => {
+          removeAvailableTrack(streamId);
+        },
+      );
+    },
+    onScreenShareStopped: (_userId, _streamId, reason) => {
+      console.log("[Voice] Screen share stopped:", reason);
+      // Sync local state only when no more streams remain
+      if (!adapter.isScreenSharing()) {
+        setVoiceState({ screenSharing: false });
+      }
+    },
+    onWebcamTrack: (userId, track) => {
+      console.log("[Voice] Webcam track received:", userId);
+      import("@/stores/webcamViewer").then(({ addAvailableTrack }) => {
+        addAvailableTrack(userId, track);
+      });
+    },
+    onWebcamTrackRemoved: (userId) => {
+      console.log("[Voice] Webcam track removed:", userId);
+      import("@/stores/webcamViewer").then(({ removeAvailableTrack }) => {
+        removeAvailableTrack(userId);
+      });
+    },
+  });
 }
 
 /**
- * Leave the current voice channel.
+ * What the user sees when the channel session is over (left, replaced,
+ * removed, given up). Synchronous: the screen follows the click at once;
+ * the voice owner ends the adapter session in the background.
  */
-export async function leaveVoice(): Promise<void> {
-  if (voiceState.state === "disconnected") return;
-
-  // Stop metrics collection first
+function showVoiceLeft(): void {
   stopMetricsLoop();
-
-  // Deactivate PTT/PTM
-  await deactivatePtt();
-
   // Reset notification state and dismiss any active connection toasts
   currentIncidentStart = null;
   goodQualityStartTime = null;
   dismissToast("connection-critical");
   dismissToast("connection-warning");
+  removeRemoteAudioElements();
+  resetVoiceSession();
+}
 
-  const adapter = await createVoiceAdapter();
-  const result = await adapter.leave();
-  // After the streams stopped, so an error raised while leaving is cleared too.
-  dismissToast(AUDIO_CAPTURE_TOAST_ID);
-  dismissToast(AUDIO_PLAYBACK_TOAST_ID);
+/** Channel voice as the voice owner runs it (see `VoiceHooks`). */
+function channelHooks(channelId: string): VoiceHooks {
+  /** Browser: the microphone stored in settings when the join began. */
+  let storedInput: string | null = null;
+  /** What this session owns; no other session reads or changes it. */
+  const own: ChannelSessionOwn = {
+    pttQueue: Promise.resolve(),
+    ptt: null,
+    adapter: null,
+    mine: () => false,
+  };
+  return {
+    prepare: async (adapter, mine) => {
+      own.adapter = adapter;
+      own.mine = mine;
+      installAdapterHandlers(adapter);
+      await applyStoredNoiseSuppression(adapter);
+      if (!mine()) return;
+      // Browser mode: hand the stored devices over BEFORE joining. Outside a
+      // call the adapter only records them, so join opens the stored mic
+      // directly (falling back to the default mic if it is gone) and remote
+      // audio arriving later uses the stored speaker.
+      storedInput = isTauri() ? null : (appSettings()?.audio?.input_device ?? null);
+      if (!isTauri()) await applyStoredAudioDevices(adapter, mine);
+    },
+    established: async (adapter, _session, mine) => {
+      if (isTauri()) {
+        // Native: apply the audio devices configured in settings — without
+        // this the stored selection never reaches the adapter and voice
+        // always uses the system default devices.
+        await applyStoredAudioDevices(adapter, mine);
+      } else if (
+        storedInput &&
+        typeof adapter.getInputDevice === "function" &&
+        adapter.getInputDevice() === null
+      ) {
+        // Join found the stored mic gone and used the default instead.
+        await forgetStoredDevice("input_device");
+      }
+      if (!mine()) return;
+      // Activate PTT/PTM if configured (also handles VAD disable when PTT active)
+      await inPttOrder(own, () => bindPtt(own));
+    },
+    live: (adapter) => {
+      liveChannel = own;
+      // Start session tracking and metrics collection
+      setVoiceState("sessionId", crypto.randomUUID());
+      setVoiceState("connectedAt", Date.now());
+      startMetricsLoop();
+      // Apply VAD config only if PTT didn't take over
+      if (!isPttActive()) syncVadConfig(adapter);
+    },
+    media: (state) => {
+      // A short outage ("reconnecting") keeps every audio element (A8):
+      // when ICE recovers, the same streams play on. Only an ended
+      // connection removes them.
+      if (state === "disconnected") removeRemoteAudioElements();
+      setVoiceState({ state: storeStateFor(state) });
+    },
+    recovering: () => {
+      setVoiceState({ state: "reconnecting" });
+      stopMetricsLoop();
+    },
+    // After a gap (the device slept): shown as reconnecting until the
+    // owner has seen that the connections are in fact alive.
+    verifying: () => setVoiceState({ state: "reconnecting" }),
+    verified: () => setVoiceState({ state: "connected" }),
+    attemptStarts: () => {
+      // The old connection is gone: its audio, shares and webcam with it
+      // (screen share and webcam are not restarted, C32).
+      removeRemoteAudioElements();
+      import("@/stores/webcamViewer").then(({ clearAll }) => clearAll());
+      setVoiceState({ screenSharing: false, webcamActive: false });
+    },
+    rejoined: async (adapter, _session, mine) => {
+      // Deafened stays deafened from the first remote track on (native
+      // plays tracks that arrive before "connected").
+      if (voiceState.deafened && mine()) await adapter.setDeafen(true);
+    },
+    restore: async (adapter, _session, mine) => {
+      // The latest choice wins: mute/deafen may have changed while
+      // reconnecting. Each step applies to this attempt's connection only:
+      // once it is no longer the held one, nothing more is touched.
+      if (!mine()) return;
+      await adapter.setDeafen(voiceState.deafened);
+      if (!mine()) return;
+      await adapter.setMute(voiceState.muted || voiceState.deafened);
+      if (!mine()) return;
+      if (isTauri()) {
+        // Native keeps no device choice across the silent leave.
+        await applyStoredAudioDevices(adapter, mine);
+      }
+    },
+    recovered: (adapter) => {
+      setVoiceState({
+        state: "connected",
+        muted: voiceState.muted || voiceState.deafened,
+        error: null,
+        sessionId: crypto.randomUUID(),
+        connectedAt: Date.now(),
+      });
+      startMetricsLoop();
+      if (!isPttActive()) syncVadConfig(adapter);
+      console.info("[Voice] Rejoined voice channel:", channelId);
+    },
+    failed: (error) => {
+      setVoiceState({ state: "disconnected", channelId: null, error });
+    },
+    gaveUp: () => {
+      showVoiceLeft();
+      // A failed attempt's error is not news once the call is over.
+      lostChannelUser = currentUser()?.id ?? null;
+      setVoiceState({ lostChannelId: channelId, error: null });
+    },
+    // Something else took the voice session (a DM call): the channel is left.
+    superseded: showVoiceLeft,
+    released: async (adapter, mine) => {
+      if (liveChannel === own) liveChannel = null;
+      // After the adapter session ended: with PTT active this restores open
+      // mic locally only (the adapter has no channel any more).
+      // Not queued behind a set-up or settings change that is still under
+      // way: the binding is marked released at once, and whatever is still
+      // registering takes its shortcut back when it resumes.
+      await releasePtt(own.ptt, adapter, mine);
+      if (!mine()) return;
+      // After the streams stopped, so an error raised while leaving is cleared too.
+      dismissToast(AUDIO_CAPTURE_TOAST_ID);
+      dismissToast(AUDIO_PLAYBACK_TOAST_ID);
+    },
+  };
+}
 
-  if (!result.ok) {
-    console.error("Failed to leave voice:", result.error);
+/**
+ * Join a voice channel: the channel becomes the voice session the user
+ * wants, replacing whatever was wanted before. The screen switches at once;
+ * the voice owner ends the old session completely and then joins this one,
+ * unless the user has changed their mind again by then. Resolves when the
+ * join is through or was replaced; throws when it failed.
+ */
+export async function joinVoice(channelId: string): Promise<void> {
+  // Joining, connected or reconnecting in this very channel: one
+  // session is enough.
+  if (voiceOwner.wants(channelWish) && channelWish?.id === channelId) {
+    console.info("[Voice] Already in this channel, join ignored");
+    return;
   }
+  removedChannels.delete(channelId);
+  const wish = voiceOwner.wish("channel", channelId, channelHooks(channelId));
+  channelWish = wish;
+  const outcome = voiceOwner.request(wish);
+  setVoiceState({ state: "connecting", channelId, error: null, lostChannelId: null });
 
+  const result = await outcome;
+  if (result.type === "failed") throw new Error(getErrorMessage(result.error));
+}
+
+/**
+ * Leave the current voice channel. The screen shows "left" at once; the
+ * promise resolves when the voice owner has ended the session.
+ */
+export async function leaveVoice(): Promise<void> {
+  setVoiceState({ lostChannelId: null });
+  const wish = channelWish;
+  if (voiceOwner.wants(wish) || voiceState.state !== "disconnected") showVoiceLeft();
+  // Only this store's own wish is dropped; a DM call that took over since
+  // is not this leave's to end.
+  await voiceOwner.drop(wish);
+}
+
+/** Clear everything about the current call (state stays `disconnected`). */
+function resetVoiceSession(): void {
   // Clear webcam viewer tracks
   import("@/stores/webcamViewer").then(({ clearAll }) => clearAll());
 
@@ -615,6 +796,125 @@ export async function leaveVoice(): Promise<void> {
   });
 }
 
+/** One line of text per `voice_removed` reason (C31); unknown = kicked. */
+const VOICE_REMOVED_TEXT = {
+  kicked: "voice.removed.kicked",
+  banned: "voice.removed.banned",
+  permission_lost: "voice.removed.permissionLost",
+  channel_deleted: "voice.removed.channelDeleted",
+  session_replaced: "voice.removed.sessionReplaced",
+} as const;
+
+export function voiceRemovedText(reason: string): string {
+  const key =
+    VOICE_REMOVED_TEXT[reason as keyof typeof VOICE_REMOVED_TEXT] ??
+    VOICE_REMOVED_TEXT.kicked;
+  return t(key);
+}
+
+/**
+ * Channels the server removed us from (C31) since the last own join there.
+ */
+const removedChannels = new Set<string>();
+
+/** Whether `voice_removed` arrived for this channel since the last own join. */
+export function wasRemovedFrom(channelId: string): boolean {
+  return removedChannels.has(channelId);
+}
+
+/**
+ * C31 `voice_removed`: the server dropped this socket's voice peer. The
+ * channel session is over: the voice owner ends it WITHOUT `voice_leave`
+ * and never rejoins it; the store says why in one line. A removal for a
+ * channel the user is no longer in changes nothing they see. Returns
+ * whether the removal was for the channel voice the user is in.
+ */
+export async function handleVoiceRemoved(
+  channelId: string,
+  reason: string,
+): Promise<boolean> {
+  // Whatever is still held for that channel goes without `voice_leave`:
+  // the server already removed the peer.
+  voiceOwner.serverRemoved(channelId);
+  const wish = channelWish;
+  if (!wish || wish.id !== channelId || !voiceOwner.wants(wish)) return false;
+  removedChannels.add(channelId);
+  showVoiceLeft();
+  const ended = voiceOwner.drop(wish, { silent: true });
+
+  showToast({
+    type: "warning",
+    title: voiceRemovedText(reason),
+    duration: 8000,
+    id: "voice-removed",
+  });
+  await ended;
+  return true;
+}
+
+// ============================================================================
+// Rejoin after a lost connection (C32) — run by the voice owner
+// ============================================================================
+
+/** An attempt fails when the publisher is not connected after this long. */
+export const REJOIN_ATTEMPT_TIMEOUT_MS = RECOVERY_ATTEMPT_TIMEOUT_MS;
+
+/** Whether the channel session is being recovered (exported for tests). */
+export function isVoiceRejoinRunning(): boolean {
+  return voiceOwner.isRecovering(channelWish);
+}
+
+/** Attempts the running recovery has used up (exported for tests). */
+export function voiceRejoinAttemptsUsed(): number {
+  return voiceOwner.isRecovering(channelWish) ? voiceOwner.attemptsUsed : 0;
+}
+
+/**
+ * The signalling socket dropped. The server removes this user's voice peer
+ * when the socket closes, so an established session shows "reconnecting"
+ * and waits for the next authenticated socket (at most 60 s, see
+ * `voiceOwner.ts`). Covers channel voice and DM-call voice alike.
+ */
+export function noteSignallingLost(): void {
+  dropForeignRejoinOffer();
+  voiceOwner.socketLost();
+}
+
+/** Who was signed in when the "Rejoin" offer was made. */
+let lostChannelUser: string | null = null;
+
+/**
+ * The "Rejoin" offer belongs to the user it was made for: for anybody
+ * else it is withdrawn (second line behind the owner's `shutdown()`).
+ */
+function dropForeignRejoinOffer(): void {
+  if (voiceState.lostChannelId && lostChannelUser !== (currentUser()?.id ?? null)) {
+    setVoiceState({ lostChannelId: null });
+  }
+}
+
+/** The socket is open again (before re-subscription). */
+export function noteSignallingUp(): void {
+  dropForeignRejoinOffer();
+  voiceOwner.socketOpen();
+}
+
+/**
+ * C32 trigger: the socket is back and the text re-subscription finished.
+ * The voice owner recovers the session the user is still in (not left, not
+ * removed). Resolves when no recovery is running any more.
+ */
+export function rejoinVoiceAfterReconnect(): Promise<void> {
+  dropForeignRejoinOffer();
+  voiceOwner.socketReady();
+  return voiceOwner.whenCalm();
+}
+
+/** The user dismissed the "Rejoin" offer. */
+export function dismissVoiceRejoin(): void {
+  setVoiceState({ lostChannelId: null });
+}
+
 function getPttConfig(): PttFullConfig | null {
   const settings = appSettings();
   if (!settings) return null;
@@ -632,53 +932,78 @@ function getPttConfig(): PttFullConfig | null {
   };
 }
 
-let pttActivating = false;
-
-async function activatePtt(): Promise<void> {
-  // Guard against concurrent activation from rapid setting changes
-  if (pttActivating) return;
-  pttActivating = true;
-  try {
-    await deactivatePtt();
-
-    const config = getPttConfig();
-    if (!config) return;
-
-    pttController = new PttController(setMute);
-    pttController.activate(config);
-    pttCleanup = await createTauriPttListeners(pttController, config);
-
-    // PTT takes priority over VAD — disable gating while PTT controls mute
-    const adapter = getVoiceAdapter();
-    if (adapter) {
-      const settings = appSettings();
-      adapter.setVadConfig(false, settings?.voice.vad_threshold ?? 0.5);
-    }
-  } finally {
-    pttActivating = false;
-  }
+/**
+ * Run `step` after every earlier push-to-talk step of this session has
+ * finished (whether it succeeded or not).
+ */
+function inPttOrder(own: ChannelSessionOwn, step: () => Promise<void>): Promise<void> {
+  const run = own.pttQueue.then(step, step);
+  own.pttQueue = run.catch(() => undefined);
+  return run;
 }
 
-async function deactivatePtt(): Promise<void> {
-  const wasActive = pttController !== null && pttController.isPttOrPtmEnabled();
-  if (pttCleanup) {
-    const fn = pttCleanup;
-    pttCleanup = null;
-    await Promise.resolve(fn());
+/**
+ * Give the session `own` its push-to-talk / push-to-mute, if configured:
+ * a controller and shortcut listeners of its own. The controller mutes and
+ * unmutes only while its session is the held one. If the session ends
+ * while the shortcut is still being registered, the registration is taken
+ * back again and nothing else is touched.
+ */
+async function bindPtt(own: ChannelSessionOwn): Promise<void> {
+  const config = getPttConfig();
+  const adapter = own.adapter;
+  if (!config || !adapter || !own.mine()) return;
+
+  const binding: PttBinding = {
+    controller: new PttController((muted) => {
+      if (binding.released || !own.mine()) return;
+      return setMute(muted);
+    }),
+    unregister: null,
+    released: false,
+  };
+  // An earlier binding of this session is never just overwritten.
+  await releasePtt(own.ptt, adapter, own.mine);
+  if (!own.mine()) return;
+  own.ptt = binding;
+  binding.controller.activate(config);
+  const unregister = await createTauriPttListeners(binding.controller, config);
+  if (binding.released || !own.mine()) {
+    binding.released = true;
+    binding.controller.deactivate();
+    await Promise.resolve(unregister());
+    return;
   }
-  if (pttController) {
-    pttController.deactivate();
-    pttController = null;
-  }
+  binding.unregister = unregister;
+  activePtt = binding;
+  // PTT takes priority over VAD — disable gating while PTT controls mute
+  adapter.setVadConfig(false, appSettings()?.voice.vad_threshold ?? 0.5);
+}
+
+/**
+ * Take a session's push-to-talk away: its controller and its listeners.
+ * Shared state (the microphone's mute, the VAD setting) is restored only
+ * while `mine()` holds, i.e. while nothing newer is in the adapter.
+ */
+async function releasePtt(
+  binding: PttBinding | null,
+  adapter: VoiceAdapter | null,
+  mine: StillMine,
+): Promise<void> {
+  if (!binding || binding.released) return;
+  binding.released = true;
+  const wasActive = binding.controller.isPttOrPtmEnabled();
+  if (activePtt === binding) activePtt = null;
+  binding.controller.deactivate();
+  const unregister = binding.unregister;
+  binding.unregister = null;
+  if (unregister) await Promise.resolve(unregister());
+  if (!mine()) return;
   // Restore open-mic when PTT/PTM is deactivated so the user isn't left
   // silently muted (PTT rest state is muted).
-  if (wasActive) {
-    await setMute(false);
-  }
-
+  if (wasActive) await setMute(false);
   // Restore VAD config from settings
-  const adapter = getVoiceAdapter();
-  if (adapter) syncVadConfig(adapter);
+  if (mine() && adapter) syncVadConfig(adapter);
 }
 
 /**
@@ -689,15 +1014,20 @@ function syncVadConfig(adapter: import("@/lib/webrtc/types").VoiceAdapter): void
   const settings = appSettings();
   if (!settings) return;
 
-  const isPtt = pttController !== null && pttController.isPttOrPtmEnabled();
-  const vadEnabled = !isPtt && settings.voice.voice_activity_detection;
+  const vadEnabled = !isPttActive() && settings.voice.voice_activity_detection;
   adapter.setVadConfig(vadEnabled, settings.voice.vad_threshold);
 }
 
 /** Re-sync PTT state when settings change mid-call. */
 export async function updatePttFromSettings(): Promise<void> {
-  if (voiceState.state !== "connected") return;
-  await activatePtt();
+  const own = liveChannel;
+  if (voiceState.state !== "connected" || !own) return;
+  // One change at a time: an update that overlaps an earlier one waits for
+  // it, releases its binding and only then registers the new shortcut.
+  await inPttOrder(own, async () => {
+    await releasePtt(own.ptt, own.adapter, own.mine);
+    if (own.mine()) await bindPtt(own);
+  });
 }
 
 /** Re-sync VAD config when settings change mid-call. */
@@ -709,7 +1039,41 @@ export function updateVadFromSettings(): void {
 
 /** Whether PTT or PTM is currently controlling the mute state. */
 export function isPttActive(): boolean {
-  return pttController !== null && pttController.isPttOrPtmEnabled();
+  return activePtt !== null && !activePtt.released && activePtt.controller.isPttOrPtmEnabled();
+}
+
+/**
+ * While reconnecting mute/deafen stay usable: the store keeps the
+ * user's latest choice, the adapter applies it locally where it can, and
+ * the next successful attempt applies it to the new connection.
+ */
+function reconnecting(): boolean {
+  return voiceState.state === "reconnecting";
+}
+
+/** Run an adapter call; while reconnecting a failure only gets logged. */
+async function applyToAdapter(
+  what: string,
+  call: (adapter: VoiceAdapter) => Promise<{ ok: boolean; error?: VoiceError }>,
+): Promise<boolean> {
+  try {
+    const adapter = await createVoiceAdapter();
+    const result = await call(adapter);
+    if (result.ok) return true;
+    if (reconnecting()) {
+      console.warn(`[Voice] ${what} kept for the reconnect:`, result.error);
+      return true;
+    }
+    console.error(`Failed to ${what}:`, result.error);
+    setVoiceState({ error: result.error ?? null });
+    return false;
+  } catch (err) {
+    if (reconnecting()) {
+      console.warn(`[Voice] ${what} kept for the reconnect:`, err);
+      return true;
+    }
+    throw err;
+  }
 }
 
 /**
@@ -717,13 +1081,8 @@ export function isPttActive(): boolean {
  */
 export async function toggleMute(): Promise<void> {
   const newMuted = !voiceState.muted;
-  const adapter = await createVoiceAdapter();
-  const result = await adapter.setMute(newMuted);
-
-  if (!result.ok) {
-    console.error("Failed to toggle mute:", result.error);
-    setVoiceState({ error: result.error });
-  }
+  if (reconnecting()) setVoiceState({ muted: newMuted });
+  await applyToAdapter("toggle mute", (adapter) => adapter.setMute(newMuted));
 }
 
 /**
@@ -731,18 +1090,14 @@ export async function toggleMute(): Promise<void> {
  */
 export async function toggleDeafen(): Promise<void> {
   const newDeafened = !voiceState.deafened;
-  const adapter = await createVoiceAdapter();
-  const result = await adapter.setDeafen(newDeafened);
-
-  if (!result.ok) {
-    console.error("Failed to toggle deafen:", result.error);
-    setVoiceState({ error: result.error });
-  } else {
-    setVoiceState({
-      deafened: newDeafened,
-      // Deafening also mutes
-      muted: newDeafened ? true : voiceState.muted,
-    });
+  const next = {
+    deafened: newDeafened,
+    // Deafening also mutes
+    muted: newDeafened ? true : voiceState.muted,
+  };
+  if (reconnecting()) setVoiceState(next);
+  if (await applyToAdapter("toggle deafen", (adapter) => adapter.setDeafen(newDeafened))) {
+    setVoiceState(next);
   }
 }
 
@@ -799,6 +1154,9 @@ export async function startScreenShare(
 
   // Generate a stream ID for this screen share
   const streamId = crypto.randomUUID();
+  // The share belongs to this session; the picker can take long.
+  const session = heldSession();
+  const channelId = voiceState.channelId;
 
   const adapter = await createVoiceAdapter();
 
@@ -809,6 +1167,10 @@ export async function startScreenShare(
     console.error("Failed to start screen share:", result.error);
     return { ok: false, error: getErrorMessage(result.error) };
   }
+  if (!isSameSession(session, heldSession()) || voiceState.state !== "connected") {
+    await adapter.stopScreenShare(streamId);
+    return { ok: false, error: t("voice.error.notConnected") };
+  }
 
   // Get actual screen share info from the adapter
   const shareInfo = adapter.getScreenShareInfo(streamId);
@@ -818,7 +1180,7 @@ export async function startScreenShare(
   // Notify server about screen share start
   try {
     await tauri.wsScreenShareStart(
-      voiceState.channelId,
+      channelId,
       streamId,
       quality || "medium",
       hasAudio,
@@ -936,6 +1298,8 @@ export async function startWebcam(
     return { ok: false, error: t("voice.error.webcamActive") };
   }
 
+  const session = heldSession();
+  const channelId = voiceState.channelId;
   const adapter = await createVoiceAdapter();
 
   const result = await adapter.startWebcam({ quality, deviceId });
@@ -944,10 +1308,14 @@ export async function startWebcam(
     console.error("Failed to start webcam:", result.error);
     return { ok: false, error: getErrorMessage(result.error) };
   }
+  if (!isSameSession(session, heldSession()) || voiceState.state !== "connected") {
+    await adapter.stopWebcam();
+    return { ok: false, error: t("voice.error.notConnected") };
+  }
 
   // Notify server about webcam start
   try {
-    await tauri.wsWebcamStart(voiceState.channelId, quality || "medium");
+    await tauri.wsWebcamStart(channelId, quality || "medium");
   } catch (err) {
     console.error("Failed to notify server of webcam start:", err);
     await adapter.stopWebcam();
@@ -1000,10 +1368,14 @@ export function isInVoice(): boolean {
 }
 
 /**
- * Check if connected to a specific channel.
+ * Check if in a specific channel (connected or reconnecting).
  */
 export function isInChannel(channelId: string): boolean {
-  return voiceState.state === "connected" && voiceState.channelId === channelId;
+  // Reconnecting is still the same voice session.
+  return (
+    (voiceState.state === "connected" || voiceState.state === "reconnecting") &&
+    voiceState.channelId === channelId
+  );
 }
 
 /**

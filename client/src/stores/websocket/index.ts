@@ -4,6 +4,7 @@
  * Manages WebSocket connection and routes events to appropriate stores.
  */
 
+import { noteVoiceInbound } from "../voiceShutdownHook";
 import { loadServerFeatures, isHiddenChannel } from "@/stores/serverFeatures";
 import { isTextLikeChannelType } from "@/lib/channelTypes";
 import { createStore } from "solid-js/store";
@@ -33,6 +34,8 @@ import {
   setChannelCallId,
   participantJoined,
   participantLeft,
+  answeredElsewhere,
+  declinedElsewhere,
   type EndReason,
 } from "../call";
 import {
@@ -383,6 +386,8 @@ function notifySecurityNotice(message: Message): void {
 
 export async function handleServerEvent(event: ServerEvent): Promise<void> {
   console.log("[WebSocket] Received event:", event.type);
+  // Any frame from the server shows that the socket is alive right now.
+  noteVoiceInbound();
 
   switch (event.type) {
     case "message_new":
@@ -543,36 +548,23 @@ export async function handleServerEvent(event: ServerEvent): Promise<void> {
       break;
 
     case "voice_error":
+      // Nothing is sent from here: every `voice_join` and `voice_leave`
+      // belongs to the voice owner's session. (The old leave-and-rejoin
+      // answer to "Already in voice channel" is gone; the server replaces
+      // a stale peer of the same user on `voice_join`, C32.)
       console.error("Voice error:", event.code, event.message);
+      break;
 
-      // Auto-retry for "Already in voice channel" error
-      if (event.message === "Already in voice channel") {
-        const { voiceState } = await import("@/stores/voice");
-        const channelId = voiceState.channelId;
-
-        if (channelId) {
-          console.log(
-            "[WebSocket] Auto-retry: leaving and rejoining channel",
-            channelId,
-          );
-
-          // Send leave message
-          await tauri.wsSend({
-            type: "voice_leave",
-            channel_id: channelId,
-          });
-
-          // Wait a bit for server to process leave
-          await new Promise((resolve) => setTimeout(resolve, 150));
-
-          // Retry join
-          await tauri.wsSend({
-            type: "voice_join",
-            channel_id: channelId,
-          });
-        }
+    case "voice_removed": {
+      // Routed to whichever voice session is active: channel voice or the
+      // native voice of a DM call.
+      const { handleVoiceRemoved, voiceRemovedText } = await import("@/stores/voice");
+      if (!(await handleVoiceRemoved(event.channel_id, event.reason))) {
+        const { handleCallVoiceRemoved } = await import("@/stores/call");
+        await handleCallVoiceRemoved(event.channel_id, voiceRemovedText(event.reason));
       }
       break;
+    }
 
     // Call events
     case "incoming_call": {
@@ -608,24 +600,35 @@ export async function handleServerEvent(event: ServerEvent): Promise<void> {
       );
       break;
 
-    case "call_participant_joined":
+    case "call_participant_joined": {
       console.log("[WebSocket] Participant joined call:", event.username);
       participantJoined(event.channel_id, event.user_id, event.call_id);
+      // C2: our own user answered on another device; stop ringing here.
+      const me = currentUser();
+      if (me && event.user_id === me.id) {
+        answeredElsewhere(event.channel_id, event.call_id);
+      }
       // Only transition to connected on the first join (not on subsequent
       // participants) and only for the call we are actually in.
       connectOnFirstJoin(event.channel_id, event.user_id, event.call_id);
       break;
+    }
 
     case "call_participant_left":
       console.log("[WebSocket] Participant left call:", event.user_id);
       participantLeft(event.channel_id, event.user_id, event.call_id);
       break;
 
-    case "call_declined":
+    case "call_declined": {
       console.log("[WebSocket] Call declined by:", event.user_id);
-      // The call store will handle this through the API response
-      // This event is informational for other participants
+      // Declined on another of my devices: stop ringing here, not missed.
+      // For anyone else the event is informational.
+      const me = currentUser();
+      if (me && event.user_id === me.id) {
+        declinedElsewhere(event.channel_id, event.call_id);
+      }
       break;
+    }
 
     case "voice_user_stats":
       await handleVoiceUserStatsEvent(event);
@@ -1121,6 +1124,18 @@ async function handleReconnect(): Promise<void> {
 
   // Signal connection ready after subscriptions are restored
   window.dispatchEvent(new Event("ws-connected"));
+
+  // C32: the server dropped our voice peer with the old socket; rejoin the
+  // voice channel the user is still in (after the text re-subscription).
+  void import("@/stores/voice")
+    .then(({ rejoinVoiceAfterReconnect }) => rejoinVoiceAfterReconnect())
+    .catch((err) => console.error("[WS] Voice rejoin after reconnect failed:", err));
+  // C33: a DM call may have ended (or been answered elsewhere) in the gap.
+  void import("@/stores/call")
+    .then(({ resyncCallAfterReconnect }) =>
+      resyncCallAfterReconnect(currentUser()?.id),
+    )
+    .catch((err) => console.error("[WS] Call resync after reconnect failed:", err));
 }
 
 /** Browser transport for the reconnect supervisor. */
@@ -1245,7 +1260,19 @@ function getSupervisor(): ConnectionSupervisor {
     mode: isTauri() ? "external" : "managed",
     onStatus: (status, attempt) => {
       // A new connection must deliver its own `ready` before catch-up.
-      if (status !== "connected") readyReceived = false;
+      if (status !== "connected") {
+        readyReceived = false;
+        // The voice peer goes with the socket: the voice owner shows
+        // "reconnecting" and holds the recovery until the next
+        // authenticated socket (C32), for channel and DM-call voice alike.
+        void import("@/stores/voice")
+          .then(({ noteSignallingLost }) => noteSignallingLost())
+          .catch((err) => console.warn("[WS] Voice signalling-lost hook failed:", err));
+      } else {
+        void import("@/stores/voice")
+          .then(({ noteSignallingUp }) => noteSignallingUp())
+          .catch((err) => console.warn("[WS] Voice signalling-up hook failed:", err));
+      }
       setWsState({
         status,
         reconnectAttempt: attempt,

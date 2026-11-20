@@ -10,7 +10,7 @@ import { Component, Show, createEffect, createSignal, onCleanup } from "solid-js
 import { ShieldAlert } from "lucide-solid";
 import { t } from "@/i18n";
 import { isProbation, replaceSessionWithPasskey } from "@/stores/auth";
-import { meSecurity, refreshMeSecurity } from "@/stores/security";
+import { addPasskeyHintKey, meSecurity, refreshMeSecurity } from "@/stores/security";
 import { canUsePasskeys } from "@/lib/tauri/passkeys";
 import { passkeyFailureText } from "@/lib/authErrors";
 import { isTauri } from "@/lib/tauri/common";
@@ -93,7 +93,7 @@ const ProbationBanner: Component = () => {
               when={canSignIn()}
               fallback={
                 <Show when={meSecurity() && !hasPasskey()}>
-                  <p class="text-sm text-text-primary">{t("auth.probation.addPasskeyHint")}</p>
+                  <p class="text-sm text-text-primary">{t(addPasskeyHintKey())}</p>
                 </Show>
               }
             >

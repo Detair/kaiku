@@ -50,19 +50,41 @@ Audio tasks run in blocking threads, state is shared via `Arc<AtomicBool>`.
 1. **cpal callback** (real-time thread) receives `&[f32]` samples
 2. Accumulate in buffer until `FRAME_SIZE * CHANNELS` samples ready
 3. Convert f32 → i16 for Opus: `(sample * 32767.0) as i16`
-4. **Opus encode** frame (20ms = 960 samples/channel)
+4. **Opus encode** frame (20ms = 960 samples/channel; `audio::voice_encoder()`: mono VoIP, in-band FEC, 10 % expected loss)
 5. Send encoded packet via `mpsc::Sender<Vec<u8>>`
 
 **Critical:** Never block in audio callback. Use `try_send()`, not `send().await`.
 
-### Playback Pipeline
-1. Receive encoded packets via `mpsc::Receiver<Vec<u8>>`
-2. **Opus decode** in background thread (not audio callback)
-3. Convert i16 → f32: `f32::from(sample) / 32768.0`
-4. Store in `VecDeque<f32>` buffer
-5. **cpal callback** drains buffer to fill output `&mut [f32]`
+### Playback Pipeline (calls: `voice/audio_mixer.rs`, `voice/playout.rs`, `voice/jitter_buffer.rs`)
+1. Per remote track, `commands/voice.rs::forward_remote_audio_track` stamps each RTP packet's arrival and `try_send`s it (bounded, 16; drops counted as `queue_full`) to the mixer task; it also wakes when its queue closes (instance retired or mixer ended)
+2. The mixer owns one `TrackPlayout` per track **instance**: the instance id is taken when the track is announced (`AudioMixer::new_instance`), a registration only uses the mixer of the session that announced it, an older instance never retires a newer one, and only the current instance reports the track as gone (`release_with`, under the transition). Each holds a `JitterBuffer` (pure, clock-injected; at most 25 packets) and one Opus decoder (PLC, or FEC from the next packet when libopus would really use it)
+3. Jitter buffer rules: seq ordering; duplicates/late dropped; a packet whose seq and ts disagree (incl. < 10 ms of ts per seq, an unexplained forward ts jump) is discarded until a second one confirms a restart (same source with running seq numbers: resumed like a pause); late packets of a replaced source refused for 10 s; 40–160 ms adaptive target; pause detection incl. senders that do not advance ts; audio played while the buffer ran dry counts against a loss's gap, the stretch right before the next packet is left for its FEC; drift drop/insert from a level average taken only while playing (a starved stretch does not count); a few too many packets while playing drop the oldest
+4. Timeline in decoded audio: packets of 10–120 ms all give one full 20 ms frame per tick; shorter or undecodable packets are rejected, packets older than 500 ms when taken are expired (both counted); a failed decoder call is replaced by concealment or silence of the same length
+5. `Pacer`: every 5 ms the mixer renders **one frame per 20 ms of elapsed time**, so jitter buffers are ticked evenly whatever the device block. At each callback's low point the queue is held at one frame plus the spread between the device's smallest and largest block of the last 5 s (`OutputLevel::request_range`); a frame short → one extra tick (device clock drift); far short (start, larger blocks, new device) → silence, not ticks (the ticks due in that wake are rendered first); above target → skip one frame per second (every 200 ms when far above). Bounded by the queue's capacity. No callback for 1 s → absent: rendering stops 3 frames ahead and queued audio, held packets and decoded audio are dropped (again on resume)
+6. A pusher thread writes mixed frames into a preallocated lock-free `audio::ring::SampleRing` (capacity `MAX_QUEUE_SAMPLES` = 2 × 400 ms + 3 frames)
+7. **cpal callback** (`fill_output`): a replaced stream (old generation during a device switch) plays silence and takes nothing; stale audio (flush requested) is dropped; a new stream's first callback drops what lies beyond its block plus a frame; then it reads without ever waiting, counts consumed samples and the callback into `OutputLevel` (also while deafened, then it plays zeros), and notes its block size for its generation
 
-**Jitter Buffer:** `VecDeque` provides basic buffering. Future: Add adaptive jitter buffer for network delays.
+**Output latency:** the queue swings between its low point (one frame, plus the block-size spread on devices whose blocks vary) and that plus one block, plus up to one 5 ms mixer wake (tokio timer; Windows timer granularity unverified). `AudioMixer::shutdown()` ends the mixer, the PCM thread and the readers with the session.
+
+Counters per track reach `voice_connection_stats` (`playout[]`) and a debug log every 5 s. The contract of the whole receive path is checked by the property test `voice/playout_properties.rs` (every fourth generated case is a clean stream of one packet duration, where drift adjustments are counted against what device block changes, a settling target and losses explain).
+
+**Frozen for v1.0:** the jitter buffer, playout and pacer take no further behaviour change without a failing property case first. Add the case to `voice/playout_properties.rs`, show it red, then change the code.
+
+**Added latency on devices whose block size varies:** the queue's low point carries the spread between the smallest and largest block of the last 5 s. Measured in a simulation (clean network, mean output queue): a 20/20/20/100 ms pattern holds 175 ms against 80 ms for a constant 100 ms block; a Bluetooth-like pattern (20 ms, every eighth 60 ms) 114 ms against 40 ms for a constant 20 ms block; 20/20/20/400 ms holds 635 ms.
+
+**Known limits (v1.0):**
+- One large callback (xrun recovery, priming) raises the reserve for 5 s; it drains by skips, each a cross-fade (about 20 after one 400 ms block among 10 ms blocks).
+- A device whose block size jumps between a few sizes (PipeWire quantum 21/43/85 ms every ~10 s) gets a short gap plus silence at each step up and a few cross-fades after each step down (simulated: 40 drops, 28 silence frames, 118 ms of device gap in 300 s).
+- A block size that wanders randomly over 10–400 ms every 2 s is audibly unsettled (simulated: 549 cross-fades, ~10 s of silence in 290 s); real devices were not seen to do this.
+- Frames rendered before the device's first callback tick the tracks; that callback drops what lies beyond its block, so a track present before the device starts loses up to that much audio. Rendering silence instead lets packets pile up until the buffer resynchronises, which is worse.
+- With 10 ms packets the 25 slots hold only 250 ms: a high target plus reordering ends in overflow drops (browsers send 20 ms).
+- A lost packet drains the level until its successor shows the loss; with frequent losses the average sits low and an occasional insert/drop pair follows.
+- Unchecked by the property test: device clock drift against the wall clock, timer jitter beyond fixed wake phases, device switches mid-call, several tracks at once, decoder errors, old senders with more than 40 ms of jitter.
+
+**Real-time note:** the callbacks use atomics and the lock-free ring only: no allocation, no lock, no logging.
+
+### Capture → RTP
+While muted, the device's samples are replaced by silence at the conversion, before any stage that keeps state (resampler, framer): nothing captured while muted can reach a frame encoded after unmuting. Capture numbers every 20 ms frame it delivers, gated and muted ones included, in `EncodedFrame { capture, frame, captured_at, talkspurt }`; `voice::rtp_clock::RtpClock` advances the RTP timestamp by exactly the frames between two packets, bridges only a restarted capture stream by the time between the two capture moments, and sets the marker bit on the first packet, after a restart and after gated or muted frames (not after a frame that could not be queued).
 
 ### Mute/Deafen State
 - **Muted**: Capture stream runs but doesn't send encoded packets
@@ -132,7 +154,7 @@ Use `commands/voice.rs::start_mic_test` to verify:
 ## Future Improvements
 
 ### High Priority
-1. **Adaptive Jitter Buffer**: Adjust buffer size based on network jitter
+1. ~~**Adaptive Jitter Buffer**~~: done (see Playback Pipeline)
 2. **Echo Cancellation**: Use speexdsp or WebRTC AEC
 3. **Noise Suppression**: Use RNNoise or WebRTC NS
 

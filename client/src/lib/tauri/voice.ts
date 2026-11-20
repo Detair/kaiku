@@ -1,23 +1,12 @@
 /**
  * Voice commands (browser mode stubs — voice requires Tauri).
+ *
+ * Joining and leaving voice is not here: every voice session, channel or
+ * DM call, is joined and ended by the voice owner (`stores/voiceOwner.ts`)
+ * through the voice adapter, so nothing else can start or end one.
  */
 
 import { isTauri } from "./common";
-
-export async function joinVoice(channelId: string): Promise<void> {
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("join_voice", { channelId });
-  }
-  console.warn("Voice chat requires the native app");
-}
-
-export async function leaveVoice(): Promise<void> {
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("leave_voice");
-  }
-}
 
 export async function setMute(muted: boolean): Promise<void> {
   if (isTauri()) {
