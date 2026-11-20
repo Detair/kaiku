@@ -74,13 +74,12 @@ pub async fn handle_voice_event_for_session(
         }),
         ClientEvent::VoicePublisherOffer { .. } => Some(EventClass::PublisherOffer),
         ClientEvent::VoiceSubscriberAnswer { .. } => Some(EventClass::SubscriberAnswer),
-        ClientEvent::VoiceScreenShareStart { .. } | ClientEvent::VoiceScreenShareStop { .. } => {
-            Some(EventClass::ScreenShareToggle)
-        }
+        // Stops are never limited: they only end things, and a lost stop
+        // would leave a share or webcam registered.
+        ClientEvent::VoiceScreenShareStart { .. } => Some(EventClass::ScreenShareToggle),
         ClientEvent::VoiceMute { .. }
         | ClientEvent::VoiceUnmute { .. }
-        | ClientEvent::VoiceWebcamStart { .. }
-        | ClientEvent::VoiceWebcamStop { .. } => Some(EventClass::MuteOrWebcamToggle),
+        | ClientEvent::VoiceWebcamStart { .. } => Some(EventClass::MuteOrWebcamToggle),
         ClientEvent::VoiceSetLayerPreference { .. } => Some(EventClass::SetLayerPreference),
         _ => None,
     };
@@ -987,6 +986,12 @@ async fn handle_screen_share_start(
         peer.push_pending_source(TrackSource::ScreenAudio(stream_id))
             .await;
     }
+    expire_unused_announcement(
+        room.clone(),
+        peer.clone(),
+        TrackSource::ScreenVideo(stream_id),
+        screen_share_limiter.cloned(),
+    );
 
     // Broadcast to room (including the sharer, so they get confirmation)
     room.broadcast_all(ServerEvent::ScreenShareStarted {
@@ -1028,6 +1033,62 @@ async fn handle_screen_share_stop(
         .await
         .ok_or(VoiceError::RoomNotFound(channel_id))?;
     let peer = owned_peer(&room, user_id, tx).await?;
+    end_screen_share(
+        &room,
+        &peer,
+        stream_id,
+        screen_share_limiter,
+        "user_stopped",
+    )
+    .await
+}
+
+/// How long an accepted share or webcam start waits for its track before it
+/// ends by itself (the client failed or gave up after the acknowledgement).
+pub const ANNOUNCEMENT_TTL: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// After [`ANNOUNCEMENT_TTL`], end the share or webcam announced as `source`
+/// if no track arrived for it: its slot is released and the room gets the
+/// normal stopped event with reason `no_media`. A stale announcement can then
+/// never bind a later track.
+fn expire_unused_announcement(
+    room: Arc<Room>,
+    peer: Arc<super::peer::Peer>,
+    source: TrackSource,
+    limiter: Option<ScreenShareLimiter>,
+) {
+    tokio::spawn(async move {
+        tokio::time::sleep(ANNOUNCEMENT_TTL).await;
+        if peer.is_retired() || peer.incoming_tracks.read().await.contains_key(&source) {
+            return;
+        }
+        let ended = match source {
+            TrackSource::ScreenVideo(stream_id) => {
+                end_screen_share(&room, &peer, stream_id, limiter.as_ref(), "no_media").await
+            }
+            TrackSource::Webcam => end_webcam(&room, &peer, "no_media").await,
+            TrackSource::Microphone | TrackSource::ScreenAudio(_) => Ok(()),
+        };
+        if let Err(e) = ended {
+            debug!(user_id = %peer.user_id, error = %e, "Expiring an unused announcement failed");
+        }
+    });
+}
+
+/// End the screen share `stream_id` of `peer`: drop its queued
+/// announcement, remove it from the room, release its slot, remove its
+/// tracks everywhere and tell the room (`screen_share_stopped` with
+/// `reason`). Shared by the client's stop and the expiry of an announcement
+/// whose track never came.
+async fn end_screen_share(
+    room: &Room,
+    peer: &Arc<super::peer::Peer>,
+    stream_id: Uuid,
+    screen_share_limiter: Option<&ScreenShareLimiter>,
+    reason: &str,
+) -> Result<(), VoiceError> {
+    let user_id = peer.user_id;
+    let channel_id = room.channel_id;
     // An announcement this stop ends must never bind a later track.
     peer.remove_pending_sources(|s| s.stream_id() == Some(stream_id))
         .await;
@@ -1160,6 +1221,7 @@ async fn handle_webcam_start(
 
     // Queue pending track source so setup_track_handler identifies it as Webcam
     peer.push_pending_source(TrackSource::Webcam).await;
+    expire_unused_announcement(room.clone(), peer.clone(), TrackSource::Webcam, None);
 
     // In the dual-PC model, the client adds tracks to the publisher PC
     // and sends a new offer. No server-side transceiver allocation needed.
@@ -1205,6 +1267,20 @@ async fn handle_webcam_stop(
         .await
         .ok_or(VoiceError::RoomNotFound(channel_id))?;
     let peer = owned_peer(&room, user_id, tx).await?;
+    end_webcam(&room, &peer, "user_stopped").await
+}
+
+/// End the webcam of `peer`: drop its queued announcement, remove it from
+/// the room and from every subscriber, and tell the room (`webcam_stopped`
+/// with `reason`). Shared by the client's stop and the expiry of an
+/// announcement whose track never came.
+async fn end_webcam(
+    room: &Room,
+    peer: &Arc<super::peer::Peer>,
+    reason: &str,
+) -> Result<(), VoiceError> {
+    let user_id = peer.user_id;
+    let channel_id = room.channel_id;
     // A webcam announcement this stop ends must never bind a later track.
     peer.remove_pending_sources(|s| *s == TrackSource::Webcam)
         .await;

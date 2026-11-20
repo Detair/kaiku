@@ -251,3 +251,77 @@ async fn rate_limited_start_is_answered(pool: PgPool) {
         limiter.stop_n(voice, 3).await;
     }
 }
+
+/// A stop is never lost to the rate limit: after a burst of start/stop
+/// pairs at the limit no share is left registered and no slot is held.
+#[sqlx::test]
+async fn stops_are_never_rate_limited(pool: PgPool) {
+    let app = TestApp::with_pool_and_screen_share_limiter(pool.clone()).await;
+    let server = spawn_test_server(app.router.clone()).await;
+    let (owner, _) = create_test_user(&pool).await;
+    let guild =
+        create_guild_with_default_role(&pool, owner, GuildPermissions::EVERYONE_DEFAULT).await;
+    let voice = create_voice_channel(&pool, guild, "voice").await;
+    let mut ws = connect_and_join(&server, &generate_access_token(&app.config, owner), voice).await;
+
+    for _ in 0..4 {
+        let stream_id = Uuid::new_v4();
+        send(&mut ws, share_start(voice, stream_id)).await;
+        send(
+            &mut ws,
+            serde_json::json!({
+                "type": "voice_screen_share_stop",
+                "channel_id": voice,
+                "stream_id": stream_id,
+            }),
+        )
+        .await;
+    }
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    let room = app.state.sfu.get_room(voice).await.expect("room");
+    assert!(
+        room.get_screen_shares().await.is_empty(),
+        "a share outlived its stop: {:?}",
+        room.get_screen_shares().await
+    );
+}
+
+/// An accepted start whose track never comes expires by itself: the others
+/// get `screen_share_stopped` and the slot is free again.
+#[sqlx::test]
+async fn announcement_without_track_expires(pool: PgPool) {
+    let app = TestApp::with_pool_and_screen_share_limiter(pool.clone()).await;
+    let server = spawn_test_server(app.router.clone()).await;
+    let (owner, _) = create_test_user(&pool).await;
+    let (viewer, _) = create_test_user(&pool).await;
+    let guild =
+        create_guild_with_default_role(&pool, owner, GuildPermissions::EVERYONE_DEFAULT).await;
+    add_guild_member(&pool, guild, viewer).await;
+    let voice = create_voice_channel(&pool, guild, "voice").await;
+    sqlx::query("UPDATE channels SET max_screen_shares = 1 WHERE id = $1")
+        .bind(voice)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mut viewer_ws =
+        connect_and_join(&server, &generate_access_token(&app.config, viewer), voice).await;
+    let mut ws = connect_and_join(&server, &generate_access_token(&app.config, owner), voice).await;
+
+    let stream_id = Uuid::new_v4();
+    send(&mut ws, share_start(voice, stream_id)).await;
+    next_ws_event(&mut ws, "screen_share_started", EVENT_TIMEOUT).await;
+    let stopped = next_ws_event(
+        &mut viewer_ws,
+        "screen_share_stopped",
+        Duration::from_secs(20),
+    )
+    .await;
+    assert_eq!(stopped["stream_id"], stream_id.to_string(), "{stopped}");
+
+    // The slot is free: the viewer can share now.
+    send(&mut viewer_ws, share_start(voice, Uuid::new_v4())).await;
+    next_ws_event(&mut viewer_ws, "screen_share_started", EVENT_TIMEOUT).await;
+    if let Some(limiter) = &app.state.screen_share_limiter {
+        limiter.stop(voice).await;
+    }
+}
