@@ -593,3 +593,62 @@ describe("the attempt follows the dialog", () => {
     expect(pc.cancelPcSetup).not.toHaveBeenCalled();
   });
 });
+
+describe("the dialog belongs to one signed-in chat-only session", () => {
+  async function openFromBanner() {
+    getMeSecurity.mockResolvedValue(security(0, true));
+    render(() => (
+      <>
+        <ProbationBanner />
+        <SetUpThisPcHost />
+      </>
+    ));
+    fireEvent.click(await screen.findByRole("button", { name: "Set up this PC" }));
+    expect(await screen.findByRole("img", { name: "Code to scan with the Kaiku app on your phone" })).toBeTruthy();
+    expect(pc.startPcSetup).toHaveBeenCalledOnce();
+  }
+
+  it("a session end with the dialog open leaves no dialog on the signed-out page", async () => {
+    await openFromBanner();
+    setAuthState({ user: null });
+    await waitFor(() => expect(screen.queryByTestId("set-up-this-pc")).toBeNull());
+  });
+
+  it("the next chat-only sign-in in this window gets no dialog and starts nothing", async () => {
+    await openFromBanner();
+    setAuthState({ user: null });
+    await waitFor(() => expect(screen.queryByTestId("set-up-this-pc")).toBeNull());
+    pc.startPcSetup.mockClear();
+    pc.currentPcSetup.mockClear();
+    // Another account signs in for chat only.
+    setAuthState({
+      user: { id: "u2", username: "bob", session: { ...probation, id: "s2" } } as unknown as User,
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.queryByTestId("set-up-this-pc")).toBeNull();
+    expect(pc.startPcSetup).not.toHaveBeenCalled();
+    expect(pc.currentPcSetup).not.toHaveBeenCalled();
+  });
+});
+
+describe("answers that a retry cannot change, and ones it can", () => {
+  it("a refused passkey step says to start again, not to try again", async () => {
+    await openAt("enrolled");
+    pc.startPcSetupPasskey.mockRejectedValue(http("APPROVAL_STATE", 409));
+    fireEvent.click(await screen.findByRole("button", { name: "Create a passkey" }));
+    expect(await screen.findByText("This didn't work. Start again.")).toBeTruthy();
+    expect(screen.queryByText("The passkey could not be created. Please try again.")).toBeNull();
+  });
+
+  it("a 401 from a refresh that failed for now is retried, not the end", async () => {
+    vi.useFakeTimers();
+    pc.pollPcSetup.mockReset();
+    pc.pollPcSetup.mockRejectedValueOnce(http("INVALID_TOKEN", 401)).mockImplementation(never);
+    render(() => <SetUpThisPc onClose={vi.fn()} />);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pc.pollPcSetup).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(3_100);
+    expect(pc.pollPcSetup).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText("This didn't work. Start again.")).toBeNull();
+  });
+});
