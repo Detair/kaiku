@@ -125,6 +125,20 @@ fn uuid_like(s: &str) -> bool {
     s.len() == 36 && s.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-')
 }
 
+/// How long to wait for the hand-off: until the flow's `expires_at`, never
+/// longer than `cap` (the purpose's bound); a missing or unreadable
+/// `expires_at` waits the whole `cap`.
+fn listen_for(expires_at: Option<&str>, cap: Duration) -> Duration {
+    expires_at
+        .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+        .map_or(cap, |t| {
+            (t.with_timezone(&chrono::Utc) - chrono::Utc::now())
+                .to_std()
+                .unwrap_or_default()
+        })
+        .min(cap)
+}
+
 /// The shared desktop flow; `open` launches the browser (stubbed in tests),
 /// `listen_cap` bounds the wait (the flow's own expiry is the other bound).
 #[allow(clippy::too_many_arguments)]
@@ -178,15 +192,7 @@ pub async fn run_flow(
             attempt_id.is_some(),
         )
         .ok_or(FAILED)?;
-        let expires_in = started["expires_at"]
-            .as_str()
-            .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
-            .map_or(FLOW_LISTEN_MAX, |t| {
-                (t.with_timezone(&chrono::Utc) - chrono::Utc::now())
-                    .to_std()
-                    .unwrap_or_default()
-            });
-        let deadline = Instant::now() + expires_in.min(listen_cap);
+        let deadline = Instant::now() + listen_for(started["expires_at"].as_str(), listen_cap);
         // 3. Browser.
         attempt.check()?;
         open(&url).map_err(|_| "PASSKEY_BROWSER_FAILED".to_string())?;
@@ -400,6 +406,21 @@ mod tests {
     use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
     use super::*;
+
+    #[test]
+    fn a_missing_or_unreadable_flow_end_falls_back_to_the_callers_cap() {
+        let cap = PC_SETUP_LISTEN_MAX;
+        assert_eq!(listen_for(None, cap), cap);
+        assert_eq!(listen_for(Some("not a time"), cap), cap);
+        let soon = (chrono::Utc::now() + chrono::Duration::minutes(12)).to_rfc3339();
+        let wait = listen_for(Some(&soon), cap);
+        assert!(
+            wait > Duration::from_mins(11) && wait <= Duration::from_mins(12),
+            "{wait:?}"
+        );
+        let later = (chrono::Utc::now() + chrono::Duration::minutes(40)).to_rfc3339();
+        assert_eq!(listen_for(Some(&later), cap), cap);
+    }
     use crate::commands::settings::PasskeyBrowser;
     use crate::session::store::MemoryTokenStore;
     use crate::AuthState;

@@ -209,9 +209,9 @@ async fn reply(stream: &mut TcpStream, ok: bool) {
     let _ = stream.flush().await;
 }
 
-/// Wait for the flow's hand-off POST until `deadline` (capped at
-/// [`FLOW_LISTEN_MAX`]). Up to [`MAX_CONNECTIONS`] connections are served at
-/// once; a slow or idle one is dropped after `read_deadline`.
+/// Wait for the flow's hand-off POST until `deadline` (the caller bounds it
+/// by its purpose: [`FLOW_LISTEN_MAX`] or [`PC_SETUP_LISTEN_MAX`]). Up to [`MAX_CONNECTIONS`]
+/// connections are served at once; a slow or idle one is dropped after `read_deadline`.
 pub async fn wait_for_post(
     listener: &(impl Acceptor + Sync),
     cb: &LoopbackCallback,
@@ -219,7 +219,6 @@ pub async fn wait_for_post(
     deadline: Instant,
     read_deadline: Duration,
 ) -> Result<HandBack, CallbackTimeout> {
-    let deadline = deadline.min(Instant::now() + FLOW_LISTEN_MAX);
     // Each connection is served on its own task (bounded), so an idle or slow
     // one never delays the browser's POST (each still has `read_deadline`).
     let accept = async {
@@ -479,6 +478,22 @@ mod tests {
             task.await.unwrap(),
             Ok(HandBack::Error("PASSKEY_USER_MISMATCH".into()))
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_listener_honours_a_deadline_past_ten_minutes() {
+        let (listener, cb) = bind().await.unwrap();
+        let task = spawn_wait(listener, cb, Duration::from_mins(15));
+        // Let the listener start (and take its deadline) first.
+        for _ in 0..20 {
+            tokio::task::yield_now().await;
+        }
+        tokio::time::advance(Duration::from_mins(11)).await;
+        for _ in 0..20 {
+            tokio::task::yield_now().await;
+        }
+        assert!(!task.is_finished(), "still listening after 11 minutes");
+        task.abort();
     }
 
     #[tokio::test]
