@@ -826,13 +826,82 @@ class CallControllerTest {
     }
 
     @Test
-    fun `a microphone service Android refuses ends the answer as failed and leaves the call`() = runTest {
+    fun `a microphone service Android refuses ends the answer as failed and answers nothing on the server`() = runTest {
         val r = rig()
         r.holdGranted = false
         r.ring()
         r.accept()
         runCurrent()
         assertEquals(CallState.Ended(r.dm, CallEndReason.Failed), r.state)
+        // Neither answered nor left nor declined: the call goes on ringing on the user's other devices.
+        assertEquals(emptyList<String>(), r.api.requests)
+        coVerify(exactly = 0) { r.voice.joinCall(any(), any<VoiceRepository.CallSession>()) }
+        // It does not ring again here, and its end is no missed call (the user saw it and tried).
+        r.ring()
+        r.server(ServerEvent.CallEnded(r.dm, "c-1", "no_answer", null))
+        assertTrue(r.notifier.log.none { it.startsWith("missed") })
+        assertEquals(1, r.notifier.log.count { it.startsWith("ring:") })
+    }
+
+    @Test
+    fun `a microphone service Android refuses starts no call on the server`() = runTest {
+        val r = rig()
+        r.holdGranted = false
+        r.startCall()
+        runCurrent()
+        assertEquals(CallState.Ended(r.dm, CallEndReason.Failed), r.state)
+        assertEquals(emptyList<String>(), r.api.requests)
+        // Nothing is on its way that could still ring the other side.
+        advanceTimeBy(CallMachine.RING_CAP_MS + 1_000)
+        runCurrent()
+        assertEquals(emptyList<String>(), r.api.requests)
+        coVerify(exactly = 0) { r.voice.joinCall(any(), any<VoiceRepository.CallSession>()) }
+    }
+
+    @Test
+    fun `the microphone service is asked for the signed-in session the call belongs to`() = runTest {
+        val r = rig()
+        val session = r.sessions.generation.enter()!!
+        r.startCall()
+        runCurrent()
+        assertEquals(listOf(session), r.holdTickets)
+    }
+
+    @Test
+    fun `mute and disconnect on the service's notification before the call's session is open act on the call`() = runTest {
+        val r = rig()
+        r.voiceChannel.value = "guild-voice" // still in a voice channel while the call starts
+        r.api.hold = true // the start is still on its way to the server
+        r.startCall()
+        runCurrent()
+
+        r.held!!.onMuteToggle()
+        runCurrent()
+        assertEquals(true, (r.state as CallState.Outgoing).muted)
+        verify(exactly = 0) { r.voice.toggleMute() }
+
+        r.held!!.onDisconnect()
+        runCurrent()
+        assertEquals(CallState.Ended(r.dm, CallEndReason.Left), r.state)
+        coVerify(exactly = 0) { r.voice.leaveChannel() }
+        // The start's answer comes: that call is left, once.
+        r.api.releaseAll()
+        runCurrent()
+        assertEquals(listOf("start", "leave"), r.api.requests)
+    }
+
+    @Test
+    fun `disconnect on the service's notification while an answer is on its way leaves the call once`() = runTest {
+        val r = rig()
+        r.api.hold = true
+        r.ring()
+        r.accept()
+        runCurrent()
+        r.held!!.onDisconnect()
+        runCurrent()
+        assertEquals(CallState.Ended(r.dm, CallEndReason.Left), r.state)
+        r.api.releaseAll()
+        runCurrent()
         assertEquals(listOf("join", "leave"), r.api.requests)
         coVerify(exactly = 0) { r.voice.joinCall(any(), any<VoiceRepository.CallSession>()) }
     }

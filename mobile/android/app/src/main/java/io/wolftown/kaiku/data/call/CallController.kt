@@ -477,6 +477,9 @@ class CallController internal constructor(
         private var voiceJob: VoiceJob? = null
         private val busyCapJobs = HashMap<String, Job>()
 
+        /** The microphone service was refused for the call of the event being handled. */
+        private var holdRefused = false
+
         /** The actor's state for readers on other threads (the rejoin gate, the call's mute). */
         @Volatile
         private var shown: CallState = CallState.Idle
@@ -566,6 +569,7 @@ class CallController internal constructor(
             shown = step.model.state
             publish(step.model.state)
             var waited = false
+            holdRefused = false
             for (effect in step.effects) waited = run(effect, envelope.done) || waited
             if (!waited) envelope.done?.complete(Unit)
             // Every way out of a call (end, removal, a resync) also ends its voice join,
@@ -592,8 +596,14 @@ class CallController internal constructor(
         /** Runs [effect]; true if it took over [done] (completes it when its request is through). */
         private fun run(effect: CallEffect, done: CompletableDeferred<Unit>?): Boolean {
             when (effect) {
-                is CallEffect.RestStart -> lanes.submit(effect.channelId) { restStart(effect.channelId, effect.startedAtMs) }
-                is CallEffect.RestJoin -> lanes.submit(effect.channelId) { restJoin(effect.channelId, effect.callId, effect.verify) }
+                // A call whose microphone service was refused sends nothing: it is neither started
+                // nor answered here, and an incoming one goes on ringing on the user's other devices.
+                is CallEffect.RestStart -> if (!holdRefused) {
+                    lanes.submit(effect.channelId) { restStart(effect.channelId, effect.startedAtMs) }
+                }
+                is CallEffect.RestJoin -> if (!holdRefused) {
+                    lanes.submit(effect.channelId) { restJoin(effect.channelId, effect.callId, effect.verify) }
+                }
                 is CallEffect.RestDecline -> {
                     lanes.submit(effect.channelId) {
                         try {
@@ -607,15 +617,7 @@ class CallController internal constructor(
                 is CallEffect.RestLeave -> lanes.submit(effect.channelId) {
                     quietly("leave") { api.leave(effect.channelId, ticket.requestSession()) }
                 }
-                is CallEffect.HoldVoice -> {
-                    // Now, in the actor, right after the tap: the microphone service is up before
-                    // any request goes out. If Android refuses it, the call cannot have a microphone.
-                    val failed = { offer(CallEvent.VoiceJoinFailed(effect.channelId, effect.voiceId)) }
-                    val held = voice.holdForCall(
-                        tagBase + effect.voiceId, effect.channelId, directory.titleOf(effect.channelId),
-                    ) { failed() }
-                    if (!held) failed()
-                }
+                is CallEffect.HoldVoice -> holdRefused = !holdVoice(effect.channelId, effect.voiceId)
                 is CallEffect.JoinVoice -> joinVoice(effect.channelId, effect.voiceId)
                 is CallEffect.Resync -> resync(effect.channelId, effect.askedFor)
                 is CallEffect.ArmBusyCap -> armBusyCap(effect.channelId, effect.callId, effect.startedAtMs)
@@ -760,6 +762,30 @@ class CallController internal constructor(
 
         // -- Voice -------------------------------------------------------------------
 
+        /**
+         * Starts the microphone service for the call's voice session [voiceId]
+         * now, in the actor, right after the tap and before any request goes
+         * out. The voice layer starts it only while this owner's session is
+         * the signed-in one, in one step with what a sign-out clears. Until
+         * the call's session takes the service over, what the service reports
+         * (its notification's buttons, a failed start) comes back here, to
+         * this call. False: nothing was started, and the call cannot have a
+         * microphone.
+         */
+        private fun holdVoice(channelId: String, voiceId: Long): Boolean {
+            val held = voice.holdForCall(
+                ticket, tagBase + voiceId, channelId, directory.titleOf(channelId),
+                VoiceRepository.CallHold(
+                    onStartFailed = { offer(CallEvent.VoiceJoinFailed(channelId, voiceId)) },
+                    onMuteToggle = { offer(CallEvent.MuteToggled(voiceId)) },
+                    // Like leaving the call's voice any other way than the call screen.
+                    onDisconnect = { offer(CallEvent.VoiceEnded(voiceId, VoiceEnd.Left)) },
+                ),
+            )
+            if (!held) offer(CallEvent.HoldRefused(channelId, voiceId))
+            return held
+        }
+
         private fun joinVoice(channelId: String, voiceId: Long) {
             voiceJob?.cancel()
             val join = VoiceJob(voiceId)
@@ -777,6 +803,8 @@ class CallController internal constructor(
                                     // The call's own mute, as it is when the session opens.
                                     muted = { mutedNow(voiceId) },
                                     onMuteToggle = { offer(CallEvent.MuteToggled(voiceId)) },
+                                    // For this owner's session and no other.
+                                    session = ticket,
                                 ),
                             )
                             offer(CallEvent.VoiceJoined(channelId, clock.nowMs(), voiceId))

@@ -175,6 +175,13 @@ sealed interface CallEvent {
     data class VoiceJoined(val channelId: String, val nowMs: Long, val voiceId: Long) : CallEvent
     data class VoiceJoinFailed(val channelId: String, val voiceId: Long) : CallEvent
 
+    /**
+     * The microphone service could not be started for the voice session [voiceId] when the
+     * user tapped Call or Accept. The request of that tap was not sent: the call was neither
+     * started nor answered on the server.
+     */
+    data class HoldRefused(val channelId: String, val voiceId: Long) : CallEvent
+
     /** A new authenticated socket: the shown call is checked with the server (resync). */
     data object SocketReady : CallEvent
 
@@ -396,6 +403,7 @@ object CallMachine {
             is CallEvent.JoinFailed -> joinFailed(event)
             is CallEvent.VoiceJoined -> voiceJoined(event)
             is CallEvent.VoiceJoinFailed -> voiceJoinFailed(event)
+            is CallEvent.HoldRefused -> holdRefused(event)
             is CallEvent.Decline -> decline(event)
             is CallEvent.HangUp -> hangUp(event)
             is CallEvent.SetMuted -> setMuted(event)
@@ -596,6 +604,23 @@ object CallMachine {
             if (callId != null || state !is CallState.Outgoing) leave(channelId, callId)
             rememberEnded(channelId, callId)
             return endedState(channelId, CallEndReason.Failed)
+        }
+
+        /**
+         * No microphone for this call. Nothing of it reached the server from this phone, so
+         * there is nothing to leave: an incoming call goes on ringing on this user's other
+         * devices (here it is over and does not ring again), an outgoing one was never started.
+         */
+        fun holdRefused(e: CallEvent.HoldRefused): CallStep {
+            val callId = when (state) {
+                is CallState.Outgoing -> state.callId
+                is CallState.Connecting -> state.callId
+                is CallState.Connected -> state.callId
+                else -> return same()
+            }
+            if (state.channelId != e.channelId || e.voiceId != shownVoiceId()) return same()
+            rememberEnded(e.channelId, callId)
+            return endedState(e.channelId, CallEndReason.Failed)
         }
 
         fun decline(e: CallEvent.Decline): CallStep {
@@ -888,12 +913,13 @@ object CallMachine {
             return when (val why = e.why) {
                 // The gate's answer follows as a resync; the call is simply over here.
                 VoiceEnd.Refused -> to(CallState.Idle)
+                // A start that has not answered yet is left when its answer comes (see startOk).
                 VoiceEnd.Left -> {
-                    leave(channelId, callId)
+                    if (callId != null || state !is CallState.Outgoing) leave(channelId, callId)
                     endedState(channelId, CallEndReason.Left)
                 }
                 VoiceEnd.Lost -> {
-                    leave(channelId, callId)
+                    if (callId != null || state !is CallState.Outgoing) leave(channelId, callId)
                     endedState(channelId, CallEndReason.ConnectionLost)
                 }
                 is VoiceEnd.Removed -> {

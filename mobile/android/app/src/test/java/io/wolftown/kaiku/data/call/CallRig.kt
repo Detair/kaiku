@@ -145,6 +145,12 @@ internal class CallRig(val test: TestScope, val dm: String = "dm-1") {
     /** What the voice layer calls if the service reports later that it could not go to the foreground. */
     var serviceFailed: (() -> Unit)? = null
 
+    /** What the voice layer tells the call while the microphone service is held for it. */
+    var held: VoiceRepository.CallHold? = null
+
+    /** The session each microphone service was asked for. */
+    val holdTickets = mutableListOf<SessionGeneration.Ticket>()
+
     /** Everything the call layer asked of the voice layer, in order. */
     val voiceOps = mutableListOf<String>()
 
@@ -166,11 +172,14 @@ internal class CallRig(val test: TestScope, val dm: String = "dm-1") {
             voiceChannel.value = firstArg()
         }
         // The microphone service, asked for at the tap; in the order of the requests.
-        every { holdForCall(any(), any(), any(), any()) } answers {
+        every { holdForCall(any(), any(), any(), any(), any()) } answers {
             api.calls += "hold"
             voiceOps += "hold"
-            serviceFailed = arg(3)
-            holdGranted
+            holdTickets += firstArg<SessionGeneration.Ticket>()
+            held = arg(4)
+            serviceFailed = held!!.onStartFailed
+            // Like the voice layer: nothing is started for a session that is over.
+            holdGranted && firstArg<SessionGeneration.Ticket>().alive
         }
         every { setCallMuted(any(), any()) } answers { voiceOps += "mute" }
         coEvery { leaveChannel() } coAnswers { voiceChannel.value = null }

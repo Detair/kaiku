@@ -508,6 +508,20 @@ internal class VoiceRig(
         }
     }
 
+    /**
+     * The call layer asks for the microphone service for the call [tag], for the signed-in
+     * session [ticket] (by default the one of this moment; none: nobody to ask for).
+     */
+    fun hold(
+        tag: Long,
+        ticket: io.wolftown.kaiku.data.session.SessionGeneration.Ticket? = sessions.generation.enter(),
+        onStartFailed: () -> Unit = {},
+        onMuteToggle: () -> Unit = {},
+        onDisconnect: () -> Unit = {},
+    ): Boolean = ticket != null && repository.holdForCall(
+        ticket, tag, "dm-1", "Anna", VoiceRepository.CallHold(onStartFailed, onMuteToggle, onDisconnect),
+    )
+
     /** The user leaves, as a second thread would at this very point. */
     fun leave() {
         log += "LEAVE"

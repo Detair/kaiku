@@ -178,6 +178,11 @@ class VoiceRepository @Inject constructor(
         val muted: () -> Boolean = { false },
         /** Mute tapped on a control of this session outside the call screen: the call decides. */
         val onMuteToggle: (() -> Unit)? = null,
+        /**
+         * The signed-in session the call belongs to: its voice session is opened for that one
+         * or not at all. Null: the session signed in when the join is asked for.
+         */
+        val session: SessionGeneration.Ticket? = null,
     )
 
     /** Why a session ended; set by whoever closed it. */
@@ -286,8 +291,8 @@ class VoiceRepository @Inject constructor(
      * the current one → [next], or none". Voice channel joins, DM call
      * joins and leaves all come through here, one at a time ([door]):
      *
-     * 1. If another session than the expected one is current, nothing
-     *    happens (null).
+     * 1. If another session than the expected one is current, or [next] was
+     *    asked for a signed-in session that is over, nothing happens (null).
      * 2. The current session is ended (closed, its owner cancelled and
      *    waited for until it is quiet, torn down); so is one that ended by
      *    itself or at a sign-out and whose teardown is still due.
@@ -302,6 +307,8 @@ class VoiceRepository @Inject constructor(
         val caller = currentCoroutineContext()[Job]
         withContext(NonCancellable) {
             val pending = synchronized(sessionLock) {
+                // Asked for a signed-in session that is over: nothing of the present one is touched.
+                if (next != null && !next.ticket.alive) return@withContext null
                 val running = live
                 val current = running ?: last
                 val named = when (expected) {
@@ -615,9 +622,9 @@ class VoiceRepository @Inject constructor(
         if (!micPermissionChecker.isGranted()) {
             throw MissingMicPermissionException()
         }
-        // A voice session belongs to the signed-in session it was asked for; one that is being
-        // signed out gets no new voice session.
-        val ticket = sessions.enter()?.takeIf { it.open } ?: throw SessionEnded()
+        // A voice session belongs to the signed-in session it was asked for (a call names its
+        // own); one that is over or being signed out gets no new voice session.
+        val ticket = (call?.session ?: sessions.enter())?.takeIf { it.open } ?: throw SessionEnded()
         val session = replaceSession(Expected.Anything, Opening(channelId, call, ticket, muted)) ?: throw SessionEnded()
         try {
             session.firstJoin.await()
@@ -667,14 +674,31 @@ class VoiceRepository @Inject constructor(
         }
     }
 
+    /** What a leave names: the session and the [startJoin] that are current when it is asked for. */
+    private class Leaving(val session: Session?, val join: Job?)
+
     /**
-     * Cancels a running [startJoin] and waits until it is gone, so a leave
-     * never interleaves with a join that has not opened its session yet.
-     * [self] is the caller's job: a leave that runs inside the join's own
-     * job does not cancel itself.
+     * Names what a leave asked for now means, and ends it at once: the
+     * session that is current (or [only] that one, if given) sends no
+     * `voice_join` and opens no connection from here on, and the running
+     * [startJoin] is cancelled. Whatever is opened or started after this is
+     * not part of this leave. [self] is the caller's job: a leave that runs
+     * inside the join's own job does not cancel itself.
      */
-    private suspend fun cancelJoin(self: Job?) {
-        val job = synchronized(joinLock) {
+    private fun nameLeave(self: Job?, only: Session? = null): Leaving {
+        val named = synchronized(sessionLock) {
+            val running = live
+            // Said about a session that is not the running one any more: nothing else is left for it.
+            if (only != null && running !== only) return Leaving(only, null)
+            // An own leave wins, at once.
+            if (running != null) {
+                live = null
+                running.end = End.Left
+            }
+            running ?: last
+        }
+        named?.owner?.cancel()
+        val join = synchronized(joinLock) {
             val running = joinJob
             if (running == null || running === self) {
                 null
@@ -683,8 +707,28 @@ class VoiceRepository @Inject constructor(
                 joiningChannelId = null
                 running
             }
-        } ?: return
-        job.cancelAndJoin()
+        }
+        join?.cancel()
+        return Leaving(named, join)
+    }
+
+    /**
+     * The rest of a leave: waits for the cancelled join and tears the named
+     * session down under the door ([replaceSession] to "none"), and no
+     * other. Runs to its end even if the caller is cancelled, so a call is
+     * never left half torn down.
+     */
+    private suspend fun finishLeave(leaving: Leaving) {
+        withContext(NonCancellable) {
+            // So a leave never interleaves with a join that has not opened its session yet.
+            leaving.join?.join()
+            // Also for a session that is over: a teardown of it that is running holds the door.
+            if (leaving.session != null) replaceSession(Expected.This(leaving.session), null)
+            // Own leave and logout: a notice of an earlier call is no longer
+            // relevant. After the teardown (the door), so that a removal tearing
+            // down the same session right now has set its notice by this point.
+            _endNotice.value = null
+        }
     }
 
     /**
@@ -703,26 +747,12 @@ class VoiceRepository @Inject constructor(
      * is cancelled, so a call is never left half torn down.
      */
     suspend fun leaveChannel() {
-        val self = currentCoroutineContext()[Job]
-        // An own leave wins, at once.
-        val named = synchronized(sessionLock) {
-            val running = live
-            if (running != null) {
-                live = null
-                running.end = End.Left
-            }
-            running ?: last
-        }
-        withContext(NonCancellable) {
-            named?.owner?.cancel()
-            cancelJoin(self)
-            // Also for a session that is over: a teardown of it that is running holds the door.
-            if (named != null) replaceSession(Expected.This(named), null)
-            // Own leave and logout: a notice of an earlier call is no longer
-            // relevant. After the teardown (the door), so that a removal tearing
-            // down the same session right now has set its notice by this point.
-            _endNotice.value = null
-        }
+        finishLeave(nameLeave(currentCoroutineContext()[Job]))
+    }
+
+    /** [leaveChannel] for [session] and no other (what its own microphone service reports). */
+    private suspend fun leaveSession(session: Session) {
+        finishLeave(nameLeave(currentCoroutineContext()[Job], only = session))
     }
 
     /**
@@ -762,6 +792,21 @@ class VoiceRepository @Inject constructor(
     private var holdEvents: Job? = null
 
     /**
+     * What the call layer hears from the microphone service while the
+     * service is held for its call and no session has taken it over: the
+     * service's notification names that call, so its buttons act on that
+     * call and on nothing else.
+     */
+    class CallHold(
+        /** The service reported that it could not go to the foreground; the hold is over (once). */
+        val onStartFailed: () -> Unit = {},
+        /** Mute was tapped on the service's notification. */
+        val onMuteToggle: () -> Unit = {},
+        /** Disconnect was tapped on the service's notification. */
+        val onDisconnect: () -> Unit = {},
+    )
+
+    /**
      * Starts the microphone service for the DM call [tag] now, before the
      * call's voice session exists: when the user taps Call or Accept the
      * app is in front, which Android requires to start a microphone
@@ -770,39 +815,56 @@ class VoiceRepository @Inject constructor(
      * The call's session takes the service over ([SessionSteps.prepare]);
      * [leaveCall] gives it up if no session ever did. A session that is
      * current meanwhile (a voice channel being left for the call) keeps
-     * running under it.
+     * running under it; what is tapped on the service's notification goes
+     * to the call ([hold]) until then.
      *
-     * Returns false if Android refused the start. If the service itself
-     * reports later that it could not go to the foreground while no session
-     * has taken it over yet, [onStartFailed] is called (once).
+     * Only for the signed-in session [ticket] the call belongs to: the check
+     * and the start are one step under the lock a sign-out clears the hold
+     * under, so a session that is over starts no service, and one that ends
+     * right after has it stopped.
+     *
+     * Returns false if nothing was started: the session is over, or Android
+     * refused the start.
      */
-    fun holdForCall(tag: Long, channelId: String, title: String?, onStartFailed: () -> Unit = {}): Boolean =
-        synchronized(serviceLock) {
-            // Listen first, so the service's own report cannot be missed (the events have no replay).
-            holdEvents?.cancel()
-            holdEvents = scope.launch(start = CoroutineStart.UNDISPATCHED) {
-                voiceServiceEvents.events.collect { event ->
-                    if (event == VoiceServiceEvent.StartFailed) {
+    fun holdForCall(
+        ticket: SessionGeneration.Ticket,
+        tag: Long,
+        channelId: String,
+        title: String?,
+        hold: CallHold = CallHold(),
+    ): Boolean = synchronized(serviceLock) {
+        if (!ticket.alive) return false
+        // Listen first, so the service's own report cannot be missed (the events have no replay).
+        holdEvents?.cancel()
+        holdEvents = scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            voiceServiceEvents.events.collect { event ->
+                when (event) {
+                    VoiceServiceEvent.StartFailed -> {
                         val mine = synchronized(serviceLock) { (heldForCall == tag).also { if (it) heldForCall = null } }
-                        if (mine) onStartFailed()
+                        if (mine) hold.onStartFailed()
                     }
+                    VoiceServiceEvent.MuteToggle -> if (holdsFor(tag)) hold.onMuteToggle()
+                    VoiceServiceEvent.Disconnect -> if (holdsFor(tag)) hold.onDisconnect()
                 }
             }
-            try {
-                VoiceCallService.start(context, channelId, title ?: channelId, forCall = true)
-            } catch (e: IllegalStateException) {
-                // ForegroundServiceStartNotAllowedException (API 31+) is one.
-                logger.warning("Call service refused for a call: ${e::class.simpleName}")
-                stopHoldEvents()
-                return false
-            } catch (e: SecurityException) {
-                logger.warning("Call service refused for a call: ${e::class.simpleName}")
-                stopHoldEvents()
-                return false
-            }
-            heldForCall = tag
-            true
         }
+        try {
+            VoiceCallService.start(context, channelId, title ?: channelId, forCall = true)
+        } catch (e: IllegalStateException) {
+            // ForegroundServiceStartNotAllowedException (API 31+) is one.
+            logger.warning("Call service refused for a call: ${e::class.simpleName}")
+            stopHoldEvents()
+            return false
+        } catch (e: SecurityException) {
+            logger.warning("Call service refused for a call: ${e::class.simpleName}")
+            stopHoldEvents()
+            return false
+        }
+        heldForCall = tag
+        true
+    }
+
+    private fun holdsFor(tag: Long): Boolean = synchronized(serviceLock) { heldForCall == tag }
 
     /** Call with [serviceLock] held. */
     private fun stopHoldEvents() {
@@ -976,12 +1038,16 @@ class VoiceRepository @Inject constructor(
     /**
      * Leaves on the repository's own scope, for UI callers (the Leave button,
      * the overlay's disconnect) whose scope may end right away, e.g. when the
-     * screen navigates back after the tap.
+     * screen navigates back after the tap. What is left is the session (and
+     * the join) that is current when this is called, like [leaveChannel].
      */
     fun leaveInBackground() {
+        // Named now, at the tap: a session that is opened or a join that is started before the
+        // rest runs is not what the user asked to leave.
+        val leaving = nameLeave(self = null)
         scope.launch {
             try {
-                leaveChannel()
+                finishLeave(leaving)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -1205,11 +1271,14 @@ class VoiceRepository @Inject constructor(
             serviceEventJob = scope.launch(start = CoroutineStart.UNDISPATCHED) {
                 voiceServiceEvents.events.collect { event ->
                     when (event) {
-                        VoiceServiceEvent.MuteToggle -> toggleMute()
-                        VoiceServiceEvent.Disconnect -> leaveChannel()
+                        // While the service is held for a call, its notification shows that call:
+                        // what is tapped there goes to the call ([holdForCall]), not to this session.
+                        VoiceServiceEvent.MuteToggle -> if (!holdsServiceForCall) toggleMute()
+                        // This session, also if another one is current by the time the leave runs.
+                        VoiceServiceEvent.Disconnect -> if (!holdsServiceForCall) leaveSession(session)
                         VoiceServiceEvent.StartFailed -> {
                             try {
-                                leaveChannel()
+                                leaveSession(session)
                             } finally {
                                 // The teardown clears _error, so set it afterwards.
                                 _error.value = R.string.voice_start_failed
