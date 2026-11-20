@@ -250,6 +250,12 @@ pub(crate) async fn forward_to(
     }
 }
 
+/// Whether an entry of user `user_id` added by seat `owner` belongs to
+/// `peer`: the same user and the same seat.
+fn owned_by(user_id: Uuid, owner: Uuid, peer: &Peer) -> bool {
+    (user_id, owner) == (peer.user_id, peer.session_id)
+}
+
 /// Remove the simulcast layers `peer` published from the room's router.
 fn room_remove_layers(room: &Room, peer: &Peer) {
     let layers = peer.take_simulcast_layers(&|_: &TrackSource| true);
@@ -654,10 +660,9 @@ impl Room {
         stream_id: Uuid,
     ) -> Option<ScreenShareInfo> {
         let mut shares = self.screen_shares.write().await;
-        // The seat's session id is unique, so it alone names the owner.
         if shares
             .get(&stream_id)
-            .is_some_and(|s| s.owner == peer.session_id)
+            .is_some_and(|s| owned_by(s.user_id, s.owner, peer))
         {
             shares.remove(&stream_id)
         } else {
@@ -670,7 +675,7 @@ impl Room {
         let mut webcams = self.webcams.write().await;
         if webcams
             .get(&peer.user_id)
-            .is_some_and(|w| w.owner == peer.session_id)
+            .is_some_and(|w| owned_by(w.user_id, w.owner, peer))
         {
             webcams.remove(&peer.user_id)
         } else {
