@@ -1682,6 +1682,27 @@ class SetupOwnerTest {
 
     // ── A scanner restored over a stored setup ────────────────────────────────────────────────
 
+    /**
+     * A setup started on the scanner screen stores its claim and then hands back to the scanner
+     * (its answer was lost, and the person went back): the scanner gives way to the waiting screen.
+     */
+    @Test fun `a scanner given back after its setup stored a claim gives way to the waiting screen`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        enroll.claimGate = CompletableDeferred()
+        val (owner, f) = phone()
+        val scanner = SetupFlowViewModel(owner)
+        assertFalse(scanner.scannerGivesWay.value)
+        scanner.start(entry)
+        scanner.confirmSubject(activity)
+        advanceTimeBy(SetupOwner.CLAIM_TIMEOUT_MS + 1)
+        runCurrent()
+        assertEquals(SetupUi.Ended(R.string.setup_claim_unsure, canRetry = true), scanner.ui.value)
+        assertEquals(KeyDevicePhase.CLAIMING, f.repo.phase())
+        scanner.reset()
+        assertFalse(scanner.startedFlow.value)
+        assertTrue(scanner.scannerGivesWay.value)
+    }
+
     /** After a restart, a scanner screen that was on top while a setup is stored shows the waiting screen instead. */
     @Test fun `a restored scanner gives way to the waiting screen of a stored setup`() = runTest {
         val (first, f, _) = lostClaim()

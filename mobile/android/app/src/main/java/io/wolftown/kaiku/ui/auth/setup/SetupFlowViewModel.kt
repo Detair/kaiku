@@ -16,7 +16,11 @@ import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.domain.KaikuPayloads
 import io.wolftown.kaiku.ui.auth.signInResultText
+import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import java.io.IOException
 import java.time.Instant
 import javax.inject.Inject
@@ -124,6 +128,14 @@ class SetupFlowViewModel @Inject constructor(private val owner: SetupOwner) : Vi
 
     /** True when this screen's scanner must give way to the waiting screen of a stored setup. */
     fun storedSetupWaits(): Boolean = !startedFlow.value && owner.storedSetupWaits()
+
+    /**
+     * [storedSetupWaits], judged again whenever the screen goes back to its scanner: at the start,
+     * and each time a setup run on this screen hands back to it (it may have stored a claim).
+     */
+    val scannerGivesWay: StateFlow<Boolean> = startedFlow
+        .map { started -> !started && owner.storedSetupWaits() }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, storedSetupWaits())
     fun reset() = owner.reset()
     fun retry() = owner.retry()
     fun cancel() = owner.cancel()

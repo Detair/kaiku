@@ -40,15 +40,15 @@ fun SetupScanScreen(
 ) {
     val started by flow.startedFlow.collectAsState()
     val ready by flow.scanReady.collectAsState()
-    // Restored over a stored setup that has not finished: its waiting screen, before any check or
-    // camera of this screen starts.
-    val waits = remember { flow.storedSetupWaits() }
+    // Over a stored setup that has not finished (restored, or stored by a setup run here that
+    // handed back to the scanner): its waiting screen, before any check or camera starts.
+    val waits by flow.scannerGivesWay.collectAsState()
     // Checked anew whenever the scanner part is what this screen shows: at a visit, and again
     // after a setup on this screen ended (an earlier result may be out of date) ...
-    LaunchedEffect(started) { if (!started && !waits) flow.scannerShown() }
+    LaunchedEffect(started, waits) { if (!started && !waits) flow.scannerShown() }
     // ... and whenever the screen is in front again (back from the screen-lock settings, or after
     // a screen above it closed).
-    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { if (!flow.startedFlow.value && !waits) flow.scannerShown() }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { if (!flow.startedFlow.value && !flow.scannerGivesWay.value) flow.scannerShown() }
     val r = ready
     when {
         waits && !started -> {
