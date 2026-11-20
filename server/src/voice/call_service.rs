@@ -298,13 +298,7 @@ impl CallService {
 
         // The start time, or (missing or unreadable) the time of the
         // stream's first entry, which Valkey stamps into its id.
-        let entry_ms = |id: &str| id.split('-').next().and_then(|ms| ms.parse::<i64>().ok());
-        let started_at = first
-            .get("started_ms")
-            .and_then(|ms| ms.parse::<i64>().ok())
-            .or_else(|| entry_ms(first_id))
-            .and_then(|ms| Utc.timestamp_millis_opt(ms).single())
-            .unwrap_or_else(Utc::now);
+        let started_at = call_start_time(first.get("started_ms").map(String::as_str), first_id);
         let targets: HashSet<Uuid> = first
             .get("targets")
             .and_then(|t| serde_json::from_str(t).ok())
@@ -1124,9 +1118,43 @@ pub enum CallError {
     Internal(String),
 }
 
+/// The start time of a call stream: its `started_ms`, or (missing,
+/// unreadable or out of range) the time of the stream's first entry, which
+/// Valkey stamps into its id.
+fn call_start_time(started_ms: Option<&str>, first_id: &str) -> DateTime<Utc> {
+    // Each candidate is converted before it is chosen, so one out of range
+    // falls through to the next.
+    let to_time = |ms: &str| {
+        ms.parse::<i64>()
+            .ok()
+            .and_then(|ms| Utc.timestamp_millis_opt(ms).single())
+    };
+    started_ms
+        .and_then(to_time)
+        .or_else(|| first_id.split('-').next().and_then(to_time))
+        // Neither readable: old (start-up clean-up ends it), not "now".
+        .unwrap_or(DateTime::UNIX_EPOCH)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A start time out of range falls back to the stream entry's time
+    /// (so start-up clean-up sees how old the call is).
+    #[test]
+    fn an_out_of_range_start_time_uses_the_entry_time() {
+        let entry = Utc
+            .timestamp_millis_opt(1_700_000_000_000)
+            .single()
+            .unwrap();
+        assert_eq!(
+            call_start_time(Some("9223372036854775807"), "1700000000000-0"),
+            entry
+        );
+        assert_eq!(call_start_time(Some("x"), "1700000000000-0"), entry);
+        assert_eq!(call_start_time(None, "1700000000000-0"), entry);
+    }
 
     #[test]
     fn test_stream_key_format() {
