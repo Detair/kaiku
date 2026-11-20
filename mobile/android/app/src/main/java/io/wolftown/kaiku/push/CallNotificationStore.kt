@@ -20,9 +20,13 @@ enum class CallPhase {
 /**
  * The current call of a channel: [atMs] is the receive time of the ringing
  * ([CallPhase.RINGING]) or ended ([CallPhase.ENDING]) wake, or the time it was
- * missed or ended (wall clock).
+ * missed or ended (wall clock). [ringAtMs]: for an ended wake, the receive time
+ * of that call's ringing wake, if one was recorded (null: it never rang here).
  */
-data class ShownCall(val callId: String, val phase: CallPhase, val atMs: Long = 0L)
+data class ShownCall(val callId: String, val phase: CallPhase, val atMs: Long = 0L, val ringAtMs: Long? = null) {
+    /** When this call's ringing wake was received here, if that is known. */
+    val ringReceivedAtMs: Long? get() = if (phase == CallPhase.RINGING) atMs else ringAtMs
+}
 
 /**
  * Per account and DM channel, the current call (ids and times only):
@@ -67,6 +71,7 @@ class PrefsCallNotificationStore(
         private const val CALL_ID = "call_id"
         private const val PHASE = "call_phase"
         private const val AT = "call_at"
+        private const val RING_AT = "call_ring_at"
     }
 
     private fun key(userId: String, channelId: String, field: String) = "$userId|$channelId|$field"
@@ -78,16 +83,20 @@ class PrefsCallNotificationStore(
         val phase = CallPhase.entries.firstOrNull { it.name == phaseName } ?: return null
         val at = prefs.getString(key(userId, channelId, AT), null)?.toLongOrNull() ?: 0L
         if (phase == CallPhase.ENDED && now() - at > TOMBSTONE_TTL_MS) return null
-        return ShownCall(callId, phase, at)
+        val ringAt = prefs.getString(key(userId, channelId, RING_AT), null)?.toLongOrNull()
+        return ShownCall(callId, phase, at, ringAt)
     }
 
     @Synchronized
     override fun setShown(userId: String, channelId: String, call: ShownCall) {
-        prefs.edit()
+        val editor = prefs.edit()
             .putString(key(userId, channelId, CALL_ID), call.callId)
             .putString(key(userId, channelId, PHASE), call.phase.name)
             .putString(key(userId, channelId, AT), call.atMs.toString())
-            .apply()
+        val ringAt = call.ringAtMs
+        if (ringAt != null) editor.putString(key(userId, channelId, RING_AT), ringAt.toString())
+        else editor.remove(key(userId, channelId, RING_AT))
+        editor.apply()
     }
 
     @Synchronized
@@ -103,6 +112,7 @@ class PrefsCallNotificationStore(
             .remove(key(userId, channelId, CALL_ID))
             .remove(key(userId, channelId, PHASE))
             .remove(key(userId, channelId, AT))
+            .remove(key(userId, channelId, RING_AT))
             .apply()
     }
 

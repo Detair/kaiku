@@ -62,6 +62,17 @@ class SocketCallNotifier internal constructor(
         sink.cancelCall(channelId)
     }
 
+    override fun silenceRing(session: SessionGeneration.Ticket, channelId: String, callId: String) {
+        if (!session.alive) return
+        val live = CallRules.live(store.shown(session.userId, channelId), now())
+        // Another, newer call of this DM keeps its notification.
+        if (live != null && live.callId != callId) return
+        if (live?.phase == CallPhase.MISSED) return
+        // No tombstone: the stored ring stays, so the `ended` wake of this call is still
+        // accepted and can say how it ended. A late ringing wake of it is too old to ring.
+        sink.cancelCall(channelId)
+    }
+
     override fun missed(session: SessionGeneration.Ticket, channelId: String, callId: String, callerName: String?) {
         val user = session.userId
         sink.showCall {

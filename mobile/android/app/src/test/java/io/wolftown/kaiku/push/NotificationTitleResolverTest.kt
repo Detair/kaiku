@@ -46,7 +46,7 @@ class NotificationTitleResolverTest {
     fun `caller in the cached DM is found without a request`() = runTest {
         cache.value = listOf(dm(meParticipant, bobParticipant))
 
-        assertEquals(CallerLookup.Found("Bob"), resolver.lookupCaller(ch, bob))
+        assertEquals(CallerLookup.Found("Bob", direct = true), resolver.lookupCaller(ch, bob))
         coVerify(exactly = 0) { dmApi.getDms() }
     }
 
@@ -54,7 +54,15 @@ class NotificationTitleResolverTest {
     fun `caller in the DM list from the server is found`() = runTest {
         coEvery { dmApi.getDms() } returns listOf(dm(meParticipant, bobParticipant))
 
-        assertEquals(CallerLookup.Found("Bob"), resolver.lookupCaller(ch, bob))
+        assertEquals(CallerLookup.Found("Bob", direct = true), resolver.lookupCaller(ch, bob))
+    }
+
+    @Test
+    fun `a caller in a group conversation is found as not one-to-one`() = runTest {
+        val carol = DmParticipant(userId = "carol", username = "carol", displayName = "Carol")
+        cache.value = listOf(dm(meParticipant, bobParticipant, carol))
+
+        assertEquals(CallerLookup.Found("Bob", direct = false), resolver.lookupCaller(ch, bob))
     }
 
     @Test

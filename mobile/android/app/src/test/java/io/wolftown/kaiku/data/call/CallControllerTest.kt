@@ -68,15 +68,16 @@ class CallControllerTest {
     }
 
     @Test
-    fun `an incoming ring ends after 100 s as missed`() = runTest {
+    fun `an incoming ring ends after 100 s as missed once the server says it is gone`() = runTest {
         val r = rig()
         r.ring()
         advanceTimeBy(99_999); runCurrent()
         assertTrue(r.state is CallState.Incoming)
         advanceTimeBy(1); runCurrent()
         assertEquals(CallState.Idle, r.state)
-        assertEquals(listOf("ring:c-1:Anna", "stop:c-1", "missed:c-1"), r.notifier.log)
-        assertTrue(r.api.requests.isEmpty())
+        assertEquals(listOf("ring:c-1:Anna", "quiet:c-1", "missed:c-1"), r.notifier.log)
+        // The server was asked, and told nothing.
+        assertEquals(listOf("get"), r.api.requests)
     }
 
     @Test
@@ -714,7 +715,7 @@ class CallControllerTest {
     }
 
     @Test
-    fun `a ring by push only ends 100 s after its wake was received and is a missed call`() = runTest {
+    fun `a ring by push only ends 100 s after its wake was received and is missed once the server says it is gone`() = runTest {
         val r = rig()
         // The wake was received 30 s ago; its work got here only now.
         r.pushRing("c-1", receivedAgoMs = 30_000)
@@ -723,7 +724,7 @@ class CallControllerTest {
         assertTrue(r.state is CallState.Incoming)
         advanceTimeBy(1_000 + CallController.CAP_CHECK_MS); runCurrent()
         assertEquals(CallState.Idle, r.state)
-        assertEquals(listOf("ring:c-1:Anna", "stop:c-1", "missed:c-1"), r.notifier.log)
+        assertEquals(listOf("ring:c-1:Anna", "quiet:c-1", "missed:c-1"), r.notifier.log)
     }
 
     @Test
@@ -741,11 +742,60 @@ class CallControllerTest {
     @Test
     fun `an ended wake for a ring this process never saw is a missed call`() = runTest {
         val r = rig()
+        // It never rang here (offline during the ring): as before.
         r.pushEnded("c-4", "no_answer")
         assertEquals(listOf("stop:c-4", "missed:c-4"), r.notifier.log)
         // Declined by everyone else: nothing was missed.
         r.pushEnded("c-5", "all_declined")
         assertEquals(listOf("stop:c-4", "missed:c-4", "stop:c-5"), r.notifier.log)
+    }
+
+    @Test
+    fun `a late ended wake of a group call whose ring is over here claims no missed call`() = runTest {
+        val r = rig()
+        // Rung here 120 s ago by a process that is gone. A group call: this user may have
+        // declined it on another device, and the wake does not say.
+        r.pushEnded("c-4", "no_answer", direct = false, ringReceivedAgoMs = 120_000)
+        assertEquals(listOf("stop:c-4"), r.notifier.log)
+        // The conversation's shape from the chat list where the wake did not find it: one-to-one.
+        r.direct = true
+        r.pushEnded("c-6", "cancelled", ringReceivedAgoMs = 120_000)
+        assertEquals(listOf("stop:c-4", "stop:c-6", "missed:c-6"), r.notifier.log)
+    }
+
+    @Test
+    fun `an ended wake of a group call that still rang here when this process went is a missed call as before`() = runTest {
+        val r = rig()
+        // The ring was received 30 s ago by a process that is gone; its end comes within its 100 s.
+        r.pushEnded("c-4", "no_answer", direct = false, ringReceivedAgoMs = 30_000)
+        assertEquals(listOf("stop:c-4", "missed:c-4"), r.notifier.log)
+        // Received 120 s ago: its ring is over here, the end comes late and cannot tell.
+        r.pushEnded("c-5", "no_answer", direct = false, ringReceivedAgoMs = 120_000)
+        assertEquals(listOf("stop:c-4", "missed:c-4", "stop:c-5"), r.notifier.log)
+    }
+
+    @Test
+    fun `a ring by push whose 100 s are over in a process without a restored session claims nothing until its end can tell`() = runTest {
+        val r = CallRig(this, restored = false)
+        r.pushRing("c-1")
+        assertEquals(listOf("ring:c-1:Anna"), r.notifier.log)
+        advanceTimeBy(CallMachine.RING_CAP_MS + CallController.CAP_CHECK_MS); runCurrent()
+        assertEquals(CallState.Idle, r.state)
+        // Nothing could be asked: no request goes out without a restored session.
+        assertEquals(emptyList<String>(), r.api.requests)
+        assertEquals(listOf("ring:c-1:Anna", "quiet:c-1"), r.notifier.log)
+        // A group call's late end cannot tell: nothing.
+        r.pushEnded("c-1", "no_answer", direct = false)
+        assertEquals(listOf("ring:c-1:Anna", "quiet:c-1", "stop:c-1"), r.notifier.log)
+    }
+
+    @Test
+    fun `a ring by push whose 100 s are over is missed when its one-to-one end comes`() = runTest {
+        val r = CallRig(this, restored = false)
+        r.pushRing("c-1")
+        advanceTimeBy(CallMachine.RING_CAP_MS + CallController.CAP_CHECK_MS); runCurrent()
+        r.pushEnded("c-1", "no_answer", direct = true)
+        assertEquals(listOf("ring:c-1:Anna", "quiet:c-1", "missed:c-1"), r.notifier.log)
     }
 
     @Test
@@ -768,16 +818,50 @@ class CallControllerTest {
         assertTrue("missed:c-1" in r.notifier.log)
     }
 
+    // -- A missed call is only claimed on knowledge -------------------------------------
+
+    @Test
+    fun `a ring by push that this user answered on another device is no missed call when its 100 s are over`() = runTest {
+        val r = rig()
+        r.pushRing("c-1")
+        // Answered on the desktop; the phone has no socket and hears nothing of it.
+        r.api.current = CallStateDto(r.dm, "c-1", "active", startedBy = "anna", participants = listOf("anna", "me"))
+        advanceTimeBy(CallMachine.RING_CAP_MS + CallController.CAP_CHECK_MS); runCurrent()
+        assertEquals(CallState.Idle, r.state)
+        assertTrue("a call that was answered shows as missed: ${r.notifier.log}", r.notifier.log.none { it.startsWith("missed") })
+    }
+
+    @Test
+    fun `a ring by push that this user declined on another device is no missed call when its 100 s are over`() = runTest {
+        val r = rig()
+        r.pushRing("c-1")
+        // A group call, declined on the desktop; the others let it ring.
+        r.api.current = CallStateDto(r.dm, "c-1", "ringing", startedBy = "anna", declinedBy = listOf("me"))
+        advanceTimeBy(CallMachine.RING_CAP_MS + CallController.CAP_CHECK_MS); runCurrent()
+        assertEquals(CallState.Idle, r.state)
+        assertTrue("a call that was declined shows as missed: ${r.notifier.log}", r.notifier.log.none { it.startsWith("missed") })
+    }
+
+    @Test
+    fun `a ring whose 100 s are over while the server cannot be asked is not called missed`() = runTest {
+        val r = rig()
+        r.pushRing("c-1")
+        r.api.getError = java.io.IOException("offline")
+        advanceTimeBy(CallMachine.RING_CAP_MS + CallController.CAP_CHECK_MS); runCurrent()
+        assertEquals(CallState.Idle, r.state)
+        assertTrue("claimed without knowing: ${r.notifier.log}", r.notifier.log.none { it.startsWith("missed") })
+    }
+
     // -- The ring notification going away ----------------------------------------------
 
     @Test
-    fun `the shown ring's notification timing out ends the ring as missed`() = runTest {
+    fun `the shown ring's notification timing out ends the ring, missed once the server says it is gone`() = runTest {
         val r = rig()
         r.ring()
         r.ringExpired("c-1")
         runCurrent()
         assertEquals(CallState.Idle, r.state)
-        assertEquals(listOf("ring:c-1:Anna", "stop:c-1", "missed:c-1"), r.notifier.log)
+        assertEquals(listOf("ring:c-1:Anna", "quiet:c-1", "missed:c-1"), r.notifier.log)
     }
 
     @Test

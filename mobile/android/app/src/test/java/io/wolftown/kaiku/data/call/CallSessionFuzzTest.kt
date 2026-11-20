@@ -198,7 +198,7 @@ class CallSessionFuzzTest {
             advanceTimeBy(CallMachine.RING_CAP_MS + CallController.CAP_CHECK_MS); runCurrent()
             rig.outcome()
         }
-        assertEquals(CallState.Idle to listOf("ring:c-1:Anna", "stop:c-1", "missed:c-1"), outcomes.getValue(Way.Socket))
+        assertEquals(CallState.Idle to listOf("ring:c-1:Anna", "quiet:c-1", "missed:c-1"), outcomes.getValue(Way.Socket))
         assertEquals("the same whichever way the ring came: $outcomes", 1, outcomes.values.toSet().size)
     }
 

@@ -123,9 +123,10 @@ class CallWakeProcessor @Inject constructor(
             CallEndReason.LAST_LEFT -> "last_left" to false
             CallEndReason.UNKNOWN, null -> return CallOutcome.IGNORED
         }
-        // A missed call names the caller.
-        val name = if (!unanswered) null else when (val lookup = lookupCaller(channelId, call.callerId)) {
-            is CallerLookup.Found -> lookup.name
+        // A missed call names the caller. Whether the conversation is one-to-one decides what an
+        // unanswered end says about a ring that has already stopped (see CallInput.PushEnded).
+        val found = if (!unanswered) null else when (val lookup = lookupCaller(channelId, call.callerId)) {
+            is CallerLookup.Found -> lookup
             CallerLookup.Unknown -> null
             CallerLookup.NotMember -> return notMember(account, channelId, stored)
         }
@@ -133,7 +134,10 @@ class CallWakeProcessor @Inject constructor(
         if (isStopped() || !CallRules.endedApplies(store.shown(account.userId, channelId), call, now())) {
             return CallOutcome.IGNORED
         }
-        val end = CallInput.PushEnded(CallRef(account.userId, channelId, call.callId), call.callerId, name, reason)
+        val end = CallInput.PushEnded(
+            CallRef(account.userId, channelId, call.callId), call.callerId, found?.name, reason, found?.direct,
+            ringReceivedAtMs = stored?.takeIf { it.callId == call.callId }?.ringReceivedAtMs,
+        )
         if (!door.fromPush(end)) return CallOutcome.NOT_LOGGED_IN
         return if (unanswered) CallOutcome.MISSED else CallOutcome.CANCELLED
     }

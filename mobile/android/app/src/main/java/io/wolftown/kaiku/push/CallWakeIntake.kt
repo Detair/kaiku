@@ -47,7 +47,10 @@ class CallWakeIntake @Inject constructor(
                 CallState.ENDED -> {
                     if (!CallRules.endedApplies(stored, call, nowMs)) return false
                     if (sameCall && current?.phase == CallPhase.ENDING) return true
-                    ShownCall(call.callId, CallPhase.ENDING, nowMs)
+                    // When its ring was received here stays known: it decides what an
+                    // unanswered end can still claim (see CallInput.PushEnded).
+                    val ringAt = stored?.takeIf { it.callId == call.callId }?.ringReceivedAtMs
+                    ShownCall(call.callId, CallPhase.ENDING, nowMs, ringAt)
                 }
                 CallState.UNKNOWN -> return false
             }

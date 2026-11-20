@@ -172,7 +172,8 @@ class WakeSchedulerTest {
     fun `accepted ended marks the call as ending at intake`() {
         scheduler.onWake(call(CallState.RINGING))
         scheduler.onWake(call(CallState.ENDED, CallEndReason.NO_ANSWER))
-        assertEquals(ShownCall(callId, CallPhase.ENDING, clock), callStore.shown("me", "c1"))
+        // When its ring was received stays known with it.
+        assertEquals(ShownCall(callId, CallPhase.ENDING, clock, ringAtMs = clock), callStore.shown("me", "c1"))
     }
 
     @Test

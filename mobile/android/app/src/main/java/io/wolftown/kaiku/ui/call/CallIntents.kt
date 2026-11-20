@@ -55,8 +55,9 @@ object CallIntents {
      * What a notification broadcast of [action] for [ring] means to the
      * call owner at [nowMs], or null for nothing: Decline declines exactly
      * that call; the ring notification going away after its time is the
-     * ring's end (a missed call unless something else was said about that
-     * call), going away earlier was the user's swipe and changes nothing.
+     * ring's end (a missed call only once the owner knows that nobody answered
+     * or declined it here or elsewhere), going away earlier was the user's
+     * swipe and changes nothing.
      */
     fun inputOf(action: String?, ring: Ring, nowMs: Long): CallInput? = when (action) {
         ACTION_DECLINE -> CallInput.Decline(ring.ref())

@@ -45,6 +45,12 @@ interface CallNotifier {
 
     fun stopRing(session: SessionGeneration.Ticket, channelId: String, callId: String)
 
+    /**
+     * The ring stops and its notification goes, but nothing is recorded about how the call
+     * ended: an end of that call that arrives later (a push wake) is still accepted.
+     */
+    fun silenceRing(session: SessionGeneration.Ticket, channelId: String, callId: String)
+
     /** A missed call (once per call; tap opens the DM). */
     fun missed(session: SessionGeneration.Ticket, channelId: String, callId: String, callerName: String?)
 
@@ -62,6 +68,9 @@ interface CallDirectory {
 
     /** The DM's title as the chat list shows it (the other person, or the group), or null. */
     fun titleOf(channelId: String): String?
+
+    /** Whether the DM is a one-to-one conversation (two people), or null when it is not known here. */
+    fun isDirect(channelId: String): Boolean? = null
 }
 
 /**
@@ -131,12 +140,19 @@ sealed interface CallInput {
         override val account get() = call.account
     }
 
-    /** An `ended` push wake with the wire [reason]. */
+    /**
+     * An `ended` push wake with the wire [reason]. [direct]: the conversation is one-to-one
+     * (this user is the only one the call rang), as far as the push path found out; null:
+     * it did not. [ringReceivedAtMs]: when this phone received the ring of that call (wall
+     * clock), as recorded; null: no ring of it is recorded.
+     */
     data class PushEnded(
         val call: CallRef,
         val callerId: String,
         val callerName: String?,
         val reason: String,
+        val direct: Boolean? = null,
+        val ringReceivedAtMs: Long? = null,
     ) : CallInput {
         override val account get() = call.account
     }
@@ -536,6 +552,11 @@ class CallController internal constructor(
                 CallEvent.ServerEnded(
                     input.call.channelId, known(callId), input.reason,
                     rungHere = true, callerId = input.callerId, callerName = input.callerName,
+                    // A wake says nothing about this user's own decline on another device. Only
+                    // where they are the only one rung does "unanswered" rule it out.
+                    complete = input.direct ?: directory.isDirect(input.call.channelId) ?: false,
+                    // Its ring was received here and its 100 s from that receipt are over.
+                    ringOver = input.ringReceivedAtMs?.let { wallClock() - it >= CallMachine.RING_CAP_MS } ?: false,
                 )
             }
         }
@@ -626,6 +647,8 @@ class CallController internal constructor(
                 is CallEffect.ApplyMute -> voice.setCallMuted(tagBase + effect.voiceId, effect.muted)
                 is CallEffect.Ring -> notifier.ring(ticket, effect.channelId, effect.callId, effect.callerId, effect.callerName)
                 is CallEffect.StopRing -> notifier.stopRing(ticket, effect.channelId, effect.callId)
+                is CallEffect.SilenceRing -> notifier.silenceRing(ticket, effect.channelId, effect.callId)
+                is CallEffect.AskRing -> askRing(effect.channelId, effect.callId)
                 is CallEffect.Missed -> notifier.missed(ticket, effect.channelId, effect.callId, effect.callerName)
                 is CallEffect.MissedIfRinging ->
                     notifier.missedIfRinging(ticket, effect.channelId, effect.callId, effect.callerName)
@@ -723,6 +746,25 @@ class CallController internal constructor(
                     // Unchanged; the next socket asks again, and the ring cap still applies.
                     logger.info("call resync failed: ${e::class.simpleName}")
                 }
+            }
+        }
+
+        /**
+         * Asks the server about the call [callId] whose ring just stopped here. Without an
+         * answer (no restored session to ask with, no connection, a server error) the
+         * machine hears that it could not be asked, and claims nothing.
+         */
+        private fun askRing(channelId: String, callId: String) {
+            scope.launch {
+                val event = try {
+                    CallEvent.RingChecked(channelId, callId, getCall(channelId), asked = true)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    logger.info("call check after a ring failed: ${e::class.simpleName}")
+                    CallEvent.RingChecked(channelId, callId, answer = null, asked = false)
+                }
+                offer(event)
             }
         }
 

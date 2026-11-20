@@ -22,6 +22,15 @@ class CallNotificationStoreTest {
     }
 
     @Test
+    fun `an ended call keeps when its ring was received, and an entry without one has none`() {
+        store.setShown("me", "c1", ShownCall("call-1", CallPhase.ENDING, 50L, ringAtMs = 42L))
+        assertEquals(42L, store.shown("me", "c1")?.ringReceivedAtMs)
+        store.setShown("me", "c1", ShownCall("call-2", CallPhase.ENDING, 60L))
+        assertEquals(ShownCall("call-2", CallPhase.ENDING, 60L), store.shown("me", "c1"))
+        assertNull(store.shown("me", "c1")?.ringReceivedAtMs)
+    }
+
+    @Test
     fun `ended tombstone expires after its lifetime`() {
         store.setShown("me", "c1", ShownCall("call-1", CallPhase.ENDED, clock))
 

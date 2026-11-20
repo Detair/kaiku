@@ -207,6 +207,19 @@ sealed interface CallEvent {
      * `call_ended`; [reason] is the wire name. [rungHere]: it came as a push wake, which only
      * goes to someone the call rang for, so an unanswered end is a missed call also when this
      * process never saw the ring ([callerId] and [callerName] say whose).
+     *
+     * [complete]: an unanswered [reason] also rules out that this user declined the call on
+     * another device. Always so from the socket, which reports this user's own answer or
+     * decline. From a push wake only where this user is the only one the call rang (a
+     * one-to-one conversation: their decline would have ended it as `all_declined`); in a
+     * group the wake cannot show it. It decides only for a ring that had already stopped
+     * here: one this owner keeps as open ([CallModel.openRings]), or, for a wake of a call
+     * this owner never showed, [ringOver].
+     *
+     * [ringOver]: a push wake for a call whose ring is over on this phone without this owner
+     * having seen it: its ring was received here (an earlier process recorded it) and its
+     * 100 s from that receipt had passed. A call that never rang here is not such a ring: its
+     * unanswered end is a missed call, as it always was.
      */
     data class ServerEnded(
         val channelId: String,
@@ -215,10 +228,24 @@ sealed interface CallEvent {
         val rungHere: Boolean = false,
         val callerId: String? = null,
         val callerName: String? = null,
+        val complete: Boolean = true,
+        val ringOver: Boolean = false,
     ) : CallEvent
 
     /** The ring notification of [callId] timed out (100 s after the ring was received). */
     data class RingExpired(val channelId: String, val callId: String, val callerName: String?) : CallEvent
+
+    /**
+     * What the server said about the call [callId] whose ring had just stopped here
+     * ([CallEffect.AskRing]): [answer] (null: no call), or, with [asked] false, nothing,
+     * because it could not be asked (no restored session, no connection).
+     */
+    data class RingChecked(
+        val channelId: String,
+        val callId: String,
+        val answer: CallSnapshot?,
+        val asked: Boolean,
+    ) : CallEvent
 
     /** The 100 s ring cap of the ring that started at [startedAtMs]. */
     data class RingCap(val channelId: String, val startedAtMs: Long) : CallEvent
@@ -278,6 +305,15 @@ sealed interface CallEffect {
 
     data class StopRing(val channelId: String, val callId: String) : CallEffect
 
+    /**
+     * The ring of [callId] stops here and its notification goes, while nothing is known yet
+     * about how the call ended: what the server says about that call later is still heard.
+     */
+    data class SilenceRing(val channelId: String, val callId: String) : CallEffect
+
+    /** Ask the server about the call [callId] whose ring just stopped here; answered by [CallEvent.RingChecked]. */
+    data class AskRing(val channelId: String, val callId: String) : CallEffect
+
     /** Post a missed call for [callId]. */
     data class Missed(val channelId: String, val callId: String, val callerId: String, val callerName: String?) : CallEffect
 
@@ -295,6 +331,18 @@ sealed interface CallEffect {
 data class BusyRing(val callId: String, val callerId: String, val callerName: String?)
 
 /**
+ * A ring that stopped here (its 100 s were over, or its notification timed out) before this
+ * phone knew how the call ended for this user. [shown]: this owner showed it.
+ */
+data class OpenRing(
+    val channelId: String,
+    val callId: String,
+    val callerId: String,
+    val callerName: String?,
+    val shown: Boolean,
+)
+
+/**
  * The machine's whole state: the shown call, the ids of recently ended calls
  * per DM (their late events are ignored) and busy rings per DM.
  */
@@ -308,6 +356,12 @@ data class CallModel(
     val voiceSeq: Long = 0L,
     /** How recently ended calls ended, by call id (for a start whose answer comes after its call's end). */
     val endedWhy: Map<String, CallEndReason> = emptyMap(),
+    /**
+     * Rings that stopped here without a missed call being claimed: a missed call is only
+     * claimed once the server said that the call ended without this user answering or
+     * declining it anywhere.
+     */
+    val openRings: List<OpenRing> = emptyList(),
 )
 
 /** One transition: the next model and what to do. */
@@ -358,9 +412,11 @@ object CallMachine {
         var left = model.left
         var voiceSeq = model.voiceSeq
         var endedWhy = model.endedWhy
+        var openRings = model.openRings
 
-        fun to(next: CallState): CallStep = CallStep(CallModel(next, ended, busy, left, voiceSeq, endedWhy), effects.toList())
-        fun same(): CallStep = CallStep(CallModel(state, ended, busy, left, voiceSeq, endedWhy), effects.toList())
+        fun to(next: CallState): CallStep =
+            CallStep(CallModel(next, ended, busy, left, voiceSeq, endedWhy, openRings), effects.toList())
+        fun same(): CallStep = to(state)
 
         fun rememberEnded(channelId: String, callId: String?) {
             if (callId.isNullOrEmpty()) return
@@ -424,6 +480,7 @@ object CallMachine {
             CallEvent.SocketReady -> socketReady()
             is CallEvent.BusyCap -> busyCap(e = event)
             is CallEvent.RingExpired -> ringExpired(event)
+            is CallEvent.RingChecked -> ringChecked(event)
         }
 
         fun start(e: CallEvent.Start): CallStep {
@@ -764,6 +821,8 @@ object CallMachine {
             // A ring that was not rung here because a call was on: once anyone answered it (this
             // user elsewhere, or someone else in a group call) it is no unanswered call any more.
             if (e.userId == me || e.callId.isNotEmpty()) dropBusy(e.channelId, e.callId)
+            // Answered on another device after its ring had stopped here: not missed.
+            if (e.userId == me) closeOpenRing(e.channelId, e.callId)
             return same()
         }
 
@@ -796,7 +855,11 @@ object CallMachine {
                 rememberEnded(s.channelId, s.callId)
                 return to(CallState.Idle)
             }
-            if (e.userId == me) dropBusy(e.channelId, e.callId)
+            if (e.userId == me) {
+                dropBusy(e.channelId, e.callId)
+                // Declined on another device after its ring had stopped here: not missed.
+                closeOpenRing(e.channelId, e.callId)
+            }
             return same()
         }
 
@@ -815,6 +878,17 @@ object CallMachine {
             if (e.callId.isNotEmpty()) {
                 val kept = ended.values.flatten().toSet()
                 endedWhy = (endedWhy + (e.callId to reason)).filterKeys { it in kept }
+            }
+            // A ring that had stopped here before anything was known: this end says how the
+            // call ended, if it can tell. Unanswered, and not declined by this user elsewhere
+            // either: missed. Anything else: over without a missed call.
+            openRing(e.channelId, e.callId)?.let { ring ->
+                openRings = openRings - ring
+                effects += if (unanswered && e.complete) {
+                    CallEffect.Missed(ring.channelId, ring.callId, ring.callerId, ring.callerName ?: e.callerName)
+                } else {
+                    CallEffect.StopRing(ring.channelId, ring.callId)
+                }
             }
             var wasBusy = false
             busy[e.channelId]?.let { ring ->
@@ -836,7 +910,8 @@ object CallMachine {
                 // up from an earlier process): the wake says it rang here.
                 if (e.rungHere && !wasBusy && !knownEnded && e.callId.isNotEmpty()) {
                     effects += CallEffect.StopRing(e.channelId, e.callId)
-                    if (unanswered) {
+                    // A ring that is over here already: missed only if the wake can tell.
+                    if (unanswered && (e.complete || !e.ringOver)) {
                         effects += CallEffect.Missed(e.channelId, e.callId, e.callerId.orEmpty(), e.callerName)
                     }
                 }
@@ -870,32 +945,77 @@ object CallMachine {
             }
         }
 
+        fun openRing(channelId: String, callId: String): OpenRing? =
+            if (callId.isEmpty()) null else openRings.firstOrNull { it.channelId == channelId && it.callId == callId }
+
+        /** This user answered or declined the call of an open ring on another device: over, not missed. */
+        fun closeOpenRing(channelId: String, callId: String) {
+            val ring = openRing(channelId, callId) ?: return
+            openRings = openRings - ring
+            effects += CallEffect.StopRing(ring.channelId, ring.callId)
+        }
+
         /**
-         * The ring's notification timed out. For the shown ring that is the ring cap; for a
-         * ring this owner does not show, the missed call is posted only if nothing else was
-         * said about that call since (the notifier knows).
+         * The ring of [callId] is over here (its 100 s, or its notification timed out) and the
+         * server has not said how the call ended. It stops ringing and never rings here again.
+         * Whether it was missed is not known: this user may have answered or declined it on
+         * another device, which a phone without a connection does not hear. So nothing is
+         * claimed: the server is asked ([ringChecked]), and until something says how the call
+         * ended for this user the ring is kept as an open one.
+         */
+        fun ringOver(channelId: String, callId: String, callerId: String, callerName: String?, shown: Boolean) {
+            // A ring this owner does not show has lost its notification already (it timed out).
+            if (shown) effects += CallEffect.SilenceRing(channelId, callId)
+            effects += CallEffect.AskRing(channelId, callId)
+            val ring = OpenRing(channelId, callId, callerId, callerName, shown)
+            openRings = (openRings.filterNot { it.channelId == channelId && it.callId == callId } + ring).takeLast(MAX_ENDED)
+            rememberEnded(channelId, callId)
+        }
+
+        /**
+         * The server's answer about an open ring's call. Declined by this user: declined on
+         * another device, nothing was missed. Answered (active, with this user in it or not:
+         * an answered call is no missed one, as with its `last_left` end): nothing was missed.
+         * Gone, or still ringing without this user having declined it: a missed call. Not
+         * asked: nothing is claimed, and the ring stays open for a later end of that call to
+         * decide.
+         */
+        fun ringChecked(e: CallEvent.RingChecked): CallStep {
+            val ring = openRing(e.channelId, e.callId) ?: return same()
+            if (!e.asked) return same()
+            openRings = openRings - ring
+            val answer = e.answer?.takeIf { it.callId == ring.callId }
+            effects += when {
+                answer != null && (answer.active || me in answer.declinedBy) ->
+                    CallEffect.StopRing(ring.channelId, ring.callId)
+                ring.shown -> CallEffect.Missed(ring.channelId, ring.callId, ring.callerId, ring.callerName)
+                // Only if nothing else was said about that call since its notification was posted.
+                else -> CallEffect.MissedIfRinging(ring.channelId, ring.callId, ring.callerName)
+            }
+            return same()
+        }
+
+        /**
+         * The ring's notification timed out. For the shown ring that is the ring cap; a ring
+         * this owner does not show (its notification outlived the process that posted it) is
+         * over the same way.
          */
         fun ringExpired(e: CallEvent.RingExpired): CallStep {
             val s = state as? CallState.Incoming
             if (s != null && s.channelId == e.channelId && s.callId == e.callId) {
-                effects += CallEffect.StopRing(s.channelId, s.callId)
-                effects += CallEffect.Missed(s.channelId, s.callId, s.callerId, s.callerName)
-                rememberEnded(s.channelId, s.callId)
+                ringOver(s.channelId, s.callId, s.callerId, s.callerName, shown = true)
                 return to(CallState.Idle)
             }
             if (e.callId.isEmpty() || isEnded(e.channelId, e.callId)) return same()
             if (state.channelId == e.channelId && !idle) return same()
-            effects += CallEffect.MissedIfRinging(e.channelId, e.callId, e.callerName)
-            rememberEnded(e.channelId, e.callId)
+            ringOver(e.channelId, e.callId, "", e.callerName, shown = false)
             return same()
         }
 
         fun ringCap(e: CallEvent.RingCap): CallStep = when (state) {
             is CallState.Incoming -> if (state.channelId == e.channelId && state.startedAtMs == e.startedAtMs) {
-                // An incoming ring that ends locally counts as missed; nothing is sent.
-                effects += CallEffect.StopRing(state.channelId, state.callId)
-                effects += CallEffect.Missed(state.channelId, state.callId, state.callerId, state.callerName)
-                rememberEnded(state.channelId, state.callId)
+                // An incoming ring ends locally; nothing is sent, and nothing is claimed yet.
+                ringOver(state.channelId, state.callId, state.callerId, state.callerName, shown = true)
                 to(CallState.Idle)
             } else same()
             is CallState.Outgoing -> if (state.channelId == e.channelId && state.startedAtMs == e.startedAtMs) {
@@ -941,6 +1061,8 @@ object CallMachine {
 
         /** A new socket: ask the server about the call shown (stamped with this state). */
         fun socketReady(): CallStep {
+            // A ring that stopped here while nothing could be asked: the server can be asked now.
+            for (ring in openRings) effects += CallEffect.AskRing(ring.channelId, ring.callId)
             val asked = when (state) {
                 is CallState.Incoming, is CallState.Outgoing, is CallState.Connecting, is CallState.Connected -> state
                 else -> return same()

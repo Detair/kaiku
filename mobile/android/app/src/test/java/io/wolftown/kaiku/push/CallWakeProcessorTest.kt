@@ -581,4 +581,62 @@ class CallWakeProcessorTest {
 
         assertEquals(listOf(missed(name = null)), sink.posts)
     }
+
+    // -- A missed call is claimed only on knowledge -------------------------------------------
+
+    /** A process that knows nothing of earlier calls: what an earlier one did is only in the store. */
+    private fun freshProcessor(): CallWakeProcessor {
+        val owner = io.wolftown.kaiku.data.call.CallController(
+            api = mockk(relaxed = true),
+            voice = mockk(relaxed = true) { every { callEnds } returns kotlinx.coroutines.flow.MutableSharedFlow() },
+            webSocket = mockk(relaxed = true) { every { events } returns kotlinx.coroutines.flow.MutableSharedFlow() },
+            sessions = io.wolftown.kaiku.data.session.SessionGeneration(
+                { io.wolftown.kaiku.data.local.AuthSession.LoggedOut },
+                { userId?.takeIf { refreshToken != null } },
+            ),
+            notifier = SocketCallNotifier(sink, store) { clock },
+            directory = object : io.wolftown.kaiku.data.call.CallDirectory {
+                override fun nameOf(channelId: String, userId: String): String? = null
+                override fun titleOf(channelId: String): String? = null
+            },
+            clock = { clock },
+            voiceScope = callScope,
+            wallClock = { clock },
+        )
+        return CallWakeProcessor(tokenStorage, refresher, names, store, owner).also { it.now = { clock } }
+    }
+
+    @Test
+    fun `a late end of a group call whose ring is over here, rung by a process that is gone, claims nothing`() = runTest {
+        ring()
+        // The ring's 100 s pass in a process that is then gone; the end comes late.
+        clock += 120_000
+        coEvery { names.lookupCaller(ch, bob) } returns CallerLookup.Found("Bob", direct = false)
+        intake.accept(ended(CallEndReason.NO_ANSWER))
+        freshProcessor().process(ended(CallEndReason.NO_ANSWER), owner)
+
+        assertTrue("a missed call claimed without knowing: ${sink.posts}", sink.posts.none { it.kind == CallKind.MISSED })
+    }
+
+    @Test
+    fun `a late one-to-one end whose ring is over here, rung by a process that is gone, is a missed call`() = runTest {
+        ring()
+        clock += 120_000
+        coEvery { names.lookupCaller(ch, bob) } returns CallerLookup.Found("Bob", direct = true)
+        intake.accept(ended(CallEndReason.NO_ANSWER))
+        freshProcessor().process(ended(CallEndReason.NO_ANSWER), owner)
+
+        assertEquals(missed(), sink.posts.last())
+    }
+
+    @Test
+    fun `a group call's end within its ring, rung by a process that is gone, is a missed call as before`() = runTest {
+        ring()
+        clock += 30_000
+        coEvery { names.lookupCaller(ch, bob) } returns CallerLookup.Found("Bob", direct = false)
+        intake.accept(ended(CallEndReason.NO_ANSWER))
+        freshProcessor().process(ended(CallEndReason.NO_ANSWER), owner)
+
+        assertEquals(missed(), sink.posts.last())
+    }
 }
