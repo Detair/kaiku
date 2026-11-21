@@ -514,6 +514,12 @@ use is notified to the account, its recovery contact and all admins.
 | every 20th | `guessing` notice to the account (coalesced) |
 | 100 | the factor becomes `throttled` (once per counter epoch). 100 wrong TOTP codes after a correct password also mark that password generation `compromised` |
 
+A try is counted **before** it is checked: the counter is raised in the same atomic step that
+looks at the delay, and a correct answer then resets it. So tries sent in parallel, from one
+address or from many, never share a count: after the 5th try of a burst every further one answers
+429 without being checked. A try that could not be checked at all (the server could not record
+the code, for example) is given back. The per-IP limits below stay in front, unchanged.
+
 Counters live in Valkey and expire after 24 h without failures. If Valkey is down, password and
 TOTP steps answer 503 `SERVICE_UNAVAILABLE`. Passkeys, QR sign-in, device-key sign-in and existing
 sessions are never affected, so a guesser cannot lock anyone out of the strong paths.

@@ -840,6 +840,19 @@ was reproduced (`40P01`) and pinned by a test (implementation notes).
 and `ratelimit:acct:totp:{user_id}:{generation}`.
 
 - One Lua script updates count, epoch, the next allowed time and the expiry atomically.
+- **Reserve before check.** Every password and TOTP check (`/auth/login`, the attempt's TOTP step,
+  the bootstrap and recovery request factors, owner-rule part 2) first calls `reserve`: the same
+  script, gated on `next` — while the delay runs it answers 429 and counts nothing, else it counts
+  the try as a failure at once. Then the check runs and the try is settled: a success resets the
+  counter (`reset_epoch`), a failure applies the effects below with the reserved count, and a try
+  whose check never ran (the TOTP replay store or a lookup failed) is given back (`give_back`:
+  only while epoch and count are unchanged; below 5 the delay goes too; its throttle claim is
+  released). Parallel tries therefore get distinct counts, and a burst checks at most 5 before the
+  delay. The TOTP sign-in step reserves under the account lock, after the attempt checks, so no
+  early refusal needs a give-back; the bootstrap and recovery requests reserve inside their
+  transaction, so a refused try counts no start and consumes no recovery code. `check` and
+  `count_failure` remain: `check` gives the early answer before a bootstrap OIDC code is spent,
+  and both serve the tests.
 - From the 5th consecutive failure the next try waits `30 s · 2^(n−5)`, at most 3600 s (from the
   12th failure on); 429 `TOO_MANY_ATTEMPTS` + `Retry-After`.
 - Every 20th failure records `guessing` (coalesced).
