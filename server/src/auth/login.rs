@@ -226,7 +226,7 @@ pub async fn reserve_password(
 /// B.5: the effects of a wrong password whose try `failure` reserved (and
 /// so counted): at every 20th a coalesced `guessing` notice; the first
 /// failure at or past the 100th in an epoch throttles the password (its
-/// claim is given back if this fails, Flash r5).
+/// claim is given back if this fails, so the next failure throttles).
 pub async fn account_failure(
     state: &AppState,
     counter: &crate::ratelimit::account::CounterKey,

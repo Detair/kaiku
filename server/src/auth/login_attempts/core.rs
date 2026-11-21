@@ -1156,12 +1156,13 @@ pub async fn record_unfinished(conn: &mut PgConnection, ids: &[Uuid]) -> sqlx::R
 
 /// Outcome of a TOTP step.
 pub enum TotpOutcome {
-    /// Signed in; the TOTP generation the code was checked against (its
-    /// counter alone is reset, Codex r4) and the try reserved on it.
+    /// Signed in; the TOTP generation the code was checked against (only
+    /// that generation's counter is reset, never a renewed one's) and the
+    /// try reserved on it.
     Signed(Collected, i64, Failure),
     /// A wrong or replayed code: `second_factor_failed` was recorded; the
-    /// TOTP generation the code was checked against (Codex r3) and the try
-    /// reserved (counted) on it.
+    /// TOTP generation the code was checked against (its counter carries
+    /// the failure) and the try reserved (counted) on it.
     WrongCode(Vec<Uuid>, i64, Failure),
 }
 

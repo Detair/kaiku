@@ -305,10 +305,10 @@ async fn start_bootstrap(
     });
     let totp_ok = match (&body.totp_code, &secret_now) {
         (Some(code), Some(secret)) if st.totp.state == factors::FactorState::Active => {
-            // B.5: the code's try is reserved under the account lock. Fable
-            // r2 (i): the delay is only reachable after a correct first
-            // factor, so it answers neutrally too; the transaction rolls
-            // back, so a refused try counts no start.
+            // B.5: the code's try is reserved under the account lock. The
+            // delay is only reachable after a correct first factor, so it
+            // answers neutrally too; the transaction rolls back, so a
+            // refused try counts no start.
             let (ok, reserved) = match crate::auth::totp_guard::check_reserved(
                 ctx,
                 user.id,
