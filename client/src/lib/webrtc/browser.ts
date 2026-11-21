@@ -1546,13 +1546,17 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
           };
         }
       } else {
-        // Audio track = voice (Microphone) or screen audio (ScreenAudio)
-        this.remoteStreams.set(userId, stream);
+        // Audio track = voice (Microphone) or screen audio (ScreenAudio).
+        // Play it from a stream of its own: the browser reuses the event's
+        // stream object for the same stream id, so after a rejoin it can
+        // still hold the person's old track next to this one.
+        const played = new MediaStream([track]);
+        this.remoteStreams.set(userId, played);
 
         const remoteTrack: RemoteTrack = {
           trackId: track.id,
           userId,
-          stream,
+          stream: played,
           muted: false,
         };
 
@@ -1560,6 +1564,8 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
 
         track.onended = () => {
           console.log("[BrowserVoiceAdapter] Remote audio track ended");
+          // A newer track of the same person has replaced this one.
+          if (this.remoteStreams.get(userId) !== played) return;
           this.remoteStreams.delete(userId);
           this.eventHandlers.onRemoteTrackRemoved?.(userId);
         };

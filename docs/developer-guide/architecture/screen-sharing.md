@@ -182,7 +182,8 @@ The stream ID format used in WebRTC track naming:
 e.g. "58b286b0-...:screen_video:9e23fc36-..."
 ```
 
-The client parses this to determine the source user and type.
+The client parses this to determine the source user and type. Each forwarded track has its own track id
+(`{stream id}:{n}`); clients identify the source by the stream id, never by the track id.
 
 ## Codec: VP8 Only
 

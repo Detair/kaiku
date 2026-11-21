@@ -309,6 +309,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Servers whose storage credentials are set but empty (as in the self-hosting compose file) now treat storage as not configured and no longer probe the default AWS endpoint at startup.
 - Nightly backups and the upgrade preflight check now authenticate to the database correctly and reject incomplete dumps (#623).
 - People who lose connection, close their laptop or crash no longer stay visible in the voice channel; they are removed automatically.
+- People in a voice channel keep receiving changes after someone leaves and joins again: they hear the person who came back and everyone who joins later, without rejoining themselves.
 - The desktop app can sign in and stay signed in against servers that restrict allowed origins.
 - The first direct message to someone now appears immediately on all of their open devices, instead of only after reloading the conversation list.
 - Realtime updates no longer stop silently when the server's internal event stream hiccups — the connection is closed so apps reconnect and catch up.
