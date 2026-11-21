@@ -366,6 +366,10 @@ const ChannelPermissions: Component<ChannelPermissionsProps> = (props) => {
                             {(perm) => {
                               const state = () =>
                                 localOverrides()[perm.bit] || "inherit";
+                              // The server never grants these to @everyone:
+                              // allow is not offered, deny and inherit stay.
+                              const allowRefused =
+                                !!role.is_default && perm.forbiddenForEveryone;
 
                               return (
                                 <div
@@ -393,18 +397,31 @@ const ChannelPermissions: Component<ChannelPermissionsProps> = (props) => {
                                         Inherit
                                       </span>
                                     </label>
-                                    <label class="flex items-center gap-1 cursor-pointer">
+                                    <label
+                                      class="flex items-center gap-1"
+                                      classList={{
+                                        "cursor-pointer": !allowRefused,
+                                        "cursor-not-allowed": allowRefused,
+                                      }}
+                                    >
                                       <input
                                         type="radio"
                                         name={`perm-${perm.bit}`}
                                         data-testid="channel-permissions-allow"
+                                        disabled={allowRefused}
                                         checked={state() === "allow"}
                                         onChange={() =>
                                           handleStateChange(perm.bit, "allow")
                                         }
-                                        class="w-4 h-4 accent-green-500"
+                                        class="w-4 h-4 accent-green-500 state-disabled-quiet"
                                       />
-                                      <span class="text-xs text-green-400">
+                                      <span
+                                        class="text-xs"
+                                        classList={{
+                                          "text-green-400": !allowRefused,
+                                          "text-text-muted": allowRefused,
+                                        }}
+                                      >
                                         Allow
                                       </span>
                                     </label>

@@ -10,7 +10,9 @@ const p = vi.hoisted(() => ({
   overrides: [] as Override[],
   setChannelOverride: vi.fn(),
   hidden: new Set<string>(),
+  roles: [] as { id: string; name: string; is_default: boolean; permissions: number; color: null }[],
 }));
+const EVERYONE = { id: "everyone", name: "@everyone", is_default: true, permissions: 0, color: null };
 
 vi.mock("@/stores/permissions", () => ({
   loadChannelOverrides: vi.fn(),
@@ -18,9 +20,7 @@ vi.mock("@/stores/permissions", () => ({
   setChannelOverride: p.setChannelOverride,
   deleteChannelOverride: vi.fn(),
   loadGuildRoles: vi.fn(),
-  getGuildRoles: () => [
-    { id: "everyone", name: "@everyone", is_default: true, permissions: 0, color: null },
-  ],
+  getGuildRoles: () => p.roles,
   permissionsState: { isOverridesLoading: false },
 }));
 vi.mock("@/stores/serverFeatures", () => ({
@@ -40,6 +40,7 @@ afterEach(() => {
   p.hidden.clear();
 });
 beforeEach(() => {
+  p.roles = [EVERYONE];
   p.setChannelOverride.mockReset();
   p.setChannelOverride.mockResolvedValue({});
 });
@@ -121,5 +122,40 @@ describe("ChannelPermissions save", () => {
     render(() => <ChannelPermissions channelId="c1" guildId="g1" />);
     fireEvent.click(screen.getByTestId("channel-permissions-override-edit"));
     expect(screen.getByTestId("channel-permissions-row-screen-share")).toBeTruthy();
+  });
+});
+
+describe("ChannelPermissions for @everyone", () => {
+  const rowOf = (key: string) =>
+    screen.getByTestId(`channel-permissions-row-${key.toLowerCase().replace(/_/g, "-")}`);
+  const allowOf = (key: string) =>
+    within(rowOf(key)).getByTestId("channel-permissions-allow") as HTMLInputElement;
+
+  it("does not offer allow for a permission @everyone may not get; deny still saves", async () => {
+    p.overrides = [{ role_id: "everyone", allow_permissions: 0, deny_permissions: 0 }];
+    render(() => <ChannelPermissions channelId="c1" guildId="g1" />);
+    fireEvent.click(screen.getByTestId("channel-permissions-override-edit"));
+
+    expect(allowOf("MANAGE_MESSAGES").disabled).toBe(true);
+    const manage = rowOf("MANAGE_MESSAGES");
+    expect((within(manage).getByTestId("channel-permissions-deny") as HTMLInputElement).disabled).toBe(false);
+    expect((within(manage).getByTestId("channel-permissions-inherit") as HTMLInputElement).disabled).toBe(false);
+    // A permission @everyone may hold keeps its allow.
+    expect(allowOf("SEND_MESSAGES").disabled).toBe(false);
+
+    fireEvent.click(within(manage).getByTestId("channel-permissions-deny"));
+    fireEvent.click(screen.getByTestId("channel-permissions-save"));
+    await waitFor(() => expect(p.setChannelOverride).toHaveBeenCalled());
+    const [, , body] = p.setChannelOverride.mock.calls[0];
+    expect(body.deny).toBe(PermissionBits.MANAGE_MESSAGES);
+    expect(body.allow).toBe(0);
+  });
+
+  it("a normal role keeps allow for the same permission", () => {
+    p.roles = [{ id: "mods", name: "Mods", is_default: false, permissions: 0, color: null }];
+    p.overrides = [{ role_id: "mods", allow_permissions: 0, deny_permissions: 0 }];
+    render(() => <ChannelPermissions channelId="c1" guildId="g1" />);
+    fireEvent.click(screen.getByTestId("channel-permissions-override-edit"));
+    expect(allowOf("MANAGE_MESSAGES").disabled).toBe(false);
   });
 });
