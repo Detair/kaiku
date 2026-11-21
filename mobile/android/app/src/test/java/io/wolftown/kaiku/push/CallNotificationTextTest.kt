@@ -129,7 +129,7 @@ class CallNotificationTextTest {
     fun `ringing timeout never drops below the minimum`() {
         val now = 1_000_000L
         val plan = CallNotificationText.plan(
-            n(CallKind.INCOMING, "Bob").copy(ringingSinceMs = now - 58_000L),
+            n(CallKind.INCOMING, "Bob").copy(ringingSinceMs = now - 98_000L),
             previous = null,
             nowMs = now,
         )

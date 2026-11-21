@@ -30,6 +30,7 @@ import javax.inject.Singleton
  *
  * - 0: reserved for push unregistration (push plan Task 7), which must run
  *   first while the session token still works
+ * - 5: close the session to new work ([WorkSessionTeardown])
  * - 10: leave voice ([VoiceSessionTeardown])
  * - 20: close the realtime connection ([RealtimeSessionTeardown])
  * - 30: clear chat, server and DM caches ([CacheSessionTeardown])
@@ -186,6 +187,18 @@ class SessionTeardownRunner @Inject constructor(
             logger.warning("teardown $name failed: ${e::class.simpleName}")
         }
     }
+}
+
+/**
+ * Order 5: from here on the ending session takes no new work (chats, people,
+ * new calls); a sign-out still waits for the server while its tokens are
+ * stored, and nothing started then may reach the next account.
+ */
+class WorkSessionTeardown @Inject constructor(
+    private val sessions: SessionGeneration,
+) : SessionTeardown {
+    override val order: Int = 5
+    override suspend fun onLogout(sessionId: Long?) = sessions.close(sessionId)
 }
 
 /** Order 10: leaves the voice channel (stops the call service and releases media). */

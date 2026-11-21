@@ -3,6 +3,8 @@ package io.wolftown.kaiku.push
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
+import android.media.AudioAttributes
+import android.media.RingtoneManager
 import android.os.Build
 import androidx.annotation.StringRes
 import io.wolftown.kaiku.R
@@ -12,6 +14,18 @@ object NotificationChannels {
     const val DM = "dm_messages"
     const val MENTIONS = "mentions"
     const val VOICE = "voice_calls"
+
+    /**
+     * Incoming DM calls: high importance with the phone's ringtone (usage
+     * "notification ringtone") and vibration. The system applies the ringer
+     * mode (silent, vibrate) and Do Not Disturb's call rules to the channel,
+     * so the app plays no sound of its own. The caller's name may show on the
+     * lock screen, as for a phone call.
+     */
+    const val CALLS = "calls_incoming"
+
+    /** Vibration of [CALLS]: ring rhythm. */
+    private val RING_VIBRATION = longArrayOf(0L, 800L, 600L, 800L, 600L)
     const val SYNC = "background_sync"
 
     /** C28 security notices (L2-A6): high importance, private on the lock screen, never actions. */
@@ -29,6 +43,20 @@ object NotificationChannels {
             build(context, VOICE, NotificationManager.IMPORTANCE_LOW,
                 R.string.voice_notification_channel_name, R.string.voice_notification_channel_description)
                 .apply { setShowBadge(false) },
+            build(context, CALLS, NotificationManager.IMPORTANCE_HIGH,
+                R.string.notif_channel_calls_name, R.string.notif_channel_calls_description)
+                .apply {
+                    setSound(
+                        RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE),
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                            .build(),
+                    )
+                    enableVibration(true)
+                    vibrationPattern = RING_VIBRATION
+                    lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
+                },
             build(context, SECURITY, NotificationManager.IMPORTANCE_HIGH,
                 R.string.notif_channel_security_name, R.string.notif_channel_security_description)
                 .apply { lockscreenVisibility = android.app.Notification.VISIBILITY_PRIVATE },

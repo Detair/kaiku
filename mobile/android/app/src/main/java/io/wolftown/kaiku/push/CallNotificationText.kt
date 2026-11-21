@@ -6,7 +6,7 @@ import io.wolftown.kaiku.navigation.DeepLinks
 
 /** What a DM call notification shows. */
 enum class CallKind {
-    /** The call is ringing: a heads-up pointing to the PC. */
+    /** The call is ringing: full-screen or heads-up with Accept and Decline. */
     INCOMING,
 
     /** The call ended unanswered (no answer or cancelled by the caller). */
@@ -25,6 +25,8 @@ data class CallNotification(
     val callerName: String?,
     /** When the ringing wake was received ([CallKind.INCOMING]); the timeout counts from there. */
     val ringingSinceMs: Long? = null,
+    /** Who calls ([CallKind.INCOMING]); the call screen opened from the notification needs it. */
+    val callerId: String? = null,
 )
 
 /**
@@ -43,6 +45,19 @@ interface CallNotificationSink {
     fun showCall(prepare: () -> CallNotification?): ShowResult
 
     fun cancelCall(channelId: String)
+
+    /**
+     * Removes the channel's call notification if [check] says so; [check] runs
+     * in the same critical section as the removal and as [cancelAllCalls] (and
+     * may record what the removal means), so what it checks cannot change in
+     * between.
+     */
+    fun cancelCallIf(channelId: String, check: () -> Boolean) {
+        if (check()) cancelCall(channelId)
+    }
+
+    /** Removes every call notification (sign-out; message notifications stay for [NotificationSink.cancelAll]). */
+    fun cancelAllCalls() {}
 }
 
 /** A call notification as last posted in its channel (presenter bookkeeping). */
@@ -60,8 +75,11 @@ data class CallPostPlan(
 
 /** The localized text of a call notification. */
 object CallNotificationText {
-    /** A ringing notification goes away after this, a bit above the 45 s ring timeout, if its `ended` push is lost. */
-    const val RINGING_TIMEOUT_MS = 60_000L
+    /**
+     * A ringing notification goes away after this if its `ended` never comes:
+     * the ring cap (100 s, above the server's 90 s ring timeout).
+     */
+    const val RINGING_TIMEOUT_MS = 100_000L
 
     /** A ringing notification posted late still stays at least this long. */
     const val MIN_RINGING_TIMEOUT_MS = 5_000L

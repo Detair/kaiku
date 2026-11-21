@@ -24,8 +24,12 @@ interface AdminApi {
     suspend fun elevate(reason: String?)
     suspend fun users(search: String?): List<AdminUserSummary>
     suspend fun user(id: String): AdminUserDetail
-    /** C4/C23 amended by C27: no `temporary_password`; the account is passwordless. */
-    suspend fun createUser(username: String, displayName: String, recoveryContactId: String?): AdminUserSummary
+    /**
+     * C4/C23 amended by C27: no `temporary_password`; the account is passwordless.
+     * [guildIds]: the servers the account joins at once (C23: at most 10; an
+     * empty list makes an account without a server). Always sent.
+     */
+    suspend fun createUser(username: String, displayName: String, recoveryContactId: String?, guildIds: List<String>): AdminUserSummary
     suspend fun issueEnrollment(userId: String, mode: String, claimantMethod: String, note: String, lostDeviceIds: List<String>): EnrollmentIssued
     suspend fun setMayApprove(userId: String, value: Boolean)
     /** "Remove device now" (C26, L1b): another account's key device or passkey; needs `admin.authenticator.remove`. */
@@ -39,7 +43,12 @@ private data class AdminStatus(val isAdmin: Boolean = false)
 private data class ElevateRequest(val reason: String?)
 
 @Serializable
-private data class CreateUserBody(val username: String, val displayName: String, val recoveryContactId: String?)
+private data class CreateUserBody(
+    val username: String,
+    val displayName: String,
+    val recoveryContactId: String?,
+    val guildIds: List<String>,
+)
 
 @Serializable
 private data class ClaimantCheckBody(val method: String, val note: String)
@@ -77,8 +86,13 @@ class AdminApiImpl @Inject constructor(private val httpClient: HttpClient) : Adm
         return r.body()
     }
 
-    override suspend fun createUser(username: String, displayName: String, recoveryContactId: String?): AdminUserSummary {
-        val r = httpClient.post("/api/admin/users") { setBody(CreateUserBody(username, displayName, recoveryContactId)) }
+    override suspend fun createUser(
+        username: String,
+        displayName: String,
+        recoveryContactId: String?,
+        guildIds: List<String>,
+    ): AdminUserSummary {
+        val r = httpClient.post("/api/admin/users") { setBody(CreateUserBody(username, displayName, recoveryContactId, guildIds)) }
         r.ensureSuccess("create user failed")
         return r.body()
     }

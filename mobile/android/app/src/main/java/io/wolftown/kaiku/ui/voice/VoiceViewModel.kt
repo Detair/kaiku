@@ -7,6 +7,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import io.wolftown.kaiku.data.repository.GuildRepository
 import io.wolftown.kaiku.data.repository.VoiceRepository
 import io.wolftown.kaiku.data.voice.AudioRoute
+import io.wolftown.kaiku.data.voice.VoiceLinkState
 import io.wolftown.kaiku.data.voice.AudioRouteManager
 import io.wolftown.kaiku.data.voice.WebRtcManager
 import io.wolftown.kaiku.data.ws.ScreenShareInfo
@@ -48,6 +49,9 @@ class VoiceViewModel @Inject constructor(
     val participants: StateFlow<List<VoiceParticipant>> = voiceRepository.participants
     val isMuted: StateFlow<Boolean> = voiceRepository.isMuted
     val isConnected: StateFlow<Boolean> = voiceRepository.isConnected
+
+    /** Stable, interrupted or rejoining (shown as "Reconnecting…"). */
+    val linkState: StateFlow<VoiceLinkState> = voiceRepository.linkState
 
     /** True while this ViewModel's channel is the one the repository is joined to. */
     val isInChannel: StateFlow<Boolean> = voiceRepository.currentChannelId

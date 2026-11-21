@@ -1,6 +1,7 @@
 package io.wolftown.kaiku.data.local
 
 import android.content.SharedPreferences
+import io.wolftown.kaiku.data.session.SessionEndHook
 import java.io.IOException
 import java.security.GeneralSecurityException
 import java.util.logging.Logger
@@ -128,6 +129,8 @@ class TokenStorage internal constructor(
         }
         // Type only: the message could describe stored data.
         logger.warning("Secure storage unreadable (${cause::class.simpleName}), resetting session data")
+        // The session is removed: what belongs to it ends first.
+        SessionEndHook.beforeSessionEnds()
         sessionGeneration++
         val cleared = try {
             val editor = prefs.edit()
@@ -168,6 +171,8 @@ class TokenStorage internal constructor(
         expiresIn: Int,
         userId: String
     ) {
+        // A stored session is replaced: what belongs to it ends first, like at a removal.
+        if (prefs.contains(KEY_ACCESS_TOKEN) || prefs.contains(KEY_REFRESH_TOKEN)) SessionEndHook.beforeSessionEnds()
         // Bump before writing, so a reader that sees the new tokens also sees the new generation.
         sessionGeneration++
         writeTokens(accessToken, refreshToken, expiresIn, userId)
@@ -286,6 +291,8 @@ class TokenStorage internal constructor(
         // Only ending a stored session voids a pending move; clearing an empty store
         // (cleanup after a failed sign-in) keeps the move for the next start (Codex r4).
         if (prefs.contains(KEY_ACCESS_TOKEN) || prefs.contains(KEY_REFRESH_TOKEN)) sessionChanged()
+        // Voice, a call and the microphone end before a stored session is removed.
+        if (prefs.contains(KEY_ACCESS_TOKEN) || prefs.contains(KEY_REFRESH_TOKEN)) SessionEndHook.beforeSessionEnds()
         val success = prefs.edit()
             .remove(KEY_ACCESS_TOKEN)
             .remove(KEY_REFRESH_TOKEN)

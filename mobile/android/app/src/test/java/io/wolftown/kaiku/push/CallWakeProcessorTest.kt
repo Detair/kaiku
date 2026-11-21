@@ -31,12 +31,36 @@ class CallWakeProcessorTest {
     private val names: NotificationTitleResolver = mockk()
     private val store = PrefsCallNotificationStore(InMemorySharedPreferences()) { clock }
     private val sink = FakeCallSink()
-    private val processor = CallWakeProcessor(tokenStorage, refresher, names, store, sink).also { it.now = { clock } }
-    private val intake = CallWakeIntake(tokenStorage, store).also { it.now = { clock } }
 
     private var generation = 1L
     private var refreshToken: String? = "refresh"
     private var userId: String? = "me"
+
+    // The call owner behind the door, as in a process a push woke up: nobody restored the
+    // session, the stored account counts. Its actor runs in place (unconfined).
+    private val sessions = io.wolftown.kaiku.data.session.SessionGeneration(
+        { io.wolftown.kaiku.data.local.AuthSession.LoggedOut },
+        { userId?.takeIf { refreshToken != null } },
+    )
+    private val callScope = kotlinx.coroutines.CoroutineScope(
+        kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.test.UnconfinedTestDispatcher()
+    )
+    private val calls = io.wolftown.kaiku.data.call.CallController(
+        api = mockk(relaxed = true),
+        voice = mockk(relaxed = true) { every { callEnds } returns kotlinx.coroutines.flow.MutableSharedFlow() },
+        webSocket = mockk(relaxed = true) { every { events } returns kotlinx.coroutines.flow.MutableSharedFlow() },
+        sessions = sessions,
+        notifier = SocketCallNotifier(sink, store) { clock },
+        directory = object : io.wolftown.kaiku.data.call.CallDirectory {
+            override fun nameOf(channelId: String, userId: String): String? = null
+            override fun titleOf(channelId: String): String? = null
+        },
+        clock = { clock },
+        voiceScope = callScope,
+        wallClock = { clock },
+    )
+    private val processor = CallWakeProcessor(tokenStorage, refresher, names, store, calls).also { it.now = { clock } }
+    private val intake = CallWakeIntake(tokenStorage, store).also { it.now = { clock } }
 
     /** Records call notifications per channel the way the system shows them (same key = replaced). */
     class FakeCallSink : CallNotificationSink {
@@ -55,9 +79,27 @@ class CallWakeProcessorTest {
             return ShowResult.POSTED
         }
 
+        /** Runs as a removal begins (where another thread could end the session). */
+        var beforeCancel: () -> Unit = {}
+
         override fun cancelCall(channelId: String) {
+            beforeCancel()
             cancelled += channelId
             shown.remove(channelId)
+        }
+
+        override fun cancelCallIf(channelId: String, check: () -> Boolean) {
+            beforeCancel()
+            if (!check()) return
+            cancelled += channelId
+            shown.remove(channelId)
+        }
+
+        var cancelledAll = 0
+
+        override fun cancelAllCalls() {
+            cancelledAll++
+            shown.clear()
         }
     }
 
@@ -90,7 +132,7 @@ class CallWakeProcessorTest {
     fun `ringing posts the incoming call with the caller name`() = runTest {
         assertEquals(CallOutcome.INCOMING, ring())
 
-        assertEquals(CallNotification("me", ch, callA, CallKind.INCOMING, "Bob", ringingSinceMs = clock), sink.shown[ch])
+        assertEquals(CallNotification("me", ch, callA, CallKind.INCOMING, "Bob", ringingSinceMs = clock, callerId = bob), sink.shown[ch])
         coVerify { names.lookupCaller(ch, bob) }
     }
 
@@ -102,7 +144,6 @@ class CallWakeProcessorTest {
 
         assertEquals(missed(), sink.shown[ch])
         assertEquals(1, sink.shown.size)
-        assertTrue(sink.cancelled.isEmpty())
         assertEquals(CallPhase.MISSED, store.shown("me", ch)?.phase)
     }
 
@@ -318,9 +359,14 @@ class CallWakeProcessorTest {
 
     @Test
     fun `logout right before posting posts nothing`() = runTest {
-        sink.beforePost = { refreshToken = null }
+        // As the token store does it: the session-end hook's advance, then the stored session goes.
+        sink.beforePost = {
+            sessions.advance()
+            refreshToken = null
+        }
 
-        assertEquals(CallOutcome.NOT_LOGGED_IN, ring())
+        // Handed to the call owner, whose post is checked in one step with the posting.
+        ring()
 
         assertTrue(sink.posts.isEmpty())
     }
@@ -369,7 +415,8 @@ class CallWakeProcessorTest {
     fun `disabled notifications keep the accepted call for its end`() = runTest {
         sink.disabled = true
 
-        assertEquals(CallOutcome.NOTIFICATIONS_OFF, ring())
+        // The call owner knows the ring all the same (the call screen shows it while the app is open).
+        assertEquals(CallOutcome.INCOMING, ring())
 
         assertEquals(CallPhase.RINGING, store.shown("me", ch)?.phase)
     }
@@ -491,7 +538,7 @@ class CallWakeProcessorTest {
         // A new call rings while the missed call of the old one is about to be posted.
         sink.beforePost = { intake.accept(ringing(callB)) }
 
-        assertEquals(CallOutcome.IGNORED, processor.process(ended(CallEndReason.NO_ANSWER, callA), owner))
+        processor.process(ended(CallEndReason.NO_ANSWER, callA), owner)
 
         assertEquals(ShownCall(callB, CallPhase.RINGING, clock), store.shown("me", ch))
         assertEquals(1, sink.posts.size)
@@ -544,5 +591,193 @@ class CallWakeProcessorTest {
         assertEquals(CallOutcome.MISSED, processor.process(ended(CallEndReason.NO_ANSWER), owner))
 
         assertEquals(listOf(missed(name = null)), sink.posts)
+    }
+
+    // -- A missed call is claimed only on knowledge -------------------------------------------
+
+    /** A process that knows nothing of earlier calls: what an earlier one did is only in the store. */
+    private fun freshProcessor(
+        socketEvents: kotlinx.coroutines.flow.MutableSharedFlow<io.wolftown.kaiku.data.ws.ServerEvent> = kotlinx.coroutines.flow.MutableSharedFlow(),
+    ): CallWakeProcessor {
+        val owner = io.wolftown.kaiku.data.call.CallController(
+            api = mockk(relaxed = true),
+            voice = mockk(relaxed = true) { every { callEnds } returns kotlinx.coroutines.flow.MutableSharedFlow() },
+            webSocket = mockk(relaxed = true) {
+                every { events } returns socketEvents
+                every { authenticatedSocket } returns kotlinx.coroutines.flow.MutableStateFlow(1L)
+            },
+            sessions = io.wolftown.kaiku.data.session.SessionGeneration(
+                { io.wolftown.kaiku.data.local.AuthSession.LoggedOut },
+                { userId?.takeIf { refreshToken != null } },
+            ),
+            notifier = SocketCallNotifier(sink, store) { clock },
+            directory = object : io.wolftown.kaiku.data.call.CallDirectory {
+                override fun nameOf(channelId: String, userId: String): String? = null
+                override fun titleOf(channelId: String): String? = null
+            },
+            clock = { clock },
+            voiceScope = callScope,
+            wallClock = { clock },
+        ).also { it.start() }
+        return CallWakeProcessor(tokenStorage, refresher, names, store, owner).also { it.now = { clock } }
+    }
+
+    @Test
+    fun `a late end whose ring is over here, rung by a process that is gone, is missed when nobody answered`() = runTest {
+        ring()
+        // The ring's 100 s pass in a process that is then gone; the end comes late.
+        clock += 120_000
+        intake.accept(ended(CallEndReason.NO_ANSWER))
+        freshProcessor().process(ended(CallEndReason.NO_ANSWER), owner)
+
+        assertEquals(missed(), sink.posts.last())
+    }
+
+    @Test
+    fun `a late end that says somebody answered, rung by a process that is gone, shows nothing`() = runTest {
+        ring()
+        clock += 120_000
+        intake.accept(ended(CallEndReason.LAST_LEFT))
+        freshProcessor().process(ended(CallEndReason.LAST_LEFT), owner)
+
+        assertTrue(sink.posts.none { it.kind == CallKind.MISSED })
+    }
+
+    // -- An earlier call of the conversation does not hide a new call's end ---------------------
+
+    private val tenMinutes = 10 * 60 * 1000L
+
+    /** The end push of [callB], which never rang here, as the scheduler hands it on: intake, then the work. */
+    private suspend fun endOfNewCall(reason: CallEndReason = CallEndReason.NO_ANSWER): CallOutcome? {
+        if (!intake.accept(ended(reason, callB))) return null
+        return processor.process(ended(reason, callB), owner)
+    }
+
+    @Test
+    fun `a call nobody answered is a missed call although the conversation's last call was missed long ago`() = runTest {
+        store.setShown("me", ch, ShownCall(callA, CallPhase.MISSED, clock - 30L * 24 * 60 * 60 * 1000))
+        assertEquals(CallOutcome.MISSED, endOfNewCall())
+        assertEquals(listOf(missed(callB)), sink.posts)
+        // Once: its duplicate end changes nothing.
+        assertEquals(null, endOfNewCall())
+        assertEquals(1, sink.posts.size)
+    }
+
+    @Test
+    fun `a call nobody answered is a missed call although the conversation's last call ended ten minutes ago`() = runTest {
+        store.setShown("me", ch, ShownCall(callA, CallPhase.ENDED, clock - tenMinutes))
+        assertEquals(CallOutcome.MISSED, endOfNewCall())
+        assertEquals(listOf(missed(callB)), sink.posts)
+        assertEquals(null, endOfNewCall())
+        assertEquals(1, sink.posts.size)
+    }
+
+    @Test
+    fun `an earlier call of the conversation that answered ends shows nothing for a new call that somebody answered`() = runTest {
+        store.setShown("me", ch, ShownCall(callA, CallPhase.MISSED, clock - tenMinutes))
+        assertEquals(CallOutcome.CANCELLED, endOfNewCall(CallEndReason.LAST_LEFT))
+        assertTrue(sink.posts.isEmpty())
+    }
+
+    @Test
+    fun `the end of another call is ignored while an earlier call of the conversation still rings here`() = runTest {
+        // One call per conversation: while call A rings here, the end of call B (never rung here)
+        // is not taken; A's own end, or its ring's 100 s, decide about A.
+        ring(callA)
+        clock += 30_000
+        assertEquals(null, endOfNewCall())
+        assertEquals(1, sink.posts.size)
+        assertEquals(CallKind.INCOMING, sink.posts.single().kind)
+    }
+
+    @Test
+    fun `a busy ring this user declined on another device shows no missed call in a later process`() = runTest {
+        val ch2 = "2c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f"
+        coEvery { names.lookupCaller(any(), any()) } returns CallerLookup.Found("Bob")
+        val socket = kotlinx.coroutines.flow.MutableSharedFlow<io.wolftown.kaiku.data.ws.ServerEvent>()
+        val first = freshProcessor(socket)
+        // A call rings here; a second call of another conversation comes while it does (busy).
+        intake.accept(ringing(callA))
+        first.process(ringing(callA), owner)
+        val ringB = WakeSignal(WakeKind.CALL, ch2, 1, CallInfo(callB, bob, CallState.RINGING))
+        intake.accept(ringB)
+        first.process(ringB, owner)
+        assertEquals(listOf(CallKind.INCOMING), sink.posts.map { it.kind })
+        // This user declines the second call on the PC; the connection says so.
+        socket.emit(io.wolftown.kaiku.data.ws.ServerEvent.Ready("me"))
+        socket.emit(io.wolftown.kaiku.data.ws.ServerEvent.CallDeclined(ch2, callB, "me"))
+
+        // The process is gone; nobody else answers, and the end push comes to a new one.
+        val endB = WakeSignal(WakeKind.CALL, ch2, 1, CallInfo(callB, bob, CallState.ENDED, CallEndReason.NO_ANSWER))
+        if (intake.accept(endB)) freshProcessor().process(endB, owner)
+        assertTrue("a call this user declined shows as missed: ${sink.posts}", sink.posts.none { it.kind == CallKind.MISSED })
+    }
+
+    // -- A conversation that already had a call: the busy ring's end -------------------------------
+
+    private val ch2 = "2c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f"
+    private val callOld = "3d4e5f6a-7b8c-4d9e-8f0a-1b2c3d4e5f6a"
+
+    /**
+     * Process 1: conversation [ch2] holds an earlier call stored as [earlier] with its notification up;
+     * a call rings here (ch), and call B rings in ch2 over the connection only, so it is a busy ring.
+     * [then] is what the connection says about B next. Returns the connection's events.
+     */
+    private suspend fun busyRingInAChatWithAnEarlierCall(
+        earlier: CallPhase,
+        then: List<io.wolftown.kaiku.data.ws.ServerEvent>,
+    ) {
+        coEvery { names.lookupCaller(any(), any()) } returns CallerLookup.Found("Bob")
+        store.setShown("me", ch2, ShownCall(callOld, earlier, clock - 10 * 60 * 1000L))
+        val oldNotice = CallNotification("me", ch2, callOld, CallKind.MISSED, "Bob")
+        sink.shown[ch2] = oldNotice
+        val socket = kotlinx.coroutines.flow.MutableSharedFlow<io.wolftown.kaiku.data.ws.ServerEvent>()
+        val first = freshProcessor(socket)
+        intake.accept(ringing(callA))
+        first.process(ringing(callA), owner)
+        socket.emit(io.wolftown.kaiku.data.ws.ServerEvent.Ready("me"))
+        socket.emit(io.wolftown.kaiku.data.ws.ServerEvent.IncomingCall(ch2, callB, bob, "bob"))
+        then.forEach { socket.emit(it) }
+    }
+
+    /** Process 2 (the first one is gone): B's end push arrives. */
+    private suspend fun endPushOfBInANewProcess() {
+        val endB = WakeSignal(WakeKind.CALL, ch2, 1, CallInfo(callB, bob, CallState.ENDED, CallEndReason.NO_ANSWER))
+        if (intake.accept(endB)) freshProcessor().process(endB, owner)
+    }
+
+    @Test
+    fun `a busy ring declined or answered elsewhere in a chat that had a call shows no missed call in a later process`() = runTest {
+        for (earlier in listOf(CallPhase.MISSED, CallPhase.ENDED)) {
+            for (handled in listOf(
+                io.wolftown.kaiku.data.ws.ServerEvent.CallDeclined(ch2, callB, "me"),
+                io.wolftown.kaiku.data.ws.ServerEvent.CallParticipantJoined(ch2, callB, "me", "me"),
+            )) {
+                sink.posts.clear()
+                store.clearUser("me")
+                busyRingInAChatWithAnEarlierCall(earlier, listOf(handled))
+                endPushOfBInANewProcess()
+                assertTrue(
+                    "$earlier, $handled: a call this user handled shows as missed: ${sink.posts}",
+                    sink.posts.none { it.kind == CallKind.MISSED && it.callId == callB },
+                )
+                // The earlier call's notice is untouched.
+                assertEquals("$earlier, $handled", callOld, sink.shown[ch2]?.callId)
+            }
+        }
+    }
+
+    @Test
+    fun `a busy ring nobody answered in a chat that had a call is one missed call`() = runTest {
+        for (earlier in listOf(CallPhase.MISSED, CallPhase.ENDED)) {
+            sink.posts.clear()
+            store.clearUser("me")
+            busyRingInAChatWithAnEarlierCall(
+                earlier,
+                listOf(io.wolftown.kaiku.data.ws.ServerEvent.CallEnded(ch2, callB, "no_answer")),
+            )
+            endPushOfBInANewProcess()
+            assertEquals("$earlier: ${sink.posts}", 1, sink.posts.count { it.kind == CallKind.MISSED && it.callId == callB })
+        }
     }
 }

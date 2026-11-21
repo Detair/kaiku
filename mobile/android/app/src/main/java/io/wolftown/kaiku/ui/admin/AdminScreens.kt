@@ -11,6 +11,9 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -32,6 +35,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -72,7 +76,6 @@ fun AdminUsersScreen(onBack: () -> Unit, onOpenUser: (String) -> Unit, viewModel
     val activity = currentFragmentActivity()
     var newUsername by remember { mutableStateOf("") }
     var newDisplayName by remember { mutableStateOf("") }
-    var creating by remember { mutableStateOf(false) }
 
     LaunchedEffect(ui.created) { ui.created?.let { viewModel.clearCreated(); onOpenUser(it.id) } }
 
@@ -100,8 +103,8 @@ fun AdminUsersScreen(onBack: () -> Unit, onOpenUser: (String) -> Unit, viewModel
             }
             HorizontalDivider()
         }
-        if (!creating) {
-            KeySecondaryButton(stringResource(R.string.admin_new_account), onClick = { creating = true })
+        if (!ui.newAccount) {
+            KeySecondaryButton(stringResource(R.string.admin_new_account), onClick = viewModel::startNewAccount)
         } else {
             KeyTitle(stringResource(R.string.admin_new_account))
             KeyBody(stringResource(R.string.admin_new_account_explain), secondary = true)
@@ -109,9 +112,43 @@ fun AdminUsersScreen(onBack: () -> Unit, onOpenUser: (String) -> Unit, viewModel
                 singleLine = true, modifier = Modifier.fillMaxWidth())
             OutlinedTextField(newDisplayName, { newDisplayName = it }, label = { Text(stringResource(R.string.admin_display_name)) },
                 singleLine = true, modifier = Modifier.fillMaxWidth())
-            KeyPrimaryButton(stringResource(R.string.admin_create), enabled = newUsername.isNotBlank(), working = ui.working,
+            NewAccountServers(ui, onToggle = viewModel::toggleServer, onRetry = viewModel::loadServers)
+            KeyPrimaryButton(stringResource(R.string.admin_create), enabled = newUsername.isNotBlank() && !ui.serversLoading, working = ui.working,
                 onClick = { viewModel.createUser(newUsername, newDisplayName, null) })
         }
+    }
+}
+
+/** The servers of a new account: one tickable row per server of the admin (whole row toggles). */
+@Composable
+private fun NewAccountServers(ui: AdminUsersUi, onToggle: (String) -> Unit, onRetry: () -> Unit) {
+    Text(stringResource(R.string.admin_new_account_servers), style = MaterialTheme.typography.titleMedium,
+        color = MaterialTheme.colorScheme.onBackground, modifier = Modifier.padding(top = 16.dp))
+    KeyBody(stringResource(R.string.admin_new_account_servers_explain), secondary = true)
+    when {
+        ui.serversLoading -> CircularProgressIndicator(Modifier.padding(8.dp))
+        ui.serversFailed -> Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(stringResource(R.string.admin_new_account_servers_failed), fontSize = 16.sp,
+                color = MaterialTheme.colorScheme.onBackground, modifier = Modifier.weight(1f))
+            TextButton(onClick = onRetry) { Text(stringResource(R.string.common_retry)) }
+        }
+    }
+    ui.servers.forEach { g ->
+        Row(
+            Modifier.fillMaxWidth().heightIn(min = KeyScreenSizes.otherAction)
+                .toggleable(value = g.id in ui.selectedServers, role = Role.Checkbox, onValueChange = { onToggle(g.id) })
+                .padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            // The row carries the semantics; the box itself is not a second target.
+            Checkbox(checked = g.id in ui.selectedServers, onCheckedChange = null)
+            Text(g.name, fontSize = 18.sp, color = MaterialTheme.colorScheme.onBackground,
+                modifier = Modifier.padding(start = 12.dp).weight(1f))
+        }
+    }
+    ui.serversNotice?.let { KeyNotice(stringResource(it), warning = true) }
+    if (!ui.serversLoading && ui.selectedServers.isEmpty()) {
+        KeyNotice(stringResource(R.string.admin_new_account_no_servers), warning = true)
     }
 }
 

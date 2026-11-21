@@ -4,7 +4,11 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.wolftown.kaiku.R
+import io.wolftown.kaiku.data.local.AuthState
+import io.wolftown.kaiku.data.repository.DmRepository
 import io.wolftown.kaiku.data.repository.GuildRepository
+import io.wolftown.kaiku.domain.ChatsSummary
+import io.wolftown.kaiku.domain.chatsSummary
 import io.wolftown.kaiku.data.ws.RealtimeConnectionManager
 import io.wolftown.kaiku.data.ws.RealtimeStatus
 import io.wolftown.kaiku.domain.ChannelSection
@@ -24,7 +28,9 @@ import javax.inject.Inject
 class HomeViewModel @Inject constructor(
     private val guildRepository: GuildRepository,
     realtimeConnectionManager: RealtimeConnectionManager,
-    private val pushRegistrar: PushRegistrar
+    private val pushRegistrar: PushRegistrar,
+    private val dmRepository: DmRepository,
+    authState: AuthState,
 ) : ViewModel() {
 
     companion object {
@@ -32,6 +38,18 @@ class HomeViewModel @Inject constructor(
     }
 
     val guilds: StateFlow<List<Guild>> = guildRepository.guilds
+
+    /**
+     * The start page's "Chats" entry. The list itself is loaded on every
+     * (re)connect by the resync, on Refresh, and kept live by the DM repository.
+     */
+    val chats: StateFlow<ChatsSummary> = dmRepository.conversations
+        .map(::chatsSummary)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, ChatsSummary())
+
+    val currentUserId: StateFlow<String> = authState.currentUserId
+        .map { it.orEmpty() }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, "")
 
     /** Realtime connection state, for the reconnect banner. */
     val connectionStatus: StateFlow<RealtimeStatus> = realtimeConnectionManager.status
@@ -133,6 +151,16 @@ class HomeViewModel @Inject constructor(
 
     fun refresh() {
         loadGuilds()
+        // The chats too: their load on connect may have failed and is otherwise retried only on the next connect.
+        viewModelScope.launch {
+            try {
+                dmRepository.loadDms()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                logger.warning("Failed to reload chats (${e::class.simpleName})")
+            }
+        }
     }
 
     private fun loadGuilds() {
