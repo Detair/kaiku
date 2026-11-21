@@ -66,6 +66,12 @@ const MAX_PENDING_CANDIDATES = 100;
 
 /** How long a publisher offer waits for its answer (the native client's deadline too). */
 const OFFER_ANSWER_TIMEOUT_MS = 10_000;
+/**
+ * How long the one retry after a failed offer waits. Long enough that a
+ * server which answers late still gets the retry through: its late answer
+ * to the withdrawn offer is recognised and the retry keeps waiting.
+ */
+const OFFER_RETRY_TIMEOUT_MS = 20_000;
 
 /**
  * Adapter state for a publisher `connectionState` (A8). A short ICE outage
@@ -120,6 +126,17 @@ interface BrowserSession {
   joinSent: boolean;
   /** Ended: a join step that resumes now releases what it got and stops. */
   ended: boolean;
+  /** Deadline of this session's outstanding publisher offer. */
+  offerDeadline: ReturnType<typeof setTimeout> | null;
+  /** Publisher offers that failed in a row (refused, no answer, not sent). */
+  failedOffers: number;
+  /**
+   * An offer was withdrawn at its deadline: its answer may still come and
+   * meet the retry. One refused answer is taken as that one and ignored.
+   */
+  lateAnswerOwed: boolean;
+  /** The retry failed too: the connection was reported lost, nothing more is offered. */
+  givenUp: boolean;
 }
 
 export class BrowserVoiceAdapter implements VoiceAdapter {
@@ -195,11 +212,6 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
   private unsentVideos: SentVideo[] = [];
   /** Published videos the outstanding offer carries (ended if its answer is refused). */
   private videosInOffer: SentVideo[] = [];
-  /**
-   * Deadline of the outstanding offer: an offer whose answer has not come
-   * after `OFFER_ANSWER_TIMEOUT_MS` ends like one whose answer was refused.
-   */
-  private offerDeadline: ReturnType<typeof setTimeout> | null = null;
 
   constructor() {
     console.log("[BrowserVoiceAdapter] Initialized");
@@ -225,6 +237,10 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
       subscriber: null,
       joinSent: false,
       ended: false,
+      offerDeadline: null,
+      failedOffers: 0,
+      lateAnswerOwed: false,
+      givenUp: false,
     };
     this.session = session;
     const cancelled = (): VoiceResult<VoiceSessionHandle> => {
@@ -439,6 +455,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
   private endSession(session: BrowserSession): void {
     if (session.ended) return;
     session.ended = true;
+    this.clearOfferDeadline(session);
     if (this.session === session) {
       // The adapter-wide fields (stream, connections, VAD, shares, webcam)
       // are this session's: they go with it.
@@ -595,13 +612,16 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
       };
     }
 
+    const session = this.session;
+
     // No offer is outstanding (for example its deadline passed and it was
-    // withdrawn): the answer belongs to no offer and changes nothing.
+    // withdrawn, or the next offer is still being made): the answer belongs
+    // to no offer and changes nothing.
     if (state.pc.signalingState === "stable") {
+      if (session) session.lateAnswerOwed = false;
       console.warn("[BrowserVoiceAdapter] Publisher answer without an outstanding offer ignored");
       return { ok: true, value: undefined };
     }
-    this.clearOfferDeadline();
 
     // Reset buffering flags for this negotiation — any candidates queued from
     // a prior session or stale renegotiation must not be reused.
@@ -633,6 +653,13 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
         );
       }
 
+      // The offer is answered: its deadline and the row of failures end.
+      if (session) {
+        this.clearOfferDeadline(session);
+        session.failedOffers = 0;
+        session.lateAnswerOwed = false;
+      }
+
       // Release negotiation lock
       this.isNegotiating = false;
       this.videosInOffer = [];
@@ -645,7 +672,15 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
 
       return { ok: true, value: undefined };
     } catch (err) {
-      await this.withdrawRefusedOffer(state);
+      if (session?.lateAnswerOwed) {
+        // The late answer to the offer withdrawn at its deadline met the
+        // retry and was refused: the retry keeps waiting for its own.
+        session.lateAnswerOwed = false;
+        console.warn("[BrowserVoiceAdapter] Late answer to a withdrawn offer ignored");
+        return { ok: true, value: undefined };
+      }
+      if (session) await this.offerFailed(state, session, false);
+      else await this.withdrawRefusedOffer(state);
       return {
         ok: false,
         error: {
@@ -664,7 +699,6 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
    * person sees why), then send what is still queued.
    */
   private async withdrawRefusedOffer(state: PcState): Promise<void> {
-    this.clearOfferDeadline();
     if (state.pc.signalingState === "have-local-offer") {
       try {
         await state.pc.setLocalDescription({ type: "rollback" });
@@ -682,28 +716,67 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
           : !!(video.streamId && this.screenShares.get(video.streamId)?.videoSender);
       if (stillSent) this.eventHandlers.onLocalMediaEnded?.(video.kind, video.streamId, "not_sent");
     }
-    if (this.pendingNegotiation && this.publisherState === state) {
+    if (this.pendingNegotiation && this.publisherState === state && !this.session?.givenUp) {
       this.pendingNegotiation = false;
       state.pc.dispatchEvent(new Event("negotiationneeded"));
     }
   }
 
-  /** Start the deadline of the offer just made on `state`. */
-  private armOfferDeadline(state: PcState): void {
-    this.clearOfferDeadline();
-    const timer = setTimeout(() => {
-      // A deadline of an earlier offer or of an ended session does nothing.
-      if (this.offerDeadline !== timer || this.publisherState !== state) return;
-      this.offerDeadline = null;
-      console.warn("[BrowserVoiceAdapter] Publisher offer got no answer in time; withdrawn");
-      void this.withdrawRefusedOffer(state);
-    }, OFFER_ANSWER_TIMEOUT_MS);
-    this.offerDeadline = timer;
+  /**
+   * An offer of `session` failed: its answer was refused, its deadline
+   * passed, or it could not be sent. The first failure withdraws it; the
+   * browser then offers again by itself, and that offer is the one retry
+   * (with the longer deadline). A second failure in a row gives the
+   * connection up: it is withdrawn, reported lost, and nothing more is
+   * offered on this session.
+   */
+  private async offerFailed(
+    state: PcState,
+    session: BrowserSession,
+    answerMayFollow: boolean,
+  ): Promise<void> {
+    this.clearOfferDeadline(session);
+    session.failedOffers += 1;
+    if (session.failedOffers < 2) {
+      session.lateAnswerOwed = answerMayFollow;
+      await this.withdrawRefusedOffer(state);
+      return;
+    }
+    session.givenUp = true;
+    session.lateAnswerOwed = false;
+    await this.withdrawRefusedOffer(state);
+    if (!this.holds(session)) return;
+    console.warn("[BrowserVoiceAdapter] Publisher offers failed twice in a row; connection lost");
+    this.eventHandlers.onError?.(
+      {
+        type: "connection_failed",
+        reason: "Publisher offer got no usable answer",
+        retriable: true,
+      },
+      session.handle,
+    );
+    this.eventHandlers.onConnectionLost?.(session.handle);
   }
 
-  private clearOfferDeadline(): void {
-    if (this.offerDeadline !== null) clearTimeout(this.offerDeadline);
-    this.offerDeadline = null;
+  /** Start the deadline of the offer `session` just made on `state`. */
+  private armOfferDeadline(state: PcState, session: BrowserSession): void {
+    this.clearOfferDeadline(session);
+    const ms = session.failedOffers === 0 ? OFFER_ANSWER_TIMEOUT_MS : OFFER_RETRY_TIMEOUT_MS;
+    const timer = setTimeout(() => {
+      // A deadline of an earlier offer or of an ended session does nothing.
+      if (session.offerDeadline !== timer || !this.holds(session) || this.publisherState !== state) {
+        return;
+      }
+      session.offerDeadline = null;
+      console.warn("[BrowserVoiceAdapter] Publisher offer got no answer in time; withdrawn");
+      void this.offerFailed(state, session, true);
+    }, ms);
+    session.offerDeadline = timer;
+  }
+
+  private clearOfferDeadline(session: BrowserSession): void {
+    if (session.offerDeadline !== null) clearTimeout(session.offerDeadline);
+    session.offerDeadline = null;
   }
 
   /** A video left the connection: no offer reports it any more. */
@@ -1665,6 +1738,8 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     publisher.pc.onnegotiationneeded = async () => {
       const current = this.publisherState;
       if (!current || session.ended) return;
+      // Given up (reported lost): nothing more is offered on this session.
+      if (session.givenUp) return;
 
       if (this.isNegotiating) {
         this.pendingNegotiation = true;
@@ -1677,7 +1752,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
         await current.pc.setLocalDescription(offer);
         // What this offer carries (ended if its answer is refused).
         this.videosInOffer.push(...this.unsentVideos.splice(0));
-        this.armOfferDeadline(current);
+        this.armOfferDeadline(current, session);
 
         const { wsSend } = await import("@/lib/tauri");
         await wsSend({
@@ -1687,8 +1762,15 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
         });
       } catch (err) {
         console.error("[BrowserVoiceAdapter] Publisher negotiation failed:", err);
-        this.clearOfferDeadline();
-        this.isNegotiating = false;
+        // A negotiation of an ended session changes nothing of the current one.
+        if (!this.holds(session) || this.publisherState !== current) return;
+        if (current.pc.signalingState === "have-local-offer") {
+          // Set locally but not sent: withdrawn like an offer whose answer was refused.
+          await this.offerFailed(current, session, false);
+        } else {
+          this.clearOfferDeadline(session);
+          this.isNegotiating = false;
+        }
       }
     };
 
@@ -2003,7 +2085,6 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     this.remoteStreams.clear();
 
     // Reset negotiation lock
-    this.clearOfferDeadline();
     this.isNegotiating = false;
     this.pendingNegotiation = false;
     this.unsentVideos = [];

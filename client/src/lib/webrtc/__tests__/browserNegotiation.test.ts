@@ -27,7 +27,7 @@ class NegPc {
   descriptions: string[] = [];
   refuseNextAnswer = false;
   tracks: unknown[] = [];
-  private offers = 0;
+  offers = 0;
   constructor() {
     pcs.push(this);
   }
@@ -168,15 +168,52 @@ describe("BrowserVoiceAdapter: a refused answer", () => {
   });
 });
 
+
+/**
+ * What a browser does around a withdrawn offer (measured in Chromium):
+ * after a rollback it fires `negotiationneeded` by itself, and an answer
+ * made for an earlier offer is refused once a newer offer is outstanding.
+ * The fake also lets a test hold `createOffer` to look into the gap
+ * between "negotiation started" and "offer set".
+ */
+class BrowserPc extends NegPc {
+  holdOffer: Promise<void> | null = null;
+  async createOffer() {
+    if (this.holdOffer) await this.holdOffer;
+    return super.createOffer();
+  }
+  async setLocalDescription(d: { type: string }) {
+    await super.setLocalDescription(d);
+    if (d.type === "rollback") {
+      setTimeout(() => this.dispatchEvent(new Event("negotiationneeded")), 0);
+    }
+  }
+  async setRemoteDescription(desc?: { init?: { sdp?: string } }) {
+    const made = /answer-for-(\d+)/.exec(desc?.init?.sdp ?? "");
+    if (made && Number(made[1]) !== this.offers && this.signalingState === "have-local-offer") {
+      throw new Error("Failed to set remote answer sdp: The order of m-lines in answer doesn't match");
+    }
+    return super.setRemoteDescription();
+  }
+}
+
+/** Offer numbers (per connection) in the order they were sent. */
+const sentOfferNumbers = () =>
+  wsSend.mock.calls
+    .map(([m]) => m as { type: string; sdp?: string })
+    .filter((m) => m.type === "voice_publisher_offer")
+    .map((m) => Number(/offer-(\d+)/.exec(m.sdp ?? "")?.[1]));
+
 describe("BrowserVoiceAdapter: an offer without an answer", () => {
   let gdm: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     pcs.length = 0;
-    wsSend.mockClear();
+    wsSend.mockReset();
+    wsSend.mockResolvedValue(undefined);
     const gum = vi.fn().mockResolvedValue(streamOf(fakeTrack("audio")));
     gdm = vi.fn().mockResolvedValue(streamOf(fakeTrack("video")));
-    vi.stubGlobal("RTCPeerConnection", NegPc);
+    vi.stubGlobal("RTCPeerConnection", BrowserPc);
     vi.stubGlobal(
       "RTCSessionDescription",
       class {
@@ -199,138 +236,344 @@ describe("BrowserVoiceAdapter: an offer without an answer", () => {
     vi.restoreAllMocks();
   });
 
+  const rollbacks = (pc: NegPc) => pc.descriptions.filter((d) => d === "rollback").length;
+
   /** Let the async steps of a negotiation (offer, import, send) finish. */
   async function settle(): Promise<void> {
     for (let i = 0; i < 5; i += 1) await vi.advanceTimersByTimeAsync(0);
+  }
+
+  /**
+   * A server that answers offer `n` after `delay(n)` ms (never for null),
+   * counted from when the driver first sees it. Time runs in 500 ms
+   * steps; the answers are applied in the order sent.
+   */
+  function server(adapter: BrowserVoiceAdapter, delay: (n: number) => number | null) {
+    let now = 0;
+    // The join's offer was answered already; every later one is the server's.
+    let seen = 1;
+    const due: Array<{ at: number; n: number }> = [];
+    const results: Array<{ n: number; at: number; ok: boolean }> = [];
+    async function run(ms: number): Promise<void> {
+      for (let t = 0; t < ms; t += 500) {
+        await vi.advanceTimersByTimeAsync(500);
+        now += 500;
+        const sent = sentOfferNumbers();
+        while (sent.length > seen) {
+          const n = sent[seen];
+          seen += 1;
+          const d = delay(n);
+          if (d !== null) due.push({ at: now + d, n });
+        }
+        while (due.length && due[0].at <= now) {
+          const { n } = due.shift()!;
+          const r = await adapter.handlePublisherAnswer("ch-a", `answer-for-${n}`);
+          results.push({ n, at: now, ok: r.ok });
+          await settle();
+        }
+      }
+    }
+    return { run, results, now: () => now };
   }
 
   /** Joined, the join's offer answered, then a screen share's offer sent. */
   async function shareOfferSent() {
     const adapter = new BrowserVoiceAdapter();
     const ended = vi.fn();
-    adapter.setEventHandlers({ onLocalMediaEnded: ended });
+    const lost = vi.fn();
+    adapter.setEventHandlers({ onLocalMediaEnded: ended, onConnectionLost: lost });
     await adapter.join(A);
     const pc = pcs[0];
     await pc.onnegotiationneeded?.();
-    expect((await adapter.handlePublisherAnswer("ch-a", "answer-1")).ok).toBe(true);
+    expect((await adapter.handlePublisherAnswer("ch-a", "answer-for-1")).ok).toBe(true);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     await adapter.captureScreen({ streamId: "s1" });
     await adapter.publishScreenShare("s1");
     await pc.onnegotiationneeded?.();
-    expect(offersSent()).toBe(2);
+    expect(sentOfferNumbers()).toEqual([1, 2]);
     expect(pc.signalingState).toBe("have-local-offer");
-    return { adapter, ended, pc };
+    return { adapter, ended, lost, pc };
   }
 
-  it("ends like a refused one after 10 s and sends what was queued", async () => {
-    const { adapter, ended, pc } = await shareOfferSent();
-    // A change while the offer is out is queued behind it.
-    await pc.onnegotiationneeded?.();
-    expect(offersSent()).toBe(2);
+  it("(a) a server that never answers: one retry, then the connection is reported lost once", async () => {
+    const { adapter, ended, lost, pc } = await shareOfferSent();
+    const s = server(adapter, () => null);
 
-    await vi.advanceTimersByTimeAsync(9_999);
-    expect(ended).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(1);
-    await settle();
-
-    expect(pc.descriptions).toContain("rollback");
+    await s.run(9_500);
+    expect(rollbacks(pc)).toBe(0);
+    await s.run(1_000); // 10 s: withdrawn, the browser offers again
+    expect(rollbacks(pc)).toBe(1);
     expect(ended).toHaveBeenCalledWith("screen", "s1", "not_sent");
-    // The queued negotiation went out as a new offer, and it completes.
-    expect(offersSent()).toBe(3);
-    expect((await adapter.handlePublisherAnswer("ch-a", "answer-3")).ok).toBe(true);
-    expect(pc.signalingState).toBe("stable");
+    expect(sentOfferNumbers()).toEqual([1, 2, 3]);
+
+    await s.run(19_000); // 29.5 s
+    expect(lost).not.toHaveBeenCalled();
+    await s.run(1_000); // 30.5 s: the retry's 20 s are over
+    expect(lost).toHaveBeenCalledTimes(1);
+    expect(lost).toHaveBeenCalledWith(A);
+    const sentAtLost = wsSend.mock.calls.length;
+
+    await s.run(90_000);
+    expect(sentOfferNumbers()).toEqual([1, 2, 3]);
+    expect(wsSend.mock.calls.length).toBe(sentAtLost);
+    expect(lost).toHaveBeenCalledTimes(1);
+    expect(ended).toHaveBeenCalledTimes(1);
   });
 
-  it("an answer in time stops the deadline; a later offer keeps its own", async () => {
-    const { adapter, ended, pc } = await shareOfferSent();
-    expect((await adapter.handlePublisherAnswer("ch-a", "answer-2")).ok).toBe(true);
+  it("(b) a server that answers every offer 12 s late gets the retry through", async () => {
+    const { adapter, ended, lost, pc } = await shareOfferSent();
+    const s = server(adapter, () => 12_000);
+    await s.run(120_000);
 
-    // A later change, 5 s on, sends its own offer.
-    await vi.advanceTimersByTimeAsync(5_000);
-    await pc.onnegotiationneeded?.();
-    expect(offersSent()).toBe(3);
-
-    // 10 s after the first offer: its deadline is gone, the later offer stays.
-    await vi.advanceTimersByTimeAsync(7_000);
-    await settle();
-    expect(pc.descriptions).not.toContain("rollback");
-    expect(pc.signalingState).toBe("have-local-offer");
-    expect((await adapter.handlePublisherAnswer("ch-a", "answer-3")).ok).toBe(true);
+    expect(sentOfferNumbers()).toEqual([1, 2, 3]);
+    // The first answer meets the retry and is ignored; the retry's applies.
+    expect(s.results.map((r) => [r.n, r.ok])).toEqual([
+      [2, true],
+      [3, true],
+    ]);
     expect(pc.signalingState).toBe("stable");
+    expect(rollbacks(pc)).toBe(1);
+    expect(ended).toHaveBeenCalledTimes(1);
+    expect(lost).not.toHaveBeenCalled();
+  });
 
-    await vi.advanceTimersByTimeAsync(30_000);
-    await settle();
-    expect(pc.descriptions).not.toContain("rollback");
+  it("(c) a dropped offer: the retry is answered at once and a later share goes out", async () => {
+    const { adapter, ended, lost, pc } = await shareOfferSent();
+    const s = server(adapter, (n) => (n === 2 ? null : 0));
+    await s.run(12_000);
+    expect(sentOfferNumbers()).toEqual([1, 2, 3]);
+    expect(pc.signalingState).toBe("stable");
+    expect(ended).toHaveBeenCalledTimes(1);
+    expect(ended).toHaveBeenCalledWith("screen", "s1", "not_sent");
+
+    await adapter.captureScreen({ streamId: "s2" });
+    await adapter.publishScreenShare("s2");
+    await pc.onnegotiationneeded?.();
+    await s.run(120_000);
+    expect(sentOfferNumbers()).toEqual([1, 2, 3, 4]);
+    expect(pc.signalingState).toBe("stable");
+    expect(ended).toHaveBeenCalledTimes(1);
+    expect(lost).not.toHaveBeenCalled();
+  });
+
+  it("(d) an answer in time: one offer, and its deadline is gone", async () => {
+    const { adapter, ended, lost, pc } = await shareOfferSent();
+    const s = server(adapter, (n) => (n === 2 ? 1_000 : null));
+    await s.run(120_000);
+    expect(sentOfferNumbers()).toEqual([1, 2]);
+    expect(rollbacks(pc)).toBe(0);
     expect(ended).not.toHaveBeenCalled();
-    expect(offersSent()).toBe(3);
+    expect(lost).not.toHaveBeenCalled();
   });
 
-  it("an answer after the deadline is ignored and leaves the lock free", async () => {
-    const { adapter, ended, pc } = await shareOfferSent();
-    await vi.advanceTimersByTimeAsync(10_000);
-    await settle();
-    expect(ended).toHaveBeenCalledTimes(1);
-    expect(offersSent()).toBe(2);
-
-    // The late answer finds no offer outstanding: nothing changes.
-    await adapter.handlePublisherAnswer("ch-a", "answer-2");
-    await settle();
-    expect(ended).toHaveBeenCalledTimes(1);
-    expect(offersSent()).toBe(2);
+  it("(d2) after an answer in time, a later unanswered offer waits its full 10 s", async () => {
+    const { adapter, lost, pc } = await shareOfferSent();
+    const s = server(adapter, (n) => (n === 2 ? 1_000 : null));
+    await s.run(30_000);
     expect(pc.signalingState).toBe("stable");
 
-    // The lock is free: the next change sends an offer at once.
+    await adapter.captureScreen({ streamId: "s2" });
+    await adapter.publishScreenShare("s2");
     await pc.onnegotiationneeded?.();
-    expect(offersSent()).toBe(3);
+    await s.run(9_500);
+    expect(rollbacks(pc)).toBe(0);
+    await s.run(1_000);
+    expect(rollbacks(pc)).toBe(1);
+    // Its retry has 20 s again: nothing is lost before that.
+    await s.run(19_000);
+    expect(lost).not.toHaveBeenCalled();
+    await s.run(1_000);
+    expect(lost).toHaveBeenCalledTimes(1);
   });
 
-  it("an answer after the deadline that the next offer refuses ends that offer once", async () => {
-    const { adapter, ended, pc } = await shareOfferSent();
-    await pc.onnegotiationneeded?.(); // queued
-    await vi.advanceTimersByTimeAsync(10_000);
-    await settle();
-    expect(offersSent()).toBe(3);
+  it("(e) a second refused answer while the retry waits: lost, no further offer", async () => {
+    const { adapter, lost, pc } = await shareOfferSent();
+    const s = server(adapter, () => null);
+    await s.run(10_500);
+    expect(sentOfferNumbers()).toEqual([1, 2, 3]);
 
-    // The late answer meets the newer offer, and the browser refuses it.
-    pc.refuseNextAnswer = true;
-    await adapter.handlePublisherAnswer("ch-a", "answer-2");
+    // The first refused answer counts as the late answer of offer 2.
+    await adapter.handlePublisherAnswer("ch-a", "answer-for-2");
     await settle();
+    expect(pc.signalingState).toBe("have-local-offer");
+    expect(lost).not.toHaveBeenCalled();
+    // The lock stays held: a change now waits.
+    await pc.onnegotiationneeded?.();
+    await settle();
+    expect(sentOfferNumbers()).toEqual([1, 2, 3]);
+
+    // A second refused answer ends it.
+    await adapter.handlePublisherAnswer("ch-a", "answer-for-99");
+    await settle();
+    expect(lost).toHaveBeenCalledTimes(1);
+    await s.run(120_000);
+    expect(sentOfferNumbers()).toEqual([1, 2, 3]);
+    expect(lost).toHaveBeenCalledTimes(1);
+  });
+
+  it("(f) a send that fails withdraws the offer and ends its share", async () => {
+    const adapter = new BrowserVoiceAdapter();
+    const ended = vi.fn();
+    const lost = vi.fn();
+    adapter.setEventHandlers({ onLocalMediaEnded: ended, onConnectionLost: lost });
+    await adapter.join(A);
+    const pc = pcs[0];
+    await pc.onnegotiationneeded?.();
+    await adapter.handlePublisherAnswer("ch-a", "answer-for-1");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    await adapter.captureScreen({ streamId: "s1" });
+    await adapter.publishScreenShare("s1");
+    wsSend.mockRejectedValueOnce(new Error("WebSocket not connected"));
+    await pc.onnegotiationneeded?.();
+    await settle();
+
+    expect(rollbacks(pc)).toBe(1);
+    expect(ended).toHaveBeenCalledWith("screen", "s1", "not_sent");
+    // The lock was freed: the browser's own next negotiation went out.
+    expect(sentOfferNumbers()).toEqual([1, 2, 3]);
+    // Offer 2 never reached the server; the retry is answered.
+    const s = server(adapter, (n) => (n === 2 ? null : 0));
+    await s.run(120_000);
     expect(pc.signalingState).toBe("stable");
-    expect(offersSent()).toBe(3);
-
-    // Its own deadline is gone with it: nothing more happens.
-    await vi.advanceTimersByTimeAsync(30_000);
-    await settle();
-    expect(offersSent()).toBe(3);
-    expect(ended).toHaveBeenCalledTimes(1);
-    await pc.onnegotiationneeded?.();
-    expect(offersSent()).toBe(4);
+    expect(lost).not.toHaveBeenCalled();
   });
 
-  it("a leave before the deadline leaves nothing to fire", async () => {
-    const { adapter, ended, pc } = await shareOfferSent();
+  it("(g) an applied answer ends the row: the next unanswered offer waits 10 s again", async () => {
+    const { adapter, lost, pc } = await shareOfferSent();
+    const s = server(adapter, (n) => (n === 3 ? 0 : null));
+    await s.run(12_000); // 2 withdrawn at 10 s, its retry 3 answered
+    expect(pc.signalingState).toBe("stable");
+    expect(rollbacks(pc)).toBe(1);
+
+    await adapter.captureScreen({ streamId: "s2" });
+    await adapter.publishScreenShare("s2");
+    await pc.onnegotiationneeded?.();
+    await s.run(9_500);
+    expect(rollbacks(pc)).toBe(1);
+    await s.run(1_000);
+    expect(rollbacks(pc)).toBe(2);
+    expect(lost).not.toHaveBeenCalled();
+    await s.run(120_000);
+    expect(lost).toHaveBeenCalledTimes(1);
+  });
+
+  it("(h1) a leave while the first offer waits: nothing fires", async () => {
+    const { adapter, ended, lost, pc } = await shareOfferSent();
+    const s = server(adapter, () => null);
+    await s.run(5_000);
+    await adapter.leave(A);
+    const sentAtLeave = wsSend.mock.calls.length;
+    const descriptionsAtLeave = pc.descriptions.length;
+    await s.run(120_000);
+    expect(pc.descriptions.length).toBe(descriptionsAtLeave);
+    expect(wsSend.mock.calls.length).toBe(sentAtLeave);
+    expect(ended).not.toHaveBeenCalled();
+    expect(lost).not.toHaveBeenCalled();
+  });
+
+  it("(h2) a leave while the retry waits: nothing fires", async () => {
+    const { adapter, lost, pc } = await shareOfferSent();
+    const s = server(adapter, () => null);
+    await s.run(15_000);
+    expect(sentOfferNumbers()).toEqual([1, 2, 3]);
+    await adapter.leave(A);
+    const sentAtLeave = wsSend.mock.calls.length;
+    const descriptionsAtLeave = pc.descriptions.length;
+    await s.run(120_000);
+    expect(pc.descriptions.length).toBe(descriptionsAtLeave);
+    expect(wsSend.mock.calls.length).toBe(sentAtLeave);
+    expect(lost).not.toHaveBeenCalled();
+  });
+
+  it("(h3) the old session's deadline does not touch the new session's offer", async () => {
+    const { adapter, ended, lost, pc } = await shareOfferSent();
     await vi.advanceTimersByTimeAsync(5_000);
     await adapter.leave(A);
     const descriptionsAtLeave = pc.descriptions.length;
 
-    // A new session, its join offer still waiting for an answer.
     const B = { token: 2, channelId: "ch-a" };
     await adapter.join(B);
     const pc2 = pcs[2]; // [publisher, subscriber] per join
     await pc2.onnegotiationneeded?.();
-    const offersOfB = offersSent();
+    expect(pc2.signalingState).toBe("have-local-offer");
 
-    // The old offer's deadline (10 s) passes: nothing of the new session moves.
+    // The old offer's 10 s pass: the new session's offer stays, its lock too.
     await vi.advanceTimersByTimeAsync(6_000);
     await settle();
     expect(pc.descriptions.length).toBe(descriptionsAtLeave);
-    expect(pc2.descriptions).not.toContain("rollback");
-    expect(ended).not.toHaveBeenCalledWith("screen", "s1", "not_sent");
-    // The new session's lock is still held: a change waits for its answer.
+    expect(rollbacks(pc2)).toBe(0);
+    const offersOfB = sentOfferNumbers().length;
     await pc2.onnegotiationneeded?.();
-    expect(offersSent()).toBe(offersOfB);
-    expect((await adapter.handlePublisherAnswer("ch-a", "answer-b")).ok).toBe(true);
     await settle();
-    expect(offersSent()).toBe(offersOfB + 1);
+    expect(sentOfferNumbers().length).toBe(offersOfB);
+    // Its own deadline still runs: 10 s after its offer it is withdrawn.
+    await vi.advanceTimersByTimeAsync(4_000);
+    await settle();
+    expect(rollbacks(pc2)).toBe(1);
+    expect(ended).not.toHaveBeenCalledWith("screen", "s1", "not_sent");
+    expect(lost).not.toHaveBeenCalled();
+  });
+
+  it("(h4) a failed send of the old session leaves the new session's lock and deadline", async () => {
+    const adapter = new BrowserVoiceAdapter();
+    const lost = vi.fn();
+    adapter.setEventHandlers({ onConnectionLost: lost });
+    await adapter.join(A);
+    const pc = pcs[0];
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    // The old session's join offer is still being sent when it is left.
+    let failSend!: (e: Error) => void;
+    wsSend.mockImplementationOnce(() => new Promise((_, reject) => (failSend = reject)));
+    const oldNegotiation = pc.onnegotiationneeded?.();
+    await settle();
+    await adapter.leave(A);
+
+    const B = { token: 2, channelId: "ch-a" };
+    await adapter.join(B);
+    const pc2 = pcs[2];
+    await pc2.onnegotiationneeded?.();
+    expect(pc2.signalingState).toBe("have-local-offer");
+
+    failSend(new Error("WebSocket not connected"));
+    await oldNegotiation;
+    await settle();
+
+    // The new session's lock is still held: a change waits for its answer.
+    const offersOfB = sentOfferNumbers().length;
+    await pc2.onnegotiationneeded?.();
+    await settle();
+    expect(sentOfferNumbers().length).toBe(offersOfB);
+    // And its deadline still runs.
+    await vi.advanceTimersByTimeAsync(10_000);
+    await settle();
+    expect(rollbacks(pc2)).toBe(1);
+  });
+
+  it("an answer while a negotiation is still being made leaves the lock held", async () => {
+    const { adapter, pc } = await shareOfferSent();
+    await adapter.handlePublisherAnswer("ch-a", "answer-for-2");
+    expect(pc.signalingState).toBe("stable");
+
+    // A new negotiation starts; its offer is not made yet.
+    let makeOffer!: () => void;
+    (pc as BrowserPc).holdOffer = new Promise((r) => (makeOffer = r));
+    await adapter.captureScreen({ streamId: "s2" });
+    await adapter.publishScreenShare("s2");
+    const negotiation = pc.onnegotiationneeded?.();
+    await settle();
+    // A stray answer arrives in that gap: ignored.
+    await adapter.handlePublisherAnswer("ch-a", "answer-for-2");
+    await settle();
+    // A further change waits for the offer under way.
+    void pc.onnegotiationneeded?.();
+    (pc as BrowserPc).holdOffer = null;
+    makeOffer();
+    await negotiation;
+    await settle();
+    expect(sentOfferNumbers()).toEqual([1, 2, 3]);
+    // Exactly one offer was made locally for the two changes.
+    expect(pc.descriptions).toEqual(["offer", "offer", "offer"]);
+    expect(pc.signalingState).toBe("have-local-offer");
+    expect(rollbacks(pc)).toBe(0);
   });
 });
