@@ -24,9 +24,11 @@ import {
 import {
   CHANNEL_OVERRIDE_PERMISSIONS,
   CATEGORY_NAMES,
+  PERMISSIONS,
   PermissionCategory,
   hasPermission,
   addPermission,
+  removePermission,
   mergeShownBits,
 } from "@/lib/permissionConstants";
 import type { ChannelOverride } from "@/lib/types";
@@ -130,7 +132,14 @@ const ChannelPermissions: Component<ChannelPermissionsProps> = (props) => {
         if (state === "deny") editedDeny = addPermission(editedDeny, perm.bit);
       }
       const stored = getOverride(roleId);
-      const allow = mergeShownBits(stored?.allow_permissions ?? 0, shown, editedAllow);
+      let allow = mergeShownBits(stored?.allow_permissions ?? 0, shown, editedAllow);
+      // @everyone is never given these: the server leaves them out for it
+      // and refuses a save that holds one, shown in the editor or not.
+      if (roles().find((r) => r.id === roleId)?.is_default) {
+        for (const perm of PERMISSIONS) {
+          if (perm.forbiddenForEveryone) allow = removePermission(allow, perm.bit);
+        }
+      }
       const deny = mergeShownBits(stored?.deny_permissions ?? 0, shown, editedDeny);
       await setChannelOverride(props.channelId, roleId, { allow, deny });
       setEditingRoleId(null);

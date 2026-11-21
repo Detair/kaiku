@@ -13,6 +13,7 @@ const p = vi.hoisted(() => ({
   roles: [] as { id: string; name: string; is_default: boolean; permissions: number; color: null }[],
 }));
 const EVERYONE = { id: "everyone", name: "@everyone", is_default: true, permissions: 0, color: null };
+const MODS = { id: "mods", name: "Mods", is_default: false, permissions: 0, color: null };
 
 vi.mock("@/stores/permissions", () => ({
   loadChannelOverrides: vi.fn(),
@@ -56,10 +57,12 @@ function openEditorAndDenySending() {
 describe("ChannelPermissions save", () => {
   it("keeps a stored allow and deny of permissions it does not list", async () => {
     // Forum and event rights are not offered per channel; a deny and an
-    // allow stored for them survive an unrelated change.
+    // allow stored for them survive an unrelated change (of a role other
+    // than @everyone; see below for @everyone).
+    p.roles = [MODS];
     p.overrides = [
       {
-        role_id: "everyone",
+        role_id: "mods",
         allow_permissions: PermissionBits.MANAGE_EVENTS,
         deny_permissions: PermissionBits.MANAGE_POSTS,
       },
@@ -103,9 +106,10 @@ describe("ChannelPermissions save", () => {
   it("keeps every stored bit the editor does not list, also above bit 31", async () => {
     const unlistedAllow = PermissionBits.MANAGE_EVENTS + HIGH * 2;
     const unlistedDeny = PermissionBits.MANAGE_POSTS + PermissionBits.SEND_ANNOUNCEMENTS + HIGH;
+    p.roles = [MODS];
     p.overrides = [
       {
-        role_id: "everyone",
+        role_id: "mods",
         allow_permissions: unlistedAllow + PermissionBits.SEND_MESSAGES,
         deny_permissions: unlistedDeny,
       },
@@ -149,6 +153,39 @@ describe("ChannelPermissions for @everyone", () => {
     const [, , body] = p.setChannelOverride.mock.calls[0];
     expect(body.deny).toBe(PermissionBits.MANAGE_MESSAGES);
     expect(body.allow).toBe(0);
+  });
+
+  it("a save never sends an allow @everyone may not get, listed or not", async () => {
+    // Stored earlier: allow Manage Messages (listed, refused for @everyone),
+    // allow Manage Events (not listed, refused for @everyone), allow Attach
+    // Files (fine) and a bit the table does not know.
+    p.overrides = [
+      {
+        role_id: "everyone",
+        allow_permissions:
+          PermissionBits.MANAGE_MESSAGES +
+          PermissionBits.MANAGE_EVENTS +
+          PermissionBits.ATTACH_FILES +
+          HIGH,
+        deny_permissions: 0,
+      },
+    ];
+    openEditorAndDenySending();
+    await waitFor(() => expect(p.setChannelOverride).toHaveBeenCalled());
+    const [, , body] = p.setChannelOverride.mock.calls[0];
+    expect(body.allow).toBe(PermissionBits.ATTACH_FILES + HIGH);
+    expect(body.deny).toBe(PermissionBits.SEND_MESSAGES);
+  });
+
+  it("another role's override sends the same stored allows back", async () => {
+    const stored = PermissionBits.MANAGE_MESSAGES + PermissionBits.MANAGE_EVENTS + HIGH;
+    p.roles = [MODS];
+    p.overrides = [{ role_id: "mods", allow_permissions: stored, deny_permissions: 0 }];
+    openEditorAndDenySending();
+    await waitFor(() => expect(p.setChannelOverride).toHaveBeenCalled());
+    const [, , body] = p.setChannelOverride.mock.calls[0];
+    expect(body.allow).toBe(stored);
+    expect(body.deny).toBe(PermissionBits.SEND_MESSAGES);
   });
 
   it("a normal role keeps allow for the same permission", () => {
