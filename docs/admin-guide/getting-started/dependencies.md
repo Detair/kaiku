@@ -46,7 +46,7 @@ pkg-config --modversion glib-2.0
 Once dependencies are installed:
 
 ```bash
-cd /home/detair/GIT/canis
+cd kaiku
 cargo clean
 cargo build --release
 ```
@@ -124,7 +124,7 @@ pkg-config --variable pc_path pkg-config
 ### Alternative: Build Server Only
 If you only need the server component (not the Tauri desktop client):
 ```bash
-cd /home/detair/GIT/canis/server
+cd kaiku/server
 cargo build --release
 ```
 
@@ -154,7 +154,7 @@ sudo apt-get install -y libwebkit2gtk-4.0-dev build-essential curl wget file lib
 pkg-config --modversion glib-2.0
 
 # 3. Build
-cd /home/detair/GIT/canis
+cd kaiku
 cargo clean
 cargo build --release
 

@@ -96,7 +96,7 @@ Explore (Tempo, Loki) for those.
 2. Verify STUN/TURN reachability: `ping <STUN_SERVER>`.
 3. Check WebRTC SFU port availability: `ss -ulnp | grep 10[0-9][0-9][0-9][0-9]`.
 4. In Tempo: `{ span.name =~ ".*voice.*join.*" && duration > 500ms }` — look for ICE negotiation delays.
-5. Check active voice sessions in Valkey: `docker exec canis-valkey valkey-cli keys "voice:*"`.
+5. Check active voice sessions in Valkey: `docker exec canis-valkey sh -c 'REDISCLI_AUTH="$VALKEY_PASSWORD" valkey-cli --scan --pattern "voice:*"'` (Valkey requires its password).
 
 **Escalation:** If > 50% of joins are slow, set server maintenance mode and page on-call immediately.
 
