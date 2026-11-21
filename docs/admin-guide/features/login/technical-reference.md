@@ -193,8 +193,22 @@ afterwards): besides `auth_methods` and the authenticator of a full session,
   and `approved_by_id` `NULL`: they end when any key device of the account is revoked.
 - `password_generation`/`totp_generation`: the generations the sign-in used (the same values as the
   `sign_in` event's `details.factors`). When such a generation ends (replaced, removed or marked
-  compromised), the session ends (`factor_ended`), except the acting session of owner-rule part 2.
-  A pre-v1 `{legacy}` session carries the account's generations at the upgrade.
+  compromised), the session ends (`factor_ended`). Owner-rule part 2 keeps its acting session only
+  when it proved a recovery code, or a TOTP generation that the action does not end; proved with the
+  TOTP being marked compromised, it ends with the others (the person then recovers as with a lost
+  factor). A pre-v1 `{legacy}` session carries the account's generations at the upgrade.
+
+**At the upgrade** the migration fills these columns for live sessions and ends the ones whose
+origin had already ended: an exact approver that is no longer `active` (`authenticator_revoked`),
+or a recorded generation older than the account's current one (`factor_ended`). It writes only the
+rows (no denylist, no `NOTIFY`); the server has restarted, and every request and refresh reads the
+row, so such a session is refused from its first request. A generation in an old `sign_in` event
+that is not a whole number is skipped (the account's current generation is used instead).
+
+**Not reached by these rules:** a `{legacy}` session (no approver) of an account with neither a
+password nor TOTP ends only with its 30-day cap, logout, a session end or a completed request; the
+sessions of a phone or passkey added through a removed phone stay until that one is removed or the
+sessions are ended.
 
 An ended session answers like any other: `error SESSION_REVOKED` and close 1008 on its socket, 401
 `INVALID_TOKEN` on refresh and on every bearer request.
@@ -849,7 +863,8 @@ who became admin cannot confirm. `counts_from = confirmed_at + ACCOUNT_REQUEST_D
 **Lock order:** accounts (one statement) → device rows → session rows → challenges and enrolments
 → login attempts. Device-side transitions (claim, answer, deny, release) lock accounts → device →
 session → challenge → attempt; the PC side (collect, TOTP step) locks the attempt's account →
-attempt; poll, cancel and the sweep touch only attempt rows. Logout and refresh do not take the
+attempt; poll, cancel and the sweep touch only attempt rows. `kaiku-admin sessions end` and the
+session end of an account deletion take the account lock before their sessions. Logout and refresh do not take the
 account lock and touch only sessions, grants and enrolments. The cascades of a revoked key device
 and of an ended factor generation run under the account lock of their cause and lock, in this
 order, session rows (ended), grants and enrolments, then challenges, attempts and requests; a

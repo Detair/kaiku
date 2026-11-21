@@ -99,6 +99,7 @@ new server. Read this section **before** you deploy.
 | A user named `kaiku` | Renamed to `kaiku_` plus hex digits of its id (the name is reserved for the system account); the audit log records `system.username_reserved`. Tell the owner. |
 | Every account | `first_activity_at` is set, so every pre-existing account counts as *existing* (not new) for admin setups. |
 | Refresh tokens | Rotate into the new format at their first refresh. A token copied before the upgrade is only recognised as reused from the second refresh after the upgrade on. |
+| Sessions confirmed by a phone, or signed in with a password or TOTP code (upgrading from a 1.0 release candidate) | Remember the phone that confirmed them and the password and TOTP they used, so that later removals and changes end them. A session whose confirming phone was already removed, or whose password or authenticator app was already changed, removed or marked unsafe before the upgrade, ends with the upgrade (`authenticator_revoked` / `factor_ended`). Every other session stays signed in. The server reads the session row on every request, so such a session is refused from the first request after the restart; nothing else needs to be done. |
 
 ### The one rule that decides day 1
 
@@ -363,15 +364,26 @@ confirmed: computers and browsers signed in by scanning a QR code with it, or wi
 identity provider and a confirmation on it. A sign-in confirmed before the server recorded which
 phone confirmed it (sign-ins from before this version) ends when **any** key phone of the account is
 removed. Sign-ins that no phone confirmed (password and authenticator code, a passkey, another
-phone) are not affected. The notice's `details.ended_sessions` counts the sessions that ended, the
-phone's own included.
+phone) are not affected. This includes a key the phone itself reports as no longer usable (for
+example after its screen lock or fingerprints changed) and setting up the same phone again. The
+notice's `details.ended_sessions` counts the sessions that ended, the phone's own included.
+
+What these rules do not reach: sessions of a phone or passkey that was added *through* the removed
+phone (remove those separately or end all sessions), and sessions from before the 1.0 sign-in
+(`auth_methods` `legacy`). Those end on a password or TOTP change of the account; on an account
+with neither a password nor TOTP they end only with their normal lifetime (at most 30 days from
+their creation), or with `kaiku-admin sessions end --all`.
 
 **Changing a password or authenticator app** works the same way: when a password or TOTP secret is
 replaced, removed or marked unsafe (by its owner, an admin, a completed request, "I didn't start
 this" or "That wasn't me"), every session that signed in with the old one ends at once
-(`end_reason` `factor_ended`). The session that makes the change stays: it is a passkey or key-phone
-session, or, for "That wasn't me" without a strong authenticator, the session that has just entered
-a fresh code. A QR sign-in used no password and stays.
+(`end_reason` `factor_ended`). The session that makes the change stays when it is a passkey or
+key-phone session. "That wasn't me" without a strong authenticator is made from a chat-only session
+with a fresh code: that session stays if the code was a recovery code, or an authenticator code
+while the authenticator app is not among what is being blocked. If the authenticator app itself is
+blocked by this step, the session that entered its code ends with the others: the person is then
+signed out everywhere and gets back in as with a lost authenticator app, through a recovery
+(section 8). A QR sign-in used no password and stays.
 
 **Order for a stolen phone:** remove it **first**, then start the recovery. A thief who knows the
 screen lock holds a full key and could cancel the recovery. Removing a request's only recorded
@@ -499,7 +511,7 @@ Examples:
 # A family member lost their only phone and the thief may know the PIN
 docker compose exec server kaiku-admin devices list oma
 docker compose exec server kaiku-admin devices remove oma 0d3c…-…  # also ends what it confirmed
-docker compose exec server kaiku-admin sessions end oma --all      # optional: every other sign-in
+docker compose exec server kaiku-admin sessions end oma --all      # recommended: also what it added
 docker compose exec server kaiku-admin enroll oma        # new phone, active at once
 
 # Someone hammered a password and it is throttled

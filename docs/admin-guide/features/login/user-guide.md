@@ -157,11 +157,18 @@ you out. A passkey cannot be tricked this way, so it gives a full sign-in.
 list:
 
 - when the phone that confirmed it is removed (by you, an admin or a recovery), every computer or
-  browser that this phone let in by scanning or by confirming your password ends at once;
+  browser that this phone let in by scanning or by confirming your password ends at once. The same
+  happens when the phone's key stops working on its own (for example after you change its screen
+  lock or fingerprints) and when you set the same phone up again;
 - when you change or remove your password or authenticator app, or it is marked unsafe, every
-  sign-in that used the old one ends at once. The sign-in you make the change from stays.
+  sign-in that used the old one ends at once. The sign-in you make the change from stays. If you
+  use "That wasn't me" without a key phone or passkey and enter a code from the very authenticator
+  app that this blocks, you are signed out everywhere, this sign-in included; you then get back in
+  as with a lost authenticator app.
 
-So if one of your phones was stolen, removing it also signs out every PC it let in. Old phones you
+So if one of your phones was stolen, removing it also signs out every PC it let in. Phones or
+passkeys that were added with the stolen phone are not removed with it: check your list of phones
+and passkeys, and end your other sessions. Old phones you
 replace properly do the same: if a computer was signed in by scanning with the old phone, sign in
 on it again afterwards.
 
