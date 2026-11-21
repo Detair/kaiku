@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Nothing in this file sets the flag (and it does not import the setup
 // module): the default must come from the suite setup in vitest.config.ts.
@@ -14,6 +14,11 @@ async function flush(): Promise<void> {
 }
 
 describe("session restore at import in unit tests", () => {
+  // Each test counts only its own requests, whatever ran before it.
+  beforeEach(() => {
+    fetchMock.mockClear();
+  });
+
   afterEach(() => {
     localStorage.clear();
   });

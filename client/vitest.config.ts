@@ -12,11 +12,14 @@ export default defineConfig({
     globals: true,
     include: ["src/**/*.test.ts", "src/**/*.test.tsx", "scripts/**/*.test.ts"],
     exclude: ["node_modules"],
-    // No session restore (a real refresh request) when a test imports the
-    // auth module; see the file for how a test opts in.
-    // The app loads its on-demand English areas in `initLocale` before the
-    // first render; tests call `t()` without it.
-    setupFiles: ["./src/test/sessionRestoreSetup.ts", "./src/i18n/testSetup.ts"],
+    setupFiles: [
+      // No session restore (a real refresh request) when a test imports the
+      // auth module; see the file for how a test opts in.
+      "./src/test/sessionRestoreSetup.ts",
+      // The app loads its on-demand English areas in `initLocale` before the
+      // first render; tests call `t()` without it.
+      "./src/i18n/testSetup.ts",
+    ],
     server: {
       deps: {
         // Ensure solid-js store uses the same browser build as user code
