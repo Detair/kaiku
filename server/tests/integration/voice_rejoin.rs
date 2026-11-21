@@ -10,7 +10,7 @@ use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
 use vc_server::db;
 use vc_server::permissions::GuildPermissions;
-use vc_server::voice::ScreenShareLimiter;
+use vc_server::voice::{ScreenShareLimiter, ShareCounter};
 
 use super::helpers::{
     add_guild_member, create_dm_channel, create_guild, create_guild_with_default_role,
@@ -34,9 +34,11 @@ async fn screen_share_counters_cleared_at_startup() {
     limiter.init().await.expect("load script");
 
     // Slots left behind by a previous process.
-    let stale: Vec<Uuid> = (0..3).map(|_| Uuid::new_v4()).collect();
-    for channel in &stale {
-        limiter.start(*channel, 6).await.expect("reserve slot");
+    let stale: Vec<ShareCounter> = (0..3)
+        .map(|_| ShareCounter::for_new_room(Uuid::new_v4()))
+        .collect();
+    for counter in &stale {
+        limiter.start(counter, 6).await.expect("reserve slot");
     }
     let other = format!("screenshare:limit-other:{}", Uuid::new_v4());
     let _: () = redis
@@ -46,18 +48,18 @@ async fn screen_share_counters_cleared_at_startup() {
 
     let cleared = limiter.clear_all().await.expect("clear counters");
     assert_eq!(cleared, stale.len());
-    for channel in &stale {
+    for counter in &stale {
         let exists: i64 = redis
-            .exists(format!("{prefix}{channel}"))
+            .exists(format!("{prefix}{counter}"))
             .await
             .expect("exists");
-        assert_eq!(exists, 0, "stale counter for {channel} survived");
+        assert_eq!(exists, 0, "stale counter {counter} survived");
     }
     let other_exists: i64 = redis.exists(&other).await.expect("exists");
     assert_eq!(other_exists, 1, "a key outside the prefix was deleted");
 
     // A cleared channel can be shared again up to the limit.
-    limiter.start(stale[0], 1).await.expect("slot free again");
+    limiter.start(&stale[0], 1).await.expect("slot free again");
 
     let _: i64 = redis.del(&other).await.expect("cleanup");
     limiter.clear_all().await.expect("cleanup");

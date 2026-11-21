@@ -89,8 +89,11 @@ async fn assert_member_can_share(app: &TestApp, guild: Uuid, member: Uuid) {
     assert_eq!(ack["stream_id"], stream_id.to_string());
     assert_eq!(ack["user_id"], member.to_string());
 
-    if let Some(limiter) = &app.state.screen_share_limiter {
-        limiter.stop(voice).await;
+    if let (Some(limiter), Some(room)) = (
+        &app.state.screen_share_limiter,
+        app.state.sfu.get_room(voice).await,
+    ) {
+        limiter.stop(&room.share_counter).await;
     }
 }
 
@@ -215,8 +218,11 @@ async fn channel_share_limit_answers_with_its_code(pool: PgPool) {
     )
     .await;
 
-    if let Some(limiter) = &app.state.screen_share_limiter {
-        limiter.stop(voice).await;
+    if let (Some(limiter), Some(room)) = (
+        &app.state.screen_share_limiter,
+        app.state.sfu.get_room(voice).await,
+    ) {
+        limiter.stop(&room.share_counter).await;
     }
 }
 
@@ -324,7 +330,10 @@ async fn announcement_without_track_expires(pool: PgPool) {
     // The slot is free: the viewer can share now.
     send(&mut viewer_ws, share_start(voice, Uuid::new_v4())).await;
     next_ws_event(&mut viewer_ws, "screen_share_started", EVENT_TIMEOUT).await;
-    if let Some(limiter) = &app.state.screen_share_limiter {
-        limiter.stop(voice).await;
+    if let (Some(limiter), Some(room)) = (
+        &app.state.screen_share_limiter,
+        app.state.sfu.get_room(voice).await,
+    ) {
+        limiter.stop(&room.share_counter).await;
     }
 }

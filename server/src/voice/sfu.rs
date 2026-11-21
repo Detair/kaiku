@@ -419,7 +419,7 @@ pub struct Room {
     /// (and its late calls) never changes a newer room's count. The counter
     /// expires by itself after a day without use; nothing clears it when the
     /// room is removed.
-    pub share_counter: String,
+    pub share_counter: super::screen_share::ShareCounter,
 }
 
 impl Room {
@@ -433,7 +433,7 @@ impl Room {
             max_participants,
             screen_shares: RwLock::new(HashMap::new()),
             webcams: RwLock::new(HashMap::new()),
-            share_counter: format!("{channel_id}:{}", Uuid::new_v4()),
+            share_counter: super::screen_share::ShareCounter::for_new_room(channel_id),
         }
     }
 
