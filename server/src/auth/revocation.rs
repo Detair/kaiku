@@ -80,6 +80,23 @@ impl EndReason {
             Self::AbsoluteCap => "absolute_cap",
         }
     }
+
+    /// Whether the ended session's push subscriptions stay.
+    ///
+    /// They stay only for the reasons listed here: a sign-out (the app
+    /// deletes its own row first, a key phone keeps it), a newer sign-in of
+    /// the same phone (it takes the rows over), the per-account session
+    /// limit and the absolute lifetime (the same phone signs in again and
+    /// re-registers only once its local record is a day old). Every other
+    /// reason, including one added later, deletes them in the transaction
+    /// that ends the session.
+    #[must_use]
+    pub const fn keeps_push_subscriptions(self) -> bool {
+        matches!(
+            self,
+            Self::Logout | Self::Superseded | Self::Limit | Self::AbsoluteCap
+        )
+    }
 }
 
 /// Internal notice on `user:{id}`, consumed by the WebSocket loop and never
@@ -126,7 +143,7 @@ pub async fn end_sessions_tx(
     .bind(reason.as_str())
     .fetch_all(&mut *conn)
     .await?;
-    after_update(conn, ctx, user_id, &ended, false).await?;
+    after_update(conn, ctx, user_id, &ended, false, reason).await?;
     Ok(ended)
 }
 
@@ -150,7 +167,7 @@ pub async fn end_all_sessions_tx(
     .bind(reason.as_str())
     .fetch_all(&mut *conn)
     .await?;
-    after_update(conn, ctx, user_id, &ended, keep.is_none()).await?;
+    after_update(conn, ctx, user_id, &ended, keep.is_none(), reason).await?;
     Ok(ended)
 }
 
@@ -162,6 +179,7 @@ async fn after_update(
     user_id: Uuid,
     ended: &[Uuid],
     all: bool,
+    reason: EndReason,
 ) -> AuthResult<()> {
     if ended.is_empty() && !all {
         return Ok(());
@@ -195,7 +213,7 @@ async fn after_update(
             .await?;
     }
     // B.7 rule 2: what the ended sessions issued or hold.
-    crate::approvals::cascade::on_sessions_ended(conn, ctx, ended).await?;
+    crate::approvals::cascade::on_sessions_ended(conn, ctx, ended, reason).await?;
     Ok(())
 }
 
@@ -286,6 +304,43 @@ async fn listen(pool: &PgPool, redis: &Client) -> Result<(), sqlx::Error> {
         }
         for sid in &p.session_ids {
             crate::admin::clear_elevated_cache(redis, *sid).await;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::EndReason;
+
+    /// The reasons that keep an ended session's push subscriptions. Every
+    /// other reason deletes them; a reason added later deletes them too
+    /// unless it is added here on purpose.
+    #[test]
+    fn push_subscriptions_are_kept_only_for_the_listed_reasons() {
+        let kept = [
+            EndReason::Logout,
+            EndReason::Superseded,
+            EndReason::Limit,
+            EndReason::AbsoluteCap,
+        ];
+        let deleted = [
+            EndReason::Revoked,
+            EndReason::OthersRevoked,
+            EndReason::PasswordChanged,
+            EndReason::Ban,
+            EndReason::AccountDeleted,
+            EndReason::RefreshReuse,
+            EndReason::AuthenticatorRevoked,
+            EndReason::Repudiated,
+            EndReason::RequestCompleted,
+            EndReason::Upgrade,
+            EndReason::Cli,
+        ];
+        for r in kept {
+            assert!(r.keeps_push_subscriptions(), "{}", r.as_str());
+        }
+        for r in deleted {
+            assert!(!r.keeps_push_subscriptions(), "{}", r.as_str());
         }
     }
 }

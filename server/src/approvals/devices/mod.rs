@@ -114,6 +114,18 @@ impl RevokeReason {
         }
     }
 
+    /// Whether the revoking path tells the removed phone last
+    /// ([`after_revoke`]: deliver the notice, then delete the install's push
+    /// subscriptions). Only for these reasons; for every other one the
+    /// subscriptions go in the revoking transaction.
+    #[must_use]
+    pub const fn sends_last_notice(self) -> bool {
+        matches!(
+            self,
+            Self::Owner | Self::Admin | Self::Cli | Self::KeyInvalidated
+        )
+    }
+
     /// `authenticator_removed.details.by` (C28).
     const fn removed_by(self) -> &'static str {
         match self {
@@ -301,6 +313,12 @@ pub async fn revoke_tx(
     .ok_or(ApprovalError::KeyDeviceRevoked)?;
     let a = AuthenticatorRef::key_device(row.id);
     crate::approvals::cascade::on_authenticator_revoked(conn, ctx, row.user_id, a).await?;
+    if !reason.sends_last_notice() {
+        // Revoked for cause: the install's push subscriptions go with it, in
+        // this transaction. Otherwise `after_revoke` deletes them once the
+        // removed phone got its last notice.
+        crate::push::delete_device_subscriptions_tx(conn, row.user_id, row.device_id).await?;
+    }
     let (event_type, details) = if reason == RevokeReason::KeyInvalidated {
         (EventType::KeyInvalidated, serde_json::json!({}))
     } else {

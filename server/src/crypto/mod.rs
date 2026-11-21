@@ -200,6 +200,7 @@ struct BackupStatusRow {
     request_body = UploadKeysRequest,
     responses(
         (status = 200, description = "Keys uploaded"),
+        (status = 403, description = "FULL_SESSION_REQUIRED"),
     ),
     security(("bearer_auth" = [])),
 )]
@@ -501,6 +502,7 @@ pub async fn claim_prekey(
     request_body = UploadBackupRequest,
     responses(
         (status = 200, description = "Backup uploaded"),
+        (status = 403, description = "FULL_SESSION_REQUIRED"),
     ),
     security(("bearer_auth" = [])),
 )]
@@ -675,15 +677,27 @@ pub async fn get_backup_status(
 /// Create E2EE key management router.
 ///
 /// Routes:
-/// - POST /upload - Upload identity keys and prekeys for a device
+/// - POST /upload - Upload identity keys and prekeys for a device (full session)
 /// - GET /backup - Download encrypted key backup
-/// - POST /backup - Upload encrypted key backup
+/// - POST /backup - Upload encrypted key backup (full session)
 /// - GET /backup/status - Check backup existence and metadata
 /// - GET /devices - Get current user's devices
 pub fn router() -> Router<AppState> {
+    use axum::handler::Handler;
+    use axum::middleware::from_fn;
+
+    use crate::auth::guards::require_full_session;
+    // C27: adding a device identity and replacing the backup need a full
+    // session; reading stays open (a new PC restores before it is full).
     Router::new()
-        .route("/upload", post(upload_keys))
-        .route("/backup", get(get_backup).post(upload_backup))
+        .route(
+            "/upload",
+            post(upload_keys.layer(from_fn(require_full_session))),
+        )
+        .route(
+            "/backup",
+            get(get_backup).post(upload_backup.layer(from_fn(require_full_session))),
+        )
         .route("/backup/status", get(get_backup_status))
         .route("/devices", get(get_own_devices))
 }

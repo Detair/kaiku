@@ -10,12 +10,12 @@
 
 - `signing.rs`, `context.rs` — the `kaiku-sig-v1` bytes and canonical contexts (C26, golden vectors in `mobile/android/app/src/test/resources/golden/kaiku_sig_v1.json`; never regenerate the signatures).
 - `transition.rs` — B.7 rule 1: `lock_accounts` (one statement, ascending id order), `lock_scope`.
-- `cascade.rs` — B.7 rule 2: `on_sessions_ended` (grants, enrolments; never challenges, see the lock order), `on_authenticator_revoked` (sessions, grants, enrolments; a key device also voids its open challenges).
+- `cascade.rs` — B.7 rule 2: `on_sessions_ended` (grants, enrolments, and the sessions' push subscriptions unless the end reason keeps them; never challenges, see the lock order), `on_authenticator_revoked` (sessions, grants, enrolments; a key device also voids its open challenges).
 - `core.rs` — challenges: `issue` (v4 id, 32-byte nonce, ≤ 10 min, never already past due), `head` (approver and subject without a lock, to learn which accounts to lock), `lock_for_answer` (`FOR UPDATE` by id + approver + install id; another account's or device's → 404; open and past due → expired, 410, the caller commits the mark; not `issued` → 409), `verify`, `set_state`, `expire_due` (minute sweep).
 - `handlers.rs` — `/api/approvals/*` (`ApprovalLogin` limit per user): `step-up` (key-device session only), `answer` (dispatch by kind), `deny`, `release`.
 - `device_login.rs` — device-key sign-in (B.4, C26 `device_login`): public `POST /auth/device-login/challenge` and `POST /auth/device-login` (`AuthFlow` per IP, never IP-blocked). `sign_in` locks account → device row → challenge, re-checks `active` and the ban, consumes the challenge, ends the device's older sessions (`superseded`), mints a full android session and records `sign_in`.
 - `enrollments/` — SM2: `issue_tx` per issuer, the public `open`/`pop-challenge`/`claim`/`status` routes (`AuthFlow`), `confirm_tx` per confirmer (a re-enrolling install's old row goes through the revocation cascade), `after_done`.
-- `devices/` — key devices (SM4): list (any session), remove (full + `key_device.remove` grant, never the last strong authenticator), `invalidated` (the device's own session), `revoke_tx` (+ cascade + notice event), `after_revoke` (deliver the notice, then delete the device's push subscriptions).
+- `devices/` — key devices (SM4): list (any session), remove (full + `key_device.remove` grant, never the last strong authenticator), `invalidated` (the device's own session), `revoke_tx` (+ cascade + notice event; for a reason outside `RevokeReason::sends_last_notice` it also deletes the install's push subscriptions in the transaction), `after_revoke` (deliver the notice, then delete the device's push subscriptions).
 
 ## Order of checks (answer)
 

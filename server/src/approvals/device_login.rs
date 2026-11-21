@@ -243,6 +243,10 @@ pub async fn sign_in(
         .bind(device.id)
         .execute(&mut *tx)
         .await?;
+    // The install's push subscription follows the new session (the older
+    // one ended as `superseded`, which keeps it; the app does not register
+    // again while its local record is fresh).
+    crate::push::adopt_install_rows(&mut tx, user_id, device.device_id, session.session_id).await?;
     let mut ev = NewSecurityEvent::new(
         user_id,
         EventType::SignIn,

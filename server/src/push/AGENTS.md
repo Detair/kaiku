@@ -11,7 +11,8 @@ channel.
 
 - `mod.rs` - `WakeSignal`, the `PushPayload` trait (FCM data, UnifiedPush
   body, priority, collapse key, TTL), `deliver` / `deliver_with`, `send_one`
-  (provider dispatch), UnifiedPush transport, subscription CRUD.
+  (provider dispatch), UnifiedPush transport, subscription CRUD and ownership
+  (who may overwrite or delete a row, what happens when its session ends).
 - `call.rs` - `CallWake` (C20 addendum "call wake") and `CallPusher`, which the
   DM call service uses to send `ringing` and `ended`.
 - `fcm.rs` - FCM HTTP v1 transport: service-account loading, RS256 OAuth2
@@ -180,13 +181,54 @@ possessing the token proves the phone changed hands. A `device_id` is
 client-asserted, so it never deletes another user's rows. A UnifiedPush endpoint
 on a guessable topic (e.g. ntfy) is a weaker possession proof than an FCM token;
 registering the same URL from another account evicts the first account's row
-(C19 mandates this).
+(C19 mandates this). Within an account, a full session may overwrite any row by
+naming its `device_id` (by design; chat-only sessions may not, see
+"Ownership").
 
 Endpoints (FCM tokens included) are capped at 2048 bytes: they sit in btree
 indexes, whose entries are limited to about 2.7 KB. Registration takes two
 advisory locks in a fixed order: the per-user lock (seed 65,
 `push_register_user`), then the (provider, endpoint) lock (seed 67,
 `push_register_endpoint`); both are in the `db/mod.rs` registry.
+
+## Ownership (C27, chat-only sessions)
+
+A subscription row belongs to the session that registered it
+(`push_subscriptions.session_id`, no foreign key; a missing or ended session
+counts as "no longer live").
+
+- `GET /` and `DELETE /{id}` need a full session (`require_full_session`
+  layer). `POST /` and `DELETE /device/{device_id}` are open to every session.
+- `create_subscription` locks the caller's session row (`FOR SHARE`, after the
+  two advisory locks) and refuses with 401 `INVALID_TOKEN` when it is no
+  longer live. Lock order with the session-end cascade: session row, then
+  push rows, on both sides.
+- A chat-only caller may overwrite (same `(user, device_id)` or same
+  `(user, endpoint)`) or delete only rows it may take (`takeable_by!`): its own,
+  without owner, or of a session that is no longer live. Upsert otherwise →
+  403 `FULL_SESSION_REQUIRED` with nothing changed; delete-by-device skips the
+  row (still 204). A full caller may overwrite or delete any row of the
+  account and becomes its owner.
+- Pruning: a chat-only session holds at most
+  `MAX_SUBSCRIPTIONS_PER_CHAT_ONLY_SESSION` (2) rows; the per-account cap never
+  prunes another live session's row when the caller is chat-only (the account
+  may then stay over the cap for a while; it is bounded by the session limit).
+- Session end (`approvals::cascade::on_sessions_ended` →
+  `delete_for_ended_sessions`, in the ending transaction): rows are kept only
+  for the reasons in `EndReason::keeps_push_subscriptions` (`logout`,
+  `superseded`, `limit`, `absolute_cap`); every other reason, also one added
+  later, deletes them. A key-device session ended with `authenticator_revoked`
+  keeps the rows of its own install: the device revocation decides
+  (`RevokeReason::sends_last_notice` → `after_revoke` deletes them after the
+  last notice; any other reason deletes them in `revoke_tx`; a re-enrolment of
+  the same install keeps them).
+- A device-key sign-in (`approvals::device_login`) takes over the install's
+  rows that belonged to a key-device session of that install, or to none
+  (`adopt_install_rows`); a row another session registered under that install
+  id stays with it. The released Android app does not register again while its
+  local record is younger than 24 h, so the row must follow the new session.
+- Deliveries ignore the owner: a row of an ended (kept) session still wakes
+  its phone.
 
 ## Single replica
 

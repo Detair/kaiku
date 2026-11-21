@@ -1,7 +1,7 @@
 //! B.7 rule 2: invalidation cascades, each in the transaction of its cause.
 //!
 //! - ending a session voids its step-up grants and the enrolments it issued (Tasks 9 and 11 fill
-//!   [`on_sessions_ended`]);
+//!   [`on_sessions_ended`]) and, unless the reason keeps them, deletes its push subscriptions;
 //! - revoking an authenticator ends its sessions and voids its open challenges, the grants it
 //!   produced and the enrolments it issued ([`on_authenticator_revoked`]; L1b adds requests).
 //!
@@ -52,17 +52,28 @@ pub async fn on_contact_changed(
     crate::auth::account_requests::core::recheck_routes(conn, ctx, None, Some(account)).await
 }
 
-/// The cascade of ended sessions (called by `end_sessions_tx`).
+/// The cascade of ended sessions (called by `end_sessions_tx`): their grants
+/// and the enrolments they issued; their push subscriptions unless `reason`
+/// keeps them ([`EndReason::keeps_push_subscriptions`]).
 pub async fn on_sessions_ended(
     conn: &mut PgConnection,
     _ctx: &AuthCtx<'_>,
     sids: &[Uuid],
+    reason: EndReason,
 ) -> AuthResult<()> {
     if sids.is_empty() {
         return Ok(());
     }
     crate::auth::step_up::void_for_sessions(conn, sids).await?;
     super::enrollments::expire_for_sessions(conn, sids).await?;
+    if !reason.keeps_push_subscriptions() {
+        crate::push::delete_for_ended_sessions(
+            conn,
+            sids,
+            reason == EndReason::AuthenticatorRevoked,
+        )
+        .await?;
+    }
     Ok(())
 }
 

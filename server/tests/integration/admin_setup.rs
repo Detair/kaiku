@@ -250,12 +250,14 @@ async fn remove_device_now_notifies_the_removed_device_last(pool: PgPool) {
     let (user, _) = create_test_user(&pool).await;
     // The account's only strong authenticator: no last-authenticator check.
     let dev = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    // Registered by the phone's own session (the row belongs to it).
     sqlx::query(
-        "INSERT INTO push_subscriptions (user_id, provider, endpoint, device_id)
-         VALUES ($1, 'unifiedpush', 'https://push.invalid/x', $2)",
+        "INSERT INTO push_subscriptions (user_id, provider, endpoint, device_id, session_id)
+         VALUES ($1, 'unifiedpush', 'https://push.invalid/x', $2, $3)",
     )
     .bind(user)
     .bind(dev.device_id)
+    .bind(dev.session_id)
     .execute(&pool)
     .await
     .unwrap();
