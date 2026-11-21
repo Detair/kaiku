@@ -3,9 +3,10 @@
 //! A chat-only (probation) session may overwrite or delete only its own rows,
 //! rows without an owner, and rows whose owning session is no longer live; it
 //! holds at most two rows and never prunes another live session's rows. When a
-//! session ends, its rows stay for an explicit list of reasons (logout, a new
-//! sign-in of the same phone, the session limit, the absolute lifetime) and go
-//! in the same transaction for every other reason. A device-key sign-in takes
+//! session ends, its rows stay for an explicit list of reasons (a new sign-in
+//! of the same phone, the session limit, the absolute lifetime) and go in the
+//! same transaction for every other reason, sign-out included; a key phone
+//! keeps the row of its own install over a sign-out. A device-key sign-in takes
 //! over the rows of its install.
 //!
 //! Run with: `cargo test --test integration push_ownership`
@@ -585,13 +586,14 @@ async fn revoked_session_drops_its_rows(pool: PgPool) {
 }
 
 /// The reasons for which a session keeps its rows; every other reason drops
-/// them in the transaction that ends the session.
+/// them in the transaction that ends the session (a chat-only session here,
+/// so the key-phone exception does not apply).
 #[sqlx::test]
 async fn session_end_reasons_keep_or_drop_rows(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (user, _) = create_test_user(&pool).await;
     let all = [
-        (EndReason::Logout, true),
+        (EndReason::Logout, false),
         (EndReason::Superseded, true),
         (EndReason::Limit, true),
         (EndReason::AbsoluteCap, true),
@@ -675,15 +677,20 @@ async fn device_login_does_not_adopt_another_sessions_row(pool: PgPool) {
     assert!(row(&pool, user, phone.device_id).await.is_none());
 }
 
+/// A key phone keeps its subscription over a sign-out (it can still be asked
+/// for confirmations) and its next device-key sign-in takes the row over. A
+/// row its session registered under another install id goes.
 #[sqlx::test]
-async fn logout_keeps_rows_until_app_deletes(pool: PgPool) {
+async fn key_phone_row_survives_sign_out_and_is_adopted(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (user, _) = create_test_user(&pool).await;
-
-    // A key phone keeps its subscription over a sign-out and gets it back
-    // with the next device-key sign-in.
     let phone = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
-    register(&app, &phone.access_token, "phone", Some(phone.device_id)).await;
+    let (s, b) = register(&app, &phone.access_token, "phone", Some(phone.device_id)).await;
+    assert_eq!(s, 201, "{b}");
+    let elsewhere = Uuid::new_v4();
+    let (s, b) = register(&app, &phone.access_token, "elsewhere", Some(elsewhere)).await;
+    assert_eq!(s, 201, "{b}");
+
     let (s, b) = send(
         &app,
         Method::POST,
@@ -695,15 +702,29 @@ async fn logout_keeps_rows_until_app_deletes(pool: PgPool) {
     assert_eq!(s, 200, "{b}");
     assert_eq!(
         row(&pool, user, phone.device_id).await,
-        Some(("phone".into(), phone.session_id))
+        Some(("phone".into(), phone.session_id)),
+        "the key phone's own row stays"
     );
+    assert!(
+        row(&pool, user, elsewhere).await.is_none(),
+        "a row of another install goes"
+    );
+
     let (new_sid, _) = device_sign_in(&app, &phone).await;
     assert_eq!(
         row(&pool, user, phone.device_id).await,
         Some(("phone".into(), Some(new_sid)))
     );
+}
 
-    // A chat-only app deletes its own row first, then signs out.
+/// Any other session's rows are gone after its sign-out, also when the app
+/// did not delete them itself.
+#[sqlx::test]
+async fn sign_out_removes_the_sessions_rows(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+
+    // A chat-only app that deletes its own row first.
     let (_, tablet) = create_probation_session_with_token(&pool, &app.config, user).await;
     let install = Uuid::new_v4();
     register(&app, &tablet, "tablet", Some(install)).await;
@@ -711,6 +732,26 @@ async fn logout_keeps_rows_until_app_deletes(pool: PgPool) {
     let (s, b) = send(&app, Method::POST, "/auth/logout", &tablet, json!({})).await;
     assert_eq!(s, 200, "{b}");
     assert!(row(&pool, user, install).await.is_none());
+
+    // A chat-only session that signs out without deleting anything.
+    let (sid, chat_only) = create_probation_session_with_token(&pool, &app.config, user).await;
+    let other = Uuid::new_v4();
+    let (s, b) = register(&app, &chat_only, "chat-only", Some(other)).await;
+    assert_eq!(s, 201, "{b}");
+    let (s, b) = register(&app, &chat_only, "legacy", None).await;
+    assert_eq!(s, 201, "{b}");
+    let (s, b) = send(&app, Method::POST, "/auth/logout", &chat_only, json!({})).await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(rows_of_session(&pool, sid).await, 0, "nothing stays behind");
+
+    // A full session that is not a key phone (a passkey sign-in, say).
+    let (full_sid, full) = create_session_with_token(&pool, &app.config, user).await;
+    let pc = Uuid::new_v4();
+    let (s, b) = register(&app, &full, "pc", Some(pc)).await;
+    assert_eq!(s, 201, "{b}");
+    let (s, b) = send(&app, Method::POST, "/auth/logout", &full, json!({})).await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(rows_of_session(&pool, full_sid).await, 0);
 }
 
 /// A key device revoked for cause ("that was not me", an account request)

@@ -67,12 +67,8 @@ pub async fn on_sessions_ended(
     crate::auth::step_up::void_for_sessions(conn, sids).await?;
     super::enrollments::expire_for_sessions(conn, sids).await?;
     if !reason.keeps_push_subscriptions() {
-        crate::push::delete_for_ended_sessions(
-            conn,
-            sids,
-            reason == EndReason::AuthenticatorRevoked,
-        )
-        .await?;
+        crate::push::delete_for_ended_sessions(conn, sids, reason.spares_key_device_install_rows())
+            .await?;
     }
     Ok(())
 }

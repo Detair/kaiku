@@ -502,7 +502,7 @@ pub async fn claim_prekey(
     request_body = UploadBackupRequest,
     responses(
         (status = 200, description = "Backup uploaded"),
-        (status = 403, description = "FULL_SESSION_REQUIRED"),
+        (status = 403, description = "FULL_SESSION_REQUIRED: replacing an existing backup needs a full session"),
     ),
     security(("bearer_auth" = [])),
 )]
@@ -535,6 +535,31 @@ pub async fn upload_backup(
     if ciphertext.len() > 1_048_576 {
         // 1MB max
         return Err(AuthError::Validation("Ciphertext too large".into()));
+    }
+
+    // C27: a chat-only session may create the account's first backup (the
+    // released desktop app offers it after sign-in), never replace one. One
+    // statement, so two first uploads at once store exactly one.
+    if auth_user.assurance() != crate::auth::assurance::Assurance::Full {
+        let created = sqlx::query(
+            "INSERT INTO key_backups (user_id, salt, nonce, ciphertext, version)
+             VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (user_id) DO NOTHING",
+        )
+        .bind(user_id)
+        .bind(&salt)
+        .bind(&nonce)
+        .bind(&ciphertext)
+        .bind(req.version)
+        .execute(&state.db)
+        .await
+        .map_err(AuthError::Database)?
+        .rows_affected();
+        if created == 0 {
+            return Err(AuthError::FullSessionRequired);
+        }
+        tracing::info!(user_id = %user_id, version = req.version, "First key backup uploaded");
+        return Ok(StatusCode::CREATED);
     }
 
     // Enforce version monotonicity — new version must be strictly greater than existing
@@ -679,7 +704,7 @@ pub async fn get_backup_status(
 /// Routes:
 /// - POST /upload - Upload identity keys and prekeys for a device (full session)
 /// - GET /backup - Download encrypted key backup
-/// - POST /backup - Upload encrypted key backup (full session)
+/// - POST /backup - Upload encrypted key backup (replacing one needs a full session)
 /// - GET /backup/status - Check backup existence and metadata
 /// - GET /devices - Get current user's devices
 pub fn router() -> Router<AppState> {
@@ -687,17 +712,16 @@ pub fn router() -> Router<AppState> {
     use axum::middleware::from_fn;
 
     use crate::auth::guards::require_full_session;
-    // C27: adding a device identity and replacing the backup need a full
-    // session; reading stays open (a new PC restores before it is full).
+    // C27: adding a device identity needs a full session; replacing the
+    // backup too (checked in `upload_backup`, which lets a chat-only session
+    // create the first one). Reading stays open (a new PC restores before it
+    // is full).
     Router::new()
         .route(
             "/upload",
             post(upload_keys.layer(from_fn(require_full_session))),
         )
-        .route(
-            "/backup",
-            get(get_backup).post(upload_backup.layer(from_fn(require_full_session))),
-        )
+        .route("/backup", get(get_backup).post(upload_backup))
         .route("/backup/status", get(get_backup_status))
         .route("/devices", get(get_own_devices))
 }

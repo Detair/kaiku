@@ -1,7 +1,8 @@
 //! What a chat-only (probation) session may no longer do (C27 "What each may
 //! do"): list or delete push subscriptions by id, delete a guild, add an
-//! end-to-end-encryption device identity or replace the key backup. Reading
-//! keys and claiming another user's prekey stay open.
+//! end-to-end-encryption device identity or replace the key backup. Creating
+//! the account's first key backup, reading keys and claiming another user's
+//! prekey stay open.
 //!
 //! Run with: `cargo test --test integration chat_only_limits`
 
@@ -231,16 +232,70 @@ fn backup(version: i32) -> Value {
     })
 }
 
+fn backup_with(version: i32, content: &[u8]) -> Value {
+    json!({
+        "salt": STANDARD.encode([1u8; 16]),
+        "nonce": STANDARD.encode([2u8; 12]),
+        "ciphertext": STANDARD.encode(content),
+        "version": version,
+    })
+}
+
+/// The stored backup, byte for byte, with its version and time.
+async fn stored_backup(
+    pool: &PgPool,
+    user: Uuid,
+) -> Option<(
+    Vec<u8>,
+    Vec<u8>,
+    Vec<u8>,
+    i32,
+    chrono::DateTime<chrono::Utc>,
+)> {
+    sqlx::query_as(
+        "SELECT salt, nonce, ciphertext, version, created_at FROM key_backups WHERE user_id = $1",
+    )
+    .bind(user)
+    .fetch_optional(pool)
+    .await
+    .unwrap()
+}
+
+/// The released desktop app offers to create the key backup after sign-in;
+/// most desktop sessions are chat-only, so the first backup stays open to
+/// them with today's answer.
+#[sqlx::test]
+async fn chat_only_can_create_the_first_backup(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let (_, chat_only) = create_probation_session_with_token(&pool, &app.config, user).await;
+    let (status, body) = send(
+        &app,
+        Method::POST,
+        "/api/keys/backup",
+        &chat_only,
+        backup(1),
+    )
+    .await;
+    assert_eq!(status, 201, "{body}");
+    let stored = stored_backup(&pool, user).await.expect("stored");
+    assert_eq!((stored.2.as_slice(), stored.3), (&b"sealed backup"[..], 1));
+
+    // Reading the backup and its status stays open (restoring on a new PC).
+    for uri in ["/api/keys/backup", "/api/keys/backup/status"] {
+        let (status, body) = send(&app, Method::GET, uri, &chat_only, json!({})).await;
+        assert_eq!(status, 200, "GET {uri}: {body}");
+    }
+}
+
 #[sqlx::test]
 async fn probation_cannot_replace_backup(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (user, _) = create_test_user(&pool).await;
     let (_, full) = create_session_with_token(&pool, &app.config, user).await;
     let (status, body) = send(&app, Method::POST, "/api/keys/backup", &full, backup(1)).await;
-    assert!(
-        status == 200 || status == 201 || status == 204,
-        "{status} {body}"
-    );
+    assert_eq!(status, 201, "{body}");
+    let before = stored_backup(&pool, user).await.expect("stored");
 
     let (_, chat_only) = create_probation_session_with_token(&pool, &app.config, user).await;
     let (status, body) = send(
@@ -248,22 +303,133 @@ async fn probation_cannot_replace_backup(pool: PgPool) {
         Method::POST,
         "/api/keys/backup",
         &chat_only,
-        backup(2),
+        backup_with(2, b"someone else's backup"),
     )
     .await;
-    assert_full_required(status, &body, "POST /api/keys/backup");
-    let version: i32 = sqlx::query_scalar("SELECT version FROM key_backups WHERE user_id = $1")
-        .bind(user)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_eq!(version, 1, "the backup was not replaced");
+    assert_full_required(status, &body, "POST /api/keys/backup over an existing one");
+    assert_eq!(
+        stored_backup(&pool, user).await,
+        Some(before),
+        "the stored backup is byte-identical"
+    );
+}
 
-    // Reading the backup and its status stays open (restoring on a new PC).
-    for uri in ["/api/keys/backup", "/api/keys/backup/status"] {
-        let (status, body) = send(&app, Method::GET, uri, &chat_only, json!({})).await;
-        assert_eq!(status, 200, "GET {uri}: {body}");
+#[sqlx::test]
+async fn two_first_backups_at_once_store_one(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    for round in 0..10 {
+        let (user, _) = create_test_user(&pool).await;
+        let (_, a) = create_probation_session_with_token(&pool, &app.config, user).await;
+        let (_, b) = create_probation_session_with_token(&pool, &app.config, user).await;
+        let (ra, rb) = tokio::join!(
+            send(
+                &app,
+                Method::POST,
+                "/api/keys/backup",
+                &a,
+                backup_with(1, b"from a")
+            ),
+            send(
+                &app,
+                Method::POST,
+                "/api/keys/backup",
+                &b,
+                backup_with(1, b"from b")
+            ),
+        );
+        let mut statuses = [ra.0, rb.0];
+        statuses.sort_unstable();
+        assert_eq!(statuses, [201, 403], "round {round}: {} / {}", ra.1, rb.1);
+        let refused = if ra.0 == 403 { &ra.1 } else { &rb.1 };
+        assert_eq!(refused["error"], "FULL_SESSION_REQUIRED", "round {round}");
+        let stored = stored_backup(&pool, user).await.expect("one stored");
+        let winner: &[u8] = if ra.0 == 201 { b"from a" } else { b"from b" };
+        assert_eq!(
+            stored.2, winner,
+            "round {round}: the stored one is the accepted one"
+        );
     }
+}
+
+#[sqlx::test]
+async fn full_session_replaces_backup(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let (_, chat_only) = create_probation_session_with_token(&pool, &app.config, user).await;
+    let (status, body) = send(
+        &app,
+        Method::POST,
+        "/api/keys/backup",
+        &chat_only,
+        backup(1),
+    )
+    .await;
+    assert_eq!(status, 201, "{body}");
+    let (_, full) = create_session_with_token(&pool, &app.config, user).await;
+    let (status, body) = send(
+        &app,
+        Method::POST,
+        "/api/keys/backup",
+        &full,
+        backup_with(2, b"newer"),
+    )
+    .await;
+    assert_eq!(status, 201, "{body}");
+    let stored = stored_backup(&pool, user).await.expect("stored");
+    assert_eq!((stored.2.as_slice(), stored.3), (&b"newer"[..], 2));
+    // The version rule is unchanged for full sessions.
+    let (status, body) = send(
+        &app,
+        Method::POST,
+        "/api/keys/backup",
+        &full,
+        backup_with(2, b"same version"),
+    )
+    .await;
+    assert_eq!(status, 400, "{body}");
+}
+
+/// With the backup made mandatory by the operator, the desktop prompt cannot
+/// be skipped; a chat-only session without a backup can still complete it.
+#[sqlx::test]
+async fn mandatory_backup_prompt_completes_in_a_chat_only_session(pool: PgPool) {
+    let mut config = vc_server::config::Config::default_for_test();
+    config.require_e2ee_setup = true;
+    let app = TestApp::with_pool_and_config(pool.clone(), config).await;
+    let (user, _) = create_test_user(&pool).await;
+    let (_, chat_only) = create_probation_session_with_token(&pool, &app.config, user).await;
+
+    let (status, settings) = send(&app, Method::GET, "/api/settings", &chat_only, json!({})).await;
+    assert_eq!(status, 200, "{settings}");
+    assert_eq!(settings["require_e2ee_setup"], true, "{settings}");
+    let (_, before) = send(
+        &app,
+        Method::GET,
+        "/api/keys/backup/status",
+        &chat_only,
+        json!({}),
+    )
+    .await;
+    assert_eq!(before["has_backup"], false, "{before}");
+
+    let (status, body) = send(
+        &app,
+        Method::POST,
+        "/api/keys/backup",
+        &chat_only,
+        backup(1),
+    )
+    .await;
+    assert_eq!(status, 201, "{body}");
+    let (_, after) = send(
+        &app,
+        Method::GET,
+        "/api/keys/backup/status",
+        &chat_only,
+        json!({}),
+    )
+    .await;
+    assert_eq!(after["has_backup"], true, "{after}");
 }
 
 #[sqlx::test]

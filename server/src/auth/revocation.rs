@@ -83,19 +83,28 @@ impl EndReason {
 
     /// Whether the ended session's push subscriptions stay.
     ///
-    /// They stay only for the reasons listed here: a sign-out (the app
-    /// deletes its own row first, a key phone keeps it), a newer sign-in of
-    /// the same phone (it takes the rows over), the per-account session
-    /// limit and the absolute lifetime (the same phone signs in again and
-    /// re-registers only once its local record is a day old). Every other
-    /// reason, including one added later, deletes them in the transaction
-    /// that ends the session.
+    /// They stay only for the reasons listed here: a newer sign-in of the
+    /// same phone (it takes the rows over), the per-account session limit and
+    /// the absolute lifetime (the same phone signs in again and re-registers
+    /// only once its local record is a day old). Every other reason, including
+    /// one added later, deletes them in the transaction that ends the session,
+    /// apart from the exception in [`Self::spares_key_device_install_rows`].
     #[must_use]
     pub const fn keeps_push_subscriptions(self) -> bool {
-        matches!(
-            self,
-            Self::Logout | Self::Superseded | Self::Limit | Self::AbsoluteCap
-        )
+        matches!(self, Self::Superseded | Self::Limit | Self::AbsoluteCap)
+    }
+
+    /// Whether a key-device session that ends for this reason keeps the rows
+    /// of its own install (all its other rows go).
+    ///
+    /// A sign-out of a key phone keeps its subscription on purpose (it can
+    /// still be asked for confirmations; its next device-key sign-in takes the
+    /// row over). A revoked key device's install rows are left to the
+    /// revocation: deleted after the removed phone's last notice, at once when
+    /// revoked for cause, kept when the same install is set up again.
+    #[must_use]
+    pub const fn spares_key_device_install_rows(self) -> bool {
+        matches!(self, Self::Logout | Self::AuthenticatorRevoked)
     }
 }
 
@@ -313,17 +322,18 @@ mod tests {
     use super::EndReason;
 
     /// The reasons that keep an ended session's push subscriptions. Every
-    /// other reason deletes them; a reason added later deletes them too
-    /// unless it is added here on purpose.
+    /// other reason deletes them (a sign-out and a revoked key device spare
+    /// only a key device's own-install rows); a reason added later deletes
+    /// them too unless it is added here on purpose.
     #[test]
     fn push_subscriptions_are_kept_only_for_the_listed_reasons() {
         let kept = [
-            EndReason::Logout,
             EndReason::Superseded,
             EndReason::Limit,
             EndReason::AbsoluteCap,
         ];
         let deleted = [
+            EndReason::Logout,
             EndReason::Revoked,
             EndReason::OthersRevoked,
             EndReason::PasswordChanged,
@@ -341,6 +351,15 @@ mod tests {
         }
         for r in deleted {
             assert!(!r.keeps_push_subscriptions(), "{}", r.as_str());
+        }
+        // Only these spare a key device's own-install rows.
+        for r in kept.into_iter().chain(deleted) {
+            assert_eq!(
+                r.spares_key_device_install_rows(),
+                matches!(r, EndReason::Logout | EndReason::AuthenticatorRevoked),
+                "{}",
+                r.as_str()
+            );
         }
     }
 }

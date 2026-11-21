@@ -761,18 +761,19 @@ pub async fn delete_device_subscriptions(
 /// Delete the push subscriptions owned by `sids`, which just ended for a
 /// reason that does not keep them (in the transaction that ends them).
 ///
-/// With `device_revoked` (the sessions ended because an authenticator was
-/// revoked), a key-device session's rows of its own install stay: the
-/// device's revocation decides about them (deleted after the removed phone's
-/// last notice, or at once when revoked for cause; kept when the same install
-/// re-enrols).
+/// With `spare_key_device_install` (a sign-out, or the sessions ended because
+/// an authenticator was revoked), a key-device session's rows of its own
+/// install stay: a key phone keeps its subscription over a sign-out, and a
+/// revoked device's revocation decides about them (deleted after the removed
+/// phone's last notice, or at once when revoked for cause; kept when the same
+/// install is set up again).
 ///
 /// # Errors
 /// The delete failed.
 pub async fn delete_for_ended_sessions(
     conn: &mut sqlx::PgConnection,
     sids: &[Uuid],
-    device_revoked: bool,
+    spare_key_device_install: bool,
 ) -> Result<u64, sqlx::Error> {
     Ok(sqlx::query(
         "DELETE FROM push_subscriptions p
@@ -784,7 +785,7 @@ pub async fn delete_for_ended_sessions(
                    AND d.user_id = p.user_id AND d.device_id = p.device_id))",
     )
     .bind(sids)
-    .bind(device_revoked)
+    .bind(spare_key_device_install)
     .execute(&mut *conn)
     .await?
     .rows_affected())

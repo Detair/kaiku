@@ -1037,6 +1037,69 @@ async fn re_enrolment_ends_the_replaced_keys_sessions(pool: PgPool) {
     );
 }
 
+/// Setting the same install up again (a new key on the same phone) keeps the
+/// install's push subscription: the phone does not register again while its
+/// local record is fresh, and the row now serves the new key.
+#[sqlx::test]
+async fn re_enrolment_on_the_same_install_keeps_its_push_row(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let old = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    let req = peer_request(Method::POST, "/api/me/push-subscriptions")
+        .header("Authorization", format!("Bearer {}", old.access_token))
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            json!({
+                "provider": "unifiedpush",
+                "endpoint": "https://push.example.com/same-phone",
+                "device_id": old.device_id,
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    assert_eq!(app.oneshot(req).await.status().as_u16(), 201);
+
+    let issued = issue(&app, user, EnrollmentVariant::Cli, Issuer::Cli)
+        .await
+        .unwrap();
+    let phone = Phone {
+        key: SigningKey::random(&mut rand::rngs::OsRng),
+        device_id: old.device_id,
+    };
+    let (s, claim) = claim_with(
+        &app,
+        &issued.setup_token,
+        &phone,
+        "Pixel 8",
+        good(),
+        "per_use",
+    )
+    .await;
+    assert_eq!(s, 201, "{claim}");
+    confirm_cli(&app, issued.enrollment_id, claim["code"].as_str().unwrap())
+        .await
+        .unwrap();
+
+    let state: String = sqlx::query_scalar("SELECT state FROM approval_devices WHERE id = $1")
+        .bind(old.row_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(state, "revoked", "the old key was replaced");
+    let endpoints: Vec<String> = sqlx::query_scalar(
+        "SELECT endpoint FROM push_subscriptions WHERE user_id = $1 AND device_id = $2",
+    )
+    .bind(user)
+    .bind(old.device_id)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        endpoints,
+        vec!["https://push.example.com/same-phone".to_string()]
+    );
+}
+
 /// Review round 1 (Fable M2 / Codex M2): the `enroll` answer locks the
 /// accounts before the challenge and the enrolment, so it never forms a
 /// cycle with a revocation of the issuing device (accounts → device →
