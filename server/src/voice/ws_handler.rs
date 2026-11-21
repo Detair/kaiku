@@ -1573,6 +1573,150 @@ mod replaced_media_tests {
         held.abort();
     }
 
+    /// A store that accepts connections and never answers, and a limiter on it.
+    async fn silent_limiter() -> (ScreenShareLimiter, tokio::task::JoinHandle<()>) {
+        use fred::interfaces::ClientLike;
+        let silent = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let port = silent.local_addr().expect("addr").port();
+        let held = tokio::spawn(async move {
+            let mut open = Vec::new();
+            while let Ok((socket, _)) = silent.accept().await {
+                open.push(socket);
+            }
+        });
+        let config = fred::types::config::Config::from_url(&format!("redis://127.0.0.1:{port}"))
+            .expect("config");
+        let store = fred::clients::Client::new(config, None, None, None);
+        let _connecting = store.connect();
+        (ScreenShareLimiter::new(store), held)
+    }
+
+    /// A seat with one share in a room with one viewer; returns the room,
+    /// the seat, the share's stream id, the viewer and the viewer's queue.
+    async fn room_with_a_share(
+        viewer_queue: usize,
+    ) -> (
+        Arc<Room>,
+        Arc<super::super::peer::Peer>,
+        Uuid,
+        Arc<super::super::peer::Peer>,
+        mpsc::Receiver<OutboundMsg>,
+    ) {
+        let sfu = SfuServer::new(Arc::new(Config::default_for_test()), None).expect("sfu");
+        let channel = Uuid::from_u128(1);
+        let room = Arc::new(Room::new(channel, 10));
+        let (vtx, vrx) = mpsc::channel(viewer_queue);
+        let viewer = sfu
+            .create_peer(Uuid::from_u128(2), "v".into(), "V".into(), channel, vtx)
+            .await
+            .expect("viewer");
+        let (tx, _rx) = mpsc::channel(8);
+        let seat = sfu
+            .create_peer(Uuid::from_u128(3), "u".into(), "U".into(), channel, tx)
+            .await
+            .expect("seat");
+        room.add_peer(viewer.clone()).await.expect("add");
+        room.add_peer(seat.clone()).await.expect("add");
+        let stream = Uuid::from_u128(10);
+        let info = ScreenShareInfo::new(
+            stream,
+            seat.user_id,
+            "u".into(),
+            "Display".into(),
+            false,
+            super::super::Quality::Medium,
+        );
+        room.try_add_screen_share_for(&seat, info)
+            .await
+            .expect("share");
+        (room, seat, stream, viewer, vrx)
+    }
+
+    /// The share's slot is free no later than its stop is announced: while
+    /// the store has not answered, no stop reaches the others.
+    #[tokio::test]
+    async fn a_share_stop_is_announced_only_after_its_slot_is_free() {
+        let (room, seat, stream, _viewer, mut rx) = room_with_a_share(8).await;
+        let (limiter, held) = silent_limiter().await;
+        let ending = {
+            let (room, seat) = (room.clone(), seat.clone());
+            tokio::spawn(async move {
+                end_screen_share(&room, &seat, stream, Some(&limiter), "user_stopped", None).await
+            })
+        };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while room.screen_shares.read().await.contains_key(&stream) {
+            assert!(Instant::now() < deadline, "the share was not removed");
+            tokio::task::yield_now().await;
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        while let Ok(msg) = rx.try_recv() {
+            assert!(
+                !matches!(
+                    msg,
+                    OutboundMsg::Voice {
+                        event: ServerEvent::ScreenShareStopped { .. },
+                        ..
+                    }
+                ),
+                "the stop was announced before the store freed the slot"
+            );
+        }
+        ending.abort();
+        held.abort();
+    }
+
+    /// A share's sources are detached while the seat's media lock is held
+    /// (a track never starts forwarding for a share that has ended).
+    #[tokio::test]
+    async fn a_share_is_detached_under_the_seats_media_lock() {
+        // The viewer's queue is full, so the renegotiation after the detach
+        // waits (bounded) and the detach can be observed mid-way.
+        let (room, seat, stream, viewer, _rx) = room_with_a_share(1).await;
+        viewer
+            .signal_tx
+            .try_send(OutboundMsg::Ping)
+            .expect("fill the queue");
+        let source = TrackSource::ScreenVideo(stream);
+        let track = super::super::track::forwarded_track(
+            seat.user_id,
+            source,
+            webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability {
+                mime_type: "video/VP8".into(),
+                clock_rate: 90_000,
+                ..Default::default()
+            },
+        );
+        viewer
+            .add_outgoing_track(&seat, source, track.clone())
+            .await
+            .expect("add");
+        seat.record_forwarded(viewer.user_id, source, track);
+
+        let ending = {
+            let (room, seat) = (room.clone(), seat.clone());
+            tokio::spawn(async move {
+                end_screen_share(&room, &seat, stream, None, "user_stopped", None).await
+            })
+        };
+        // The forwarded track leaves the viewer, then the viewer's offer waits.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !viewer.outgoing_track_list().await.is_empty() {
+            assert!(
+                Instant::now() < deadline,
+                "the share's track was not detached"
+            );
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            seat.media.try_lock().is_err(),
+            "the share was detached without the seat's media lock"
+        );
+        ending.await.expect("join").expect("end");
+    }
+
     /// A takeover's release of the replaced seat's shares does not wait for
     /// the store: with a store that never answers, it finishes at once (the
     /// slots are freed beside it) and the stops are still announced.
