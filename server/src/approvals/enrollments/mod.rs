@@ -1036,16 +1036,23 @@ pub async fn lock_issued_by(
 /// Unknown id or wrong claim secret → 404 `ENROLLMENT_TOKEN_INVALID`; a known enrolment
 /// answers 200 with its stored state, also `cancelled`, `expired` or `failed`.
 ///
-/// `expired` is final: the code's time is over and no confirmation can succeed any more.
-/// For a `claimed` row past its code time the call stores `expired` like the sweep
-/// (`expire_due`), in one statement that re-checks state and time under the row's lock.
-/// That statement takes only the enrolment row, and only if it is free (`SKIP LOCKED`):
-/// it never waits for a lock and holds no other one. While a confirmation holds the row
-/// nothing is stored and the answer stays `claimed`; a long poll tries again with its next
-/// read (every 500 ms) and then answers `done` if the confirmation committed, else stores
-/// `expired`. The statement changes the row at most once per enrolment and runs at most
-/// once per read of a `claimed` row past its code time: once for a call without waiting,
-/// at most once per 500 ms attempt of a long poll. Every other read is a plain `SELECT`.
+/// `expired` is final: no later confirmation of this enrolment can succeed. It is stored
+/// once the code's time is over, and also earlier, for example when the issuing session
+/// ends or the issuing device is revoked.
+///
+/// The call answers the stored state. For a `claimed` row past its code time it first
+/// stores `expired` like the sweep (`expire_due`), in one statement that re-checks state
+/// and time under the row's lock. That statement takes only the enrolment row, and only if
+/// no conflicting lock is held on it (`SKIP LOCKED`): it does not wait for the row while a
+/// confirmation or the sweep holds it, and it holds no other lock. If it changed no row,
+/// the call reads the row once more (no lock, nothing stored) and answers that state.
+/// While a confirmation holds the row the answer stays `claimed`; afterwards it is the
+/// state stored then: `done` if the confirmation succeeded, `failed` or `cancelled` are
+/// possible too, and `expired` is stored by a status call or the sweep only if the row is
+/// then still `claimed` and past its code time. A long poll tries again with its next read
+/// (every 500 ms). The statement changes the row at most once per enrolment and runs at
+/// most once per call without waiting, at most once per 500 ms attempt of a long poll.
+/// Every other read is a plain `SELECT`.
 pub async fn status(
     ctx: &AuthCtx<'_>,
     enrollment_id: Uuid,
