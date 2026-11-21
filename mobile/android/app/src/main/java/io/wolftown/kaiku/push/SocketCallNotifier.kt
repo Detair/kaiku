@@ -58,12 +58,15 @@ class SocketCallNotifier internal constructor(
             val stored = store.shown(user, channelId)
             // What counts is the call that is live there (a ring whose end never came is none).
             val live = CallRules.live(stored, now())
-            // Another, newer call of this DM keeps its notification.
-            if (live != null && live.callId != callId) return@cancelCallIf false
-            if (live?.phase == CallPhase.MISSED) return@cancelCallIf false
-            // Tombstone: a late or duplicate push ringing of this call is not accepted.
+            val other = live != null && live.callId != callId
+            // Another call of this DM that still rings or ends here keeps everything.
+            if (other && (live!!.phase == CallPhase.RINGING || live.phase == CallPhase.ENDING)) return@cancelCallIf false
+            if (!other && live?.phase == CallPhase.MISSED) return@cancelCallIf false
+            // Tombstone: a late or duplicate push of this call is not accepted (its end push
+            // shows nothing in a later process). It takes the place of an earlier call that is
+            // over, whose notification (a missed call) stays up.
             store.setShownIf(user, channelId, stored, ShownCall(callId, CallPhase.ENDED, now()))
-            true
+            !other
         }
     }
 
