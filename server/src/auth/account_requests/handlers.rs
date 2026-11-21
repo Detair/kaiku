@@ -190,7 +190,8 @@ async fn start_bootstrap(
     let user = match crate::db::find_user_by_username(&state.db, &body.username).await {
         Ok(u) => u,
         Err(e) => {
-            // Nothing was checked: the try goes back.
+            // Nothing was checked: the try goes back (while nothing else
+            // touched the counter since).
             if let Some(r) = &reserved {
                 let _ = AccountLimiter::new(ctx.redis)
                     .give_back(&password_key, r)

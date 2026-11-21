@@ -72,9 +72,11 @@ pub async fn reserve(ctx: &AuthCtx<'_>, user: Uuid, generation: i64) -> AuthResu
 
 /// Reserve a try, then check `code` against the TOTP of `generation`.
 ///
-/// The check is replay-checked. Returns `(valid, the reserved try)`;
-/// settle it with [`settle`]. A check that could not run (the replay store
-/// failed) gives its try back and returns the error.
+/// Returns `(valid, the reserved try)`; settle it with [`settle`]. The
+/// record of used codes is only written after the code matched; if that
+/// record (or the secret) fails, the answer is that error (503), the try is
+/// given back (see [`AccountLimiter::give_back`]) and the counter is not
+/// reset.
 pub async fn check_reserved(
     ctx: &AuthCtx<'_>,
     user: Uuid,

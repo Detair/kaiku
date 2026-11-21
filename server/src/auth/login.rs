@@ -108,7 +108,8 @@ pub async fn login(
     let user_opt = match find_user_by_username(&state.db, &body.username).await {
         Ok(u) => u,
         Err(e) => {
-            // Nothing was checked: the try goes back.
+            // Nothing was checked: the try goes back (while nothing else
+            // touched the counter since).
             let _ = limiter.give_back(&counter, &reserved).await;
             return Err(e.into());
         }
