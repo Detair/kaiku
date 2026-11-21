@@ -1059,7 +1059,6 @@ pub async fn status(
         claim_secret.as_bytes(),
     );
     let mut first_state: Option<String> = None;
-    let mut settled = false;
     loop {
         let row: Option<(String, bool, Option<Vec<u8>>, Option<String>)> = sqlx::query_as(
             "SELECT e.state,
@@ -1079,17 +1078,23 @@ pub async fn status(
         if !hash.is_some_and(|h| ct_eq(&h, &want)) {
             return Err(ApprovalError::EnrollmentTokenInvalid);
         }
-        if past_due && !settled {
-            // Waits for a running confirmation; then the row says `done` or `expired`.
-            sqlx::query(
+        if past_due {
+            // A row held by a running confirmation is skipped, not waited for:
+            // it stays `claimed` for this read.
+            let stored = sqlx::query(
                 "UPDATE enrollments SET state = 'expired', ended_at = NOW()
-                  WHERE id = $1 AND state = 'claimed' AND code_expires_at <= NOW()",
+                  WHERE id = (SELECT id FROM enrollments
+                               WHERE id = $1 AND state = 'claimed' AND code_expires_at <= NOW()
+                               FOR NO KEY UPDATE SKIP LOCKED)",
             )
             .bind(enrollment_id)
             .execute(ctx.db)
-            .await?;
-            settled = true;
-            continue;
+            .await?
+            .rows_affected();
+            if stored == 1 {
+                // Answer from the stored row.
+                continue;
+            }
         }
         let changed = first_state.as_ref().is_some_and(|s| *s != state);
         if changed || state != "claimed" || started.elapsed() >= wait {
