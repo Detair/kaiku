@@ -1168,8 +1168,10 @@ async fn end_screen_share(
     let user_id = peer.user_id;
     let channel_id = room.channel_id;
     // Serialized with a track being bound to this share (see `sfu.rs`): a
-    // track never starts forwarding for a share that has ended.
-    let _media = peer.media.lock().await;
+    // track never starts forwarding for a share that has ended. What ends is
+    // decided and removed under the lock; the store is not waited for under
+    // it (a takeover of this seat waits for the lock).
+    let media = peer.media.lock().await;
     if let Some(n) = expiry {
         if !still_unused(peer, TrackSource::ScreenVideo(stream_id), n).await {
             return Ok(());
@@ -1198,14 +1200,17 @@ async fn end_screen_share(
         return Ok(());
     }
 
-    // Decrement Redis counter
+    detach_sources(room, peer, |s| s.stream_id() == Some(stream_id)).await;
+    drop(media);
+
+    // The slot is free before the stop is announced; whether the stop is
+    // announced at all is decided under the room's share state (a share live
+    // again with this id is not announced as stopped).
     if let Some(limiter) = screen_share_limiter {
         limiter.stop(&room.share_counter).await;
     } else {
         tracing::warn!("Screen share limiter unavailable during stop — counter not decremented");
     }
-
-    detach_sources(room, peer, |s| s.stream_id() == Some(stream_id)).await;
 
     // Broadcast to room
     room.announce_stopped(
@@ -1493,6 +1498,74 @@ mod replaced_media_tests {
 
     use super::*;
     use crate::config::Config;
+
+    /// The end of a share frees its slot in the store without holding the
+    /// seat's media lock: with a store that never answers, a takeover of
+    /// that seat (which waits for the lock) is not held up by the store.
+    #[tokio::test]
+    async fn a_share_end_waits_for_the_store_without_the_media_lock() {
+        use fred::interfaces::ClientLike;
+        let sfu = SfuServer::new(Arc::new(Config::default_for_test()), None).expect("sfu");
+        let channel = Uuid::from_u128(1);
+        let room = Arc::new(Room::new(channel, 10));
+        let (tx, _rx) = mpsc::channel(8);
+        let seat = sfu
+            .create_peer(Uuid::from_u128(3), "u".into(), "U".into(), channel, tx)
+            .await
+            .expect("peer");
+        room.add_peer(seat.clone()).await.expect("add");
+        let stream = Uuid::from_u128(10);
+        let info = ScreenShareInfo::new(
+            stream,
+            seat.user_id,
+            "u".into(),
+            "Display".into(),
+            false,
+            super::super::Quality::Medium,
+        );
+        room.try_add_screen_share_for(&seat, info)
+            .await
+            .expect("share");
+
+        // A store that accepts connections and never answers.
+        let silent = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let port = silent.local_addr().expect("addr").port();
+        let held = tokio::spawn(async move {
+            let mut open = Vec::new();
+            while let Ok((socket, _)) = silent.accept().await {
+                open.push(socket);
+            }
+        });
+        let config = fred::types::config::Config::from_url(&format!("redis://127.0.0.1:{port}"))
+            .expect("config");
+        let store = fred::clients::Client::new(config, None, None, None);
+        let _connecting = store.connect();
+        let limiter = ScreenShareLimiter::new(store);
+
+        let ending = {
+            let (room, seat) = (room.clone(), seat.clone());
+            tokio::spawn(async move {
+                end_screen_share(&room, &seat, stream, Some(&limiter), "user_stopped", None).await
+            })
+        };
+        // The share is removed under the lock; then the slot is freed.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while room.screen_shares.read().await.contains_key(&stream) {
+            assert!(Instant::now() < deadline, "the share was not removed");
+            tokio::task::yield_now().await;
+        }
+        // What a takeover does with the old seat: it waits for its media lock.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(500), room.detach_media(&seat))
+                .await
+                .is_ok(),
+            "the seat's media lock was held while waiting for the store"
+        );
+        ending.abort();
+        held.abort();
+    }
 
     /// The stops of a replaced seat's media go out together: a participant
     /// with a full queue delays them by one send bound, not one per stop.
