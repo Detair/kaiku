@@ -1191,7 +1191,7 @@ fn parse_turn_servers(raw: Option<&str>) -> Result<Vec<String>> {
             // Named by position: the entry itself may hold a credential.
             anyhow::ensure!(
                 is_turn_uri(url),
-                "TURN_SERVER entry {} is not a valid turn: or turns: URL \
+                "TURN_SERVER: non-empty entry {} is not a valid turn: or turns: URL \
                  (host[:port][?transport=udp|tcp], no user info; list several URLs separated \
                  by commas)",
                 i + 1
