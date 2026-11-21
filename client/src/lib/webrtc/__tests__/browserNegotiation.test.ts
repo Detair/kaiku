@@ -576,4 +576,57 @@ describe("BrowserVoiceAdapter: an offer without an answer", () => {
     expect(pc.signalingState).toBe("have-local-offer");
     expect(rollbacks(pc)).toBe(0);
   });
+
+  it("an answer in stable uses up the expected late answer: the retry's refusal ends it at once", async () => {
+    const { adapter, lost, pc } = await shareOfferSent();
+    // The retry is still being made when offer 2's late answer arrives.
+    let makeOffer!: () => void;
+    (pc as BrowserPc).holdOffer = new Promise((r) => (makeOffer = r));
+    await vi.advanceTimersByTimeAsync(10_000);
+    await vi.advanceTimersByTimeAsync(1); // the browser's own next negotiation starts
+    await settle();
+    expect(rollbacks(pc)).toBe(1);
+    expect(pc.signalingState).toBe("stable");
+    await adapter.handlePublisherAnswer("ch-a", "answer-for-2");
+    (pc as BrowserPc).holdOffer = null;
+    makeOffer();
+    await settle();
+    expect(sentOfferNumbers()).toEqual([1, 2, 3]);
+
+    // The retry's own answer is refused: no late answer is owed any more.
+    await adapter.handlePublisherAnswer("ch-a", "answer-for-99");
+    await settle();
+    expect(lost).toHaveBeenCalledTimes(1);
+  });
+
+  it("a refused answer is no expired deadline: the retry's refusal ends it at once", async () => {
+    const { adapter, ended, lost, pc } = await shareOfferSent();
+    await adapter.handlePublisherAnswer("ch-a", "answer-for-99");
+    await settle();
+    expect(rollbacks(pc)).toBe(1);
+    expect(ended).toHaveBeenCalledWith("screen", "s1", "not_sent");
+    expect(sentOfferNumbers()).toEqual([1, 2, 3]);
+
+    await adapter.handlePublisherAnswer("ch-a", "answer-for-98");
+    await settle();
+    expect(lost).toHaveBeenCalledTimes(1);
+  });
+
+  it("a leave while the giving-up withdraw is under way raises no lost", async () => {
+    const { adapter, lost, pc } = await shareOfferSent();
+    await vi.advanceTimersByTimeAsync(10_500);
+    await settle();
+    let release!: () => void;
+    const hold = new Promise<void>((r) => (release = r));
+    const original = pc.setLocalDescription.bind(pc);
+    pc.setLocalDescription = async (d: { type: string }) => {
+      if (d.type === "rollback") await hold;
+      return original(d);
+    };
+    await vi.advanceTimersByTimeAsync(20_000); // the retry's deadline: its withdraw waits
+    await adapter.leave(A);
+    release();
+    await settle();
+    expect(lost).not.toHaveBeenCalled();
+  });
 });
