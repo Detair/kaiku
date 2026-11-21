@@ -34,7 +34,7 @@ Central routing configuration and shared application state for the Kaiku platfor
 - `Social`: 20 requests/60s (friend operations)
 - `WebSocket`: 1 connection/60s per user
 
-**Body Limit**: Default 2MB, configurable via `max_upload_size` in config (currently 50MB). Applied via `DefaultBodyLimit::max()` layer.
+**Body Limit**: `DEFAULT_BODY_LIMIT` (1 MiB) for every route. Routes that accept files set their own `DefaultBodyLimit` layer: message uploads, DM icon, guild banner and emoji use `max_upload_size` (`MAX_UPLOAD_SIZE`, default 50 MB), the avatar `max_avatar_size`, the key backup 2 MiB. A new multipart or large-JSON route must add its own layer.
 
 **Security**: All routes under `/api/*` (except `/api/messages/attachments/:id/download`) require JWT authentication. Download endpoint handles auth via query parameter for browser compatibility.
 

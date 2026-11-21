@@ -16,9 +16,8 @@ use super::rate_limit::EventClass;
 use super::screen_share::{
     validate_source_label, ScreenShareError, ScreenShareInfo, ScreenShareLimiter,
 };
-use super::sfu::SfuServer;
+use super::sfu::{ReplacedMedia, Room, SfuServer};
 use super::stats::VoiceStats;
-use super::track::spawn_subscriber_remb_reader;
 use super::track_types::{LayerPreference, TrackSource};
 use super::webcam::WebcamInfo;
 use super::{queries, Quality};
@@ -29,17 +28,33 @@ fn map_permission_error(e: crate::permissions::PermissionError, context: &str) -
     match e {
         crate::permissions::PermissionError::DatabaseError(msg) => {
             error!(error = %msg, "Database error during {context}");
-            VoiceError::Signaling(format!("Permission check failed: {msg}"))
+            // Detail stays in the log; the client gets a generic error.
+            VoiceError::Internal(format!("permission check failed during {context}: {msg}"))
         }
         _ => VoiceError::Unauthorized,
     }
 }
 
-/// Handle a voice-related client event.
+/// Handle a voice-related client event (socket without a known login
+/// session; see [`handle_voice_event_for_session`]).
 pub async fn handle_voice_event(
     sfu: &Arc<SfuServer>,
     pool: &PgPool,
     user_id: Uuid,
+    event: ClientEvent,
+    tx: &mpsc::Sender<OutboundMsg>,
+    screen_share_limiter: Option<&ScreenShareLimiter>,
+) -> Result<(), VoiceError> {
+    handle_voice_event_for_session(sfu, pool, user_id, None, event, tx, screen_share_limiter).await
+}
+
+/// Handle a voice-related client event from a socket that authenticated
+/// with login session `auth_session` (recorded on a seat it joins).
+pub async fn handle_voice_event_for_session(
+    sfu: &Arc<SfuServer>,
+    pool: &PgPool,
+    user_id: Uuid,
+    auth_session: Option<Uuid>,
     event: ClientEvent,
     tx: &mpsc::Sender<OutboundMsg>,
     screen_share_limiter: Option<&ScreenShareLimiter>,
@@ -56,16 +71,14 @@ pub async fn handle_voice_event(
             PcType::Publisher => EventClass::IceCandidatePublisher,
             PcType::Subscriber => EventClass::IceCandidateSubscriber,
         }),
-        ClientEvent::VoicePublisherOffer { .. } | ClientEvent::VoiceSubscriberAnswer { .. } => {
-            Some(EventClass::PublisherOffer)
-        }
-        ClientEvent::VoiceScreenShareStart { .. } | ClientEvent::VoiceScreenShareStop { .. } => {
-            Some(EventClass::ScreenShareToggle)
-        }
+        ClientEvent::VoicePublisherOffer { .. } => Some(EventClass::PublisherOffer),
+        ClientEvent::VoiceSubscriberAnswer { .. } => Some(EventClass::SubscriberAnswer),
+        // Stops are never limited: they only end things, and a lost stop
+        // would leave a share or webcam registered.
+        ClientEvent::VoiceScreenShareStart { .. } => Some(EventClass::ScreenShareToggle),
         ClientEvent::VoiceMute { .. }
         | ClientEvent::VoiceUnmute { .. }
-        | ClientEvent::VoiceWebcamStart { .. }
-        | ClientEvent::VoiceWebcamStop { .. } => Some(EventClass::MuteOrWebcamToggle),
+        | ClientEvent::VoiceWebcamStart { .. } => Some(EventClass::MuteOrWebcamToggle),
         ClientEvent::VoiceSetLayerPreference { .. } => Some(EventClass::SetLayerPreference),
         _ => None,
     };
@@ -78,33 +91,52 @@ pub async fn handle_voice_event(
                 event_class = class.as_scope(),
                 "voice_rate_limit_drop",
             );
+            // A share or webcam start is a request the client waits for
+            // (C30): answer it instead of dropping it silently.
+            if matches!(
+                event,
+                ClientEvent::VoiceScreenShareStart { .. } | ClientEvent::VoiceWebcamStart { .. }
+            ) {
+                return Err(VoiceError::RateLimited("media_start"));
+            }
             return Ok(());
         }
     }
 
     match event {
         ClientEvent::VoiceJoin { channel_id } => {
-            let result = handle_join(sfu, pool, user_id, channel_id, tx).await;
+            let result = handle_join(
+                sfu,
+                pool,
+                user_id,
+                channel_id,
+                tx,
+                screen_share_limiter,
+                auth_session,
+            )
+            .await;
             crate::observability::metrics::record_voice_join(result.is_ok());
             result
         }
         ClientEvent::VoiceLeave { channel_id } => {
-            handle_leave(sfu, pool, user_id, channel_id, screen_share_limiter).await
+            handle_leave(sfu, pool, user_id, channel_id, screen_share_limiter, tx).await
         }
         ClientEvent::VoicePublisherOffer { channel_id, sdp } => {
-            handle_publisher_offer(sfu, user_id, channel_id, &sdp).await
+            handle_publisher_offer(sfu, user_id, channel_id, &sdp, tx).await
         }
         ClientEvent::VoiceSubscriberAnswer { channel_id, sdp } => {
-            handle_subscriber_answer(sfu, user_id, channel_id, &sdp).await
+            handle_subscriber_answer(sfu, user_id, channel_id, &sdp, tx).await
         }
         ClientEvent::VoiceIceCandidate {
             channel_id,
             candidate,
             pc_type,
-        } => handle_ice_candidate(sfu, user_id, channel_id, &candidate, &pc_type).await,
-        ClientEvent::VoiceMute { channel_id } => handle_mute(sfu, user_id, channel_id, true).await,
+        } => handle_ice_candidate(sfu, user_id, channel_id, &candidate, &pc_type, tx).await,
+        ClientEvent::VoiceMute { channel_id } => {
+            handle_mute(sfu, user_id, channel_id, true, tx).await
+        }
         ClientEvent::VoiceUnmute { channel_id } => {
-            handle_mute(sfu, user_id, channel_id, false).await
+            handle_mute(sfu, user_id, channel_id, false, tx).await
         }
         ClientEvent::VoiceStats {
             channel_id,
@@ -123,7 +155,7 @@ pub async fn handle_voice_event(
                 quality,
                 timestamp,
             };
-            handle_voice_stats(sfu, pool, user_id, channel_id, stats).await
+            handle_voice_stats(sfu, pool, user_id, channel_id, stats, tx).await
         }
         ClientEvent::VoiceScreenShareStart {
             channel_id,
@@ -144,6 +176,7 @@ pub async fn handle_voice_event(
                     source_label: &source_label,
                 },
                 screen_share_limiter,
+                tx,
             )
             .await
         }
@@ -151,15 +184,22 @@ pub async fn handle_voice_event(
             channel_id,
             stream_id,
         } => {
-            handle_screen_share_stop(sfu, user_id, channel_id, stream_id, screen_share_limiter)
-                .await
+            handle_screen_share_stop(
+                sfu,
+                user_id,
+                channel_id,
+                stream_id,
+                screen_share_limiter,
+                tx,
+            )
+            .await
         }
         ClientEvent::VoiceWebcamStart {
             channel_id,
             quality,
-        } => handle_webcam_start(sfu, pool, user_id, channel_id, quality).await,
+        } => handle_webcam_start(sfu, pool, user_id, channel_id, quality, tx).await,
         ClientEvent::VoiceWebcamStop { channel_id } => {
-            handle_webcam_stop(sfu, user_id, channel_id).await
+            handle_webcam_stop(sfu, user_id, channel_id, tx).await
         }
         ClientEvent::VoiceSetLayerPreference {
             channel_id,
@@ -189,8 +229,27 @@ async fn handle_join(
     user_id: Uuid,
     channel_id: Uuid,
     tx: &mpsc::Sender<OutboundMsg>,
+    screen_share_limiter: Option<&ScreenShareLimiter>,
+    auth_session: Option<Uuid>,
 ) -> Result<(), VoiceError> {
     info!(user_id = %user_id, channel_id = %channel_id, "User joining voice channel");
+
+    // The access epochs this join is decided at (`ws::access`): checked
+    // again once the peer is in the room.
+    let channel = crate::db::find_channel_by_id(pool, channel_id)
+        .await
+        .map_err(|e| VoiceError::Internal(format!("failed to load channel: {e}")))?;
+    let guild_id = channel.as_ref().and_then(|c| c.guild_id);
+    // The channel's member limit (unset or 0: none). Nobody bypasses it.
+    let user_limit = channel
+        .as_ref()
+        .and_then(|c| c.user_limit)
+        .and_then(|l| usize::try_from(l).ok())
+        .filter(|l| *l > 0);
+    let is_dm = channel
+        .as_ref()
+        .is_some_and(|c| c.channel_type == crate::db::ChannelType::Dm);
+    let epochs = crate::ws::access::registry().snapshot(user_id, guild_id);
 
     // Check if user has VIEW_CHANNEL and VOICE_CONNECT permissions
     let ctx = crate::permissions::require_channel_access(pool, user_id, channel_id)
@@ -200,29 +259,84 @@ async fn handle_join(
     if !ctx.has_permission(crate::permissions::GuildPermissions::VOICE_CONNECT) {
         return Err(VoiceError::Unauthorized);
     }
+    if is_dm {
+        ensure_no_block_in_dm(pool, user_id, channel_id).await?;
+    }
 
     sfu.check_rate_limit(user_id).await?;
+    crate::ws::test_hooks::voice_join_after_check(user_id).await;
 
     let (username, display_name) = queries::find_user_username_display_name(pool, user_id)
         .await
-        .map_err(|e| VoiceError::Signaling(format!("Failed to fetch user info: {e}")))?;
+        .map_err(|e| VoiceError::Internal(format!("failed to fetch user info: {e}")))?;
 
-    let room = sfu.get_or_create_room(channel_id).await;
+    // The seat goes into the room the server lists for the channel; if that
+    // room was removed as empty while the connections were set up, start
+    // once more with the listed one.
+    let mut attempt = 0;
+    let (room, peer, replaced) = loop {
+        attempt += 1;
+        let room = sfu.get_or_create_room(channel_id).await;
 
-    let peer = sfu
-        .create_peer(
+        let peer = sfu
+            .create_peer(
+                user_id,
+                username.clone(),
+                display_name.clone(),
+                channel_id,
+                tx.clone(),
+            )
+            .await?;
+
+        sfu.setup_ice_handler(&peer);
+        sfu.setup_track_handler(&peer, &room);
+        // What the owning socket's writes are fenced by: room content reaches
+        // it only while these epochs hold, or after a new check.
+        peer.set_admission(crate::ws::access::VoiceAdmission { guild_id, epochs });
+        peer.set_auth_session(auth_session);
+
+        match sfu.add_peer_listed(&room, peer.clone(), user_limit).await {
+            Ok(replaced) => {
+                // Counted where the seat enters the room, so every way out
+                // (including a join rolled back below) balances it.
+                crate::observability::metrics::record_voice_session_start();
+                break (room, peer, replaced);
+            }
+            // The room was removed meanwhile (the peer is closed already).
+            Err(VoiceError::RoomNotFound(_)) if attempt < 2 => {}
+            Err(e) => {
+                // Refused (room full, or removed again): the new
+                // connections are not used.
+                peer.close().await;
+                sfu.cleanup_room_if_empty(channel_id).await;
+                return Err(e);
+            }
+        }
+    };
+    if let Some(replaced) = replaced {
+        retire_replaced_peer(pool, &room, guild_id, tx, replaced, screen_share_limiter).await;
+    }
+
+    // An access change that bumped its epoch before this point may have
+    // looked at the rooms before the peer was in: re-check now. A change
+    // after this point sees the peer (it bumps, then looks), so no join can
+    // slip past a revocation.
+    if crate::ws::access::registry().snapshot(user_id, guild_id) != epochs
+        && !super::revoke::has_voice_access(pool, user_id, channel_id)
+            .await
+            .unwrap_or(false)
+    {
+        super::leave::leave_voice_internal(
+            sfu,
+            pool,
             user_id,
-            username.clone(),
-            display_name.clone(),
             channel_id,
-            tx.clone(),
+            screen_share_limiter,
+            Some(peer.session_id),
         )
         .await?;
-
-    sfu.setup_ice_handler(&peer);
-    sfu.setup_track_handler(&peer, &room);
-
-    room.add_peer(peer.clone()).await?;
+        return Err(VoiceError::Unauthorized);
+    }
 
     // In the dual-PC model, the server does NOT send an initial offer.
     // The client will send a VoicePublisherOffer after joining, which
@@ -247,23 +361,30 @@ async fn handle_join(
 
     crate::ws::handlers::send_outbound(
         tx,
-        OutboundMsg::Event(ServerEvent::VoiceRoomState {
+        OutboundMsg::voice(
             channel_id,
-            participants,
-            screen_shares,
-            webcams,
-        }),
+            ServerEvent::VoiceRoomState {
+                channel_id,
+                participants,
+                screen_shares,
+                webcams,
+            },
+        ),
     )
     .await?;
 
-    room.broadcast_except(
-        user_id,
+    crate::ws::test_hooks::voice_step(user_id, "join_announce").await;
+    // Only while this seat is still the user's: a seat removed meanwhile
+    // (a revocation, the reaper) is not announced.
+    room.broadcast_if_current(
+        &peer,
         ServerEvent::VoiceUserJoined {
             channel_id,
             user_id,
             username,
             display_name,
         },
+        false,
     )
     .await;
 
@@ -272,9 +393,165 @@ async fn handle_join(
         channel_id = %channel_id,
         "User joined voice channel"
     );
-    crate::observability::metrics::record_voice_session_start();
 
     Ok(())
+}
+
+/// How long the old connection of a replaced session may take to close
+/// before it is left to the WebRTC stack (the join does not wait for it).
+const REPLACED_PEER_CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// How long `voice_removed` may wait for the old socket's queue.
+const REPLACED_NOTICE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Tear down the peer that a new join of the same user replaced (contract
+/// C31 `session_replaced`): end its screen shares and webcam (slots released,
+/// the others told), remove its tracks from the other participants, tell its
+/// socket `voice_removed { session_replaced }` (unless the new join came on
+/// that same socket), record the session end and close its connections in
+/// the background, so a slow or failing teardown never holds up the join.
+async fn retire_replaced_peer(
+    pool: &PgPool,
+    room: &Room,
+    guild_id: Option<Uuid>,
+    new_tx: &mpsc::Sender<OutboundMsg>,
+    replaced: ReplacedMedia,
+    screen_share_limiter: Option<&ScreenShareLimiter>,
+) {
+    let ReplacedMedia {
+        peer: old,
+        screen_shares,
+        webcam,
+    } = replaced;
+    let channel_id = room.channel_id;
+    let user_id = old.user_id;
+
+    // The stops and the notice to the replaced socket go out together; the
+    // old seat's media is detached before the new seat's join answers (its
+    // tracks must be gone before the new seat publishes).
+    let notice = async {
+        if !old.signal_tx.same_channel(new_tx) {
+            let notice = OutboundMsg::Event(ServerEvent::VoiceRemoved {
+                channel_id,
+                reason: crate::ws::VoiceRemovedReason::SessionReplaced,
+            });
+            if let Err(e) = crate::ws::handlers::send_outbound_within(
+                &old.signal_tx,
+                notice,
+                REPLACED_NOTICE_TIMEOUT,
+            )
+            .await
+            {
+                debug!(user_id = %user_id, error = %e, "Could not tell the replaced session");
+            }
+        }
+    };
+    tokio::join!(
+        release_replaced_media(
+            room,
+            user_id,
+            &screen_shares,
+            webcam.is_some(),
+            screen_share_limiter,
+        ),
+        notice
+    );
+    room.detach_media(&old).await;
+
+    super::leave::end_session_records(pool, &old, guild_id);
+    tokio::spawn(async move {
+        if tokio::time::timeout(REPLACED_PEER_CLOSE_TIMEOUT, old.close())
+            .await
+            .is_err()
+        {
+            warn!(user_id = %old.user_id, "Closing a replaced voice peer timed out");
+        }
+    });
+}
+
+/// End the screen shares and webcam of a peer that a new join of the same
+/// user replaced: release their slots and tell the other participants, so no
+/// ghost share remains.
+async fn release_replaced_media(
+    room: &Room,
+    user_id: Uuid,
+    screen_shares: &[ScreenShareInfo],
+    had_webcam: bool,
+    screen_share_limiter: Option<&ScreenShareLimiter>,
+) {
+    let channel_id = room.channel_id;
+    if !screen_shares.is_empty() {
+        if let Some(limiter) = screen_share_limiter {
+            // Freed beside the new join, not before its answer: until the
+            // store has answered, a share start in this room can still see
+            // the old count. Each slot is freed once (by this task).
+            let (limiter, counter, n) = (
+                limiter.clone(),
+                room.share_counter.clone(),
+                screen_shares.len(),
+            );
+            tokio::spawn(async move { limiter.stop_n(&counter, n).await });
+        } else {
+            warn!("Screen share limiter unavailable — replaced shares not released");
+        }
+    }
+    // All stops go out together (each waits at most one send bound for a
+    // participant with a full queue).
+    let share_stops = screen_shares.iter().map(|share| {
+        room.announce_stopped(
+            ServerEvent::ScreenShareStopped {
+                channel_id,
+                user_id,
+                stream_id: share.stream_id,
+                reason: "replaced".to_string(),
+            },
+            false,
+        )
+    });
+    let webcam_stop = async {
+        if had_webcam {
+            room.announce_stopped(
+                ServerEvent::WebcamStopped {
+                    channel_id,
+                    user_id,
+                    reason: "replaced".to_string(),
+                },
+                false,
+            )
+            .await;
+        }
+    };
+    tokio::join!(futures::future::join_all(share_stops), webcam_stop);
+}
+
+/// Refuse a join to a DM call when the user and any other participant of
+/// the DM blocked each other (either direction; same rule as starting or
+/// answering a call). The error does not say who blocked whom. A failed
+/// lookup refuses too.
+async fn ensure_no_block_in_dm(
+    pool: &PgPool,
+    user_id: Uuid,
+    channel_id: Uuid,
+) -> Result<(), VoiceError> {
+    let others: Vec<Uuid> = crate::chat::queries::list_dm_participants(pool, channel_id)
+        .await
+        .map_err(|e| {
+            warn!(channel_id = %channel_id, error = %e, "DM participant lookup failed on voice join");
+            // Still refused, but not reported as a block.
+            VoiceError::Internal("DM participant lookup failed".to_string())
+        })?
+        .into_iter()
+        .map(|p| p.user_id)
+        .filter(|id| *id != user_id)
+        .collect();
+    match crate::chat::queries::blocked_among(pool, user_id, &others).await {
+        Ok(blocked) if blocked.is_empty() => Ok(()),
+        Ok(_) => Err(VoiceError::JoinRefused),
+        Err(e) => {
+            warn!(user_id = %user_id, error = %e, "Block lookup failed on voice join");
+            Err(VoiceError::Internal("block lookup failed".to_string()))
+        }
+    }
 }
 
 /// Handle a user leaving a voice channel.
@@ -287,11 +564,62 @@ async fn handle_leave(
     user_id: Uuid,
     channel_id: Uuid,
     screen_share_limiter: Option<&ScreenShareLimiter>,
+    tx: &mpsc::Sender<OutboundMsg>,
 ) -> Result<(), VoiceError> {
     info!(user_id = %user_id, channel_id = %channel_id, "User leaving voice channel");
-    super::leave::leave_voice_internal(sfu, pool, user_id, channel_id, screen_share_limiter, None)
+    // Only this socket's own seat: after the user moved to another device,
+    // a leave from the old one changes nothing.
+    let Some(room) = sfu.get_room(channel_id).await else {
+        return Ok(());
+    };
+    let Ok(peer) = owned_peer(&room, user_id, tx).await else {
+        debug!(user_id = %user_id, channel_id = %channel_id, "Leave from a socket without a seat ignored");
+        return Ok(());
+    };
+    super::leave::leave_voice_internal(
+        sfu,
+        pool,
+        user_id,
+        channel_id,
+        screen_share_limiter,
+        Some(peer.session_id),
+    )
+    .await
+    .map(|_| ())
+}
+
+/// The media id (`a=mid`) of the first audio section of a session
+/// description, if it has one.
+fn first_audio_mid(sdp: &str) -> Option<String> {
+    let mut in_audio = false;
+    for line in sdp.lines() {
+        if let Some(media) = line.strip_prefix("m=") {
+            if in_audio {
+                return None;
+            }
+            in_audio = media.starts_with("audio");
+        } else if in_audio {
+            if let Some(mid) = line.strip_prefix("a=mid:") {
+                return Some(mid.trim().to_owned());
+            }
+        }
+    }
+    None
+}
+
+/// The peer of `user_id` in `room` that belongs to the socket `tx`. Every
+/// voice event except the join acts only on its own socket's peer: after
+/// the same user joined from another socket, the old socket's events find
+/// nothing (`PARTICIPANT_NOT_FOUND`) and never reach the new session.
+async fn owned_peer(
+    room: &Room,
+    user_id: Uuid,
+    tx: &mpsc::Sender<OutboundMsg>,
+) -> Result<Arc<super::peer::Peer>, VoiceError> {
+    room.get_peer(user_id)
         .await
-        .map(|_| ())
+        .filter(|peer| peer.signal_tx.same_channel(tx))
+        .ok_or(VoiceError::ParticipantNotFound(user_id))
 }
 
 /// Handle a publisher SDP offer from the client.
@@ -303,6 +631,7 @@ async fn handle_publisher_offer(
     user_id: Uuid,
     channel_id: Uuid,
     sdp: &str,
+    tx: &mpsc::Sender<OutboundMsg>,
 ) -> Result<(), VoiceError> {
     debug!(user_id = %user_id, channel_id = %channel_id, "Received publisher offer");
 
@@ -311,19 +640,25 @@ async fn handle_publisher_offer(
         .await
         .ok_or(VoiceError::RoomNotFound(channel_id))?;
 
-    let peer = room
-        .get_peer(user_id)
-        .await
-        .ok_or(VoiceError::ParticipantNotFound(user_id))?;
+    let peer = owned_peer(&room, user_id, tx).await?;
+
+    // The first offer names the microphone: its first audio section (every
+    // client adds the microphone before it sends that offer). Refused video
+    // transceiver bindings do not outlive an offer (it may reuse them).
+    peer.set_microphone_mid(first_audio_mid(sdp));
+    peer.forget_refused_mids(sdp);
 
     match SfuServer::handle_publisher_offer(&peer, sdp.to_string()).await {
         Ok(answer_sdp) => {
             if let Err(e) = crate::ws::handlers::send_outbound(
                 &peer.signal_tx,
-                OutboundMsg::Event(ServerEvent::VoicePublisherAnswer {
+                OutboundMsg::voice(
                     channel_id,
-                    sdp: answer_sdp,
-                }),
+                    ServerEvent::VoicePublisherAnswer {
+                        channel_id,
+                        sdp: answer_sdp,
+                    },
+                ),
             )
             .await
             {
@@ -372,54 +707,24 @@ async fn subscribe_to_existing_tracks(
             .collect()
     };
 
-    for (other_id, other_peer) in &other_peers {
-        let incoming = other_peer.incoming_tracks.read().await;
-        for (source_type, track) in incoming.iter() {
-            match room
-                .track_router
-                .create_subscriber_track(*other_id, *source_type, peer, track)
-            {
-                Ok(local_track) => {
-                    match peer
-                        .add_outgoing_track(*other_id, *source_type, local_track)
-                        .await
-                    {
-                        Ok(sender) => {
-                            if source_type.is_video() {
-                                spawn_subscriber_remb_reader(
-                                    room.track_router.clone(),
-                                    user_id,
-                                    *other_id,
-                                    *source_type,
-                                    sender,
-                                    peer.signal_tx.clone(),
-                                    room.channel_id,
-                                );
-                            }
-                            // PLI for screen shares is sent AFTER renegotiation
-                            // (see below) so the keyframe arrives when the subscriber
-                            // is actually ready to decode.
-                        }
-                        Err(e) => {
-                            warn!(
-                                source = %other_id,
-                                subscriber = %user_id,
-                                error = %e,
-                                "Failed to add outgoing track for existing peer"
-                            );
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        user_id = %user_id,
-                        source_user = %other_id,
-                        source = ?source_type,
-                        error = %e,
-                        "failed to create subscriber track"
-                    );
-                }
-            }
+    for (_, other_peer) in &other_peers {
+        // State added on behalf of the source seat: under its media lock and
+        // only while it is current (a seat replaced meanwhile has its media
+        // removed under the same lock).
+        let _media = other_peer.media.lock().await;
+        if other_peer.is_retired() {
+            continue;
+        }
+        let incoming: Vec<(TrackSource, Arc<webrtc::track::track_remote::TrackRemote>)> =
+            other_peer
+                .incoming_tracks
+                .read()
+                .await
+                .iter()
+                .map(|(s, t)| (*s, t.clone()))
+                .collect();
+        for (source_type, track) in incoming {
+            super::sfu::forward_to(room, other_peer, source_type, &track, peer).await;
         }
     }
 
@@ -440,6 +745,7 @@ async fn handle_subscriber_answer(
     user_id: Uuid,
     channel_id: Uuid,
     sdp: &str,
+    tx: &mpsc::Sender<OutboundMsg>,
 ) -> Result<(), VoiceError> {
     debug!(user_id = %user_id, channel_id = %channel_id, "Received subscriber answer");
 
@@ -448,10 +754,7 @@ async fn handle_subscriber_answer(
         .await
         .ok_or(VoiceError::RoomNotFound(channel_id))?;
 
-    let peer = room
-        .get_peer(user_id)
-        .await
-        .ok_or(VoiceError::ParticipantNotFound(user_id))?;
+    let peer = owned_peer(&room, user_id, tx).await?;
 
     SfuServer::handle_subscriber_answer(&peer, sdp.to_string())
         .await
@@ -473,6 +776,7 @@ async fn handle_ice_candidate(
     channel_id: Uuid,
     candidate: &str,
     pc_type: &PcType,
+    tx: &mpsc::Sender<OutboundMsg>,
 ) -> Result<(), VoiceError> {
     debug!(user_id = %user_id, channel_id = %channel_id, pc_type = %pc_type, "Received ICE candidate");
 
@@ -481,10 +785,7 @@ async fn handle_ice_candidate(
         .await
         .ok_or(VoiceError::RoomNotFound(channel_id))?;
 
-    let peer = room
-        .get_peer(user_id)
-        .await
-        .ok_or(VoiceError::ParticipantNotFound(user_id))?;
+    let peer = owned_peer(&room, user_id, tx).await?;
 
     if let Err(e) = SfuServer::handle_ice_candidate(&peer, candidate, pc_type).await {
         error!(user_id = %user_id, channel_id = %channel_id, pc_type = %pc_type, error = %e, "failed to add ICE candidate");
@@ -499,6 +800,7 @@ async fn handle_mute(
     user_id: Uuid,
     channel_id: Uuid,
     muted: bool,
+    tx: &mpsc::Sender<OutboundMsg>,
 ) -> Result<(), VoiceError> {
     debug!(
         user_id = %user_id,
@@ -512,10 +814,7 @@ async fn handle_mute(
         .await
         .ok_or(VoiceError::RoomNotFound(channel_id))?;
 
-    let peer = room
-        .get_peer(user_id)
-        .await
-        .ok_or(VoiceError::ParticipantNotFound(user_id))?;
+    let peer = owned_peer(&room, user_id, tx).await?;
 
     peer.set_self_muted(muted).await;
 
@@ -532,7 +831,7 @@ async fn handle_mute(
         }
     };
 
-    room.broadcast_except(user_id, event).await;
+    room.broadcast_if_current(&peer, event, false).await;
 
     Ok(())
 }
@@ -547,6 +846,7 @@ async fn handle_voice_stats(
     user_id: Uuid,
     channel_id: Uuid,
     mut stats: VoiceStats,
+    tx: &mpsc::Sender<OutboundMsg>,
 ) -> Result<(), VoiceError> {
     // Rate limit check
     if sfu.check_stats_rate_limit(user_id).await.is_err() {
@@ -568,15 +868,15 @@ async fn handle_voice_stats(
     let Some(room) = sfu.get_room(channel_id).await else {
         return Ok(());
     };
-    let Some(peer) = room.get_peer(user_id).await else {
+    let Ok(peer) = owned_peer(&room, user_id, tx).await else {
         warn!(user_id = %user_id, channel_id = %channel_id, "User sent voice stats for a room they are not in");
         return Ok(());
     };
     stats.session_id = peer.session_id;
 
     // Broadcast to room participants
-    room.broadcast_except(
-        user_id,
+    room.broadcast_if_current(
+        &peer,
         ServerEvent::VoiceUserStats {
             channel_id,
             user_id,
@@ -585,6 +885,7 @@ async fn handle_voice_stats(
             jitter: stats.jitter,
             quality: stats.quality,
         },
+        false,
     )
     .await;
 
@@ -614,6 +915,7 @@ async fn handle_screen_share_start(
     pool: &PgPool,
     params: HandleScreenShareStartParams<'_>,
     screen_share_limiter: Option<&ScreenShareLimiter>,
+    tx: &mpsc::Sender<OutboundMsg>,
 ) -> Result<(), VoiceError> {
     info!(user_id = %params.user_id, channel_id = %params.channel_id, quality = ?params.quality, "User starting screen share");
 
@@ -623,7 +925,7 @@ async fn handle_screen_share_start(
         .map_err(|e| map_permission_error(e, "screen share"))?;
 
     if !ctx.has_permission(crate::permissions::GuildPermissions::SCREEN_SHARE) {
-        return Err(VoiceError::Unauthorized);
+        return Err(VoiceError::ScreenShareForbidden);
     }
 
     // Validate source label
@@ -639,30 +941,28 @@ async fn handle_screen_share_start(
         .ok_or(VoiceError::RoomNotFound(params.channel_id))?;
 
     // Check user is in the room
-    let peer = room
-        .get_peer(params.user_id)
-        .await
-        .ok_or(VoiceError::ParticipantNotFound(params.user_id))?;
+    let peer = owned_peer(&room, params.user_id, tx).await?;
 
     // Check if user has reached the per-user stream limit (max 3 concurrent streams)
     {
         const MAX_STREAMS_PER_USER: usize = 3;
         let count = room.get_user_stream_count(params.user_id).await;
         if count >= MAX_STREAMS_PER_USER {
-            return Err(VoiceError::Signaling(
-                "Maximum 3 concurrent screen shares per user".to_string(),
+            return Err(VoiceError::ScreenShareLimit(
+                "Maximum 3 concurrent screen shares per user",
             ));
         }
     }
 
     // Fetch max_screen_shares from channel settings
+    // A failed read refuses the start (a default could exceed the
+    // channel's configured limit); an unset limit means the default.
     let max_screen_shares: i32 = queries::find_channel_max_screen_shares(pool, params.channel_id)
         .await
-        .inspect_err(|e| {
-            warn!(channel_id = %params.channel_id, error = %e, "Failed to query max_screen_shares, using default");
-        })
-        .ok()
-        .flatten()
+        .map_err(|e| {
+            warn!(channel_id = %params.channel_id, error = %e, "Failed to query max_screen_shares, refusing the start");
+            VoiceError::Internal("channel settings unavailable".to_string())
+        })?
         .unwrap_or(6);
     // Use the stream_id provided by the client.
     let stream_id = params.stream_id;
@@ -678,25 +978,15 @@ async fn handle_screen_share_start(
     // Try to reserve a slot via limiter
     let limiter = screen_share_limiter
         .ok_or_else(|| VoiceError::Signaling("Screen share limiter unavailable".to_string()))?;
-    if let Err(e) = limiter.start(params.channel_id, max_shares).await {
+    if let Err(e) = limiter.start(&room.share_counter, max_shares).await {
         warn!(user_id = %params.user_id, channel_id = %params.channel_id, error = ?e, "Screen share limit check failed");
-        return Err(VoiceError::Signaling(match e {
-            ScreenShareError::LimitReached => "Screen share limit reached".to_string(),
-            ScreenShareError::InternalError => "Internal error".to_string(),
-            _ => format!("{e:?}"),
-        }));
+        return Err(match e {
+            ScreenShareError::LimitReached => {
+                VoiceError::ScreenShareLimit("Screen share limit reached")
+            }
+            other => VoiceError::Internal(format!("screen share limiter: {other:?}")),
+        });
     }
-
-    // Queue pending track sources so setup_track_handler can identify them
-    peer.push_pending_source(TrackSource::ScreenVideo(stream_id))
-        .await;
-    if params.has_audio {
-        peer.push_pending_source(TrackSource::ScreenAudio(stream_id))
-            .await;
-    }
-
-    // In the dual-PC model, the client adds tracks to the publisher PC
-    // and sends a new offer. No server-side transceiver allocation needed.
 
     // Get username for the info
     let username = peer.username.clone();
@@ -711,21 +1001,64 @@ async fn handle_screen_share_start(
         params.quality,
     );
 
-    // Add to room's screen shares
-    room.add_screen_share(info.clone()).await;
+    // Add to the room's screen shares; a concurrent start with the same
+    // `stream_id` that won the race keeps its entry, and this one gives its
+    // slot back.
+    // Registered in one step with the check that this is still the user's
+    // current seat: a seat replaced or gone during the checks above adds
+    // nothing and gives its slot back.
+    // Registered, queued and numbered under the seat's media lock, the lock
+    // its end and its expiry take: an expiry decides about exactly the start
+    // it was armed for.
+    let media = peer.media.lock().await;
+    if let Err(e) = room.try_add_screen_share_for(&peer, info.clone()).await {
+        drop(media);
+        limiter.stop(&room.share_counter).await;
+        return Err(e);
+    }
 
-    // Broadcast to room (including the sharer, so they get confirmation)
-    room.broadcast_all(ServerEvent::ScreenShareStarted {
-        channel_id: params.channel_id,
-        user_id: params.user_id,
-        stream_id,
-        username,
-        source_label: params.source_label.to_string(),
-        has_audio: params.has_audio,
-        quality: params.quality,
-        started_at: info.started_at.to_rfc3339(),
-    })
-    .await;
+    // Queue pending track sources so setup_track_handler can identify them
+    // (only once the share is live; a track never binds to a dead share).
+    peer.push_pending_source(TrackSource::ScreenVideo(stream_id))
+        .await;
+    if params.has_audio {
+        peer.push_pending_source(TrackSource::ScreenAudio(stream_id))
+            .await;
+    }
+    let announcement = peer.announce(TrackSource::ScreenVideo(stream_id));
+    drop(media);
+    expire_unused_announcement(
+        room.clone(),
+        peer.clone(),
+        TrackSource::ScreenVideo(stream_id),
+        announcement,
+        screen_share_limiter.cloned(),
+    );
+
+    crate::ws::test_hooks::voice_step(params.user_id, "share_start").await;
+
+    // Broadcast to room (including the sharer, so they get confirmation),
+    // only while this is still the user's seat: a replacement in between
+    // took the share back and announced its end.
+    if !room
+        .broadcast_if_current(
+            &peer,
+            ServerEvent::ScreenShareStarted {
+                channel_id: params.channel_id,
+                user_id: params.user_id,
+                stream_id,
+                username,
+                source_label: params.source_label.to_string(),
+                has_audio: params.has_audio,
+                quality: params.quality,
+                started_at: info.started_at.to_rfc3339(),
+            },
+            true,
+        )
+        .await
+    {
+        return Err(VoiceError::ParticipantNotFound(params.user_id));
+    }
 
     info!(
         user_id = %params.user_id,
@@ -744,6 +1077,7 @@ async fn handle_screen_share_stop(
     channel_id: Uuid,
     stream_id: Uuid,
     screen_share_limiter: Option<&ScreenShareLimiter>,
+    tx: &mpsc::Sender<OutboundMsg>,
 ) -> Result<(), VoiceError> {
     info!(user_id = %user_id, channel_id = %channel_id, stream_id = %stream_id, "User stopping screen share");
 
@@ -752,87 +1086,148 @@ async fn handle_screen_share_stop(
         .get_room(channel_id)
         .await
         .ok_or(VoiceError::RoomNotFound(channel_id))?;
+    let peer = owned_peer(&room, user_id, tx).await?;
+    end_screen_share(
+        &room,
+        &peer,
+        stream_id,
+        screen_share_limiter,
+        "user_stopped",
+        None,
+    )
+    .await
+}
 
-    // Look up the specific stream by stream_id and verify ownership.
-    let share_info = {
-        let shares = room.screen_shares.read().await;
-        shares.get(&stream_id).cloned()
-    };
+/// How long an accepted share or webcam start waits for its track before it
+/// ends by itself (the client failed or gave up after the acknowledgement).
+pub const ANNOUNCEMENT_TTL: std::time::Duration = std::time::Duration::from_secs(10);
 
-    if let Some(info) = share_info {
-        // Verify the requesting user owns this stream
-        if info.user_id != user_id {
-            warn!(user_id = %user_id, stream_id = %stream_id, "User tried to stop a screen share they don't own");
-            return Err(VoiceError::Signaling("Not your screen share".to_string()));
+/// After [`ANNOUNCEMENT_TTL`], end the share or webcam announced as `source`
+/// if no track arrived for it: its slot is released and the room gets the
+/// normal stopped event with reason `no_media`. A stale announcement can then
+/// never bind a later track.
+fn expire_unused_announcement(
+    room: Arc<Room>,
+    peer: Arc<super::peer::Peer>,
+    source: TrackSource,
+    announcement: u64,
+    limiter: Option<ScreenShareLimiter>,
+) {
+    tokio::spawn(async move {
+        tokio::time::sleep(ANNOUNCEMENT_TTL).await;
+        // Only this announcement: a later start of the same source (webcam
+        // off and on, a reused stream id) has its own timer. Any layer of a
+        // simulcast track counts as its media (the first layer to arrive
+        // sets the incoming track).
+        if peer.is_retired()
+            || !peer.is_current_announcement(source, announcement)
+            || peer.incoming_tracks.read().await.contains_key(&source)
+        {
+            return;
         }
-        room.remove_screen_share(stream_id).await;
-    } else {
-        // User wasn't sharing, but that's okay - idempotent
-        debug!(user_id = %user_id, "User tried to stop screen share but wasn't sharing");
+        let ended = match source {
+            TrackSource::ScreenVideo(stream_id) => {
+                end_screen_share(
+                    &room,
+                    &peer,
+                    stream_id,
+                    limiter.as_ref(),
+                    "no_media",
+                    Some(announcement),
+                )
+                .await
+            }
+            TrackSource::Webcam => end_webcam(&room, &peer, "no_media", Some(announcement)).await,
+            TrackSource::Microphone | TrackSource::ScreenAudio(_) => Ok(()),
+        };
+        if let Err(e) = ended {
+            debug!(user_id = %peer.user_id, error = %e, "Expiring an unused announcement failed");
+        }
+    });
+}
+
+/// Whether the start that armed expiry `announcement` of `source` is still
+/// the latest one and still has no track. Checked under the seat's media
+/// lock, which a start, a track binding and an end also take, so the answer
+/// holds while the expiry ends it.
+async fn still_unused(peer: &super::peer::Peer, source: TrackSource, announcement: u64) -> bool {
+    !peer.is_retired()
+        && peer.is_current_announcement(source, announcement)
+        && !peer.incoming_tracks.read().await.contains_key(&source)
+}
+
+/// End the screen share `stream_id` of `peer`: drop its queued
+/// announcement, remove it from the room, release its slot, remove its
+/// tracks everywhere and tell the room (`screen_share_stopped` with
+/// `reason`). Shared by the client's stop and the expiry of an announcement
+/// whose track never came. Only a share that this seat owns is touched: a
+/// replaced seat's late stop or expiry ends nothing of a newer seat's.
+async fn end_screen_share(
+    room: &Room,
+    peer: &Arc<super::peer::Peer>,
+    stream_id: Uuid,
+    screen_share_limiter: Option<&ScreenShareLimiter>,
+    reason: &str,
+    expiry: Option<u64>,
+) -> Result<(), VoiceError> {
+    crate::ws::test_hooks::voice_step(peer.user_id, "end_share").await;
+    let user_id = peer.user_id;
+    let channel_id = room.channel_id;
+    // Serialized with a track being bound to this share (see `sfu.rs`): a
+    // track never starts forwarding for a share that has ended. What ends is
+    // decided and removed under the lock; the store is not waited for under
+    // it (a takeover of this seat waits for the lock).
+    let media = peer.media.lock().await;
+    if let Some(n) = expiry {
+        if !still_unused(peer, TrackSource::ScreenVideo(stream_id), n).await {
+            return Ok(());
+        }
+    }
+    // An announcement this stop ends must never bind a later track.
+    peer.remove_pending_sources(|s| s.stream_id() == Some(stream_id))
+        .await;
+
+    // Another user's stream is refused; a stream of another seat of this
+    // user (or none) is left alone.
+    let other_users = room
+        .screen_shares
+        .read()
+        .await
+        .get(&stream_id)
+        .is_some_and(|s| s.user_id != user_id);
+    if other_users {
+        warn!(user_id = %user_id, stream_id = %stream_id, "User tried to stop a screen share they don't own");
+        return Err(VoiceError::Signaling("Not your screen share".to_string()));
+    }
+    // Only the one who removes the entry releases the slot (a stop and the
+    // expiry may race).
+    if room.remove_screen_share_of(peer, stream_id).await.is_none() {
+        debug!(user_id = %user_id, "Screen share to stop is not this seat's (or already ended)");
         return Ok(());
     }
 
-    // Decrement Redis counter
+    detach_sources(room, peer, |s| s.stream_id() == Some(stream_id)).await;
+    drop(media);
+
+    // The slot is free before the stop is announced; whether the stop is
+    // announced at all is decided under the room's share state (a share live
+    // again with this id is not announced as stopped).
     if let Some(limiter) = screen_share_limiter {
-        limiter.stop(channel_id).await;
+        limiter.stop(&room.share_counter).await;
     } else {
         tracing::warn!("Screen share limiter unavailable during stop — counter not decremented");
     }
 
-    // Collect only the track sources belonging to this specific stream_id
-    let screen_sources: Vec<TrackSource> = if let Some(peer) = room.get_peer(user_id).await {
-        let incoming = peer.incoming_tracks.read().await;
-        incoming
-            .keys()
-            .filter(|s| s.stream_id() == Some(stream_id))
-            .copied()
-            .collect()
-    } else {
-        Vec::new()
-    };
-
-    // Clean up screen share tracks from the track router
-    for source in &screen_sources {
-        room.track_router
-            .remove_source_track(user_id, *source)
-            .await;
-    }
-
-    // Remove incoming tracks from the peer
-    if let Some(peer) = room.get_peer(user_id).await {
-        let mut incoming = peer.incoming_tracks.write().await;
-        for source in &screen_sources {
-            incoming.remove(source);
-        }
-    }
-
-    // Remove outgoing tracks from all subscribers and renegotiate
-    let other_peers = room.get_other_peers(user_id).await;
-    for other_peer in &other_peers {
-        let mut any_removed = false;
-        for source in &screen_sources {
-            if other_peer.remove_outgoing_track(user_id, *source).await {
-                any_removed = true;
-            }
-        }
-        if any_removed {
-            if let Err(e) = SfuServer::renegotiate(other_peer).await {
-                warn!(
-                    subscriber = %other_peer.user_id,
-                    error = %e,
-                    "Failed to renegotiate after screen share track removal"
-                );
-            }
-        }
-    }
-
     // Broadcast to room
-    room.broadcast_all(ServerEvent::ScreenShareStopped {
-        channel_id,
-        user_id,
-        stream_id,
-        reason: "user_stopped".to_string(),
-    })
+    room.announce_stopped(
+        ServerEvent::ScreenShareStopped {
+            channel_id,
+            user_id,
+            stream_id,
+            reason: reason.to_string(),
+        },
+        true,
+    )
     .await;
 
     info!(
@@ -845,6 +1240,50 @@ async fn handle_screen_share_stop(
     Ok(())
 }
 
+/// Remove the media of `peer`'s sources matching `ended` (a share or webcam
+/// that ended) from the room: its incoming tracks, exactly the tracks it
+/// forwarded to the others (one renegotiation each), their router
+/// subscriptions and simulcast layers, and the transceiver bindings. Never
+/// touches another seat's media. The caller holds `peer.media`.
+async fn detach_sources(
+    room: &Room,
+    peer: &Arc<super::peer::Peer>,
+    ended: impl Fn(&TrackSource) -> bool,
+) {
+    peer.incoming_tracks.write().await.retain(|s, _| !ended(s));
+    peer.forget_video_mids(&ended);
+    let layers = peer.take_simulcast_layers(&ended);
+    room.track_router.remove_simulcast_tracks(&layers);
+    let forwarded = peer.take_forwarded_of(&ended);
+    let tracks: Vec<_> = forwarded.iter().map(|(_, _, t)| t.clone()).collect();
+    room.track_router.remove_subscriptions_into(&tracks);
+    let user_id = peer.user_id;
+    let others = room.get_other_peers(user_id).await;
+    let forwarded = &forwarded;
+    let updates = others.into_iter().map(|other| async move {
+        let mut removed = false;
+        for (subscriber, source, track) in forwarded {
+            if *subscriber == other.user_id
+                && other
+                    .remove_outgoing_track_if(user_id, *source, track)
+                    .await
+            {
+                removed = true;
+            }
+        }
+        if removed {
+            if let Err(e) = SfuServer::renegotiate(&other).await {
+                warn!(
+                    subscriber = %other.user_id,
+                    error = %e,
+                    "Failed to renegotiate after removing ended tracks"
+                );
+            }
+        }
+    });
+    futures::future::join_all(updates).await;
+}
+
 /// Handle starting a webcam.
 async fn handle_webcam_start(
     sfu: &Arc<SfuServer>,
@@ -852,13 +1291,12 @@ async fn handle_webcam_start(
     user_id: Uuid,
     channel_id: Uuid,
     quality: Quality,
+    tx: &mpsc::Sender<OutboundMsg>,
 ) -> Result<(), VoiceError> {
     info!(user_id = %user_id, channel_id = %channel_id, quality = ?quality, "User starting webcam");
 
-    // Rate limit check
-    sfu.check_rate_limit(user_id).await?;
-
-    // Check if user has VIEW_CHANNEL permission
+    // Check if user has VIEW_CHANNEL permission (the start's rate limit is
+    // the per-seat toggle bucket; it does not use the join limit).
     crate::permissions::require_channel_access(pool, user_id, channel_id)
         .await
         .map_err(|e| map_permission_error(e, "webcam start"))?;
@@ -870,10 +1308,7 @@ async fn handle_webcam_start(
         .ok_or(VoiceError::RoomNotFound(channel_id))?;
 
     // Check user is in the room
-    let peer = room
-        .get_peer(user_id)
-        .await
-        .ok_or(VoiceError::ParticipantNotFound(user_id))?;
+    let peer = owned_peer(&room, user_id, tx).await?;
 
     // Check if user already has webcam active
     {
@@ -883,27 +1318,49 @@ async fn handle_webcam_start(
         }
     }
 
-    // Queue pending track source so setup_track_handler identifies it as Webcam
-    peer.push_pending_source(TrackSource::Webcam).await;
-
-    // In the dual-PC model, the client adds tracks to the publisher PC
-    // and sends a new offer. No server-side transceiver allocation needed.
+    crate::ws::test_hooks::voice_step(user_id, "webcam_start").await;
 
     // Get username for the info
     let username = peer.username.clone();
 
-    // Create webcam info and add to room
+    // Register the webcam first (a track only binds to a live webcam), in
+    // one step with the check that this is still the user's current seat:
+    // a seat that was replaced meanwhile adds nothing.
+    // Under the seat's media lock, as for a share (see there).
     let info = WebcamInfo::new(user_id, username.clone(), quality);
-    room.add_webcam(info).await;
+    let media = peer.media.lock().await;
+    room.add_webcam_for(&peer, info).await?;
 
-    // Broadcast to room (including the user, so they get confirmation)
-    room.broadcast_all(ServerEvent::WebcamStarted {
-        channel_id,
-        user_id,
-        username,
-        quality,
-    })
-    .await;
+    // Queue pending track source so setup_track_handler identifies it as Webcam
+    peer.push_pending_source(TrackSource::Webcam).await;
+    let announcement = peer.announce(TrackSource::Webcam);
+    drop(media);
+    expire_unused_announcement(
+        room.clone(),
+        peer.clone(),
+        TrackSource::Webcam,
+        announcement,
+        None,
+    );
+
+    // Broadcast to room (including the user, so they get confirmation),
+    // only while this is still the user's seat: a replacement in between
+    // already announced the end of this seat's media.
+    if !room
+        .broadcast_if_current(
+            &peer,
+            ServerEvent::WebcamStarted {
+                channel_id,
+                user_id,
+                username,
+                quality,
+            },
+            true,
+        )
+        .await
+    {
+        return Err(VoiceError::ParticipantNotFound(user_id));
+    }
 
     info!(
         user_id = %user_id,
@@ -920,6 +1377,7 @@ async fn handle_webcam_stop(
     sfu: &Arc<SfuServer>,
     user_id: Uuid,
     channel_id: Uuid,
+    tx: &mpsc::Sender<OutboundMsg>,
 ) -> Result<(), VoiceError> {
     info!(user_id = %user_id, channel_id = %channel_id, "User stopping webcam");
 
@@ -928,54 +1386,51 @@ async fn handle_webcam_stop(
         .get_room(channel_id)
         .await
         .ok_or(VoiceError::RoomNotFound(channel_id))?;
+    let peer = owned_peer(&room, user_id, tx).await?;
+    end_webcam(&room, &peer, "user_stopped", None).await
+}
 
-    // Remove webcam from room
-    if room.remove_webcam(user_id).await.is_none() {
-        // User didn't have webcam active, but that's okay - idempotent
-        debug!(user_id = %user_id, "User tried to stop webcam but wasn't active");
+/// End the webcam of `peer`: drop its queued announcement, remove it from
+/// the room and from every subscriber, and tell the room (`webcam_stopped`
+/// with `reason`). Shared by the client's stop and the expiry of an
+/// announcement whose track never came. Only a webcam this seat owns is
+/// touched.
+async fn end_webcam(
+    room: &Room,
+    peer: &Arc<super::peer::Peer>,
+    reason: &str,
+    expiry: Option<u64>,
+) -> Result<(), VoiceError> {
+    crate::ws::test_hooks::voice_step(peer.user_id, "end_webcam").await;
+    let user_id = peer.user_id;
+    let channel_id = room.channel_id;
+    // Serialized with a track being bound to the webcam (see `sfu.rs`).
+    let _media = peer.media.lock().await;
+    if let Some(n) = expiry {
+        if !still_unused(peer, TrackSource::Webcam, n).await {
+            return Ok(());
+        }
+    }
+    // A webcam announcement this stop ends must never bind a later track.
+    peer.remove_pending_sources(|s| *s == TrackSource::Webcam)
+        .await;
+
+    if room.remove_webcam_of(peer).await.is_none() {
+        debug!(user_id = %user_id, "Webcam to stop is not this seat's (or already ended)");
         return Ok(());
     }
 
-    // Clean up the webcam track from the track router
-    // This removes all subscribers of this user's Webcam track
-    room.track_router
-        .remove_source_track(user_id, TrackSource::Webcam)
-        .await;
-
-    // Remove the incoming webcam track from the peer and clean up outgoing tracks
-    // on all other peers
-    if let Some(peer) = room.get_peer(user_id).await {
-        // Remove the incoming track record
-        {
-            let mut incoming = peer.incoming_tracks.write().await;
-            incoming.remove(&TrackSource::Webcam);
-        }
-    }
-
-    // Remove outgoing tracks from all subscribers and renegotiate
-    let other_peers = room.get_other_peers(user_id).await;
-    for other_peer in &other_peers {
-        if other_peer
-            .remove_outgoing_track(user_id, TrackSource::Webcam)
-            .await
-        {
-            // Renegotiate so subscriber's SDP reflects the removed track
-            if let Err(e) = SfuServer::renegotiate(other_peer).await {
-                warn!(
-                    subscriber = %other_peer.user_id,
-                    error = %e,
-                    "Failed to renegotiate after webcam track removal"
-                );
-            }
-        }
-    }
+    detach_sources(room, peer, |s| *s == TrackSource::Webcam).await;
 
     // Broadcast to room
-    room.broadcast_all(ServerEvent::WebcamStopped {
-        channel_id,
-        user_id,
-        reason: "user_stopped".to_string(),
-    })
+    room.announce_stopped(
+        ServerEvent::WebcamStopped {
+            channel_id,
+            user_id,
+            reason: reason.to_string(),
+        },
+        true,
+    )
     .await;
 
     info!(
@@ -1012,9 +1467,7 @@ async fn handle_set_layer_preference(
         .ok_or(VoiceError::RoomNotFound(channel_id))?;
 
     // Verify the requesting user is in the room
-    room.get_peer(user_id)
-        .await
-        .ok_or(VoiceError::ParticipantNotFound(user_id))?;
+    owned_peer(&room, user_id, tx).await?;
 
     if let Some(new_layer) = room.track_router.set_layer_preference(
         user_id,
@@ -1025,12 +1478,15 @@ async fn handle_set_layer_preference(
         // Notify the viewer of the layer change
         crate::ws::handlers::send_outbound(
             tx,
-            OutboundMsg::Event(ServerEvent::VoiceLayerChanged {
+            OutboundMsg::voice(
                 channel_id,
-                source_user_id: target_user_id,
-                track_source,
-                active_layer: new_layer,
-            }),
+                ServerEvent::VoiceLayerChanged {
+                    channel_id,
+                    source_user_id: target_user_id,
+                    track_source,
+                    active_layer: new_layer,
+                },
+            ),
         )
         .await?;
     }
@@ -1041,3 +1497,323 @@ async fn handle_set_layer_preference(
 #[cfg(test)]
 #[path = "ws_handler_test.rs"]
 mod ws_handler_test;
+
+#[cfg(test)]
+mod replaced_media_tests {
+    use std::time::{Duration, Instant};
+
+    use super::*;
+    use crate::config::Config;
+
+    /// The end of a share frees its slot in the store without holding the
+    /// seat's media lock: with a store that never answers, a takeover of
+    /// that seat (which waits for the lock) is not held up by the store.
+    #[tokio::test]
+    async fn a_share_end_waits_for_the_store_without_the_media_lock() {
+        use fred::interfaces::ClientLike;
+        let sfu = SfuServer::new(Arc::new(Config::default_for_test()), None).expect("sfu");
+        let channel = Uuid::from_u128(1);
+        let room = Arc::new(Room::new(channel, 10));
+        let (tx, _rx) = mpsc::channel(8);
+        let seat = sfu
+            .create_peer(Uuid::from_u128(3), "u".into(), "U".into(), channel, tx)
+            .await
+            .expect("peer");
+        room.add_peer(seat.clone()).await.expect("add");
+        let stream = Uuid::from_u128(10);
+        let info = ScreenShareInfo::new(
+            stream,
+            seat.user_id,
+            "u".into(),
+            "Display".into(),
+            false,
+            super::super::Quality::Medium,
+        );
+        room.try_add_screen_share_for(&seat, info)
+            .await
+            .expect("share");
+
+        // A store that accepts connections and never answers.
+        let silent = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let port = silent.local_addr().expect("addr").port();
+        let held = tokio::spawn(async move {
+            let mut open = Vec::new();
+            while let Ok((socket, _)) = silent.accept().await {
+                open.push(socket);
+            }
+        });
+        let config = fred::types::config::Config::from_url(&format!("redis://127.0.0.1:{port}"))
+            .expect("config");
+        let store = fred::clients::Client::new(config, None, None, None);
+        let _connecting = store.connect();
+        let limiter = ScreenShareLimiter::new(store);
+
+        let ending = {
+            let (room, seat) = (room.clone(), seat.clone());
+            tokio::spawn(async move {
+                end_screen_share(&room, &seat, stream, Some(&limiter), "user_stopped", None).await
+            })
+        };
+        // The share is removed under the lock; then the slot is freed.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while room.screen_shares.read().await.contains_key(&stream) {
+            assert!(Instant::now() < deadline, "the share was not removed");
+            tokio::task::yield_now().await;
+        }
+        // What a takeover does with the old seat: it waits for its media lock.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(500), room.detach_media(&seat))
+                .await
+                .is_ok(),
+            "the seat's media lock was held while waiting for the store"
+        );
+        ending.abort();
+        held.abort();
+    }
+
+    /// A store that accepts connections and never answers, and a limiter on it.
+    async fn silent_limiter() -> (ScreenShareLimiter, tokio::task::JoinHandle<()>) {
+        use fred::interfaces::ClientLike;
+        let silent = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let port = silent.local_addr().expect("addr").port();
+        let held = tokio::spawn(async move {
+            let mut open = Vec::new();
+            while let Ok((socket, _)) = silent.accept().await {
+                open.push(socket);
+            }
+        });
+        let config = fred::types::config::Config::from_url(&format!("redis://127.0.0.1:{port}"))
+            .expect("config");
+        let store = fred::clients::Client::new(config, None, None, None);
+        let _connecting = store.connect();
+        (ScreenShareLimiter::new(store), held)
+    }
+
+    /// A seat with one share in a room with one viewer; returns the room,
+    /// the seat, the share's stream id, the viewer and the viewer's queue.
+    async fn room_with_a_share(
+        viewer_queue: usize,
+    ) -> (
+        Arc<Room>,
+        Arc<super::super::peer::Peer>,
+        Uuid,
+        Arc<super::super::peer::Peer>,
+        mpsc::Receiver<OutboundMsg>,
+    ) {
+        let sfu = SfuServer::new(Arc::new(Config::default_for_test()), None).expect("sfu");
+        let channel = Uuid::from_u128(1);
+        let room = Arc::new(Room::new(channel, 10));
+        let (vtx, vrx) = mpsc::channel(viewer_queue);
+        let viewer = sfu
+            .create_peer(Uuid::from_u128(2), "v".into(), "V".into(), channel, vtx)
+            .await
+            .expect("viewer");
+        let (tx, _rx) = mpsc::channel(8);
+        let seat = sfu
+            .create_peer(Uuid::from_u128(3), "u".into(), "U".into(), channel, tx)
+            .await
+            .expect("seat");
+        room.add_peer(viewer.clone()).await.expect("add");
+        room.add_peer(seat.clone()).await.expect("add");
+        let stream = Uuid::from_u128(10);
+        let info = ScreenShareInfo::new(
+            stream,
+            seat.user_id,
+            "u".into(),
+            "Display".into(),
+            false,
+            super::super::Quality::Medium,
+        );
+        room.try_add_screen_share_for(&seat, info)
+            .await
+            .expect("share");
+        (room, seat, stream, viewer, vrx)
+    }
+
+    /// The share's slot is free no later than its stop is announced: while
+    /// the store has not answered, no stop reaches the others.
+    #[tokio::test]
+    async fn a_share_stop_is_announced_only_after_its_slot_is_free() {
+        let (room, seat, stream, _viewer, mut rx) = room_with_a_share(8).await;
+        let (limiter, held) = silent_limiter().await;
+        let ending = {
+            let (room, seat) = (room.clone(), seat.clone());
+            tokio::spawn(async move {
+                end_screen_share(&room, &seat, stream, Some(&limiter), "user_stopped", None).await
+            })
+        };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while room.screen_shares.read().await.contains_key(&stream) {
+            assert!(Instant::now() < deadline, "the share was not removed");
+            tokio::task::yield_now().await;
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        while let Ok(msg) = rx.try_recv() {
+            assert!(
+                !matches!(
+                    msg,
+                    OutboundMsg::Voice {
+                        event: ServerEvent::ScreenShareStopped { .. },
+                        ..
+                    }
+                ),
+                "the stop was announced before the store freed the slot"
+            );
+        }
+        ending.abort();
+        held.abort();
+    }
+
+    /// A share's sources are detached while the seat's media lock is held
+    /// (a track never starts forwarding for a share that has ended).
+    #[tokio::test]
+    async fn a_share_is_detached_under_the_seats_media_lock() {
+        // The viewer's queue is full, so the renegotiation after the detach
+        // waits (bounded) and the detach can be observed mid-way.
+        let (room, seat, stream, viewer, _rx) = room_with_a_share(1).await;
+        viewer
+            .signal_tx
+            .try_send(OutboundMsg::Ping)
+            .expect("fill the queue");
+        let source = TrackSource::ScreenVideo(stream);
+        let track = super::super::track::forwarded_track(
+            seat.user_id,
+            source,
+            webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability {
+                mime_type: "video/VP8".into(),
+                clock_rate: 90_000,
+                ..Default::default()
+            },
+        );
+        viewer
+            .add_outgoing_track(&seat, source, track.clone())
+            .await
+            .expect("add");
+        seat.record_forwarded(viewer.user_id, source, track);
+
+        let ending = {
+            let (room, seat) = (room.clone(), seat.clone());
+            tokio::spawn(async move {
+                end_screen_share(&room, &seat, stream, None, "user_stopped", None).await
+            })
+        };
+        // The forwarded track leaves the viewer, then the viewer's offer waits.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !viewer.outgoing_track_list().await.is_empty() {
+            assert!(
+                Instant::now() < deadline,
+                "the share's track was not detached"
+            );
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            seat.media.try_lock().is_err(),
+            "the share was detached without the seat's media lock"
+        );
+        ending.await.expect("join").expect("end");
+    }
+
+    /// A takeover's release of the replaced seat's shares does not wait for
+    /// the store: with a store that never answers, it finishes at once (the
+    /// slots are freed beside it) and the stops are still announced.
+    #[tokio::test]
+    async fn a_takeover_does_not_wait_for_the_store() {
+        use fred::interfaces::ClientLike;
+        let sfu = SfuServer::new(Arc::new(Config::default_for_test()), None).expect("sfu");
+        let channel = Uuid::from_u128(1);
+        let room = Room::new(channel, 10);
+        let (tx, mut rx) = mpsc::channel(8);
+        let viewer = sfu
+            .create_peer(Uuid::from_u128(2), "v".into(), "V".into(), channel, tx)
+            .await
+            .expect("peer");
+        room.add_peer(viewer).await.expect("add");
+        let user = Uuid::from_u128(3);
+        let share = ScreenShareInfo::new(
+            Uuid::from_u128(10),
+            user,
+            "u".into(),
+            "Display".into(),
+            false,
+            super::super::Quality::Medium,
+        );
+
+        let silent = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let port = silent.local_addr().expect("addr").port();
+        let held = tokio::spawn(async move {
+            let mut open = Vec::new();
+            while let Ok((socket, _)) = silent.accept().await {
+                open.push(socket);
+            }
+        });
+        let config = fred::types::config::Config::from_url(&format!("redis://127.0.0.1:{port}"))
+            .expect("config");
+        let store = fred::clients::Client::new(config, None, None, None);
+        let _connecting = store.connect();
+        let limiter = ScreenShareLimiter::new(store);
+
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(500),
+                release_replaced_media(&room, user, &[share], false, Some(&limiter)),
+            )
+            .await
+            .is_ok(),
+            "the takeover waited for the store"
+        );
+        assert!(
+            matches!(
+                rx.try_recv(),
+                Ok(OutboundMsg::Voice {
+                    event: ServerEvent::ScreenShareStopped { .. },
+                    ..
+                })
+            ),
+            "the stop was not announced"
+        );
+        held.abort();
+    }
+
+    /// The stops of a replaced seat's media go out together: a participant
+    /// with a full queue delays them by one send bound, not one per stop.
+    #[tokio::test]
+    async fn a_replaced_seats_stops_are_sent_together() {
+        let sfu = SfuServer::new(Arc::new(Config::default_for_test()), None).expect("sfu");
+        let channel = Uuid::from_u128(1);
+        let room = Room::new(channel, 10);
+        let (slow_tx, _slow_rx) = mpsc::channel(1);
+        slow_tx.try_send(OutboundMsg::Ping).expect("fill the queue");
+        let slow = sfu
+            .create_peer(Uuid::from_u128(2), "s".into(), "S".into(), channel, slow_tx)
+            .await
+            .expect("peer");
+        room.add_peer(slow).await.expect("add");
+
+        let user = Uuid::from_u128(3);
+        let shares: Vec<ScreenShareInfo> = (10..12)
+            .map(|n| {
+                ScreenShareInfo::new(
+                    Uuid::from_u128(n),
+                    user,
+                    "u".into(),
+                    "Display".into(),
+                    false,
+                    super::super::Quality::Medium,
+                )
+            })
+            .collect();
+        let started = Instant::now();
+        release_replaced_media(&room, user, &shares, true, None).await;
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "three stops took {:?}",
+            started.elapsed()
+        );
+    }
+}

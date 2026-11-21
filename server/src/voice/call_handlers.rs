@@ -51,8 +51,16 @@ impl IntoResponse for CallError {
             }
         };
 
+        // The detail of a Valkey, serialization or internal failure is for
+        // the log only.
+        let error = if status == StatusCode::INTERNAL_SERVER_ERROR {
+            tracing::error!(error = %self, "Call request failed");
+            "Internal server error".to_string()
+        } else {
+            self.to_string()
+        };
         let body = Json(CallApiError {
-            error: self.to_string(),
+            error,
             code: code.to_string(),
         });
 
@@ -98,14 +106,17 @@ impl IntoResponse for CallHandlerError {
                 }),
             )
                 .into_response(),
-            Self::Database(e) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(CallApiError {
-                    error: format!("Database error: {e}"),
-                    code: "INTERNAL_ERROR".to_string(),
-                }),
-            )
-                .into_response(),
+            Self::Database(e) => {
+                tracing::error!(error = %e, "Call request failed: database error");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(CallApiError {
+                        error: "Internal server error".to_string(),
+                        code: "INTERNAL_ERROR".to_string(),
+                    }),
+                )
+                    .into_response()
+            }
         }
     }
 }
@@ -346,7 +357,7 @@ pub async fn join_call(
     tag = "voice",
     params(("id" = Uuid, Path, description = "DM conversation ID")),
     responses(
-        (status = 200, description = "Call declined", body = CallStateResponse),
+        (status = 200, description = "Call declined; unchanged call state when the user is in the call on another device", body = CallStateResponse),
         (status = 403, description = "Not a participant of this DM"),
         (status = 404, description = "DM channel or call not found"),
         (status = 409, description = "Invalid state transition"),
@@ -362,6 +373,9 @@ pub async fn decline_call(
     verify_dm_participant(&state, channel_id, auth.id).await?;
 
     let calls = CallService::for_state(&state);
+    if seat_held_by_another_session(&state, channel_id, &auth).await {
+        return current_state(&calls, channel_id).await;
+    }
     let declined = calls.decline_call(channel_id, auth.id).await?;
     Ok(Json(response(channel_id, declined)))
 }
@@ -373,7 +387,7 @@ pub async fn decline_call(
     tag = "voice",
     params(("id" = Uuid, Path, description = "DM conversation ID")),
     responses(
-        (status = 200, description = "Left call (may end call if last participant)", body = CallStateResponse),
+        (status = 200, description = "Left call (may end call if last participant); unchanged call state when the user is in the call on another device", body = CallStateResponse),
         (status = 403, description = "Not a participant of this DM"),
         (status = 404, description = "DM channel or call not found"),
         (status = 409, description = "Invalid state transition"),
@@ -389,8 +403,39 @@ pub async fn leave_call(
     verify_dm_participant(&state, channel_id, auth.id).await?;
 
     let calls = CallService::for_state(&state);
+    if seat_held_by_another_session(&state, channel_id, &auth).await {
+        return current_state(&calls, channel_id).await;
+    }
     let left = calls.leave_call(channel_id, auth.id).await?;
     Ok(Json(response(channel_id, left)))
+}
+
+/// Whether the user is in this DM's voice room on another device: their seat
+/// there belongs to a different login session than this request's. A leave
+/// or decline from that other session must not end the call the seat is in.
+async fn seat_held_by_another_session(state: &AppState, channel_id: Uuid, auth: &AuthUser) -> bool {
+    let Some(room) = state.sfu.get_room(channel_id).await else {
+        return false;
+    };
+    let Some(peer) = room.get_peer(auth.id).await else {
+        return false;
+    };
+    matches!(
+        (peer.auth_session(), auth.session_id),
+        (Some(owner), Some(caller)) if owner != caller
+    )
+}
+
+/// The call as it is, for a leave or decline that changes nothing.
+async fn current_state(
+    calls: &CallService,
+    channel_id: Uuid,
+) -> Result<Json<CallStateResponse>, CallHandlerError> {
+    let (state, meta) = calls
+        .get_call(channel_id)
+        .await?
+        .ok_or(CallError::CallNotFound)?;
+    Ok(Json(response(channel_id, Transition { state, meta })))
 }
 
 /// Build the call router (to be nested under /api/dm)
@@ -403,4 +448,46 @@ pub fn call_router() -> axum::Router<AppState> {
         .route("/{id}/call/join", post(join_call))
         .route("/{id}/call/decline", post(decline_call))
         .route("/{id}/call/leave", post(leave_call))
+}
+
+#[cfg(test)]
+mod error_body_tests {
+    use axum::response::IntoResponse;
+
+    use super::{CallError, CallHandlerError};
+
+    async fn body_of(response: axum::response::Response) -> (u16, serde_json::Value) {
+        let status = response.status().as_u16();
+        let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .expect("body");
+        (status, serde_json::from_slice(&bytes).expect("JSON body"))
+    }
+
+    /// Database and internal failures answer with a fixed text; the detail
+    /// stays in the log.
+    #[tokio::test]
+    async fn internal_failures_do_not_echo_their_detail() {
+        const DETAIL: &str = "relation \"dm_participants\" at 10.0.0.5";
+        let failures = [
+            CallHandlerError::Database(DETAIL.to_string()).into_response(),
+            CallHandlerError::Call(CallError::Internal(DETAIL.to_string())).into_response(),
+        ];
+        for response in failures {
+            let (status, body) = body_of(response).await;
+            assert_eq!(status, 500);
+            assert_eq!(body["code"], "INTERNAL_ERROR");
+            assert_eq!(body["error"], "Internal server error");
+            assert!(!body.to_string().contains("dm_participants"), "{body}");
+        }
+    }
+
+    /// Errors the caller can act on keep their text.
+    #[tokio::test]
+    async fn client_errors_keep_their_text() {
+        let (status, body) = body_of(CallError::CallNotFound.into_response()).await;
+        assert_eq!(status, 404);
+        assert_eq!(body["code"], "CALL_NOT_FOUND");
+        assert_ne!(body["error"], "Internal server error");
+    }
 }

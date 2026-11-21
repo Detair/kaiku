@@ -244,3 +244,132 @@ fn test_reserved_slugs_constant() {
     assert!(RESERVED_SLUGS.contains(&"settings"));
     assert!(RESERVED_SLUGS.contains(&"api"));
 }
+
+// ============================================================================
+// Guild pages are for members
+// ============================================================================
+
+mod membership {
+    use axum::body::Body;
+    use axum::http::Method;
+    use sqlx::PgPool;
+    use uuid::Uuid;
+    use vc_server::permissions::GuildPermissions;
+
+    use super::super::helpers::{
+        add_guild_member, body_to_json, create_guild_with_default_role, create_test_user,
+        generate_access_token, TestApp,
+    };
+
+    async fn get(app: &TestApp, token: &str, uri: &str) -> u16 {
+        let req = TestApp::request(Method::GET, uri)
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap();
+        app.oneshot(req).await.status().as_u16()
+    }
+
+    /// Guild with a "rules" page created by the owner through the API.
+    async fn guild_with_rules(app: &TestApp) -> (Uuid, Uuid, Uuid) {
+        let (owner, _) = create_test_user(&app.pool).await;
+        let guild =
+            create_guild_with_default_role(&app.pool, owner, GuildPermissions::VIEW_CHANNEL).await;
+        let req = TestApp::request(Method::POST, &format!("/api/guilds/{guild}/pages"))
+            .header(
+                "Authorization",
+                format!("Bearer {}", generate_access_token(&app.config, owner)),
+            )
+            .header("Content-Type", "application/json")
+            .body(Body::from(
+                serde_json::json!({ "title": "Rules", "slug": "rules", "content": "Be kind." })
+                    .to_string(),
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await;
+        assert_eq!(resp.status(), 200);
+        let page: Uuid = body_to_json(resp).await["id"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        (owner, guild, page)
+    }
+
+    fn read_uris(guild: Uuid, page: Uuid) -> Vec<String> {
+        vec![
+            format!("/api/guilds/{guild}/pages"),
+            format!("/api/guilds/{guild}/pages/by-slug/rules"),
+            format!("/api/guilds/{guild}/pages/{page}/revisions"),
+            format!("/api/guilds/{guild}/pages/{page}/revisions/1"),
+            format!("/api/guilds/{guild}/page-categories"),
+        ]
+    }
+
+    #[sqlx::test]
+    async fn non_member_cannot_read_guild_pages(pool: PgPool) {
+        let app = TestApp::with_pool(pool.clone()).await;
+        let (_, guild, page) = guild_with_rules(&app).await;
+        let (stranger, _) = create_test_user(&pool).await;
+        let token = generate_access_token(&app.config, stranger);
+        for uri in read_uris(guild, page) {
+            assert_eq!(get(&app, &token, &uri).await, 403, "{uri}");
+        }
+    }
+
+    /// A non-member cannot accept a server page (nor learn whether the
+    /// page exists or needs acceptance).
+    #[sqlx::test]
+    async fn non_member_cannot_accept_guild_page(pool: PgPool) {
+        let app = TestApp::with_pool(pool.clone()).await;
+        let (_, guild, page) = guild_with_rules(&app).await;
+        sqlx::query("UPDATE pages SET requires_acceptance = true WHERE id = $1")
+            .bind(page)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let (stranger, _) = create_test_user(&pool).await;
+        let token = generate_access_token(&app.config, stranger);
+        for target in [page, Uuid::new_v4()] {
+            let req = TestApp::request(
+                Method::POST,
+                &format!("/api/guilds/{guild}/pages/{target}/accept"),
+            )
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap();
+            assert_eq!(app.oneshot(req).await.status(), 403, "{target}");
+        }
+        let accepted: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM page_acceptances WHERE user_id = $1")
+                .bind(stranger)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(accepted, 0);
+    }
+
+    /// Regression guard: passes on the code before this change too (members could read pages
+    /// before; pins that the membership check lets them in).
+    #[sqlx::test]
+    async fn member_and_pending_member_can_read_guild_pages(pool: PgPool) {
+        let app = TestApp::with_all_features(pool.clone()).await;
+        let (_, guild, page) = guild_with_rules(&app).await;
+        let (member, _) = create_test_user(&pool).await;
+        add_guild_member(&pool, guild, member).await;
+        let (pending, _) = create_test_user(&pool).await;
+        sqlx::query(
+            "INSERT INTO guild_members (guild_id, user_id, membership_state) VALUES ($1, $2, 'pending')",
+        )
+        .bind(guild)
+        .bind(pending)
+        .execute(&pool)
+        .await
+        .unwrap();
+        for user in [member, pending] {
+            let token = generate_access_token(&app.config, user);
+            for uri in read_uris(guild, page) {
+                assert_eq!(get(&app, &token, &uri).await, 200, "{uri}");
+            }
+        }
+    }
+}

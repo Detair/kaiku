@@ -14,6 +14,10 @@ pub struct WebcamInfo {
     pub username: String,
     /// Current quality tier.
     pub quality: Quality,
+    /// The voice seat (peer session) the webcam belongs to. Server-side
+    /// only: a seat changes or removes only its own webcam.
+    #[serde(skip)]
+    pub owner: Uuid,
 }
 
 impl WebcamInfo {
@@ -24,6 +28,7 @@ impl WebcamInfo {
             user_id,
             username,
             quality,
+            owner: Uuid::nil(),
         }
     }
 }

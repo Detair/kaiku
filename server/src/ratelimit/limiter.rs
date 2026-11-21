@@ -262,6 +262,27 @@ impl RateLimiter {
     /// Returns `RateLimitError::RedisUnavailable` if Redis is unreachable.
     #[tracing::instrument(skip(self))]
     pub async fn record_failed_auth(&self, ip: &str) -> Result<bool, RateLimitError> {
+        self.record_failure_in(FailureScope::Login, ip).await
+    }
+
+    /// Records a wrong bot token from an IP. Same thresholds as
+    /// [`Self::record_failed_auth`], but its own counter and block: bot
+    /// failures never block human sign-ins from that address, and failed
+    /// human sign-ins never block bots.
+    pub async fn record_bot_gateway_failure(&self, ip: &str) -> Result<bool, RateLimitError> {
+        self.record_failure_in(FailureScope::BotGateway, ip).await
+    }
+
+    /// Whether bot gateway sign-ins from this IP are blocked.
+    pub async fn is_bot_gateway_blocked(&self, ip: &str) -> Result<bool, RateLimitError> {
+        self.is_blocked_in(FailureScope::BotGateway, ip).await
+    }
+
+    async fn record_failure_in(
+        &self,
+        scope: FailureScope,
+        ip: &str,
+    ) -> Result<bool, RateLimitError> {
         if !self.config.enabled {
             return Ok(false);
         }
@@ -270,8 +291,9 @@ impl RateLimiter {
             return Ok(false);
         }
 
-        let failed_key = self.build_key("failed_auth", ip);
-        let block_key = self.build_key("blocked", ip);
+        let (failed_prefix, blocked_prefix) = scope.prefixes();
+        let failed_key = self.build_key(failed_prefix, ip);
+        let block_key = self.build_key(blocked_prefix, ip);
         let config = &self.config.limits.failed_auth;
 
         // Execute atomic Lua script with NOSCRIPT retry
@@ -364,6 +386,10 @@ impl RateLimiter {
     /// Returns `RateLimitError::RedisUnavailable` if Redis is unreachable.
     #[tracing::instrument(skip(self))]
     pub async fn is_blocked(&self, ip: &str) -> Result<bool, RateLimitError> {
+        self.is_blocked_in(FailureScope::Login, ip).await
+    }
+
+    async fn is_blocked_in(&self, scope: FailureScope, ip: &str) -> Result<bool, RateLimitError> {
         if !self.config.enabled {
             return Ok(false);
         }
@@ -372,7 +398,7 @@ impl RateLimiter {
             return Ok(false);
         }
 
-        let key = self.build_key("blocked", ip);
+        let key = self.build_key(scope.prefixes().1, ip);
         let exists: bool = self.redis.exists(&key).await.map_err(|e| {
             debug!(error = %e, "Failed to check IP block status");
             RateLimitError::RedisUnavailable
@@ -436,7 +462,10 @@ impl RateLimiter {
     /// Returns the limit configuration for a given category.
     fn get_limit_config(&self, category: RateLimitCategory) -> &LimitConfig {
         match category {
-            RateLimitCategory::AuthLogin => &self.config.limits.auth_login,
+            // The bot gateway has the login's limits in its own bucket.
+            RateLimitCategory::AuthLogin | RateLimitCategory::BotGateway => {
+                &self.config.limits.auth_login
+            }
             RateLimitCategory::AuthRegister => &self.config.limits.auth_register,
             RateLimitCategory::AuthPasswordReset => &self.config.limits.auth_password_reset,
             RateLimitCategory::AuthOther => &self.config.limits.auth_other,
@@ -519,5 +548,24 @@ mod tests {
     fn create_mock_client() -> Client {
         let config = Config::from_url("redis://localhost:6379").unwrap();
         Client::new(config, None, None, None)
+    }
+}
+
+/// Which failed-sign-in counter and block a failure belongs to.
+#[derive(Debug, Clone, Copy)]
+enum FailureScope {
+    /// Human sign-ins (password login and friends).
+    Login,
+    /// Bot gateway sign-ins (bot tokens).
+    BotGateway,
+}
+
+impl FailureScope {
+    /// Key prefixes of the failure counter and the block.
+    const fn prefixes(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Login => ("failed_auth", "blocked"),
+            Self::BotGateway => ("bot_failed_auth", "bot_blocked"),
+        }
     }
 }

@@ -31,8 +31,10 @@ use crate::auth::AuthUser;
 )]
 pub async fn list_guild_categories(
     State(state): State<AppState>,
+    user: AuthUser,
     Path(guild_id): Path<Uuid>,
 ) -> Result<Json<Vec<PageCategory>>, PagesError> {
+    super::shared::require_guild_member(&state, guild_id, user.id).await?;
     let categories = queries::list_categories(&state.db, guild_id)
         .await
         .map_err(|e| {

@@ -102,8 +102,12 @@ pub enum EventClass {
     IceCandidatePublisher,
     /// ICE candidates for the subscriber `PeerConnection`.
     IceCandidateSubscriber,
-    /// Covers `VoicePublisherOffer` and `VoiceSubscriberAnswer`.
+    /// `VoicePublisherOffer` (client-initiated renegotiation).
     PublisherOffer,
+    /// `VoiceSubscriberAnswer`: answers to the server's own offers, so the
+    /// server sets their pace (one per offer); a generous bucket only stops
+    /// floods. Dropping a real answer would stall the subscriber connection.
+    SubscriberAnswer,
     /// Covers `VoiceScreenShareStart` and `VoiceScreenShareStop`.
     ScreenShareToggle,
     /// Covers Mute / Unmute / `WebcamStart` / `WebcamStop`.
@@ -120,6 +124,7 @@ impl EventClass {
             Self::IceCandidatePublisher => "ice_candidate_publisher",
             Self::IceCandidateSubscriber => "ice_candidate_subscriber",
             Self::PublisherOffer => "publisher_offer",
+            Self::SubscriberAnswer => "subscriber_answer",
             Self::ScreenShareToggle => "screen_share_toggle",
             Self::MuteOrWebcamToggle => "mute_or_webcam_toggle",
             Self::SetLayerPreference => "set_layer_preference",
@@ -233,6 +238,7 @@ impl VoiceRateLimiter {
             }
             // Renegotiation should be rare — protect against offer storms.
             EventClass::PublisherOffer => TokenBucket::new(5, 1),
+            EventClass::SubscriberAnswer => TokenBucket::new(30, 10),
             // Integer approximation of "1 per 5 seconds" for screen share toggles.
             EventClass::ScreenShareToggle => TokenBucket::new(5, 1),
             EventClass::MuteOrWebcamToggle => TokenBucket::new(10, 2),
@@ -410,6 +416,19 @@ mod tests {
         assert!(limiter.try_acquire(peer, EventClass::PublisherOffer));
     }
 
+    /// Subscriber answers have their own, wider bucket: 30 in a burst, and
+    /// they do not use up the publisher-offer bucket.
+    #[tokio::test(start_paused = true)]
+    async fn subscriber_answers_have_their_own_bucket() {
+        let limiter = VoiceRateLimiter::new();
+        let peer = Uuid::new_v4();
+        for _ in 0..30 {
+            assert!(limiter.try_acquire(peer, EventClass::SubscriberAnswer));
+        }
+        assert!(!limiter.try_acquire(peer, EventClass::SubscriberAnswer));
+        assert!(limiter.try_acquire(peer, EventClass::PublisherOffer));
+    }
+
     #[test]
     fn event_class_scope_labels_are_stable() {
         assert_eq!(
@@ -421,6 +440,7 @@ mod tests {
             "ice_candidate_subscriber"
         );
         assert_eq!(EventClass::PublisherOffer.as_scope(), "publisher_offer");
+        assert_eq!(EventClass::SubscriberAnswer.as_scope(), "subscriber_answer");
         assert_eq!(
             EventClass::ScreenShareToggle.as_scope(),
             "screen_share_toggle"

@@ -1,6 +1,56 @@
 //! Selective Forwarding Unit Implementation
 //!
 //! Manages voice rooms and WebRTC peer connections for real-time audio and video.
+//!
+//! # Locks
+//!
+//! Order: `SfuServer::rooms` → `Room::peers` → `Room::screen_shares` →
+//! `Room::webcams` (as in [`Room::get_participant_info`]). Per-peer locks
+//! (`Peer::incoming_tracks`, the outgoing track map, the pending sources) are
+//! taken with no room lock held and are never held across a socket send.
+//!
+//! `Peer::media` (per seat, async) guards adding state on behalf of a seat:
+//! the track callback binding a track to a source and forwarding it
+//! (`forward_to`, `Peer::record_forwarded`), the first-offer subscribe path
+//! forwarding an existing seat's tracks, and the end of a share or webcam.
+//! Rule: **a retired seat adds nothing.** Whether the seat is still current
+//! (`Peer::is_retired`) and its source still live is decided after taking
+//! `media`, in the same critical section as the additions;
+//! `Room::detach_media` sets `retired` first and then takes `media` before it
+//! collects the seat's forwarded tracks, so it either sees every addition or
+//! the addition sees `retired`.
+//!
+//! Order: `media` → room locks → leaf locks, never the reverse. At most one
+//! seat's `media` is held at a time and it is never taken while a room lock
+//! is held. `detach_media` and the end of a share or webcam send the
+//! resulting offers while still holding `media`; each offer is bounded, so a
+//! concurrent leave of the same seat waits at most that long.
+//!
+//! Room state a seat adds (its webcam, its screen shares, its simulcast
+//! layers, the tracks it forwards) records that seat. Adding checks under the
+//! room lock that the seat is still the user's current one
+//! ([`Room::try_add_screen_share_for`], [`Room::add_webcam_for`]); removing on
+//! behalf of a seat removes only entries that seat owns
+//! ([`Room::remove_screen_share_of`], [`Room::remove_webcam_of`]). Events the
+//! others get about a seat are decided and queued without waiting in one
+//! section under the peers lock ([`Room::broadcast_if_current`],
+//! [`Room::announce_departure`], [`Room::announce_stopped`]). These take the
+//! peers lock for reading, so it does not order them against each other;
+//! it gives that the seat check and the queueing see the same seat list (a
+//! join or leave, which writes it, cannot come in between). The order of a
+//! stop and a successor's start comes from the source's room state: a stop
+//! holds it (webcams or screen shares, read) from its decision until it is
+//! queued, and a start must write it before its start event is queued. A
+//! participant whose queue is full gets the event after the lock is
+//! released (bounded wait, order not guaranteed for that participant).
+//!
+//! `Peer::negotiation` (the subscriber offer/answer state) is a leaf lock: it
+//! is taken with no room lock held, nothing else of ours is locked while it is
+//! held, and it covers only local WebRTC work (create offer, set local or
+//! remote description), never a network or socket wait. webrtc-rs callbacks
+//! (`on_track`, ICE, connection state) run on their own tasks and reach it only
+//! through [`SfuServer::renegotiate`], which never waits for a callback, so the
+//! two cannot wait on each other.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
@@ -18,7 +68,6 @@ use webrtc::api::setting_engine::SettingEngine;
 use webrtc::api::{APIBuilder, API};
 use webrtc::ice::network_type::NetworkType;
 use webrtc::ice::udp_network::{EphemeralUDP, UDPNetwork};
-use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::interceptor::registry::Registry;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
@@ -33,7 +82,7 @@ use super::error::VoiceError;
 use super::peer::Peer;
 use super::rate_limit::{VoiceRateLimiter, VoiceStatsLimiter};
 use super::screen_share::{ScreenShareInfo, ScreenShareLimiter};
-use super::track::{spawn_rtp_forwarder, spawn_subscriber_remb_reader, TrackRouter};
+use super::track::{spawn_rtp_forwarder, spawn_subscriber_rtcp_reader, TrackRouter};
 use super::track_types::{Layer, TrackSource};
 use super::webcam::WebcamInfo;
 use crate::config::{Config, IceIpFamily};
@@ -49,11 +98,15 @@ const PEER_SIGNAL_SEND_TIMEOUT: Duration = Duration::from_millis(250);
 /// Send `event` to every peer concurrently, waiting at most
 /// [`PEER_SIGNAL_SEND_TIMEOUT`] per peer. Peers whose queue is closed or stays
 /// full are skipped (logged), so one stalled peer never delays the others.
-async fn fan_out(senders: Vec<(Uuid, mpsc::Sender<OutboundMsg>)>, event: &ServerEvent) {
+async fn fan_out(
+    channel_id: Uuid,
+    senders: Vec<(Uuid, mpsc::Sender<OutboundMsg>)>,
+    event: &ServerEvent,
+) {
     let sends = senders.iter().map(|(user_id, tx)| async move {
         if let Err(e) = send_outbound_within(
             tx,
-            OutboundMsg::Event(event.clone()),
+            OutboundMsg::voice(channel_id, event.clone()),
             PEER_SIGNAL_SEND_TIMEOUT,
         )
         .await
@@ -62,6 +115,28 @@ async fn fan_out(senders: Vec<(Uuid, mpsc::Sender<OutboundMsg>)>, event: &Server
         }
     });
     futures::future::join_all(sends).await;
+}
+
+/// Queue `event` for each of `senders` without waiting (called under the
+/// room's peers lock, so the order of events decided under it is the order
+/// in every healthy queue). Returns the participants whose queue is full:
+/// the caller sends to them with [`fan_out`] after releasing the lock.
+fn queue_now(
+    channel_id: Uuid,
+    senders: impl Iterator<Item = (Uuid, mpsc::Sender<OutboundMsg>)>,
+    event: &ServerEvent,
+) -> Vec<(Uuid, mpsc::Sender<OutboundMsg>)> {
+    let mut full = Vec::new();
+    for (user_id, tx) in senders {
+        match tx.try_send(OutboundMsg::voice(channel_id, event.clone())) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(_)) => full.push((user_id, tx)),
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                debug!(user_id = %user_id, "Skipping voice event for closed peer");
+            }
+        }
+    }
+    full
 }
 
 /// How long a peer connection may stay `Failed` before the peer is removed
@@ -78,6 +153,216 @@ pub struct StalePeer {
     /// Only this session is removed; a newer session of the same user stays.
     pub session_id: Uuid,
 }
+
+/// How long a video track that arrived before its announcement waits for
+/// it (the rc.5 web client adds the track right before it sends the start).
+pub const UNANNOUNCED_TRACK_GRACE: Duration = Duration::from_secs(3);
+
+/// Drop a video track that has no announced source: it gets no forwarder
+/// and no subscriber tracks, and the sender learns why.
+async fn reject_unannounced_track(
+    peer: &Peer,
+    track: &webrtc::track::track_remote::TrackRemote,
+    video: bool,
+) {
+    warn!(
+        user_id = %peer.user_id,
+        channel_id = %peer.channel_id,
+        track_id = %track.id(),
+        video,
+        "Dropping track without an announced source"
+    );
+    let error = if video {
+        VoiceError::VideoSourceUnannounced
+    } else {
+        VoiceError::AudioSourceUnannounced
+    };
+    let event = OutboundMsg::Event(crate::ws::handlers::voice_error_event(&error));
+    if let Err(e) = send_outbound_within(&peer.signal_tx, event, PEER_SIGNAL_SEND_TIMEOUT).await {
+        debug!(user_id = %peer.user_id, error = %e, "Could not report dropped track");
+    }
+}
+
+/// The oldest announced source for a new track of `peer` whose share or
+/// webcam is still live, waiting up to [`UNANNOUNCED_TRACK_GRACE`].
+/// Announcements whose share or webcam ended meanwhile are discarded.
+///
+/// webrtc-rs runs the track callbacks of one connection one after another,
+/// so this wait also holds back that participant's next track (bounded by
+/// the grace).
+async fn take_live_source(peer: &Peer, room: &Room, video: bool) -> Option<TrackSource> {
+    let deadline = tokio::time::Instant::now() + UNANNOUNCED_TRACK_GRACE;
+    loop {
+        let source = peer.take_source_until(video, deadline).await?;
+        if source_is_live(room, peer, source).await {
+            return Some(source);
+        }
+        debug!(user_id = %peer.user_id, source = %source, "Discarding announcement of an ended source");
+    }
+}
+
+/// Whether the share or webcam that `source` belongs to is still registered
+/// for `peer` (the microphone always is).
+async fn source_is_live(room: &Room, peer: &Peer, source: TrackSource) -> bool {
+    match source {
+        TrackSource::ScreenVideo(id) | TrackSource::ScreenAudio(id) => room
+            .screen_shares
+            .read()
+            .await
+            .get(&id)
+            .is_some_and(|share| share.user_id == peer.user_id),
+        TrackSource::Webcam => room.webcams.read().await.contains_key(&peer.user_id),
+        TrackSource::Microphone => true,
+    }
+}
+
+/// Forward `source`'s `track` of seat `source_peer` to `subscriber`: router
+/// subscription, outgoing track, the source seat's forwarded list and the
+/// RTCP reader for video. The caller holds `source_peer.media` and has
+/// checked that the seat is current. Returns whether a track was added (the
+/// subscriber then needs a renegotiation).
+pub(crate) async fn forward_to(
+    room: &Room,
+    source_peer: &Arc<Peer>,
+    source: TrackSource,
+    track: &Arc<webrtc::track::track_remote::TrackRemote>,
+    subscriber: &Arc<Peer>,
+) -> bool {
+    let source_user = source_peer.user_id;
+    if subscriber.is_retired() {
+        return false;
+    }
+    let Ok(local_track) =
+        room.track_router
+            .create_subscriber_track(source_user, source, subscriber, track)
+    else {
+        return false;
+    };
+    match subscriber
+        .add_outgoing_track(source_peer, source, local_track.clone())
+        .await
+    {
+        Ok((sender, replaced)) => {
+            // An older seat's track that this one replaced writes nowhere.
+            if let Some(old) = replaced {
+                room.track_router.remove_subscriptions_into(&[old]);
+            }
+            // Recorded first, then checked: a subscriber that leaves now either
+            // finds the record (its departure drops it from the publisher's
+            // list) or is seen as gone here, and the add is taken back.
+            source_peer.record_forwarded(subscriber.user_id, source, local_track.clone());
+            if subscriber.is_retired() {
+                source_peer.forget_forwarded_tracks(std::slice::from_ref(&local_track));
+                subscriber
+                    .remove_outgoing_track_if(source_user, source, &local_track)
+                    .await;
+                room.track_router.remove_subscriptions_into(&[local_track]);
+                return false;
+            }
+            if source.is_video() {
+                spawn_subscriber_rtcp_reader(
+                    Arc::downgrade(source_peer),
+                    track.ssrc(),
+                    room.track_router.clone(),
+                    subscriber.user_id,
+                    source_user,
+                    source,
+                    sender,
+                    subscriber.signal_tx.clone(),
+                    room.channel_id,
+                );
+            }
+            true
+        }
+        Err(e) => {
+            room.track_router.remove_subscriptions_into(&[local_track]);
+            debug!(
+                source = %source_user,
+                subscriber = %subscriber.user_id,
+                error = %e,
+                "Track not added"
+            );
+            false
+        }
+    }
+}
+
+/// Whether an entry of user `user_id` added by seat `owner` belongs to
+/// `peer`: the same user and the same seat.
+fn owned_by(user_id: Uuid, owner: Uuid, peer: &Peer) -> bool {
+    (user_id, owner) == (peer.user_id, peer.session_id)
+}
+
+/// Remove the simulcast layers `peer` published from the room's router.
+fn room_remove_layers(room: &Room, peer: &Peer) {
+    let layers = peer.take_simulcast_layers(&|_: &TrackSource| true);
+    room.track_router.remove_simulcast_tracks(&layers);
+}
+
+/// Ask the publisher of `peer` for a key frame on each of `ssrcs` (PLI).
+pub(crate) async fn request_keyframe(peer: &Peer, ssrcs: &[u32]) -> Result<(), webrtc::Error> {
+    use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
+    let packets: Vec<Box<dyn webrtc::rtcp::packet::Packet + Send + Sync>> = ssrcs
+        .iter()
+        .map(|ssrc| {
+            Box::new(PictureLossIndication {
+                sender_ssrc: 0,
+                media_ssrc: *ssrc,
+            }) as Box<dyn webrtc::rtcp::packet::Packet + Send + Sync>
+        })
+        .collect();
+    peer.publisher_pc.write_rtcp(&packets).await.map(|_| ())
+}
+
+/// A session description without its simulcast lines (`a=simulcast`,
+/// `a=rid`): the answer to it then accepts one stream per section.
+fn without_simulcast(sdp: &str) -> String {
+    let mut out = String::with_capacity(sdp.len());
+    for line in sdp.split_inclusive('\n') {
+        let bare = line.trim_end_matches(['\r', '\n']);
+        if bare.starts_with("a=simulcast:") || bare.starts_with("a=rid:") {
+            continue;
+        }
+        out.push_str(line);
+    }
+    out
+}
+
+/// The direction of each media section of a session description, in order
+/// (`sendrecv` when a section names none).
+fn section_directions(sdp: &str) -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = Vec::new();
+    for line in sdp.lines() {
+        if line.starts_with("m=") {
+            out.push("sendrecv");
+        } else if let Some(last) = out.last_mut() {
+            for dir in ["sendrecv", "sendonly", "recvonly", "inactive"] {
+                if line.strip_prefix("a=") == Some(dir) {
+                    *last = dir;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Whether an answer with `answer` section directions can answer an offer
+/// with `offer` directions (same sections, each direction allowed by
+/// JSEP). An answer to an earlier offer fails this once a section changed.
+fn answer_fits(offer: &[&str], answer: &[&str]) -> bool {
+    offer.len() == answer.len()
+        && offer.iter().zip(answer).all(|(o, a)| match *o {
+            "sendonly" => matches!(*a, "recvonly" | "inactive"),
+            "recvonly" => matches!(*a, "sendonly" | "inactive"),
+            "inactive" => *a == "inactive",
+            _ => true,
+        })
+}
+
+/// How long a subscriber offer may wait for its answer before a new change
+/// offers again regardless (a client that lost the offer would otherwise
+/// never receive tracks again).
+const SUBSCRIBER_ANSWER_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Default maximum participants per room.
 const DEFAULT_MAX_PARTICIPANTS: usize = 25;
@@ -103,6 +388,18 @@ pub struct ParticipantInfo {
     pub webcam_active: bool,
 }
 
+/// A peer that [`Room::add_peer`] replaced (same user, new join), with the
+/// screen shares and webcam it had. The caller tears it down outside the
+/// room lock.
+pub struct ReplacedMedia {
+    /// The replaced peer (no longer in the room, not closed yet).
+    pub peer: Arc<Peer>,
+    /// The replaced peer's screen shares (their slots are still counted).
+    pub screen_shares: Vec<ScreenShareInfo>,
+    /// The replaced peer's webcam, if it was on.
+    pub webcam: Option<WebcamInfo>,
+}
+
 /// Voice channel room with all participants.
 pub struct Room {
     /// Channel ID.
@@ -117,6 +414,12 @@ pub struct Room {
     pub screen_shares: RwLock<HashMap<Uuid, ScreenShareInfo>>,
     /// Active webcams.
     pub webcams: RwLock<HashMap<Uuid, WebcamInfo>>,
+    /// Name of this room's screen share counter in the store: the channel
+    /// plus a value made when the room is created, so a room that is gone
+    /// (and its late calls) never changes a newer room's count. The counter
+    /// expires by itself after a day without use; nothing clears it when the
+    /// room is removed.
+    pub share_counter: super::screen_share::ShareCounter,
 }
 
 impl Room {
@@ -130,34 +433,160 @@ impl Room {
             max_participants,
             screen_shares: RwLock::new(HashMap::new()),
             webcams: RwLock::new(HashMap::new()),
+            share_counter: super::screen_share::ShareCounter::for_new_room(channel_id),
         }
     }
 
-    /// Add a peer to the room.
-    pub async fn add_peer(&self, peer: Arc<Peer>) -> Result<(), VoiceError> {
+    /// Add a peer to the room (room capacity only, no channel limit).
+    pub async fn add_peer(&self, peer: Arc<Peer>) -> Result<Option<ReplacedMedia>, VoiceError> {
+        self.add_peer_with_limit(peer, None).await
+    }
+
+    /// Add a peer to the room, refusing it when the room holds
+    /// `min(user_limit, max_participants)` other users already.
+    ///
+    /// If the user already has a peer here (a stale session or a join from
+    /// another socket), that peer is replaced: it leaves the map in the same
+    /// step (one entry per user at all times, and a replacement does not
+    /// count against the limit) and is returned with its screen shares and
+    /// webcam, which are removed from the room. The caller closes it; nothing
+    /// slow happens under the room lock.
+    pub async fn add_peer_with_limit(
+        &self,
+        peer: Arc<Peer>,
+        user_limit: Option<usize>,
+    ) -> Result<Option<ReplacedMedia>, VoiceError> {
         let mut peers = self.peers.write().await;
 
-        if peers.len() >= self.max_participants {
+        let limit = user_limit.map_or(self.max_participants, |l| l.min(self.max_participants));
+        let replacing = peers.contains_key(&peer.user_id);
+        if !replacing && peers.len() >= limit {
             return Err(VoiceError::ChannelFull {
-                max_participants: self.max_participants,
+                max_participants: limit,
             });
         }
 
-        // If the user already has a peer (stale session from a previous connection),
-        // remove it and replace with the new one instead of rejecting
-        if let Some(old_peer) = peers.remove(&peer.user_id) {
-            tracing::info!(user_id = %peer.user_id, "Replacing stale voice peer");
-            // Close old peer connections
-            old_peer.close().await;
-        }
+        let replaced = if let Some(old_peer) = peers.remove(&peer.user_id) {
+            old_peer.retire();
+            tracing::info!(user_id = %peer.user_id, "Replacing voice peer of the same user");
+            // Lock order as in `get_participant_info`: peers, shares, webcams.
+            let screen_shares = {
+                let mut shares = self.screen_shares.write().await;
+                let ids: Vec<Uuid> = shares
+                    .values()
+                    .filter(|s| s.user_id == peer.user_id)
+                    .map(|s| s.stream_id)
+                    .collect();
+                ids.iter().filter_map(|id| shares.remove(id)).collect()
+            };
+            let webcam = self.webcams.write().await.remove(&peer.user_id);
+            Some(ReplacedMedia {
+                peer: old_peer,
+                screen_shares,
+                webcam,
+            })
+        } else {
+            None
+        };
 
         peers.insert(peer.user_id, peer);
-        Ok(())
+        Ok(replaced)
+    }
+
+    /// Remove what a peer that left the room (or was replaced) still has in
+    /// the room's media: its tracks at every remaining peer, with one
+    /// renegotiation each, the router entries of its sources and the
+    /// subscriptions that wrote into its own tracks.
+    ///
+    /// Must run before a replacing peer of the same user publishes (the
+    /// router keys sources by user).
+    pub async fn detach_media(&self, departed: &Peer) {
+        // From now on its late track callbacks and forwarders do nothing.
+        departed.retire();
+        // Wait for a track callback that is adding state for this seat right
+        // now (it checked the seat before it was retired): afterwards the
+        // forwarded list below is complete, and later callbacks see `retired`.
+        let _media = departed.media.lock().await;
+        let user_id = departed.user_id;
+        // Only this peer instance's media: a newer peer of the same user may
+        // already be in the room and keeps its own.
+        room_remove_layers(self, departed);
+        let forwarded = departed.take_forwarded();
+        let forwarded_tracks: Vec<_> = forwarded.iter().map(|(_, _, t)| t.clone()).collect();
+        self.track_router
+            .remove_subscriptions_into(&forwarded_tracks);
+        // What it received: the router subscriptions into those tracks and
+        // the publishers' records of them.
+        let received = departed.outgoing_track_list().await;
+        self.track_router.remove_subscriptions_into(&received);
+        let others = self.get_other_peers(user_id).await;
+        for other in &others {
+            other.forget_forwarded_tracks(&received);
+        }
+        let forwarded = &forwarded;
+        let updates = others.into_iter().map(|other| async move {
+            let mut removed = 0;
+            for (subscriber, source, track) in forwarded {
+                if *subscriber == other.user_id
+                    && other
+                        .remove_outgoing_track_if(user_id, *source, track)
+                        .await
+                {
+                    removed += 1;
+                }
+            }
+            if removed > 0 {
+                if let Err(e) = SfuServer::renegotiate(&other).await {
+                    warn!(
+                        subscriber = %other.user_id,
+                        error = %e,
+                        "Renegotiation failed after removing a departed peer's tracks"
+                    );
+                }
+            }
+        });
+        futures::future::join_all(updates).await;
     }
 
     /// Remove a peer from the room.
     pub async fn remove_peer(&self, user_id: Uuid) -> Option<Arc<Peer>> {
         self.remove_peer_matching(user_id, None).await
+    }
+
+    /// Remove the seat of `user_id` if it is still session `session_id`,
+    /// together with its screen shares and webcam, all under the peers lock
+    /// (as a replacement does): a seat the user takes afterwards keeps its
+    /// own. The seat is retired in the same step.
+    pub async fn remove_seat_if_session(
+        &self,
+        user_id: Uuid,
+        session_id: Uuid,
+    ) -> Option<ReplacedMedia> {
+        let mut peers = self.peers.write().await;
+        if peers.get(&user_id).map(|p| p.session_id) != Some(session_id) {
+            return None;
+        }
+        let peer = peers.remove(&user_id)?;
+        peer.retire();
+        // Lock order as in `get_participant_info`: peers, shares, webcams.
+        let screen_shares = {
+            let mut shares = self.screen_shares.write().await;
+            let ids: Vec<Uuid> = shares
+                .values()
+                .filter(|s| s.user_id == user_id)
+                .map(|s| s.stream_id)
+                .collect();
+            ids.iter().filter_map(|id| shares.remove(id)).collect()
+        };
+        let webcam = self.webcams.write().await.remove(&user_id);
+        drop(peers);
+        self.track_router
+            .remove_subscriptions_into(&peer.outgoing_track_list().await);
+        Some(ReplacedMedia {
+            peer,
+            screen_shares,
+            webcam,
+        })
     }
 
     /// Remove a peer only if it is still the given session. Check and removal
@@ -183,7 +612,8 @@ impl Room {
         }
         let peer = peers.remove(&user_id);
 
-        if peer.is_some() {
+        if let Some(peer) = &peer {
+            peer.retire();
             // Clean up track subscriptions
             self.track_router.remove_source(user_id).await;
             self.track_router.remove_subscriber_from_all(user_id).await;
@@ -212,6 +642,181 @@ impl Room {
     pub async fn add_screen_share(&self, info: ScreenShareInfo) {
         let mut shares = self.screen_shares.write().await;
         shares.insert(info.stream_id, info);
+    }
+
+    /// Whether `peer` is the user's current seat in this room. Callers that
+    /// need the answer to hold while they change room state use the
+    /// `*_for` methods, which decide it under the same lock.
+    pub async fn is_current(&self, peer: &Peer) -> bool {
+        self.peers
+            .read()
+            .await
+            .get(&peer.user_id)
+            .is_some_and(|p| p.session_id == peer.session_id)
+    }
+
+    /// Register `info` as a screen share of `peer`, in one step with the
+    /// check that `peer` is the user's current seat (peers lock held while
+    /// the shares lock is taken) and that the stream id is free in the room.
+    pub async fn try_add_screen_share_for(
+        &self,
+        peer: &Peer,
+        mut info: ScreenShareInfo,
+    ) -> Result<(), VoiceError> {
+        let peers = self.peers.read().await;
+        if peers
+            .get(&peer.user_id)
+            .is_none_or(|p| p.session_id != peer.session_id)
+        {
+            return Err(VoiceError::ParticipantNotFound(peer.user_id));
+        }
+        let mut shares = self.screen_shares.write().await;
+        if shares.contains_key(&info.stream_id) {
+            return Err(VoiceError::DuplicateStreamId);
+        }
+        info.owner = peer.session_id;
+        shares.insert(info.stream_id, info);
+        Ok(())
+    }
+
+    /// Register `info` as the webcam of `peer`, in one step with the check
+    /// that `peer` is the user's current seat and has no webcam yet.
+    pub async fn add_webcam_for(
+        &self,
+        peer: &Peer,
+        mut info: WebcamInfo,
+    ) -> Result<(), VoiceError> {
+        let peers = self.peers.read().await;
+        if peers
+            .get(&peer.user_id)
+            .is_none_or(|p| p.session_id != peer.session_id)
+        {
+            return Err(VoiceError::ParticipantNotFound(peer.user_id));
+        }
+        let mut webcams = self.webcams.write().await;
+        if webcams.contains_key(&peer.user_id) {
+            return Err(VoiceError::Signaling("Webcam already active".to_string()));
+        }
+        info.owner = peer.session_id;
+        webcams.insert(peer.user_id, info);
+        Ok(())
+    }
+
+    /// Remove the screen share `stream_id` only if `peer`'s seat owns it.
+    pub async fn remove_screen_share_of(
+        &self,
+        peer: &Peer,
+        stream_id: Uuid,
+    ) -> Option<ScreenShareInfo> {
+        let mut shares = self.screen_shares.write().await;
+        if shares
+            .get(&stream_id)
+            .is_some_and(|s| owned_by(s.user_id, s.owner, peer))
+        {
+            shares.remove(&stream_id)
+        } else {
+            None
+        }
+    }
+
+    /// Remove the webcam only if `peer`'s seat owns it.
+    pub async fn remove_webcam_of(&self, peer: &Peer) -> Option<WebcamInfo> {
+        let mut webcams = self.webcams.write().await;
+        if webcams
+            .get(&peer.user_id)
+            .is_some_and(|w| owned_by(w.user_id, w.owner, peer))
+        {
+            webcams.remove(&peer.user_id)
+        } else {
+            None
+        }
+    }
+
+    /// Send `event` to the room (all, or all but the user) only while
+    /// `peer` is the user's current seat; the decision and the queueing
+    /// happen under the peers lock, so a newer seat's join cannot slip in
+    /// between. Returns whether it was sent.
+    pub async fn broadcast_if_current(
+        &self,
+        peer: &Peer,
+        event: ServerEvent,
+        include_self: bool,
+    ) -> bool {
+        let full = {
+            let peers = self.peers.read().await;
+            if peers
+                .get(&peer.user_id)
+                .is_none_or(|p| p.session_id != peer.session_id)
+            {
+                return false;
+            }
+            let senders = peers
+                .iter()
+                .filter(|(id, _)| include_self || **id != peer.user_id)
+                .map(|(id, p)| (*id, p.signal_tx.clone()));
+            queue_now(self.channel_id, senders, &event)
+        };
+        fan_out(self.channel_id, full, &event).await;
+        true
+    }
+
+    /// Tell the others that `user_id` left, only while the user holds no
+    /// seat here (decided and queued under the peers lock), and run
+    /// `on_absent` in that same step. Returns whether the user was absent.
+    pub async fn announce_departure(
+        &self,
+        user_id: Uuid,
+        event: ServerEvent,
+        on_absent: impl FnOnce(),
+    ) -> bool {
+        let full = {
+            let peers = self.peers.read().await;
+            if peers.contains_key(&user_id) {
+                return false;
+            }
+            on_absent();
+            let senders = peers.iter().map(|(id, p)| (*id, p.signal_tx.clone()));
+            queue_now(self.channel_id, senders, &event)
+        };
+        fan_out(self.channel_id, full, &event).await;
+        true
+    }
+
+    /// Tell the room (with or without the user) that a webcam or screen
+    /// share of one of the user's seats ended, unless that webcam (by user) or share
+    /// (by stream id) is live again: then it belongs to a newer seat whose
+    /// start was announced, and the stop would hide it. Decided and queued
+    /// under the peers lock, like the starts. Returns whether it was sent.
+    pub async fn announce_stopped(&self, event: ServerEvent, include_self: bool) -> bool {
+        let full = {
+            let peers = self.peers.read().await;
+            // The source's room state stays held (read) until the stop is
+            // queued: a successor's start has to write it first, so its
+            // start event is queued after this stop. Lock order: peers,
+            // shares, webcams.
+            let shares = self.screen_shares.read().await;
+            let webcams = self.webcams.read().await;
+            let (user_id, live_again) = match &event {
+                ServerEvent::WebcamStopped { user_id, .. } => {
+                    (*user_id, webcams.contains_key(user_id))
+                }
+                ServerEvent::ScreenShareStopped {
+                    user_id, stream_id, ..
+                } => (*user_id, shares.contains_key(stream_id)),
+                _ => return false,
+            };
+            crate::ws::test_hooks::voice_step(user_id, "stop_decided").await;
+            if live_again {
+                return false;
+            }
+            let senders = peers
+                .iter()
+                .filter(|(id, _)| include_self || **id != user_id)
+                .map(|(id, p)| (*id, p.signal_tx.clone()));
+            queue_now(self.channel_id, senders, &event)
+        };
+        fan_out(self.channel_id, full, &event).await;
+        true
     }
 
     /// Remove a single screen share session by `stream_id`.
@@ -245,12 +850,6 @@ impl Room {
     pub async fn get_screen_shares(&self) -> Vec<ScreenShareInfo> {
         let shares = self.screen_shares.read().await;
         shares.values().cloned().collect()
-    }
-
-    /// Add a webcam session.
-    pub async fn add_webcam(&self, info: WebcamInfo) {
-        let mut webcams = self.webcams.write().await;
-        webcams.insert(info.user_id, info);
     }
 
     /// Remove a webcam session.
@@ -302,7 +901,7 @@ impl Room {
         };
 
         // Send without holding the lock; never block on another peer's queue
-        fan_out(senders, &event).await;
+        fan_out(self.channel_id, senders, &event).await;
     }
 
     /// Broadcast an event to all peers.
@@ -319,7 +918,7 @@ impl Room {
         };
 
         // Send without holding the lock; never block on another peer's queue
-        fan_out(senders, &event).await;
+        fan_out(self.channel_id, senders, &event).await;
     }
 
     /// Get participant count.
@@ -339,8 +938,6 @@ pub struct SfuServer {
     rooms: Arc<RwLock<HashMap<Uuid, Arc<Room>>>>,
     /// WebRTC API instance.
     api: Arc<API>,
-    /// Server configuration.
-    config: Arc<Config>,
     /// Rate limiter for voice operations (global/redis).
     rate_limiter: Option<Arc<RateLimiter>>,
     /// Rate limiter for voice stats (local/memory).
@@ -393,6 +990,49 @@ fn ice_network_plan(family: IceIpFamily, public_ip: Option<&str>) -> IceNetworkP
         network_types,
         use_public_ip: public_ip.is_some() && ip_family_ok,
         public_ip_ignored: public_ip.is_some() && !ip_family_ok,
+    }
+}
+
+/// Whether `ip` cannot be reached from the internet (loopback, private,
+/// link-local, shared address space, unique local).
+const fn is_private_or_local(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            let o = v4.octets();
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || (o[0] == 100 && (o[1] & 0xc0) == 64) // 100.64.0.0/10
+        }
+        std::net::IpAddr::V6(v6) => {
+            let s = v6.segments();
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || (s[0] & 0xfe00) == 0xfc00 // unique local
+                || (s[0] & 0xffc0) == 0xfe80 // link-local
+        }
+    }
+}
+
+/// The SFU offers its own host addresses only. Without `PUBLIC_IP`, a
+/// server whose addresses are all private (behind NAT, in a container) is
+/// unreachable for clients outside that network: say so at start.
+fn warn_if_only_private_addresses(allowed: Option<&[String]>) {
+    let Ok(found) = webrtc::util::ifaces::ifaces() else {
+        return;
+    };
+    let any_public = found
+        .iter()
+        .filter(|i| allowed.is_none_or(|a| a.contains(&i.name)))
+        .filter_map(|i| i.addr.map(|a| a.ip()))
+        .any(|ip| !is_private_or_local(ip));
+    if !any_public {
+        warn!(
+            "PUBLIC_IP is not set and this host has only private addresses: voice clients outside \
+             this network cannot reach the SFU (it uses no STUN/TURN itself). Set PUBLIC_IP to the \
+             address clients reach this host on."
+        );
     }
 }
 
@@ -488,6 +1128,11 @@ impl SfuServer {
             )
             .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
 
+        // The media-id and layer-id (rid) header extensions are not offered
+        // on purpose: without them a sender that offers several encodings
+        // gets an answer without simulcast and sends one stream. Forwarding
+        // between simulcast layers is not ready for production yet.
+
         // Create interceptor registry
         let mut registry = Registry::new();
         registry = register_default_interceptors(registry, &mut media_engine)
@@ -510,6 +1155,10 @@ impl SfuServer {
                 webrtc::ice_transport::ice_candidate_type::RTCIceCandidateType::Host,
             );
             info!(public_ip = %public_ip, "SFU NAT 1:1 IP configured");
+        }
+
+        if config.public_ip.is_none() {
+            warn_if_only_private_addresses(config.voice_ice_interfaces.as_deref());
         }
 
         // Restrict ICE to the configured interfaces.
@@ -542,7 +1191,6 @@ impl SfuServer {
         Ok(Self {
             rooms: Arc::new(RwLock::new(HashMap::new())),
             api: Arc::new(api),
-            config,
             rate_limiter: rate_limiter.map(Arc::new),
             stats_limiter: Arc::new(VoiceStatsLimiter::default()),
             voice_rate_limiter: Arc::new(VoiceRateLimiter::new()),
@@ -664,48 +1312,16 @@ impl SfuServer {
         self.stats_limiter.start_cleanup_task()
     }
 
-    /// Get `RTCConfiguration` with ICE servers from config.
+    /// `RTCConfiguration` of the server's own peer connections: no ICE
+    /// servers. The SFU gathers host candidates only (its address is
+    /// reachable, or `PUBLIC_IP` maps it); without STUN/TURN gathering each
+    /// connection binds one UDP socket per local address instead of two
+    /// (plus a relay allocation). Clients still get STUN/TURN from
+    /// `GET /api/voice/ice-servers` and reach the SFU through a relay of
+    /// their own when they need one.
     #[must_use]
     pub fn rtc_config(&self) -> RTCConfiguration {
-        let mut ice_servers = vec![RTCIceServer {
-            urls: vec![self.config.stun_server.clone()],
-            ..Default::default()
-        }];
-
-        // Add TURN server if credentials are actually derivable — webrtc-rs
-        // rejects a turn: URL with empty username/credential ("turn server
-        // credentials required"), which broke every voice join on servers
-        // configured with TURN_SHARED_SECRET only (the beta setup).
-        // webrtc-rs 0.17 removed `credential_type` from RTCIceServer; password is
-        // the only credential type now per the W3C RTCIceServer dictionary.
-        if let Some(turn) = &self.config.turn_server {
-            if let Some(secret) = &self.config.turn_shared_secret {
-                let (username, credential) =
-                    super::turn_rest_credentials(secret, self.config.turn_credential_ttl, "sfu");
-                ice_servers.push(RTCIceServer {
-                    urls: vec![turn.clone()],
-                    username,
-                    credential,
-                });
-            } else if let (Some(username), Some(credential)) = (
-                self.config.turn_username.clone(),
-                self.config.turn_credential.clone(),
-            ) {
-                ice_servers.push(RTCIceServer {
-                    urls: vec![turn.clone()],
-                    username,
-                    credential,
-                });
-            }
-            // No usable credentials: skip TURN rather than hand webrtc-rs an
-            // invalid server. The SFU runs on a public address and does not
-            // depend on a relay itself.
-        }
-
-        RTCConfiguration {
-            ice_servers,
-            ..Default::default()
-        }
+        RTCConfiguration::default()
     }
 
     /// Get or create a room for a channel.
@@ -724,10 +1340,47 @@ impl SfuServer {
         room
     }
 
+    /// All current rooms.
+    pub async fn rooms_snapshot(&self) -> Vec<Arc<Room>> {
+        self.rooms.read().await.values().cloned().collect()
+    }
+
     /// Get a room by channel ID.
     pub async fn get_room(&self, channel_id: Uuid) -> Option<Arc<Room>> {
         let rooms = self.rooms.read().await;
         rooms.get(&channel_id).cloned()
+    }
+
+    /// Add `peer` to `room` only while the server still lists `room` for
+    /// its channel (decided while the room list is held, so a room removed
+    /// as empty meanwhile gets no seat). Otherwise the peer is closed and
+    /// the join gets `RoomNotFound` (the caller may start again with the
+    /// listed room).
+    pub async fn add_peer_listed(
+        &self,
+        room: &Arc<Room>,
+        peer: Arc<Peer>,
+        user_limit: Option<usize>,
+    ) -> Result<Option<ReplacedMedia>, VoiceError> {
+        // Lock order: rooms, then the room's peers (as in
+        // `cleanup_room_if_empty`).
+        let result = {
+            let rooms = self.rooms.read().await;
+            if rooms
+                .get(&room.channel_id)
+                .is_some_and(|listed| Arc::ptr_eq(listed, room))
+            {
+                Some(room.add_peer_with_limit(peer.clone(), user_limit).await)
+            } else {
+                None
+            }
+        };
+        if let Some(result) = result {
+            result
+        } else {
+            peer.close().await;
+            Err(VoiceError::RoomNotFound(room.channel_id))
+        }
     }
 
     /// Remove a room if empty.
@@ -792,7 +1445,7 @@ impl SfuServer {
         let channel_id = peer.channel_id;
 
         peer.publisher_pc
-            .on_track(Box::new(move |track, _receiver, _transceiver| {
+            .on_track(Box::new(move |track, _receiver, transceiver| {
                 let pw = peer_weak.clone();
                 let rw = room_weak.clone();
                 let uid = user_id;
@@ -818,56 +1471,89 @@ impl SfuServer {
                         (Some(p), Some(r)) => (p, r),
                         _ => return,
                     };
+                    // A seat that left or was replaced takes no new track.
+                    if peer.is_retired() {
+                        return;
+                    }
 
-                    // Determine source type: check pending queue first, fall back to defaults.
-                    //
-                    // For simulcast video: the browser sends 3 on_track calls (one per
-                    // RID layer) for the same logical source. We only pop from the
-                    // pending queue for the primary layer (High) or non-simulcast
-                    // tracks. Secondary layers (Medium, Low) look up the source type
-                    // from the already-registered High-layer entry in simulcast_tracks.
-                    let is_secondary_simulcast = !rid.is_empty()
-                        && layer != Layer::High
-                        && track.kind() == RTPCodecType::Video;
-
-                    let source_type = if is_secondary_simulcast {
-                        // Find the source type from the High layer already stored.
-                        if let Some(st) = room
-                            .track_router
-                            .find_source_type_for_user(uid, Layer::High)
-                        {
-                            st
-                        } else {
-                            // High layer hasn't arrived yet — stash and skip.
-                            // When High arrives, store_simulcast_track will drain this.
-                            room.track_router
-                                .stash_pending_secondary(uid, layer, track.clone());
+                    // A simulcast track arrives as one `on_track` per layer
+                    // (rid), all on one publisher transceiver (`mid`). The first
+                    // layer to arrive binds the transceiver to its announcement
+                    // and is the primary one (incoming track, subscriber
+                    // tracks); the other layers only forward under that binding.
+                    // webrtc-rs runs the callbacks of one connection in order,
+                    // so the binding is in place before the next layer's turn.
+                    let mid = transceiver.mid().map(|m| m.to_string()).unwrap_or_default();
+                    let simulcast = !rid.is_empty() && track.kind() == RTPCodecType::Video;
+                    let binding = if simulcast { peer.video_mid(&mid) } else { None };
+                    let is_secondary_simulcast = binding.is_some();
+                    let source_type = if let Some(bound) = binding {
+                        // The transceiver's first layer was refused: so are its
+                        // other layers (refusal already reported).
+                        let super::peer::MidBinding::Source(st) = bound else {
                             return;
-                        }
+                        };
+                        st
                     } else {
-                        match track.kind() {
-                            RTPCodecType::Audio => peer
-                                .pop_pending_audio_source()
-                                .await
-                                .unwrap_or(TrackSource::Microphone),
-                            RTPCodecType::Video => peer
-                                .pop_pending_video_source()
-                                .await
-                                // Fallback: if no pending source was queued, assume
-                                // it is a screen-video track with a nil stream_id.
-                                // This keeps backwards compatibility for the initial
-                                // mic+screen two-track setup.
-                                .unwrap_or(TrackSource::ScreenVideo(Uuid::nil())),
+                        // Every track needs a source the server accepted
+                        // (contract C30): the first audio track is the
+                        // microphone (announced by the join); any further
+                        // audio needs an accepted share with audio, video an
+                        // accepted share or webcam start. One that stays
+                        // unannounced is never forwarded.
+                        // The microphone is the audio negotiated as such when
+                        // joining (the first audio section of the first
+                        // publisher offer), not whichever audio sends first.
+                        let video = match track.kind() {
+                            RTPCodecType::Audio
+                                if peer.is_microphone_mid(Some(&mid)) && peer.claim_microphone() =>
+                            {
+                                None
+                            }
+                            RTPCodecType::Audio => Some(false),
+                            RTPCodecType::Video => Some(true),
                             RTPCodecType::Unspecified => {
                                 warn!("Unspecified track kind: {:?}", track.kind());
                                 return;
                             }
+                        };
+                        let resolved = match video {
+                            None => Some(TrackSource::Microphone),
+                            Some(video) => take_live_source(&peer, &room, video).await,
+                        };
+                        if simulcast {
+                            peer.bind_video_mid(&mid, resolved);
                         }
+                        let Some(source) = resolved else {
+                            // A retired seat's socket no longer cares.
+                            if !peer.is_retired() {
+                                reject_unannounced_track(&peer, &track, video == Some(true)).await;
+                            }
+                            return;
+                        };
+                        source
                     };
 
-                    // For video tracks with a valid RID, store in simulcast_tracks.
-                    let is_simulcast = !rid.is_empty() && source_type.is_video();
-                    if is_simulcast {
+                    // Everything below adds state on behalf of this seat, so it
+                    // runs under the seat's media lock and only while the seat
+                    // is current and its source is live (see the module doc).
+                    let media = peer.media.lock().await;
+                    if peer.is_retired() || !source_is_live(&room, &peer, source_type).await {
+                        debug!(user_id = %uid, source = %source_type, "Not forwarding: seat or source ended");
+                        return;
+                    }
+                    crate::ws::test_hooks::track_before_forwarding(uid).await;
+                    // One track per source: a key that is taken stays with its
+                    // first track (no second forwarder into its subscribers).
+                    if !is_secondary_simulcast
+                        && peer.incoming_tracks.read().await.contains_key(&source_type)
+                    {
+                        warn!(user_id = %uid, source = %source_type, "Dropping a second track for a taken source");
+                        return;
+                    }
+
+                    if simulcast {
+                        peer.record_simulcast_layer(source_type, layer, track.clone());
                         room.track_router.store_simulcast_track(
                             uid,
                             source_type,
@@ -893,39 +1579,58 @@ impl SfuServer {
                         peer.clone(),
                     );
 
+                    // Secondary layers share the primary layer's subscriber
+                    // tracks: they are only forwarded when a subscriber's active
+                    // layer matches.
+                    if is_secondary_simulcast {
+                        return;
+                    }
+
                     // For video tracks: send PLI every 3 seconds so subscribers
                     // always get a fresh keyframe. This is the standard Pion SFU
                     // pattern — webrtc-rs doesn't include an interval PLI interceptor
                     // by default, and PeerConnection::write_rtcp() doesn't reliably
                     // deliver PLI to the remote browser.
-                    if source_type.is_video() && layer == Layer::High {
-                        let publisher_pc_weak = Arc::downgrade(&peer.publisher_pc);
-                        let track_ssrc = track.ssrc();
+                    // The request goes to every layer of the source (a viewer
+                    // may watch any) and ends with the source or the seat.
+                    if source_type.is_video() {
+                        let peer_weak = Arc::downgrade(&peer);
+                        let primary_ssrc = track.ssrc();
+                        // The source is live while its incoming track is
+                        // still this one: a source ended and started again
+                        // has a new track (and its own request task).
+                        let own_track = Arc::downgrade(&track);
                         tokio::spawn(async move {
-                            use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
                             let mut interval = tokio::time::interval(std::time::Duration::from_secs(3));
+                            let mut first = true;
                             loop {
                                 interval.tick().await;
-                                let Some(publisher_pc) = publisher_pc_weak.upgrade() else {
-                                    break; // PC dropped — stop PLI
-                                };
-                                let pli = PictureLossIndication {
-                                    sender_ssrc: 0,
-                                    media_ssrc: track_ssrc,
-                                };
-                                if publisher_pc.write_rtcp(&[Box::new(pli)]).await.is_err() {
+                                let Some(peer) = peer_weak.upgrade() else { break };
+                                let live = peer
+                                    .incoming_tracks
+                                    .read()
+                                    .await
+                                    .get(&source_type)
+                                    .is_some_and(|t| std::ptr::eq(Arc::as_ptr(t), own_track.as_ptr()));
+                                // Only the immediate first tick may come before
+                                // the track is stored.
+                                if peer.is_retired() || (!live && !first) {
+                                    break;
+                                }
+                                first = false;
+                                let mut ssrcs: Vec<u32> = peer
+                                    .simulcast_ssrcs(source_type)
+                                    .into_iter()
+                                    .map(|(_, ssrc)| ssrc)
+                                    .collect();
+                                if ssrcs.is_empty() {
+                                    ssrcs.push(primary_ssrc);
+                                }
+                                if request_keyframe(&peer, &ssrcs).await.is_err() {
                                     break;
                                 }
                             }
                         });
-                    }
-
-                    // Only create subscriber tracks for the primary layer (High)
-                    // or non-simulcast tracks. Secondary simulcast layers (Medium,
-                    // Low) share the same subscriber local track — they are just
-                    // forwarded when the subscriber's active_layer matches.
-                    if is_simulcast && layer != Layer::High {
-                        return;
                     }
 
                     // Store incoming track (only for the primary / non-simulcast track)
@@ -939,45 +1644,22 @@ impl SfuServer {
                         other_peer_count = other_peers.len(),
                         "Forwarding track to subscribers"
                     );
+                    let mut changed = Vec::new();
                     for other_peer in other_peers {
-                        if let Ok(local_track) = room
-                            .track_router
-                            .create_subscriber_track(uid, source_type, &other_peer, &track)
-                        {
-                            match other_peer
-                                .add_outgoing_track(uid, source_type, local_track)
-                                .await
-                            {
-                                Ok(sender) => {
-                                    if source_type.is_video() {
-                                        spawn_subscriber_remb_reader(
-                                            room.track_router.clone(),
-                                            other_peer.user_id,
-                                            uid,
-                                            source_type,
-                                            sender,
-                                            other_peer.signal_tx.clone(),
-                                            room.channel_id,
-                                        );
-                                    }
-                                    // Renegotiate so subscriber receives updated SDP
-                                    if let Err(e) = Self::renegotiate(&other_peer).await {
-                                        warn!(
-                                            subscriber = %other_peer.user_id,
-                                            error = %e,
-                                            "Renegotiation failed after track add"
-                                        );
-                                    }
-                                }
-                                Err(e) => {
-                                    warn!(
-                                        source = %uid,
-                                        subscriber = %other_peer.user_id,
-                                        error = %e,
-                                        "Failed to add outgoing track"
-                                    );
-                                }
-                            }
+                        if forward_to(&room, &peer, source_type, &track, &other_peer).await {
+                            changed.push(other_peer);
+                        }
+                    }
+                    // Renegotiate outside the media lock (a slow socket must not
+                    // hold up a leave or replacement of this seat).
+                    drop(media);
+                    for other_peer in changed {
+                        if let Err(e) = Self::renegotiate(&other_peer).await {
+                            warn!(
+                                subscriber = %other_peer.user_id,
+                                error = %e,
+                                "Renegotiation failed after track add"
+                            );
                         }
                     }
                 })
@@ -1026,7 +1708,7 @@ impl SfuServer {
                     }
                 };
                 if let Err(e) = tx
-                    .send(OutboundMsg::Event(ServerEvent::VoiceIceCandidate {
+                    .send(OutboundMsg::voice(channel_id, ServerEvent::VoiceIceCandidate {
                         channel_id,
                         candidate: candidate_str,
                         pc_type: if pc_label == "subscriber" { PcType::Subscriber } else { PcType::Publisher },
@@ -1102,8 +1784,11 @@ impl SfuServer {
         peer: &Arc<Peer>,
         sdp: String,
     ) -> Result<String, VoiceError> {
-        let offer =
-            RTCSessionDescription::offer(sdp).map_err(|e| VoiceError::Signaling(e.to_string()))?;
+        // Simulcast is not accepted (the server cannot receive it): without
+        // the layer lines in the offer, the answer has none either, so the
+        // sender falls back to one stream (its first encoding).
+        let offer = RTCSessionDescription::offer(without_simulcast(&sdp))
+            .map_err(|e| VoiceError::Signaling(e.to_string()))?;
         peer.publisher_pc.set_remote_description(offer).await?;
         let answer = peer.publisher_pc.create_answer(None).await?;
         peer.publisher_pc
@@ -1112,22 +1797,66 @@ impl SfuServer {
         Ok(answer.sdp)
     }
 
-    /// Handle a subscriber answer from the client.
+    /// Handle a subscriber answer from the client. If tracks changed while
+    /// the answered offer was outstanding, the next offer goes out now.
     pub async fn handle_subscriber_answer(peer: &Arc<Peer>, sdp: String) -> Result<(), VoiceError> {
+        let answer_directions = section_directions(&sdp);
         let answer =
             RTCSessionDescription::answer(sdp).map_err(|e| VoiceError::Signaling(e.to_string()))?;
-        peer.subscriber_pc.set_remote_description(answer).await?;
-        Ok(())
+        let (next, applied) = {
+            let mut state = peer.negotiation.lock().await;
+            if state.awaiting_answer_since.is_none() {
+                // No offer is open (a repeated or late answer): nothing to do.
+                debug!(user_id = %peer.user_id, "Ignoring a subscriber answer without an open offer");
+                return Ok(());
+            }
+            let open_directions = peer
+                .subscriber_pc
+                .pending_local_description()
+                .await
+                .map(|d| section_directions(&d.sdp));
+            if open_directions.is_some_and(|offer| !answer_fits(&offer, &answer_directions)) {
+                // Answers an older offer than the open one (another number of
+                // sections, or a section whose direction changed since).
+                debug!(user_id = %peer.user_id, "Ignoring an answer to a superseded subscriber offer");
+                return Ok(());
+            }
+            let applied = peer.subscriber_pc.set_remote_description(answer).await;
+            state.awaiting_answer_since = None;
+            state.repeated = false;
+            // A change waited for this answer, or the answer did not fit:
+            // offer (again) now.
+            let next = if state.again || applied.is_err() {
+                match Self::open_offer(peer, &mut state).await {
+                    Ok(next) => Some(next),
+                    Err(e) => {
+                        // Not lost: try again shortly.
+                        state.again = true;
+                        Self::retry_offer_later(peer);
+                        return Err(e);
+                    }
+                }
+            } else {
+                None
+            };
+            (next, applied)
+        };
+        if let Some((event, seq)) = next {
+            // This runs in the peer's own socket loop.
+            Self::send_offer(peer, event, seq, None).await?;
+        }
+        applied.map_err(VoiceError::from)
     }
 
-    /// Trigger renegotiation on the subscriber PC of *another* peer by creating
-    /// a new offer and sending it to that peer. Used after dynamically
-    /// adding/removing tracks. Runs from the sender's socket loop, so the wait
-    /// is bounded by the short per-peer [`PEER_SIGNAL_SEND_TIMEOUT`].
+    /// Renegotiate the subscriber connection of *another* peer after its
+    /// tracks changed. Runs from the sender's socket loop, so the send is
+    /// bounded by the short per-peer [`PEER_SIGNAL_SEND_TIMEOUT`].
+    ///
+    /// Serialized per peer (see [`super::peer::SubscriberNegotiation`]): while
+    /// an offer waits for its answer, this only records that another offer
+    /// is due; the answer sends it.
     pub async fn renegotiate(peer: &Arc<Peer>) -> Result<(), VoiceError> {
-        let event = Self::create_subscriber_offer(peer).await?;
-        let sent = send_outbound_within(&peer.signal_tx, event, PEER_SIGNAL_SEND_TIMEOUT).await;
-        Self::check_offer_sent(peer, sent)
+        Self::negotiate(peer, Some(PEER_SIGNAL_SEND_TIMEOUT)).await
     }
 
     /// [`Self::renegotiate`] for the peer of the socket that is handling the
@@ -1135,8 +1864,122 @@ impl SfuServer {
     /// socket's own full slow-client bound, so a briefly busy queue does not
     /// drop the offer.
     pub async fn renegotiate_own(peer: &Arc<Peer>) -> Result<(), VoiceError> {
+        Self::negotiate(peer, None).await
+    }
+
+    async fn negotiate(peer: &Arc<Peer>, bound: Option<Duration>) -> Result<(), VoiceError> {
+        let (event, seq) = {
+            let mut state = peer.negotiation.lock().await;
+            if let Some(since) = state.awaiting_answer_since {
+                if since.elapsed() < SUBSCRIBER_ANSWER_TIMEOUT {
+                    state.again = true;
+                    return Ok(());
+                }
+                // The answer is overdue: offer again instead of waiting forever.
+                warn!(user_id = %peer.user_id, "Subscriber answer overdue, offering again");
+            }
+            state.repeated = false;
+            Self::open_offer(peer, &mut state).await?
+        };
+        Self::send_offer(peer, event, seq, bound).await
+    }
+
+    /// Create and set a new subscriber offer under the negotiation lock and
+    /// mark it open. Returns the event to send and the offer's number.
+    async fn open_offer(
+        peer: &Arc<Peer>,
+        state: &mut super::peer::SubscriberNegotiation,
+    ) -> Result<(OutboundMsg, u64), VoiceError> {
         let event = Self::create_subscriber_offer(peer).await?;
-        let sent = send_outbound(&peer.signal_tx, event).await;
+        state.awaiting_answer_since = Some(tokio::time::Instant::now());
+        state.again = false;
+        state.offer_seq += 1;
+        Ok((event, state.offer_seq))
+    }
+
+    /// After [`SUBSCRIBER_ANSWER_TIMEOUT`], if offer `seq` is still open and
+    /// unanswered: repeat it once (a lost offer or answer would otherwise
+    /// block every later change), or, if it already is the repeat, release
+    /// the open state so the next change offers at once.
+    fn watch_offer(peer: &Arc<Peer>, seq: u64) {
+        let peer = Arc::downgrade(peer);
+        tokio::spawn(async move {
+            tokio::time::sleep(SUBSCRIBER_ANSWER_TIMEOUT).await;
+            let Some(peer) = peer.upgrade() else { return };
+            let repeat = {
+                let mut state = peer.negotiation.lock().await;
+                if state.offer_seq != seq || state.awaiting_answer_since.is_none() {
+                    return;
+                }
+                if state.repeated && !state.again {
+                    debug!(user_id = %peer.user_id, "Repeated subscriber offer unanswered; releasing");
+                    state.awaiting_answer_since = None;
+                    return;
+                }
+                // Repeat once; a change that came in meanwhile is offered now
+                // (with a repeat of its own) instead of being dropped. Changes
+                // are only ever dropped with the seat.
+                state.repeated = !state.again;
+                match Self::open_offer(&peer, &mut state).await {
+                    Ok(next) => next,
+                    Err(e) => {
+                        debug!(user_id = %peer.user_id, error = %e, "Repeating an unanswered offer failed");
+                        state.awaiting_answer_since = None;
+                        // The change it carried is not lost: try again shortly.
+                        state.again = true;
+                        Self::retry_offer_later(&peer);
+                        return;
+                    }
+                }
+            };
+            let (event, seq) = repeat;
+            let _ = Self::send_offer(&peer, event, seq, Some(PEER_SIGNAL_SEND_TIMEOUT)).await;
+        });
+    }
+
+    /// Offer once more after a short pause if a change is still pending and
+    /// no offer is open.
+    fn retry_offer_later(peer: &Arc<Peer>) {
+        let peer = Arc::downgrade(peer);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            let Some(peer) = peer.upgrade() else { return };
+            let pending = {
+                let state = peer.negotiation.lock().await;
+                state.again && state.awaiting_answer_since.is_none()
+            };
+            if pending && !peer.is_retired() {
+                let _ = Self::negotiate(&peer, Some(PEER_SIGNAL_SEND_TIMEOUT)).await;
+            }
+        });
+    }
+
+    /// Send an offer created under the negotiation lock and watch it. If it
+    /// cannot be queued, the client never answers it: forget that it is
+    /// outstanding, so the next change offers again.
+    async fn send_offer(
+        peer: &Arc<Peer>,
+        event: OutboundMsg,
+        seq: u64,
+        bound: Option<Duration>,
+    ) -> Result<(), VoiceError> {
+        let sent = match bound {
+            Some(bound) => send_outbound_within(&peer.signal_tx, event, bound).await,
+            None => send_outbound(&peer.signal_tx, event).await,
+        };
+        if sent.is_err() {
+            let mut state = peer.negotiation.lock().await;
+            if state.offer_seq == seq {
+                state.awaiting_answer_since = None;
+                // Neither the change this offer carried nor one that waited
+                // for it may be lost: offer again shortly (the queue may only
+                // have been busy; a closed socket ends the seat).
+                state.again = true;
+                Self::retry_offer_later(peer);
+            }
+        } else {
+            Self::watch_offer(peer, seq);
+        }
         Self::check_offer_sent(peer, sent)
     }
 
@@ -1145,10 +1988,13 @@ impl SfuServer {
         peer.subscriber_pc
             .set_local_description(offer.clone())
             .await?;
-        Ok(OutboundMsg::Event(ServerEvent::VoiceSubscriberOffer {
-            channel_id: peer.channel_id,
-            sdp: offer.sdp,
-        }))
+        Ok(OutboundMsg::voice(
+            peer.channel_id,
+            ServerEvent::VoiceSubscriberOffer {
+                channel_id: peer.channel_id,
+                sdp: offer.sdp,
+            },
+        ))
     }
 
     fn check_offer_sent(
@@ -1282,6 +2128,7 @@ mod fan_out_tests {
         tokio::time::timeout(
             PEER_SIGNAL_SEND_TIMEOUT * 2,
             fan_out(
+                Uuid::nil(),
                 vec![
                     (Uuid::from_u128(2), healthy_a_tx),
                     (stalled_id, stalled_tx),
@@ -1297,7 +2144,10 @@ mod fan_out_tests {
         for rx in [&mut healthy_a_rx, &mut healthy_b_rx] {
             assert!(matches!(
                 rx.try_recv(),
-                Ok(OutboundMsg::Event(ServerEvent::VoiceUserLeft { .. }))
+                Ok(OutboundMsg::Voice {
+                    event: ServerEvent::VoiceUserLeft { .. },
+                    ..
+                })
             ));
         }
         // The stalled peer only holds what it had before; its event was skipped.
@@ -1311,6 +2161,7 @@ mod fan_out_tests {
         drop(closed_rx);
         let (healthy_tx, mut healthy_rx) = mpsc::channel(8);
         fan_out(
+            Uuid::nil(),
             vec![
                 (Uuid::from_u128(1), closed_tx),
                 (Uuid::from_u128(2), healthy_tx),
@@ -1356,9 +2207,800 @@ mod renegotiate_tests {
             .expect("own offer must not be dropped by the fan-out bound");
         assert!(matches!(
             drain.await.expect("drain task"),
-            Some(OutboundMsg::Event(ServerEvent::VoiceSubscriberOffer { .. }))
+            Some(OutboundMsg::Voice {
+                event: ServerEvent::VoiceSubscriberOffer { .. },
+                ..
+            })
         ));
         peer.close().await;
+    }
+}
+
+#[cfg(test)]
+mod negotiation_tests {
+    use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
+
+    use super::*;
+
+    /// A new seat of user `user` (its own session).
+    async fn seat(user: u128) -> Arc<Peer> {
+        let sfu = SfuServer::new(Arc::new(Config::default_for_test()), None).expect("sfu");
+        let (tx, _rx) = mpsc::channel(8);
+        sfu.create_peer(
+            Uuid::from_u128(user),
+            "s".into(),
+            "S".into(),
+            Uuid::from_u128(2),
+            tx,
+        )
+        .await
+        .expect("seat")
+    }
+
+    fn audio_track(id: &str) -> Arc<TrackLocalStaticRTP> {
+        Arc::new(TrackLocalStaticRTP::new(
+            RTCRtpCodecCapability {
+                mime_type: "audio/opus".into(),
+                clock_rate: 48000,
+                channels: 2,
+                ..Default::default()
+            },
+            id.into(),
+            id.into(),
+        ))
+    }
+
+    fn offer_sdp(msg: OutboundMsg) -> String {
+        match msg {
+            OutboundMsg::Voice {
+                event: ServerEvent::VoiceSubscriberOffer { sdp, .. },
+                ..
+            } => sdp,
+            other => panic!("expected a subscriber offer, got {other:?}"),
+        }
+    }
+
+    /// While an offer waits for its answer, further changes send nothing;
+    /// the answer triggers exactly one new offer that contains them all.
+    #[tokio::test]
+    async fn changes_during_an_open_offer_coalesce_into_one_offer() {
+        let mut config = Config::default_for_test();
+        config.stun_server = "stun:127.0.0.1:3478".into();
+        let sfu = SfuServer::new(Arc::new(config), None).expect("sfu");
+        let (tx, mut rx) = mpsc::channel(16);
+        let peer = sfu
+            .create_peer(
+                Uuid::from_u128(1),
+                "a".into(),
+                "A".into(),
+                Uuid::from_u128(2),
+                tx,
+            )
+            .await
+            .expect("peer");
+        let client = sfu
+            .api
+            .new_peer_connection(RTCConfiguration::default())
+            .await
+            .expect("client pc");
+
+        peer.add_outgoing_track(&*seat(3).await, TrackSource::Microphone, audio_track("u3"))
+            .await
+            .expect("track 1");
+        SfuServer::renegotiate(&peer).await.expect("offer 1");
+        let first = offer_sdp(rx.try_recv().expect("first offer sent"));
+
+        for n in 4..6 {
+            peer.add_outgoing_track(
+                &*seat(n).await,
+                TrackSource::Microphone,
+                audio_track(&format!("u{n}")),
+            )
+            .await
+            .expect("more tracks");
+            SfuServer::renegotiate(&peer).await.expect("coalesced");
+        }
+        assert!(
+            rx.try_recv().is_err(),
+            "a second offer went out before the answer"
+        );
+
+        client
+            .set_remote_description(RTCSessionDescription::offer(first).unwrap())
+            .await
+            .expect("client applies offer 1");
+        let answer = client.create_answer(None).await.expect("answer");
+        client
+            .set_local_description(answer.clone())
+            .await
+            .expect("client local answer");
+        SfuServer::handle_subscriber_answer(&peer, answer.sdp)
+            .await
+            .expect("server applies answer 1");
+
+        let second = offer_sdp(rx.try_recv().expect("the pending change was offered"));
+        assert_eq!(second.matches("m=audio").count(), 3, "{second}");
+        assert!(rx.try_recv().is_err(), "more than one follow-up offer");
+
+        let _ = client.close().await;
+        peer.close().await;
+    }
+
+    async fn setup() -> (
+        SfuServer,
+        Arc<Peer>,
+        mpsc::Receiver<OutboundMsg>,
+        Arc<RTCPeerConnection>,
+    ) {
+        let mut config = Config::default_for_test();
+        config.stun_server = "stun:127.0.0.1:3478".into();
+        let sfu = SfuServer::new(Arc::new(config), None).expect("sfu");
+        let (tx, rx) = mpsc::channel(16);
+        let peer = sfu
+            .create_peer(
+                Uuid::from_u128(1),
+                "a".into(),
+                "A".into(),
+                Uuid::from_u128(2),
+                tx,
+            )
+            .await
+            .expect("peer");
+        let client = Arc::new(
+            sfu.api
+                .new_peer_connection(RTCConfiguration::default())
+                .await
+                .expect("client pc"),
+        );
+        (sfu, peer, rx, client)
+    }
+
+    async fn answer_for(client: &RTCPeerConnection, offer: String) -> String {
+        client
+            .set_remote_description(RTCSessionDescription::offer(offer).unwrap())
+            .await
+            .expect("client applies offer");
+        let answer = client.create_answer(None).await.expect("answer");
+        client
+            .set_local_description(answer.clone())
+            .await
+            .expect("client local answer");
+        answer.sdp
+    }
+
+    /// An answer that arrives while no offer is open is ignored, not an
+    /// error that could disturb the connection.
+    #[tokio::test]
+    async fn stray_answer_is_ignored() {
+        let (_sfu, peer, mut rx, client) = setup().await;
+        peer.add_outgoing_track(&*seat(3).await, TrackSource::Microphone, audio_track("u3"))
+            .await
+            .expect("track");
+        SfuServer::renegotiate(&peer).await.expect("offer");
+        let offer = offer_sdp(rx.try_recv().expect("offer sent"));
+        let answer = answer_for(&client, offer).await;
+        SfuServer::handle_subscriber_answer(&peer, answer.clone())
+            .await
+            .expect("answer applied");
+        SfuServer::handle_subscriber_answer(&peer, answer)
+            .await
+            .expect("a repeated answer is ignored");
+        assert!(rx.try_recv().is_err());
+        let _ = client.close().await;
+        peer.close().await;
+    }
+
+    /// An answer to an older offer (other number of m-lines than the open
+    /// one) is ignored; the open offer still takes its own answer.
+    #[tokio::test]
+    async fn answer_to_a_superseded_offer_is_ignored() {
+        let (_sfu, peer, mut rx, client) = setup().await;
+        let old_client = setup().await.3;
+        peer.add_outgoing_track(&*seat(3).await, TrackSource::Microphone, audio_track("u3"))
+            .await
+            .expect("track");
+        SfuServer::renegotiate(&peer).await.expect("offer");
+        let first = offer_sdp(rx.try_recv().expect("offer sent"));
+        // The open offer is replaced (as after the answer timeout) by one
+        // with two m-lines.
+        peer.add_outgoing_track(&*seat(4).await, TrackSource::Microphone, audio_track("u4"))
+            .await
+            .expect("track 2");
+        peer.negotiation.lock().await.awaiting_answer_since =
+            Some(tokio::time::Instant::now() - SUBSCRIBER_ANSWER_TIMEOUT);
+        SfuServer::renegotiate(&peer).await.expect("re-offer");
+        let second = offer_sdp(rx.try_recv().expect("re-offer sent"));
+
+        let stale = answer_for(&old_client, first).await;
+        SfuServer::handle_subscriber_answer(&peer, stale)
+            .await
+            .expect("stale answer ignored");
+        assert!(peer
+            .negotiation
+            .lock()
+            .await
+            .awaiting_answer_since
+            .is_some());
+
+        let answer = answer_for(&client, second).await;
+        SfuServer::handle_subscriber_answer(&peer, answer)
+            .await
+            .expect("current answer applied");
+        assert!(peer
+            .negotiation
+            .lock()
+            .await
+            .awaiting_answer_since
+            .is_none());
+        let _ = client.close().await;
+        let _ = old_client.close().await;
+        peer.close().await;
+    }
+
+    /// An offer that could not be sent is offered again shortly, even with
+    /// no other change pending (the change it carried must not be lost).
+    #[tokio::test(start_paused = true)]
+    async fn an_offer_that_could_not_be_sent_is_offered_again() {
+        let (_sfu, peer, mut rx, _client) = setup().await;
+        peer.add_outgoing_track(&*seat(3).await, TrackSource::Microphone, audio_track("u3"))
+            .await
+            .expect("track");
+        // A full queue: the offer cannot be sent within its bound.
+        for _ in 0..16 {
+            if peer.signal_tx.try_send(OutboundMsg::Ping).is_err() {
+                break;
+            }
+        }
+        assert!(SfuServer::renegotiate(&peer).await.is_err());
+        while rx.try_recv().is_ok() {}
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        offer_sdp(rx.try_recv().expect("the change was offered again"));
+        peer.close().await;
+    }
+
+    /// A change made while a repeated offer waits is offered when the repeat
+    /// times out, not dropped with it.
+    #[tokio::test(start_paused = true)]
+    async fn a_change_during_the_repeat_is_offered_after_it() {
+        let (_sfu, peer, mut rx, _client) = setup().await;
+        peer.add_outgoing_track(&*seat(3).await, TrackSource::Microphone, audio_track("u3"))
+            .await
+            .expect("track");
+        SfuServer::renegotiate(&peer).await.expect("offer");
+        offer_sdp(rx.try_recv().expect("offer sent"));
+        tokio::time::sleep(SUBSCRIBER_ANSWER_TIMEOUT + Duration::from_secs(1)).await;
+        offer_sdp(rx.try_recv().expect("repeat sent"));
+
+        peer.add_outgoing_track(&*seat(4).await, TrackSource::Microphone, audio_track("u4"))
+            .await
+            .expect("track 2");
+        SfuServer::renegotiate(&peer).await.expect("coalesced");
+        assert!(rx.try_recv().is_err());
+
+        tokio::time::sleep(SUBSCRIBER_ANSWER_TIMEOUT + Duration::from_secs(1)).await;
+        let next = offer_sdp(rx.try_recv().expect("the change was offered"));
+        assert_eq!(next.matches("m=audio").count(), 2, "{next}");
+        peer.close().await;
+    }
+
+    /// Telling the room about a seat never holds the room's peer list while
+    /// a participant's queue is full: a join or leave is not held up.
+    #[tokio::test]
+    async fn room_events_do_not_hold_the_peer_list_for_a_full_queue() {
+        let (sfu, me, mut rx, _client) = setup().await;
+        let room = Room::new(me.channel_id, 10);
+        let (slow_tx, _slow_rx) = mpsc::channel(1);
+        slow_tx.try_send(OutboundMsg::Ping).expect("fill the queue");
+        let slow = sfu
+            .create_peer(
+                Uuid::from_u128(3),
+                "s".into(),
+                "S".into(),
+                me.channel_id,
+                slow_tx,
+            )
+            .await
+            .expect("peer");
+        room.add_peer(slow).await.expect("add");
+        room.add_peer(me.clone()).await.expect("add");
+        let event = ServerEvent::VoiceUserLeft {
+            channel_id: me.channel_id,
+            user_id: Uuid::from_u128(9),
+        };
+        let (sent, free) = tokio::join!(room.broadcast_if_current(&me, event, true), async {
+            tokio::task::yield_now().await;
+            tokio::time::timeout(PEER_SIGNAL_SEND_TIMEOUT / 5, room.peers.write())
+                .await
+                .map(drop)
+        });
+        assert!(sent);
+        assert!(free.is_ok(), "the peer list was held for the full queue");
+        assert!(rx.try_recv().is_ok(), "the seat's own queue got the event");
+    }
+
+    /// A refused simulcast transceiver stays refused across a new offer
+    /// that still sends the same track on it (its late layers must not bind
+    /// to a newer announcement); it is forgotten once the offer sends
+    /// another track there or stops sending.
+    #[tokio::test]
+    async fn a_refused_transceiver_is_forgotten_only_when_its_track_changes() {
+        let (_sfu, peer, _rx, _client) = setup().await;
+        let offer = |msid: &str, dir: &str| {
+            format!(
+                "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:0\r\na=sendonly\r\n\
+                 m=video 9 UDP/TLS/RTP/SAVPF 96\r\na=mid:1\r\na={dir}\r\na=msid:{msid}\r\n"
+            )
+        };
+        peer.forget_refused_mids(&offer("s cam", "sendonly"));
+        peer.bind_video_mid("1", None);
+        peer.forget_refused_mids(&offer("s cam", "sendonly"));
+        assert_eq!(
+            peer.video_mid("1"),
+            Some(crate::voice::peer::MidBinding::Refused),
+            "same track, still refused"
+        );
+        peer.forget_refused_mids(&offer("s cam2", "sendonly"));
+        assert_eq!(
+            peer.video_mid("1"),
+            None,
+            "another track on the transceiver"
+        );
+        peer.bind_video_mid("1", None);
+        peer.forget_refused_mids(&offer("s cam2", "inactive"));
+        assert_eq!(peer.video_mid("1"), None, "the transceiver stopped sending");
+    }
+
+    /// What a listener receives from a person belongs to that person's seat:
+    /// a track of the person's new seat replaces the old seat's entry and
+    /// sender (also while the old seat's teardown has not removed it yet), a
+    /// second one of the same seat is refused, and the old seat's late
+    /// removal by track leaves the new one.
+    #[tokio::test]
+    async fn a_new_seats_track_replaces_the_old_seats_entry() {
+        let (_sfu, listener, _rx, _client) = setup().await;
+        let (old_seat, new_seat) = (seat(7).await, seat(7).await);
+        let user = old_seat.user_id;
+        let shared = Uuid::from_u128(72);
+        let mut new_tracks = Vec::new();
+        for source in [
+            TrackSource::Microphone,
+            TrackSource::Webcam,
+            TrackSource::ScreenVideo(shared),
+        ] {
+            // Old and new carry the same id, as forwarded tracks do.
+            let old = audio_track(&format!("{user}:{source}"));
+            let new = audio_track(&format!("{user}:{source}"));
+            listener
+                .add_outgoing_track(&old_seat, source, old.clone())
+                .await
+                .expect("old seat's track");
+            listener
+                .add_outgoing_track(&new_seat, source, new.clone())
+                .await
+                .expect("the new seat's track replaces the old one");
+            assert!(
+                listener
+                    .add_outgoing_track(&new_seat, source, audio_track("dup"))
+                    .await
+                    .is_err(),
+                "a second track of the same seat is refused"
+            );
+            assert!(
+                !listener.remove_outgoing_track_if(user, source, &old).await,
+                "the old seat's late removal finds nothing of its own"
+            );
+            new_tracks.push(new);
+        }
+        let kept = listener.outgoing_track_list().await;
+        assert_eq!(kept.len(), 3, "exactly one track per source");
+        assert!(
+            kept.iter()
+                .all(|t| new_tracks.iter().any(|n| Arc::ptr_eq(n, t))),
+            "an old seat's track is still listed"
+        );
+        // The old senders are gone from the listener's connection: only the
+        // three new ones still carry a track.
+        let mut carrying = 0;
+        for sender in listener.subscriber_pc.get_senders().await {
+            if sender.track().await.is_some() {
+                carrying += 1;
+            }
+        }
+        assert_eq!(carrying, 3, "an old seat's sender is still sending");
+        assert_eq!(listener.inactive_mlines(), 3);
+    }
+
+    /// A track of a seat that is no longer current never replaces an entry:
+    /// the new seat's track is in place, the old seat's late add comes, the
+    /// old seat's teardown runs, and the listener still has the new track.
+    #[tokio::test]
+    async fn a_retired_seats_late_track_replaces_nothing() {
+        let (_sfu, listener, _rx, _client) = setup().await;
+        let (old_seat, new_seat) = (seat(9).await, seat(9).await);
+        let user = old_seat.user_id;
+        old_seat.retire();
+        let new = audio_track("new");
+        listener
+            .add_outgoing_track(&new_seat, TrackSource::Microphone, new.clone())
+            .await
+            .expect("the new seat's track");
+        let late = audio_track("late");
+        assert!(
+            listener
+                .add_outgoing_track(&old_seat, TrackSource::Microphone, late.clone())
+                .await
+                .is_err(),
+            "a retired seat's track is refused"
+        );
+        listener
+            .remove_outgoing_track_if(user, TrackSource::Microphone, &late)
+            .await;
+        let kept = listener.outgoing_track_list().await;
+        assert!(
+            kept.len() == 1 && Arc::ptr_eq(&kept[0], &new),
+            "the listener lost the new seat's track"
+        );
+    }
+
+    /// A join whose room was removed as empty while the join set up its
+    /// connections gets no seat in that removed room; its peer is closed.
+    #[tokio::test]
+    async fn a_join_gets_no_seat_in_a_room_that_was_removed() {
+        let (sfu, _peer, _rx, _client) = setup().await;
+        let channel = Uuid::from_u128(42);
+        let room = sfu.get_or_create_room(channel).await;
+        sfu.cleanup_room_if_empty(channel).await;
+        let (tx, _rx2) = mpsc::channel(8);
+        let joiner = sfu
+            .create_peer(Uuid::from_u128(5), "j".into(), "J".into(), channel, tx)
+            .await
+            .expect("peer");
+        let result = sfu.add_peer_listed(&room, joiner.clone(), None).await;
+        assert!(
+            matches!(result, Err(VoiceError::RoomNotFound(_))),
+            "{:?}",
+            result.as_ref().err()
+        );
+        assert_eq!(
+            room.participant_count().await,
+            0,
+            "a seat in the removed room"
+        );
+        assert!(sfu.get_room(channel).await.is_none());
+        assert_eq!(
+            joiner.publisher_pc.connection_state(),
+            RTCPeerConnectionState::Closed,
+            "the refused peer is closed"
+        );
+    }
+
+    /// A stop is decided and queued while the source's room state is held:
+    /// a successor seat's start of that source waits for it, so the others
+    /// get the stop before the new start.
+    #[tokio::test]
+    async fn a_successors_start_follows_the_old_seats_stop() {
+        let (sfu, viewer, mut rx, _client) = setup().await;
+        let room = Arc::new(Room::new(viewer.channel_id, 10));
+        room.add_peer(viewer.clone()).await.expect("viewer");
+        let user = Uuid::from_u128(8);
+        let (tx, _rx2) = mpsc::channel(8);
+        let successor = sfu
+            .create_peer(user, "n".into(), "N".into(), viewer.channel_id, tx)
+            .await
+            .expect("peer");
+        room.add_peer(successor.clone()).await.expect("successor");
+
+        let pause = crate::ws::test_hooks::pause_voice_step(user, "stop_decided");
+        let stopping = {
+            let room = room.clone();
+            tokio::spawn(async move {
+                room.announce_stopped(
+                    ServerEvent::WebcamStopped {
+                        channel_id: room.channel_id,
+                        user_id: user,
+                        reason: "disconnected".into(),
+                    },
+                    false,
+                )
+                .await
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(5), pause.reached.notified())
+            .await
+            .expect("the stop was decided");
+        let start = room.add_webcam_for(
+            &successor,
+            crate::voice::webcam::WebcamInfo::new(user, "n".into(), crate::voice::Quality::Medium),
+        );
+        tokio::pin!(start);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut start)
+                .await
+                .is_err(),
+            "the start completed while the stop was being decided"
+        );
+        pause.release.notify_one();
+        assert!(stopping.await.expect("join"), "the stop was sent");
+        start.await.expect("the start completes after the stop");
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(OutboundMsg::Voice {
+                event: ServerEvent::WebcamStopped { .. },
+                ..
+            })
+        ));
+    }
+
+    /// A viewer that leaves takes its entries out of the publishers'
+    /// forwarded lists (a long-lived publisher keeps nothing of departed
+    /// viewers).
+    #[tokio::test]
+    async fn a_departed_viewer_leaves_nothing_in_a_publishers_list() {
+        let (sfu, publisher, _rx, _client) = setup().await;
+        let room = Room::new(publisher.channel_id, 10);
+        let (tx, _rx2) = mpsc::channel(8);
+        let viewer = sfu
+            .create_peer(
+                Uuid::from_u128(6),
+                "v".into(),
+                "V".into(),
+                publisher.channel_id,
+                tx,
+            )
+            .await
+            .expect("peer");
+        room.add_peer(publisher.clone()).await.expect("publisher");
+        room.add_peer(viewer.clone()).await.expect("viewer");
+        let track = audio_track("p-mic");
+        viewer
+            .add_outgoing_track(&publisher, TrackSource::Microphone, track.clone())
+            .await
+            .expect("forwarded");
+        publisher.record_forwarded(viewer.user_id, TrackSource::Microphone, track);
+
+        room.remove_peer(viewer.user_id).await;
+        room.detach_media(&viewer).await;
+        assert!(
+            publisher.take_forwarded().is_empty(),
+            "the publisher still lists the departed viewer's track"
+        );
+    }
+
+    /// A listener's offer never carries the same stream id and track id on
+    /// two sections after a person leaves and comes back, moves to another
+    /// device (removal and addition in one offer), or turns the camera off
+    /// and on: each forwarded track has its own id, and the live section
+    /// keeps the stream id `{user}:{source}`.
+    #[tokio::test]
+    async fn a_listeners_offer_never_repeats_a_track_identity() {
+        let (_sfu, listener, mut rx, client) = setup().await;
+        let opus = || RTCRtpCodecCapability {
+            mime_type: "audio/opus".into(),
+            clock_rate: 48000,
+            channels: 2,
+            ..Default::default()
+        };
+        let vp8 = || RTCRtpCodecCapability {
+            mime_type: "video/VP8".into(),
+            clock_rate: 90000,
+            ..Default::default()
+        };
+        // Offer, check it, answer it.
+        async fn round(
+            listener: &Arc<Peer>,
+            rx: &mut mpsc::Receiver<OutboundMsg>,
+            client: &RTCPeerConnection,
+            step: &str,
+        ) -> String {
+            SfuServer::renegotiate(listener).await.expect("offer");
+            let offer = offer_sdp(rx.try_recv().expect("offer sent"));
+            let msids: Vec<&str> = offer.lines().filter(|l| l.starts_with("a=msid:")).collect();
+            let mut unique = msids.clone();
+            unique.sort_unstable();
+            unique.dedup();
+            assert_eq!(
+                unique.len(),
+                msids.len(),
+                "{step}: a repeated msid line: {msids:?}"
+            );
+            let answer = answer_for(client, offer.clone()).await;
+            SfuServer::handle_subscriber_answer(listener, answer)
+                .await
+                .expect("answer");
+            offer
+        }
+        let user = Uuid::from_u128(7);
+        let mic = TrackSource::Microphone;
+        // Tracks are built the way forwarding builds them.
+        let router = crate::voice::track::TrackRouter::new();
+        let live = |offer: &str, source: TrackSource| {
+            offer
+                .lines()
+                .any(|l| l.starts_with(&format!("a=msid:{user}:{source} ")))
+        };
+
+        let first = seat(7).await;
+        let t1 = router.subscribe_with_codec(user, mic, &listener, opus());
+        listener
+            .add_outgoing_track(&first, mic, t1.clone())
+            .await
+            .expect("add");
+        round(&listener, &mut rx, &client, "join").await;
+
+        // (1) Leave and come back.
+        listener.remove_outgoing_track_if(user, mic, &t1).await;
+        round(&listener, &mut rx, &client, "leave").await;
+        let second = seat(7).await;
+        let t2 = router.subscribe_with_codec(user, mic, &listener, opus());
+        listener
+            .add_outgoing_track(&second, mic, t2)
+            .await
+            .expect("add");
+        let offer = round(&listener, &mut rx, &client, "rejoin").await;
+        assert!(live(&offer, mic), "rejoin: stream id changed:\n{offer}");
+
+        // (2) Another device takes over: removal and addition in one offer.
+        let third = seat(7).await;
+        let t3 = router.subscribe_with_codec(user, mic, &listener, opus());
+        listener
+            .add_outgoing_track(&third, mic, t3)
+            .await
+            .expect("takeover");
+        let offer = round(&listener, &mut rx, &client, "takeover").await;
+        assert!(live(&offer, mic), "takeover: stream id changed:\n{offer}");
+
+        // (3) Camera off and on.
+        let cam = TrackSource::Webcam;
+        let c1 = router.subscribe_with_codec(user, cam, &listener, vp8());
+        listener
+            .add_outgoing_track(&third, cam, c1.clone())
+            .await
+            .expect("camera");
+        round(&listener, &mut rx, &client, "camera on").await;
+        listener.remove_outgoing_track_if(user, cam, &c1).await;
+        let c2 = router.subscribe_with_codec(user, cam, &listener, vp8());
+        listener
+            .add_outgoing_track(&third, cam, c2)
+            .await
+            .expect("camera again");
+        let offer = round(&listener, &mut rx, &client, "camera off and on").await;
+        assert!(live(&offer, cam), "camera: stream id changed:\n{offer}");
+    }
+
+    /// A track waiting for its announcement on a seat that is retired stops
+    /// waiting at once (no grace period, nothing bound).
+    #[tokio::test]
+    async fn retiring_a_seat_ends_its_wait_for_an_announcement() {
+        let (_sfu, peer, _rx, _client) = setup().await;
+        let waiting = {
+            let peer = peer.clone();
+            tokio::spawn(async move {
+                let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+                peer.take_source_until(true, deadline).await
+            })
+        };
+        tokio::task::yield_now().await;
+        peer.retire();
+        let got = tokio::time::timeout(std::time::Duration::from_secs(2), waiting)
+            .await
+            .expect("the wait ended with the seat")
+            .expect("join");
+        assert!(got.is_none(), "a retired seat bound {got:?}");
+    }
+
+    /// An answer to an older offer with the same number of media sections
+    /// (a track was removed in between, so a section changed direction) is
+    /// ignored too.
+    #[tokio::test]
+    async fn answer_to_an_offer_before_a_removal_is_ignored() {
+        let (_sfu, peer, mut rx, client) = setup().await;
+        let track = audio_track("u3");
+        peer.add_outgoing_track(&*seat(3).await, TrackSource::Microphone, track.clone())
+            .await
+            .expect("track");
+        SfuServer::renegotiate(&peer).await.expect("offer");
+        let first = offer_sdp(rx.try_recv().expect("offer sent"));
+        let stale = answer_for(&client, first).await;
+
+        assert!(
+            peer.remove_outgoing_track_if(Uuid::from_u128(3), TrackSource::Microphone, &track)
+                .await
+        );
+        peer.negotiation.lock().await.awaiting_answer_since =
+            Some(tokio::time::Instant::now() - SUBSCRIBER_ANSWER_TIMEOUT);
+        SfuServer::renegotiate(&peer).await.expect("re-offer");
+        let second = offer_sdp(rx.try_recv().expect("re-offer sent"));
+        assert_eq!(second.matches("m=audio").count(), 1, "{second}");
+
+        SfuServer::handle_subscriber_answer(&peer, stale)
+            .await
+            .expect("stale answer ignored");
+        assert!(
+            peer.negotiation
+                .lock()
+                .await
+                .awaiting_answer_since
+                .is_some(),
+            "an answer to the earlier offer was taken for the open one"
+        );
+        let _ = client.close().await;
+        peer.close().await;
+    }
+
+    /// An offer nobody answers is sent once more after the answer timeout;
+    /// if that one stays unanswered too, the open state is released so the
+    /// next change offers right away.
+    #[tokio::test(start_paused = true)]
+    async fn unanswered_offer_is_repeated_once_then_released() {
+        let (_sfu, peer, mut rx, _client) = setup().await;
+        peer.add_outgoing_track(&*seat(3).await, TrackSource::Microphone, audio_track("u3"))
+            .await
+            .expect("track");
+        SfuServer::renegotiate(&peer).await.expect("offer");
+        offer_sdp(rx.try_recv().expect("offer sent"));
+
+        tokio::time::sleep(SUBSCRIBER_ANSWER_TIMEOUT + Duration::from_secs(1)).await;
+        offer_sdp(rx.try_recv().expect("the unanswered offer is repeated"));
+
+        tokio::time::sleep(SUBSCRIBER_ANSWER_TIMEOUT + Duration::from_secs(1)).await;
+        assert!(rx.try_recv().is_err(), "repeated more than once");
+        assert!(peer
+            .negotiation
+            .lock()
+            .await
+            .awaiting_answer_since
+            .is_none());
+
+        SfuServer::renegotiate(&peer).await.expect("next change");
+        offer_sdp(rx.try_recv().expect("next change offers at once"));
+        peer.close().await;
+    }
+}
+
+#[cfg(test)]
+mod host_candidate_tests {
+    use super::*;
+
+    /// With STUN and TURN configured (for clients), the server's own peer
+    /// connections still use no ICE server and gather host candidates only.
+    #[tokio::test]
+    async fn server_peer_connections_gather_host_candidates_only() {
+        let mut config = Config::default_for_test();
+        config.stun_server = "stun:127.0.0.1:3478".into();
+        config.turn_servers = vec!["turn:127.0.0.1:3478".into()];
+        config.turn_shared_secret = Some("secret".into());
+        config.voice_udp_port_min = Some(50100);
+        config.voice_udp_port_max = Some(50120);
+        let sfu = SfuServer::new(Arc::new(config), None).expect("sfu");
+        assert!(sfu.rtc_config().ice_servers.is_empty());
+
+        let (tx, _rx) = mpsc::channel(16);
+        let peer = sfu
+            .create_peer(
+                Uuid::from_u128(1),
+                "a".into(),
+                "A".into(),
+                Uuid::from_u128(2),
+                tx,
+            )
+            .await
+            .expect("peer");
+        let pc = &peer.subscriber_pc;
+        pc.create_data_channel("probe", None).await.expect("dc");
+        let offer = pc.create_offer(None).await.expect("offer");
+        let mut gathered = pc.gathering_complete_promise().await;
+        pc.set_local_description(offer).await.expect("local desc");
+        let _ = tokio::time::timeout(Duration::from_secs(10), gathered.recv()).await;
+        let sdp = pc.local_description().await.expect("desc").sdp;
+        peer.close().await;
+        let candidates: Vec<&str> = sdp
+            .lines()
+            .filter(|l| l.starts_with("a=candidate:"))
+            .collect();
+        assert!(!candidates.is_empty(), "no candidates gathered:\n{sdp}");
+        for line in candidates {
+            assert!(line.contains(" typ host"), "non-host candidate: {line}");
+        }
     }
 }
 
@@ -1493,6 +3135,26 @@ mod ice_filter_tests {
         config.voice_ice_interfaces = Some(vec!["no-such-if0".to_owned()]);
         let ips = gather_ips(config).await;
         assert!(ips.is_empty(), "{ips:?}");
+    }
+
+    #[test]
+    fn private_and_local_addresses_are_recognised() {
+        for ip in [
+            "10.1.2.3",
+            "172.16.0.1",
+            "192.168.1.1",
+            "127.0.0.1",
+            "169.254.1.1",
+            "100.64.0.1",
+            "fd00::1",
+            "fe80::1",
+            "::1",
+        ] {
+            assert!(is_private_or_local(ip.parse().unwrap()), "{ip}");
+        }
+        for ip in ["203.0.113.5", "8.8.8.8", "2001:db8::1", "100.128.0.1"] {
+            assert!(!is_private_or_local(ip.parse().unwrap()), "{ip}");
+        }
     }
 
     #[test]

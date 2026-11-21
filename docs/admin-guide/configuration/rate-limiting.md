@@ -42,7 +42,7 @@ Each category can be configured using environment variables in the format `reque
 | `RATE_LIMIT_WRITE` | `30,60` | 30 requests per 60 seconds |
 | `RATE_LIMIT_SOCIAL` | `20,60` | 20 requests per 60 seconds |
 | `RATE_LIMIT_READ` | `200,60` | 200 requests per 60 seconds |
-| `RATE_LIMIT_WS_CONNECT` | `10,60` | 10 connections per 60 seconds |
+| `RATE_LIMIT_WS_CONNECT` | `60,60` | 60 new WebSocket connections per 60 seconds per client address. Sized for a restart: every device of a household behind one address (5 people × 3 devices) reconnects at once, maybe twice within the minute; 60 is also twice the open-socket cap per address (`WS_MAX_CONNECTIONS_PER_IP`, 30) |
 | `RATE_LIMIT_WS_MESSAGE` | `60,60` | 60 messages per 60 seconds |
 
 ### Failed Authentication Tracking
@@ -81,7 +81,7 @@ sharing one IP is not locked out of their phones.
 | `Write` | Create, update, delete operations | 30 req/60s |
 | `Social` | Friend requests, invites | 20 req/60s |
 | `Read` | Fetching data | 200 req/60s |
-| `WsConnect` | WebSocket connection attempts | 10 req/60s |
+| `WsConnect` | WebSocket connection attempts | 60 req/60s |
 | `WsMessage` | WebSocket message rate | 60 req/60s |
 | `FailedAuth` | Failed login tracking | 10 failures -> 15 min block |
 

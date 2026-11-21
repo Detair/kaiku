@@ -130,6 +130,41 @@ otel-collector:4317 (gRPC) / :4318 (HTTP)
 
 ---
 
+## Files that cannot be deleted
+
+Deleted messages, channels, servers and accounts leave their files to a background clean-up
+(`storage_pending_deletes`). A file the object store refuses to delete is retried with growing
+pauses (1 minute, doubling to 6 hours) and never given up.
+
+- **Signal:** one error-level log line per file, "Stored object still cannot be deleted", at its 8th
+  failed attempt or once it has been queued for 6 hours, whichever comes first. The gauges
+  `kaiku_storage_pending_deletes` and `kaiku_storage_oldest_pending_delete_seconds` show the queue; an
+  oldest entry that keeps growing means something is stuck.
+- **Find the stuck files:**
+
+  ```sql
+  SELECT s3_key, attempts, created_at, last_attempt_at, next_attempt_at
+  FROM storage_pending_deletes
+  WHERE attempts >= 8 OR created_at < now() - interval '6 hours'
+  ORDER BY created_at;
+  ```
+
+- **Usual causes:** the object store is unreachable or its credentials lost the delete permission.
+  Once that is fixed nothing else is needed; to retry at once instead of waiting for the next pause:
+  `UPDATE storage_pending_deletes SET next_attempt_at = now() WHERE attempts > 0;`
+- Rows with `attempts = 0` and a `next_attempt_at` up to 30 minutes ahead belong to uploads in
+  progress and disappear on their own.
+
+## WebSocket connections refused or closed by the server
+
+- **Refused connections** are counted in `kaiku_ws_refused_total` and logged at info level, at most
+  once a minute per reason, with the number refused since the last line. `per_address_limit` for many
+  people at once behind a reverse proxy means the proxy is not listed in
+  `RATE_LIMIT_TRUSTED_PROXIES`: every client then counts as the proxy's address.
+- **Resync closes** (`kaiku_ws_resync_closes_total`) are sockets the server closed so the app
+  reconnects and catches up. A burst with `access_check_failed` or `access_resync` together with
+  `kaiku_ws_access_check_failures_total` points at the database.
+
 ## OTel Collector Health Check Commands
 
 ```bash
@@ -212,3 +247,18 @@ If Loki ingest cost is high:
           severity_texts: ["DEBUG", "TRACE"]
   ```
 - Insert `filter/logs_level` before `batch` in the logs pipeline.
+
+---
+
+## Voice sessions with many inactive m-lines
+
+Every track that leaves a participant's voice connection (someone leaves, rejoins, stops a share or a
+webcam) stays there as an inactive m-line until that participant rejoins. Each one makes the voice
+session descriptions of that connection about 0.5–1 KiB bigger.
+
+- **Signal:** the gauge `kaiku_voice_inactive_mlines` (sum over all live voice connections) and one
+  warn-level log line per connection when it reaches 60: "Voice subscriber connection keeps many inactive
+  m-lines; rejoining resets them".
+- **Effect:** none for a long time; inbound WebSocket messages are limited to 256 KiB (several hundred
+  inactive m-lines). A connection that gets there drops and the client rejoins with a fresh one.
+- **Action:** none needed; the participant leaving and rejoining voice resets the count.

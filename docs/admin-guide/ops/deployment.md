@@ -117,6 +117,8 @@ sudo iptables -A INPUT -p udp --dport 10000:10100 -j ACCEPT
 For users behind restrictive NATs, configure a TURN server:
 
 ```bash
+# One URL, or several separated by commas (e.g. add ?transport=tcp for
+# networks without UDP)
 TURN_SERVER=turn:turn.yourdomain.com:3478
 TURN_USERNAME=voicechat
 TURN_CREDENTIAL=your-turn-password
