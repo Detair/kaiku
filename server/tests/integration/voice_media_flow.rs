@@ -708,24 +708,61 @@ async fn expiry_acts_only_on_its_own_start(pool: PgPool) {
     assert_eq!(late["reason"], "no_media", "{late}");
 }
 
-/// A simulcast webcam (one track, three layers by rid) reaches the viewers:
-/// the server's answer carries the header extensions a simulcast sender
-/// needs to mark its layers.
+/// A sender that offers a webcam with three encodings, declares an SSRC for
+/// each and keeps sending all three (it ignores that the answer has no
+/// simulcast): the server receives the first declared encoding as the
+/// webcam and does not receive the others (no track, no layer), so the
+/// viewer gets one video track of that person.
 #[sqlx::test]
-#[ignore = "needs simulcast, which the server does not negotiate (no layer-id header extension)"]
-async fn simulcast_webcam_reaches_viewers(pool: PgPool) {
+async fn three_encoding_offer_sending_all_encodings_forwards_only_the_first(pool: PgPool) {
     let f = fixture(pool).await;
     let (mut a, b) = two_in_call(&f).await;
     a.send(serde_json::json!({ "type": "voice_webcam_start", "channel_id": f.voice, "quality": "medium" }));
     a.next_event("webcam_started", WAIT).await;
-    a.add_simulcast_video("cam", &["l", "m", "h"], &["l", "m", "h"])
+    let (_, sender) = a
+        .add_simulcast_video("cam", &["l", "m", "h"], &["l", "m", "h"])
         .await;
     a.publish().await;
     let id = format!("{}:webcam", a.user_id);
     assert!(
         b.wait_for_packets(&id, 5, WAIT).await,
-        "viewer did not get the simulcast webcam: {:?}",
+        "viewer did not get the webcam: {:?}",
         b.seen_tracks()
+    );
+
+    let encodings = sender.get_parameters().await.encodings;
+    let first = encodings
+        .iter()
+        .find(|e| e.rid == "l")
+        .expect("first encoding")
+        .ssrc;
+    let room = f.app.state.sfu.get_room(f.voice).await.expect("room");
+    let peer = room.get_peer(a.user_id).await.expect("publisher");
+    let incoming = peer.incoming_tracks.read().await;
+    let encodings_by_rid: Vec<_> = encodings
+        .iter()
+        .map(|e| (e.rid.to_string(), e.ssrc))
+        .collect();
+    assert_eq!(
+        incoming
+            .get(&vc_server::voice::TrackSource::Webcam)
+            .map(|t| t.ssrc()),
+        Some(first),
+        "the webcam is not the first encoding; encodings: {encodings_by_rid:?}"
+    );
+    // Microphone and the one webcam stream; the other encodings are not
+    // received, neither as tracks nor as layers.
+    assert_eq!(incoming.len(), 2, "tracks received from the sender");
+    drop(incoming);
+    assert!(
+        peer.simulcast_ssrcs(vc_server::voice::TrackSource::Webcam)
+            .is_empty(),
+        "the webcam was received as layers"
+    );
+    assert_eq!(
+        video_tracks_of(&b, a.user_id),
+        [id],
+        "the viewer got more than one video track"
     );
 }
 
