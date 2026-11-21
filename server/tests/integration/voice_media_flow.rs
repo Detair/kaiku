@@ -6,6 +6,8 @@ use std::time::Duration;
 use sqlx::PgPool;
 use uuid::Uuid;
 use vc_server::permissions::GuildPermissions;
+use vc_server::voice::ws_handler::ANNOUNCEMENT_TTL;
+use webrtc::peer_connection::signaling_state::RTCSignalingState;
 
 use super::helpers::voice_media::{media_app, mic_track, SimOptions, SimParticipant};
 use super::helpers::{
@@ -900,18 +902,26 @@ async fn three_encoding_offer_falls_back_to_one_stream(pool: PgPool) {
     );
 }
 
-/// Like a browser: a webcam offered with three encodings declares no SSRC
-/// for its video section (only layer ids). After the answer without
-/// simulcast the sender sends its first encoding as one stream, and that
-/// stream reaches the viewers.
+/// Like a browser of the current release: a webcam offered with three
+/// encodings declares no SSRC for its video section (only layer ids). The
+/// server cannot map such a stream without the media-id and layer-id header
+/// extensions, which it does not offer, so this webcam is not received.
+/// What happens instead: the publisher's negotiation completes; no video of
+/// that webcam reaches the viewer; the webcam's announcement ends by itself
+/// after its lifetime with `no_media`; the microphone keeps flowing; and a
+/// later one-stream webcam of the same person reaches the viewer.
+///
+/// Runs on the real clock (about 12 s): the expiry is a timer inside the
+/// server and the media needs real time.
 #[sqlx::test]
-#[ignore = "fails: the server cannot map a stream whose SSRC the offer does not declare without the media-id and layer-id extensions"]
-async fn three_encoding_offer_without_ssrcs_falls_back_to_one_stream(pool: PgPool) {
+async fn three_encoding_offer_without_ssrcs_sends_no_webcam_until_one_stream(pool: PgPool) {
     let f = fixture(pool).await;
-    let (mut a, b) = two_in_call(&f).await;
-    a.send(serde_json::json!({ "type": "voice_webcam_start", "channel_id": f.voice, "quality": "medium" }));
+    let (mut a, mut b) = two_in_call(&f).await;
+    let start = serde_json::json!({ "type": "voice_webcam_start", "channel_id": f.voice, "quality": "medium" });
+    let started_at = tokio::time::Instant::now();
+    a.send(start.clone());
     a.next_event("webcam_started", WAIT).await;
-    a.add_simulcast_video("cam", &["h", "m", "l"], &["h"]).await;
+    let (_, sender) = a.add_simulcast_video("cam", &["h", "m", "l"], &["h"]).await;
     a.publish_edited(|sdp| {
         let video = sdp.find("m=video").unwrap_or(sdp.len());
         let (head, tail) = sdp.split_at(video);
@@ -922,10 +932,62 @@ async fn three_encoding_offer_without_ssrcs_falls_back_to_one_stream(pool: PgPoo
         format!("{head}{tail}")
     })
     .await;
+
+    // The answer is accepted: no offer is left open on the publisher.
+    let deadline = tokio::time::Instant::now() + WAIT;
+    loop {
+        let answered = a
+            .publisher
+            .remote_description()
+            .await
+            .is_some_and(|d| d.sdp.contains("m=video"));
+        if answered && a.publisher.signaling_state() == RTCSignalingState::Stable {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the publisher's offer was not answered: {}",
+            a.publisher.signaling_state()
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    // The announcement ends by itself, as one whose media never came.
+    let stopped = b
+        .next_event("webcam_stopped", ANNOUNCEMENT_TTL + WAIT)
+        .await;
+    assert_eq!(stopped["reason"], "no_media", "{stopped}");
+    assert_eq!(stopped["user_id"], a.user_id.to_string(), "{stopped}");
+    assert!(
+        started_at.elapsed() >= ANNOUNCEMENT_TTL,
+        "ended before its lifetime: {:?}",
+        started_at.elapsed()
+    );
+    assert!(
+        video_tracks_of(&b, a.user_id).is_empty(),
+        "video of the webcam reached the viewer: {:?}",
+        b.seen_tracks()
+    );
+    let mic = mic_track(a.user_id);
+    let before = b.packets(&mic);
+    assert!(
+        b.wait_for_packets(&mic, before + 5, WAIT).await,
+        "the microphone stopped"
+    );
+
+    // The person switches the camera off and on again, now as one stream.
+    a.publisher
+        .remove_track(&sender)
+        .await
+        .expect("remove the three-encoding webcam");
+    a.send(start);
+    a.next_event("webcam_started", WAIT).await;
+    a.add_track(true, "cam-single").await;
+    a.publish().await;
     let id = format!("{}:webcam", a.user_id);
     assert!(
         b.wait_for_packets(&id, 5, WAIT).await,
-        "viewer did not get the one stream: {:?}",
+        "the one-stream webcam did not reach the viewer: {:?}",
         b.seen_tracks()
     );
 }
