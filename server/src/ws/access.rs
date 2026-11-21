@@ -4304,6 +4304,36 @@ mod tests {
         }
     }
 
+    /// The reply is remembered for the user epoch its read was planned for:
+    /// when the epoch moves after the read and before the reply is
+    /// remembered, nothing is remembered for the new epoch (the next request
+    /// there reads).
+    #[tokio::test(start_paused = true)]
+    async fn the_reply_is_remembered_for_the_epoch_it_was_read_at() {
+        let u = Uuid::new_v4();
+        let access = admin_socket(u, false).await;
+        cooled_down().await;
+        registry().bump_user(u);
+        install(&access, &[], false, None);
+        let seams = park_reads(&access);
+        let subscribe = access.subscribe_admin();
+        tokio::pin!(subscribe);
+        assert_eq!(until_parked(&seams, &mut subscribe).await, Ok(()));
+        seams.release.add_permits(1);
+        // The read returns and is applied; the subscribe stops at its seam.
+        assert!(futures::poll!(subscribe.as_mut()).is_pending());
+        registry().bump_user(u);
+        assert_eq!(
+            answer_of(&seams, &mut subscribe).await,
+            AdminSubscription::Refused
+        );
+        assert_eq!(
+            standing_reply(&access),
+            None,
+            "remembered for an epoch it was not read at"
+        );
+    }
+
     /// A read that began before the admin frame was taken does not decide
     /// it: the frame waits for a read of its own.
     #[tokio::test(start_paused = true)]
