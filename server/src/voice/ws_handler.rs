@@ -482,9 +482,15 @@ async fn release_replaced_media(
     let channel_id = room.channel_id;
     if !screen_shares.is_empty() {
         if let Some(limiter) = screen_share_limiter {
-            limiter
-                .stop_n(&room.share_counter, screen_shares.len())
-                .await;
+            // Freed beside the new join, not before its answer: until the
+            // store has answered, a share start in this room can still see
+            // the old count. Each slot is freed once (by this task).
+            let (limiter, counter, n) = (
+                limiter.clone(),
+                room.share_counter.clone(),
+                screen_shares.len(),
+            );
+            tokio::spawn(async move { limiter.stop_n(&counter, n).await });
         } else {
             warn!("Screen share limiter unavailable — replaced shares not released");
         }
@@ -1564,6 +1570,69 @@ mod replaced_media_tests {
             "the seat's media lock was held while waiting for the store"
         );
         ending.abort();
+        held.abort();
+    }
+
+    /// A takeover's release of the replaced seat's shares does not wait for
+    /// the store: with a store that never answers, it finishes at once (the
+    /// slots are freed beside it) and the stops are still announced.
+    #[tokio::test]
+    async fn a_takeover_does_not_wait_for_the_store() {
+        use fred::interfaces::ClientLike;
+        let sfu = SfuServer::new(Arc::new(Config::default_for_test()), None).expect("sfu");
+        let channel = Uuid::from_u128(1);
+        let room = Room::new(channel, 10);
+        let (tx, mut rx) = mpsc::channel(8);
+        let viewer = sfu
+            .create_peer(Uuid::from_u128(2), "v".into(), "V".into(), channel, tx)
+            .await
+            .expect("peer");
+        room.add_peer(viewer).await.expect("add");
+        let user = Uuid::from_u128(3);
+        let share = ScreenShareInfo::new(
+            Uuid::from_u128(10),
+            user,
+            "u".into(),
+            "Display".into(),
+            false,
+            super::super::Quality::Medium,
+        );
+
+        let silent = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let port = silent.local_addr().expect("addr").port();
+        let held = tokio::spawn(async move {
+            let mut open = Vec::new();
+            while let Ok((socket, _)) = silent.accept().await {
+                open.push(socket);
+            }
+        });
+        let config = fred::types::config::Config::from_url(&format!("redis://127.0.0.1:{port}"))
+            .expect("config");
+        let store = fred::clients::Client::new(config, None, None, None);
+        let _connecting = store.connect();
+        let limiter = ScreenShareLimiter::new(store);
+
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(500),
+                release_replaced_media(&room, user, &[share], false, Some(&limiter)),
+            )
+            .await
+            .is_ok(),
+            "the takeover waited for the store"
+        );
+        assert!(
+            matches!(
+                rx.try_recv(),
+                Ok(OutboundMsg::Voice {
+                    event: ServerEvent::ScreenShareStopped { .. },
+                    ..
+                })
+            ),
+            "the stop was not announced"
+        );
         held.abort();
     }
 

@@ -137,12 +137,19 @@ async fn replacing_peer_frees_screen_share_slot(pool: PgPool) {
         serde_json::json!([]),
         "the replaced peer's share is still listed: {state}"
     );
-    let used: Option<i64> = redis.get(&counter).await.expect("get counter");
-    assert_eq!(
-        used.unwrap_or(0),
-        0,
-        "slot of the replaced peer not released"
-    );
+    // The slot is freed beside the new join (not before its answer).
+    let deadline = tokio::time::Instant::now() + EVENT_TIMEOUT;
+    loop {
+        let used: Option<i64> = redis.get(&counter).await.expect("get counter");
+        if used.unwrap_or(0) == 0 {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "slot of the replaced peer not released"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
 
     let room = app.state.sfu.get_room(voice).await.expect("room");
     assert!(room.get_screen_shares().await.is_empty());
