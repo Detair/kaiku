@@ -1,6 +1,6 @@
 # Observability Runbook
 
-**Stack:** OpenTelemetry → Tempo (traces) · Prometheus (metrics) · Loki (logs) · Sentry (errors)
+**Stack:** OpenTelemetry → Tempo (traces) · Prometheus (metrics) · Loki (logs) · Sentry (client errors only)
 **Last reviewed:** 2026-02-27
 
 ---
@@ -35,7 +35,7 @@ otel-collector:4317 (gRPC) / :4318 (HTTP)
 | RED metrics | spanmetrics connector (derived from traces) | 90 days (Prometheus TSDB) |
 | Application metrics | none yet: the server has no native Prometheus endpoint (the `vc-server` scrape job in `infra/monitoring/prometheus.yaml` is a placeholder and stays down) | — |
 | Structured logs | vc-server (`tracing-subscriber` OTLP layer) | 14 days (Loki) |
-| Crash / exception | Sentry SDK (client + server) | 90 days |
+| Crash / exception | Sentry SDK in the desktop/web client only; the server has no Sentry integration (its errors are in its logs and traces) | 90 days |
 
 ---
 
@@ -44,7 +44,7 @@ otel-collector:4317 (gRPC) / :4318 (HTTP)
 | Dashboard | Location | Purpose |
 |-----------|----------|---------|
 | **Kaiku Overview** | Grafana › Kaiku › Kaiku Overview (provisioned by the compose stack) | Request rate, error rate and P95 latency (overall and by route), server log stream |
-| **Log Explorer** | Grafana › Explore › Loki | Ad-hoc log queries, e.g. `{service="vc-server"}` |
+| **Log Explorer** | Grafana › Explore › Loki | Ad-hoc log queries, e.g. `{service_name="vc-server"}` (the query the shipped dashboard uses) |
 
 There is no provisioned dashboard for voice join latency or client crashes; use
 Explore (Tempo, Loki) for those.
@@ -62,11 +62,11 @@ Explore (Tempo, Loki) for those.
 **Meaning:** More than 0.1% of API spans are returning `STATUS_CODE_ERROR` over a rolling 5-minute window.
 
 **Immediate triage:**
-1. Open Sentry → Issues → sort by "First Seen" in the last 30 minutes.
-2. Find a representative `trace_id` in the Sentry event detail.
+1. Open the server logs for the last 30 minutes (`docker compose logs server --since 30m | grep -i error`) and, if you use client Sentry, its Issues list (client errors only; the server does not report to Sentry).
+2. Find a representative `trace_id` in an error log line or a Sentry client event.
 3. Paste `trace_id` into Tempo (Grafana › Explore › Tempo › TraceQL: `{ .trace_id = "<id>" }`).
 4. Identify which handler/span is the root cause.
-5. Check Loki for correlated `ERROR` log lines: `{service="vc-server"} |= "ERROR" | json`.
+5. Check Loki for correlated `ERROR` log lines: `{service_name="vc-server"} |= "ERROR" | json` (the label the shipped dashboard queries).
 
 **Escalation:** If error rate > 1% or rising, escalate to on-call engineer. Silence after root cause identified and a fix deployed.
 
@@ -96,7 +96,7 @@ Explore (Tempo, Loki) for those.
 2. Verify STUN/TURN reachability: `ping <STUN_SERVER>`.
 3. Check WebRTC SFU port availability: `ss -ulnp | grep 10[0-9][0-9][0-9][0-9]`.
 4. In Tempo: `{ span.name =~ ".*voice.*join.*" && duration > 500ms }` — look for ICE negotiation delays.
-5. Check active voice sessions in Valkey: `docker exec canis-valkey sh -c 'REDISCLI_AUTH="$VALKEY_PASSWORD" valkey-cli --scan --pattern "voice:*"'` (Valkey requires its password).
+5. Look for join/leave and ICE errors in the server logs: `docker compose logs server --since 15m | grep -iE 'voice|ice|webrtc'`. (Voice sessions are held in the server's memory, not in Valkey, so there are no voice keys to inspect there.).
 
 **Escalation:** If > 50% of joins are slow, set server maintenance mode and page on-call immediately.
 
@@ -110,7 +110,7 @@ Explore (Tempo, Loki) for those.
 1. This alert fires alongside `APIHighErrorRate` — follow that runbook first.
 2. Identify the blast radius: single route vs. global degradation.
 3. If a recent deployment is correlated: initiate rollback via `git revert` + redeploy.
-4. Open Sentry Release health — compare error rates before/after the current release.
+4. Compare the error rate panel of the Kaiku Overview dashboard before and after the release (client Sentry release health covers the clients only).
 5. If not deployment-related: check infrastructure — PostgreSQL, Valkey, network partition.
 
 **Escalation:** Page engineering lead immediately. Open a P1 incident in the incident tracker.

@@ -2,6 +2,7 @@
 
 **Purpose:** Step-by-step guide for on-call engineers to triage alerts and service degradation using Kaiku's observability stack.
 **Prerequisite:** Monitoring stack running (`docker compose --profile monitoring up -d`).
+**Note on Sentry:** only the clients (desktop and web) have a Sentry integration; the server does not report to Sentry. Server errors are found in its logs (`docker compose logs server`) and in Tempo/Loki. Where this page says "Sentry", it means client error reports; for server-side errors use the logs and traces.
 
 ---
 
@@ -29,7 +30,7 @@ flowchart TD
    - First-seen time vs. alert start time (correlation check)
 4. If no Sentry errors but alert is firing → **go to Step 3**.
 
-> **Tip:** If `ObservabilityCollectorDown` fired, Sentry may still receive data via its own SDK — check there first even if Prometheus/Tempo are dark.
+> **Tip:** If `ObservabilityCollectorDown` fired, client Sentry reports still arrive through their own SDK, but they say nothing about the server: read the server logs (`docker compose logs server`) instead.
 
 ---
 
@@ -52,7 +53,7 @@ flowchart TD
    - Look for spans with unexpectedly long duration relative to siblings.
 4. Correlate to logs (Loki):
    - Click **Logs for this span** in Tempo (uses `trace_id` → Loki derived field).
-   - Or in Loki: `{service="vc-server"} | json | trace_id = "<id>"`.
+   - Or in Loki: `{service_name="vc-server"} | json | trace_id = "<id>"`.
 5. Note the **root cause component**: DB query, Valkey call, downstream service, or application logic.
 6. Proceed to **Step 3** to cross-check metrics, or jump to **Escalation** if root cause is clear.
 
@@ -176,7 +177,7 @@ flowchart LR
 
     subgraph ObservabilityCollectorDown
         OCD[ObservabilityCollectorDown Critical] --> OCD_Rest[Restore collector FIRST]
-        OCD_Rest --> OCD_Sentry[Use Sentry as fallback error signal while collector is down]
+        OCD_Rest --> OCD_Sentry[Client Sentry reports cover clients only]
         OCD_Sentry --> OCD_Logs[Check application logs directly: docker compose logs server]
     end
 ```
