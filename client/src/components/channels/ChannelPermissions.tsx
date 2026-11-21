@@ -72,12 +72,27 @@ const ChannelPermissions: Component<ChannelPermissionsProps> = (props) => {
     return overrides().find((o) => o.role_id === roleId);
   };
 
+  /**
+   * `allow` as it applies to `roleId`: @everyone is never given what the
+   * server refuses it (the server leaves those out and refuses a save
+   * holding one), so such a stored allow is neither shown nor sent.
+   */
+  const applicableAllow = (roleId: string, allow: number): number => {
+    if (!roles().find((r) => r.id === roleId)?.is_default) return allow;
+    for (const perm of PERMISSIONS) {
+      if (perm.forbiddenForEveryone) allow = removePermission(allow, perm.bit);
+    }
+    return allow;
+  };
+
   const getOverrideState = (
     override: ChannelOverride | undefined,
     bit: number,
   ): OverrideState => {
     if (!override) return "inherit";
-    if (hasPermission(override.allow_permissions, bit)) return "allow";
+    if (hasPermission(applicableAllow(override.role_id, override.allow_permissions), bit)) {
+      return "allow";
+    }
     if (hasPermission(override.deny_permissions, bit)) return "deny";
     return "inherit";
   };
@@ -87,8 +102,9 @@ const ChannelPermissions: Component<ChannelPermissionsProps> = (props) => {
   ): { allowed: number; denied: number } => {
     let allowed = 0;
     let denied = 0;
+    const allow = applicableAllow(override.role_id, override.allow_permissions);
     for (const perm of CHANNEL_OVERRIDE_PERMISSIONS) {
-      if (hasPermission(override.allow_permissions, perm.bit)) allowed++;
+      if (hasPermission(allow, perm.bit)) allowed++;
       if (hasPermission(override.deny_permissions, perm.bit)) denied++;
     }
     return { allowed, denied };
@@ -132,14 +148,10 @@ const ChannelPermissions: Component<ChannelPermissionsProps> = (props) => {
         if (state === "deny") editedDeny = addPermission(editedDeny, perm.bit);
       }
       const stored = getOverride(roleId);
-      let allow = mergeShownBits(stored?.allow_permissions ?? 0, shown, editedAllow);
-      // @everyone is never given these: the server leaves them out for it
-      // and refuses a save that holds one, shown in the editor or not.
-      if (roles().find((r) => r.id === roleId)?.is_default) {
-        for (const perm of PERMISSIONS) {
-          if (perm.forbiddenForEveryone) allow = removePermission(allow, perm.bit);
-        }
-      }
+      const allow = applicableAllow(
+        roleId,
+        mergeShownBits(stored?.allow_permissions ?? 0, shown, editedAllow),
+      );
       const deny = mergeShownBits(stored?.deny_permissions ?? 0, shown, editedDeny);
       await setChannelOverride(props.channelId, roleId, { allow, deny });
       setEditingRoleId(null);

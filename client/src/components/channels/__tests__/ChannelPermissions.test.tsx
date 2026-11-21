@@ -188,6 +188,39 @@ describe("ChannelPermissions for @everyone", () => {
     expect(body.deny).toBe(PermissionBits.SEND_MESSAGES);
   });
 
+  it("shows a stored allow @everyone may not get as inherit, and does not count it", () => {
+    p.overrides = [
+      {
+        role_id: "everyone",
+        allow_permissions: PermissionBits.MANAGE_MESSAGES + PermissionBits.ATTACH_FILES,
+        deny_permissions: 0,
+      },
+    ];
+    render(() => <ChannelPermissions channelId="c1" guildId="g1" />);
+    const summary = screen.getByTestId("channel-permissions-override-row");
+    expect(summary.textContent).toContain("+1 allowed");
+    fireEvent.click(screen.getByTestId("channel-permissions-override-edit"));
+    const manage = rowOf("MANAGE_MESSAGES");
+    expect((within(manage).getByTestId("channel-permissions-inherit") as HTMLInputElement).checked).toBe(true);
+    expect(allowOf("MANAGE_MESSAGES").checked).toBe(false);
+    expect(allowOf("ATTACH_FILES").checked).toBe(true);
+  });
+
+  it("another role shows the same stored allow as allowed", () => {
+    p.roles = [MODS];
+    p.overrides = [
+      {
+        role_id: "mods",
+        allow_permissions: PermissionBits.MANAGE_MESSAGES + PermissionBits.ATTACH_FILES,
+        deny_permissions: 0,
+      },
+    ];
+    render(() => <ChannelPermissions channelId="c1" guildId="g1" />);
+    expect(screen.getByTestId("channel-permissions-override-row").textContent).toContain("+2 allowed");
+    fireEvent.click(screen.getByTestId("channel-permissions-override-edit"));
+    expect(allowOf("MANAGE_MESSAGES").checked).toBe(true);
+  });
+
   it("a normal role keeps allow for the same permission", () => {
     p.roles = [{ id: "mods", name: "Mods", is_default: false, permissions: 0, color: null }];
     p.overrides = [{ role_id: "mods", allow_permissions: 0, deny_permissions: 0 }];
