@@ -368,9 +368,10 @@ changes); for `enroll` it verifies the signature first, then compares: wrong →
   - `POST /auth/enrollments/status {enrollment_id, claim_secret, wait?: 0..25}` (browser: the claim
     cookie) → 200 `{state, authenticator_state|null, ready_at|null, enrollment_id}` (long-poll;
     `enrollment_id` is additive). `expired` is stored and final: for a `claimed` enrolment whose
-    code time is over, the call records `expired` under the enrolment's row lock after any
-    confirmation already running has finished (then it answers `done`), so no confirmation
-    succeeds after an `expired` answer. Then device-key sign-in.
+    code time is over, the call records `expired` under the enrolment's row lock, so no
+    confirmation succeeds after an `expired` answer. It never waits for that lock: while a
+    confirmation is running the answer stays `claimed`, then `done` if it succeeds, else
+    `expired`. Then device-key sign-in.
   - Passkey claims from a browser: C29.
 - Limits: setup token 256-bit, single use, 10 min; code 6 digits (shown "123 456"), valid 5 min from
   the claim (unconfirmed → `expired`), 3 tries; ≤ 5 open per issuer (409 `ENROLLMENT_LIMIT`).
