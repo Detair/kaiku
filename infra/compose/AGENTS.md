@@ -18,7 +18,7 @@ The production / self-hosting stack: server, web client, Caddy, PostgreSQL, Valk
 
 ### Development services (outdated)
 
-> The sections from here to "Production stack" and below describe an older development stack and no longer match `docker-compose.dev.yml` (which uses `bitnami/postgresql`, `bitnami/valkey`, RustFS and MailHog, with `canis-dev-*` container names). Read that file for the current definition.
+> Historical: the sections "Development services" up to (not including) "Production stack (`docker-compose.yml`)" (PostgreSQL, Redis, RustFS and MailHog configuration), and the sections from "Usage" to the end (Usage, Connection strings, Modifying services, Environment overrides, Troubleshooting, Production differences, Performance tuning, Healthchecks, Dependencies) describe an older development stack. They no longer match `docker-compose.dev.yml` (which uses `bitnami/postgresql`, `bitnami/valkey`, RustFS and MailHog, with `canis-dev-*` container names); read that file for the current definition. The section "Production stack (`docker-compose.yml`)" is current.
 
 The old description listed 4 services:
 
@@ -105,6 +105,7 @@ The production/self-hosting stack hardens a few things. `scripts/check_compose_h
 - `VALKEY_PASSWORD` is required; it must be hex (URL-safe) because it is embedded in `REDIS_URL`. The healthcheck authenticates with `REDISCLI_AUTH`.
 - `CORS_ALLOWED_ORIGINS` is required; `RATE_LIMIT_TRUSTED_PROXIES` comes from `KAIKU_NET_SUBNET`. Do not reintroduce `RATE_LIMIT_TRUST_PROXY`.
 - `PUBLIC_IP` is forwarded to the server so the SFU advertises its public address.
+- `KAIKU_VERSION` is required: it selects the tag of the `ghcr.io/detair/kaiku-server` and `ghcr.io/detair/kaiku-web` images (no `latest` exists until a final release; release candidates are published only under their version).
 
 ### Usage
 

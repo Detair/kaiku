@@ -40,8 +40,9 @@ and set `COMPOSE_DIR`/`MIGRATIONS_DIR`/`BACKUP_DIR` for the scripts if yours
 differs). Deploys are operator-run, never automated.
 
 ```bash
-# 0. Preflight — fix every ✗ before continuing
-/opt/kaiku/infra/scripts/upgrade-preflight.sh
+# 0. Preflight — fix every ✗ before continuing. The compose stack does not
+#    publish the server's port, so point the health check at your domain:
+HEALTH_URL=https://<your-domain>/health /opt/kaiku/infra/scripts/upgrade-preflight.sh
 # Note the printed "Current server image" digest, and the running version:
 docker inspect canis-server --format '{{.Config.Image}}'   # your rollback target
 
@@ -50,6 +51,11 @@ docker inspect canis-server --format '{{.Config.Image}}'   # your rollback targe
 
 # 2. Update the checkout (compose file and migrations of the new release)
 cd /opt/kaiku && git fetch --tags && git checkout v<new-version>
+
+#    Run the preflight again now: its migration check (5) compares the
+#    checkout with the database, so it only says something about the new
+#    release after this step.
+HEALTH_URL=https://<your-domain>/health /opt/kaiku/infra/scripts/upgrade-preflight.sh
 
 # 3. Deploy the new release's images
 cd infra/compose
@@ -70,10 +76,10 @@ crash-looping and is your signal to roll back.
 `infra/scripts/deploy.sh` is not a general deploy tool: it connects to one fixed
 host. Use the steps above.
 
-> The preflight's second check requests `http://localhost:8080/health`. The
-> compose file does not publish the server's HTTP port on the host, so that
-> check reports ✗ on a stock install even when the server is healthy; verify
-> `/health` through your domain (step 4) and treat that single ✗ as known.
+> Without `HEALTH_URL` the preflight's second check requests
+> `http://localhost:8080/health`, which the compose file does not publish on
+> the host: it would report ✗ and the script would end with `PREFLIGHT FAILED`
+> and exit code 1 even though the server is healthy.
 
 ## Rollback
 

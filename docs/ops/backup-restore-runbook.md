@@ -69,7 +69,7 @@ docker exec canis-postgres sh -c 'PGPASSWORD="$POSTGRESQL_PASSWORD" psql -U "$PO
 
 # 5. Restart and verify health
 docker start canis-server
-curl -sf http://localhost:8080/health
+curl -sf https://<your-domain>/health
 ```
 
 Drop `voicechat_old` only after a day of verified operation.
