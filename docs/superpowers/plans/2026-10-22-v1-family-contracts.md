@@ -919,6 +919,13 @@ not sign in someone else by mistake. Additive; absent means no check.
   created before it, and, for the two removals, the target was created before it. Removing itself or a younger
   one, and every action of an account whose only strong authenticators are as young or younger, stay allowed.
   The refusal changes nothing: the grant stays unused and works again once `allowed_at` has passed. A device
-  that waited as `pending` counts from when it was added, so it is usually settled when it becomes active.
+  that waited as `pending` counts from when it was added: settled on activation when it was staged at the
+  start of the request's wait, young for the rest of the delay when it was staged later. A key set up again on
+  the same install is a new authenticator and young again.
+- C28 "That wasn't me" (owner rule part 1): the same 403 `AUTHENTICATOR_TOO_NEW {allowed_at}` when the report
+  would revoke a key device or passkey that is older than the reporting one (a `sign_in` by it or its
+  `authenticator_added`) and the reporter is young on an account with an older active authenticator. The whole
+  report is refused (no session ended, no factor marked). Reports that only end sessions, mark factors or revoke
+  a younger authenticator are unchanged.
 - Clients that do not know the code show their generic failure text for the action; the next client release
   names the time and points to "Sign out and remove this phone" on the old phone.

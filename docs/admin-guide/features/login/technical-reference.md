@@ -657,9 +657,19 @@ session or a key phone, at registration, by an admin for a new account or by `ka
 active at once and young for one delay. A device that waited as `pending` (an account request, an admin
 setup of an existing account) counts from when it was staged; when the request's delay ran from the
 staging it is settled on activation, a phone staged later in the request's waiting time stays young for
-the rest. A phone set up again on the same install is a new row and is young again. Other step-up
-actions (`sessions.end`, `recovery_contact.set`, `enrollment.issue`, `identity.link`/`unlink`,
-`event.repudiate`, `request.cancel`, `account.delete`, `admin.*`) do not apply this rule.
+the rest of the delay after the request completes. A phone set up again on the same install (a new key)
+is a new row and is young again.
+
+"That wasn't me" (`event.repudiate`, owner-rule part 1) follows the same rule: when carrying out the
+report would revoke a key device or passkey that is not yet revoked (a `sign_in` by a passkey or key
+device, or its `authenticator_added`), `ensure_settled` runs with that authenticator as the target before
+anything is written. A young reporter on an account with an older active authenticator cannot have an
+older one revoked: 403 `AUTHENTICATOR_TOO_NEW {allowed_at}`, and the whole report is refused (no session
+ended, no factor marked, the grant unused). Reports that only end sessions, mark password or TOTP
+generations compromised, or revoke a younger authenticator are carried out as before.
+
+Other step-up actions (`sessions.end`, `recovery_contact.set`, `enrollment.issue`,
+`identity.link`/`unlink`, `request.cancel`, `account.delete`, `admin.*`) do not apply this rule.
 
 `admin.*` actions are refused before anything else for a non-admin (403 `NOT_ADMIN`). Each guarded
 action records `step_up_action {action, target_label}` besides its own event. Bodies that still
@@ -937,12 +947,16 @@ Residual risks (spec B.6, as implemented):
 13. **Hostile use of owner-rule part 2** by someone with a session and the TOTP secret or a recovery
     code while the account has no strong authenticator.
 14. **Request-notice fatigue:** at most 3 self-service starts per account per delay period.
-15. **An old device in the wrong hands is not limited by the waiting time for new authenticators**
-    (section 9): the rule only stops a *newly added* phone or passkey from removing older ones or
-    replacing the password, TOTP or recovery codes. A stolen phone that has been a key for longer than
-    the delay can still do all of that until it is removed (risk 7). A phone set up again on the same
-    install is new again, so an honest owner who re-installs the app waits one delay before removing
-    an older device from it.
+15. **The waiting time for new authenticators has limits** (section 9). It stops a *newly added*
+    phone or passkey from removing or having revoked an older one and from replacing the password,
+    TOTP or recovery codes. Such a newcomer can still disturb the account without taking it over: mark
+    the password or TOTP compromised through "That wasn't me" or "I didn't start this" (the owner sets a
+    new one from an older device), end sessions, cancel an account request, add a further phone, and
+    schedule the account's deletion, which the owner can undo for 30 days. An **old device in the wrong
+    hands is not limited** by this rule: a stolen phone that has been a key for longer than the delay
+    can still do all of the above until it is removed (risk 7). A phone set up again on the same
+    install is new again, so an honest owner who re-installs the app waits one delay before acting
+    against an older device from it.
 
 Coordinator and maintainer decisions recorded in the implementation notes:
 

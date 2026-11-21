@@ -205,8 +205,9 @@ Three wrong codes end the setup; start again. Both phones are now keys. If you n
 old one, remove it there with **Sign out and remove this phone**.
 
 For the first day (or the waiting time your server uses) a new phone or passkey cannot remove your
-older phones or passkeys, and cannot change your password, authenticator app or recovery codes. After
-that time it can. This keeps your account safe if someone else ever manages to add a
+older phones or passkeys (also not with "That wasn't me"), and cannot change your password,
+authenticator app or recovery codes. After that time it can. A phone you set up again, for example
+after reinstalling Kaiku, counts as new again. This keeps your account safe if someone else ever manages to add a
 phone of their own: your older devices stay in your hands long enough to see the notice and remove
 it. To retire the old phone now, use **Sign out and remove this phone** on the old phone; that always
 works at once.

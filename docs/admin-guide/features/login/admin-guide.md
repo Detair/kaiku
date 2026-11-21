@@ -352,7 +352,7 @@ allowed, so a stolen admin phone cannot lock the other admins out. Your own acco
 | An admin | **Remove device now** (`POST /api/admin/users/{user_id}/authenticators/{id}/remove`, step-up `admin.authenticator.remove` for that id) | none | Works on key phones and passkeys, also on the last one and on a pending one. Not on another admin's account. |
 | The operator | `kaiku-admin devices remove <username> <device-id>` | none | Key phones only; also on admin accounts. |
 | An account request | devices named lost are revoked when it completes | the request's delay | Naming a device lost never removes it early. |
-| The owner, on a notice | "That wasn't me" on a sign-in by a phone or passkey, or on its `authenticator_added` | none | |
+| The owner, on a notice | "That wasn't me" on a sign-in by a phone or passkey, or on its `authenticator_added` | none, except from a new phone or passkey | A phone or passkey added less than the delay ago cannot have an older one revoked this way (`AUTHENTICATOR_TOO_NEW`); the whole report is refused. |
 
 Removing an authenticator ends its sessions at once, voids its open challenges, its step-up grants,
 the setup codes it issued and the admin requests it started, and records `authenticator_removed`
@@ -360,8 +360,9 @@ the setup codes it issued and the admin requests it started, and records `authen
 
 **New phones and passkeys wait before they act against older ones.** For the account request delay
 (`ACCOUNT_REQUEST_DELAY_HOURS`, 24 h by default) after a phone or passkey was added, a confirmation
-from it cannot remove an older phone or passkey, and cannot set or remove the password, set or turn
-off TOTP or replace the recovery codes (403 `AUTHENTICATOR_TOO_NEW` with `allowed_at`). This only
+from it cannot remove an older phone or passkey, cannot have one revoked through "That wasn't me", and
+cannot set or remove the password, set or turn off TOTP or replace the recovery codes (403
+`AUTHENTICATOR_TOO_NEW` with `allowed_at`). This only
 applies while the account has an older active phone or passkey; a brand-new account with its first
 phone is never held back, and a new phone may always remove itself or one that is even newer. So
 someone who got a phone of their own into the account cannot throw out the owner's devices before
@@ -371,7 +372,9 @@ What to tell a member who replaces a phone: remove the old phone **on the old ph
 and remove this phone**, which works at once. From the new phone, removing the old one works after the
 delay. When the old phone is lost, remove it from another device that is older, ask an admin
 (**Remove device now**) or use `kaiku-admin devices remove`; these are not held back. A phone that is
-set up again on the same install (new key) counts as new.
+set up again on the same install (new key) counts as new. A phone added through an account request
+counts from when it was set up during the request, so one set up late in the waiting time stays new for
+the rest of the delay after the request completes.
 
 **Order for a stolen phone:** remove it **first**, then start the recovery. A thief who knows the
 screen lock holds a full key and could cancel the recovery. Removing a request's only recorded
