@@ -103,6 +103,22 @@ UPDATE sessions s
                     WHERE d.id = s.approved_by_id AND d.user_id = s.user_id
                       AND d.state = 'active');
 
+-- A session whose confirming key device is unknown ends, from now on, when
+-- any key device of the account is revoked. The same rule for the time
+-- before the upgrade: it ends if a key device of the account that had been
+-- active was revoked at or after the session was created (a device that was
+-- only ever pending confirmed nothing).
+UPDATE sessions s
+   SET ended_at = NOW(), end_reason = 'authenticator_revoked'
+ WHERE s.ended_at IS NULL
+   AND s.approved_by_type = 'key_device'
+   AND s.approved_by_id IS NULL
+   AND EXISTS (SELECT 1 FROM approval_devices d
+                WHERE d.user_id = s.user_id
+                  AND d.state = 'revoked'
+                  AND d.activated_at IS NOT NULL
+                  AND d.revoked_at >= s.created_at);
+
 UPDATE sessions s
    SET ended_at = NOW(), end_reason = 'factor_ended'
   FROM users u

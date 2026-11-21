@@ -321,6 +321,18 @@ async fn raw_device(pool: &PgPool, user: Uuid) -> Uuid {
     id
 }
 
+async fn revoke_raw_device(pool: &PgPool, id: Uuid) {
+    sqlx::query(
+        "UPDATE approval_devices SET state = 'revoked', revoked_at = NOW(),
+                revoke_reason = 'owner'
+          WHERE id = $1",
+    )
+    .bind(id)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
 async fn raw_consumed_attempt(pool: &PgPool, user: Uuid, device: Uuid, session: Uuid) {
     sqlx::query(
         "INSERT INTO login_attempts (id, kind, collection_hash, collection_kind,
@@ -432,6 +444,70 @@ async fn session_origin_backfill(pool: PgPool) {
     let totp_renewed = raw_session(&pool, u, &["password", "totp"], false).await;
     raw_sign_in_event(&pool, u, totp_renewed, factors(Some(4), Some(1))).await;
 
+    // Sessions whose confirming phone is unknown, one account per case: the
+    // rule from now on (any key device of the account revoked) applied to
+    // the time before the upgrade.
+    let unknown_on = |user: Uuid| {
+        let pool = pool.clone();
+        async move { raw_session(&pool, user, &["qr"], false).await }
+    };
+    // A once-active phone revoked after the sign-in → ends.
+    let acct_after = raw_user(&pool, "origin_after", false, false).await;
+    let dev_after = raw_device(&pool, acct_after).await;
+    let unknown_after = unknown_on(acct_after).await;
+    // A phone revoked before the sign-in → stays.
+    let acct_before = raw_user(&pool, "origin_before", false, false).await;
+    let dev_before = raw_device(&pool, acct_before).await;
+    revoke_raw_device(&pool, dev_before).await;
+    raw_device(&pool, acct_before).await;
+    let unknown_before = unknown_on(acct_before).await;
+    // Only a phone that was never active, revoked after the sign-in → stays.
+    let acct_pending = raw_user(&pool, "origin_pending", false, false).await;
+    raw_device(&pool, acct_pending).await;
+    let pending = raw_device(&pool, acct_pending).await;
+    sqlx::query("UPDATE approval_devices SET state = 'pending', activated_at = NULL WHERE id = $1")
+        .bind(pending)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let unknown_pending = unknown_on(acct_pending).await;
+    // All phones active → stays.
+    let acct_active = raw_user(&pool, "origin_active", false, false).await;
+    raw_device(&pool, acct_active).await;
+    let unknown_active = unknown_on(acct_active).await;
+    // Only another account's phone revoked after the sign-in → stays.
+    let acct_other = raw_user(&pool, "origin_other", false, false).await;
+    raw_device(&pool, acct_other).await;
+    let unknown_other = unknown_on(acct_other).await;
+    // The same phone set up again after the sign-in (old row revoked, new
+    // row active) → ends, as the rule does from now on.
+    let acct_reenrol = raw_user(&pool, "origin_reenrol", false, false).await;
+    let old_row = raw_device(&pool, acct_reenrol).await;
+    let unknown_reenrol = unknown_on(acct_reenrol).await;
+    let install: Uuid = sqlx::query_scalar("SELECT device_id FROM approval_devices WHERE id = $1")
+        .bind(old_row)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    revoke_raw_device(&pool, old_row).await;
+    sqlx::query(
+        "INSERT INTO approval_devices (id, user_id, device_id, public_key, public_key_hash,
+             uv_class, label, state, enrolled_via, activated_at)
+         VALUES (gen_random_uuid(), $1, $2, '\\x01', decode(repeat('01', 32), 'hex'),
+                 'per_use', 'P', 'active', 'cli', NOW())",
+    )
+    .bind(acct_reenrol)
+    .bind(install)
+    .execute(&pool)
+    .await
+    .unwrap();
+    // The revocations after the sign-ins.
+    revoke_raw_device(&pool, dev_after).await;
+    revoke_raw_device(&pool, pending).await;
+    let stranger = raw_user(&pool, "origin_stranger", false, false).await;
+    let stranger_dev = raw_device(&pool, stranger).await;
+    revoke_raw_device(&pool, stranger_dev).await;
+
     apply_from(&pool, ORIGIN_MIGRATION).await;
 
     let o = |t: Option<&str>, id: Option<Uuid>, pw: Option<i64>, totp: Option<i64>| {
@@ -486,6 +562,18 @@ async fn session_origin_backfill(pool: PgPool) {
     ] {
         assert!(live(&pool, sid).await, "{sid} stays live");
     }
+    for sid in [
+        unknown_before,
+        unknown_pending,
+        unknown_active,
+        unknown_other,
+    ] {
+        assert!(live(&pool, sid).await, "{sid} stays live");
+        assert_eq!(
+            origin(&pool, sid).await,
+            o(Some("key_device"), None, None, None)
+        );
+    }
     // What was already over ends now, with the reason the rules give.
     assert_eq!(
         ended(&pool, qr_removed).await,
@@ -499,6 +587,13 @@ async fn session_origin_backfill(pool: PgPool) {
         ended(&pool, totp_renewed).await,
         (false, Some("factor_ended".into()))
     );
+    for sid in [unknown_after, unknown_reenrol] {
+        assert_eq!(
+            ended(&pool, sid).await,
+            (false, Some("authenticator_revoked".into())),
+            "a phone of the account was removed or set up again since"
+        );
+    }
 }
 
 /// A session the upgrade ends is refused at once: its refresh token and its
@@ -508,19 +603,12 @@ async fn session_ended_by_the_upgrade_is_refused(pool: PgPool) {
     apply_until(&pool, ORIGIN_MIGRATION).await;
     let u = raw_user(&pool, "origin_refused", true, true).await;
     let removed = raw_device(&pool, u).await;
-    sqlx::query(
-        "UPDATE approval_devices SET state = 'revoked', revoked_at = NOW(),
-                revoke_reason = 'owner'
-          WHERE id = $1",
-    )
-    .bind(removed)
-    .execute(&pool)
-    .await
-    .unwrap();
     let config = super::helpers::login::login_config();
     let mut tokens = Vec::new();
-    for _ in 0..2 {
-        let sid = raw_session(&pool, u, &["qr"], false).await;
+    // A QR sign-in with a known approver, one whose approver is unknown, and
+    // a password + TOTP sign-in (no phone confirmed it).
+    for methods in [&["qr"][..], &["qr"][..], &["password", "totp"][..]] {
+        let sid = raw_session(&pool, u, methods, false).await;
         let pair = super::helpers::tokens::token_pair_for_session(
             u,
             sid,
@@ -537,12 +625,16 @@ async fn session_ended_by_the_upgrade_is_refused(pool: PgPool) {
             .unwrap();
         tokens.push((sid, pair));
     }
-    // The first was confirmed by the phone removed before the upgrade.
+    // The first was confirmed by the phone, which is removed before the
+    // upgrade (after these sign-ins).
     raw_consumed_attempt(&pool, u, removed, tokens[0].0).await;
+    revoke_raw_device(&pool, removed).await;
     apply_from(&pool, ORIGIN_MIGRATION).await;
 
     let app = TestApp::with_pool(pool.clone()).await;
-    let (gone, healthy) = (&tokens[0].1, &tokens[1].1);
+    let (gone, unknown, healthy) = (&tokens[0].1, &tokens[1].1, &tokens[2].1);
+    let (s, b) = refresh(&app, &unknown.refresh_token).await;
+    assert_eq!((s, b["error"].as_str()), (401, Some("INVALID_TOKEN")));
     // Only status and error code in the messages: the bodies hold tokens.
     let (s, b) = refresh(&app, &gone.refresh_token).await;
     assert_eq!((s, b["error"].as_str()), (401, Some("INVALID_TOKEN")));
