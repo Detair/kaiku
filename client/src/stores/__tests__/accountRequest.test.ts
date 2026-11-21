@@ -3,7 +3,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const fetchMock = vi.hoisted(() => {
-  localStorage.setItem("kaiku:skip-session-restore", "1");
   const f = vi.fn();
   globalThis.fetch = f as unknown as typeof fetch;
   return f;

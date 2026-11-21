@@ -5,7 +5,6 @@ import { describe, it, expect } from "vitest";
 
 describe("full-session refusals before the lazy hosts load", () => {
   it("the app shell registers the listener, so an early refusal is kept", async () => {
-    localStorage.setItem("kaiku:skip-session-restore", "1");
     await import("@/App");
     const { reportFullSessionRequired } = await import("@/lib/tauri/common");
     reportFullSessionRequired();

@@ -2,7 +2,6 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup, waitFor } from "@solidjs/testing-library";
 
 const fetchMock = vi.hoisted(() => {
-  localStorage.setItem("kaiku:skip-session-restore", "1");
   const f = vi.fn();
   globalThis.fetch = f as unknown as typeof fetch;
   return f;
