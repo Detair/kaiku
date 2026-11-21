@@ -14,6 +14,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import kotlinx.coroutines.flow.first
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.test.assertIs
@@ -254,7 +255,14 @@ class KaikuWebSocketTest {
 
             ws.connect(serverUrl(), TOKEN)
             assertEquals(1L, awaitItem())
-            assertEquals(ConnectionState.Connected, ws.connectionState.value)
+            // The socket id is published right before the state, from the socket's thread: wait
+            // for the state, do not read it at the instant the id arrived.
+            assertEquals(
+                ConnectionState.Connected,
+                kotlinx.coroutines.withTimeout(10_000) {
+                    ws.connectionState.first { it == ConnectionState.Connected }
+                },
+            )
 
             ws.disconnect()
             assertEquals(null, awaitItem())
