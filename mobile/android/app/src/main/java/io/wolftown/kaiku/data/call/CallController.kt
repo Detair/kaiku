@@ -319,6 +319,10 @@ class CallController internal constructor(
      * call is gone from the screen at once; every ring goes.
      * (Voice and the microphone are ended by the voice layer's own part.)
      */
+    /** How many looks at rings by push still run in the current owner (tests). */
+    @androidx.annotation.VisibleForTesting
+    internal fun ringLooksRunning(): Int = synchronized(ownerLock) { owner }?.ringLooksRunning() ?: 0
+
     fun endForSignOut() {
         reset()
         notifier.stopAll()
@@ -742,6 +746,9 @@ class CallController internal constructor(
 
         /** The looks at a ring that came by push, per conversation. */
         private val ringLooks = HashMap<String, Job>()
+
+        /** How many looks at a ring by push still run (tests). */
+        fun ringLooksRunning(): Int = synchronized(ringLooks) { ringLooks.values.count { it.isActive } }
 
         /**
          * While the ring of [callId] that came by push is shown here and no connection is

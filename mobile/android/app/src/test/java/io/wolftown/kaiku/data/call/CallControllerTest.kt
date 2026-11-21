@@ -1062,6 +1062,26 @@ class CallControllerTest {
     }
 
     @Test
+    fun `the looks at a ring by push end with the ring, with or without a session to ask with`() = runTest {
+        for (restored in listOf(true, false)) {
+            val r = CallRig(this, restored = restored)
+            r.serverRings("c-1")
+            r.pushRing("c-1")
+            advanceTimeBy(CallController.RING_POLL_MS); runCurrent()
+            assertEquals("$restored", 1, r.controller.ringLooksRunning())
+            // The ring's 100 s pass.
+            advanceTimeBy(CallMachine.RING_CAP_MS + CallController.CAP_CHECK_MS); runCurrent()
+            assertTrue("$restored", r.state is CallState.Idle)
+            val asked = r.api.requests.size
+            // The next wake-up finds the ring over and ends the looks for good.
+            advanceTimeBy(CallController.RING_POLL_MS); runCurrent()
+            assertEquals("the looks run on after the ring ($restored)", 0, r.controller.ringLooksRunning())
+            advanceTimeBy(10 * CallController.RING_POLL_MS); runCurrent()
+            assertEquals(asked, r.api.requests.size)
+        }
+    }
+
+    @Test
     fun `a ring that came over a live connection is not looked at`() = runTest {
         val r = rig()
         r.serverRings("c-1")
