@@ -2045,6 +2045,121 @@ async fn status_stores_expired_after_a_running_confirmation_rolls_back(pool: PgP
     assert!(ended_at.is_some(), "stored like the sweep stores it");
 }
 
+/// Waits (≤ 10 s) until a backend of this test database runs a statement
+/// matching `pattern` and waits for a lock, seen from `watch`.
+async fn until_lock_wait(watch: &mut sqlx::PgConnection, pattern: &str) {
+    for _ in 0..100 {
+        let n: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pg_stat_activity
+              WHERE datname = current_database() AND pid <> pg_backend_pid()
+                AND wait_event_type = 'Lock' AND query LIKE $1",
+        )
+        .bind(pattern)
+        .fetch_one(&mut *watch)
+        .await
+        .unwrap();
+        if n > 0 {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    panic!("no statement like {pattern} waits for a lock");
+}
+
+/// A status call without waiting on a `claimed` row past its code time
+/// whose row `holder` has changed but not committed. The call's first read
+/// sees `claimed`; its settling statement is held back by a table lock
+/// queued behind `holder` until `holder` has committed, so the row changes
+/// between the call's first read and its statement. Returns the answer.
+async fn status_across_a_commit(
+    app: &TestApp,
+    watch: &mut sqlx::PgConnection,
+    holder: sqlx::Transaction<'static, sqlx::Postgres>,
+    id: Uuid,
+    secret: &str,
+) -> (u16, Value) {
+    let mut gate = app.pool.begin().await.unwrap();
+    let gate = tokio::spawn(async move {
+        sqlx::query("LOCK TABLE enrollments IN SHARE MODE")
+            .execute(&mut *gate)
+            .await
+            .unwrap();
+        gate.commit().await.unwrap();
+    });
+    until_lock_wait(watch, "LOCK TABLE enrollments%").await;
+    let call = spawn_status(app, id, secret, 0);
+    until_lock_wait(watch, "%FOR NO KEY UPDATE SKIP LOCKED%").await;
+    assert!(!call.is_finished(), "the call waits before its statement");
+    holder.commit().await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(10), gate)
+        .await
+        .expect("the table lock is taken and released")
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(10), call)
+        .await
+        .expect("the call answers")
+        .unwrap()
+}
+
+/// A confirmation that commits `done` between a call's first read and its
+/// settling statement: the call without waiting answers `done`, not the
+/// `claimed` it read first.
+#[sqlx::test]
+async fn status_without_waiting_answers_a_confirmation_committed_meanwhile(pool: PgPool) {
+    use sqlx::Connection;
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let (id, code, secret) = claimed_cli(&app, user).await;
+    let mut watch = sqlx::PgConnection::connect_with(&pool.connect_options())
+        .await
+        .unwrap();
+    let (held, after) = hold_confirmation_past_due(&app, id, &code).await;
+
+    let (s, st) = status_across_a_commit(&app, &mut watch, held, id, &secret).await;
+    vc_server::approvals::enrollments::after_done(&app.state, after).await;
+    assert_eq!((s, st["state"].as_str()), (200, Some("done")), "{st}");
+    assert_eq!(st["authenticator_state"], "active");
+    assert_eq!(stored(&pool, id).await.0, "done");
+}
+
+/// The sweep stores `expired` between a call's first read and its settling
+/// statement: the call without waiting answers `expired` from the row the
+/// sweep stored, and writes nothing itself.
+#[sqlx::test]
+async fn status_without_waiting_answers_a_sweep_committed_meanwhile(pool: PgPool) {
+    use sqlx::Connection;
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let (id, _, secret) = claimed_cli(&app, user).await;
+    sqlx::query(
+        "UPDATE enrollments SET code_expires_at = NOW() - INTERVAL '1 second' WHERE id = $1",
+    )
+    .bind(id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let mut watch = sqlx::PgConnection::connect_with(&pool.connect_options())
+        .await
+        .unwrap();
+    let mut sweep = pool.begin().await.unwrap();
+    vc_server::approvals::enrollments::expire_due(&mut sweep)
+        .await
+        .unwrap();
+    let swept: (String, String) =
+        sqlx::query_as("SELECT state, xmin::text FROM enrollments WHERE id = $1")
+            .bind(id)
+            .fetch_one(&mut *sweep)
+            .await
+            .unwrap();
+    assert_eq!(swept.0, "expired");
+
+    let (s, st) = status_across_a_commit(&app, &mut watch, sweep, id, &secret).await;
+    assert_eq!((s, st["state"].as_str()), (200, Some("expired")), "{st}");
+    let after = row_version(&pool, id).await;
+    assert_eq!(after.0, "expired");
+    assert_eq!(after.2, swept.1, "stored by the sweep, not by the call");
+}
+
 /// `(state, ended_at, xmin)` of an enrolment row; `xmin` changes with
 /// every write of the row, also one that keeps its values.
 async fn row_version(
