@@ -184,7 +184,9 @@ impl SimParticipant {
             let counts = counts.clone();
             let ssrc_map = ssrc_map.clone();
             Box::pin(async move {
-                let id = track.id();
+                // Person and source come from the stream id (each forwarded
+                // track has its own track id).
+                let id = track.stream_id();
                 ssrc_map.lock().unwrap().insert(id.clone(), track.ssrc());
                 counts.lock().unwrap().entry(id.clone()).or_insert(0);
                 tokio::spawn(async move {

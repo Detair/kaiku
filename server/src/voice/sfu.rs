@@ -2766,6 +2766,105 @@ mod negotiation_tests {
         );
     }
 
+    /// A listener's offer never carries the same stream id and track id on
+    /// two sections after a person leaves and comes back, moves to another
+    /// device (removal and addition in one offer), or turns the camera off
+    /// and on: each forwarded track has its own id, and the live section
+    /// keeps the stream id `{user}:{source}`.
+    #[tokio::test]
+    async fn a_listeners_offer_never_repeats_a_track_identity() {
+        let (_sfu, listener, mut rx, client) = setup().await;
+        let opus = || RTCRtpCodecCapability {
+            mime_type: "audio/opus".into(),
+            clock_rate: 48000,
+            channels: 2,
+            ..Default::default()
+        };
+        let vp8 = || RTCRtpCodecCapability {
+            mime_type: "video/VP8".into(),
+            clock_rate: 90000,
+            ..Default::default()
+        };
+        // Offer, check it, answer it.
+        async fn round(
+            listener: &Arc<Peer>,
+            rx: &mut mpsc::Receiver<OutboundMsg>,
+            client: &RTCPeerConnection,
+            step: &str,
+        ) -> String {
+            SfuServer::renegotiate(listener).await.expect("offer");
+            let offer = offer_sdp(rx.try_recv().expect("offer sent"));
+            let msids: Vec<&str> = offer.lines().filter(|l| l.starts_with("a=msid:")).collect();
+            let mut unique = msids.clone();
+            unique.sort_unstable();
+            unique.dedup();
+            assert_eq!(
+                unique.len(),
+                msids.len(),
+                "{step}: a repeated msid line: {msids:?}"
+            );
+            let answer = answer_for(client, offer.clone()).await;
+            SfuServer::handle_subscriber_answer(listener, answer)
+                .await
+                .expect("answer");
+            offer
+        }
+        let user = Uuid::from_u128(7);
+        let mic = TrackSource::Microphone;
+        let live = |offer: &str, source: TrackSource| {
+            offer
+                .lines()
+                .any(|l| l.starts_with(&format!("a=msid:{user}:{source} ")))
+        };
+
+        let first = seat(7).await;
+        let t1 = crate::voice::track::forwarded_track(user, mic, opus());
+        listener
+            .add_outgoing_track(&first, mic, t1.clone())
+            .await
+            .expect("add");
+        round(&listener, &mut rx, &client, "join").await;
+
+        // (1) Leave and come back.
+        listener.remove_outgoing_track_if(user, mic, &t1).await;
+        round(&listener, &mut rx, &client, "leave").await;
+        let second = seat(7).await;
+        let t2 = crate::voice::track::forwarded_track(user, mic, opus());
+        listener
+            .add_outgoing_track(&second, mic, t2)
+            .await
+            .expect("add");
+        let offer = round(&listener, &mut rx, &client, "rejoin").await;
+        assert!(live(&offer, mic), "rejoin: stream id changed:\n{offer}");
+
+        // (2) Another device takes over: removal and addition in one offer.
+        let third = seat(7).await;
+        let t3 = crate::voice::track::forwarded_track(user, mic, opus());
+        listener
+            .add_outgoing_track(&third, mic, t3)
+            .await
+            .expect("takeover");
+        let offer = round(&listener, &mut rx, &client, "takeover").await;
+        assert!(live(&offer, mic), "takeover: stream id changed:\n{offer}");
+
+        // (3) Camera off and on.
+        let cam = TrackSource::Webcam;
+        let c1 = crate::voice::track::forwarded_track(user, cam, vp8());
+        listener
+            .add_outgoing_track(&third, cam, c1.clone())
+            .await
+            .expect("camera");
+        round(&listener, &mut rx, &client, "camera on").await;
+        listener.remove_outgoing_track_if(user, cam, &c1).await;
+        let c2 = crate::voice::track::forwarded_track(user, cam, vp8());
+        listener
+            .add_outgoing_track(&third, cam, c2)
+            .await
+            .expect("camera again");
+        let offer = round(&listener, &mut rx, &client, "camera off and on").await;
+        assert!(live(&offer, cam), "camera: stream id changed:\n{offer}");
+    }
+
     /// A track waiting for its announcement on a seat that is retired stops
     /// waiting at once (no grace period, nothing bound).
     #[tokio::test]
