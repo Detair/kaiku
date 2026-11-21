@@ -361,12 +361,13 @@ the setup codes it issued and the admin requests it started, and records `authen
 
 Removing a key phone, by any of the ways above, also ends at once every sign-in that phone
 confirmed: computers and browsers signed in by scanning a QR code with it, or with a password or an
-identity provider and a confirmation on it. A sign-in confirmed before the server recorded which
+identity provider and a confirmation on it. The same happens when the phone itself reports its key
+as no longer usable (for example after its screen lock or fingerprints changed) and when the same
+phone is set up again: both remove its old key. A sign-in confirmed before the server recorded which
 phone confirmed it (sign-ins from before this version) ends when **any** key phone of the account is
 removed. Sign-ins that no phone confirmed (password and authenticator code, a passkey, another
-phone) are not affected. This includes a key the phone itself reports as no longer usable (for
-example after its screen lock or fingerprints changed) and setting up the same phone again. The
-notice's `details.ended_sessions` counts the sessions that ended, the phone's own included.
+phone) are not affected. The notice's `details.ended_sessions` counts the sessions that ended, the
+phone's own included.
 
 What these rules do not reach: sessions of a phone or passkey that was added *through* the removed
 phone (remove those separately or end all sessions), and sessions from before the 1.0 sign-in
