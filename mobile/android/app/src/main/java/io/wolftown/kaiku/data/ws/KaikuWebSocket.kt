@@ -70,7 +70,9 @@ class KaikuWebSocket @Inject constructor(
      * once it was false.
      *
      * Changes together with [connectionState], under the same lock: non-null
-     * exactly while that is Connected.
+     * exactly while that is Connected, for a reader that holds the lock. The
+     * two values are published one after the other, this one first: a reader
+     * of both without the lock can see the new id with the old state.
      */
     val authenticatedSocket: StateFlow<Long?> = _authenticatedSocket.asStateFlow()
 

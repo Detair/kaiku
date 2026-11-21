@@ -313,16 +313,16 @@ class CallController internal constructor(
         return owner
     }
 
+    /** How many looks at rings by push still run in the current owner (tests). */
+    @androidx.annotation.VisibleForTesting
+    internal fun ringLooksRunning(): Int = synchronized(ownerLock) { owner }?.ringLooksRunning() ?: 0
+
     /**
      * Signed-in user: runs synchronously in the session-end hook, after the
      * generation advanced. The owner of the ended session is dropped and its
      * call is gone from the screen at once; every ring goes.
      * (Voice and the microphone are ended by the voice layer's own part.)
      */
-    /** How many looks at rings by push still run in the current owner (tests). */
-    @androidx.annotation.VisibleForTesting
-    internal fun ringLooksRunning(): Int = synchronized(ownerLock) { owner }?.ringLooksRunning() ?: 0
-
     fun endForSignOut() {
         reset()
         notifier.stopAll()
