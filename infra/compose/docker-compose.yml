@@ -1,11 +1,18 @@
 # Kaiku Production Docker Compose
 #
 # Usage:
-#   1. Copy .env.example to .env and configure
+#   1. Copy .env.example (repository root) to .env in THIS directory and
+#      configure it (compose reads .env from the directory of this file)
 #   2. docker compose up -d                             (core services)
 #      docker compose --profile monitoring up -d        (with monitoring)
 #
+# Container names keep the historical `canis-` prefix on purpose: the scripts
+# in infra/scripts/ and the runbooks address the containers by these names.
+#
 # Required environment variables (see .env.example):
+#   - KAIKU_VERSION: release to run, e.g. 1.0.0-rc.5 (no leading "v"). Used for
+#     the server and web images; there is no moving tag to fall back to
+#     until a final release exists (release candidates have only their version)
 #   - DOMAIN: Your domain (e.g., chat.example.com)
 #   - POSTGRES_PASSWORD: Strong database password
 #   - JWT_PRIVATE_KEY/JWT_PUBLIC_KEY: Ed25519 key pair (base64-encoded PEM)
@@ -20,7 +27,8 @@ services:
   # Kaiku Server
   # ==========================================================================
   server:
-    image: ghcr.io/detair/kaiku/server:latest
+    # Published under the release version only (see KAIKU_VERSION above).
+    image: ghcr.io/detair/kaiku-server:${KAIKU_VERSION:?set KAIKU_VERSION to the release to run, e.g. 1.0.0-rc.5}
     build:
       context: ../..
       dockerfile: infra/docker/Dockerfile
@@ -128,11 +136,9 @@ services:
   # ==========================================================================
   # RustFS — S3-compatible object storage (uploads, avatars, emoji)
   # ==========================================================================
-  # NOTE: added 2026-06-12 from the dev template because the live VPS runs
-  # canis-rustfs but this file never defined it — a fresh VPS could not be
-  # rebuilt from the repo. Before relying on this definition, verify it
-  # against the running container (image tag, env, volume):
-  #   docker inspect canis-rustfs --format '{{.Config.Image}} {{.Mounts}}'
+  # The server uses this service only when S3_ENDPOINT=http://rustfs:9000 is
+  # set (with S3_ACCESS_KEY / S3_SECRET_KEY). With S3_ENDPOINT empty it does
+  # not, and any other S3-compatible storage can be configured instead.
   rustfs:
     image: rustfs/rustfs:latest
     container_name: canis-rustfs
@@ -155,9 +161,10 @@ services:
   # Kaiku Web — the web client (static files, nginx, port 8080)
   # ==========================================================================
   web:
-    # latest = newest final release; set KAIKU_VERSION (e.g. 1.0.0-rc.2) to
-    # run a release candidate, which is published under its version only.
-    image: ghcr.io/detair/kaiku-web:${KAIKU_VERSION:-latest}
+    # Same version as the server. `latest` only moves for final releases and
+    # release candidates are published under their version only, so the
+    # version is required.
+    image: ghcr.io/detair/kaiku-web:${KAIKU_VERSION:?set KAIKU_VERSION to the release to run, e.g. 1.0.0-rc.5}
     build:
       context: ../..
       dockerfile: infra/docker/web/Dockerfile

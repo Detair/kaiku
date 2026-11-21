@@ -12,6 +12,8 @@
 #   BACKUP_DIR=/var/lib/kaiku/backups
 #   MIGRATIONS_DIR=/opt/kaiku/server/migrations
 #   POSTGRES_CONTAINER=canis-postgres
+#   HEALTH_URL=http://localhost:8080/health   # compose does not publish the
+#                                             # server port: use https://<domain>/health
 #   MIN_FREE_DISK_PCT=20
 #   MAX_BACKUP_AGE_HOURS=26
 
@@ -21,6 +23,7 @@ COMPOSE_DIR="${COMPOSE_DIR:-/opt/kaiku/infra/compose}"
 BACKUP_DIR="${BACKUP_DIR:-/var/lib/kaiku/backups}"
 MIGRATIONS_DIR="${MIGRATIONS_DIR:-/opt/kaiku/server/migrations}"
 PG="${POSTGRES_CONTAINER:-canis-postgres}"
+HEALTH_URL="${HEALTH_URL:-http://localhost:8080/health}"
 MIN_FREE_DISK_PCT="${MIN_FREE_DISK_PCT:-20}"
 MAX_BACKUP_AGE_HOURS="${MAX_BACKUP_AGE_HOURS:-26}"
 
@@ -46,7 +49,7 @@ done
 
 # --- 2. Server HTTP health ----------------------------------------------------
 echo "[2/6] Server /health endpoint"
-if curl -sf --max-time 5 http://localhost:8080/health > /dev/null; then
+if curl -sf --max-time 5 "$HEALTH_URL" > /dev/null; then
     pass "server responds healthy"
 else
     fail "server /health did not respond OK"

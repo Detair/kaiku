@@ -3,9 +3,9 @@
   <h1 style="color: #88C0D0;">Kaiku</h1>
   <p><b style="color: #B48EAD;">The Echo of Victory — Next-Gen Voice Chat for Gamers</b></p>
   <p>
-    <a href="https://github.com/detair/canis/releases"><img alt="Platform" src="https://img.shields.io/badge/platform-linux-2E3440.svg?style=flat-square&logo=linux&logoColor=88C0D0" /></a>
-    <a href="https://github.com/detair/canis/issues"><img alt="Issues" src="https://img.shields.io/github/issues/detair/canis?style=flat-square&color=88C0D0&labelColor=2E3440" /></a>
-    <a href="https://github.com/detair/canis/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-B48EAD.svg?style=flat-square&labelColor=2E3440" /></a>
+    <a href="https://github.com/detair/kaiku/releases"><img alt="Platform" src="https://img.shields.io/badge/platform-linux-2E3440.svg?style=flat-square&logo=linux&logoColor=88C0D0" /></a>
+    <a href="https://github.com/detair/kaiku/issues"><img alt="Issues" src="https://img.shields.io/github/issues/detair/kaiku?style=flat-square&color=88C0D0&labelColor=2E3440" /></a>
+    <a href="https://github.com/detair/kaiku/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-B48EAD.svg?style=flat-square&labelColor=2E3440" /></a>
   </p>
 </div>
 
@@ -49,7 +49,7 @@ We don't want your data. All direct messages and private group calls utilize **O
 
 ## <span style="color: #88C0D0;">🚀 Quick Start (Development)</span>
 
-1. Clone the repository: `git clone https://github.com/detair/canis.git`
+1. Clone the repository: `git clone https://github.com/detair/kaiku.git`
 2. Install dependencies: `bun install`
 3. Run the development environment: `bun run tauri dev`
 

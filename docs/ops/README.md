@@ -30,5 +30,10 @@
 |---|---|
 | `infra/scripts/backup.sh` | Daily postgres + RustFS backup (cron) |
 | `infra/scripts/upgrade-preflight.sh` | Pre-deploy safety gate |
-| `infra/scripts/deploy.sh` | Operator-run deploy (never automated) |
-| `infra/scripts/setup-beta.sh` | Initial host provisioning |
+| `infra/scripts/deploy.sh` | Pulls and restarts the images over ssh, but for one fixed host: not for general use; see the [upgrade playbook](upgrade-playbook.md) for the generic steps |
+| `infra/scripts/setup-beta.sh` | Host provisioning for one fixed domain (set inside the script); builds the server image from the checkout. Not a general installer: see the [deployment guide](../admin-guide/ops/deployment.md) |
+
+The compose stack runs the images `ghcr.io/detair/kaiku-server` and
+`ghcr.io/detair/kaiku-web`, chosen with `KAIKU_VERSION` in
+`infra/compose/.env`. Container names keep the `canis-` prefix (for example
+`canis-server`, `canis-postgres`); the scripts and runbooks use them.

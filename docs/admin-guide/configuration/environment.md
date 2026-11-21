@@ -14,6 +14,13 @@ environment variables only.
   `latest` only moves for final (non-pre-release) versions. Builds of `main` are tagged
   `main` and `sha-<short>` and never `latest`.
 - Platform: `linux/amd64`. Runs as UID 1001. HTTP on `8080`.
+- **Docker Compose.** The shipped `infra/compose/docker-compose.yml` passes only the
+  variables listed under the `server` service's `environment:` to the container
+  (`KAIKU_VERSION` in `.env` chooses the image tag). Any other variable on this page,
+  for example `SMTP_*`, `JWT_ACCESS_EXPIRY`, `MAX_UPLOAD_SIZE`, `KAIKU_OPTIONAL_FEATURES`
+  or the individual `RATE_LIMIT_*` limits, has no effect from `.env` until you add a line such as
+  `- MAX_UPLOAD_SIZE=${MAX_UPLOAD_SIZE:-}` to that list. Compose also takes the
+  database name (`voicechat`) from its own file, and derives `PUBLIC_URL` from `DOMAIN`.
 
 "Required" means the server refuses to start without the variable. Boolean variables accept
 `true` or `1` (case-insensitive); anything else is false. An empty value counts as unset for

@@ -17,26 +17,14 @@ The Kaiku client can be configured with a default server URL to avoid manual ent
 
 ### Production Setup
 
-For production deployments using Docker Compose:
+For production deployments using Docker Compose there is nothing to set for the
+web client: the `kaiku-web` image is the same for every installation and talks
+to the server on its own origin (see [Web client](web-client.md)). Users of the
+desktop app and the Android app enter your server's address (for example
+`https://chat.yourdomain.com`) when they sign in.
 
-1. Copy `.env.example` to `.env`:
-   ```bash
-   cp .env.example .env
-   ```
-
-2. Edit `.env` and set your server URL:
-   ```bash
-   SERVER_URL=https://chat.yourdomain.com
-   ```
-
-3. Build and deploy with docker-compose:
-   ```bash
-   cd infra/compose
-   docker compose build
-   docker compose up -d
-   ```
-
-The client will be built with the configured `SERVER_URL` baked into the production build.
+The server's own settings live in `infra/compose/.env` (start from `.env.example`
+in the repository root); see [Deployment](deployment.md).
 
 ### Environment Variables
 
@@ -44,11 +32,11 @@ The client will be built with the configured `SERVER_URL` baked into the product
 
 - `VITE_SERVER_URL`: Default server URL shown in login/register screens
   - Development: `http://localhost:8080`
-  - Production: Set via `SERVER_URL` in root `.env` file
+  - Production: not used; the web client uses its own origin and the apps ask for the address
 
 #### Server Environment Variables
 
-See `.env.example` in the root directory for all available server configuration options.
+See `.env.example` in the root directory and the [environment variables](../configuration/environment.md) reference for the server configuration options.
 
 ### Testing the Configuration
 
