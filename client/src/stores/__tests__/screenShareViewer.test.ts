@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { unwrap } from "solid-js/store";
 import {
   viewerState,
@@ -194,6 +194,43 @@ describe("screenShareViewer", () => {
       startViewing("stream-1");
 
       expect(viewerState.viewingStreamId).toBeNull();
+    });
+
+    describe("while waiting for the track", () => {
+      beforeEach(() => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      });
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      it("opens once the track arrives", () => {
+        startViewing("late");
+        addAvailableTrack("late", createMockTrack(), "user1", "Alice", "Screen 1");
+        vi.advanceTimersByTime(500);
+        expect(viewerState.viewingStreamId).toBe("late");
+      });
+
+      it("a viewer closed before the track arrives stays closed", () => {
+        startViewing("late");
+        stopViewing();
+        addAvailableTrack("late", createMockTrack(), "user1", "Alice", "Screen 1");
+        vi.advanceTimersByTime(5_000);
+        expect(viewerState.viewingStreamId).toBeNull();
+        expect(viewerState.videoTrack).toBeNull();
+      });
+
+      it("viewing another share drops the wait for the first", () => {
+        const b = createMockTrack();
+        addAvailableTrack("b", b, "user2", "Bob", "Screen 2");
+        startViewing("a"); // no track yet
+        startViewing("b");
+        expect(viewerState.viewingStreamId).toBe("b");
+        addAvailableTrack("a", createMockTrack(), "user1", "Alice", "Screen 1");
+        vi.advanceTimersByTime(5_000);
+        expect(viewerState.viewingStreamId).toBe("b");
+        expect(unwrap(viewerState).videoTrack).toBe(b);
+      });
     });
   });
 

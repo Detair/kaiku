@@ -145,19 +145,33 @@ export function removeAvailableTrack(streamId: string): void {
   }
 }
 
+/** A start that waits for its track; dropped by any later start or stop. */
+let pendingStart: ReturnType<typeof setTimeout> | null = null;
+
+function dropPendingStart(): void {
+  if (pendingStart !== null) clearTimeout(pendingStart);
+  pendingStart = null;
+}
+
 /**
  * Start viewing a specific screen share stream.
- * Sets the stream as the primary view. If the stream is already registered
- * as available, uses the existing track; otherwise this is a no-op
- * (use addAvailableTrack first).
+ * Sets the stream as the primary view. If the stream's track has not
+ * arrived yet, waits for it for a few seconds; closing the viewer or
+ * viewing another share ends that wait.
  */
-export function startViewing(streamId: string, retries = 0): void {
+export function startViewing(streamId: string): void {
+  dropPendingStart();
+  tryStartViewing(streamId, 0);
+}
+
+function tryStartViewing(streamId: string, retries: number): void {
+  pendingStart = null;
   const info = viewerState.availableTracks.get(streamId);
   if (!info) {
     // The WebSocket broadcast arrives before the WebRTC track.
     // Retry a few times to wait for addAvailableTrack to register it.
     if (retries < 10) {
-      setTimeout(() => startViewing(streamId, retries + 1), 500);
+      pendingStart = setTimeout(() => tryStartViewing(streamId, retries + 1), 500);
       return;
     }
     console.warn(
@@ -187,6 +201,7 @@ export function startViewing(streamId: string, retries = 0): void {
  * Stop viewing the current screen share (clear primary view).
  */
 export function stopViewing(): void {
+  dropPendingStart();
   setViewerState({
     viewingStreamId: null,
     videoTrack: null,
@@ -272,6 +287,7 @@ export function swapPrimary(streamId: string): void {
     return;
   }
 
+  dropPendingStart();
   setViewerState({
     viewingStreamId: streamId,
     videoTrack: info.track,
