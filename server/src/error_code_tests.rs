@@ -143,6 +143,9 @@ async fn admin_and_auth_codes_are_upper_snake() {
         AuthError::UserNotFound,
         AuthError::SessionReused,
         AuthError::LastStrongAuthenticator,
+        AuthError::AuthenticatorTooNew {
+            allowed_at: chrono::Utc::now(),
+        },
         AuthError::FullSessionRequired,
         AuthError::StepUpRequired,
         AuthError::SessionExpired,

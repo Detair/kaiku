@@ -143,6 +143,66 @@ pub async fn ensure_not_last_strong(
     Ok(())
 }
 
+/// A newly added authenticator may not act against older ones.
+///
+/// `by` produced the step-up of the caller's action (call this in the
+/// action's transaction, after the grant was consumed or peeked, under the
+/// account lock). Refused with 403 `AUTHENTICATOR_TOO_NEW {allowed_at}` when
+/// all hold:
+///
+/// 1. `by` was created less than `delay_hours` ago (`created_at`, on the database clock;
+///    `allowed_at` = `created_at` + the delay);
+/// 2. the account has another active strong authenticator created before `by` (an account whose
+///    oldest active authenticators are this young is never held back);
+/// 3. with a `target` (the removals): the target was created before `by` (removing itself or a
+///    younger one stays allowed).
+///
+/// A `by` that is not an active strong authenticator of `user_id` is refused
+/// as a missing grant (403 `STEP_UP_REQUIRED`), never treated as settled.
+/// Every kind of strong authenticator is one arm of the `strong` list below.
+pub async fn ensure_settled(
+    conn: &mut sqlx::PgConnection,
+    user_id: Uuid,
+    by: AuthenticatorRef,
+    target: Option<AuthenticatorRef>,
+    delay_hours: i64,
+) -> crate::auth::AuthResult<()> {
+    let row: Option<(chrono::DateTime<chrono::Utc>, bool)> = sqlx::query_as(
+        "WITH strong AS (
+             SELECT 'key_device'::text AS kind, id, state, created_at
+               FROM approval_devices WHERE user_id = $1
+             UNION ALL
+             SELECT 'passkey'::text, id, state, created_at
+               FROM passkeys WHERE user_id = $1
+         ), producer AS (
+             SELECT created_at, created_at + make_interval(hours => $4) AS allowed_at
+               FROM strong WHERE kind = $2 AND id = $3 AND state = 'active'
+         )
+         SELECT p.allowed_at,
+                p.allowed_at > clock_timestamp()
+                AND EXISTS (SELECT 1 FROM strong o
+                             WHERE o.state = 'active' AND o.created_at < p.created_at)
+                AND ($5::text IS NULL
+                     OR EXISTS (SELECT 1 FROM strong t
+                                 WHERE t.kind = $5 AND t.id = $6
+                                   AND t.created_at < p.created_at))
+           FROM producer p",
+    )
+    .bind(user_id)
+    .bind(by.as_str())
+    .bind(by.id)
+    .bind(i32::try_from(delay_hours).unwrap_or(i32::MAX))
+    .bind(target.map(|t| t.as_str()))
+    .bind(target.map(|t| t.id))
+    .fetch_optional(&mut *conn)
+    .await?;
+    match row {
+        None => Err(crate::auth::AuthError::StepUpRequired),
+        Some((allowed_at, true)) => Err(crate::auth::AuthError::AuthenticatorTooNew { allowed_at }),
+        Some((_, false)) => Ok(()),
+    }
+}
+
 /// B.0 "new account".
 ///
 /// Never an active authenticator, a password, TOTP, recovery codes or a

@@ -61,7 +61,7 @@ pub async fn list(
     params(("id" = Uuid, Path, description = "Key device id")),
     responses(
         (status = 200, body = KeyDevice),
-        (status = 403, description = "FULL_SESSION_REQUIRED or STEP_UP_REQUIRED"),
+        (status = 403, description = "FULL_SESSION_REQUIRED, STEP_UP_REQUIRED or AUTHENTICATOR_TOO_NEW {allowed_at}"),
         (status = 404, description = "KEY_DEVICE_UNKNOWN"),
         (status = 409, description = "LAST_STRONG_AUTHENTICATOR"),
     ),
@@ -87,7 +87,7 @@ pub async fn remove(
         .await?
         .filter(|d| d.user_id == auth.id)
         .ok_or(ApprovalError::KeyDeviceUnknown)?;
-    consume_tx(
+    let grant = consume_tx(
         &mut tx,
         &auth,
         StepUpAction::KeyDeviceRemove,
@@ -97,6 +97,16 @@ pub async fn remove(
     if device.state == "revoked" {
         return Err(ApprovalError::KeyDeviceRevoked);
     }
+    // A newly added phone or passkey does not remove an older one; the
+    // refusal rolls back and keeps the grant.
+    crate::auth::strong::ensure_settled(
+        &mut tx,
+        auth.id,
+        grant.by,
+        Some(AuthenticatorRef::key_device(id)),
+        state.config.account_request_delay_hours,
+    )
+    .await?;
     crate::auth::strong::ensure_not_last_strong(&mut tx, auth.id, AuthenticatorRef::key_device(id))
         .await?;
     let was_current = current(&auth) == Some(AuthenticatorRef::key_device(id));

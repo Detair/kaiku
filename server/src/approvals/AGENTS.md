@@ -15,7 +15,7 @@
 - `handlers.rs` — `/api/approvals/*` (`ApprovalLogin` limit per user): `step-up` (key-device session only), `answer` (dispatch by kind), `deny`, `release`.
 - `device_login.rs` — device-key sign-in (B.4, C26 `device_login`): public `POST /auth/device-login/challenge` and `POST /auth/device-login` (`AuthFlow` per IP, never IP-blocked). `sign_in` locks account → device row → challenge, re-checks `active` and the ban, consumes the challenge, ends the device's older sessions (`superseded`), mints a full android session and records `sign_in`.
 - `enrollments/` — SM2: `issue_tx` per issuer, the public `open`/`pop-challenge`/`claim`/`status` routes (`AuthFlow`), `confirm_tx` per confirmer (a re-enrolling install's old row goes through the revocation cascade), `after_done`.
-- `devices/` — key devices (SM4): list (any session), remove (full + `key_device.remove` grant, never the last strong authenticator), `invalidated` (the device's own session), `revoke_tx` (+ cascade + notice event), `after_revoke` (deliver the notice, then delete the device's push subscriptions).
+- `devices/` — key devices (SM4): list (any session), remove (full + `key_device.remove` grant, never the last strong authenticator, never an older device from one added less than the request delay ago: `strong::ensure_settled`), `invalidated` (the device's own session), `revoke_tx` (+ cascade + notice event), `after_revoke` (deliver the notice, then delete the device's push subscriptions).
 
 ## Order of checks (answer)
 

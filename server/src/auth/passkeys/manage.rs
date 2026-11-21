@@ -100,7 +100,7 @@ pub async fn rename(
     params(("id" = Uuid, Path, description = "Passkey id")),
     responses(
         (status = 200, body = PasskeyRemovedResponse),
-        (status = 403, description = "FULL_SESSION_REQUIRED or STEP_UP_REQUIRED"),
+        (status = 403, description = "FULL_SESSION_REQUIRED, STEP_UP_REQUIRED or AUTHENTICATOR_TOO_NEW {allowed_at}"),
         (status = 404, description = "Not the caller's active passkey"),
         (status = 409, description = "LAST_STRONG_AUTHENTICATOR"),
     ),
@@ -135,11 +135,20 @@ pub async fn remove(
         .ok_or_else(|| AuthError::NotFound("passkey".into()))?;
     // Under the lock and before the grant: a refusal leaves the grant.
     strong::ensure_not_last_strong(&mut tx, auth.id, AuthenticatorRef::passkey(id)).await?;
-    step_up::consume_tx(
+    let grant = step_up::consume_tx(
         &mut tx,
         &auth,
         StepUpAction::PasskeyRemove,
         &StepUpTarget::Id(id),
+    )
+    .await?;
+    // A newly added passkey or phone does not remove an older passkey.
+    strong::ensure_settled(
+        &mut tx,
+        auth.id,
+        grant.by,
+        Some(AuthenticatorRef::passkey(id)),
+        state.config.account_request_delay_hours,
     )
     .await?;
     queries::revoke(&mut tx, &ctx, auth.id, id, "removed_by_owner")

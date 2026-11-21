@@ -174,6 +174,13 @@ pub enum AuthError {
     #[error("This is your last way to sign in securely; add another first")]
     LastStrongAuthenticator,
 
+    /// The phone or passkey that confirmed this was added too recently to
+    /// act against an older one: 403 `AUTHENTICATOR_TOO_NEW {allowed_at}`.
+    #[error("This phone or passkey was added too recently to change your older sign-in methods")]
+    AuthenticatorTooNew {
+        allowed_at: chrono::DateTime<chrono::Utc>,
+    },
+
     /// A refresh token was used twice: the session has ended (B.4).
     #[error("This session was ended because its key was used twice")]
     SessionReused,
@@ -374,6 +381,7 @@ impl AuthError {
             Self::FullSessionRequired => (StatusCode::FORBIDDEN, "FULL_SESSION_REQUIRED"),
             Self::StepUpRequired => (StatusCode::FORBIDDEN, "STEP_UP_REQUIRED"),
             Self::LastStrongAuthenticator => (StatusCode::CONFLICT, "LAST_STRONG_AUTHENTICATOR"),
+            Self::AuthenticatorTooNew { .. } => (StatusCode::FORBIDDEN, "AUTHENTICATOR_TOO_NEW"),
             Self::SessionReused => (StatusCode::UNAUTHORIZED, "SESSION_REUSED"),
             Self::SessionExpired => (StatusCode::UNAUTHORIZED, "SESSION_EXPIRED"),
             Self::PasskeysUnavailable => (StatusCode::SERVICE_UNAVAILABLE, "PASSKEYS_UNAVAILABLE"),
@@ -419,7 +427,8 @@ impl IntoResponse for AuthError {
         let (status, code) = self.status_and_code();
 
         // C29: `PASSKEY_PENDING` carries `ready_at` next to `error`; C27:
-        // `PASSWORD_REJECTED` carries `reason`.
+        // `PASSWORD_REJECTED` carries `reason`, `AUTHENTICATOR_TOO_NEW`
+        // carries `allowed_at`.
         let mut response = if let Self::AccountRequestNotReady { state } = &self {
             (
                 status,
@@ -460,6 +469,16 @@ impl IntoResponse for AuthError {
                     "error": code,
                     "message": self.to_string(),
                     "reason": reason.as_str(),
+                })),
+            )
+                .into_response()
+        } else if let Self::AuthenticatorTooNew { allowed_at } = &self {
+            (
+                status,
+                Json(serde_json::json!({
+                    "error": code,
+                    "message": self.to_string(),
+                    "allowed_at": allowed_at,
                 })),
             )
                 .into_response()

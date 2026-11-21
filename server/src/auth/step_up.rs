@@ -407,17 +407,21 @@ async fn open_grant(
 }
 
 /// Check that a usable grant exists without consuming it (LP's
-/// `register/start`).
+/// `register/start`); the authenticator that produced it.
 pub async fn peek_tx(
     conn: &mut PgConnection,
     auth: &AuthUser,
     action: StepUpAction,
     target: &StepUpTarget,
-) -> AuthResult<()> {
+) -> AuthResult<AuthenticatorRef> {
     let sid = lock_full_session(conn, auth).await?;
-    open_grant(conn, sid, action, target, false)
-        .await
-        .map(|_| ())
+    let grant = open_grant(conn, sid, action, target, false).await?;
+    let kind =
+        AuthenticatorKind::parse(&grant.authenticator_type).ok_or(AuthError::StepUpRequired)?;
+    Ok(AuthenticatorRef {
+        kind,
+        id: grant.authenticator_id,
+    })
 }
 
 /// Consume the oldest usable grant for (`sid`, `action`, `target`) in the

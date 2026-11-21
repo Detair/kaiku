@@ -245,7 +245,7 @@ pub async fn left_conn(conn: &mut PgConnection, user_id: Uuid) -> sqlx::Result<i
     tag = "auth",
     responses(
         (status = 200, description = "New recovery codes (shown once)", body = RecoveryCodesResponse),
-        (status = 403, description = "FULL_SESSION_REQUIRED or STEP_UP_REQUIRED"),
+        (status = 403, description = "FULL_SESSION_REQUIRED, STEP_UP_REQUIRED or AUTHENTICATOR_TOO_NEW {allowed_at}"),
     ),
     security(("bearer_auth" = [])),
 )]
@@ -263,6 +263,14 @@ pub async fn create(
         &auth,
         StepUpAction::RecoveryCodesCreate,
         &StepUpTarget::None,
+    )
+    .await?;
+    super::strong::ensure_settled(
+        &mut tx,
+        auth.id,
+        grant.by,
+        None,
+        state.config.account_request_delay_hours,
     )
     .await?;
     let codes = replace_tx(&mut tx, &ctx, auth.id).await?;
