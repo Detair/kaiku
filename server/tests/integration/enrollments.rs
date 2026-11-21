@@ -1899,7 +1899,9 @@ fn spawn_status(
 
 /// A confirmation of `id` with the right code that passed its own expiry
 /// check (`done` written, not committed) while the code time was running,
-/// held until the database says the code time is over.
+/// held until the database says the code time is over. The code time is
+/// set five seconds beyond the later of the application's and the
+/// database's clock, so the confirmation's own check passes either way.
 async fn hold_confirmation_past_due(
     app: &TestApp,
     id: Uuid,
@@ -1909,9 +1911,11 @@ async fn hold_confirmation_past_due(
     vc_server::approvals::enrollments::AfterDone,
 ) {
     sqlx::query(
-        "UPDATE enrollments SET code_expires_at = NOW() + INTERVAL '5 seconds' WHERE id = $1",
+        "UPDATE enrollments SET code_expires_at = GREATEST(NOW(), $2) + INTERVAL '5 seconds'
+          WHERE id = $1",
     )
     .bind(id)
+    .bind(chrono::Utc::now())
     .execute(&app.pool)
     .await
     .unwrap();
