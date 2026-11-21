@@ -170,6 +170,7 @@ unchanged, so the firewall forwards the same UDP port numbers 1:1.
 
 - **C19 amendment (2026-10-24, server security review):** registering a `device_id` does NOT remove other users' rows with the same `device_id` (client-asserted; would let anyone disable another user's push). Cross-user cleanup only on an exact `(provider, endpoint)` match. Android uses a random per-install UUID as push `device_id`, never the E2EE device id; logout deletes the device row.
 - **C19 amendment 2 (2026-10-24):** push token/endpoint max 2048 bytes (PostgreSQL B-tree index limit on the unique (user_id, endpoint) index); longer → 400 `VALIDATION_ERROR`.
+- **C19 amendment 4 (2026-11-21):** a subscription belongs to the session that registered it. Listing and deleting by id need a full session (C27). A probation session may overwrite (same `device_id` or same endpoint) or delete by `device_id` only its own rows, rows without owner, and rows whose session is no longer live: registering otherwise → 403 `FULL_SESSION_REQUIRED` with nothing changed, delete-by-device skips the row and still answers 204. A probation session holds at most 2 rows; pruning never removes another live session's row for a probation caller. When a session ends, its rows stay for `logout`, `superseded`, `limit` and `absolute_cap` and are deleted for every other reason; a device-key sign-in takes over the install's rows. Request and response bodies are unchanged.
 - **C20 note 1 (2026-10-24):** FCM keeps at most 4 collapse keys per offline device (Firebase docs, "Non-collapsible and collapsible messages") (collapse_key = channel id) with no guarantee which survive → clients must never rely on push for completeness; app start/reconnect always runs C1 catch-up.
 - **C20 note 2 (2026-10-24):** wake/read ordering is not guaranteed; on a wake the client fetches the channel and notifies only for messages newer than the server read cursor — if there are none, it shows no notification; on `read` it clears the channel notification. A trailing wake is only a fetch hint.
 - **C20 note 3 (2026-10-24):** `read` and wakes share collapse_key = channel id, so FCM may drop a `read` offline: on a wake with nothing unread after the read cursor, the client actively clears any existing notification for that channel.
@@ -390,7 +391,9 @@ revoked_at|null, revoke_reason: "owner"|"admin"|"request"|"repudiated"|"key_inva
 `KEY_DEVICE_PENDING {ready_at}`, 403 `KEY_DEVICE_REVOKED` (the app deletes its key and shows setup),
 403 `ACCOUNT_BANNED`. **C19 amendment 3:** on a key device a plain sign-out keeps the push
 subscription (lapsed key devices still get call wakes and C28 notices, B.4); "Sign out and remove
-this phone" and every revocation delete it, after the last notice.
+this phone" and every revocation delete it, after the last notice (2026-11-21: a revocation for cause,
+"That wasn't me" or an account request naming the phone lost, deletes it in the revoking
+transaction, without a last notice; a re-enrolment of the same install keeps it; C19 amendment 4).
 
 **Delivery (v1.0).** No approval push and no approval list (B.2 "Delivery"). Reserved for v1.1 M2,
 never sent in v1.0, ignored by clients: push `{"t":"approval","approval_id":"<uuid>"}` (HIGH,
@@ -565,7 +568,7 @@ active at once; an existing account gets an `admin` request (SM3), and the new p
 |---|---|
 | any session, probation included | chat, DMs, voice and calls, WebSocket; `GET /auth/me`, `POST /auth/me` (name), `/auth/me/avatar`; notification and preference settings; the own-account reads of C26–C29 (`/api/me/security`, `/api/me/security-events`, `/api/approval-devices`, `/auth/passkeys`, `/auth/sessions`, `/api/me/account-requests`); `POST /auth/logout`; owner rule part 2 (cancel, repudiate with a fresh factor) |
 | full + step-up grant | every action of the step-up table (common rules) |
-| full | the contact's confirmation (C28); `/api/admin/*` (with the elevation window where it applies today); creating bot, webhook or other long-lived tokens (contract call: they would outlive a relayed probation session) |
+| full | the contact's confirmation (C28); `/api/admin/*` (with the elevation window where it applies today); creating bot, webhook or other long-lived tokens (contract call: they would outlive a relayed probation session); `GET /api/me/push-subscriptions`, `DELETE /api/me/push-subscriptions/{id}`; `DELETE /api/guilds/{id}`; `POST /api/keys/upload`, `POST /api/keys/backup` (2026-11-21 amendment; 403 `FULL_SESSION_REQUIRED` as for the other full routes) |
 | unchanged | every other route keeps its existing permission checks and is open to probation (B.4's "cannot" list read as exhaustive) |
 
 - Existing routes behind the guards: `POST /auth/me/password` `{new_password}` (`password.set`;

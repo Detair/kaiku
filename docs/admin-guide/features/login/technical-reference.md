@@ -135,9 +135,35 @@ the committed `sessions` row, read by primary key:
 | Class | Allowed |
 |---|---|
 | any session, probation included | chat, DMs, voice and calls, WebSocket; `GET /auth/me`, profile name and avatar; notification and preference settings; own-account reads (`/api/me/security`, `/api/me/security-events`, `/api/approval-devices`, `/auth/passkeys`, `/auth/sessions`, `/api/me/account-requests`); `POST /auth/logout`; owner-rule part 2 actions (section 10) |
-| full | the recovery contact's confirmation; `/api/admin/*` except `/api/admin/status` (with elevation where it applies); bot token creation and reset, incoming-webhook creation |
+| full | the recovery contact's confirmation; `/api/admin/*` except `/api/admin/status` (with elevation where it applies); bot token creation and reset, incoming-webhook creation; `GET /api/me/push-subscriptions` and `DELETE /api/me/push-subscriptions/{id}`; `DELETE /api/guilds/{id}` (the owner still decides); `POST /api/keys/upload` and `POST /api/keys/backup` (reading keys and the backup, and claiming another user's prekey, stay open) |
 | full + step-up | every action of the step-up table (section 9) |
 | unchanged | every other route keeps its own permission checks and is open to probation |
+
+**Push subscriptions belong to the session that registered them** (`push_subscriptions.session_id`,
+no foreign key; a missing or ended session counts as not live). `POST /api/me/push-subscriptions`
+and `DELETE /api/me/push-subscriptions/device/{device_id}` stay open to every session:
+
+- registering stores the caller's `sid` as the owner, under the caller's session row lock (`FOR
+  SHARE`), so a session that is being ended either waits for the registration and then deletes the
+  row, or has ended and the registration answers 401 `INVALID_TOKEN`;
+- a probation caller may overwrite (same install id, or same endpoint) or delete a row only if it
+  is its own, has no owner, or its owner is no longer live; otherwise registering answers 403
+  `FULL_SESSION_REQUIRED` and changes nothing, and delete-by-install skips the row (still 204).
+  Full sessions may overwrite and delete any row of the account, as before;
+- a probation session holds at most 2 rows (its most recently used are kept); the cap of 10 per
+  account never prunes another live session's row when the caller is probation;
+- when a session ends, its rows are kept only for `logout`, `superseded`, `limit` and
+  `absolute_cap` (and a plain lapse, which ends no row); every other reason deletes them in the
+  ending transaction (`EndReason::keeps_push_subscriptions`). A key-device session ended because its
+  device was revoked keeps the rows of its own install for the revocation to decide: the removed
+  phone gets its last notice first (`owner`, `admin`, `cli`, `key_invalidated`), they go in the
+  revoking transaction for every other revoke reason, and stay with a re-enrolment of the same
+  install;
+- a device-key sign-in takes over the install's rows that belonged to a session of a key device of
+  that install, or to none. The released Android app does not register again while its local
+  record is younger than a day, so its row must follow the new session;
+- the upgrade gives rows of an active key device's install that device's newest live session; all
+  other rows start without owner and are taken over by the next registration from their install.
 
 ## 4. Sessions: refresh rotation and caps
 

@@ -157,6 +157,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Windows that open on demand (channel settings, new channel, new message, search, pinned messages, custom status, keyboard shortcuts, report and block, the first-run setup and tour) load when first opened, so the app has less to download at start. If one cannot load, the page says so and offers a reload.
 
 ### Security
+- A chat-only sign-in can no longer list or remove the devices that get the account's notifications, delete a server the account owns, add an end-to-end encryption key for a new device or replace the key backup; these need a full sign-in (passkey or key phone). It may still register and remove its own notification device, and that registration is removed when the sign-in is ended by you, an admin or "That wasn't me". Existing notification registrations keep working.
 - The end-to-end encryption library was updated to a release that clears key material from memory more thoroughly.
 - Dependency advisories for the web client and the server were cleared.
 - Repeated wrong passwords or codes for one account slow further tries (from the 5th: 30 seconds, doubling up to an hour) and are reported to the account and the admins; after 100 the password or code is blocked. Signing in with a passkey or your phone is never blocked by this.
