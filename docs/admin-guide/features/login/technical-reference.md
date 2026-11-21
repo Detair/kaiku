@@ -637,6 +637,30 @@ session and cannot authorise a PC session.
 | `admin.factor.set_state` | user id | `PUT /api/admin/users/{user_id}/factors` |
 | `admin.recovery_contact.set` | user id | `PUT /api/admin/users/{user_id}/recovery-contact` |
 
+**A new authenticator does not act against older ones.** After the grant is consumed, in the same
+transaction, `strong::ensure_settled` looks at the authenticator that produced it (`grant.by`, a key
+device or a passkey). It refuses with 403 `AUTHENTICATOR_TOO_NEW {allowed_at}` when all of these hold:
+
+1. the producer was created less than `ACCOUNT_REQUEST_DELAY_HOURS` ago (row `created_at`, compared
+   with the database clock; `allowed_at` = `created_at` + the delay);
+2. the account has another **active** key device or passkey created before the producer;
+3. for `key_device.remove` and `passkey.remove` only: the target was created before the producer.
+
+It runs on `key_device.remove`, `passkey.remove`, `recovery_codes.create`, `password.set`,
+`password.remove`, `totp.set` (at `/auth/mfa/setup` too, so the user hears it before scanning, and at
+the peek of `/auth/mfa/verify`, before the code is spent) and `totp.remove`. The refusal rolls the
+transaction back, so the grant is not used up. Removing itself or a younger authenticator, removing an
+old phone *on* that phone ("Sign out and remove this phone"), and an account's first authenticator are
+never refused. A producer that is not an active authenticator of the account is refused as a missing
+grant (`STEP_UP_REQUIRED`), never treated as old. Ages by origin: a phone or passkey added from a full
+session or a key phone, at registration, by an admin for a new account or by `kaiku-admin enroll` is
+active at once and young for one delay. A device that waited as `pending` (an account request, an admin
+setup of an existing account) counts from when it was staged; when the request's delay ran from the
+staging it is settled on activation, a phone staged later in the request's waiting time stays young for
+the rest. A phone set up again on the same install is a new row and is young again. Other step-up
+actions (`sessions.end`, `recovery_contact.set`, `enrollment.issue`, `identity.link`/`unlink`,
+`event.repudiate`, `request.cancel`, `account.delete`, `admin.*`) do not apply this rule.
+
 `admin.*` actions are refused before anything else for a non-admin (403 `NOT_ADMIN`). Each guarded
 action records `step_up_action {action, target_label}` besides its own event. Bodies that still
 carry `current_password`, `revoke_others` or a TOTP code have them ignored. `GET /auth/reauth/methods`
@@ -913,6 +937,12 @@ Residual risks (spec B.6, as implemented):
 13. **Hostile use of owner-rule part 2** by someone with a session and the TOTP secret or a recovery
     code while the account has no strong authenticator.
 14. **Request-notice fatigue:** at most 3 self-service starts per account per delay period.
+15. **An old device in the wrong hands is not limited by the waiting time for new authenticators**
+    (section 9): the rule only stops a *newly added* phone or passkey from removing older ones or
+    replacing the password, TOTP or recovery codes. A stolen phone that has been a key for longer than
+    the delay can still do all of that until it is removed (risk 7). A phone set up again on the same
+    install is new again, so an honest owner who re-installs the app waits one delay before removing
+    an older device from it.
 
 Coordinator and maintainer decisions recorded in the implementation notes:
 
@@ -1002,6 +1032,7 @@ All errors use the body `{"error": CODE, "message": string}`; listed extra field
 | `ACCOUNT_BANNED` | 403 | The account is banned |
 | `FULL_SESSION_REQUIRED` | 403 | The action needs a full session |
 | `STEP_UP_REQUIRED` | 403 | No valid grant for this action and target |
+| `AUTHENTICATOR_TOO_NEW` | 403 | `{allowed_at}`: the phone or passkey that confirmed was added less than the request delay ago and the action would act against an older one (section 9); the grant stays unused |
 | `NOT_ADMIN` | 403 | Not a system admin (also for `admin.*` step-ups) |
 | `ELEVATION_REQUIRED` | 403 | Admin mode is not open |
 | `SERVICE_UNAVAILABLE` | 503 | Valkey or the database is unavailable where it is required |

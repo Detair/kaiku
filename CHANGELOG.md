@@ -157,6 +157,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Windows that open on demand (channel settings, new channel, new message, search, pinned messages, custom status, keyboard shortcuts, report and block, the first-run setup and tour) load when first opened, so the app has less to download at start. If one cannot load, the page says so and offers a reload.
 
 ### Security
+- A phone or passkey added less than the account request delay ago (24 hours by default) can no longer remove the account's older phones or passkeys or change the password, the authenticator app or the recovery codes; the server answers `AUTHENTICATOR_TOO_NEW` with the time from which it can. An account's first phone is not affected, and "Sign out and remove this phone" on the old phone still works at once.
 - The end-to-end encryption library was updated to a release that clears key material from memory more thoroughly.
 - Dependency advisories for the web client and the server were cleared.
 - Repeated wrong passwords or codes for one account slow further tries (from the 5th: 30 seconds, doubling up to an hour) and are reported to the account and the admins; after 100 the password or code is blocked. Signing in with a passkey or your phone is never blocked by this.

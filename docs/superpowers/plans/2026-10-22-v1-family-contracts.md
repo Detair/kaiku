@@ -908,3 +908,17 @@ not sign in someone else by mistake. Additive; absent means no check.
 **C27 amendment (2026-11-03, L1b review round 2; behaviour, no new code):**
 - A TOTP step on a QR login attempt answers 403 `TOTP_UNAVAILABLE`, as listed for the TOTP step; it no longer answers 409 `LOGIN_ATTEMPT_NOT_READY`.
 - The bootstrap request start answers the neutral 401 while its per-account TOTP counter is delayed, so a correct password is not revealed. The recovery start still answers 429 with `Retry-After` before consumption. Only a holder of a valid recovery code can reach that answer, so it reveals nothing.
+
+**C26/C27 amendment (2026-11-21; new error code, additive):**
+- A key device or passkey that was added less than the account request delay ago (`ACCOUNT_REQUEST_DELAY_HOURS`,
+  24 h by default, counted from the row's creation, on the server's database clock) may not act against an
+  older one. A step-up it produced is refused with 403 `AUTHENTICATOR_TOO_NEW {allowed_at}` (RFC 3339: its
+  creation time plus the delay) on `DELETE /api/approval-devices/{id}` (C26 "remove"), `DELETE /auth/passkeys/{id}`,
+  `POST /auth/recovery-codes`, `POST` / `DELETE /auth/me/password`, `/auth/mfa/setup` (already at this first
+  call), `/auth/mfa/verify` and `/auth/mfa/disable`, when the account has another active key device or passkey
+  created before it, and, for the two removals, the target was created before it. Removing itself or a younger
+  one, and every action of an account whose only strong authenticators are as young or younger, stay allowed.
+  The refusal changes nothing: the grant stays unused and works again once `allowed_at` has passed. A device
+  that waited as `pending` counts from when it was added, so it is usually settled when it becomes active.
+- Clients that do not know the code show their generic failure text for the action; the next client release
+  names the time and points to "Sign out and remove this phone" on the old phone.
