@@ -960,7 +960,9 @@ Residual risks (spec B.6, as implemented):
 13. **Hostile use of owner-rule part 2** by someone with a session and the TOTP secret or a recovery
     code while the account has no strong authenticator. With a TOTP code the acting session gets no
     exception, so whoever acts on an event that blocks the password ends every session that used it,
-    their own included; with a stolen recovery code the acting session stays.
+    their own included. A session that did not use the blocked factor (for example one made through
+    the identity provider) stays, whoever made the report. With a stolen recovery code the acting
+    session stays.
 14. **Request-notice fatigue:** at most 3 self-service starts per account per delay period.
 
 Coordinator and maintainer decisions recorded in the implementation notes:
