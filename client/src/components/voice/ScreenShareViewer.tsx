@@ -119,7 +119,8 @@ const ScreenShareViewer: Component = () => {
           if (over) return;
           if (err?.name === "AbortError" && attempt < 3) {
             retry = setTimeout(() => tryPlay(attempt + 1), 100 * (attempt + 1));
-          } else if (err?.name !== "AbortError") {
+          } else {
+            // Blocked, or every attempt was interrupted: offer click-to-play.
             console.warn("[ScreenShareViewer] Autoplay blocked:", err);
             setAutoplayBlocked(true);
           }

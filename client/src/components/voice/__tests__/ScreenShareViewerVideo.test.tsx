@@ -3,7 +3,7 @@
  * switching the view mode mounts a new element and it gets the stream too.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render } from "@solidjs/testing-library";
+import { cleanup, render, screen } from "@solidjs/testing-library";
 
 vi.mock("@/stores/voice", () => ({ voiceState: { participants: {}, channelId: "ch" } }));
 vi.mock("@/stores/simulcastLayers", () => ({
@@ -94,6 +94,29 @@ describe("ScreenShareViewer start of playback", () => {
     render(() => <ScreenShareViewer />);
     expect(frames.size).toBeGreaterThan(0);
     expect(runFrames).not.toThrow();
+  });
+
+  it("offers click-to-play when every play attempt was aborted", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const play = vi
+        .spyOn(HTMLMediaElement.prototype, "play")
+        .mockImplementation(() =>
+          Promise.reject(new DOMException("The play() request was interrupted", "AbortError")),
+        );
+      viewing();
+      render(() => <ScreenShareViewer />);
+      runFrames();
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(play).toHaveBeenCalledTimes(4);
+      // Let the last rejection settle.
+      for (let i = 0; i < 5; i += 1) await Promise.resolve();
+      // The viewer is mounted in a portal on the page body.
+      expect(screen.queryByText("Click to play")).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("a frame requested by a viewer that is gone does not run", () => {
