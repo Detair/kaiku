@@ -5,7 +5,6 @@ import { Router, Route } from "@solidjs/router";
 const tauriMode = vi.hoisted(() => ({ on: false }));
 vi.mock("@tauri-apps/api/core", async (orig) => ({ ...(await orig<object>()), isTauri: () => tauriMode.on }));
 const fetchMock = vi.hoisted(() => {
-  localStorage.setItem("kaiku:skip-session-restore", "1");
   const f = vi.fn();
   globalThis.fetch = f as unknown as typeof fetch;
   return f;

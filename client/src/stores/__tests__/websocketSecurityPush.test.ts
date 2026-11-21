@@ -1,6 +1,5 @@
 // Flash r3 p2 #4: the notice texts are a lazy chunk; if it cannot load, the
 // OS notification still goes out, with a generic sentence.
-localStorage.setItem("kaiku:skip-session-restore", "1");
 import { describe, it, expect, vi } from "vitest";
 
 vi.mock("@/components/security/noticeText", () => {

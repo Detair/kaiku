@@ -3,8 +3,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 const tauriMode = vi.hoisted(() => ({ on: false }));
 const invoke = vi.hoisted(() => vi.fn());
 const fetchMock = vi.hoisted(() => {
-  // No session restore at import: the module-level refresh would hit fetch.
-  localStorage.setItem("kaiku:skip-session-restore", "1");
   const f = vi.fn();
   globalThis.fetch = f as unknown as typeof fetch;
   return f;

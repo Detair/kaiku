@@ -1,5 +1,3 @@
-// Module-level session restore would hit fetch on import.
-localStorage.setItem("kaiku:skip-session-restore", "1");
 import { describe, it, expect, vi } from "vitest";
 
 const security = vi.hoisted(() => ({ refreshMeSecurity: vi.fn() }));
