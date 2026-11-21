@@ -828,7 +828,12 @@ object CallMachine {
             }
             // A ring that was not rung here because a call was on: once anyone answered it (this
             // user elsewhere, or someone else in a group call) it is no unanswered call any more.
-            if (e.userId == me || e.callId.isNotEmpty()) dropBusy(e.channelId, e.callId)
+            if (e.userId == me) {
+                // Answered by this user on another device: the busy ring stops as a ring.
+                dropBusy(e.channelId, e.callId)?.let { effects += CallEffect.StopRing(e.channelId, it.callId) }
+            } else if (e.callId.isNotEmpty()) {
+                dropBusy(e.channelId, e.callId)
+            }
             // Answered on another device after its ring had stopped here: not missed.
             if (e.userId == me) {
                 closeOpenRing(e.channelId, e.callId)
@@ -867,7 +872,8 @@ object CallMachine {
                 return to(CallState.Idle)
             }
             if (e.userId == me) {
-                dropBusy(e.channelId, e.callId)
+                // Declined by this user on another device: the busy ring stops as a ring.
+                dropBusy(e.channelId, e.callId)?.let { effects += CallEffect.StopRing(e.channelId, it.callId) }
                 // Declined on another device after its ring had stopped here: not missed.
                 closeOpenRing(e.channelId, e.callId)
                 handledElsewhere(e.channelId, e.callId)
@@ -875,9 +881,12 @@ object CallMachine {
             return same()
         }
 
-        fun dropBusy(channelId: String, callId: String) {
-            val ring = busy[channelId] ?: return
-            if (callId.isEmpty() || ring.callId == callId) busy = busy - channelId
+        /** Drops the busy ring of [channelId] if it is [callId] (or any, without an id); returns it. */
+        fun dropBusy(channelId: String, callId: String): BusyRing? {
+            val ring = busy[channelId] ?: return null
+            if (callId.isNotEmpty() && ring.callId != callId) return null
+            busy = busy - channelId
+            return ring
         }
 
         fun serverEnded(e: CallEvent.ServerEnded): CallStep {
@@ -909,8 +918,11 @@ object CallMachine {
                     wasBusy = true
                     busy = busy - e.channelId
                     // A busy ring is dropped when this user answers or declines it anywhere seen here.
-                    if (missedOnEnd(reason, handledHere = false)) {
-                        effects += CallEffect.Missed(e.channelId, ring.callId, ring.callerId, ring.callerName)
+                    effects += if (missedOnEnd(reason, handledHere = false)) {
+                        CallEffect.Missed(e.channelId, ring.callId, ring.callerId, ring.callerName)
+                    } else {
+                        // Over without a missed call: it stops as a ring (its end is recorded).
+                        CallEffect.StopRing(e.channelId, ring.callId)
                     }
                 }
             }

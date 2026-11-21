@@ -596,11 +596,16 @@ class CallWakeProcessorTest {
     // -- A missed call is claimed only on knowledge -------------------------------------------
 
     /** A process that knows nothing of earlier calls: what an earlier one did is only in the store. */
-    private fun freshProcessor(): CallWakeProcessor {
+    private fun freshProcessor(
+        socketEvents: kotlinx.coroutines.flow.MutableSharedFlow<io.wolftown.kaiku.data.ws.ServerEvent> = kotlinx.coroutines.flow.MutableSharedFlow(),
+    ): CallWakeProcessor {
         val owner = io.wolftown.kaiku.data.call.CallController(
             api = mockk(relaxed = true),
             voice = mockk(relaxed = true) { every { callEnds } returns kotlinx.coroutines.flow.MutableSharedFlow() },
-            webSocket = mockk(relaxed = true) { every { events } returns kotlinx.coroutines.flow.MutableSharedFlow() },
+            webSocket = mockk(relaxed = true) {
+                every { events } returns socketEvents
+                every { authenticatedSocket } returns kotlinx.coroutines.flow.MutableStateFlow(1L)
+            },
             sessions = io.wolftown.kaiku.data.session.SessionGeneration(
                 { io.wolftown.kaiku.data.local.AuthSession.LoggedOut },
                 { userId?.takeIf { refreshToken != null } },
@@ -613,7 +618,7 @@ class CallWakeProcessorTest {
             clock = { clock },
             voiceScope = callScope,
             wallClock = { clock },
-        )
+        ).also { it.start() }
         return CallWakeProcessor(tokenStorage, refresher, names, store, owner).also { it.now = { clock } }
     }
 
@@ -683,5 +688,28 @@ class CallWakeProcessorTest {
         assertEquals(null, endOfNewCall())
         assertEquals(1, sink.posts.size)
         assertEquals(CallKind.INCOMING, sink.posts.single().kind)
+    }
+
+    @Test
+    fun `a busy ring this user declined on another device shows no missed call in a later process`() = runTest {
+        val ch2 = "2c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f"
+        coEvery { names.lookupCaller(any(), any()) } returns CallerLookup.Found("Bob")
+        val socket = kotlinx.coroutines.flow.MutableSharedFlow<io.wolftown.kaiku.data.ws.ServerEvent>()
+        val first = freshProcessor(socket)
+        // A call rings here; a second call of another conversation comes while it does (busy).
+        intake.accept(ringing(callA))
+        first.process(ringing(callA), owner)
+        val ringB = WakeSignal(WakeKind.CALL, ch2, 1, CallInfo(callB, bob, CallState.RINGING))
+        intake.accept(ringB)
+        first.process(ringB, owner)
+        assertEquals(listOf(CallKind.INCOMING), sink.posts.map { it.kind })
+        // This user declines the second call on the PC; the connection says so.
+        socket.emit(io.wolftown.kaiku.data.ws.ServerEvent.Ready("me"))
+        socket.emit(io.wolftown.kaiku.data.ws.ServerEvent.CallDeclined(ch2, callB, "me"))
+
+        // The process is gone; nobody else answers, and the end push comes to a new one.
+        val endB = WakeSignal(WakeKind.CALL, ch2, 1, CallInfo(callB, bob, CallState.ENDED, CallEndReason.NO_ANSWER))
+        if (intake.accept(endB)) freshProcessor().process(endB, owner)
+        assertTrue("a call this user declined shows as missed: ${sink.posts}", sink.posts.none { it.kind == CallKind.MISSED })
     }
 }

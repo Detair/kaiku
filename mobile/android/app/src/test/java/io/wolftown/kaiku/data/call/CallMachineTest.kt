@@ -1359,4 +1359,21 @@ class CallMachineTest {
         send(CallEvent.BusyCap("dm-2", "c-7"))
         assertEquals(emptyList<CallEffect>(), missedOver(ServerEnded("dm-2", "c-7", "last_left", rungHere = true, callerId = "bob")))
     }
+
+    @Test
+    fun `a busy ring that goes away without a missed call stops as a ring`() {
+        for (end in listOf<CallEvent>(
+            Declined("dm-2", "c-7", me),
+            ParticipantJoined("dm-2", "c-7", me, 1L),
+            ServerEnded("dm-2", "c-7", "last_left"),
+            ServerEnded("dm-2", "c-7", "all_declined", rungHere = true, callerId = "bob"),
+        )) {
+            model = CallModel()
+            connectedAsCallee()
+            send(Rang("dm-2", "c-7", "bob", "Bob", 0L))
+            send(end)
+            assertEquals("$end", listOf(StopRing("dm-2", "c-7")), effects)
+            assertTrue(model.busy.isEmpty())
+        }
+    }
 }
