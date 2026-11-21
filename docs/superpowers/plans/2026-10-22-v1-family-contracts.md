@@ -922,8 +922,8 @@ behaviour and additive fields, no new code):**
   (`factor_ended`) when that generation ends (replaced, removed or marked compromised by its owner,
   an admin, the CLI, a completed or cancelled request, "I didn't start this" or "That wasn't me").
   The acting session survives: own-account changes come from a full session, which used no password
-  or TOTP; owner-rule part 2 keeps the session that has just proved a fresh factor, unless that
-  factor is the TOTP generation the action marks compromised (then it ends with the others).
+  or TOTP; owner-rule part 2 keeps the acting session only when it proved a recovery code (with a
+  TOTP code it ends like every other session that used an ended generation).
 - At the upgrade, a live session whose recorded confirming key device is no longer active, whose
   confirming key device is unknown while a once-active key device of the account was revoked since
   the session was created, or whose recorded password or TOTP generation is older than the

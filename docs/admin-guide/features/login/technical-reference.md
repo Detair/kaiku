@@ -193,10 +193,12 @@ afterwards): besides `auth_methods` and the authenticator of a full session,
   and `approved_by_id` `NULL`: they end when any key device of the account is revoked.
 - `password_generation`/`totp_generation`: the generations the sign-in used (the same values as the
   `sign_in` event's `details.factors`). When such a generation ends (replaced, removed or marked
-  compromised), the session ends (`factor_ended`). Owner-rule part 2 keeps its acting session only
-  when it proved a recovery code, or a TOTP generation that the action does not end; proved with the
-  TOTP being marked compromised, it ends with the others (the person then recovers as with a lost
-  factor). A pre-v1 `{legacy}` session carries the account's generations at the upgrade.
+  compromised), the session ends (`factor_ended`). Owner-rule part 2 (repudiation and request
+  cancel) keeps its acting session only when it proved a **recovery code**. A TOTP proof gives no
+  exception: the acting session ends like every other session that used an ended generation, and
+  stays only if it used none (a TOTP is known to whoever signed in with it, so it cannot tell the
+  owner's session from another). A pre-v1 `{legacy}` session carries the account's generations at
+  the upgrade.
 
 **At the upgrade** the migration fills these columns for live sessions and ends the ones whose
 origin had already ended: an exact approver that is no longer `active` (`authenticator_revoked`);
@@ -956,7 +958,9 @@ Residual risks (spec B.6, as implemented):
     not verified against Google's roots (the server cannot itself confirm per-use UV or hardware
     backing); refresh tokens are bearer tokens (not sender-constrained).
 13. **Hostile use of owner-rule part 2** by someone with a session and the TOTP secret or a recovery
-    code while the account has no strong authenticator.
+    code while the account has no strong authenticator. With a TOTP code the acting session gets no
+    exception, so whoever acts on an event that blocks the password ends every session that used it,
+    their own included; with a stolen recovery code the acting session stays.
 14. **Request-notice fatigue:** at most 3 self-service starts per account per delay period.
 
 Coordinator and maintainer decisions recorded in the implementation notes:

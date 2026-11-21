@@ -99,7 +99,7 @@ new server. Read this section **before** you deploy.
 | A user named `kaiku` | Renamed to `kaiku_` plus hex digits of its id (the name is reserved for the system account); the audit log records `system.username_reserved`. Tell the owner. |
 | Every account | `first_activity_at` is set, so every pre-existing account counts as *existing* (not new) for admin setups. |
 | Refresh tokens | Rotate into the new format at their first refresh. A token copied before the upgrade is only recognised as reused from the second refresh after the upgrade on. |
-| Sessions confirmed by a phone, or signed in with a password or TOTP code (upgrading from a 1.0 release candidate) | Remember the phone that confirmed them and the password and TOTP they used, so that later removals and changes end them. A session a phone confirmed ends with the upgrade when a phone of the account was removed or set up again since that sign-in, and a session that used a password or authenticator app that was changed, removed or marked unsafe since ends too (`authenticator_revoked` / `factor_ended`). The person signs in on that computer once more. Every other session stays signed in. The server reads the session row on every request, so such a session is refused from the first request after the restart; nothing else needs to be done. |
+| Sessions confirmed by a phone, or signed in with a password or TOTP code (upgrading from a 1.0 release candidate) | Remember the phone that confirmed them and the password and TOTP they used, so that later removals and changes end them. A session a phone confirmed ends with the upgrade when that phone was removed, set up again or reported its key as no longer usable since that sign-in; where the server does not know which phone confirmed it (most sessions older than a day), any phone of the account counts. A session that used a password or authenticator app that was changed, removed or marked unsafe since ends too (`authenticator_revoked` / `factor_ended`). The person signs in on that computer once more. Every other session stays signed in. The server reads the session row on every request, so such a session is refused from the first request after the restart; nothing else needs to be done. |
 
 ### The one rule that decides day 1
 
@@ -378,12 +378,12 @@ their creation), or with `kaiku-admin sessions end --all`.
 replaced, removed or marked unsafe (by its owner, an admin, a completed request, "I didn't start
 this" or "That wasn't me"), every session that signed in with the old one ends at once
 (`end_reason` `factor_ended`). The session that makes the change stays when it is a passkey or
-key-phone session. "That wasn't me" without a strong authenticator is made from a chat-only session
-with a fresh code: that session stays if the code was a recovery code, or an authenticator code
-while the authenticator app is not among what is being blocked. If the authenticator app itself is
-blocked by this step, the session that entered its code ends with the others: the person is then
-signed out everywhere and gets back in as with a lost authenticator app, through a recovery
-(section 8). A QR sign-in used no password and stays.
+key-phone session. "That wasn't me" (or cancelling one's own request) without a strong
+authenticator is made from a chat-only session with a fresh code. With a **recovery code** that
+session stays. With a code from the **authenticator app** it gets no exception: it ends like every
+other sign-in if it used the password or authenticator app being blocked, and stays only if it used
+neither. The person then signs in again with a phone or passkey, or, without one, gets back in
+through a recovery with a recovery code (section 8). A QR sign-in used no password and stays.
 
 **Order for a stolen phone:** remove it **first**, then start the recovery. A thief who knows the
 screen lock holds a full key and could cancel the recovery. Removing a request's only recorded

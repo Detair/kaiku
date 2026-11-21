@@ -161,10 +161,9 @@ list:
   happens when the phone's key stops working on its own (for example after you change its screen
   lock or fingerprints) and when you set the same phone up again;
 - when you change or remove your password or authenticator app, or it is marked unsafe, every
-  sign-in that used the old one ends at once. The sign-in you make the change from stays. If you
-  use "That wasn't me" without a key phone or passkey and enter a code from the very authenticator
-  app that this blocks, you are signed out everywhere, this sign-in included; you then get back in
-  as with a lost authenticator app.
+  sign-in that used the old one ends at once. The sign-in you make the change from stays when it
+  is a passkey or key-phone sign-in; for "That wasn't me" with a code, see
+  [Security notices](#security-notices-and-that-wasnt-me).
 
 So if one of your phones was stolen, removing it also signs out every PC it let in. Phones or
 passkeys that were added with the stolen phone are not removed with it: check your list of phones
@@ -348,6 +347,15 @@ Under some notices you find buttons. They only appear where they can work:
 These buttons ask for a confirmation (a passkey or your screen lock). If your account has no key
 phone and no passkey at all, Kaiku asks instead for a fresh code from your authenticator app or one
 recovery code (*Confirm with a code*).
+
+What happens to the sign-in you use for this, when the password or authenticator app is marked
+unsafe:
+
+- with a **recovery code**, this sign-in stays;
+- with a code from your **authenticator app**, this sign-in ends too if it used the password or
+  authenticator app that is now blocked, like every other sign-in that used them. Sign-ins that
+  used neither stay. To get back in, sign in with your phone or a passkey; without one, start a
+  recovery with a recovery code (see [Lost phone, forgotten password](#lost-phone-forgotten-password-recovery)).
 
 If "That wasn't me" would also stop your own request to secure your account, Kaiku warns you
 first: *This also stops your own request to secure your account.* Read it before you continue.
