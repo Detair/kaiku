@@ -45,12 +45,8 @@ pub enum OwnerAuthority {
     },
     Part2 {
         factor: &'static str,
-        /// The acting session: it has just proved a fresh factor, so it
-        /// survives the factor generations this action ends — unless that
-        /// factor is itself one of them ([`OwnerAuthority::keep_session`]).
+        /// The acting session ([`OwnerAuthority::keep_session`]).
         session_id: Option<Uuid>,
-        /// The TOTP generation proved (`None` for a recovery code).
-        totp_generation: Option<i64>,
     },
     Contact {
         grant: ConsumedGrant,
@@ -64,29 +60,20 @@ pub enum OwnerAuthority {
 }
 
 impl OwnerAuthority {
-    /// The session that survives the factor generations `ending` (part 2
-    /// only; part 1 acts from a full session, which used no factor). It is
-    /// kept when it proved a recovery code, or a TOTP generation that is not
-    /// among `ending`; a proof with the very TOTP being ended keeps nothing.
+    /// The session that survives the factor generations the action ends:
+    /// only the acting session of part 2 when it proved a **recovery code**.
+    /// A TOTP code is no evidence of who owns the account (anyone who signed
+    /// in with it knows it), so with a TOTP proof the acting session ends like
+    /// every other session that used an ended generation, and stays only if it
+    /// used none of them. Part 1 acts from a full session, which used no
+    /// factor.
     #[must_use]
-    pub fn keep_session(&self, ending: &[super::factors::FactorRef]) -> Option<Uuid> {
+    pub fn keep_session(&self) -> Option<Uuid> {
         match self {
             Self::Part2 {
+                factor: "recovery_code",
                 session_id,
-                totp_generation,
-                ..
-            } => {
-                let proof_ends = totp_generation.is_some_and(|g| {
-                    ending
-                        .iter()
-                        .any(|f| f.factor == super::factors::Factor::Totp && f.generation == g)
-                });
-                if proof_ends {
-                    None
-                } else {
-                    *session_id
-                }
-            }
+            } => *session_id,
             _ => None,
         }
     }
@@ -180,7 +167,6 @@ pub async fn authorize(
                 Ok(OwnerAuthority::Part2 {
                     factor: "totp",
                     session_id: auth.session_id,
-                    totp_generation: Some(totp_generation),
                 })
             }
             Part2Factor::RecoveryCode(code) => {
@@ -188,7 +174,6 @@ pub async fn authorize(
                     Ok(OwnerAuthority::Part2 {
                         factor: "recovery_code",
                         session_id: auth.session_id,
-                        totp_generation: None,
                     })
                 } else {
                     Err(AuthError::InvalidCredentials)

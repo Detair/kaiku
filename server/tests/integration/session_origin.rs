@@ -1498,10 +1498,11 @@ async fn part2_with_a_recovery_code_keeps_the_acting_session(pool: PgPool) {
     );
 }
 
-/// Part 2 with a TOTP code while only the password is ended: the acting
-/// session stays, the other password sessions end.
+/// Part 2 with a TOTP code while only the password is ended: a TOTP code
+/// gives the acting session no exception, so it ends like the other
+/// sessions that used the blocked password.
 #[sqlx::test]
-async fn part2_with_a_totp_that_stays_keeps_the_acting_session(pool: PgPool) {
+async fn part2_with_a_totp_that_stays_still_ends_a_password_session(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (user, name) = password_user(&pool, PASSWORD).await;
     let totp = enable_totp(&pool, &app.config, user, &name).await;
@@ -1535,9 +1536,281 @@ async fn part2_with_a_totp_that_stays_keeps_the_acting_session(pool: PgPool) {
         ended(&pool, sid_of(&bystander)).await,
         (false, Some("factor_ended".into()))
     );
+    assert_eq!(
+        ended(&pool, sid_of(&acting)).await,
+        (false, Some("factor_ended".into())),
+        "a TOTP code is no exception"
+    );
+}
+
+/// A password sign-in that was started and cancelled: its
+/// `sign_in_not_finished` event records only the password generation.
+async fn unfinished_password_event(app: &TestApp, user: Uuid, name: &str, password: &str) -> Uuid {
+    let (s, step, secret) = login_native(app, name, password).await;
+    assert_eq!(s, 202, "{step}");
+    let id = attempt_id(&step["attempt"]);
+    let (s, b, _) = pc_call(
+        app,
+        &format!("/auth/login-attempts/{id}/cancel"),
+        &secret,
+        json!({}),
+    )
+    .await;
+    assert!(s == 200 || s == 204, "{s} {b}");
+    sqlx::query_scalar(
+        "SELECT id FROM security_events
+          WHERE subject_id = $1 AND event_type = 'sign_in_not_finished'
+          ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(user)
+    .fetch_one(&app.pool)
+    .await
+    .unwrap()
+}
+
+/// An OIDC + TOTP sign-in through the TOTP step (no password used).
+async fn oidc_totp_pc(app: &TestApp, user: Uuid, totp: &totp_rs::TOTP) -> Value {
+    use vc_server::auth::login_attempts::core::{
+        create_tx, AttemptKind, CollectionBinding, NewAttempt,
+    };
+    let (verifier, challenge) = verifier_pair();
+    let id = {
+        let mut tx = app.pool.begin().await.unwrap();
+        let created = create_tx(
+            &mut tx,
+            &vc_server::auth::ctx::AuthCtx::from(&app.state),
+            NewAttempt {
+                kind: AttemptKind::Oidc,
+                user_id: Some(user),
+                first_factor: None,
+                client_class: vc_server::auth::client_class::ClientClass::Desktop,
+                client_label: "PC".into(),
+                client: vc_server::auth::session_issue::SessionClient::default(),
+                binding: CollectionBinding::S256(challenge),
+            },
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        created.attempt.attempt_id
+    };
+    forget_totp_step(app, user).await;
+    let (s, auth, _) = pc_call(
+        app,
+        &format!("/auth/login-attempts/{id}/totp"),
+        &Secret::Verifier(verifier),
+        json!({"code": totp.generate_current().unwrap()}),
+    )
+    .await;
+    assert_eq!(s, 200, "{auth}");
+    auth
+}
+
+async fn factor_states(pool: &PgPool, user: Uuid) -> (String, String) {
+    sqlx::query_as("SELECT password_state, totp_state FROM users WHERE id = $1")
+        .bind(user)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// The sequence on an account without a strong authenticator: three
+/// password + TOTP sessions, a cancelled password sign-in, and "That wasn't
+/// me" on it with part 2 and a TOTP code. The password is blocked and every
+/// session that used it ends, the acting one included; the TOTP stays.
+#[sqlx::test]
+async fn part2_with_a_totp_ends_every_session_of_the_blocked_password(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, name) = password_user(&pool, PASSWORD).await;
+    let totp = enable_totp(&pool, &app.config, user, &name).await;
+    let acting = password_totp_pc(&app, user, &name, PASSWORD, &totp).await;
+    let a = password_totp_pc(&app, user, &name, PASSWORD, &totp).await;
+    let b = password_totp_pc(&app, user, &name, PASSWORD, &totp).await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let event = unfinished_password_event(&app, user, &name, PASSWORD).await;
+    forget_totp_step(&app, user).await;
+    let token = acting["access_token"].as_str().unwrap();
+    let (s, r) = part2_repudiate(
+        &app,
+        token,
+        event,
+        json!({"type": "totp", "code": totp.generate_current().unwrap()}),
+    )
+    .await;
+    assert_eq!(s, 200, "{r}");
+    assert_eq!(r["compromised"], json!(["password"]));
+    for sid in [sid_of(&acting), sid_of(&a), sid_of(&b)] {
+        assert_eq!(
+            ended(&pool, sid).await,
+            (false, Some("factor_ended".into()))
+        );
+    }
+    assert_eq!(
+        factor_states(&pool, user).await,
+        ("compromised".into(), "active".into())
+    );
+    let (s, e) = me(&app, token).await;
+    assert_eq!((s, e["error"].as_str()), (401, Some("INVALID_TOKEN")));
+}
+
+/// The same with a recovery code: the acting session stays, the others end.
+#[sqlx::test]
+async fn part2_with_a_recovery_code_keeps_the_acting_session_on_a_password_event(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, name) = password_user(&pool, PASSWORD).await;
+    let totp = enable_totp(&pool, &app.config, user, &name).await;
+    let codes = recovery_codes(&app, user).await;
+    let acting = password_totp_pc(&app, user, &name, PASSWORD, &totp).await;
+    let a = password_totp_pc(&app, user, &name, PASSWORD, &totp).await;
+    let b = password_totp_pc(&app, user, &name, PASSWORD, &totp).await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let event = unfinished_password_event(&app, user, &name, PASSWORD).await;
+    let (s, r) = part2_repudiate(
+        &app,
+        acting["access_token"].as_str().unwrap(),
+        event,
+        json!({"type": "recovery_code", "code": codes[0]}),
+    )
+    .await;
+    assert_eq!(s, 200, "{r}");
+    for sid in [sid_of(&a), sid_of(&b)] {
+        assert_eq!(
+            ended(&pool, sid).await,
+            (false, Some("factor_ended".into()))
+        );
+    }
     assert!(
         live(&pool, sid_of(&acting)).await,
-        "the TOTP it proved is not ended"
+        "a recovery code keeps it"
+    );
+}
+
+/// Part 2 with a TOTP code from a session that used none of the blocked
+/// factors (OIDC + TOTP, the password is blocked): it stays, because it is
+/// not among the sessions the action ends.
+#[sqlx::test]
+async fn part2_with_a_totp_keeps_a_session_that_used_none_of_the_blocked_factors(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, name) = password_user(&pool, PASSWORD).await;
+    let totp = enable_totp(&pool, &app.config, user, &name).await;
+    let acting = oidc_totp_pc(&app, user, &totp).await;
+    let a = password_totp_pc(&app, user, &name, PASSWORD, &totp).await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let event = unfinished_password_event(&app, user, &name, PASSWORD).await;
+    forget_totp_step(&app, user).await;
+    let (s, r) = part2_repudiate(
+        &app,
+        acting["access_token"].as_str().unwrap(),
+        event,
+        json!({"type": "totp", "code": totp.generate_current().unwrap()}),
+    )
+    .await;
+    assert_eq!(s, 200, "{r}");
+    assert_eq!(
+        ended(&pool, sid_of(&a)).await,
+        (false, Some("factor_ended".into()))
+    );
+    assert!(live(&pool, sid_of(&acting)).await, "it used no password");
+}
+
+async fn recovery_codes(app: &TestApp, user: Uuid) -> Vec<String> {
+    let mut tx = app.pool.begin().await.unwrap();
+    let codes = vc_server::auth::recovery_codes::replace_tx(
+        &mut tx,
+        &vc_server::auth::ctx::AuthCtx::from(&app.state),
+        user,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    codes
+}
+
+/// A recovery request started with a recovery code and the password (it
+/// records the password generation), on an account without a strong
+/// authenticator → its id.
+async fn password_recovery_request(app: &TestApp, name: &str, code: &str) -> String {
+    let (s, b) = super::account_requests::post(
+        app,
+        "/auth/account-requests",
+        None,
+        &[("X-Kaiku-Client", "android")],
+        json!({"username": name, "purpose": "recovery", "recovery_code": code,
+               "second": {"type": "password", "password": super::account_requests::PASSWORD},
+               "lost": "none"}),
+    )
+    .await;
+    assert_eq!(s, 201, "{b}");
+    b["request"]["id"].as_str().unwrap().to_string()
+}
+
+async fn part2_cancel(app: &TestApp, token: &str, id: &str, factor: Value) -> (u16, Value) {
+    super::account_requests::post(
+        app,
+        &format!("/api/account-requests/{id}/cancel"),
+        Some(token),
+        &[],
+        json!({ "part2": { "factor": factor } }),
+    )
+    .await
+}
+
+/// Cancelling one's own request with part 2 blocks the password it used:
+/// with a TOTP code the acting password session ends too; with a recovery
+/// code it stays; a session that used no password stays either way.
+#[sqlx::test]
+async fn part2_cancel_follows_the_same_rule(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    super::account_requests::admin_with_device(&app).await;
+    let pw = super::account_requests::PASSWORD;
+
+    // A TOTP code: the acting password session ends, the OIDC one stays.
+    let (user, name) = password_user(&pool, pw).await;
+    let totp = enable_totp(&pool, &app.config, user, &name).await;
+    let codes = recovery_codes(&app, user).await;
+    let acting = password_totp_pc(&app, user, &name, pw, &totp).await;
+    let other = password_totp_pc(&app, user, &name, pw, &totp).await;
+    let oidc = oidc_totp_pc(&app, user, &totp).await;
+    let id = password_recovery_request(&app, &name, &codes[0]).await;
+    forget_totp_step(&app, user).await;
+    let (s, r) = part2_cancel(
+        &app,
+        acting["access_token"].as_str().unwrap(),
+        &id,
+        json!({"type": "totp", "code": totp.generate_current().unwrap()}),
+    )
+    .await;
+    assert_eq!((s, r["state"].as_str()), (200, Some("cancelled")), "{r}");
+    for sid in [sid_of(&acting), sid_of(&other)] {
+        assert_eq!(
+            ended(&pool, sid).await,
+            (false, Some("factor_ended".into()))
+        );
+    }
+    assert!(live(&pool, sid_of(&oidc)).await, "it used no password");
+
+    // A recovery code: the acting password session stays.
+    let (user, name) = password_user(&pool, pw).await;
+    let totp = enable_totp(&pool, &app.config, user, &name).await;
+    let codes = recovery_codes(&app, user).await;
+    let acting = password_totp_pc(&app, user, &name, pw, &totp).await;
+    let other = password_totp_pc(&app, user, &name, pw, &totp).await;
+    let id = password_recovery_request(&app, &name, &codes[0]).await;
+    let (s, r) = part2_cancel(
+        &app,
+        acting["access_token"].as_str().unwrap(),
+        &id,
+        json!({"type": "recovery_code", "code": codes[1]}),
+    )
+    .await;
+    assert_eq!((s, r["state"].as_str()), (200, Some("cancelled")), "{r}");
+    assert_eq!(
+        ended(&pool, sid_of(&other)).await,
+        (false, Some("factor_ended".into()))
+    );
+    assert!(
+        live(&pool, sid_of(&acting)).await,
+        "a recovery code keeps it"
     );
 }
 

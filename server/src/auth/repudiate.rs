@@ -263,9 +263,8 @@ pub async fn repudiate_tx(
     }
     let mut compromised = Vec::new();
     // The sessions that signed in with these generations end; the acting
-    // part-2 session stays when the factor it has just proved is not one of
-    // them.
-    let keep = by.keep_session(&fx.compromise);
+    // part-2 session stays only when it proved a recovery code.
+    let keep = by.keep_session();
     for f in fx.compromise {
         if factors::mark_compromised_except_tx(
             conn,
