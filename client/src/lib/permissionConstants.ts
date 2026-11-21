@@ -414,7 +414,8 @@ const andNot = (a: number, b: number) => maskOp(a, b, (x, y) => x & ~y);
 
 // Permission helper functions
 export function hasPermission(permissions: number, bit: number): boolean {
-  return and(permissions, bit) === bit;
+  // `and` returns the unsigned value; a bit written as `1 << 31` is negative.
+  return and(permissions, bit) === unsigned(bit);
 }
 
 export function addPermission(permissions: number, bit: number): number {

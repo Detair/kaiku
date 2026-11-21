@@ -137,6 +137,13 @@ describe("permission mask helpers keep bits above 31", () => {
     );
   });
 
+  it("reads a bit written as 1 << 31 as bit 31", () => {
+    const bit31 = 1 << 31; // negative as a 32-bit result
+    expect(hasPermission(2 ** 31, bit31)).toBe(true);
+    expect(hasPermission(2 ** 31 + high, bit31)).toBe(true);
+    expect(hasPermission(high, bit31)).toBe(false);
+  });
+
   it("ignores edited bits that are not shown", () => {
     expect(mergeShownBits(0, PermissionBits.SEND_MESSAGES, PermissionBits.MANAGE_GUILD)).toBe(0);
   });
