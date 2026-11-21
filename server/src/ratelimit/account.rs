@@ -247,11 +247,14 @@ impl<'a> AccountLimiter<'a> {
         }))
     }
 
-    /// Give back a reserved try whose check never ran (the check itself
-    /// could not be made): only while no other try or success has touched
-    /// the counter since (same epoch, same count), so a try is never taken
-    /// back from someone else. Below [`FREE_FAILURES`] the delay goes too,
-    /// and the try's throttle claim is released.
+    /// Give back a reserved try whose check failed with a server error.
+    ///
+    /// The try's own throttle claim is always released (the next counted
+    /// failure claims it). The count goes back only while no other try or
+    /// success has touched the counter since (same epoch, same count), so a
+    /// try is never taken back from someone else; otherwise the try stays
+    /// counted. A delay the try started stays unless the count falls below
+    /// [`FREE_FAILURES`].
     pub async fn give_back(
         &self,
         key: &CounterKey,
@@ -261,7 +264,10 @@ impl<'a> AccountLimiter<'a> {
         let _: i64 = self
             .redis
             .eval(
-                "local e = tonumber(redis.call('HGET', KEYS[1], 'epoch') or '0')
+                "if ARGV[4] ~= '' and redis.call('HGET', KEYS[1], 'thr') == ARGV[4] then
+                   redis.call('HDEL', KEYS[1], 'thr')
+                 end
+                 local e = tonumber(redis.call('HGET', KEYS[1], 'epoch') or '0')
                  local c = tonumber(redis.call('HGET', KEYS[1], 'count') or '0')
                  if e ~= tonumber(ARGV[1]) or c ~= tonumber(ARGV[2]) then
                    return 0
@@ -269,9 +275,6 @@ impl<'a> AccountLimiter<'a> {
                  c = redis.call('HINCRBY', KEYS[1], 'count', -1)
                  if c < tonumber(ARGV[3]) then
                    redis.call('HDEL', KEYS[1], 'next')
-                 end
-                 if ARGV[4] ~= '' and redis.call('HGET', KEYS[1], 'thr') == ARGV[4] then
-                   redis.call('HDEL', KEYS[1], 'thr')
                  end
                  return 1",
                 vec![key.redis_key()],
@@ -518,6 +521,39 @@ mod tests {
         let second = reserve_ok(&limiter, &key).await;
         limiter.give_back(&key, &first).await.unwrap();
         assert_eq!(limiter.read(&key).await.unwrap().0, i64::from(second.count));
+        forget(&redis, &key).await;
+    }
+
+    #[tokio::test]
+    async fn give_back_releases_its_claim_when_the_count_moved_on() {
+        let redis = valkey().await;
+        let limiter = AccountLimiter::new(&redis);
+        let key = fresh_key();
+        let clear_delay = || {
+            let redis = redis.clone();
+            let key = key.clone();
+            async move {
+                let _: i64 = redis.hdel(key.redis_key(), "next").await.expect("Valkey");
+            }
+        };
+        let _: i64 = redis
+            .hset(key.redis_key(), ("count", i64::from(THROTTLE_AT) - 1))
+            .await
+            .expect("Valkey");
+        let claimant = reserve_ok(&limiter, &key).await;
+        assert!(claimant.throttle);
+        clear_delay().await;
+        let later = reserve_ok(&limiter, &key).await;
+        assert!(!later.throttle, "the claim is taken");
+        // The claimant's check never ran; another try counted since, so
+        // its try stays counted, but its claim is free again.
+        limiter.give_back(&key, &claimant).await.unwrap();
+        assert_eq!(limiter.read(&key).await.unwrap().0, i64::from(later.count));
+        clear_delay().await;
+        assert!(
+            reserve_ok(&limiter, &key).await.throttle,
+            "the next counted failure claims the throttle"
+        );
         forget(&redis, &key).await;
     }
 
