@@ -24,8 +24,12 @@ import {
 import {
   CHANNEL_OVERRIDE_PERMISSIONS,
   CATEGORY_NAMES,
+  PERMISSIONS,
   PermissionCategory,
   hasPermission,
+  addPermission,
+  removePermission,
+  mergeShownBits,
 } from "@/lib/permissionConstants";
 import type { ChannelOverride } from "@/lib/types";
 import { reportFailure } from "@/components/guilds/settingsAction";
@@ -68,12 +72,27 @@ const ChannelPermissions: Component<ChannelPermissionsProps> = (props) => {
     return overrides().find((o) => o.role_id === roleId);
   };
 
+  /**
+   * `allow` as it applies to `roleId`: @everyone is never given what the
+   * server refuses it (the server leaves those out and refuses a save
+   * holding one), so such a stored allow is neither shown nor sent.
+   */
+  const applicableAllow = (roleId: string, allow: number): number => {
+    if (!roles().find((r) => r.id === roleId)?.is_default) return allow;
+    for (const perm of PERMISSIONS) {
+      if (perm.forbiddenForEveryone) allow = removePermission(allow, perm.bit);
+    }
+    return allow;
+  };
+
   const getOverrideState = (
     override: ChannelOverride | undefined,
     bit: number,
   ): OverrideState => {
     if (!override) return "inherit";
-    if (hasPermission(override.allow_permissions, bit)) return "allow";
+    if (hasPermission(applicableAllow(override.role_id, override.allow_permissions), bit)) {
+      return "allow";
+    }
     if (hasPermission(override.deny_permissions, bit)) return "deny";
     return "inherit";
   };
@@ -83,8 +102,9 @@ const ChannelPermissions: Component<ChannelPermissionsProps> = (props) => {
   ): { allowed: number; denied: number } => {
     let allowed = 0;
     let denied = 0;
+    const allow = applicableAllow(override.role_id, override.allow_permissions);
     for (const perm of CHANNEL_OVERRIDE_PERMISSIONS) {
-      if (hasPermission(override.allow_permissions, perm.bit)) allowed++;
+      if (hasPermission(allow, perm.bit)) allowed++;
       if (hasPermission(override.deny_permissions, perm.bit)) denied++;
     }
     return { allowed, denied };
@@ -115,13 +135,24 @@ const ChannelPermissions: Component<ChannelPermissionsProps> = (props) => {
 
     setIsSaving(true);
     try {
-      let allow = 0;
-      let deny = 0;
-      for (const [bitStr, state] of Object.entries(localOverrides())) {
-        const bit = parseInt(bitStr);
-        if (state === "allow") allow |= bit;
-        if (state === "deny") deny |= bit;
+      // Only the bits this editor shows change; every other stored bit
+      // (unlisted or hidden permissions) is sent back unchanged.
+      let shown = 0;
+      let editedAllow = 0;
+      let editedDeny = 0;
+      for (const perm of CHANNEL_OVERRIDE_PERMISSIONS) {
+        if (!isPermissionVisible(perm.key)) continue;
+        shown = addPermission(shown, perm.bit);
+        const state = localOverrides()[perm.bit];
+        if (state === "allow") editedAllow = addPermission(editedAllow, perm.bit);
+        if (state === "deny") editedDeny = addPermission(editedDeny, perm.bit);
       }
+      const stored = getOverride(roleId);
+      const allow = applicableAllow(
+        roleId,
+        mergeShownBits(stored?.allow_permissions ?? 0, shown, editedAllow),
+      );
+      const deny = mergeShownBits(stored?.deny_permissions ?? 0, shown, editedDeny);
       await setChannelOverride(props.channelId, roleId, { allow, deny });
       setEditingRoleId(null);
     } catch (err) {
@@ -356,6 +387,10 @@ const ChannelPermissions: Component<ChannelPermissionsProps> = (props) => {
                             {(perm) => {
                               const state = () =>
                                 localOverrides()[perm.bit] || "inherit";
+                              // The server never grants these to @everyone:
+                              // allow is not offered, deny and inherit stay.
+                              const allowRefused =
+                                !!role.is_default && perm.forbiddenForEveryone;
 
                               return (
                                 <div
@@ -383,18 +418,31 @@ const ChannelPermissions: Component<ChannelPermissionsProps> = (props) => {
                                         Inherit
                                       </span>
                                     </label>
-                                    <label class="flex items-center gap-1 cursor-pointer">
+                                    <label
+                                      class="flex items-center gap-1"
+                                      classList={{
+                                        "cursor-pointer": !allowRefused,
+                                        "cursor-not-allowed": allowRefused,
+                                      }}
+                                    >
                                       <input
                                         type="radio"
                                         name={`perm-${perm.bit}`}
                                         data-testid="channel-permissions-allow"
+                                        disabled={allowRefused}
                                         checked={state() === "allow"}
                                         onChange={() =>
                                           handleStateChange(perm.bit, "allow")
                                         }
-                                        class="w-4 h-4 accent-green-500"
+                                        class="w-4 h-4 accent-green-500 state-disabled-quiet"
                                       />
-                                      <span class="text-xs text-green-400">
+                                      <span
+                                        class="text-xs"
+                                        classList={{
+                                          "text-green-400": !allowRefused,
+                                          "text-text-muted": allowRefused,
+                                        }}
+                                      >
                                         Allow
                                       </span>
                                     </label>

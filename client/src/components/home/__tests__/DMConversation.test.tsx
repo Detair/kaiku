@@ -21,13 +21,12 @@ vi.mock("@/stores/dms", () => ({
 vi.mock("@/stores/auth", () => ({ currentUser: () => ({ id: "me" }) }));
 vi.mock("@/stores/call", () => ({
   callState: { currentCall: { status: "idle" } },
-  startCall: vi.fn(),
-  endCall: vi.fn(),
+  startOutgoingCall: vi.fn(),
+  abortOutgoingCall: vi.fn(),
   isInCallForChannel: () => false,
 }));
 vi.mock("@/lib/tauri", () => ({
   startDMCall: vi.fn(),
-  joinVoice: vi.fn(),
   uploadDMAvatar: vi.fn(),
   updateDMName: vi.fn(),
   validateFileSize: vi.fn(),

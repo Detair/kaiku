@@ -93,6 +93,15 @@ impl Vp8Encoder {
         Ok(encoder)
     }
 
+    /// Make the next encoded frame a key frame. `vpx-encode` exposes no
+    /// force-key-frame flag, so libvpx is re-created at the current size:
+    /// its first frame is always a key frame (a few ms; rate-limited by the
+    /// caller).
+    pub fn force_keyframe(&mut self) -> Result<(), VideoError> {
+        self.encoder = Self::build(self.width, self.height, self.fps, self.bitrate_kbps)?;
+        Ok(())
+    }
+
     /// Re-create libvpx when the frame size changed.
     fn ensure_size(&mut self, width: u32, height: u32) -> Result<(), VideoError> {
         if (width, height) == (self.width, self.height) {
@@ -147,9 +156,14 @@ impl VideoEncoder for Vp8Encoder {
         self.i420_buf.extend_from_slice(&frame.u);
         self.i420_buf.extend_from_slice(&frame.v);
 
+        // libvpx counts in its own timebase (1/fps): one unit per frame.
+        // The 90 kHz value is only for RTP.
         let packets = self
             .encoder
-            .encode(pts_90khz as i64, &self.i420_buf)
+            .encode(
+                i64::try_from(self.frame_count).unwrap_or(i64::MAX),
+                &self.i420_buf,
+            )
             .map_err(|e| VideoError::EncodeFailed(format!("VP8 encode: {e}")))?;
 
         self.frame_count += 1;
@@ -191,6 +205,68 @@ mod tests {
             width,
             height,
         }
+    }
+
+    /// Cost of a forced key frame at 1080p (re-created libvpx + intra
+    /// frame) against a delta frame. Run with `cargo test -p vc-client
+    /// --release --lib bench_forced_keyframe -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "measurement, not a test"]
+    fn bench_forced_keyframe() {
+        use std::time::Instant;
+        let params = QualityParams::from_tier("high").expect("tier");
+        let mut encoder = Vp8Encoder::new(&params).expect("encoder");
+        let mut f = gray_frame(1920, 1080);
+        let mut delta_time = std::time::Duration::ZERO;
+        let mut delta_bytes = 0;
+        let mut key_time = std::time::Duration::ZERO;
+        let mut key_bytes = 0;
+        let rounds = 10u32;
+        for i in 0..rounds {
+            // Some change per frame so deltas are not empty.
+            for (n, b) in f.y.iter_mut().enumerate().step_by(97) {
+                *b = ((n as u32 + i * 13) % 251) as u8;
+            }
+            let t = Instant::now();
+            let out = encoder.encode(&f).expect("delta");
+            delta_time += t.elapsed();
+            delta_bytes += out.iter().map(|p| p.data.len()).sum::<usize>();
+            let t = Instant::now();
+            encoder.force_keyframe().expect("force");
+            let out = encoder.encode(&f).expect("key");
+            key_time += t.elapsed();
+            key_bytes += out.iter().map(|p| p.data.len()).sum::<usize>();
+        }
+        println!(
+            "1080p: delta {:?} {} B; forced key (rebuild + encode) {:?} {} B",
+            delta_time / rounds,
+            delta_bytes / rounds as usize,
+            key_time / rounds,
+            key_bytes / rounds as usize
+        );
+    }
+
+    #[test]
+    fn forced_keyframe_makes_the_next_frame_a_keyframe() {
+        let params = QualityParams {
+            width: 64,
+            height: 64,
+            fps: 30,
+            bitrate_kbps: 200,
+        };
+        let mut encoder = Vp8Encoder::new(&params).expect("encoder");
+        let first = encoder.encode(&gray_frame(64, 64)).expect("first");
+        assert!(first.first().is_some_and(|p| p.is_keyframe));
+        let delta = encoder.encode(&gray_frame(64, 64)).expect("delta");
+        assert!(
+            delta.iter().all(|p| !p.is_keyframe),
+            "second frame is a delta"
+        );
+        encoder.force_keyframe().expect("force");
+        let forced = encoder.encode(&gray_frame(64, 64)).expect("forced");
+        assert!(forced.first().is_some_and(|p| p.is_keyframe));
+        // Timestamps keep counting across the re-creation.
+        assert!(forced[0].pts > delta.first().map_or(0, |p| p.pts));
     }
 
     #[test]

@@ -147,7 +147,7 @@ This document tracks all direct third-party dependencies and their licenses for 
 | keyring | 2.3 | MIT OR Apache-2.0 | OS keychain for secure credential storage |
 | sysinfo | 0.34 | MIT | System/process information for capture sources |
 | arboard | 3.6 | MIT OR Apache-2.0 | Clipboard access |
-| zbus | 5.x | MIT | Linux only: detect a system tray host over D-Bus |
+| zbus | 5.x | MIT | Linux only: detect a system tray host over D-Bus; open the xdg-desktop-portal ScreenCast session for screen sharing |
 
 ### Logging & Observability
 
@@ -296,7 +296,7 @@ firebase-messaging pulls in Google Play services client libraries (e.g. `play-se
 
 - **License:** MIT (licence file kept in each directory)
 - **Location:** `third_party/libspa-sys/`, `third_party/pipewire-sys/` (upstream pipewire-rs commit `93138d01`, version 0.8.0 on bindgen 0.72; see their README.md)
-- **Note:** Linux only (screen capture via scap → pipewire 0.8). Were already transitive dependencies before vendoring.
+- **Note:** Linux only. Screen capture reads the xdg-desktop-portal ScreenCast stream with the `pipewire` 0.8 crate (MIT, direct dependency of the desktop client since 2026-11-20; the portal itself is reached over `zbus`, already a dependency). Were already transitive dependencies (via scap) before vendoring.
 
 ### openh264
 

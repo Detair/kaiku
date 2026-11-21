@@ -47,8 +47,12 @@ import {
   removeReaction,
   deleteMessage,
   editMessage,
-  getAccessToken,
 } from "@/lib/tauri";
+import {
+  getAttachmentUrl,
+  invalidateAttachmentUrl,
+  isAttachmentTooLarge,
+} from "@/lib/attachmentUrls";
 import {
   showContextMenu,
   showContextMenuAt,
@@ -207,18 +211,16 @@ interface TextBlock {
 
 type ContentBlock = CodeBlockData | TextBlock;
 
-async function fetchSignedUrl(
+/**
+ * URL for an attachment or its variant without the access token in it
+ * (C24): a cached presigned URL, or a blob URL when presigning fails.
+ */
+function fetchSignedUrl(
   attachmentId: string,
   variant?: string,
+  sizeHint?: number,
 ): Promise<string> {
-  // Use the download endpoint with ?token= for <img src> auth.
-  // Browser img tags can't send Authorization headers, so we pass JWT as query param.
-  const token = getAccessToken() || "";
-  const params = new URLSearchParams();
-  if (variant) params.set("variant", variant);
-  if (token) params.set("token", token);
-  const qs = params.toString();
-  return `/api/messages/attachments/${attachmentId}/download${qs ? `?${qs}` : ""}`;
+  return getAttachmentUrl(attachmentId, variant, { sizeHint });
 }
 
 
@@ -877,17 +879,32 @@ const MessageItem: Component<MessageItemProps> = (props) => {
                     const variant = attachment.thumbnail_url
                       ? "thumbnail"
                       : undefined;
-                    const [imgSrc] = createResource(
+                    const [imgSrc, { refetch: refetchImg }] = createResource(
                       () => attachment.id,
                       async (id) => {
                         try {
-                          return await fetchSignedUrl(id, variant);
+                          // The original's size only matters for the blob
+                          // fallback; a thumbnail is small.
+                          return await fetchSignedUrl(
+                            id,
+                            variant,
+                            variant ? undefined : attachment.size,
+                          );
                         } catch (err) {
                           console.error("Failed to load image attachment:", id, err);
                           throw err;
                         }
                       },
                     );
+                    // A URL that expired while the image waited off-screen:
+                    // ask for a fresh one once, never in a loop.
+                    let refreshedAfterError = false;
+                    const onImgError = () => {
+                      if (refreshedAfterError) return;
+                      refreshedAfterError = true;
+                      invalidateAttachmentUrl(attachment.id, variant);
+                      void refetchImg();
+                    };
 
                     return (
                       <div
@@ -913,8 +930,10 @@ const MessageItem: Component<MessageItemProps> = (props) => {
 
                         {/* Error fallback when signed URL fetch fails */}
                         <Show when={imgSrc.error}>
-                          <div class="absolute inset-0 flex items-center justify-center text-text-secondary text-sm">
-                            {t("chat.message.imageFailed")}
+                          <div class="absolute inset-0 flex items-center justify-center text-text-secondary text-sm px-3 text-center">
+                            {isAttachmentTooLarge(imgSrc.error)
+                              ? t("chat.message.imageTooLarge")
+                              : t("chat.message.imageFailed")}
                           </div>
                         </Show>
 
@@ -925,7 +944,10 @@ const MessageItem: Component<MessageItemProps> = (props) => {
                             alt={attachment.filename}
                             class="relative w-full h-full object-contain block opacity-0 transition-opacity duration-300"
                             loading="lazy"
+                            onError={onImgError}
                             onLoad={(e) => {
+                              // Loaded: a later expiry may refresh once again.
+                              refreshedAfterError = false;
                               (
                                 e.target as HTMLImageElement
                               ).classList.remove("opacity-0");

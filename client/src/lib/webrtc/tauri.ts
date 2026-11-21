@@ -11,6 +11,7 @@ import type {
   VoiceAdapter,
   VoiceConnectionState,
   VoiceError,
+  CapturedScreen,
   VoiceResult,
   VoiceAdapterEvents,
   AudioDevice,
@@ -22,6 +23,12 @@ import type {
   RawConnectionStats,
 } from "./types";
 import { buildConnectionMetrics, deltaLossPercent } from "./types";
+import {
+  isNativeJoinCancelled,
+  VOICE_JOIN_CANCELLED,
+  type VoiceSessionHandle,
+} from "./voiceSession";
+
 import * as Sentry from "@sentry/browser";
 
 /** Audio device as returned by the `get_audio_devices` command. */
@@ -41,13 +48,78 @@ interface NativeAudioDeviceList {
   outputs: NativeAudioDevice[];
 }
 
+/** Payload of the native `voice:session_state` event (wire format). */
+interface NativeSessionState {
+  /** Native epoch of the session the state belongs to. */
+  epoch: number | null;
+  /** Rust `ConnectionState` name. */
+  state: string;
+}
+
+/**
+ * One voice session of the adapter and the epoch the native process gave
+ * it. Native ends a session only when told its epoch.
+ */
+interface NativeSession {
+  readonly handle: VoiceSessionHandle;
+  /** Null until `begin_voice_session` answered. */
+  nativeEpoch: number | null;
+  /** Ended: a join step that resumes now stops. */
+  ended: boolean;
+}
+
+/**
+ * Error of a native capture command. Codes from Rust: `PORTAL_CANCELLED`
+ * (the system dialog was closed), `PORTAL_UNAVAILABLE` (no portal on this
+ * Linux system), `PERMISSION_DENIED` (macOS screen recording not allowed).
+ */
+export function mapCaptureError(err: unknown): VoiceError {
+  const text = typeof err === "string" ? err : err instanceof Error ? err.message : String(err);
+  if (text.startsWith("PORTAL_CANCELLED")) return { type: "cancelled", message: "portal" };
+  if (text.startsWith("PORTAL_UNAVAILABLE")) return { type: "not_found", message: "portal_unavailable" };
+  if (text.startsWith("PORTAL_DENIED")) return { type: "permission_denied", message: "portal_denied" };
+  if (text.startsWith("PERMISSION_DENIED")) return { type: "permission_denied", message: text };
+  if (text.startsWith("NO_DEVICE")) return { type: "device_not_found", message: text };
+  if (/not connected|Not in a voice channel|Voice not initialized/i.test(text)) {
+    return { type: "not_connected" };
+  }
+  return { type: "unknown", message: text };
+}
+
+/**
+ * Adapter state for a native publisher state (Rust `ConnectionState`,
+ * payload of `voice:session_state`). `Reconnecting` is a short ICE outage (A8); `Failed`
+ * also shows reconnecting and sets `lost` so the store rejoins (C32).
+ */
+export function mapNativeVoiceState(payload: string): {
+  state: VoiceConnectionState;
+  lost: boolean;
+} {
+  switch (payload) {
+    case "Connected":
+      return { state: "connected", lost: false };
+    case "Connecting":
+      return { state: "connecting", lost: false };
+    case "Reconnecting":
+      return { state: "reconnecting", lost: false };
+    case "Failed":
+      return { state: "reconnecting", lost: true };
+    default:
+      return { state: "disconnected", lost: false };
+  }
+}
+
 export class TauriVoiceAdapter implements VoiceAdapter {
   private state: VoiceConnectionState = "disconnected";
   private channelId: string | null = null;
+  /** The open session (its join may still be running). */
+  private session: NativeSession | null = null;
   private muted = false;
   private deafened = false;
   private noiseSuppression = false;
   private webcamActive = false;
+  /** Native publication id of the prepared or running camera. */
+  private webcamId: string | null = null;
 
   // Previous cumulative receive counters for interval packet-loss
   // calculation (same pattern as the browser adapter's prevStats)
@@ -74,38 +146,100 @@ export class TauriVoiceAdapter implements VoiceAdapter {
 
   // Lifecycle methods
 
-  async join(channelId: string): Promise<VoiceResult<void>> {
+  async join(handle: VoiceSessionHandle): Promise<VoiceResult<VoiceSessionHandle>> {
+    const channelId = handle.channelId;
     console.log(`[TauriVoiceAdapter] Joining channel: ${channelId}`);
+    const cancelled = (): VoiceResult<VoiceSessionHandle> => ({
+      ok: false,
+      error: { ...VOICE_JOIN_CANCELLED },
+    });
 
+    // A session of this window that is still open ends first, by its own
+    // handle and native epoch, without a message to the server.
+    while (this.session) await this.end(this.session.handle, false);
+
+    const session: NativeSession = { handle, nativeEpoch: null, ended: false };
+    this.session = session;
     try {
-      await invoke("join_voice", { channelId });
+      // The native process allocates the session epoch (one order across
+      // reloads and windows); `join_voice` checks it after every await and
+      // before each message, and the leave of this session names it.
+      const nativeEpoch = await invoke<number>("begin_voice_session");
+      // Ended before native knew the epoch: nothing native exists for it.
+      if (session.ended) return cancelled();
+      session.nativeEpoch = nativeEpoch;
+      await invoke("join_voice", { channelId, epoch: nativeEpoch });
+      // Ended after native finished: the leave that ended it named this
+      // epoch and runs after this join on the native side.
+      if (session.ended) return cancelled();
       this.channelId = channelId;
-      this.setState("connecting");
-      return { ok: true, value: undefined };
+      this.setState("connecting", handle);
+      return { ok: true, value: handle };
     } catch (err) {
+      if (session.ended) return cancelled();
+      // The join failed: its session ends here, including whatever native
+      // set up before the error. Native tells the server only if it had
+      // got as far as entering the channel.
+      await this.end(handle, true);
+      if (isNativeJoinCancelled(err)) {
+        // Native cancelled a join this window still wants (e.g. a leave in
+        // another window): a failure the user sees, not a silent cancel.
+        return {
+          ok: false,
+          error: { type: "connection_failed", reason: "voice session ended", retriable: true },
+        };
+      }
       return { ok: false, error: this.mapTauriError(err) };
     }
   }
 
-  async leave(): Promise<VoiceResult<void>> {
+  async leave(handle: VoiceSessionHandle): Promise<VoiceResult<void>> {
     console.log("[TauriVoiceAdapter] Leaving voice");
+    return this.end(handle, true);
+  }
 
-    // Clean up all screen shares (native capture is stopped via Rust command)
-    if (this.activeScreenShares.size > 0) {
-      for (const streamId of [...this.activeScreenShares.keys()]) {
-        try {
-          await invoke("stop_screen_share", { streamId });
-        } catch {
-          // Best effort — leave_voice will also clean up
-        }
-      }
-      this.activeScreenShares.clear();
-    }
+  async teardown(handle: VoiceSessionHandle): Promise<VoiceResult<void>> {
+    console.log("[TauriVoiceAdapter] Tearing down voice without signalling");
+    return this.end(handle, false);
+  }
 
+  async probePublisher(handle: VoiceSessionHandle): Promise<boolean> {
+    const session = this.session;
+    if (!session || session.ended || session.handle.token !== handle.token) return false;
+    if (session.nativeEpoch === null) return false;
     try {
-      await invoke("leave_voice");
-      this.channelId = null;
-      this.setState("disconnected");
+      // Native reads the peer connection's own state for this epoch.
+      return await invoke<boolean>("voice_probe", { epoch: session.nativeEpoch });
+    } catch (err) {
+      console.warn("[TauriVoiceAdapter] Probing the voice connection failed:", err);
+      return false;
+    }
+  }
+
+  /**
+   * End the session `handle` names: local state at once, then the native
+   * session by its epoch (native leaves a newer session alone). `notify`
+   * sends `VoiceLeave`. A session this adapter no longer has is a no-op.
+   */
+  private async end(handle: VoiceSessionHandle, notify: boolean): Promise<VoiceResult<void>> {
+    const session = this.session;
+    if (!session || session.ended || session.handle.token !== handle.token) {
+      return { ok: true, value: undefined };
+    }
+    session.ended = true;
+    this.session = null;
+    this.channelId = null;
+    this.prevStats = null;
+    // Native leave_voice also stops every share and the webcam.
+    this.activeScreenShares.clear();
+    this.webcamActive = false;
+    this.state = "disconnected";
+    this.eventHandlers.onStateChange?.("disconnected", handle);
+
+    // Native never heard of a session whose epoch was still being allocated.
+    if (session.nativeEpoch === null) return { ok: true, value: undefined };
+    try {
+      await invoke("leave_voice", { silent: !notify, epoch: session.nativeEpoch });
       return { ok: true, value: undefined };
     } catch (err) {
       return { ok: false, error: this.mapTauriError(err) };
@@ -441,78 +575,64 @@ export class TauriVoiceAdapter implements VoiceAdapter {
     }
   }
 
-  async startScreenShare(
-    options?: ScreenShareOptions,
-  ): Promise<VoiceResult<void>> {
-    console.log("[TauriVoiceAdapter] Starting native screen share", options);
-
-    if (this.activeScreenShares.size >= 3) {
-      return {
-        ok: false,
-        error: { type: "unknown", message: "Maximum of 3 concurrent screen shares reached" },
-      };
+  /**
+   * Prepare a native capture: check the source (Windows/macOS) or let the
+   * system dialog choose it (Linux portal). Nothing is sent yet; the track
+   * is added by `publishScreenShare` after the server accepted the share.
+   */
+  async captureScreen(
+    options: ScreenShareOptions & { streamId: string },
+  ): Promise<VoiceResult<CapturedScreen>> {
+    if (this.activeScreenShares.size > 0) {
+      return { ok: false, error: { type: "unknown", message: "Already sharing" } };
     }
-
-    if (!options?.sourceId) {
-      return {
-        ok: false,
-        error: { type: "unknown", message: "No source selected" },
-      };
-    }
-
-    const streamId = options.streamId ?? crypto.randomUUID();
-
     try {
-      await invoke("start_screen_share", {
-        sourceId: options.sourceId,
-        quality: options.quality ?? "medium",
-        withAudio: options.withAudio ?? false,
-        streamId,
+      const prepared = await invoke<{ source_name: string; has_audio: boolean }>(
+        "prepare_screen_share",
+        {
+          streamId: options.streamId,
+          sourceId: options.sourceId ?? null,
+          quality: options.quality ?? "medium",
+          withAudio: options.withAudio ?? false,
+        },
+      );
+      this.activeScreenShares.set(options.streamId, {
+        sourceName: prepared.source_name,
+        withAudio: prepared.has_audio,
       });
+      return {
+        ok: true,
+        value: { hasAudio: prepared.has_audio, sourceLabel: prepared.source_name || "Screen" },
+      };
+    } catch (err) {
+      console.error("[TauriVoiceAdapter] Failed to prepare screen share:", err);
+      return { ok: false, error: mapCaptureError(err) };
+    }
+  }
 
-      // Fetch source name from status
-      let sourceName = "Screen";
-      try {
-        const statuses = await invoke<{ stream_id: string; source_name: string }[]>(
-          "get_screen_share_status",
-        );
-        const thisStatus = statuses.find((s) => s.stream_id === streamId);
-        sourceName = thisStatus?.source_name ?? "Screen";
-      } catch {
-        // Fall through with default
-      }
-
-      this.activeScreenShares.set(streamId, {
-        sourceName,
-        withAudio: options.withAudio ?? false,
-      });
-
-      console.log(`[TauriVoiceAdapter] Native screen share started: ${streamId}`);
+  /** Start the prepared capture and send it (track added, renegotiated). */
+  async publishScreenShare(streamId: string): Promise<VoiceResult<void>> {
+    if (!this.activeScreenShares.has(streamId)) {
+      return { ok: false, error: { type: "unknown", message: "No capture for stream" } };
+    }
+    try {
+      await invoke("start_screen_share", { streamId });
       return { ok: true, value: undefined };
     } catch (err) {
       console.error("[TauriVoiceAdapter] Failed to start screen share:", err);
-      return { ok: false, error: this.mapTauriError(err) };
+      return { ok: false, error: mapCaptureError(err) };
     }
   }
 
   async stopScreenShare(streamId?: string): Promise<VoiceResult<void>> {
-    if (this.activeScreenShares.size === 0) {
-      return {
-        ok: false,
-        error: { type: "unknown", message: "Not sharing screen" },
-      };
-    }
-
-    // If no streamId given, stop the first one
     const targetId = streamId ?? [...this.activeScreenShares.keys()][0];
-    console.log(`[TauriVoiceAdapter] Stopping native screen share: ${targetId}`);
-
+    if (!targetId) {
+      return { ok: false, error: { type: "unknown", message: "Not sharing screen" } };
+    }
+    // Forgotten first: a stop that fails natively still ends the share here.
+    this.activeScreenShares.delete(targetId);
     try {
       await invoke("stop_screen_share", { streamId: targetId });
-
-      this.activeScreenShares.delete(targetId);
-
-      console.log(`[TauriVoiceAdapter] Screen share stopped: ${targetId}`);
       return { ok: true, value: undefined };
     } catch (err) {
       console.error("[TauriVoiceAdapter] Failed to stop screen share:", err);
@@ -539,27 +659,35 @@ export class TauriVoiceAdapter implements VoiceAdapter {
     return this.webcamActive;
   }
 
-  async startWebcam(options?: WebcamOptions): Promise<VoiceResult<void>> {
-    console.log("[TauriVoiceAdapter] Starting webcam", options);
-
+  /** Check the camera and remember the choice; nothing is sent yet. */
+  async captureWebcam(options?: WebcamOptions): Promise<VoiceResult<void>> {
     if (this.webcamActive) {
-      return {
-        ok: false,
-        error: { type: "unknown", message: "Webcam already active" },
-      };
+      return { ok: false, error: { type: "unknown", message: "Webcam already active" } };
     }
-
     try {
-      await invoke("start_webcam", {
+      this.webcamId = await invoke<string>("prepare_webcam", {
         quality: options?.quality ?? "medium",
-        deviceId: options?.deviceId ?? null,
+        deviceId: options?.deviceId != null ? Number(options.deviceId) : null,
       });
       this.webcamActive = true;
-      console.log("[TauriVoiceAdapter] Webcam started");
+      return { ok: true, value: undefined };
+    } catch (err) {
+      console.error("[TauriVoiceAdapter] Failed to prepare webcam:", err);
+      return { ok: false, error: mapCaptureError(err) };
+    }
+  }
+
+  /** Start the prepared camera and send it (after `webcam_started`). */
+  async publishWebcam(): Promise<VoiceResult<void>> {
+    if (!this.webcamActive) {
+      return { ok: false, error: { type: "unknown", message: "Webcam not active" } };
+    }
+    try {
+      await invoke("start_webcam", { publicationId: this.webcamId });
       return { ok: true, value: undefined };
     } catch (err) {
       console.error("[TauriVoiceAdapter] Failed to start webcam:", err);
-      return { ok: false, error: this.mapTauriError(err) };
+      return { ok: false, error: mapCaptureError(err) };
     }
   }
 
@@ -573,9 +701,12 @@ export class TauriVoiceAdapter implements VoiceAdapter {
       };
     }
 
+    const publicationId = this.webcamId;
+    this.webcamActive = false;
+    this.webcamId = null;
     try {
-      await invoke("stop_webcam");
-      this.webcamActive = false;
+      // Names this camera: a late stop never ends a newer one.
+      await invoke("stop_webcam", { publicationId });
       console.log("[TauriVoiceAdapter] Webcam stopped");
       return { ok: true, value: undefined };
     } catch (err) {
@@ -591,8 +722,9 @@ export class TauriVoiceAdapter implements VoiceAdapter {
 
     // Clean up webcam if active (fire-and-forget)
     if (this.webcamActive) {
-      invoke("stop_webcam").catch(() => {});
+      invoke("stop_webcam", { publicationId: this.webcamId }).catch(() => {});
       this.webcamActive = false;
+      this.webcamId = null;
     }
 
     // Clean up all screen shares (fire-and-forget)
@@ -616,20 +748,19 @@ export class TauriVoiceAdapter implements VoiceAdapter {
    */
   private async setupEventListeners() {
     const settled = await Promise.allSettled([
-      listen<string>("voice:state_change", (event) => {
-        console.log(`[TauriVoiceAdapter] State change: ${event.payload}`);
-        // Map Rust ConnectionState to VoiceConnectionState
-        const stateMap: Record<string, VoiceConnectionState> = {
-          Disconnected: "disconnected",
-          Connecting: "connecting",
-          Connected: "connected",
-          Failed: "disconnected",
-        };
-        const newState = stateMap[event.payload] || "disconnected";
-        if (event.payload === "Connected") {
+      listen<NativeSessionState>("voice:session_state", (event) => {
+        const { epoch, state } = event.payload;
+        console.log(`[TauriVoiceAdapter] State change: ${state} (session ${epoch})`);
+        // Only the open session's own state counts: a late state of an
+        // ended session (its connection closing) is not this one's.
+        const session = this.session;
+        if (!session || session.ended || session.nativeEpoch !== epoch) return;
+        const next = mapNativeVoiceState(state);
+        if (state === "Connected") {
           Sentry.addBreadcrumb({ category: "voice", message: "voice_connected_native", data: { channel_id: this.channelId ?? "" }, level: "info" });
         }
-        this.setState(newState);
+        this.setState(next.state, session.handle);
+        if (next.lost) this.eventHandlers.onConnectionLost?.(session.handle);
       }),
 
       // Remote audio track events
@@ -678,6 +809,16 @@ export class TauriVoiceAdapter implements VoiceAdapter {
       }),
 
       // VAD speaking indicator
+      listen<{ kind: "screen" | "webcam"; stream_id: string | null; reason?: string }>(
+        "voice:local_capture_ended",
+        (event) => {
+          const { kind, stream_id, reason } = event.payload;
+          // Only a capture this window still holds counts (by its id).
+          if (kind === "screen" && (!stream_id || !this.activeScreenShares.has(stream_id))) return;
+          if (kind === "webcam" && (!this.webcamActive || stream_id !== this.webcamId)) return;
+          this.eventHandlers.onLocalMediaEnded?.(kind, kind === "screen" ? stream_id : null, reason);
+        },
+      ),
       listen<boolean>("voice:speaking", (event) => {
         this.eventHandlers.onSpeakingChange?.(event.payload);
       }),
@@ -705,9 +846,11 @@ export class TauriVoiceAdapter implements VoiceAdapter {
     this.unlisteners.push(...handles);
   }
 
-  private setState(state: VoiceConnectionState) {
+  /** Report `state` for `session` (ignored once that session has ended). */
+  private setState(state: VoiceConnectionState, session: VoiceSessionHandle) {
+    if (this.session?.handle.token !== session.token) return;
     this.state = state;
-    this.eventHandlers.onStateChange?.(state);
+    this.eventHandlers.onStateChange?.(state, session);
   }
 
   private mapTauriError(err: unknown): VoiceError {

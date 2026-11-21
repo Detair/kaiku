@@ -15,6 +15,8 @@ import {
   type User,
 } from "@/lib/types";
 import { resetMeSecurity } from "./security";
+import { setVoiceIdentity, shutdownVoice } from "./voiceShutdownHook";
+import { clearAttachmentUrls } from "@/lib/attachmentUrls";
 import * as tauri from "@/lib/tauri";
 import {
   initWebSocket,
@@ -67,7 +69,7 @@ interface AuthState {
 }
 
 // Create the store
-const [authState, setAuthState] = createStore<AuthState>({
+const [authState, setAuthStore] = createStore<AuthState>({
   user: null,
   serverUrl: null,
   isLoading: false,
@@ -83,6 +85,40 @@ const [authState, setAuthState] = createStore<AuthState>({
 // Derived state
 export const isAuthenticated = () => authState.user !== null;
 export const currentUser = () => authState.user;
+
+
+/** The user a store update would install, or `undefined` if it leaves the user alone. */
+function userAfter(args: readonly unknown[]): User | null | undefined {
+  const [first, second] = args;
+  if (args.length === 1 && typeof first === "object" && first !== null && "user" in first) {
+    return (first as { user: User | null }).user;
+  }
+  if (first === "user" && args.length === 2) {
+    return typeof second === "function"
+      ? (second as (prev: User | null) => User | null)(authState.user)
+      : (second as User | null);
+  }
+  return undefined;
+}
+
+/**
+ * The one way the auth state changes, and so the one place where the
+ * signed-in identity can change: sign-in over an existing session, account
+ * switch, a refresh that answers with another user, sign-out, expiry.
+ * Before another user (or nobody) takes the current user's place, voice is
+ * shut down: microphone released, no call, nothing left to rejoin. An
+ * update that keeps the same user does not touch voice.
+ */
+function changeAuthState(...args: unknown[]): void {
+  const next = userAfter(args);
+  if (next !== undefined && (next?.id ?? null) !== (authState.user?.id ?? null)) {
+    shutdownVoice();
+  }
+  (setAuthStore as (...a: unknown[]) => void)(...args);
+  // A voice session is only ever served for the user it was started by.
+  if (next !== undefined) setVoiceIdentity(next?.id ?? null);
+}
+const setAuthState = changeAuthState as typeof setAuthStore;
 
 /** The current session from `GET /auth/me` (C27); null when the server sent none. */
 export const sessionInfo = (): AuthSession | null => decodeAuthSession(authState.user?.session);
@@ -270,6 +306,9 @@ let sessionExpiredListenerRegistered = false;
 
 /** Tear down the session and show the sign-in prompt for `reason`. */
 async function endSession(reason: tauri.SessionEndReason): Promise<void> {
+  // Voice ends with the session, before anything of the account is cleared:
+  // microphone released, no call, nothing that could rejoin later.
+  shutdownVoice();
   // Claim the end first so a concurrent expiry report does not repeat it.
   setAuthState({ user: null });
   resetServerFeatures();
@@ -289,6 +328,7 @@ async function endSession(reason: tauri.SessionEndReason): Promise<void> {
   passwordChangeSaved = false;
   // The ended session's overview and prompts go with it (Argon review 6 #4).
   resetMeSecurity();
+  clearAttachmentUrls();
   endSignInChoices();
   setAuthState({
     user: null,
@@ -862,10 +902,14 @@ export async function register(
  * Logout and clear session.
  */
 export async function logout(): Promise<void> {
+  // Voice ends with the session, before anything of the account is cleared:
+  // microphone released, no call, nothing that could rejoin later.
+  shutdownVoice();
   invalidatePasskeySignIns();
   endSignInChoices();
   resetServerFeatures();
   resetMeSecurity();
+  clearAttachmentUrls();
   pendingTemporaryPassword = null;
   stepPassword = null;
   passwordChangeSaved = false;

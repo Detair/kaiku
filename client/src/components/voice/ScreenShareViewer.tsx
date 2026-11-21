@@ -8,6 +8,7 @@ import {
   onCleanup,
 } from "solid-js";
 import { Portal } from "solid-js/web";
+import { createModalLayer, MODAL_LAYER } from "@/lib/a11y/modalLayer";
 import {
   X,
   Minimize2,
@@ -42,11 +43,30 @@ import {
 import * as tauri from "@/lib/tauri";
 
 /**
+ * `video.play()` as a promise: some environments return nothing, or throw,
+ * instead of a promise.
+ */
+function playVideo(video: HTMLVideoElement): Promise<void> {
+  try {
+    return Promise.resolve(video.play());
+  } catch (err) {
+    return Promise.reject(err);
+  }
+}
+
+/**
  * Screen share viewer overlay.
  * Displays the currently viewed screen share with controls.
  */
 const ScreenShareViewer: Component = () => {
+  // The shown <video>: a signal, so a new element (a view mode change)
+  // gets the track too.
+  const [videoEl, setVideoEl] = createSignal<HTMLVideoElement>();
   let videoRef: HTMLVideoElement | undefined;
+  const takeVideo = (el: HTMLVideoElement) => {
+    videoRef = el;
+    setVideoEl(el);
+  };
   const [autoplayBlocked, setAutoplayBlocked] = createSignal(false);
   const [contextMenu, setContextMenu] = createSignal<{
     x: number;
@@ -72,36 +92,51 @@ const ScreenShareViewer: Component = () => {
     setContextMenu({ x: e.clientX, y: e.clientY, userId, streamId });
   };
 
-  // Attach video track to video element when it changes
+  // Attach the video track to the shown element when either changes
   createEffect(() => {
     const track = viewerState.videoTrack;
+    const videoRef = videoEl();
     if (track && videoRef) {
       const stream = new MediaStream([track]);
       videoRef.srcObject = stream;
       videoRef.muted = true;
       setAutoplayBlocked(false);
 
-      // Retry play with increasing delays until it succeeds
+      // Retry play with increasing delays until it succeeds. The frame and
+      // the retries belong to this element and track: they are cancelled
+      // when either changes or the viewer goes.
+      let frame: number | undefined;
+      let retry: ReturnType<typeof setTimeout> | undefined;
+      let over = false;
+      onCleanup(() => {
+        over = true;
+        if (frame !== undefined) cancelAnimationFrame(frame);
+        clearTimeout(retry);
+      });
       const tryPlay = (attempt: number) => {
-        if (!videoRef || !videoRef.srcObject) return;
-        videoRef.play().catch((err) => {
-          if (err.name === "AbortError" && attempt < 3) {
-            setTimeout(() => tryPlay(attempt + 1), 100 * (attempt + 1));
-          } else if (err.name !== "AbortError") {
+        if (over || !videoRef.srcObject) return;
+        playVideo(videoRef).catch((err) => {
+          if (over) return;
+          if (err?.name === "AbortError" && attempt < 3) {
+            retry = setTimeout(() => tryPlay(attempt + 1), 100 * (attempt + 1));
+          } else {
+            // Blocked, or every attempt was interrupted: offer click-to-play.
             console.warn("[ScreenShareViewer] Autoplay blocked:", err);
             setAutoplayBlocked(true);
           }
         });
       };
-      requestAnimationFrame(() => tryPlay(0));
+      frame = requestAnimationFrame(() => {
+        frame = undefined;
+        tryPlay(0);
+      });
     }
   });
 
   // Handle manual play when autoplay is blocked
   const handleClickToPlay = () => {
     if (videoRef) {
-      videoRef
-        .play()
+      playVideo(videoRef)
         .then(() => {
           setAutoplayBlocked(false);
         })
@@ -109,11 +144,11 @@ const ScreenShareViewer: Component = () => {
     }
   };
 
-  // Apply volume to video element when it changes
+  // Apply volume to the shown element when either changes
   createEffect(() => {
-    if (videoRef) {
-      videoRef.volume = viewerState.screenVolume / 100;
-    }
+    const volume = viewerState.screenVolume / 100;
+    const el = videoEl();
+    if (el) el.volume = volume;
   });
 
   // Cleanup on unmount
@@ -242,7 +277,7 @@ const ScreenShareViewer: Component = () => {
         <Show when={viewerState.layoutMode === "focus"}>
           <Show when={viewerState.viewMode === "spotlight"}>
             <SpotlightView
-              videoRef={(el) => (videoRef = el)}
+              videoRef={takeVideo}
               sharerName={sharerName()}
               onClose={handleClose}
               onCycleMode={cycleViewMode}
@@ -256,7 +291,7 @@ const ScreenShareViewer: Component = () => {
           </Show>
           <Show when={viewerState.viewMode === "pip"}>
             <PipView
-              videoRef={(el) => (videoRef = el)}
+              videoRef={takeVideo}
               sharerName={sharerName()}
               onClose={handleClose}
               onCycleMode={cycleViewMode}
@@ -269,7 +304,7 @@ const ScreenShareViewer: Component = () => {
           </Show>
           <Show when={viewerState.viewMode === "theater"}>
             <TheaterView
-              videoRef={(el) => (videoRef = el)}
+              videoRef={takeVideo}
               sharerName={sharerName()}
               onClose={handleClose}
               onCycleMode={cycleViewMode}
@@ -437,8 +472,9 @@ const SpotlightView: Component<{
   userId: string | null;
   streamId: string | null;
 }> = (props) => {
+  const layer = createModalLayer(MODAL_LAYER.dialog);
   return (
-    <div class="fixed inset-0 z-50 bg-black flex flex-col">
+    <div class="fixed inset-0 bg-black flex flex-col" style={{ "z-index": layer }}>
       {/* Header bar */}
       <div class="flex items-center justify-between p-4 bg-black/50">
         <div class="flex items-center gap-2">
@@ -511,10 +547,13 @@ const PipView: Component<{
   userId: string | null;
   streamId: string | null;
 }> = (props) => {
+  // Not modal: a fixed layer under every dialog.
+  const layer = MODAL_LAYER.floating;
   return (
     <div
-      class="fixed z-50 bg-black rounded-lg shadow-2xl overflow-hidden"
+      class="fixed bg-black rounded-lg shadow-2xl overflow-hidden"
       style={{
+        "z-index": layer,
         right: `${viewerState.pipPosition.x}px`,
         bottom: `${viewerState.pipPosition.y}px`,
         width: `${viewerState.pipSize.width}px`,
@@ -776,8 +815,9 @@ const GridView: Component<{
     return "grid-cols-2 grid-rows-2";
   };
 
+  const layer = createModalLayer(MODAL_LAYER.dialog);
   return (
-    <div class="fixed inset-0 z-50 bg-black flex flex-col">
+    <div class="fixed inset-0 bg-black flex flex-col" style={{ "z-index": layer }}>
       {/* Grid container */}
       <div class={`flex-1 grid gap-1 p-1 ${gridClasses()}`}>
         <For each={streams()}>

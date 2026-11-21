@@ -12,6 +12,11 @@ import { onCleanup } from "solid-js";
 
 /** Modal overlay bases (z-index). */
 export const MODAL_LAYER = {
+  /**
+   * Floating, non-modal windows (the screen share picture-in-picture):
+   * above the page, below every dialog. Fixed, never pushed by dialogs.
+   */
+  floating: 60,
   /** Dialogs (`DialogShell`). */
   dialog: 70,
   /** The full-screen open-request prompt. */

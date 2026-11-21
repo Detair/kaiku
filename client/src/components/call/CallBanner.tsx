@@ -13,14 +13,14 @@ import {
   onCleanup,
 } from "solid-js";
 import { Users } from "lucide-solid";
-import { callState, setChannelCallId, joinCall, declineCall, endCall } from "@/stores/call";
 import {
-  joinDMCall,
-  declineDMCall,
-  leaveDMCall,
-  joinVoice,
-  leaveVoice,
-} from "@/lib/tauri";
+  callState,
+  acceptCall,
+  declineCall,
+  endCall,
+  leaveCallVoice,
+} from "@/stores/call";
+import { declineDMCall, leaveDMCall } from "@/lib/tauri";
 import { t } from "@/i18n";
 
 import { endReasonText, isCallAlreadyGoneError } from "@/lib/callEnd";
@@ -57,11 +57,9 @@ const CallBanner: Component<CallBannerProps> = (props) => {
   const handleAccept = async () => {
     setIsLoading(true);
     try {
-      joinCall(props.channelId);
-      const res = await joinDMCall(props.channelId);
-      setChannelCallId(props.channelId, res.call_id);
-      // Start voice connection after signaling join
-      await joinVoice(props.channelId);
+      // Accept, server join and native voice under this accept's own
+      // session token (the token never leaves the store).
+      await acceptCall(props.channelId);
     } catch (err) {
       console.error("Failed to join call:", err);
       // Reset state on error
@@ -85,41 +83,31 @@ const CallBanner: Component<CallBannerProps> = (props) => {
     }
   };
 
-  const handleLeave = async () => {
+  /**
+   * Hang up or cancel. The call's voice session is over from the first
+   * line on (no join and no recovery attempt runs for it any more); the
+   * voice owner ends it in the background while the server is told.
+   */
+  const hangUp = async (reason: "last_left" | "cancelled") => {
+    void leaveCallVoice();
     setIsLoading(true);
     try {
-      // Stop voice connection first
-      await leaveVoice();
+      // The server is told right away; it does not wait for the voice
+      // session to be gone on this device.
       await leaveDMCall(props.channelId);
-      endCall(props.channelId, "last_left");
     } catch (err) {
       if (!isCallAlreadyGoneError(err)) {
         console.error("Failed to leave call:", err);
       }
-      await leaveVoice().catch(() => {}); // Best effort cleanup
-      endCall(props.channelId, "last_left");
     } finally {
+      endCall(props.channelId, reason);
       setIsLoading(false);
     }
   };
 
-  const handleCancel = async () => {
-    setIsLoading(true);
-    try {
-      // Stop voice connection first (initiator may have started voice)
-      await leaveVoice();
-      await leaveDMCall(props.channelId);
-      endCall(props.channelId, "cancelled");
-    } catch (err) {
-      if (!isCallAlreadyGoneError(err)) {
-        console.error("Failed to cancel call:", err);
-      }
-      await leaveVoice().catch(() => {}); // Best effort cleanup
-      endCall(props.channelId, "cancelled");
-    } finally {
-      setIsLoading(false);
-    }
-  };
+  const handleLeave = () => hangUp("last_left");
+
+  const handleCancel = () => hangUp("cancelled");
 
   const currentCall = () => {
     const call = callState.currentCall;
@@ -224,7 +212,14 @@ const CallBanner: Component<CallBannerProps> = (props) => {
                   <div style={{ "background-image": "var(--icon-pickup)" }} class="w-5 h-5 bg-contain bg-center bg-no-repeat" />
                 </div>
                 <div>
-                  <p class="text-text-primary font-medium">{t("voice.call.inCall")}</p>
+                  <p class="text-text-primary font-medium">
+                    {callState.voiceReconnecting
+                      ? t("voice.call.reconnecting")
+                      : t("voice.call.inCall")}
+                  </p>
+                  <Show when={callState.voiceReconnecting}>
+                    <p class="text-sm text-text-secondary">{t("voice.call.reconnectingHint")}</p>
+                  </Show>
                   <div class="flex items-center gap-2 text-sm text-text-secondary">
                     <span>{formatDuration(callDuration())}</span>
                     <Show
@@ -253,23 +248,6 @@ const CallBanner: Component<CallBannerProps> = (props) => {
               >
                 <div style={{ "background-image": "var(--icon-leave)" }} class="w-5 h-5 bg-contain bg-center bg-no-repeat opacity-90" />
               </button>
-            </div>
-          </Show>
-
-          {/* Reconnecting */}
-          <Show when={call().status === "reconnecting"}>
-            <div class="flex items-center gap-3">
-              <div class="w-10 h-10 rounded-full bg-yellow-500/20 flex items-center justify-center">
-                <div style={{ "background-image": "var(--icon-pickup)" }} class="w-5 h-5 bg-contain bg-center bg-no-repeat animate-pulse" />
-              </div>
-              <div>
-                <p class="text-text-primary font-medium">{t("voice.call.reconnecting")}</p>
-                <p class="text-sm text-text-secondary">
-                  {t("voice.call.reconnectingHint", {
-                    seconds: (call() as { countdown: number }).countdown,
-                  })}
-                </p>
-              </div>
             </div>
           </Show>
 

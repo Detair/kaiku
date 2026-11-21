@@ -1,12 +1,8 @@
-import { Component, createMemo, Show } from "solid-js";
+import { Component, Show, createSignal } from "solid-js";
 import { MonitorUp, MonitorOff } from "lucide-solid";
-import { voiceState } from "@/stores/voice";
-import { currentUser } from "@/stores/auth";
+import { voiceState, stopScreenShare } from "@/stores/voice";
 import { t } from "@/i18n";
 import { canShareScreen } from "@/lib/browserCapabilities";
-
-/** Maximum concurrent screen shares per user. */
-const MAX_SCREEN_SHARES = 3;
 
 interface ScreenShareButtonProps {
   /** Show source picker first (native capture), then quality picker. */
@@ -15,24 +11,23 @@ interface ScreenShareButtonProps {
 }
 
 /**
- * Screen share toggle button.
- *
- * In multi-stream mode the button always opens the source/quality picker to
- * start a new stream (up to `MAX_SCREEN_SHARES`). Stopping individual
- * streams is handled via the viewer UI.
+ * Screen share toggle: starts a share, and while sharing the same button
+ * stops it (one share per person for 1.0). Reachable from every view that
+ * shows the voice controls, by keyboard too.
  */
 const ScreenShareButton: Component<ScreenShareButtonProps> = (props) => {
-  /** Number of screen shares the local user currently owns. */
-  const ownShareCount = createMemo(() => {
-    const userId = currentUser()?.id;
-    if (!userId) return 0;
-    return voiceState.screenShares.filter((s) => s.user_id === userId).length;
-  });
+  const [stopping, setStopping] = createSignal(false);
 
-  const atLimit = createMemo(() => ownShareCount() >= MAX_SCREEN_SHARES);
-
-  const handleClick = () => {
-    if (atLimit()) return; // Disabled at limit — stop individual streams via viewer UI
+  const handleClick = async () => {
+    if (voiceState.screenSharing) {
+      setStopping(true);
+      try {
+        await stopScreenShare();
+      } finally {
+        setStopping(false);
+      }
+      return;
+    }
     if (props.onShowSourcePicker) {
       props.onShowSourcePicker();
     } else {
@@ -40,34 +35,28 @@ const ScreenShareButton: Component<ScreenShareButtonProps> = (props) => {
     }
   };
 
-  const buttonTitle = () => {
-    if (atLimit()) return t("voice.screenShare.limit", { count: MAX_SCREEN_SHARES, max: MAX_SCREEN_SHARES });
-    if (voiceState.screenSharing) return t("voice.screenShare.another", { count: ownShareCount(), max: MAX_SCREEN_SHARES });
-    return t("voice.screenShare.start");
-  };
+  const label = () =>
+    voiceState.screenSharing ? t("voice.screenShare.stop") : t("voice.screenShare.start");
 
   // Browsers without getDisplayMedia (most mobile ones) can't capture a
   // screen at all; hide the button instead of offering a dead action.
   return (
     <Show when={canShareScreen()}>
-    <button
-      type="button"
-      aria-label={buttonTitle()}
-      onClick={handleClick}
-      disabled={voiceState.state !== "connected" || atLimit()}
-      class={`p-2 rounded-full transition-colors ${
-        voiceState.screenSharing
-          ? "bg-accent-success/20 text-text-primary hover:bg-accent-success/30"
-          : "bg-surface-layer2 text-text-secondary hover:bg-surface-highlight hover:text-text-primary"
-      } state-disabled-quiet`}
-      title={buttonTitle()}
-    >
-      {atLimit() ? (
-        <MonitorOff class="w-5 h-5" />
-      ) : (
-        <MonitorUp class="w-5 h-5" />
-      )}
-    </button>
+      <button
+        type="button"
+        data-testid="screen-share-toggle"
+        aria-label={label()}
+        onClick={handleClick}
+        disabled={voiceState.state !== "connected" || stopping()}
+        class={`p-2 rounded-full transition-colors ${
+          voiceState.screenSharing
+            ? "bg-accent-danger/20 text-text-primary hover:bg-accent-danger/30"
+            : "bg-surface-layer2 text-text-secondary hover:bg-surface-highlight hover:text-text-primary"
+        } state-disabled-quiet`}
+        title={label()}
+      >
+        {voiceState.screenSharing ? <MonitorOff class="w-5 h-5" /> : <MonitorUp class="w-5 h-5" />}
+      </button>
     </Show>
   );
 };

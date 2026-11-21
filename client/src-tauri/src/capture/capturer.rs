@@ -10,7 +10,7 @@
 use std::sync::mpsc;
 
 use tokio::sync::watch;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 use super::convert::{infer_row_stride, I420Converter, PixelLayout};
 use super::source::{build_capture_options, find_target_by_id};
@@ -148,9 +148,10 @@ impl FrameCapturer {
                             continue;
                         };
 
-                        // Send frame, dropping if receiver is behind
-                        if frame_tx.try_send(i420).is_err() {
-                            debug!("Frame dropped (receiver behind)");
+                        // Dropped when the encoder is behind; gone: end.
+                        if !crate::video::publication::offer_frame(&frame_tx, i420) {
+                            info!(source = %source_id, "Encoder gone; capture ends");
+                            break;
                         }
                     }
                     Err(e) => {

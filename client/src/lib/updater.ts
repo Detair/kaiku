@@ -30,7 +30,8 @@ export function initUpdater(): void {
   }, STARTUP_CHECK_DELAY_MS);
 }
 
-async function checkForUpdate(): Promise<void> {
+/** Look for a newer signed build now (also from the update hint). */
+export async function checkForUpdate(): Promise<void> {
   try {
     // Dynamic imports keep the updater plugin out of the browser bundle
     const { check } = await import("@tauri-apps/plugin-updater");

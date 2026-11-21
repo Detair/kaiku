@@ -5,6 +5,11 @@ vi.mock("@/lib/tauri", () => ({
   getServerUrl: vi.fn(() => "https://chat.example"),
 }));
 
+const checkMinClientVersion = vi.fn();
+vi.mock("@/lib/minClientVersion", () => ({
+  checkMinClientVersion: (...a: unknown[]) => checkMinClientVersion(...a),
+}));
+
 import * as tauri from "@/lib/tauri";
 import {
   isFeatureEnabled,
@@ -159,5 +164,23 @@ describe("serverFeatures", () => {
       resetServerFeatures();
       expect(isGuildDiscoveryOff()).toBe(false);
     });
+  });
+
+  it("passes a server's minimum client version to the update check", async () => {
+    const min = { web: "1.0.0", desktop: "1.0.0", android: null };
+    vi.mocked(tauri.fetchServerSettings).mockResolvedValue({
+      ...(settings() as object),
+      min_client_version: min,
+    } as never);
+    await loadServerFeatures();
+    await vi.waitFor(() => expect(checkMinClientVersion).toHaveBeenCalledWith(min));
+  });
+
+  it("an older server without the field loads no version check", async () => {
+    checkMinClientVersion.mockClear();
+    vi.mocked(tauri.fetchServerSettings).mockResolvedValue(settings());
+    await loadServerFeatures();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(checkMinClientVersion).not.toHaveBeenCalled();
   });
 });

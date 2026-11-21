@@ -3,6 +3,8 @@
  */
 
 import type { ServerEvent } from "@/lib/types";
+import * as screenShareViewer from "@/stores/screenShareViewer";
+import * as webcamViewer from "@/stores/webcamViewer";
 
 // Screen share event handlers
 
@@ -36,6 +38,11 @@ export async function handleScreenShareStarted(event: Omit<Extract<ServerEvent, 
 }
 
 export async function handleScreenShareStopped(event: Omit<Extract<ServerEvent, { type: "screen_share_stopped" }>, "type">): Promise<void> {
+  // The picture held for this share when the stop arrived. A browser does
+  // not end a received track when the server takes it out of the call, so
+  // the stop removes it (a browser track only; the desktop app removes its
+  // own when the stream ends).
+  const shown = screenShareViewer.viewerState.availableTracks.get(event.stream_id)?.track ?? null;
   const { voiceState, setVoiceState } = await import("@/stores/voice");
   const { produce } = await import("solid-js/store");
 
@@ -59,6 +66,9 @@ export async function handleScreenShareStopped(event: Omit<Extract<ServerEvent, 
 
       }),
     );
+    if (shown && screenShareViewer.viewerState.availableTracks.get(event.stream_id)?.track === shown) {
+      screenShareViewer.removeAvailableTrack(event.stream_id);
+    }
   }
 }
 
@@ -117,6 +127,10 @@ export async function handleWebcamStarted(event: Omit<Extract<ServerEvent, { typ
 }
 
 export async function handleWebcamStopped(event: Omit<Extract<ServerEvent, { type: "webcam_stopped" }>, "type">): Promise<void> {
+  // The camera picture held for this person when the stop arrived; only
+  // that one goes, so a track of a camera started right after this stop
+  // stays (a browser track only; the desktop app removes its own).
+  const shown = webcamViewer.getTrack(event.user_id) ?? null;
   const { voiceState, setVoiceState } = await import("@/stores/voice");
   const { produce } = await import("solid-js/store");
 
@@ -139,5 +153,8 @@ export async function handleWebcamStopped(event: Omit<Extract<ServerEvent, { typ
         // (authState comparison not available here, so the voice store handles it via WS event)
       }),
     );
+    if (shown && webcamViewer.getTrack(event.user_id) === shown) {
+      webcamViewer.removeAvailableTrack(event.user_id);
+    }
   }
 }

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { unwrap } from "solid-js/store";
 import {
   viewerState,
@@ -114,7 +114,7 @@ describe("screenShareViewer", () => {
       expect(getAvailableSharers()).toHaveLength(0);
     });
 
-    it("should auto-switch to next stream if removing primary view", () => {
+    it("closes the viewer when the watched stream is removed, also if others remain", () => {
       const track1 = createMockTrack();
       const track2 = createMockTrack();
       addAvailableTrack("stream-1", track1, "user1", "Alice", "Screen 1");
@@ -125,9 +125,10 @@ describe("screenShareViewer", () => {
 
       removeAvailableTrack("stream-1");
 
-      // Should auto-switch to stream-2
-      expect(viewerState.viewingStreamId).toBe("stream-2");
-      expect(unwrap(viewerState).videoTrack).toBe(track2);
+      // A share the person did not choose is not opened in its place.
+      expect(viewerState.viewingStreamId).toBeNull();
+      expect(viewerState.videoTrack).toBeNull();
+      expect(getAvailableSharers().map((s) => s.streamId)).toEqual(["stream-2"]);
     });
 
     it("should clear viewing when removing the only stream", () => {
@@ -194,6 +195,54 @@ describe("screenShareViewer", () => {
       startViewing("stream-1");
 
       expect(viewerState.viewingStreamId).toBeNull();
+    });
+
+    describe("while waiting for the track", () => {
+      beforeEach(() => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      });
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      it("opens once the track arrives", () => {
+        startViewing("late");
+        addAvailableTrack("late", createMockTrack(), "user1", "Alice", "Screen 1");
+        vi.advanceTimersByTime(500);
+        expect(viewerState.viewingStreamId).toBe("late");
+      });
+
+      it("a viewer closed before the track arrives stays closed", () => {
+        startViewing("late");
+        stopViewing();
+        addAvailableTrack("late", createMockTrack(), "user1", "Alice", "Screen 1");
+        vi.advanceTimersByTime(5_000);
+        expect(viewerState.viewingStreamId).toBeNull();
+        expect(viewerState.videoTrack).toBeNull();
+      });
+
+      it("swapping to another share drops the wait for the first", () => {
+        const b = createMockTrack();
+        addAvailableTrack("b", b, "user2", "Bob", "Screen 2");
+        startViewing("a"); // no track yet
+        swapPrimary("b");
+        addAvailableTrack("a", createMockTrack(), "user1", "Alice", "Screen 1");
+        vi.advanceTimersByTime(5_000);
+        expect(viewerState.viewingStreamId).toBe("b");
+        expect(unwrap(viewerState).videoTrack).toBe(b);
+      });
+
+      it("viewing another share drops the wait for the first", () => {
+        const b = createMockTrack();
+        addAvailableTrack("b", b, "user2", "Bob", "Screen 2");
+        startViewing("a"); // no track yet
+        startViewing("b");
+        expect(viewerState.viewingStreamId).toBe("b");
+        addAvailableTrack("a", createMockTrack(), "user1", "Alice", "Screen 1");
+        vi.advanceTimersByTime(5_000);
+        expect(viewerState.viewingStreamId).toBe("b");
+        expect(unwrap(viewerState).videoTrack).toBe(b);
+      });
     });
   });
 
@@ -355,5 +404,18 @@ describe("screenShareViewer", () => {
       // Should remain on stream-1 (stream-2 was removed)
       expect(viewerState.viewingStreamId).toBe("stream-1");
     });
+  });
+});
+
+describe("tile focus request", () => {
+  it("waits for its tile, but not for ever", async () => {
+    vi.useFakeTimers();
+    const m = await import("../screenShareViewer");
+    m.requestTileFocus("s1");
+    vi.advanceTimersByTime(m.TILE_FOCUS_REQUEST_TTL_MS - 1);
+    expect(m.tileFocusRequest()).toBe("s1");
+    vi.advanceTimersByTime(1);
+    expect(m.tileFocusRequest()).toBeNull();
+    vi.useRealTimers();
   });
 });

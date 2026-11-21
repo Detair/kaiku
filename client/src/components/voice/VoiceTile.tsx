@@ -5,7 +5,7 @@
  * (with video track from the screenShareViewer store).
  */
 
-import { Component, Show, createEffect, onCleanup } from "solid-js";
+import { Component, Show, createEffect, createSignal, onCleanup } from "solid-js";
 import { MicOff, Monitor, ExternalLink, Undo2, MonitorOff } from "lucide-solid";
 import { getTrack as getWebcamTrack } from "@/stores/webcamViewer";
 import { viewerState as screenShareViewerState } from "@/stores/screenShareViewer";
@@ -48,13 +48,32 @@ interface VoiceTileProps {
 // Sub-components
 // ---------------------------------------------------------------------------
 
+/**
+ * A `<video>` ref that keeps `track` attached: whenever both the element
+ * and the track exist, in whichever order they appear, and again when the
+ * track changes. The element is released when it goes.
+ */
+function trackedVideo(track: () => MediaStreamTrack | null | undefined) {
+  const [video, setVideo] = createSignal<HTMLVideoElement>();
+  createEffect(() => {
+    const t = track();
+    const el = video();
+    if (el) el.srcObject = t ? new MediaStream([t]) : null;
+  });
+  return (el: HTMLVideoElement) => {
+    setVideo(el);
+    onCleanup(() => {
+      el.srcObject = null;
+      if (video() === el) setVideo(undefined);
+    });
+  };
+}
+
 /** Participant tile — shows webcam video or avatar with speaking/mute state. */
 const ParticipantTile: Component<{
   tile: Extract<TileData, { type: "participant" }>;
   size: "normal" | "small";
 }> = (props) => {
-  let videoRef: HTMLVideoElement | undefined;
-
   const track = () => getWebcamTrack(props.tile.userId);
   /** Browser mode: real MediaStreamTrack available */
   const hasBrowserVideo = () => !!track();
@@ -62,19 +81,7 @@ const ParticipantTile: Component<{
   const hasTauriVideo = () => isTauri() && track() === null;
   const hasVideo = () => hasBrowserVideo() || hasTauriVideo();
 
-  createEffect(() => {
-    if (!videoRef) return;
-    const t = track();
-    if (t) {
-      videoRef.srcObject = new MediaStream([t]);
-    } else {
-      videoRef.srcObject = null;
-    }
-  });
-
-  onCleanup(() => {
-    if (videoRef) videoRef.srcObject = null;
-  });
+  const videoRef = trackedVideo(track);
 
   const initial = () =>
     (
@@ -167,14 +174,9 @@ const ScreenShareTile: Component<{
   /** Browser mode: real MediaStreamTrack available */
   const hasBrowserTrack = () => !!trackInfo()?.track;
 
-  // Attach stream when video element mounts (including after bring-back remount)
-  const attachStream = (el: HTMLVideoElement) => {
-    const info = trackInfo();
-    if (info?.track) {
-      el.srcObject = new MediaStream([info.track]);
-    }
-    onCleanup(() => { el.srcObject = null; });
-  };
+  // Attach the stream to the element when it mounts (also after a
+  // bring-back) and when the share's track changes.
+  const attachStream = trackedVideo(() => trackInfo()?.track);
 
   return (
     <>
