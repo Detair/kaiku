@@ -126,3 +126,36 @@ describe("a screen share stop", () => {
     expect(shares.viewerState.availableTracks.get("own-new")?.track).toBe(fresh);
   });
 });
+
+describe("stop events and the stored pictures (exact)", () => {
+  it("a share's stop removes only the picture held when it arrived", async () => {
+    shares.addAvailableTrack("s1", track("v-1"), "u2", "bea", "Screen");
+    const stopping = handleScreenShareStopped(shareStop("u2", "s1"));
+    const newer = track("v-2");
+    shares.addAvailableTrack("s1", newer, "u2", "bea", "Screen");
+    await stopping;
+    expect(shares.viewerState.availableTracks.get("s1")?.track).toBe(newer);
+  });
+
+  it("the desktop app's entries without a track are not removed by a stop", async () => {
+    // Stop, then at once a new start: the new entry (also without a track) stays.
+    webcams.addAvailableTrack("u2", null);
+    const camStopping = handleWebcamStopped(camStop("u2"));
+    webcams.addAvailableTrack("u2", null);
+    await camStopping;
+    expect(webcams.getTrack("u2")).toBeNull();
+
+    shares.addAvailableTrack("s1", null, "u2", "bea", "Screen");
+    const shareStopping = handleScreenShareStopped(shareStop("u2", "s1"));
+    shares.addAvailableTrack("s1", null, "u2", "bea", "Screen");
+    await shareStopping;
+    expect(shares.viewerState.availableTracks.has("s1")).toBe(true);
+  });
+
+  it("a share's stop of another channel leaves the picture", async () => {
+    const v = track("v-1");
+    shares.addAvailableTrack("s1", v, "u2", "bea", "Screen");
+    await handleScreenShareStopped({ channel_id: "other", user_id: "u2", stream_id: "s1", reason: "user" } as never);
+    expect(shares.viewerState.availableTracks.get("s1")?.track).toBe(v);
+  });
+});

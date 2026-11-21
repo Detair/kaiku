@@ -221,6 +221,17 @@ describe("screenShareViewer", () => {
         expect(viewerState.videoTrack).toBeNull();
       });
 
+      it("swapping to another share drops the wait for the first", () => {
+        const b = createMockTrack();
+        addAvailableTrack("b", b, "user2", "Bob", "Screen 2");
+        startViewing("a"); // no track yet
+        swapPrimary("b");
+        addAvailableTrack("a", createMockTrack(), "user1", "Alice", "Screen 1");
+        vi.advanceTimersByTime(5_000);
+        expect(viewerState.viewingStreamId).toBe("b");
+        expect(unwrap(viewerState).videoTrack).toBe(b);
+      });
+
       it("viewing another share drops the wait for the first", () => {
         const b = createMockTrack();
         addAvailableTrack("b", b, "user2", "Bob", "Screen 2");
