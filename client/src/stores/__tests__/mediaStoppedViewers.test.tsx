@@ -107,6 +107,17 @@ describe("a screen share stop", () => {
     expect(shares.viewerState.viewingStreamId).toBeNull();
   });
 
+  it("the watched share stops: the viewer closes, no other share or own preview opens", async () => {
+    shares.addAvailableTrack("own", track("own-1"), "me", "me", "Screen");
+    shares.addAvailableTrack("a", track("v-a"), "u2", "bea", "Screen");
+    shares.addAvailableTrack("b", track("v-b"), "u3", "cem", "Screen");
+    shares.startViewing("a");
+    await handleScreenShareStopped(shareStop("u2", "a"));
+    expect(shares.viewerState.viewingStreamId).toBeNull();
+    expect(shares.viewerState.videoTrack).toBeNull();
+    expect([...shares.viewerState.availableTracks.keys()].sort()).toEqual(["b", "own"]);
+  });
+
   it("the own preview of a new share stays when the stop of the earlier one arrives", async () => {
     // Own previews are stored per share id, like everybody's shares.
     const fresh = track("own-2");

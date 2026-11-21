@@ -114,7 +114,7 @@ describe("screenShareViewer", () => {
       expect(getAvailableSharers()).toHaveLength(0);
     });
 
-    it("should auto-switch to next stream if removing primary view", () => {
+    it("closes the viewer when the watched stream is removed, also if others remain", () => {
       const track1 = createMockTrack();
       const track2 = createMockTrack();
       addAvailableTrack("stream-1", track1, "user1", "Alice", "Screen 1");
@@ -125,9 +125,10 @@ describe("screenShareViewer", () => {
 
       removeAvailableTrack("stream-1");
 
-      // Should auto-switch to stream-2
-      expect(viewerState.viewingStreamId).toBe("stream-2");
-      expect(unwrap(viewerState).videoTrack).toBe(track2);
+      // A share the person did not choose is not opened in its place.
+      expect(viewerState.viewingStreamId).toBeNull();
+      expect(viewerState.videoTrack).toBeNull();
+      expect(getAvailableSharers().map((s) => s.streamId)).toEqual(["stream-2"]);
     });
 
     it("should clear viewing when removing the only stream", () => {

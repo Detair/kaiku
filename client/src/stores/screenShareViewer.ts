@@ -126,22 +126,13 @@ export function removeAvailableTrack(streamId: string): void {
     });
   }
 
-  // If we were viewing this stream, auto-switch to next available
+  // The watched stream is gone: the viewer closes. It does not open
+  // another share (or the own preview) the person did not choose.
   if (viewerState.viewingStreamId === streamId) {
-    const remaining = Array.from(newTracks.keys());
-    if (remaining.length > 0) {
-      const nextStreamId = remaining[0];
-      const nextInfo = newTracks.get(nextStreamId)!;
-      setViewerState({
-        viewingStreamId: nextStreamId,
-        videoTrack: nextInfo.track,
-      });
-    } else {
-      setViewerState({
-        viewingStreamId: null,
-        videoTrack: null,
-      });
-    }
+    setViewerState({
+      viewingStreamId: null,
+      videoTrack: null,
+    });
   }
 }
 
