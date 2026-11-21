@@ -97,26 +97,22 @@ pub async fn login(
     let binding =
         super::login_attempts::handlers::binding(&headers, body.client_challenge.as_deref())?;
 
-    // B.5: the per-account counter (unknown usernames count alike, DC15).
+    // B.5: the per-account counter (unknown usernames count alike, DC15)
+    // reserves this try before the password is checked.
     let counter = crate::ratelimit::account::CounterKey::password(&body.username);
     let limiter = crate::ratelimit::account::AccountLimiter::new(&state.redis);
-    match limiter.check(&counter).await {
-        Ok(Ok(())) => {}
-        Ok(Err(d)) => {
-            tracing::warn!(
-                retry_after = d.retry_after,
-                "password sign-in delayed (B.5)"
-            );
-            return Err(AuthError::TooManyAttempts {
-                retry_after: d.retry_after,
-            });
-        }
-        Err(_) => return Err(AuthError::ServiceUnavailable),
-    }
+    let reserved = reserve_password(&state.redis, &counter).await?;
 
     // Always one Argon2 verify (a dummy hash for unknown users, the system
     // account and passwordless accounts), so the work is the same.
-    let user_opt = find_user_by_username(&state.db, &body.username).await?;
+    let user_opt = match find_user_by_username(&state.db, &body.username).await {
+        Ok(u) => u,
+        Err(e) => {
+            // Nothing was checked: the try goes back.
+            let _ = limiter.give_back(&counter, &reserved).await;
+            return Err(e.into());
+        }
+    };
     let stored_hash = user_opt
         .as_ref()
         .and_then(|u| u.password_hash.clone())
@@ -133,6 +129,13 @@ pub async fn login(
         Some(u) if u.password_hash.is_some() && !u.is_system && password_valid => Some(u),
         _ => None,
     };
+    // The reserved try settles: a correct password resets the counter, any
+    // other answer stays counted with its effects.
+    if user.is_some() {
+        let _ = limiter.record_success(&counter).await;
+    } else {
+        account_failure(&state, &counter, typed_account, reserved).await?;
+    }
     let mut conn = state.db.acquire().await?;
     let step = match &user {
         Some(u) => {
@@ -146,9 +149,6 @@ pub async fn login(
         None => None,
     };
     drop(conn);
-    if !password_valid {
-        account_failure(&state, &counter, typed_account).await?;
-    }
     // Codex B2: the verified hash must still be the account's, with the
     // generation the attempt records (a replacement in between → neutral).
     let step = match (&user, step) {
@@ -196,25 +196,45 @@ pub async fn login(
     if let (Some(ref rl), Some(Extension(ref nip))) = (&state.rate_limiter, &normalized_ip) {
         let _ = rl.clear_failed_auth(&nip.0).await;
     }
-    let _ = limiter.record_success(&counter).await;
     tracing::info!(user_id = %user.id, step = step.status, "Password correct; confirmation pending");
     Ok((status, jar, Json(step)))
 }
 
-/// B.5: count a wrong password for `counter`; at every 20th a coalesced
-/// `guessing` notice; the first failure at or past the 100th in an epoch
-/// throttles the password (its claim is given back if this fails, Flash r5).
+/// B.5: reserve one password try on `counter` before the password is
+/// checked: 429 `TOO_MANY_ATTEMPTS` while its delay runs (nothing counted),
+/// 503 when Valkey fails, else the try is counted as a failure until a
+/// success resets the counter.
+pub async fn reserve_password(
+    redis: &fred::clients::Client,
+    counter: &crate::ratelimit::account::CounterKey,
+) -> AuthResult<crate::ratelimit::account::Failure> {
+    match crate::ratelimit::account::AccountLimiter::new(redis)
+        .reserve(counter)
+        .await
+    {
+        Ok(Ok(reserved)) => Ok(reserved),
+        Ok(Err(d)) => {
+            tracing::warn!(retry_after = d.retry_after, "password check delayed (B.5)");
+            Err(AuthError::TooManyAttempts {
+                retry_after: d.retry_after,
+            })
+        }
+        Err(_) => Err(AuthError::ServiceUnavailable),
+    }
+}
+
+/// B.5: the effects of a wrong password whose try `failure` reserved (and
+/// so counted): at every 20th a coalesced `guessing` notice; the first
+/// failure at or past the 100th in an epoch throttles the password (its
+/// claim is given back if this fails, Flash r5).
 pub async fn account_failure(
     state: &AppState,
     counter: &crate::ratelimit::account::CounterKey,
     account: Option<Uuid>,
+    failure: crate::ratelimit::account::Failure,
 ) -> AuthResult<()> {
     use crate::ratelimit::account::{AccountLimiter, NOTICE_EVERY};
     let limiter = AccountLimiter::new(&state.redis);
-    let failure = limiter
-        .count_failure(counter)
-        .await
-        .map_err(|_| AuthError::ServiceUnavailable)?;
     let Some(user) = account else {
         return Ok(());
     };

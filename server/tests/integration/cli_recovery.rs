@@ -31,7 +31,7 @@ fn cli_ctx(app: &TestApp) -> CliCtx {
     }
 }
 
-async fn cli(app: &TestApp, args: &[&str]) -> anyhow::Result<Vec<String>> {
+pub(super) async fn cli(app: &TestApp, args: &[&str]) -> anyhow::Result<Vec<String>> {
     let args: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
     let cmd = Command::parse(&args).map_err(|e| anyhow::anyhow!("{e}"))?;
     let mut out = Out::default();

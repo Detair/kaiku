@@ -3,8 +3,10 @@
 //! A counter of consecutive failures per account name (passwords; unknown
 //! usernames count alike, DC15) or per account (TOTP), in Valkey under
 //! `ratelimit:acct:{kind}:{key}`. From the 5th failure on, further tries wait
-//! `30 s · 2^(n−5)` (at most 1 h); a success resets the counter. Strong
-//! sign-ins (passkey, key device, QR) never consult it.
+//! `30 s · 2^(n−5)` (at most 1 h); a success resets the counter. Every
+//! check reserves its try first ([`AccountLimiter::reserve`]): the try is
+//! counted before it is checked, so parallel tries never share a count.
+//! Strong sign-ins (passkey, key device, QR) never consult it.
 
 use std::time::Duration;
 
@@ -168,7 +170,10 @@ impl<'a> AccountLimiter<'a> {
     /// the counter ([`Self::reset_epoch`]), a failure applies the effects of
     /// the returned count, and a try that was never checked is given back
     /// ([`Self::give_back`]).
-    pub async fn reserve(&self, key: &CounterKey) -> Result<Result<Failure, Delay>, RateLimitError> {
+    pub async fn reserve(
+        &self,
+        key: &CounterKey,
+    ) -> Result<Result<Failure, Delay>, RateLimitError> {
         self.count(key, true).await
     }
 
@@ -436,9 +441,15 @@ mod tests {
         }
         let refused = limiter.reserve(&key).await.expect("Valkey");
         let delay = refused.expect_err("the 6th try waits");
-        assert!((1..=FIRST_DELAY_SECS).contains(&delay.retry_after), "{delay:?}");
+        assert!(
+            (1..=FIRST_DELAY_SECS).contains(&delay.retry_after),
+            "{delay:?}"
+        );
         // A refused try is not counted.
-        assert_eq!(limiter.read(&key).await.unwrap().0, i64::from(FREE_FAILURES));
+        assert_eq!(
+            limiter.read(&key).await.unwrap().0,
+            i64::from(FREE_FAILURES)
+        );
         forget(&redis, &key).await;
     }
 
@@ -446,12 +457,13 @@ mod tests {
     async fn parallel_reservations_pass_at_most_free_failures() {
         let redis = valkey().await;
         let key = fresh_key();
-        let tries = (0..200).map(|_| {
-            let redis = redis.clone();
-            let key = key.clone();
-            tokio::spawn(async move { AccountLimiter::new(&redis).reserve(&key).await })
-        })
-        .collect::<Vec<_>>();
+        let tries = (0..200)
+            .map(|_| {
+                let redis = redis.clone();
+                let key = key.clone();
+                tokio::spawn(async move { AccountLimiter::new(&redis).reserve(&key).await })
+            })
+            .collect::<Vec<_>>();
         let mut passed = 0;
         for t in tries {
             if t.await.unwrap().expect("Valkey").is_ok() {
@@ -505,10 +517,7 @@ mod tests {
         // Nor one a later try has counted past (that try stays counted).
         let second = reserve_ok(&limiter, &key).await;
         limiter.give_back(&key, &first).await.unwrap();
-        assert_eq!(
-            limiter.read(&key).await.unwrap().0,
-            i64::from(second.count)
-        );
+        assert_eq!(limiter.read(&key).await.unwrap().0, i64::from(second.count));
         forget(&redis, &key).await;
     }
 

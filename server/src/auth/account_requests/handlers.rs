@@ -180,21 +180,29 @@ async fn start_bootstrap(
     use crate::ratelimit::account::{AccountLimiter, CounterKey};
     let neutral = || AuthError::InvalidCredentials;
     let password_key = CounterKey::password(&body.username);
-    if matches!(body.first, Some(StartFactor::Password { .. })) {
-        match AccountLimiter::new(ctx.redis).check(&password_key).await {
-            Ok(Ok(())) => {}
-            Ok(Err(d)) => {
-                return Err(AuthError::TooManyAttempts {
-                    retry_after: d.retry_after,
-                })
-            }
-            Err(_) => return Err(AuthError::ServiceUnavailable),
+    // B.5: a password try is reserved before it is checked.
+    let reserved = match body.first {
+        Some(StartFactor::Password { .. }) => {
+            Some(crate::auth::login::reserve_password(ctx.redis, &password_key).await?)
         }
-    }
-    let user = crate::db::find_user_by_username(&state.db, &body.username).await?;
+        _ => None,
+    };
+    let user = match crate::db::find_user_by_username(&state.db, &body.username).await {
+        Ok(u) => u,
+        Err(e) => {
+            // Nothing was checked: the try goes back.
+            if let Some(r) = &reserved {
+                let _ = AccountLimiter::new(ctx.redis)
+                    .give_back(&password_key, r)
+                    .await;
+            }
+            return Err(e.into());
+        }
+    };
     let verified_hash = user.as_ref().and_then(|u| u.password_hash.clone());
     // Fable r2 m-d: before a one-time OIDC code is spent, the TOTP delay
     // and the start budget (neutral answers, as for every refusal here).
+    // Only an early answer: the code itself is reserved before its check.
     if let (Some(StartFactor::Oidc { .. }), Some(u)) = (&body.first, &user) {
         if crate::auth::totp_guard::pre_check(ctx, u.id).await.is_err()
             || starts_in_period(&state.db, ctx, u.id).await? >= super::recovery::STARTS_PER_PERIOD
@@ -208,18 +216,23 @@ async fn start_bootstrap(
     let (first_ok, oidc) = match &body.first {
         Some(StartFactor::Password { password }) => {
             let ok = password_ok(verified_hash.clone(), password).await?;
-            if ok {
+            match reserved {
                 // B.5: a correct password resets its counter (Flash r5).
-                let _ = crate::ratelimit::account::AccountLimiter::new(ctx.redis)
-                    .record_success(&password_key)
-                    .await;
-            } else {
-                crate::auth::login::account_failure(
-                    state,
-                    &password_key,
-                    user.as_ref().filter(|u| !u.is_system).map(|u| u.id),
-                )
-                .await?;
+                _ if ok => {
+                    let _ = AccountLimiter::new(ctx.redis)
+                        .record_success(&password_key)
+                        .await;
+                }
+                Some(failure) => {
+                    crate::auth::login::account_failure(
+                        state,
+                        &password_key,
+                        user.as_ref().filter(|u| !u.is_system).map(|u| u.id),
+                        failure,
+                    )
+                    .await?;
+                }
+                None => {}
             }
             (ok, false)
         }
@@ -245,14 +258,6 @@ async fn start_bootstrap(
         return Err(neutral());
     };
     if !first_ok || crate::auth::queries::is_user_globally_banned(&state.db, user.id).await? {
-        return Err(neutral());
-    }
-    // Fable r2 (i): the delay is only reachable after a correct first
-    // factor, so it answers neutrally too.
-    if crate::auth::totp_guard::pre_check(ctx, user.id)
-        .await
-        .is_err()
-    {
         return Err(neutral());
     }
     let mut tx = state.db.begin().await?;
@@ -300,10 +305,25 @@ async fn start_bootstrap(
     });
     let totp_ok = match (&body.totp_code, &secret_now) {
         (Some(code), Some(secret)) if st.totp.state == factors::FactorState::Active => {
-            let ok =
-                crate::auth::reauth::accept_totp_ctx(ctx, user.id, secret, &user.username, code)
-                    .await?;
-            crate::auth::totp_guard::after(
+            // B.5: the code's try is reserved under the account lock. Fable
+            // r2 (i): the delay is only reachable after a correct first
+            // factor, so it answers neutrally too; the transaction rolls
+            // back, so a refused try counts no start.
+            let (ok, reserved) = match crate::auth::totp_guard::check_reserved(
+                ctx,
+                user.id,
+                secret,
+                &user.username,
+                code,
+                st.totp.generation,
+            )
+            .await
+            {
+                Ok(checked) => checked,
+                Err(AuthError::TooManyAttempts { .. }) => return Err(neutral()),
+                Err(e) => return Err(e),
+            };
+            crate::auth::totp_guard::settle(
                 ctx,
                 Some(state),
                 user.id,
@@ -312,6 +332,7 @@ async fn start_bootstrap(
                     totp_generation: st.totp.generation,
                     password: password_used,
                 },
+                reserved,
             )
             .await;
             ok

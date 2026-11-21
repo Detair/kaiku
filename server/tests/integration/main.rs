@@ -25,6 +25,7 @@ mod channels_http;
 mod cli;
 mod cli_recovery;
 mod connectivity_http;
+mod counter_reservation;
 mod credential_states;
 mod custom_status;
 mod device_login;

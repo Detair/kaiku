@@ -1,10 +1,13 @@
 //! The per-account TOTP counter on every TOTP check (B.5; review round 1).
 //!
-//! [`pre_check`] answers 429 `TOO_MANY_ATTEMPTS` while the counter's delay
-//! runs; [`after`] records the outcome: a success resets the counter, every
-//! 20th failure records a coalesced `guessing {factor: totp}`, the first at
-//! or past the 100th in an epoch throttles TOTP and compromises the password generation that came
-//! with it (F4). The effects run in their own transaction, spawned, because the
+//! Every check reserves its try first ([`check_reserved`]): while the
+//! counter's delay runs it answers 429 `TOO_MANY_ATTEMPTS` without checking,
+//! else the try is counted before the code is looked at, so parallel tries
+//! never share a count. [`settle`] then records the outcome: a success
+//! resets the counter, every 20th failure records a coalesced
+//! `guessing {factor: totp}`, the first at or past the 100th in an epoch
+//! throttles TOTP and compromises the password generation that came with it
+//! (F4). The effects run in their own transaction, spawned, because the
 //! caller may hold the account lock in a transaction that rolls back on the
 //! refusal; the spawned one waits for that lock.
 
@@ -13,10 +16,13 @@ use uuid::Uuid;
 use super::ctx::AuthCtx;
 use super::error::{AuthError, AuthResult};
 use super::factors::{Factor, FactorRef, StateCause};
-use crate::ratelimit::account::{AccountLimiter, CounterKey, NOTICE_EVERY};
+use crate::ratelimit::account::{AccountLimiter, CounterKey, Failure, NOTICE_EVERY};
 
-/// 429 while the delay of the account's current TOTP generation runs
-/// (fail closed on Valkey errors).
+/// 429 while the delay of the account's current TOTP generation runs.
+///
+/// Fails closed on Valkey errors. Counts nothing: only an early answer
+/// before work that must not be spent during the delay; the check itself
+/// always goes through [`check_reserved`].
 pub async fn pre_check(ctx: &AuthCtx<'_>, user: Uuid) -> AuthResult<()> {
     let generation = current_generation(ctx, user).await?;
     match AccountLimiter::new(ctx.redis)
@@ -46,8 +52,73 @@ pub struct Used {
     pub password: Option<FactorRef>,
 }
 
-/// Record the outcome of a TOTP check. With `state` the notices of the
+/// Reserve one try on `user`'s counter of TOTP generation `generation`:
+/// 429 `TOO_MANY_ATTEMPTS` while its delay runs, 503 when Valkey fails.
+pub async fn reserve(ctx: &AuthCtx<'_>, user: Uuid, generation: i64) -> AuthResult<Failure> {
+    match AccountLimiter::new(ctx.redis)
+        .reserve(&CounterKey::totp(user, generation))
+        .await
+    {
+        Ok(Ok(reserved)) => Ok(reserved),
+        Ok(Err(d)) => {
+            tracing::warn!(%user, retry_after = d.retry_after, "TOTP check delayed (B.5)");
+            Err(AuthError::TooManyAttempts {
+                retry_after: d.retry_after,
+            })
+        }
+        Err(_) => Err(AuthError::ServiceUnavailable),
+    }
+}
+
+/// Reserve a try, then check `code` against the TOTP of `generation`.
+///
+/// The check is replay-checked. Returns `(valid, the reserved try)`;
+/// settle it with [`settle`]. A check that could not run (the replay store
+/// failed) gives its try back and returns the error.
+pub async fn check_reserved(
+    ctx: &AuthCtx<'_>,
+    user: Uuid,
+    encrypted_secret: &str,
+    username: &str,
+    code: &str,
+    generation: i64,
+) -> AuthResult<(bool, Failure)> {
+    let reserved = reserve(ctx, user, generation).await?;
+    match super::reauth::accept_totp_ctx(ctx, user, encrypted_secret, username, code).await {
+        Ok(valid) => Ok((valid, reserved)),
+        Err(e) => {
+            let _ = AccountLimiter::new(ctx.redis)
+                .give_back(&CounterKey::totp(user, generation), &reserved)
+                .await;
+            Err(e)
+        }
+    }
+}
+
+/// Settle a reserved and checked try.
+///
+/// A success resets the counter of the generation checked, a failure
+/// (already counted) applies its effects. With `state` the notices of the
 /// effects are delivered at once (else by the minute sweep).
+pub async fn settle(
+    ctx: &AuthCtx<'_>,
+    state: Option<&crate::api::AppState>,
+    user: Uuid,
+    ok: bool,
+    used: Used,
+    reserved: Failure,
+) {
+    if ok {
+        let _ = AccountLimiter::new(ctx.redis)
+            .reset_epoch(&CounterKey::totp(user, used.totp_generation))
+            .await;
+        return;
+    }
+    failure_effects(ctx, state, user, used, reserved);
+}
+
+/// Count the outcome of a TOTP check made without a reservation (tools and
+/// tests); sign-in paths use [`check_reserved`] and [`settle`].
 pub async fn after(
     ctx: &AuthCtx<'_>,
     state: Option<&crate::api::AppState>,
@@ -66,6 +137,17 @@ pub async fn after(
     let Ok(failure) = limiter.count_failure(&key).await else {
         return;
     };
+    failure_effects(ctx, state, user, used, failure);
+}
+
+/// The 20th / 100th effects of a counted failure, spawned.
+fn failure_effects(
+    ctx: &AuthCtx<'_>,
+    state: Option<&crate::api::AppState>,
+    user: Uuid,
+    used: Used,
+    failure: Failure,
+) {
     let (n, epoch, throttle) = (failure.count, failure.epoch, failure.throttle);
     if !n.is_multiple_of(NOTICE_EVERY) && !throttle {
         return;
@@ -168,7 +250,7 @@ async fn effects(
     Ok(())
 }
 
-/// [`pre_check`], the replay-checked verification and [`after`] in one.
+/// [`check_reserved`] and [`settle`] in one.
 pub async fn verify(
     ctx: &AuthCtx<'_>,
     user: Uuid,
@@ -177,9 +259,9 @@ pub async fn verify(
     code: &str,
     totp_generation: i64,
 ) -> AuthResult<bool> {
-    pre_check(ctx, user).await?;
-    let ok = super::reauth::accept_totp_ctx(ctx, user, encrypted_secret, username, code).await?;
-    after(
+    let (ok, reserved) =
+        check_reserved(ctx, user, encrypted_secret, username, code, totp_generation).await?;
+    settle(
         ctx,
         None,
         user,
@@ -188,6 +270,7 @@ pub async fn verify(
             totp_generation,
             password: None,
         },
+        reserved,
     )
     .await;
     Ok(ok)

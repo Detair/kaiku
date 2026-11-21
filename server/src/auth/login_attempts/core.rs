@@ -29,6 +29,7 @@ use crate::auth::session_issue::{
     issue_session_tx, IssuedSession, NewSession, SessionClient, SignInMethod,
 };
 use crate::auth::strong::AuthenticatorRef;
+use crate::ratelimit::account::Failure;
 use crate::security_events::{record, Actor, EventType, NewSecurityEvent};
 
 /// An attempt lives at most 10 minutes (SM1; also a DB CHECK).
@@ -1156,18 +1157,21 @@ pub async fn record_unfinished(conn: &mut PgConnection, ids: &[Uuid]) -> sqlx::R
 /// Outcome of a TOTP step.
 pub enum TotpOutcome {
     /// Signed in; the TOTP generation the code was checked against (its
-    /// counter alone is reset, Codex r4).
-    Signed(Collected, i64),
+    /// counter alone is reset, Codex r4) and the try reserved on it.
+    Signed(Collected, i64, Failure),
     /// A wrong or replayed code: `second_factor_failed` was recorded; the
-    /// TOTP generation the code was checked against (Codex r3).
-    WrongCode(Vec<Uuid>, i64),
+    /// TOTP generation the code was checked against (Codex r3) and the try
+    /// reserved (counted) on it.
+    WrongCode(Vec<Uuid>, i64, Failure),
 }
 
 /// The TOTP step (SM1, F4).
 ///
 /// A `password`/`oidc` attempt in `open` or `claimed`, its first factor
 /// unchanged and not disabled (OIDC: no password check), TOTP `active` (else
-/// 403 `TOTP_UNAVAILABLE`), a code accepted once (replay store). A claimed
+/// 403 `TOTP_UNAVAILABLE`), a code accepted once (replay store). The try is
+/// reserved on the account's TOTP counter right before the check, under the
+/// account lock (429 `TOO_MANY_ATTEMPTS` while its delay runs). A claimed
 /// challenge becomes void; mints a probation session.
 #[tracing::instrument(skip(conn, ctx, secret, code, client))]
 pub async fn totp_tx(
@@ -1216,7 +1220,16 @@ pub async fn totp_tx(
     if st.totp.state.is_disabled() {
         return Err(AuthError::TotpUnavailable);
     }
-    if !crate::auth::reauth::accept_totp_ctx(ctx, user, &encrypted, &username, code).await? {
+    let (valid, reserved) = crate::auth::totp_guard::check_reserved(
+        ctx,
+        user,
+        &encrypted,
+        &username,
+        code,
+        st.totp.generation,
+    )
+    .await?;
+    if !valid {
         let mut ev = NewSecurityEvent::new(
             user,
             EventType::SecondFactorFailed,
@@ -1228,6 +1241,7 @@ pub async fn totp_tx(
         return Ok(Locked::Done(TotpOutcome::WrongCode(
             vec![record(conn, ev).await?],
             st.totp.generation,
+            reserved,
         )));
     }
     // "Phone not at hand?" while a phone holds the claim: that challenge is
@@ -1247,6 +1261,7 @@ pub async fn totp_tx(
     Ok(Locked::Done(TotpOutcome::Signed(
         collected,
         st.totp.generation,
+        reserved,
     )))
 }
 
