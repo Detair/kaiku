@@ -116,6 +116,17 @@ class WakeSchedulerTest {
     }
 
     @Test
+    fun `ended of a new call is queued although the conversation's last call was missed or ended`() {
+        for (earlier in listOf(CallPhase.MISSED, CallPhase.ENDED)) {
+            callStore.setShown("me", "c1", ShownCall(otherCallId, earlier, clock - 10 * 60 * 1000L))
+            val before = enqueuer.calls.size
+            scheduler.onWake(call(CallState.ENDED, CallEndReason.NO_ANSWER, id = callId))
+            assertEquals("$earlier", before + 1, enqueuer.calls.size)
+            callStore.clear("me", "c1")
+        }
+    }
+
+    @Test
     fun `call with unknown state is ignored`() {
         scheduler.onWake(call(CallState.UNKNOWN))
         assertTrue(enqueuer.calls.isEmpty())

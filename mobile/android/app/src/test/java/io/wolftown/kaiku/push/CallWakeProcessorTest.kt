@@ -637,4 +637,51 @@ class CallWakeProcessorTest {
 
         assertTrue(sink.posts.none { it.kind == CallKind.MISSED })
     }
+
+    // -- An earlier call of the conversation does not hide a new call's end ---------------------
+
+    private val tenMinutes = 10 * 60 * 1000L
+
+    /** The end push of [callB], which never rang here, as the scheduler hands it on: intake, then the work. */
+    private suspend fun endOfNewCall(reason: CallEndReason = CallEndReason.NO_ANSWER): CallOutcome? {
+        if (!intake.accept(ended(reason, callB))) return null
+        return processor.process(ended(reason, callB), owner)
+    }
+
+    @Test
+    fun `a call nobody answered is a missed call although the conversation's last call was missed long ago`() = runTest {
+        store.setShown("me", ch, ShownCall(callA, CallPhase.MISSED, clock - 30L * 24 * 60 * 60 * 1000))
+        assertEquals(CallOutcome.MISSED, endOfNewCall())
+        assertEquals(listOf(missed(callB)), sink.posts)
+        // Once: its duplicate end changes nothing.
+        assertEquals(null, endOfNewCall())
+        assertEquals(1, sink.posts.size)
+    }
+
+    @Test
+    fun `a call nobody answered is a missed call although the conversation's last call ended ten minutes ago`() = runTest {
+        store.setShown("me", ch, ShownCall(callA, CallPhase.ENDED, clock - tenMinutes))
+        assertEquals(CallOutcome.MISSED, endOfNewCall())
+        assertEquals(listOf(missed(callB)), sink.posts)
+        assertEquals(null, endOfNewCall())
+        assertEquals(1, sink.posts.size)
+    }
+
+    @Test
+    fun `an earlier call of the conversation that answered ends shows nothing for a new call that somebody answered`() = runTest {
+        store.setShown("me", ch, ShownCall(callA, CallPhase.MISSED, clock - tenMinutes))
+        assertEquals(CallOutcome.CANCELLED, endOfNewCall(CallEndReason.LAST_LEFT))
+        assertTrue(sink.posts.isEmpty())
+    }
+
+    @Test
+    fun `the end of another call is ignored while an earlier call of the conversation still rings here`() = runTest {
+        // One call per conversation: while call A rings here, the end of call B (never rung here)
+        // is not taken; A's own end, or its ring's 100 s, decide about A.
+        ring(callA)
+        clock += 30_000
+        assertEquals(null, endOfNewCall())
+        assertEquals(1, sink.posts.size)
+        assertEquals(CallKind.INCOMING, sink.posts.single().kind)
+    }
 }

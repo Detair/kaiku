@@ -151,13 +151,16 @@ internal object CallRules {
 
     /**
      * An ended with a known reason applies to the ringing (or already ending)
-     * call it names, or when no call is stored at all (the phone missed the
-     * ringing). Another stored call, a missed call or a tombstone make it ignored.
+     * call it names, or when no other call is going on for the channel (the
+     * phone missed the ringing). Another call blocks it only while that call
+     * still rings or ends here; an earlier call shown as missed or ended does
+     * not. For the call it names, a missed call or a tombstone make it ignored
+     * (a duplicate).
      */
     fun endedApplies(stored: ShownCall?, call: CallInfo, nowMs: Long): Boolean {
         if (call.reason == null || call.reason == CallEndReason.UNKNOWN) return false
         val current = live(stored, nowMs) ?: return true
-        return current.callId == call.callId &&
-            (current.phase == CallPhase.RINGING || current.phase == CallPhase.ENDING)
+        val going = current.phase == CallPhase.RINGING || current.phase == CallPhase.ENDING
+        return if (current.callId == call.callId) going else !going
     }
 }
