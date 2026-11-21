@@ -75,10 +75,10 @@
 //!    in the order they were read. `admin_subscribe` ([`SocketAccess::subscribe_admin`]) decides
 //!    nothing itself: it records the request and answers it as (6) says.
 //! 2. **An answer counts only if it is the newest.** It is applied only if the user epoch is
-//!    unchanged and nothing invalidated the admin scope since the read was planned
-//!    (`admin_invalidations`, counted for this scope alone: an admin frame taken, an
-//!    `admin_subscribe`, the backstop). An answer that does not count changes nothing on the scope;
-//!    it is read again.
+//!    unchanged, nothing invalidated the admin scope since the read was planned
+//!    (`admin_invalidations`, counted for this scope alone: an admin frame taken, the backstop) and
+//!    no read planned later has been applied (plans that read the scope are numbered). An answer
+//!    that does not count changes nothing on the scope; it is read again.
 //! 3. **A frame is pinned in one critical section.** [`SocketAccess::admit_admin`] either refuses
 //!    the frame outright — the stream is not requested, or the scope is a current "no" (cached per
 //!    user epoch: no read) — or invalidates the scope, in that same critical section. From there
@@ -93,24 +93,31 @@
 //!    failing; the recovery asks for a resync only if it finds the stream allowed.
 //! 6. **The answer is the socket's own, and asking costs a bounded number of reads.** The answer to
 //!    `admin_subscribe` depends on the user epoch, this socket's earlier answers and the result of
-//!    a read the request itself asked for — never on what a frame's read wrote. A refusal stands
-//!    for its user epoch: asking again is answered without a read. A request that would read a
-//!    "yes" again (for a fresh answer; frames are read anyway) does so at most once per
-//!    [`ADMIN_SUBSCRIBE_COOLDOWN`], socket and user epoch; meanwhile, at that epoch, the socket's
-//!    earlier answer stands, and without one it is "not decided yet". A new user epoch gets one
-//!    read of its own, also within the cooldown. So within the cooldown an elevation that ran out
-//!    without an epoch moving keeps its earlier "yes": nothing is written on it, every frame is
-//!    read on its own. The reads it asks for run in a pool of their own
-//!    ([`ADMIN_SUBSCRIBE_CONCURRENCY`]) and never take one of the permits other revalidations wait
-//!    for. It takes its socket's revalidation gate first, without a deadline (a frame's read under
-//!    way is waited for, so the answer is the same with and without it, only later), and a permit
-//!    of that pool second, for at most [`ADMIN_SUBSCRIBE_WAIT`]; then it lets go of the gate and
-//!    answers "not decided yet". No task holds a permit while it waits for a gate. Per attempt a
-//!    subscribe takes at most: the wait for the gate (its holder is bounded by its own read's
-//!    [`REFRESH_TIMEOUT`] plus its wait for a permit of the other revalidations, so seconds while
-//!    the database is saturated), the wait for the pool permit, and its own read
-//!    ([`REFRESH_TIMEOUT`]); up to [`DECISION_REVALIDATIONS`] attempts while the epoch keeps
-//!    moving. Frames queued on that socket wait behind it meanwhile.
+//!    a read the request itself made — never on the settled decision, which frames' reads also
+//!    write. Every attempt makes the revalidation read the admin scope for it (also when the scope
+//!    is current; it invalidates nothing), and what that read found is the reply if the user epoch
+//!    it was planned for still holds — also when a frame taken meanwhile keeps that answer from
+//!    settling the decision. If the epoch moved while it read, it reads again (up to
+//!    [`DECISION_REVALIDATIONS`] attempts, then "not decided yet"). The reply is remembered for the
+//!    epoch its read was planned for. A refusal stands for its user epoch: asking again is answered
+//!    without a read. A request that would read a "yes" again (for a fresh answer; frames are read
+//!    anyway) does so at most once per [`ADMIN_SUBSCRIBE_COOLDOWN`], socket and user epoch;
+//!    meanwhile, at that epoch, the socket's earlier answer stands, and without one it is "not
+//!    decided yet". A new user epoch gets one read of its own, also within the cooldown. So within
+//!    the cooldown an elevation that ran out without an epoch moving keeps its earlier "yes":
+//!    nothing is written on it, every frame is read on its own. The reads it asks for run in a pool
+//!    of their own ([`ADMIN_SUBSCRIBE_CONCURRENCY`]) and never take one of the permits other
+//!    revalidations wait for. It takes its socket's revalidation gate first, without a deadline (a
+//!    frame's read under way is waited for, so the answer is the same with and without it, only
+//!    later), and a permit of that pool second, for at most [`ADMIN_SUBSCRIBE_WAIT`]; then it lets
+//!    go of the gate and answers "not decided yet". No task holds a permit while it waits for a
+//!    gate. Per attempt a subscribe takes at most: the wait for the gate (its holder is bounded by
+//!    its own read's [`REFRESH_TIMEOUT`] plus its wait for a permit of the other revalidations, so
+//!    seconds while the database is saturated), the wait for the pool permit, and its own read
+//!    ([`REFRESH_TIMEOUT`]); up to [`DECISION_REVALIDATIONS`] attempts, each one only after the
+//!    epoch moved during the previous read. So a request costs at most one read per user epoch it
+//!    sees, and at most [`DECISION_REVALIDATIONS`] reads in all. Frames queued on that socket wait
+//!    behind it meanwhile.
 //!
 //! # Revalidation cost
 //!
@@ -1844,15 +1851,16 @@ impl SocketAccess {
     ///
     /// Records the request and answers it; it decides nothing itself (the
     /// revalidation writes the decision). The answer depends on the user
-    /// epoch, this socket's earlier answers and a read this request asks
-    /// for, never on what a frame's read wrote. The request stays whatever
+    /// epoch, this socket's earlier answers and what a read this request
+    /// made found at an epoch that still held — never on the settled
+    /// decision, which frames' reads also write. The request stays whatever
     /// the answer (like a refused `subscribe`): a later elevation restores
     /// delivery.
     ///
     /// What it costs is bounded (see the module docs, The admin stream): a
-    /// refusal at the current user epoch answers at once; otherwise a read
-    /// planned after the request answers it, at most one such read per
-    /// socket and [`ADMIN_SUBSCRIBE_COOLDOWN`], in a pool of its own.
+    /// refusal at the current user epoch answers at once; otherwise its own
+    /// read answers it, at most one such read per socket, user epoch and
+    /// [`ADMIN_SUBSCRIBE_COOLDOWN`], in a pool of its own.
     pub async fn subscribe_admin(&self) -> AdminSubscription {
         let epoch = self.user_epoch.load(Ordering::SeqCst);
         match self.request_admin() {
@@ -1923,10 +1931,9 @@ impl SocketAccess {
     /// was a refusal (it stands for its epoch), or within the cooldown.
     /// Otherwise the scope is to be read: not now while the cooldown at
     /// this user epoch or a backoff runs ("not decided yet"), else by a
-    /// read asked for here (once per epoch also within the cooldown) —
-    /// the scope is invalidated, so that an answer planned earlier does not
-    /// count (a failing scope stays failing, drops kept). What frames'
-    /// reads settled is not looked at.
+    /// read of its own (once per epoch also within the cooldown). Nothing
+    /// is invalidated here, and what frames' reads settled is not looked
+    /// at.
     fn request_admin(&self) -> AdminRequest {
         let mut inner = self.lock();
         let now = Instant::now();
