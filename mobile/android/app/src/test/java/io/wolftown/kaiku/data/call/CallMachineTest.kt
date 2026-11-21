@@ -1376,4 +1376,16 @@ class CallMachineTest {
             assertTrue(model.busy.isEmpty())
         }
     }
+
+    @Test
+    fun `a status answer after this user's answer was taken updates who is in the call`() {
+        incoming()
+        send(accept())
+        send(JoinOk(dm, "c-1", setOf("anna", me)))
+        // While the voice sets up, Anna left and Bob joined; the server's look says so.
+        send(Resynced(dm, snapshot(participants = setOf(me, "bob")), 1L, model.state))
+        assertEquals(setOf("bob"), (model.state as CallState.Connecting).others)
+        send(VoiceJoined(dm, 2L, voice))
+        assertEquals(setOf("bob"), (model.state as CallState.Connected).others)
+    }
 }

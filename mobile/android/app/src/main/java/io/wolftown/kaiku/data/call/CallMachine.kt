@@ -1185,6 +1185,8 @@ object CallMachine {
                         answer.active && me in answer.participants
                     if (!stillIn) return silentEnd(e.channelId, callId, shownVoiceId() ?: 0L)
                     if (state is CallState.Connected) return to(state.copy(others = answer!!.participants - me))
+                    // This user's answer was taken: the server's look says who else is in the call.
+                    if (state is CallState.Connecting && state.voice) return to(state.copy(others = answer!!.participants - me))
                     return same()
                 }
                 else -> return same()
