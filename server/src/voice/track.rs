@@ -93,6 +93,9 @@ const fn should_downgrade(current: Layer, target: Layer) -> bool {
     layer_order(target) < layer_order(current)
 }
 
+/// A forwarding task's reusable list of where a packet goes.
+pub type ForwardTargets = Vec<(Uuid, Arc<TrackLocalStaticRTP>)>;
+
 /// Manages RTP packet forwarding between participants.
 ///
 /// Uses `DashMap` for lock-free concurrent access, which is critical for the
@@ -172,15 +175,16 @@ impl TrackRouter {
     /// This is the hot path called ~50 times/second per participant.
     /// Uses `DashMap` for lock-free concurrent reads to avoid contention.
     /// The `layer` parameter indicates which simulcast layer this packet belongs to.
+    /// `targets` is the forwarding task's own buffer, reused for every packet
+    /// (no allocation per packet once it has grown to the room's size).
     pub async fn forward_rtp(
         &self,
         source_user_id: Uuid,
         source_type: TrackSource,
         layer: Layer,
         rtp_packet: &RtpPacket,
+        targets: &mut ForwardTargets,
     ) {
-        let key = (source_user_id, source_type);
-
         // Check if this source has multiple simulcast layers registered.
         // Non-simulcast sources (e.g., screen share via addTrack without RID)
         // only have a single layer — forward to all subscribers regardless of
@@ -195,23 +199,8 @@ impl TrackRouter {
                     Layer::Medium,
                 ));
 
-        // Collect the tracks to write while the map's guard is held, and
-        // write after it is released: a slow write must not hold the shard
-        // (a subscribe or removal on it would block its worker thread).
-        let targets: Vec<(Uuid, Arc<TrackLocalStaticRTP>)> = self
-            .subscriptions
-            .get(&key)
-            .map(|subscribers| {
-                subscribers
-                    .value()
-                    .iter()
-                    .filter(|sub| sub.active_layer == layer || !is_simulcast)
-                    .map(|sub| (sub.subscriber_id, sub.local_track.clone()))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let forwarded = targets.len();
-        for (subscriber_id, local_track) in targets {
+        self.collect_targets((source_user_id, source_type), layer, is_simulcast, targets);
+        for (subscriber_id, local_track) in targets.iter() {
             // Write RTP packet to local track (forwards to subscriber)
             if let Err(e) = local_track.write_rtp(rtp_packet).await {
                 warn!(
@@ -221,8 +210,34 @@ impl TrackRouter {
                 );
             }
         }
+        let forwarded = targets.len();
+        // Keep the capacity, not the tracks.
+        targets.clear();
         if forwarded > 0 {
             crate::observability::metrics::record_rtp_packet_forwarded();
+        }
+    }
+
+    /// Put the subscribers of `key` that get a packet of `layer` into
+    /// `targets` (cleared first). Collected while the map's guard is held;
+    /// the caller writes after it is released, so a slow write never holds
+    /// the shard (a subscribe or removal on it would block its worker).
+    fn collect_targets(
+        &self,
+        key: (Uuid, TrackSource),
+        layer: Layer,
+        is_simulcast: bool,
+        targets: &mut ForwardTargets,
+    ) {
+        targets.clear();
+        if let Some(subscribers) = self.subscriptions.get(&key) {
+            targets.extend(
+                subscribers
+                    .value()
+                    .iter()
+                    .filter(|sub| sub.active_layer == layer || !is_simulcast)
+                    .map(|sub| (sub.subscriber_id, sub.local_track.clone())),
+            );
         }
     }
 
@@ -462,6 +477,8 @@ pub fn spawn_rtp_forwarder(
 ) {
     tokio::spawn(async move {
         let mut buf = vec![0u8; 1500]; // MTU size
+                                       // Where each packet goes; reused for every packet of this track.
+        let mut targets = ForwardTargets::new();
         let mut packet_count: u64 = 0;
 
         loop {
@@ -494,7 +511,7 @@ pub fn spawn_rtp_forwarder(
                     }
                     // Forward the RTP packet to all subscribers whose active layer matches.
                     router
-                        .forward_rtp(source_user_id, source_type, layer, &packet)
+                        .forward_rtp(source_user_id, source_type, layer, &packet, &mut targets)
                         .await;
                 }
                 Err(e) => {
@@ -739,7 +756,13 @@ mod tests {
 
         // Should not panic when no subscribers exist
         router
-            .forward_rtp(source_id, TrackSource::Microphone, Layer::High, &rtp_packet)
+            .forward_rtp(
+                source_id,
+                TrackSource::Microphone,
+                Layer::High,
+                &rtp_packet,
+                &mut Vec::new(),
+            )
             .await;
         router
             .forward_rtp(
@@ -747,6 +770,7 @@ mod tests {
                 TrackSource::ScreenVideo(Uuid::nil()),
                 Layer::High,
                 &rtp_packet,
+                &mut Vec::new(),
             )
             .await;
     }
@@ -814,6 +838,60 @@ mod tests {
 #[cfg(test)]
 mod simulcast_tests {
     use super::*;
+
+    /// Forwarding reaches every subscriber of the packet's layer and none of
+    /// another layer (with layers), and a subscriber removed between two
+    /// packets gets nothing more; the task's buffer is reused.
+    #[tokio::test]
+    async fn forwarding_targets_follow_layers_and_removals() {
+        let router = TrackRouter::new();
+        let source = Uuid::new_v4();
+        let (a, b, c) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        let key = (source, TrackSource::Webcam);
+        for (viewer, layer) in [(a, Layer::High), (b, Layer::Low), (c, Layer::High)] {
+            router
+                .subscriptions
+                .entry(key)
+                .or_default()
+                .push(Subscription {
+                    subscriber_id: viewer,
+                    local_track: Arc::new(TrackLocalStaticRTP::new(
+                        RTCRtpCodecCapability {
+                            mime_type: "video/VP8".into(),
+                            clock_rate: 90_000,
+                            ..Default::default()
+                        },
+                        "t".into(),
+                        "s".into(),
+                    )),
+                    preferred_layer: LayerPreference::Auto,
+                    active_layer: layer,
+                    remb_estimate: u64::MAX,
+                    last_layer_change: Instant::now(),
+                });
+        }
+        let ids = |t: &ForwardTargets| t.iter().map(|(id, _)| *id).collect::<Vec<_>>();
+        let mut targets = ForwardTargets::new();
+
+        router.collect_targets(key, Layer::High, true, &mut targets);
+        assert_eq!(
+            ids(&targets),
+            vec![a, c],
+            "the high layer's subscribers only"
+        );
+        router.collect_targets(key, Layer::Low, false, &mut targets);
+        assert_eq!(ids(&targets), vec![a, b, c], "one stream: everyone");
+
+        router
+            .remove_subscriber(source, TrackSource::Webcam, c)
+            .await;
+        router.collect_targets(key, Layer::High, true, &mut targets);
+        assert_eq!(
+            ids(&targets),
+            vec![a],
+            "a removed subscriber gets nothing more"
+        );
+    }
 
     /// A viewer's own layer choice on a source without layers reports no
     /// layer change (it receives the one stream either way).
