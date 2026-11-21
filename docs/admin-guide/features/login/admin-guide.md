@@ -516,21 +516,26 @@ use is notified to the account, its recovery contact and all admins.
 
 A try is counted **before** it is checked: the counter is raised in the same atomic step that
 looks at the delay. So tries sent in parallel, from one address or from many, never share a count:
-after the 5th try of a burst every further one is refused without being checked (with a wait time
-where the route reports one: the bootstrap request answers neutrally without a wait time, and on
-a recovery request an exhausted start budget answers first).
+after the 5th try of a burst every further one is refused without being checked, with 429 and a
+wait time. Two exceptions: on the bootstrap request a refused sign-in **code** is answered
+neutrally without a wait time (a password try that has to wait gets 429 with a wait time there
+too), and on a recovery request an exhausted start budget answers first.
 
-Only a try whose answer already shows the factor was right resets the counter: on `/auth/login`
-the answer with a next step, on the requests an accepted request (the bootstrap and recovery
-password use the same decision as `/auth/login`). A try that gets the neutral answer counts as a
-failed try with all its effects, whatever was typed — for example a right password while the
-password is `throttled` or `compromised`, or on an account without a usable second step.
+When a try resets its counter:
 
-A try whose check failed with a server error (503) is given back, but only while nothing else
-has touched the counter since; a wait time that try started stays unless the count falls below
-five. For a sign-in code the record of used codes is only written after the code matched; if that
-record fails, the answer is 503, the try is given back and the counter is not reset. The per-IP
-limits below stay in front, unchanged.
+- **Password** (`/auth/login`, bootstrap request, recovery request): exactly when `/auth/login`
+  would answer that password with a next step for that account. Every other try stays counted
+  with all its effects — also a right password while the password is `throttled` or
+  `compromised`, or on an account without a usable second step. On the bootstrap request a right
+  password of an account with a next step resets the password counter even when the request as a
+  whole is refused (for example because the code was wrong).
+- **Sign-in code**: on the sign-in step, the recovery request and a part-2 action when it is
+  right; on the bootstrap request only when the request is accepted.
+
+If the server cannot complete a check because of an internal error, it answers 503, the try is
+given back (only while nothing else has touched the counter since) and the counter is not reset;
+a wait time that try started stays unless the count falls below five. The per-IP limits below
+stay in front, unchanged.
 
 Counters live in Valkey and expire after 24 h without failures. If Valkey is down, password and
 TOTP steps answer 503 `SERVICE_UNAVAILABLE`. Passkeys, QR sign-in, device-key sign-in and existing

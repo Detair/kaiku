@@ -845,21 +845,22 @@ and `ratelimit:acct:totp:{user_id}:{generation}`.
   script, gated on `next` — while the delay runs it answers 429 and counts nothing, else it counts
   the try as a failure at once. Then the check runs and the try is settled: a success resets the
   counter (`reset_epoch`), a failure applies the effects below with the reserved count, and a try
-  whose check failed with a server error (the user lookup, or the record of used codes, which is
-  only written after a code matched) is given back (`give_back`: its throttle claim is always
-  released; the count goes back only while epoch and count are unchanged, else the try stays
-  counted; a delay it started stays unless the count falls below 5). A right code whose record
-  fails answers 503 and does not reset the counter. Parallel tries therefore get distinct counts,
-  and a burst checks at most 5 before the delay. The TOTP sign-in step reserves under the account
-  lock, after the attempt checks, so no early refusal needs a give-back. The bootstrap password is
+  whose check failed with a server error (the user lookup, the stored secret or the record of used
+  codes) is given back (`give_back`: its throttle claim is always released; the count goes back
+  only while epoch and count are unchanged, else the try stays counted; a delay it started stays
+  unless the count falls below 5). Such a try never resets the counter. Parallel tries therefore
+  get distinct counts, and a burst checks at most 5 before the delay. The TOTP sign-in step
+  reserves under the account lock, after the attempt checks, so no early refusal needs a give-back. The bootstrap password is
   reserved before the request's transaction (a refusal answers before anything is written); the
   bootstrap code and both recovery factors are reserved inside it, so a refused try counts no start
   and consumes no recovery code.
-- **Success = the answer shows it.** A password try resets only when `login::password_next_step`
-  returns a step (password right, factor `active`, a usable second step, the hash unchanged) — the
-  same decision on `/auth/login`, the bootstrap password and the recovery password. A bootstrap
-  code resets only when the request is accepted (`bootstrap_open`, active password). Every other
-  answer, including the neutral 401 after a right secret, settles as a failure. `check` and
+- **When a try resets.** A password try resets exactly when `login::password_next_step` returns a
+  step (password right, factor `active`, a usable second step, the hash unchanged) — the same
+  decision on `/auth/login`, the bootstrap password and the recovery password; every other password
+  try settles as a failure. On the bootstrap request this decision stands on its own: a right
+  password with a step resets the password counter also when the request is then refused. A TOTP
+  code resets when it is right, on the bootstrap request only when the request is accepted
+  (`bootstrap_open`, active password). `check` and
   `count_failure` remain: `check` gives the early answer before a bootstrap OIDC code is spent,
   and both serve the tests.
 - From the 5th consecutive failure the next try waits `30 s · 2^(n−5)`, at most 3600 s (from the
