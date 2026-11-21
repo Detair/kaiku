@@ -1060,6 +1060,8 @@ pub async fn status(
         claim_secret.as_bytes(),
     );
     let mut first_state: Option<String> = None;
+    // False only for the read right after a statement that changed no row.
+    let mut settle = true;
     loop {
         let row: Option<(String, bool, Option<Vec<u8>>, Option<String>)> = sqlx::query_as(
             "SELECT e.state,
@@ -1079,9 +1081,8 @@ pub async fn status(
         if !hash.is_some_and(|h| ct_eq(&h, &want)) {
             return Err(ApprovalError::EnrollmentTokenInvalid);
         }
-        if past_due {
-            // A row held by a running confirmation is skipped, not waited for:
-            // it stays `claimed` for this read.
+        if past_due && settle {
+            // A row held by a running confirmation is skipped, not waited for.
             let stored = sqlx::query(
                 "UPDATE enrollments SET state = 'expired', ended_at = NOW()
                   WHERE id = (SELECT id FROM enrollments
@@ -1092,11 +1093,13 @@ pub async fn status(
             .execute(ctx.db)
             .await?
             .rows_affected();
-            if stored == 1 {
-                // Answer from the stored row.
-                continue;
-            }
+            // Changed: answer from the stored row. Not changed: read the row
+            // once more (no lock, nothing stored) and answer what is stored
+            // then; a row still held stays `claimed`.
+            settle = stored == 1;
+            continue;
         }
+        settle = true;
         let changed = first_state.as_ref().is_some_and(|s| *s != state);
         if changed || state != "claimed" || started.elapsed() >= wait {
             let passkey_ready: Option<DateTime<Utc>> = if device_state.as_deref() == Some("pending")
