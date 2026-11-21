@@ -4927,9 +4927,15 @@ mod tests {
         began: Option<u64>,
         /// The database failed at some point.
         failed: bool,
+        /// The socket task's own reads that covered the admin stream: when
+        /// each began, what it said, and when it returned.
+        own_reads: Vec<(u64, Option<bool>, Option<u64>)>,
+        /// How many world events had happened when the socket task's last
+        /// own admin read began.
+        own_world: Option<usize>,
         /// The socket task's `admin_subscribe`: how many world events had
-        /// happened when it arrived, and when it was answered.
-        world_around: Option<(usize, usize)>,
+        /// happened when it arrived.
+        arrived_world: Option<usize>,
     }
 
     /// One `admin_subscribe` of a schedule.
@@ -5012,14 +5018,31 @@ mod tests {
                     }
                     None => (asked.at, asked.answered),
                 };
-                let justified = match asked.reply {
-                    None => self.read_between(since, until, true),
-                    Some(NOT_ELEVATED) => self.read_between(since, until, false),
-                    Some(UNAVAILABLE) => asked.at_once.is_some() || self.failed,
-                    Some(_) => self.failed,
+                // A reply that is not given at once is the subscribe's own
+                // last read within it, one that no epoch move overtook
+                // before it returned; never a frame's read.
+                let own = |said: bool| {
+                    self.own_reads
+                        .iter()
+                        .filter(|(began, ..)| (asked.at..=asked.answered).contains(began))
+                        .last()
+                        .is_some_and(|&(began, answer, returned)| {
+                            answer == Some(said)
+                                && !self.bumped.is_some_and(|bumped| {
+                                    began < bumped && bumped < returned.unwrap_or(asked.answered)
+                                })
+                        })
+                };
+                let justified = match (asked.reply, asked.at_once) {
+                    (None, Some(_)) => self.read_between(since, until, true),
+                    (Some(NOT_ELEVATED), Some(_)) => self.read_between(since, until, false),
+                    (None, None) => own(true),
+                    (Some(NOT_ELEVATED), None) => own(false),
+                    (Some(UNAVAILABLE), _) => asked.at_once.is_some() || self.failed,
+                    (Some(_), _) => self.failed,
                 };
                 if !justified {
-                    return Err("a subscribe was answered without a read to say so");
+                    return Err("a subscribe was answered without a read of its own to say so");
                 }
             }
             Ok(())
@@ -5072,6 +5095,7 @@ mod tests {
         };
         let early = Trace {
             reads: vec![(2, Some(false)), (7, yes)],
+            own_reads: vec![(2, Some(false), Some(3))],
             answers: vec![asked],
             bumped: Some(5),
             began: Some(5),
@@ -5079,10 +5103,11 @@ mod tests {
         };
         assert_eq!(
             early.check(false, Doing::Subscribe),
-            Err("a subscribe was answered without a read to say so")
+            Err("a subscribe was answered without a read of its own to say so")
         );
-        // Answered at 8, after that read, it is.
+        // Answered at 8, after its own read at 7 said so, it is.
         let waited = Trace {
+            own_reads: vec![(2, Some(false), Some(3)), (7, yes, Some(8))],
             answers: vec![Asked {
                 answered: 8,
                 ..asked
@@ -5090,6 +5115,40 @@ mod tests {
             ..early
         };
         assert_eq!(waited.check(false, Doing::Subscribe), Ok(()));
+        // A frame's read at 7 that says so does not make it right: the
+        // subscribe's own last read said "no".
+        let frames_read = Trace {
+            own_reads: vec![(2, Some(false), Some(4))],
+            answers: vec![Asked {
+                answered: 8,
+                ..asked
+            }],
+            reads: vec![(2, Some(false)), (7, yes)],
+            bumped: Some(5),
+            began: Some(5),
+            ..Trace::default()
+        };
+        assert_eq!(
+            frames_read.check(false, Doing::Subscribe),
+            Err("a subscribe was answered without a read of its own to say so")
+        );
+        // Nor does its own read when the epoch moved while it ran (at 5,
+        // the read began at 4 and returned at 6).
+        let overtaken = Trace {
+            own_reads: vec![(4, yes, Some(6))],
+            answers: vec![Asked {
+                answered: 8,
+                ..asked
+            }],
+            reads: vec![(2, Some(false)), (7, yes)],
+            bumped: Some(5),
+            began: Some(5),
+            ..Trace::default()
+        };
+        assert_eq!(
+            overtaken.check(false, Doing::Subscribe),
+            Err("a subscribe was answered without a read of its own to say so")
+        );
 
         // A decision in hand answers at once and without a read: a "no"
         // from 1 at 4, but not across the epoch that moved at 3.
@@ -5113,7 +5172,7 @@ mod tests {
         };
         assert_eq!(
             outdated.check(false, Doing::Subscribe),
-            Err("a subscribe was answered without a read to say so")
+            Err("a subscribe was answered without a read of its own to say so")
         );
         // It may not read for it either (answered only at 6).
         let slow = Trace {
@@ -5233,7 +5292,7 @@ mod tests {
                 access.seam().await;
             }
             let at = tick.get();
-            let world_at = happened.get();
+            trace.borrow_mut().arrived_world = Some(happened.get());
             if let Some((_, again)) = trace.borrow_mut().withdrawn.as_mut() {
                 *again = Some(at);
             }
@@ -5250,7 +5309,6 @@ mod tests {
                 reply,
                 at_once,
             });
-            trace.world_around = Some((world_at, happened.get()));
         };
         let mut tasks: [std::pin::Pin<Box<dyn std::future::Future<Output = ()> + '_>>; 2] =
             [Box::pin(sender), Box::pin(socket)];
@@ -5329,7 +5387,12 @@ mod tests {
                             // Only a read that covered the admin stream
                             // can be behind an admin decision.
                             if let Some(said) = served.1 {
-                                trace.borrow_mut().reads.push((now, said));
+                                let mut trace = trace.borrow_mut();
+                                trace.reads.push((now, said));
+                                if i == 1 {
+                                    trace.own_reads.push((now, said, None));
+                                    trace.own_world = Some(happened.get());
+                                }
                             }
                             break Task::Reading;
                         }
@@ -5344,6 +5407,17 @@ mod tests {
                     let began_now = state[i] == Task::Reading;
                     if was_reading && failing[i] {
                         backing_off = true;
+                    }
+                    if was_reading && i == 1 {
+                        let mut trace = trace.borrow_mut();
+                        let returned = trace
+                            .own_reads
+                            .iter_mut()
+                            .rev()
+                            .find(|(began, ..)| *began < now);
+                        if let Some((_, _, returned @ None)) = returned {
+                            *returned = Some(now);
+                        }
                     }
                     assert!(
                         !(began_now && backing_off),
@@ -5392,9 +5466,9 @@ mod tests {
         );
         Explored {
             widths,
-            subscribe: trace.world_around.map(|(arrived, answered)| {
+            subscribe: trace.arrived_world.map(|arrived| {
                 let reply = trace.answers.last().expect("answered").reply;
-                (arrived, answered, reply)
+                (arrived, trace.own_world, reply)
             }),
         }
     }
@@ -5402,14 +5476,19 @@ mod tests {
     /// What [`explore`] returns for one schedule.
     struct Explored {
         widths: Vec<usize>,
-        subscribe: Option<(usize, usize, Option<&'static str>)>,
+        /// World events before the subscribe arrived and before its last
+        /// own read began, and its reply code.
+        subscribe: Option<(usize, Option<usize>, Option<&'static str>)>,
     }
 
     /// Every schedule of one family: how many, and what each one's
     /// `admin_subscribe` saw and got ([`Explored::subscribe`]).
     async fn explore_all(
         family: Family,
-    ) -> (usize, Vec<Option<(usize, usize, Option<&'static str>)>>) {
+    ) -> (
+        usize,
+        Vec<Option<(usize, Option<usize>, Option<&'static str>)>>,
+    ) {
         let mut choices: Vec<usize> = Vec::new();
         let mut subscribes = Vec::new();
         loop {
@@ -5492,6 +5571,11 @@ mod tests {
             family(false, 0, SubscribeSoon, &[Bump]),
             family(false, 0, Resubscribe, &[Bump]),
             family(false, 0, SubscribeSoon, &[Elevate]),
+            family(false, 0, Subscribe, &[Elevate]),
+            family(false, 0, Resubscribe, &[Elevate]),
+            family(true, 0, Subscribe, &[DeElevate]),
+            family(true, 0, Resubscribe, &[DeElevate]),
+            family(true, 0, SubscribeSoon, &[DeElevate]),
         ];
         let mut schedules = 0_usize;
         let mut explored = Vec::new();
@@ -5511,28 +5595,26 @@ mod tests {
                 })
                 .expect("a family with frames to compare with");
             // Without frames: the reply per number of world events before
-            // a subscribe that no world event overtook.
+            // the subscribe arrived and before its last own read began
+            // (world events may also happen while it is under way).
             let mut without = HashMap::new();
-            for &(arrived, answered, reply) in quiet.iter().flatten() {
-                if arrived == answered {
-                    let other = without.insert(arrived, reply);
-                    assert!(
-                        other.is_none_or(|other| other == reply),
-                        "without frames the reply differs between schedules: {alone:?}"
-                    );
-                }
+            for &(arrived, read, reply) in quiet.iter().flatten() {
+                let other = without.insert((arrived, read), reply);
+                assert!(
+                    other.is_none_or(|other| other == reply),
+                    "without frames the reply differs between schedules: {alone:?}"
+                );
             }
-            for &(arrived, answered, reply) in busy.iter().flatten() {
-                if arrived == answered {
-                    let expected = without
-                        .get(&arrived)
-                        .unwrap_or_else(|| panic!("nothing to compare with: {alone:?}"));
-                    assert_eq!(
-                        reply, *expected,
-                        "admin frames changed the reply: {alone:?}, world events before: {arrived}"
-                    );
-                    pairs += 1;
-                }
+            for &(arrived, read, reply) in busy.iter().flatten() {
+                let expected = without.get(&(arrived, read)).unwrap_or_else(|| {
+                    panic!("nothing to compare with: {alone:?} {arrived} {read:?}")
+                });
+                assert_eq!(
+                    reply, *expected,
+                    "admin frames changed the reply: {alone:?}, world events before it: \
+                     {arrived}, before its own read: {read:?}"
+                );
+                pairs += 1;
             }
         }
         assert!(pairs > 0, "nothing was compared");
