@@ -64,6 +64,9 @@ type AudioElementWithSinkId = HTMLAudioElement & {
  */
 const MAX_PENDING_CANDIDATES = 100;
 
+/** How long a publisher offer waits for its answer (the native client's deadline too). */
+const OFFER_ANSWER_TIMEOUT_MS = 10_000;
+
 /**
  * Adapter state for a publisher `connectionState` (A8). A short ICE outage
  * (`disconnected`) keeps every media element and reports `reconnecting`;
@@ -192,6 +195,11 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
   private unsentVideos: SentVideo[] = [];
   /** Published videos the outstanding offer carries (ended if its answer is refused). */
   private videosInOffer: SentVideo[] = [];
+  /**
+   * Deadline of the outstanding offer: an offer whose answer has not come
+   * after `OFFER_ANSWER_TIMEOUT_MS` ends like one whose answer was refused.
+   */
+  private offerDeadline: ReturnType<typeof setTimeout> | null = null;
 
   constructor() {
     console.log("[BrowserVoiceAdapter] Initialized");
@@ -587,6 +595,14 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
       };
     }
 
+    // No offer is outstanding (for example its deadline passed and it was
+    // withdrawn): the answer belongs to no offer and changes nothing.
+    if (state.pc.signalingState === "stable") {
+      console.warn("[BrowserVoiceAdapter] Publisher answer without an outstanding offer ignored");
+      return { ok: true, value: undefined };
+    }
+    this.clearOfferDeadline();
+
     // Reset buffering flags for this negotiation — any candidates queued from
     // a prior session or stale renegotiation must not be reused.
     state.remoteDescriptionSet = false;
@@ -648,6 +664,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
    * person sees why), then send what is still queued.
    */
   private async withdrawRefusedOffer(state: PcState): Promise<void> {
+    this.clearOfferDeadline();
     if (state.pc.signalingState === "have-local-offer") {
       try {
         await state.pc.setLocalDescription({ type: "rollback" });
@@ -669,6 +686,24 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
       this.pendingNegotiation = false;
       state.pc.dispatchEvent(new Event("negotiationneeded"));
     }
+  }
+
+  /** Start the deadline of the offer just made on `state`. */
+  private armOfferDeadline(state: PcState): void {
+    this.clearOfferDeadline();
+    const timer = setTimeout(() => {
+      // A deadline of an earlier offer or of an ended session does nothing.
+      if (this.offerDeadline !== timer || this.publisherState !== state) return;
+      this.offerDeadline = null;
+      console.warn("[BrowserVoiceAdapter] Publisher offer got no answer in time; withdrawn");
+      void this.withdrawRefusedOffer(state);
+    }, OFFER_ANSWER_TIMEOUT_MS);
+    this.offerDeadline = timer;
+  }
+
+  private clearOfferDeadline(): void {
+    if (this.offerDeadline !== null) clearTimeout(this.offerDeadline);
+    this.offerDeadline = null;
   }
 
   /** A video left the connection: no offer reports it any more. */
@@ -1642,6 +1677,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
         await current.pc.setLocalDescription(offer);
         // What this offer carries (ended if its answer is refused).
         this.videosInOffer.push(...this.unsentVideos.splice(0));
+        this.armOfferDeadline(current);
 
         const { wsSend } = await import("@/lib/tauri");
         await wsSend({
@@ -1651,6 +1687,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
         });
       } catch (err) {
         console.error("[BrowserVoiceAdapter] Publisher negotiation failed:", err);
+        this.clearOfferDeadline();
         this.isNegotiating = false;
       }
     };
@@ -1960,6 +1997,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     this.remoteStreams.clear();
 
     // Reset negotiation lock
+    this.clearOfferDeadline();
     this.isNegotiating = false;
     this.pendingNegotiation = false;
     this.unsentVideos = [];
