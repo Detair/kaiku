@@ -199,8 +199,11 @@ afterwards): besides `auth_methods` and the authenticator of a full session,
   factor). A pre-v1 `{legacy}` session carries the account's generations at the upgrade.
 
 **At the upgrade** the migration fills these columns for live sessions and ends the ones whose
-origin had already ended: an exact approver that is no longer `active` (`authenticator_revoked`),
-or a recorded generation older than the account's current one (`factor_ended`). It writes only the
+origin had already ended: an exact approver that is no longer `active` (`authenticator_revoked`);
+an unknown approver when a key device of the account that had been active (`activated_at` set) was
+revoked at or after the session's `created_at` — the rule for unknown approvers applied to the past
+(`authenticator_revoked`); or a recorded generation older than the account's current one
+(`factor_ended`). It writes only the
 rows (no denylist, no `NOTIFY`); the server has restarted, and every request and refresh reads the
 row, so such a session is refused from its first request. A generation in an old `sign_in` event
 that is not a whole number is skipped (the account's current generation is used instead).

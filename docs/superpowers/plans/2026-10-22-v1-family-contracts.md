@@ -924,9 +924,10 @@ behaviour and additive fields, no new code):**
   The acting session survives: own-account changes come from a full session, which used no password
   or TOTP; owner-rule part 2 keeps the session that has just proved a fresh factor, unless that
   factor is the TOTP generation the action marks compromised (then it ends with the others).
-- At the upgrade, a live session whose recorded confirming key device is no longer active, or whose
-  recorded password or TOTP generation is older than the account's current one, ends
-  (`authenticator_revoked` / `factor_ended`). Every other session stays.
+- At the upgrade, a live session whose recorded confirming key device is no longer active, whose
+  confirming key device is unknown while a once-active key device of the account was revoked since
+  the session was created, or whose recorded password or TOTP generation is older than the
+  account's current one, ends (`authenticator_revoked` / `factor_ended`). Every other session stays.
 - An ended session answers as before: WebSocket `error SESSION_REVOKED` and close 1008, 401
   `INVALID_TOKEN` on `/auth/refresh` and on every bearer request. No response shape changes.
 - C26 `DELETE /api/approval-devices/{id}` (and every other key-device removal): the sessions above
