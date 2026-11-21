@@ -591,10 +591,12 @@ New-device routes (public, rate class `AUTH_FLOW`):
   `{state: done, authenticator_state, ready_at}` without a code;
 - `POST /auth/enrollments/status {enrollment_id, claim_secret, wait: 0..25}` (browser: the
   `__Secure-kaiku_enroll` cookie) → `{state, authenticator_state, ready_at, enrollment_id}`; 404
-  only for an unknown id or a wrong secret; `expired` is stored and final: once the code time is
-  over the call records it, and no confirmation succeeds afterwards; while a confirmation is
-  running the call does not wait for it and answers `claimed`, then `done` if it succeeds, else
-  `expired`;
+  only for an unknown id or a wrong secret; the answer is the stored state; `expired` is stored
+  and final: no later confirmation of the enrolment can succeed; the call records it for a
+  `claimed` enrolment whose code time is over; it does not wait for the enrolment row while a
+  confirmation or the sweep holds it: the answer then stays `claimed`, and afterwards is the state
+  stored then (`done` if the confirmation succeeded, otherwise for example `failed` or
+  `cancelled`), or `expired` if the enrolment is then still `claimed` and past its code time;
 - browser passkey claims: `POST /auth/enrollments/passkey/{start,finish}`.
 
 Setup link: `{PUBLIC_URL}/setup#v=1&t=<b64u token>`; the token is in the fragment, so neither the
