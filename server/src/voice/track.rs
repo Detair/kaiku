@@ -120,7 +120,7 @@ static FORWARDED_TRACKS: std::sync::atomic::AtomicU64 = std::sync::atomic::Atomi
 /// `{stream id}:{n}`, so a listener's session never lists the same stream
 /// and track id twice when a person's source comes back (a rejoin, another
 /// device, the camera off and on).
-pub(crate) fn forwarded_track(
+pub fn forwarded_track(
     source_user_id: Uuid,
     source_type: TrackSource,
     codec: RTCRtpCodecCapability,
