@@ -141,6 +141,7 @@ Every sign-in is one of two kinds, decided when you sign in. It never changes af
 | Delete a server you own | yes | no |
 | See or remove the devices that get your notifications | yes | only its own |
 | Add an encryption key for a new device, replace your key backup | yes | no |
+| Create your first key backup | yes | yes |
 | Admin area | yes (admins only) | no |
 
 A chat-only sign-in shows the banner *Signed in for chat only. To change sign-in settings or do
@@ -155,8 +156,9 @@ full anyway, so you can always do sensitive things there instead.
 it. If that ever happens, the stranger can at most read and write chats until you notice (Kaiku
 tells you about the new sign-in) and end it. They can never change your sign-in methods or lock
 you out, and they cannot stop your phone from getting notifications: a chat-only sign-in may only
-touch the notification registration it made itself, and that registration is removed when you end
-the sign-in. A passkey cannot be tricked this way, so it gives a full sign-in.
+touch the notification registration it made itself, and that registration is removed when the
+sign-in ends, also when it signs itself out. Your key phone keeps its notifications when you sign
+out on it, so it can still confirm sign-ins. A passkey cannot be tricked this way, so it gives a full sign-in.
 
 **Confirmations.** Even in a full sign-in, important changes need one more confirmation right
 before you do them: a passkey on a PC, or your screen lock on your key phone. Each confirmation

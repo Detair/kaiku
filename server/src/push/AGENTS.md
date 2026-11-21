@@ -215,10 +215,15 @@ counts as "no longer live").
   may then stay over the cap for a while; it is bounded by the session limit).
 - Session end (`approvals::cascade::on_sessions_ended` →
   `delete_for_ended_sessions`, in the ending transaction): rows are kept only
-  for the reasons in `EndReason::keeps_push_subscriptions` (`logout`,
-  `superseded`, `limit`, `absolute_cap`); every other reason, also one added
-  later, deletes them. A key-device session ended with `authenticator_revoked`
-  keeps the rows of its own install: the device revocation decides
+  for the reasons in `EndReason::keeps_push_subscriptions` (`superseded`,
+  `limit`, `absolute_cap`); every other reason, `logout` included and also one
+  added later, deletes them. A kept row (and one of a lapsed session) stays
+  until another session takes it over or the per-account cap removes it; it
+  receives only content-free wakes. A key-device session that signs out
+  (`logout`) or ends with `authenticator_revoked` keeps the rows of its own
+  install (`EndReason::spares_key_device_install_rows`): a key phone keeps
+  its subscription over a sign-out, and for a revoked device the revocation
+  decides
   (`RevokeReason::sends_last_notice` → `after_revoke` deletes them after the
   last notice; any other reason deletes them in `revoke_tx`; a re-enrolment of
   the same install keeps them).

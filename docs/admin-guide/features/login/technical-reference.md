@@ -135,7 +135,7 @@ the committed `sessions` row, read by primary key:
 | Class | Allowed |
 |---|---|
 | any session, probation included | chat, DMs, voice and calls, WebSocket; `GET /auth/me`, profile name and avatar; notification and preference settings; own-account reads (`/api/me/security`, `/api/me/security-events`, `/api/approval-devices`, `/auth/passkeys`, `/auth/sessions`, `/api/me/account-requests`); `POST /auth/logout`; owner-rule part 2 actions (section 10) |
-| full | the recovery contact's confirmation; `/api/admin/*` except `/api/admin/status` (with elevation where it applies); bot token creation and reset, incoming-webhook creation; `GET /api/me/push-subscriptions` and `DELETE /api/me/push-subscriptions/{id}`; `DELETE /api/guilds/{id}` (the owner still decides); `POST /api/keys/upload` and `POST /api/keys/backup` (reading keys and the backup, and claiming another user's prekey, stay open) |
+| full | the recovery contact's confirmation; `/api/admin/*` except `/api/admin/status` (with elevation where it applies); bot token creation and reset, incoming-webhook creation; `GET /api/me/push-subscriptions` and `DELETE /api/me/push-subscriptions/{id}`; `DELETE /api/guilds/{id}` (the owner still decides); `POST /api/keys/upload`; replacing an existing key backup with `POST /api/keys/backup` (a probation session may create the account's first backup, in one statement, so two first uploads at once store exactly one; reading keys and the backup, and claiming another user's prekey, stay open) |
 | full + step-up | every action of the step-up table (section 9) |
 | unchanged | every other route keeps its own permission checks and is open to probation |
 
@@ -152,13 +152,17 @@ and `DELETE /api/me/push-subscriptions/device/{device_id}` stay open to every se
   Full sessions may overwrite and delete any row of the account, as before;
 - a probation session holds at most 2 rows (its most recently used are kept); the cap of 10 per
   account never prunes another live session's row when the caller is probation;
-- when a session ends, its rows are kept only for `logout`, `superseded`, `limit` and
-  `absolute_cap` (and a plain lapse, which ends no row); every other reason deletes them in the
-  ending transaction (`EndReason::keeps_push_subscriptions`). A key-device session ended because its
-  device was revoked keeps the rows of its own install for the revocation to decide: the removed
-  phone gets its last notice first (`owner`, `admin`, `cli`, `key_invalidated`), they go in the
-  revoking transaction for every other revoke reason, and stay with a re-enrolment of the same
-  install;
+- when a session ends, its rows are kept only for `superseded`, `limit` and `absolute_cap` (and
+  a plain lapse, which ends no row); every other reason, a sign-out (`logout`) included, deletes
+  them in the ending transaction (`EndReason::keeps_push_subscriptions`). A kept row stays until
+  another session takes it over or the per-account cap removes it, and it receives only content-free
+  wakes;
+- a key-device session keeps the rows of its own install when it signs out (the key phone keeps
+  its subscription on purpose, its next device-key sign-in takes the row over) or ends because its
+  device was revoked; then the revocation decides: the removed phone gets its last notice first
+  (`owner`, `admin`, `cli`, `key_invalidated`), they go in the revoking transaction for every other
+  revoke reason, and stay with a re-enrolment of the same install
+  (`EndReason::spares_key_device_install_rows`);
 - a device-key sign-in takes over the install's rows that belonged to a session of a key device of
   that install, or to none. The released Android app does not register again while its local
   record is younger than a day, so its row must follow the new session;
