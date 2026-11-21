@@ -1037,14 +1037,15 @@ pub async fn lock_issued_by(
 /// answers 200 with its stored state, also `cancelled`, `expired` or `failed`.
 ///
 /// `expired` is final: the code's time is over and no confirmation can succeed any more.
-/// For a `claimed` row past its code time the call first stores `expired` like the sweep
-/// (`expire_due`), in one statement under the row's lock that re-checks state and time,
-/// so it waits for a confirmation that holds the lock and then reads `done` if that
-/// confirmation committed. Lock order: this statement holds no other lock and takes only
-/// the enrolment row; a confirmation takes accounts, device and session rows, then the
-/// enrolment row (B.7), so neither waits for the other in the opposite order. It runs at
-/// most once per enrolment (only while the row is `claimed` and past due); every other
-/// read is a plain `SELECT`.
+/// For a `claimed` row past its code time the call stores `expired` like the sweep
+/// (`expire_due`), in one statement that re-checks state and time under the row's lock.
+/// That statement takes only the enrolment row, and only if it is free (`SKIP LOCKED`):
+/// it never waits for a lock and holds no other one. While a confirmation holds the row
+/// nothing is stored and the answer stays `claimed`; a long poll tries again with its next
+/// read (every 500 ms) and then answers `done` if the confirmation committed, else stores
+/// `expired`. The statement changes the row at most once per enrolment and runs at most
+/// once per read of a `claimed` row past its code time: once for a call without waiting,
+/// at most once per 500 ms attempt of a long poll. Every other read is a plain `SELECT`.
 pub async fn status(
     ctx: &AuthCtx<'_>,
     enrollment_id: Uuid,
