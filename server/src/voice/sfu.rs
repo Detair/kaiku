@@ -247,16 +247,18 @@ pub(crate) async fn forward_to(
             if let Some(old) = replaced {
                 room.track_router.remove_subscriptions_into(&[old]);
             }
-            // The subscriber left meanwhile: take the add back (its own
-            // removal may already have run).
+            // Recorded first, then checked: a subscriber that leaves now either
+            // finds the record (its departure drops it from the publisher's
+            // list) or is seen as gone here, and the add is taken back.
+            source_peer.record_forwarded(subscriber.user_id, source, local_track.clone());
             if subscriber.is_retired() {
+                source_peer.forget_forwarded_tracks(std::slice::from_ref(&local_track));
                 subscriber
                     .remove_outgoing_track_if(source_user, source, &local_track)
                     .await;
                 room.track_router.remove_subscriptions_into(&[local_track]);
                 return false;
             }
-            source_peer.record_forwarded(subscriber.user_id, source, local_track);
             if source.is_video() {
                 spawn_subscriber_rtcp_reader(
                     Arc::downgrade(source_peer),
