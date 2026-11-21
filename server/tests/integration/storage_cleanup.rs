@@ -288,17 +288,58 @@ async fn retries_are_served_despite_steady_inflow(pool: PgPool) {
     assert_eq!(retried_by_tick, [1, 0, 0, 0], "retries done within 2 ticks");
 }
 
-/// A slow store (about three deletes per tick), a full retry backlog and
-/// new keys on every tick: retries are attempted strictly longest-due
-/// first, at least one per tick, and a claimed-but-unattempted retry keeps
-/// its original due time and attempt count (it never loses its place).
-/// Bound: the retry at position p of the due queue is attempted by tick p.
+/// Object store fake for ticks that end at a chosen call: the first
+/// `served` deletes of a tick succeed, the next one is where the tick's time
+/// runs out. That call tells the test (`reached`), waits until the test has
+/// stopped the tick (`release`) and then fails like a delete that hit its
+/// time limit; the drain releases the rest of its keys, as it does when its
+/// budget is used up. No wall-clock timing decides how far a tick gets.
+#[derive(Default)]
+struct TickEnd {
+    served: usize,
+    in_tick: std::sync::atomic::AtomicUsize,
+    calls: Mutex<HashMap<String, u32>>,
+    reached: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+
+/// A shared [`TickEnd`] that a worker can own.
+#[derive(Clone)]
+struct TickEndRef(std::sync::Arc<TickEnd>);
+
+impl ObjectStore for TickEndRef {
+    async fn delete_object(&self, key: &str, _limit: Duration) -> Result<(), String> {
+        let store = &self.0;
+        *store
+            .calls
+            .lock()
+            .unwrap()
+            .entry(key.to_string())
+            .or_default() += 1;
+        let n = store
+            .in_tick
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if n < store.served {
+            return Ok(());
+        }
+        store.reached.notify_one();
+        store.release.notified().await;
+        Err("timed out".to_string())
+    }
+}
+
+/// A slow store (three deletes per tick, the third cut off by the tick's
+/// end), a full retry backlog and new keys on every tick: retries are
+/// attempted strictly longest-due first, at least one per tick, and a
+/// claimed-but-unattempted retry keeps its original due time and attempt
+/// count (it never loses its place). Bound: the retry at position p of the
+/// due queue is attempted by tick p.
 #[sqlx::test]
 async fn slow_store_keeps_retry_order_and_bound(pool: PgPool) {
-    let store = Fake {
-        delay: Duration::from_millis(100),
-        ..Fake::default()
-    };
+    let store = TickEndRef(std::sync::Arc::new(TickEnd {
+        served: 2,
+        ..TickEnd::default()
+    }));
     // 12 due retries, retry/00 the longest due.
     for i in 0..12 {
         let key = format!("retry/{i:02}");
@@ -317,8 +358,9 @@ async fn slow_store_keeps_retry_order_and_bound(pool: PgPool) {
     let due_before: HashMap<String, (i32, f64)> = retry_rows(&pool).await;
     let tick = DrainLimits {
         max_rows: 20,
-        budget: Duration::from_millis(350),
-        per_delete: Duration::from_secs(1),
+        // Never reached: each tick ends where the store says.
+        budget: Duration::from_secs(600),
+        per_delete: Duration::from_secs(300),
     };
 
     let mut attempted_total = 0;
@@ -326,12 +368,22 @@ async fn slow_store_keeps_retry_order_and_bound(pool: PgPool) {
         for j in 0..10 {
             queue(&pool, &format!("new/{t}/{j}"), 0.0).await;
         }
-        drain_pending_deletes(&pool, Some(&store), tick)
-            .await
-            .unwrap();
+        // One tick of the worker; it ends at the third delete.
+        store
+            .0
+            .in_tick
+            .store(0, std::sync::atomic::Ordering::SeqCst);
+        let worker = spawn_with(
+            pool.clone(),
+            Some(store.clone()),
+            Duration::from_secs(3600),
+            tick,
+        );
+        store.0.reached.notified().await;
+        tokio::join!(worker.shutdown(), async { store.0.release.notify_one() });
 
-        // Attempted = deleted, or failed (the delete hit the tick's time
-        // bound) and so rescheduled with one more attempt.
+        // Attempted = deleted, or failed (the delete hit the tick's end) and
+        // so rescheduled with one more attempt.
         let left = retry_rows(&pool).await;
         let was_attempted = |key: &str| left.get(key).is_none_or(|row| row.0 != due_before[key].0);
         let attempted = (0..12)
@@ -361,6 +413,7 @@ async fn slow_store_keeps_retry_order_and_bound(pool: PgPool) {
             }
         }
         let fresh_done = store
+            .0
             .calls
             .lock()
             .unwrap()
@@ -369,6 +422,7 @@ async fn slow_store_keeps_retry_order_and_bound(pool: PgPool) {
             .count();
         assert!(fresh_done >= 1, "tick {t}: no new key served");
     }
+    assert_eq!(attempted_total, 12, "two retries per tick");
 }
 
 /// Due retry rows: key → (attempts, due time as epoch seconds).

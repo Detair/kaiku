@@ -75,10 +75,10 @@
 //!    in the order they were read. `admin_subscribe` ([`SocketAccess::subscribe_admin`]) decides
 //!    nothing itself: it records the request and answers it as (6) says.
 //! 2. **An answer counts only if it is the newest.** It is applied only if the user epoch is
-//!    unchanged and nothing invalidated the admin scope since the read was planned
-//!    (`admin_invalidations`, counted for this scope alone: an admin frame taken, an
-//!    `admin_subscribe`, the backstop). An answer that does not count changes nothing on the scope;
-//!    it is read again.
+//!    unchanged, nothing invalidated the admin scope since the read was planned
+//!    (`admin_invalidations`, counted for this scope alone: an admin frame taken, the backstop) and
+//!    no read planned later has been applied (plans that read the scope are numbered). An answer
+//!    that does not count changes nothing on the scope; it is read again.
 //! 3. **A frame is pinned in one critical section.** [`SocketAccess::admit_admin`] either refuses
 //!    the frame outright — the stream is not requested, or the scope is a current "no" (cached per
 //!    user epoch: no read) — or invalidates the scope, in that same critical section. From there
@@ -94,24 +94,34 @@
 //!    for the voice room).
 //! 6. **The answer is the socket's own, and asking costs a bounded number of reads.** The answer to
 //!    `admin_subscribe` depends on the user epoch, this socket's earlier answers and the result of
-//!    a read the request itself asked for — never on what a frame's read wrote. A refusal stands
-//!    for its user epoch: asking again is answered without a read. A request that would read a
-//!    "yes" again (for a fresh answer; frames are read anyway) does so at most once per
-//!    [`ADMIN_SUBSCRIBE_COOLDOWN`], socket and user epoch; meanwhile, at that epoch, the socket's
-//!    earlier answer stands, and without one it is "not decided yet". A new user epoch gets one
-//!    read of its own, also within the cooldown. So within the cooldown an elevation that ran out
-//!    without an epoch moving keeps its earlier "yes": nothing is written on it, every frame is
-//!    read on its own. The reads it asks for run in a pool of their own
-//!    ([`ADMIN_SUBSCRIBE_CONCURRENCY`]) and never take one of the permits other revalidations wait
-//!    for. It takes its socket's revalidation gate first, without a deadline (a frame's read under
-//!    way is waited for, so the answer is the same with and without it, only later), and a permit
-//!    of that pool second, for at most [`ADMIN_SUBSCRIBE_WAIT`]; then it lets go of the gate and
-//!    answers "not decided yet". No task holds a permit while it waits for a gate. Per attempt a
-//!    subscribe takes at most: the wait for the gate (its holder is bounded by its own read's
-//!    [`REFRESH_TIMEOUT`] plus its wait for a permit of the other revalidations, so seconds while
-//!    the database is saturated), the wait for the pool permit, and its own read
-//!    ([`REFRESH_TIMEOUT`]); up to [`DECISION_REVALIDATIONS`] attempts while the epoch keeps
-//!    moving. Frames queued on that socket wait behind it meanwhile.
+//!    a read the request itself made — never on the settled decision, which frames' reads also
+//!    write. Every attempt makes the revalidation read the admin scope for it (also when the scope
+//!    is current; it invalidates nothing), and what that read found is the reply if the user epoch
+//!    it was planned for still holds — also when a frame taken meanwhile keeps that answer from
+//!    settling the decision. If the epoch moved while it read, it reads again (up to
+//!    [`DECISION_REVALIDATIONS`] attempts, then "not decided yet"). The reply is remembered for the
+//!    epoch its read was planned for. A refusal stands for its user epoch: asking again is answered
+//!    without a read. A request that would read a "yes" again (for a fresh answer; frames are read
+//!    anyway) does so at most once per [`ADMIN_SUBSCRIBE_COOLDOWN`], socket and user epoch — the
+//!    cooldown holds for the epoch the read was planned for, also when the epoch moved after the
+//!    request arrived; meanwhile, at that epoch, the socket's earlier answer stands, and without
+//!    one it is "not decided yet". A new user epoch gets one read of its own, also within the
+//!    cooldown. So within the cooldown an elevation that ran out without an epoch moving keeps its
+//!    earlier "yes": nothing is written on it, every frame is read on its own. The reads it asks
+//!    for run in a pool of their own ([`ADMIN_SUBSCRIBE_CONCURRENCY`]) and never take one of the
+//!    permits other revalidations wait for. It takes its socket's revalidation gate first, without
+//!    a deadline (a frame's read under way is waited for, so the answer is the same with and
+//!    without it, only later — except when that read fails: the socket is then in backoff, and a
+//!    subscribe that meets the backoff answers "not decided yet", whoever asked for the failed
+//!    read), and a permit of that pool second, for at most [`ADMIN_SUBSCRIBE_WAIT`]; then it lets
+//!    go of the gate and answers "not decided yet". No task holds a permit while it waits for a
+//!    gate. Per attempt a subscribe takes at most: the wait for the gate (its holder is bounded by
+//!    its own read's [`REFRESH_TIMEOUT`] plus its wait for a permit of the other revalidations, so
+//!    seconds while the database is saturated), the wait for the pool permit, and its own read
+//!    ([`REFRESH_TIMEOUT`]); up to [`DECISION_REVALIDATIONS`] attempts, each one only after the
+//!    epoch moved during the previous read. So a request costs at most one read per user epoch it
+//!    sees, and at most [`DECISION_REVALIDATIONS`] reads in all. Frames queued on that socket wait
+//!    behind it meanwhile.
 //!
 //! # Revalidation cost
 //!
@@ -877,8 +887,10 @@ struct AdminScope {
     /// What the last counting revalidation found.
     settled: settled::Settled,
     /// When an `admin_subscribe` last asked for this scope to be read, and
-    /// at which user epoch: the cooldown ([`ADMIN_SUBSCRIBE_COOLDOWN`])
-    /// holds only at that epoch, so a new epoch gets one read of its own.
+    /// at which user epoch: the one its read was planned for once it has
+    /// answered (the epoch may have moved before the read). The cooldown
+    /// ([`ADMIN_SUBSCRIBE_COOLDOWN`]) holds only at that epoch, so a new
+    /// epoch gets one read of its own.
     read_asked: Option<(Instant, u64)>,
     /// The last `admin_subscribe`'s answer, and the user epoch it holds
     /// for.
@@ -888,8 +900,8 @@ struct AdminScope {
 /// The admin stream's settled decision, behind one writer.
 mod settled {
     /// Whether the admin stream is allowed, the user epoch it was read at,
-    /// and [`super::Inner::admin_invalidations`] as of the plan of that read
-    /// (all 0/false: no read yet). The fields are private to this module:
+    /// and the number of the read's plan ([`super::Inner::admin_reads`]; all
+    /// 0/false: no read yet). The fields are private to this module:
     /// [`Settled::set`] is the only way to write them.
     #[derive(Debug, Default)]
     pub(super) struct Settled {
@@ -926,9 +938,8 @@ enum AdminRequest {
     /// Answered as this socket was answered before, at the same user
     /// epoch: a refusal, or within the cooldown an earlier answer.
     Answered(AdminSubscription),
-    /// A read: an answer planned at or after this invalidation count
-    /// answers it.
-    Read(u64),
+    /// A read of its own.
+    Read,
     /// Not decided, and no read now (cooldown at this user epoch, or the
     /// socket is in backoff).
     Later,
@@ -989,6 +1000,9 @@ struct Inner {
     /// by `admin_unsubscribe`): a read planned before one does not decide
     /// the admin stream.
     admin_invalidations: u64,
+    /// Numbers the plans that read the admin scope: an answer whose plan
+    /// is older than the settled one never replaces it.
+    admin_reads: u64,
 }
 
 /// What an event's delivery depends on.
@@ -1128,8 +1142,8 @@ struct Plan {
     direct: Vec<Uuid>,
     voice: Option<VoicePlan>,
     /// The admin scope is read: [`Inner::admin_invalidations`] as of this
-    /// plan.
-    admin: Option<u64>,
+    /// plan, and the plan's number ([`Inner::admin_reads`]).
+    admin: Option<(u64, u64)>,
 }
 
 enum Planned {
@@ -1183,6 +1197,7 @@ impl SocketAccess {
                 resync: false,
                 invalidations: 0,
                 admin_invalidations: 0,
+                admin_reads: 0,
             }),
             refresh_gate: tokio::sync::Mutex::new(()),
             subscribe_permits: admin_subscribe_pool(),
@@ -1842,22 +1857,23 @@ impl SocketAccess {
     ///
     /// Records the request and answers it; it decides nothing itself (the
     /// revalidation writes the decision). The answer depends on the user
-    /// epoch, this socket's earlier answers and a read this request asks
-    /// for, never on what a frame's read wrote. The request stays whatever
+    /// epoch, this socket's earlier answers and what a read this request
+    /// made found at an epoch that still held — never on the settled
+    /// decision, which frames' reads also write. The request stays whatever
     /// the answer (like a refused `subscribe`): a later elevation restores
     /// delivery.
     ///
     /// What it costs is bounded (see the module docs, The admin stream): a
-    /// refusal at the current user epoch answers at once; otherwise a read
-    /// planned after the request answers it, at most one such read per
-    /// socket and [`ADMIN_SUBSCRIBE_COOLDOWN`], in a pool of its own.
+    /// refusal at the current user epoch answers at once; otherwise its own
+    /// read answers it, at most one such read per socket, user epoch and
+    /// [`ADMIN_SUBSCRIBE_COOLDOWN`], in a pool of its own.
     pub async fn subscribe_admin(&self) -> AdminSubscription {
         let epoch = self.user_epoch.load(Ordering::SeqCst);
-        let asked = match self.request_admin() {
+        match self.request_admin() {
             AdminRequest::Answered(reply) => return reply,
             AdminRequest::Later => return self.reply_admin(epoch, AdminSubscription::Undecided),
-            AdminRequest::Read(asked) => asked,
-        };
+            AdminRequest::Read => {}
+        }
         for _ in 0..DECISION_REVALIDATIONS {
             #[cfg(test)]
             self.seam().await;
@@ -1875,13 +1891,16 @@ impl SocketAccess {
             else {
                 break;
             };
+            // Every attempt reads the admin scope for this request, and its
+            // reply is what that read found: never what a frame's read
+            // settled.
             let attempt = self.revalidate(&gate, Some(permit)).await;
+            drop(gate);
             // Failed or in backoff: undecided before anything else is
             // looked at, unless the checks have been failing for so long
             // that the socket ends (the same rule as for the socket's own
             // revalidation).
-            if attempt.is_err() {
-                drop(gate);
+            let Ok(own) = attempt else {
                 if self
                     .failing_for()
                     .is_some_and(|failing| failing >= FAILURE_CLOSE_AFTER)
@@ -1889,22 +1908,31 @@ impl SocketAccess {
                     return AdminSubscription::Failed;
                 }
                 break;
-            }
-            // The answer of this attempt, taken while the gate still keeps
-            // other revalidations out: its own read, or one planned after
-            // the request that left it nothing to read (the same rows).
-            let answer = self.admin_answer(asked);
-            drop(gate);
+            };
             #[cfg(test)]
             self.seam().await;
-            match answer {
-                Some((at, true)) => return self.reply_admin(at, AdminSubscription::Allowed),
-                Some((at, false)) => return self.reply_admin(at, AdminSubscription::Refused),
+            match own {
+                Some((at, true)) => return self.own_reply(at, AdminSubscription::Allowed),
+                Some((at, false)) => return self.own_reply(at, AdminSubscription::Refused),
+                // The user epoch moved while it read: read again.
                 None => {}
             }
         }
         self.attention.notify_one();
         self.reply_admin(epoch, AdminSubscription::Undecided)
+    }
+
+    /// The reply of an own read planned at user epoch `epoch`: remembered
+    /// for that epoch, and the cooldown this request started holds for that
+    /// epoch too (the one it actually read), so that asking again there
+    /// within the cooldown reads nothing more.
+    fn own_reply(&self, epoch: u64, reply: AdminSubscription) -> AdminSubscription {
+        if let Some(admin) = self.lock().admin.as_mut() {
+            if let Some((_, read_at)) = admin.read_asked.as_mut() {
+                *read_at = epoch;
+            }
+        }
+        self.reply_admin(epoch, reply)
     }
 
     /// Remember `reply` as this socket's answer at user epoch `epoch` (the
@@ -1922,10 +1950,9 @@ impl SocketAccess {
     /// was a refusal (it stands for its epoch), or within the cooldown.
     /// Otherwise the scope is to be read: not now while the cooldown at
     /// this user epoch or a backoff runs ("not decided yet"), else by a
-    /// read asked for here (once per epoch also within the cooldown) —
-    /// the scope is invalidated, so that an answer planned earlier does not
-    /// count (a failing scope stays failing, drops kept). What frames'
-    /// reads settled is not looked at.
+    /// read of its own (once per epoch also within the cooldown). Nothing
+    /// is invalidated here, and what frames' reads settled is not looked
+    /// at.
     fn request_admin(&self) -> AdminRequest {
         let mut inner = self.lock();
         let now = Instant::now();
@@ -1960,18 +1987,7 @@ impl SocketAccess {
             return AdminRequest::Later;
         }
         admin.read_asked = Some((now, epoch));
-        AdminRequest::Read(Self::invalidate_admin(&mut inner))
-    }
-
-    /// What a revalidation planned at or after `asked` wrote for the admin
-    /// stream, and the user epoch it was read at (`None`: none has yet).
-    fn admin_answer(&self, asked: u64) -> Option<(u64, bool)> {
-        let inner = self.lock();
-        inner
-            .admin
-            .as_ref()
-            .filter(|admin| admin.settled.decided() >= asked)
-            .map(|admin| (admin.settled.seen(), admin.settled.allowed()))
+        AdminRequest::Read
     }
 
     /// The client unsubscribed from admin events: the stream is no longer
@@ -2012,7 +2028,7 @@ impl SocketAccess {
         #[cfg(test)]
         self.seam().await;
         let gate = self.refresh_gate.lock().await;
-        self.revalidate(&gate, None).await
+        self.revalidate(&gate, None).await.map(|_| ())
     }
 
     /// [`Self::refresh`] under the socket's revalidation gate, which the
@@ -2020,13 +2036,18 @@ impl SocketAccess {
     /// `admin_subscribe` brings one of its own pool (`own`); every other
     /// revalidation waits for one of the process-wide ones. Every caller
     /// takes the gate before any permit.
+    ///
+    /// An `admin_subscribe`'s revalidation reads the admin scope also when
+    /// it is current, and returns what that read found with the user epoch
+    /// it was planned for (`None`: the epoch moved while it read, or there
+    /// was nothing to read).
     async fn revalidate(
         &self,
         _gate: &tokio::sync::MutexGuard<'_, ()>,
         own: Option<tokio::sync::OwnedSemaphorePermit>,
-    ) -> Result<(), AccessCheckFailed> {
-        let plan = match self.plan() {
-            Planned::Nothing => return Ok(()),
+    ) -> Result<Option<(u64, bool)>, AccessCheckFailed> {
+        let plan = match self.plan(own.is_some()) {
+            Planned::Nothing => return Ok(None),
             Planned::Backoff => return Err(AccessCheckFailed),
             Planned::Run(plan) => plan,
         };
@@ -2044,10 +2065,7 @@ impl SocketAccess {
         };
         let read = tokio::time::timeout(REFRESH_TIMEOUT, self.read(&plan)).await;
         match read {
-            Ok(Ok(found)) => {
-                self.apply(&plan, found);
-                Ok(())
-            }
+            Ok(Ok(found)) => Ok(self.apply(&plan, found)),
             Ok(Err(e)) => {
                 warn!(error = %e, user_id = %self.user_id, "Channel access revalidation failed");
                 self.fail(&plan);
@@ -2061,7 +2079,9 @@ impl SocketAccess {
         }
     }
 
-    fn plan(&self) -> Planned {
+    /// What the next revalidation reads; `admin_read`: the admin scope is
+    /// read whatever its phase (for an `admin_subscribe`).
+    fn plan(&self, admin_read: bool) -> Planned {
         let mut inner = self.lock();
         // A failure that nothing renewed for this long after its retry was
         // due is over: the next one counts from itself.
@@ -2093,8 +2113,12 @@ impl SocketAccess {
         let admin = inner
             .admin
             .as_ref()
-            .filter(|a| a.requested && self.admin_phase(a) != Phase::Current)
+            .filter(|a| a.requested && (admin_read || self.admin_phase(a) != Phase::Current))
             .map(|_| inner.admin_invalidations);
+        let admin = admin.map(|invalidations| {
+            inner.admin_reads += 1;
+            (invalidations, inner.admin_reads)
+        });
         if !full && guild_targets.is_empty() && voice.is_none() && admin.is_none() {
             // Nothing is waiting for a read: not a failed attempt, also
             // while a backoff runs (it stays for whatever comes next).
@@ -2285,7 +2309,13 @@ impl SocketAccess {
     /// be undone (forgetting a deleted channel, asking for a voice peer's
     /// removal) is done, on an
     /// answer that is no longer the current one.
-    fn apply(&self, plan: &Plan, found: ReadResult) {
+    ///
+    /// Returns what the read found for the admin stream, with the user
+    /// epoch it was planned for, if it read the admin scope and that epoch
+    /// still holds — also when the answer is not the newest for the settled
+    /// decision. That is an `admin_subscribe`'s reply; the settled decision
+    /// itself is written only by a newest answer.
+    fn apply(&self, plan: &Plan, found: ReadResult) -> Option<(u64, bool)> {
         let mut guard = self.lock();
         let inner = &mut *guard;
         // The database answered: the next attempt need not wait.
@@ -2294,8 +2324,9 @@ impl SocketAccess {
         if self.user_epoch.load(Ordering::SeqCst) != plan.user_now {
             drop(guard);
             self.attention.notify_one();
-            return;
+            return None;
         }
+        let own_admin = plan.admin.and(found.admin_ok).map(|ok| (plan.user_now, ok));
         let held: HashSet<Uuid> = plan
             .guild_targets
             .iter()
@@ -2383,13 +2414,14 @@ impl SocketAccess {
                 }
             }
         }
-        if let (Some(planned), Some(ok)) = (plan.admin, found.admin_ok) {
+        if let (Some((planned, number)), Some(ok)) = (plan.admin, found.admin_ok) {
             // The one place that decides the admin stream. Like a channel:
             // "not elevated" makes the requested stream not allowed, it does
             // not forget the request, so the next elevation (an epoch bump)
             // restores delivery.
             let newest = inner.admin_invalidations == planned;
             if let Some(admin) = inner.admin.as_mut() {
+                let newest = newest && number > admin.settled.decided();
                 if newest {
                     // A recovery that confirms "not allowed" owes nothing:
                     // the admin events dropped meanwhile were not this
@@ -2400,11 +2432,12 @@ impl SocketAccess {
                     if admin.settled.allowed() != ok {
                         debug!(user_id = %self.user_id, elevated = ok, "Admin events revalidated");
                     }
-                    admin.settled.set(ok, plan.user_now, planned);
+                    admin.settled.set(ok, plan.user_now, number);
                 } else {
                     // Invalidated since this read was planned (an admin
-                    // frame taken, a new request, the backstop): the answer
-                    // is older than what asked for it. The scope stays as
+                    // frame taken, the backstop), or a read planned later
+                    // has settled already: the answer is older than what
+                    // asked for it. The scope stays as
                     // it is and is read again.
                     reread = true;
                 }
@@ -2433,6 +2466,7 @@ impl SocketAccess {
                 "Channel access revalidated"
             );
         }
+        own_admin
     }
 
     /// A revalidation attempt failed: every scope it covered is failing
@@ -2885,7 +2919,7 @@ mod tests {
 
             // The retry succeeds.
             tokio::time::advance(RETRY_BASE + Duration::from_millis(1)).await;
-            let Planned::Run(plan) = access.plan() else {
+            let Planned::Run(plan) = access.plan(false) else {
                 panic!("no retry planned");
             };
             access.apply(&plan, all_found(&[c]));
@@ -2928,7 +2962,7 @@ mod tests {
         assert_eq!(access.channel_phase(c2), Some(Phase::Failing));
 
         tokio::time::advance(RETRY_BASE + Duration::from_millis(1)).await;
-        let Planned::Run(plan) = access.plan() else {
+        let Planned::Run(plan) = access.plan(false) else {
             panic!("no retry planned");
         };
         assert_eq!(plan.guild_targets.len(), 2);
@@ -3044,11 +3078,11 @@ mod tests {
         tokio::time::advance(ADMIN_SUBSCRIBE_COOLDOWN + Duration::from_millis(1)).await;
     }
 
-    /// An `admin_subscribe` arrives and needs a read: its request is
-    /// recorded. Returns what an answer must be planned at to answer it.
+    /// An `admin_subscribe` arrives and needs a read of its own: its
+    /// request is recorded. Returns the user epoch it arrived at.
     fn read_asked(access: &SocketAccess) -> u64 {
         match access.request_admin() {
-            AdminRequest::Read(asked) => asked,
+            AdminRequest::Read => access.user_epoch.load(Ordering::SeqCst),
             other => panic!("no read asked for: {other:?}"),
         }
     }
@@ -3677,7 +3711,7 @@ mod tests {
         // the other revalidations could let the paused clock run past the
         // cooldown.
         assert!(access.admin_frame_taken());
-        let Planned::Run(plan) = access.plan() else {
+        let Planned::Run(plan) = access.plan(false) else {
             panic!("nothing planned");
         };
         access.apply(&plan, admin_found(false));
@@ -3719,7 +3753,7 @@ mod tests {
         crate::ws::test_hooks::count_access_reads(u);
         access.unsubscribe_admin();
         access.force_full();
-        let Planned::Run(plan) = access.plan() else {
+        let Planned::Run(plan) = access.plan(false) else {
             panic!("nothing planned");
         };
         assert!(plan.admin.is_none(), "read for a stream nobody asked for");
@@ -3928,7 +3962,7 @@ mod tests {
         // A frame is taken, and its own read, planned after the request,
         // settles "not elevated" before the subscribe has the gate.
         assert!(access.admin_frame_taken());
-        let Planned::Run(plan) = access.plan() else {
+        let Planned::Run(plan) = access.plan(false) else {
             panic!("nothing planned");
         };
         access.apply(&plan, admin_found(false));
@@ -3990,7 +4024,7 @@ mod tests {
             if frame {
                 // A frame's read, planned after the request, says "no"...
                 assert!(access.admin_frame_taken());
-                let Planned::Run(plan) = access.plan() else {
+                let Planned::Run(plan) = access.plan(false) else {
                     panic!("nothing planned");
                 };
                 access.apply(&plan, admin_found(false));
@@ -3999,7 +4033,7 @@ mod tests {
             registry().bump_user(u);
             if frame {
                 assert!(access.admin_frame_taken());
-                let Planned::Run(plan) = access.plan() else {
+                let Planned::Run(plan) = access.plan(false) else {
                     panic!("nothing planned");
                 };
                 access.fail(&plan);
@@ -4039,6 +4073,275 @@ mod tests {
         assert_eq!(reads(u), 1);
     }
 
+    /// Parks every scripted read of `access` until the test releases it
+    /// (`release.add_permits(1)`); seams then yield once.
+    fn park_reads(access: &SocketAccess) -> Arc<Seams> {
+        let seams = Arc::new(Seams {
+            parked: 0.into(),
+            yielded: false.into(),
+            release: tokio::sync::Semaphore::new(0),
+        });
+        access.script.lock().unwrap().as_mut().unwrap().seams = Some(Arc::clone(&seams));
+        seams
+    }
+
+    /// Polls `subscribe` until its read is parked (`Ok`) or it is answered
+    /// (`Err`).
+    async fn until_parked(
+        seams: &Seams,
+        subscribe: &mut std::pin::Pin<&mut impl std::future::Future<Output = AdminSubscription>>,
+    ) -> Result<(), AdminSubscription> {
+        for _ in 0..100 {
+            if let std::task::Poll::Ready(answer) = futures::poll!(subscribe.as_mut()) {
+                return Err(answer);
+            }
+            if seams.parked.load(Ordering::SeqCst) == 1 {
+                return Ok(());
+            }
+        }
+        panic!("the subscribe neither read nor answered");
+    }
+
+    /// Polls `subscribe` to its answer, letting parked reads return.
+    async fn answer_of(
+        seams: &Seams,
+        subscribe: &mut std::pin::Pin<&mut impl std::future::Future<Output = AdminSubscription>>,
+    ) -> AdminSubscription {
+        for _ in 0..1000 {
+            if seams.parked.load(Ordering::SeqCst) == 1 {
+                seams.release.add_permits(1);
+            }
+            if let std::task::Poll::Ready(answer) = futures::poll!(subscribe.as_mut()) {
+                return answer;
+            }
+        }
+        panic!("the subscribe was not answered");
+    }
+
+    /// An admin frame taken and decided by its own read, step by step
+    /// (`found`: what that read said).
+    fn frame_decided(access: &SocketAccess, found: bool) {
+        assert!(access.admin_frame_taken());
+        let Planned::Run(plan) = access.plan(false) else {
+            panic!("nothing planned");
+        };
+        access.apply(&plan, admin_found(found));
+    }
+
+    /// The elevation changes (with its epoch bump) while an
+    /// `admin_subscribe` is under way: one frame is decided before the
+    /// subscribe reads, another is taken while it reads. The reply is the
+    /// subscribe's own read at the new epoch, with and without those frames,
+    /// and it is remembered for that epoch.
+    #[tokio::test(start_paused = true)]
+    async fn the_reply_is_the_subscribes_own_read_across_an_elevation_change() {
+        for elevated in [true, false] {
+            let mut replies = Vec::new();
+            for frames in [false, true] {
+                let u = Uuid::new_v4();
+                let access = admin_socket(u, elevated).await;
+                cooled_down().await;
+                if !elevated {
+                    // A change of the user's own that leaves them refused:
+                    // the refusal no longer stands, the request reads.
+                    registry().bump_user(u);
+                }
+                // The socket's own revalidation is under way.
+                let gate = access.refresh_gate.lock().await;
+                let subscribe = access.subscribe_admin();
+                tokio::pin!(subscribe);
+                assert!(futures::poll!(subscribe.as_mut()).is_pending());
+                if frames {
+                    frame_decided(&access, elevated);
+                }
+                // The elevation ends (or begins) and bumps the epoch.
+                registry().bump_user(u);
+                install(&access, &[], !elevated, None);
+                let seams = park_reads(&access);
+                drop(gate);
+                assert_eq!(until_parked(&seams, &mut subscribe).await, Ok(()));
+                if frames {
+                    // A frame is taken while the subscribe reads.
+                    assert!(access.admin_frame_taken());
+                }
+                let reply = answer_of(&seams, &mut subscribe).await;
+                assert_eq!(
+                    standing_reply(&access),
+                    Some(reply),
+                    "elevated={elevated} frames={frames}: not remembered for the current epoch"
+                );
+                replies.push(reply);
+            }
+            let expected = if elevated {
+                AdminSubscription::Refused
+            } else {
+                AdminSubscription::Allowed
+            };
+            assert_eq!(replies, [expected; 2], "elevated={elevated}");
+        }
+    }
+
+    /// The elevation runs out (no epoch moves) after a frame's read said
+    /// "yes" and before the subscribe's attempt: the subscribe reads for
+    /// itself and is refused, as it is without that frame.
+    #[tokio::test(start_paused = true)]
+    async fn the_subscribe_reads_for_itself_after_a_frames_yes() {
+        let mut replies = Vec::new();
+        for frames in [false, true] {
+            let u = Uuid::new_v4();
+            let access = admin_socket(u, true).await;
+            cooled_down().await;
+            crate::ws::test_hooks::count_access_reads(u);
+            let gate = access.refresh_gate.lock().await;
+            let subscribe = access.subscribe_admin();
+            tokio::pin!(subscribe);
+            assert!(futures::poll!(subscribe.as_mut()).is_pending());
+            if frames {
+                frame_decided(&access, true);
+            }
+            install(&access, &[], false, None);
+            drop(gate);
+            replies.push(subscribe.await);
+            assert_eq!(
+                crate::ws::test_hooks::access_reads(u).0,
+                1,
+                "frames={frames}: the subscribe did not read"
+            );
+        }
+        assert_eq!(replies, [AdminSubscription::Refused; 2]);
+    }
+
+    /// Admin frames taken while the subscribe's read runs do not change its
+    /// reply, cost it no second read, and do not make it wait for its pool
+    /// again (here the pool is busy by then).
+    #[tokio::test(start_paused = true)]
+    async fn frames_during_the_subscribes_read_do_not_change_its_reply() {
+        for busy_pool in [false, true] {
+            let mut replies = Vec::new();
+            for frames in [false, true] {
+                let u = Uuid::new_v4();
+                let access = admin_socket(u, true).await;
+                cooled_down().await;
+                crate::ws::test_hooks::count_access_reads(u);
+                install(&access, &[], true, None);
+                let seams = park_reads(&access);
+                let subscribe = access.subscribe_admin();
+                tokio::pin!(subscribe);
+                assert_eq!(until_parked(&seams, &mut subscribe).await, Ok(()));
+                if frames {
+                    assert!(access.admin_frame_taken());
+                }
+                seams.release.add_permits(1);
+                let mut reply = None;
+                if let std::task::Poll::Ready(early) = futures::poll!(subscribe.as_mut()) {
+                    reply = Some(early);
+                }
+                // Another socket's subscribe takes the pool now.
+                let busy = if busy_pool {
+                    Some(
+                        Arc::clone(&access.subscribe_permits)
+                            .acquire_owned()
+                            .await
+                            .unwrap(),
+                    )
+                } else {
+                    None
+                };
+                let reply = match reply {
+                    Some(reply) => reply,
+                    None => {
+                        tokio::time::advance(ADMIN_SUBSCRIBE_WAIT).await;
+                        answer_of(&seams, &mut subscribe).await
+                    }
+                };
+                drop(busy);
+                if !busy_pool {
+                    assert_eq!(
+                        crate::ws::test_hooks::access_reads(u).0,
+                        1,
+                        "frames={frames}: a second read for one request"
+                    );
+                }
+                replies.push(reply);
+            }
+            assert_eq!(
+                replies,
+                [AdminSubscription::Allowed; 2],
+                "busy_pool={busy_pool}"
+            );
+        }
+    }
+
+    /// What one socket's `admin_subscribe` costs is bounded per user epoch
+    /// and cooldown also when the epoch moved while the request waited to
+    /// read: the request reads at the new epoch, and asking again at that
+    /// epoch within the cooldown reads nothing more — a "yes" is repeated, a
+    /// "no" stands.
+    #[tokio::test(start_paused = true)]
+    async fn one_read_per_epoch_and_cooldown_when_the_epoch_moved_before_the_read() {
+        for elevated in [true, false] {
+            let u = Uuid::new_v4();
+            let access = admin_socket(u, elevated).await;
+            cooled_down().await;
+            if !elevated {
+                // A change of the user's own: the refusal no longer stands.
+                registry().bump_user(u);
+            }
+            install(&access, &[], elevated, None);
+            crate::ws::test_hooks::count_access_reads(u);
+            let gate = access.refresh_gate.lock().await;
+            let subscribe = access.subscribe_admin();
+            tokio::pin!(subscribe);
+            assert!(futures::poll!(subscribe.as_mut()).is_pending());
+            // The epoch moves before the request reads.
+            registry().bump_user(u);
+            drop(gate);
+            let expected = if elevated {
+                AdminSubscription::Allowed
+            } else {
+                AdminSubscription::Refused
+            };
+            assert_eq!(subscribe.await, expected);
+            assert_eq!(crate::ws::test_hooks::access_reads(u).0, 1);
+            assert_eq!(access.subscribe_admin().await, expected);
+            assert_eq!(
+                crate::ws::test_hooks::access_reads(u).0,
+                1,
+                "elevated={elevated}: a second read at one epoch within the cooldown"
+            );
+        }
+    }
+
+    /// The reply is remembered for the user epoch its read was planned for:
+    /// when the epoch moves after the read and before the reply is
+    /// remembered, nothing is remembered for the new epoch (the next request
+    /// there reads).
+    #[tokio::test(start_paused = true)]
+    async fn the_reply_is_remembered_for_the_epoch_it_was_read_at() {
+        let u = Uuid::new_v4();
+        let access = admin_socket(u, false).await;
+        cooled_down().await;
+        registry().bump_user(u);
+        install(&access, &[], false, None);
+        let seams = park_reads(&access);
+        let subscribe = access.subscribe_admin();
+        tokio::pin!(subscribe);
+        assert_eq!(until_parked(&seams, &mut subscribe).await, Ok(()));
+        seams.release.add_permits(1);
+        // The read returns and is applied; the subscribe stops at its seam.
+        assert!(futures::poll!(subscribe.as_mut()).is_pending());
+        registry().bump_user(u);
+        assert_eq!(
+            answer_of(&seams, &mut subscribe).await,
+            AdminSubscription::Refused
+        );
+        assert_eq!(
+            standing_reply(&access),
+            None,
+            "remembered for an epoch it was not read at"
+        );
+    }
+
     /// A read that began before the admin frame was taken does not decide
     /// it: the frame waits for a read of its own.
     #[tokio::test(start_paused = true)]
@@ -4048,7 +4351,7 @@ mod tests {
         // A revalidation planned (and read: "elevated") before the frame...
         access.force_full();
         let gate = access.refresh_gate.lock().await;
-        let Planned::Run(early) = access.plan() else {
+        let Planned::Run(early) = access.plan(false) else {
             panic!("nothing planned");
         };
         // ...the frame is taken and waits for a revalidation (held up
@@ -4073,8 +4376,8 @@ mod tests {
     /// An `admin_subscribe` whose read began before an admin frame was
     /// taken cannot decide that frame — also when the client unsubscribed
     /// and subscribed again while the frame was queued. Its "elevated"
-    /// changes nothing; the frame waits for a read of its own ("not
-    /// elevated" now), and that read answers the subscribe as well.
+    /// decides nothing for the frame (it is still the subscribe's own
+    /// reply); the frame waits for a read of its own ("not elevated" now).
     #[tokio::test(start_paused = true)]
     async fn a_subscribe_read_older_than_an_admin_frame_does_not_decide_it() {
         for resubscribed in [false, true] {
@@ -4089,7 +4392,7 @@ mod tests {
             // "elevated"...
             let asked = read_asked(&access);
             let gate = access.refresh_gate.lock().await;
-            let Planned::Run(early) = access.plan() else {
+            let Planned::Run(early) = access.plan(true) else {
                 panic!("nothing planned");
             };
             // ...the elevation ends without an epoch moving, and a frame
@@ -4101,23 +4404,17 @@ mod tests {
                 futures::poll!(&mut frame).is_pending(),
                 "decided without waiting for a read"
             );
-            // ...then the old "elevated" arrives.
-            access.apply(&early, admin_found(true));
+            // ...then the old "elevated" arrives: the subscribe's reply,
+            // not the frame's decision.
+            assert_eq!(access.apply(&early, admin_found(true)), Some((asked, true)));
             assert_eq!(
                 admin_decision(&access),
                 None,
                 "resubscribed={resubscribed}: an answer older than the frame was applied"
             );
-            assert_eq!(access.admin_answer(asked).map(|(_, allowed)| allowed), None);
             drop(gate);
             assert!(!frame.await, "written on a read older than the frame");
             assert_eq!(admin_decision(&access), Some(false));
-            // The frame's read began after the request was recorded: it is
-            // the subscribe's answer too.
-            assert_eq!(
-                access.admin_answer(asked).map(|(_, allowed)| allowed),
-                Some(false)
-            );
             assert_eq!(crate::ws::test_hooks::access_reads(u).0, 1);
         }
     }
@@ -4132,17 +4429,10 @@ mod tests {
         let access = admin_socket(u, true).await;
         cooled_down().await;
         crate::ws::test_hooks::count_access_reads(u);
-        // Frame 1 is taken; an `admin_subscribe` arrives while it waits for
-        // its read; the elevation ends without an epoch moving.
+        // Frame 1 is taken; the elevation ends without an epoch moving.
         assert!(access.admin_frame_taken());
-        let asked = read_asked(&access);
         install(&access, &[], false, None);
-        // One read, planned after both, answers both.
         assert!(!access.decide_admin().await);
-        assert_eq!(
-            access.admin_answer(asked).map(|(_, allowed)| allowed),
-            Some(false)
-        );
         assert_eq!(crate::ws::test_hooks::access_reads(u).0, 1);
 
         // Frame 2 meets a current "no".
@@ -4189,7 +4479,7 @@ mod tests {
             cooled_down().await;
             // A revalidation is planned and reads the old state...
             registry().bump_user(u);
-            let Planned::Run(early) = access.plan() else {
+            let Planned::Run(early) = access.plan(false) else {
                 panic!("nothing planned");
             };
             // ...the elevation changes; an `admin_subscribe` reads and
@@ -4221,19 +4511,18 @@ mod tests {
         let access = SocketAccess::new(u, lazy_pool());
         // The subscribe's read is in flight...
         let asked = read_asked(&access);
-        let Planned::Run(plan) = access.plan() else {
+        let Planned::Run(plan) = access.plan(true) else {
             panic!("nothing planned");
         };
         // ...when a new DM is recorded, still to be checked...
         assert!(access.insert_direct(Uuid::new_v4()));
         // ...and the answer counts for the admin stream.
-        access.apply(&plan, admin_found(true));
+        assert_eq!(access.apply(&plan, admin_found(true)), Some((asked, true)));
         assert_eq!(
-            access.admin_answer(asked).map(|(_, allowed)| allowed),
+            admin_decision(&access),
             Some(true),
             "a new DM made the admin read not count"
         );
-        assert_eq!(admin_decision(&access), Some(true));
         assert!(access.is_stale(), "the DM is still to be checked");
 
         // Through the entry point: a DM per read, and still answered by the
@@ -4258,7 +4547,7 @@ mod tests {
             SubscribeCommit::Recorded
         );
         registry().bump_guild(g);
-        let Planned::Run(plan) = access.plan() else {
+        let Planned::Run(plan) = access.plan(false) else {
             panic!("nothing planned");
         };
         assert!(access.admin_frame_taken());
@@ -4267,9 +4556,9 @@ mod tests {
         assert!(access.decide_admin().await);
     }
 
-    /// Admin frames taken while an `admin_subscribe` waits for its answer
-    /// do not leave it unanswered: the first frame's own read began after
-    /// the request and answers it, whatever is taken afterwards.
+    /// Admin frames taken while an `admin_subscribe` reads do not leave it
+    /// unanswered: its own read answers it although a frame taken meanwhile
+    /// keeps that read from deciding the frame; the frame reads for itself.
     #[tokio::test(start_paused = true)]
     async fn admin_frames_do_not_starve_a_subscribe() {
         let u = Uuid::new_v4();
@@ -4278,30 +4567,18 @@ mod tests {
         // The subscribe's read is in flight...
         let asked = read_asked(&access);
         let gate = access.refresh_gate.lock().await;
-        let Planned::Run(first) = access.plan() else {
+        let Planned::Run(first) = access.plan(true) else {
             panic!("nothing planned");
         };
-        // ...a frame is taken: that read no longer counts...
+        // ...a frame is taken: that read decides nothing for it...
         let frame = access.admit_admin();
         tokio::pin!(frame);
         assert!(futures::poll!(&mut frame).is_pending());
-        access.apply(&first, admin_found(true));
-        assert_eq!(access.admin_answer(asked).map(|(_, allowed)| allowed), None);
+        // ...but it is the subscribe's reply.
+        assert_eq!(access.apply(&first, admin_found(true)), Some((asked, true)));
+        assert_eq!(admin_decision(&access), None);
         drop(gate);
-        // ...the frame's read does, for both.
         assert!(frame.await);
-        assert_eq!(
-            access.admin_answer(asked).map(|(_, allowed)| allowed),
-            Some(true)
-        );
-        // The next frame is taken before the subscribe has looked.
-        assert!(access.admin_frame_taken());
-        assert_eq!(
-            access.admin_answer(asked).map(|(_, allowed)| allowed),
-            Some(true),
-            "the next frame took the subscribe's answer away"
-        );
-        assert!(access.decide_admin().await);
     }
 
     /// An `admin_subscribe` settles a failing admin scope through the same
@@ -4407,7 +4684,7 @@ mod tests {
                     // revalidations could let the paused clock run past the
                     // cooldown).
                     assert!(access.admin_frame_taken());
-                    let Planned::Run(plan) = access.plan() else {
+                    let Planned::Run(plan) = access.plan(false) else {
                         panic!("nothing planned");
                     };
                     access.apply(&plan, admin_found(false));
@@ -4559,7 +4836,7 @@ mod tests {
         let u = Uuid::new_v4();
         let access = admin_socket(u, true).await;
         assert!(access.admin_frame_taken());
-        let Planned::Run(plan) = access.plan() else {
+        let Planned::Run(plan) = access.plan(false) else {
             panic!("nothing planned");
         };
         access.unsubscribe_admin();
@@ -4775,9 +5052,15 @@ mod tests {
         began: Option<u64>,
         /// The database failed at some point.
         failed: bool,
+        /// The socket task's own reads that covered the admin stream: when
+        /// each began, what it said, and when it returned.
+        own_reads: Vec<(u64, Option<bool>, Option<u64>)>,
+        /// How many world events had happened when the socket task's last
+        /// own admin read began.
+        own_world: Option<usize>,
         /// The socket task's `admin_subscribe`: how many world events had
-        /// happened when it arrived, and when it was answered.
-        world_around: Option<(usize, usize)>,
+        /// happened when it arrived.
+        arrived_world: Option<usize>,
     }
 
     /// One `admin_subscribe` of a schedule.
@@ -4860,14 +5143,31 @@ mod tests {
                     }
                     None => (asked.at, asked.answered),
                 };
-                let justified = match asked.reply {
-                    None => self.read_between(since, until, true),
-                    Some(NOT_ELEVATED) => self.read_between(since, until, false),
-                    Some(UNAVAILABLE) => asked.at_once.is_some() || self.failed,
-                    Some(_) => self.failed,
+                // A reply that is not given at once is the subscribe's own
+                // last read within it, one that no epoch move overtook
+                // before it returned; never a frame's read.
+                let own = |said: bool| {
+                    self.own_reads
+                        .iter()
+                        .filter(|(began, ..)| (asked.at..=asked.answered).contains(began))
+                        .last()
+                        .is_some_and(|&(began, answer, returned)| {
+                            answer == Some(said)
+                                && !self.bumped.is_some_and(|bumped| {
+                                    began < bumped && bumped < returned.unwrap_or(asked.answered)
+                                })
+                        })
+                };
+                let justified = match (asked.reply, asked.at_once) {
+                    (None, Some(_)) => self.read_between(since, until, true),
+                    (Some(NOT_ELEVATED), Some(_)) => self.read_between(since, until, false),
+                    (None, None) => own(true),
+                    (Some(NOT_ELEVATED), None) => own(false),
+                    (Some(UNAVAILABLE), _) => asked.at_once.is_some() || self.failed,
+                    (Some(_), _) => self.failed,
                 };
                 if !justified {
-                    return Err("a subscribe was answered without a read to say so");
+                    return Err("a subscribe was answered without a read of its own to say so");
                 }
             }
             Ok(())
@@ -4920,6 +5220,7 @@ mod tests {
         };
         let early = Trace {
             reads: vec![(2, Some(false)), (7, yes)],
+            own_reads: vec![(2, Some(false), Some(3))],
             answers: vec![asked],
             bumped: Some(5),
             began: Some(5),
@@ -4927,10 +5228,11 @@ mod tests {
         };
         assert_eq!(
             early.check(false, Doing::Subscribe),
-            Err("a subscribe was answered without a read to say so")
+            Err("a subscribe was answered without a read of its own to say so")
         );
-        // Answered at 8, after that read, it is.
+        // Answered at 8, after its own read at 7 said so, it is.
         let waited = Trace {
+            own_reads: vec![(2, Some(false), Some(3)), (7, yes, Some(8))],
             answers: vec![Asked {
                 answered: 8,
                 ..asked
@@ -4938,6 +5240,40 @@ mod tests {
             ..early
         };
         assert_eq!(waited.check(false, Doing::Subscribe), Ok(()));
+        // A frame's read at 7 that says so does not make it right: the
+        // subscribe's own last read said "no".
+        let frames_read = Trace {
+            own_reads: vec![(2, Some(false), Some(4))],
+            answers: vec![Asked {
+                answered: 8,
+                ..asked
+            }],
+            reads: vec![(2, Some(false)), (7, yes)],
+            bumped: Some(5),
+            began: Some(5),
+            ..Trace::default()
+        };
+        assert_eq!(
+            frames_read.check(false, Doing::Subscribe),
+            Err("a subscribe was answered without a read of its own to say so")
+        );
+        // Nor does its own read when the epoch moved while it ran (at 5,
+        // the read began at 4 and returned at 6).
+        let overtaken = Trace {
+            own_reads: vec![(4, yes, Some(6))],
+            answers: vec![Asked {
+                answered: 8,
+                ..asked
+            }],
+            reads: vec![(2, Some(false)), (7, yes)],
+            bumped: Some(5),
+            began: Some(5),
+            ..Trace::default()
+        };
+        assert_eq!(
+            overtaken.check(false, Doing::Subscribe),
+            Err("a subscribe was answered without a read of its own to say so")
+        );
 
         // A decision in hand answers at once and without a read: a "no"
         // from 1 at 4, but not across the epoch that moved at 3.
@@ -4961,7 +5297,7 @@ mod tests {
         };
         assert_eq!(
             outdated.check(false, Doing::Subscribe),
-            Err("a subscribe was answered without a read to say so")
+            Err("a subscribe was answered without a read of its own to say so")
         );
         // It may not read for it either (answered only at 6).
         let slow = Trace {
@@ -5081,7 +5417,7 @@ mod tests {
                 access.seam().await;
             }
             let at = tick.get();
-            let world_at = happened.get();
+            trace.borrow_mut().arrived_world = Some(happened.get());
             if let Some((_, again)) = trace.borrow_mut().withdrawn.as_mut() {
                 *again = Some(at);
             }
@@ -5098,7 +5434,6 @@ mod tests {
                 reply,
                 at_once,
             });
-            trace.world_around = Some((world_at, happened.get()));
         };
         let mut tasks: [std::pin::Pin<Box<dyn std::future::Future<Output = ()> + '_>>; 2] =
             [Box::pin(sender), Box::pin(socket)];
@@ -5177,7 +5512,12 @@ mod tests {
                             // Only a read that covered the admin stream
                             // can be behind an admin decision.
                             if let Some(said) = served.1 {
-                                trace.borrow_mut().reads.push((now, said));
+                                let mut trace = trace.borrow_mut();
+                                trace.reads.push((now, said));
+                                if i == 1 {
+                                    trace.own_reads.push((now, said, None));
+                                    trace.own_world = Some(happened.get());
+                                }
                             }
                             break Task::Reading;
                         }
@@ -5192,6 +5532,17 @@ mod tests {
                     let began_now = state[i] == Task::Reading;
                     if was_reading && failing[i] {
                         backing_off = true;
+                    }
+                    if was_reading && i == 1 {
+                        let mut trace = trace.borrow_mut();
+                        let returned = trace
+                            .own_reads
+                            .iter_mut()
+                            .rev()
+                            .find(|(began, ..)| *began < now);
+                        if let Some((_, _, returned @ None)) = returned {
+                            *returned = Some(now);
+                        }
                     }
                     assert!(
                         !(began_now && backing_off),
@@ -5240,9 +5591,9 @@ mod tests {
         );
         Explored {
             widths,
-            subscribe: trace.world_around.map(|(arrived, answered)| {
+            subscribe: trace.arrived_world.map(|arrived| {
                 let reply = trace.answers.last().expect("answered").reply;
-                (arrived, answered, reply)
+                (arrived, trace.own_world, reply)
             }),
         }
     }
@@ -5250,14 +5601,19 @@ mod tests {
     /// What [`explore`] returns for one schedule.
     struct Explored {
         widths: Vec<usize>,
-        subscribe: Option<(usize, usize, Option<&'static str>)>,
+        /// World events before the subscribe arrived and before its last
+        /// own read began, and its reply code.
+        subscribe: Option<(usize, Option<usize>, Option<&'static str>)>,
     }
 
     /// Every schedule of one family: how many, and what each one's
     /// `admin_subscribe` saw and got ([`Explored::subscribe`]).
     async fn explore_all(
         family: Family,
-    ) -> (usize, Vec<Option<(usize, usize, Option<&'static str>)>>) {
+    ) -> (
+        usize,
+        Vec<Option<(usize, Option<usize>, Option<&'static str>)>>,
+    ) {
         let mut choices: Vec<usize> = Vec::new();
         let mut subscribes = Vec::new();
         loop {
@@ -5340,6 +5696,11 @@ mod tests {
             family(false, 0, SubscribeSoon, &[Bump]),
             family(false, 0, Resubscribe, &[Bump]),
             family(false, 0, SubscribeSoon, &[Elevate]),
+            family(false, 0, Subscribe, &[Elevate]),
+            family(false, 0, Resubscribe, &[Elevate]),
+            family(true, 0, Subscribe, &[DeElevate]),
+            family(true, 0, Resubscribe, &[DeElevate]),
+            family(true, 0, SubscribeSoon, &[DeElevate]),
         ];
         let mut schedules = 0_usize;
         let mut explored = Vec::new();
@@ -5359,28 +5720,26 @@ mod tests {
                 })
                 .expect("a family with frames to compare with");
             // Without frames: the reply per number of world events before
-            // a subscribe that no world event overtook.
+            // the subscribe arrived and before its last own read began
+            // (world events may also happen while it is under way).
             let mut without = HashMap::new();
-            for &(arrived, answered, reply) in quiet.iter().flatten() {
-                if arrived == answered {
-                    let other = without.insert(arrived, reply);
-                    assert!(
-                        other.is_none_or(|other| other == reply),
-                        "without frames the reply differs between schedules: {alone:?}"
-                    );
-                }
+            for &(arrived, read, reply) in quiet.iter().flatten() {
+                let other = without.insert((arrived, read), reply);
+                assert!(
+                    other.is_none_or(|other| other == reply),
+                    "without frames the reply differs between schedules: {alone:?}"
+                );
             }
-            for &(arrived, answered, reply) in busy.iter().flatten() {
-                if arrived == answered {
-                    let expected = without
-                        .get(&arrived)
-                        .unwrap_or_else(|| panic!("nothing to compare with: {alone:?}"));
-                    assert_eq!(
-                        reply, *expected,
-                        "admin frames changed the reply: {alone:?}, world events before: {arrived}"
-                    );
-                    pairs += 1;
-                }
+            for &(arrived, read, reply) in busy.iter().flatten() {
+                let expected = without.get(&(arrived, read)).unwrap_or_else(|| {
+                    panic!("nothing to compare with: {alone:?} {arrived} {read:?}")
+                });
+                assert_eq!(
+                    reply, *expected,
+                    "admin frames changed the reply: {alone:?}, world events before it: \
+                     {arrived}, before its own read: {read:?}"
+                );
+                pairs += 1;
             }
         }
         assert!(pairs > 0, "nothing was compared");
