@@ -203,37 +203,46 @@ counts as "no longer live").
   two advisory locks) and refuses with 401 `INVALID_TOKEN` when it is no
   longer live. Lock order with the session-end cascade: session row, then
   push rows, on both sides.
+- Two kinds of rows. A key phone's notification registration lives as long
+  as its key device; every other registration lives as long as the sign-in
+  that made it.
+- *Key phone's row* (`key_phone_row!`): its install id is the install of an
+  active or pending key device of the account. No session end touches it
+  (`delete_for_ended_sessions` skips it for every reason); it goes with the
+  device's revocation (`RevokeReason::sends_last_notice` → `after_revoke`
+  after the last notice; any other reason in `revoke_tx`) and with the
+  account. Only a full caller may register, overwrite or delete it: a
+  chat-only registration naming such an install id → 403
+  `FULL_SESSION_REQUIRED`, also when no row exists yet; delete-by-device skips
+  it; the same-endpoint check and the pruning never take it.
+- *Every other row* belongs to the session that registered it and is deleted
+  in the transaction that ends that session, for every end reason (no keep
+  list). A key-device session ended with `authenticator_revoked` leaves the
+  rows of its own install to the revocation (the device is already marked
+  revoked at that point, so they are no longer a key phone's rows); a
+  re-enrolment of the same install keeps them (the new key is active).
 - A chat-only caller may overwrite (same `(user, device_id)` or same
-  `(user, endpoint)`) or delete only rows it may take (`takeable_by!`): its own,
-  without owner, or of a session that is no longer live. Upsert otherwise →
-  403 `FULL_SESSION_REQUIRED` with nothing changed; delete-by-device skips the
-  row (still 204). A full caller may overwrite or delete any row of the
-  account and becomes its owner.
+  `(user, endpoint)`) or delete only rows it may take (`takeable_by!`): not a
+  key phone's, and its own, without owner, or of a session that is no longer
+  live. Upsert otherwise → 403 `FULL_SESSION_REQUIRED` with nothing changed;
+  delete-by-device skips the row (still 204). A full caller may overwrite or
+  delete any row of the account and becomes its owner.
 - Pruning: a chat-only session holds at most
   `MAX_SUBSCRIPTIONS_PER_CHAT_ONLY_SESSION` (2) rows; the per-account cap never
-  prunes another live session's row when the caller is chat-only (the account
-  may then stay over the cap for a while; it is bounded by the session limit).
-- Session end (`approvals::cascade::on_sessions_ended` →
-  `delete_for_ended_sessions`, in the ending transaction): rows are kept only
-  for the reasons in `EndReason::keeps_push_subscriptions` (`superseded`,
-  `limit`, `absolute_cap`); every other reason, `logout` included and also one
-  added later, deletes them. A kept row (and one of a lapsed session) stays
-  until another session takes it over or the per-account cap removes it; it
-  receives only content-free wakes. A key-device session that signs out
-  (`logout`) or ends with `authenticator_revoked` keeps the rows of its own
-  install (`EndReason::spares_key_device_install_rows`): a key phone keeps
-  its subscription over a sign-out, and for a revoked device the revocation
-  decides
-  (`RevokeReason::sends_last_notice` → `after_revoke` deletes them after the
-  last notice; any other reason deletes them in `revoke_tx`; a re-enrolment of
-  the same install keeps them).
+  prunes a key phone's row or another live session's row when the caller is
+  chat-only (the account may then stay over the cap for a while; it is bounded
+  by the session limit).
 - A device-key sign-in (`approvals::device_login`) takes over the install's
   rows that belonged to a key-device session of that install, or to none
   (`adopt_install_rows`); a row another session registered under that install
-  id stays with it. The released Android app does not register again while its
-  local record is younger than 24 h, so the row must follow the new session.
-- Deliveries ignore the owner: a row of an ended (kept) session still wakes
-  its phone.
+  id stays with it. It does not take the registration's advisory lock (that
+  would invert the lock order with the superseded session's row); with the
+  rules above the owner of a key phone's row only matters once the device is
+  revoked, and every revocation path removes the install's rows regardless of
+  the owner.
+- Deliveries ignore the owner. A phone whose row went with an ended sign-in
+  asks again within a day after it signs in again (the released app keeps its
+  local record up to 24 h).
 
 ## Single replica
 

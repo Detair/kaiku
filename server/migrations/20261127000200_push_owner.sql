@@ -1,9 +1,10 @@
--- A push subscription belongs to the session that registered it.
+-- A push subscription records the session that registered it.
 --
--- A chat-only session may overwrite or delete only its own rows, rows without
--- an owner and rows whose owning session is no longer live; whether a row is
--- deleted when its session ends depends on why it ended (push/AGENTS.md
--- "Ownership"). No foreign key, like `enrollments.issuer_session_id`: ended
+-- A key phone's row (install of an active or pending key device) belongs to
+-- the device; every other row lives as long as the session that registered it
+-- (push/AGENTS.md "Ownership"). A chat-only session may overwrite or delete
+-- only rows that are not a key phone's and are its own, without an owner, or
+-- of a session that is no longer live. No foreign key, like `enrollments.issuer_session_id`: ended
 -- session rows are cleaned up after 30 days, and a missing session counts as
 -- "no longer live".
 ALTER TABLE push_subscriptions ADD COLUMN session_id UUID;
