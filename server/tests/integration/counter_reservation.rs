@@ -1010,3 +1010,46 @@ async fn totp_burst_on_a_narrow_pool(_: PgPoolOptions, db: PgConnectOptions) {
     assert!(checked <= FREE_FAILURES as usize);
     assert_eq!(checked + refused, BURST);
 }
+
+/// The recovery request's password factor resets its counter on the same
+/// decision as `/auth/login`: a right password resets only when
+/// `/auth/login` would answer it with a next step for that account.
+#[sqlx::test]
+async fn recovery_password_resets_like_login(pool: PgPool) {
+    use super::account_requests::admin_with_device;
+    let app = TestApp::with_pool(pool.clone()).await;
+    admin_with_device(&app).await;
+    let mut seen = Vec::new();
+    // A normal account (sign-in code active), then one without a second
+    // step at `/auth/login`.
+    for second_step in [true, false] {
+        let (user, name) = password_user(&pool, PASSWORD).await;
+        if second_step {
+            enable_totp(&pool, &app.config, user, &name).await;
+        }
+        let ctx = vc_server::auth::ctx::AuthCtx::from(&app.state);
+        let mut tx = pool.begin().await.unwrap();
+        let codes = vc_server::auth::recovery_codes::replace_tx(&mut tx, &ctx, user)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let key = CounterKey::password(&name);
+        set_count(&app, &key, 2).await;
+        let req = peer_request(Method::POST, "/auth/account-requests")
+            .header("Content-Type", "application/json")
+            .header("X-Kaiku-Client", "android")
+            .body(Body::from(
+                json!({"username": name, "purpose": "recovery", "recovery_code": codes[0],
+                       "second": {"type": "password", "password": PASSWORD}, "lost": "none"})
+                .to_string(),
+            ))
+            .unwrap();
+        let (s, b, _) = send(&app.router, req).await;
+        seen.push((s, b["error"].clone(), counted(&app, &key).await));
+    }
+    // The request is answered alike; only the counter differs.
+    assert_eq!(seen[0].0, 201, "{seen:?}");
+    assert_eq!((seen[1].0, &seen[1].1), (seen[0].0, &seen[0].1), "{seen:?}");
+    assert_eq!(seen[0].2, 0, "a right password with a next step resets");
+    assert_eq!(seen[1].2, 3, "without a next step the try stays counted");
+}
