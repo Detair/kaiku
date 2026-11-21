@@ -17,6 +17,7 @@ use vc_server::auth::client_class::ClientClass;
 use vc_server::auth::ctx::AuthCtx;
 use vc_server::auth::hash_password;
 use vc_server::auth::session_issue::{issue_session, NewSession, SessionClient, SignInMethod};
+use vc_server::auth::strong::AuthenticatorRef;
 use vc_server::system_account::SYSTEM_USER_ID;
 
 use super::helpers::migrations::{apply_from, apply_until};
@@ -563,6 +564,8 @@ async fn issue_session_refuses_the_system_account(pool: PgPool) {
             client: &client,
             client_class: ClientClass::Web,
             authenticator: None,
+            approved_by: None,
+            factors: &[],
         },
     )
     .await;
@@ -584,10 +587,52 @@ async fn issue_session_refuses_the_system_account(pool: PgPool) {
             client: &client,
             client_class: ClientClass::Android,
             authenticator: None,
+            approved_by: None,
+            factors: &[],
         },
     )
     .await;
     assert!(res.is_err());
+
+    let count = || async {
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM sessions WHERE user_id = $1")
+            .bind(user)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+    };
+    let before = count().await;
+    // Only a probation session records an approving key device.
+    let res = issue_session(
+        &ctx,
+        &NewSession {
+            user_id: user,
+            method: SignInMethod::DeviceKey,
+            client: &client,
+            client_class: ClientClass::Android,
+            authenticator: Some(AuthenticatorRef::key_device(Uuid::new_v4())),
+            approved_by: Some(AuthenticatorRef::key_device(Uuid::new_v4())),
+            factors: &[],
+        },
+    )
+    .await;
+    assert!(res.is_err());
+    // A passkey never approves a sign-in.
+    let res = issue_session(
+        &ctx,
+        &NewSession {
+            user_id: user,
+            method: SignInMethod::Qr,
+            client: &client,
+            client_class: ClientClass::Desktop,
+            authenticator: None,
+            approved_by: Some(AuthenticatorRef::passkey(Uuid::new_v4())),
+            factors: &[],
+        },
+    )
+    .await;
+    assert!(res.is_err());
+    assert_eq!(count().await, before, "nothing was created");
 }
 
 /// Review round 3 (Argon coverage, part 4 M2): C27 lists `authenticator:

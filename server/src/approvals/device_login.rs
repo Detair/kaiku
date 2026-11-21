@@ -236,6 +236,8 @@ pub async fn sign_in(
             client,
             client_class: ClientClass::Android,
             authenticator: Some(authenticator),
+            approved_by: None,
+            factors: &[],
         },
     )
     .await?;

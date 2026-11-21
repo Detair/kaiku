@@ -669,6 +669,8 @@ pub async fn collect_tx(
         });
     }
     let class = ClientClass::parse(&row.client_class).unwrap_or(ClientClass::Web);
+    // The approving key device, checked active above under the account
+    // lock: the session ends when it is revoked.
     let collected = mint(
         conn,
         ctx,
@@ -677,6 +679,7 @@ pub async fn collect_tx(
         row.kind().phone_method(),
         class,
         client,
+        row.claimed_by_device.map(AuthenticatorRef::key_device),
     )
     .await?;
     Ok(Locked::Done(collected))
@@ -684,6 +687,10 @@ pub async fn collect_tx(
 
 /// Mint the session of a consumed attempt, record `sign_in`, end a password
 /// throttle for a QR sign-in (B.1 exit: another method).
+///
+/// `approved_by` is the key device that confirmed the sign-in (`None` for
+/// a TOTP sign-in: a phone that only claimed the attempt confirmed nothing).
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn mint(
     conn: &mut PgConnection,
     ctx: &AuthCtx<'_>,
@@ -692,7 +699,28 @@ pub(crate) async fn mint(
     method: SignInMethod,
     class: ClientClass,
     client: &SessionClient,
+    approved_by: Option<AuthenticatorRef>,
 ) -> AuthResult<Collected> {
+    // The factor generations this sign-in used: stored on the session (it
+    // ends with them) and in `sign_in` (so "That wasn't me" compromises
+    // exactly those; a factor replaced since stays untouched).
+    let mut used = Vec::new();
+    if row.first_factor.as_deref() == Some("password") {
+        if let Some(generation) = row.first_factor_generation {
+            used.push(FactorRef {
+                factor: Factor::Password,
+                generation,
+            });
+        }
+    }
+    if method.auth_methods().contains(&"totp") {
+        // Verified in this transaction under the account lock: current.
+        let st = factors::states(conn, user).await?;
+        used.push(FactorRef {
+            factor: Factor::Totp,
+            generation: st.totp.generation,
+        });
+    }
     let issued = issue_session_tx(
         conn,
         ctx,
@@ -702,6 +730,8 @@ pub(crate) async fn mint(
             client,
             client_class: class,
             authenticator: None,
+            approved_by,
+            factors: &used,
         },
     )
     .await?;
@@ -718,19 +748,10 @@ pub(crate) async fn mint(
         factors::clear_throttle_tx(conn, user, Factor::Password, ExitPath::OtherMethodSignIn)
             .await?;
     }
-    // The factor generations this sign-in used, so "That wasn't me"
-    // compromises exactly those (a factor replaced since stays untouched).
-    let mut used = Vec::new();
-    if row.first_factor.as_deref() == Some("password") {
-        if let Some(generation) = row.first_factor_generation {
-            used.push(serde_json::json!({"factor": "password", "generation": generation}));
-        }
-    }
-    if method.auth_methods().contains(&"totp") {
-        // Verified in this transaction under the account lock: current.
-        let st = factors::states(conn, user).await?;
-        used.push(serde_json::json!({"factor": "totp", "generation": st.totp.generation}));
-    }
+    let used: Vec<serde_json::Value> = used
+        .iter()
+        .map(|f| serde_json::json!({"factor": f.factor.as_str(), "generation": f.generation}))
+        .collect();
     let mut details = serde_json::json!({
         "auth_methods": method.auth_methods(),
         "assurance": method.assurance().as_str(),
@@ -1243,7 +1264,7 @@ pub async fn totp_tx(
         _ => SignInMethod::PasswordTotp,
     };
     let class = ClientClass::parse(&row.client_class).unwrap_or(ClientClass::Web);
-    let collected = mint(conn, ctx, &row, user, method, class, client).await?;
+    let collected = mint(conn, ctx, &row, user, method, class, client, None).await?;
     Ok(Locked::Done(TotpOutcome::Signed(
         collected,
         st.totp.generation,

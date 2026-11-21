@@ -143,6 +143,8 @@ pub(super) async fn issue(
             client,
             client_class,
             authenticator: Some(authenticator),
+            approved_by: None,
+            factors: &[],
         },
     )
     .await?;
