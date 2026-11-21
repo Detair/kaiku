@@ -506,8 +506,9 @@ pub fn spawn_rtp_forwarder(
     peer: Arc<Peer>,
 ) {
     tokio::spawn(async move {
-        let mut buf = vec![0u8; 1500]; // MTU size
-                                       // Where each packet goes; reused for every packet of this track.
+        // MTU size.
+        let mut buf = vec![0u8; 1500];
+        // Where each packet goes; reused for every packet of this track.
         let mut targets = ForwardTargets::new();
         let mut packet_count: u64 = 0;
 

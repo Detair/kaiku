@@ -118,10 +118,6 @@ impl ScreenShareError {
 /// Embedded Lua script for atomic screen share limit management.
 const SCREEN_SHARE_LIMIT_SCRIPT: &str = include_str!("screen_share_limit.lua");
 
-/// Atomic screen share limit manager backed by a Redis Lua script.
-///
-/// Provides `check()`, `start()`, and `stop()` operations that are each
-/// executed as a single atomic Redis command (via EVALSHA).
 /// Name of one room's share counter in the store: the channel plus a value
 /// made when the room is created, so a room that is gone (and its late
 /// calls) never changes a newer room's count.
@@ -142,6 +138,10 @@ impl std::fmt::Display for ShareCounter {
     }
 }
 
+/// Atomic screen share limit manager backed by a Redis Lua script.
+///
+/// Provides `check()`, `start()`, and `stop()` operations that are each
+/// executed as a single atomic Redis command (via EVALSHA).
 #[derive(Clone)]
 pub struct ScreenShareLimiter {
     redis: Client,

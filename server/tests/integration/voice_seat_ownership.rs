@@ -438,7 +438,12 @@ async fn removing_a_room_waits_for_no_store(pool: PgPool) {
     pause.release.notify_one();
 
     // Until the room is gone, every look-up of the room list is quick.
+    let deadline = tokio::time::Instant::now() + WAIT;
     loop {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the room was not removed"
+        );
         let listed = tokio::time::timeout(QUICK, sfu.get_room(r.voice))
             .await
             .expect("the room list was held while removing the room");

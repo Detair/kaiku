@@ -470,9 +470,11 @@ pub mod test_hooks {
         PAUSES.get_or_init(Mutex::default)
     }
 
-    /// Pause the next voice step `step` of `user_id` (one of `leave`,
-    /// `webcam_start`, `share_start`, `end_webcam`, `end_share`): the point
-    /// after its seat checks, before it changes room state.
+    /// Pause the next voice step `step` of `user_id`: `leave`,
+    /// `webcam_start`, `share_start`, `end_webcam`, `end_share` (after the
+    /// seat checks, before room state changes), `join_announce` (before the
+    /// join is announced), `stop_decided` (a stop decided, not yet queued)
+    /// and `room_cleanup` (a leave right before the empty room is removed).
     pub fn pause_voice_step(user_id: Uuid, step: &'static str) -> Pause {
         arm();
         let pause = Pause::default();
