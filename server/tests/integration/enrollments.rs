@@ -1198,7 +1198,10 @@ async fn re_enrolment_records_the_removed_key(pool: PgPool) {
     .unwrap();
     assert_eq!(removed.len(), 1, "one notice for the replaced key");
     assert_eq!(removed[0].0, "high");
-    assert_eq!(removed[0].1, json!({"type": "key_device", "by": "cli"}));
+    assert_eq!(
+        removed[0].1,
+        json!({"type": "key_device", "by": "cli", "ended_sessions": 1})
+    );
 }
 
 /// L1a review item (B.7 rule 1): the claim learns the subject without a

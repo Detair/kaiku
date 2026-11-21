@@ -629,13 +629,14 @@ pub async fn cancel_locked_tx(
             if f.factor == Factor::RecoveryCodes {
                 continue;
             }
-            factors::mark_compromised_tx(
+            factors::mark_compromised_except_tx(
                 conn,
                 ctx,
                 row.user_id,
                 f,
                 StateCause::Cancel,
                 actor_of(by, actor_id, row.user_id),
+                by.keep_session(),
             )
             .await?;
         }

@@ -6,7 +6,8 @@
 //! secret, recovery-code set) has a generation that changes when it is
 //! replaced, removed or marked compromised; a throttle starts none. Ending a
 //! generation runs `cascade::on_generation_ended` in the same transaction
-//! (login attempts expire, account requests that used it become `void`).
+//! (sessions that signed in with it end, login attempts expire, account
+//! requests that used it become `void`).
 //!
 //! Every function runs inside the caller's transaction; callers hold the
 //! account lock (B.7 rule 1).
@@ -271,7 +272,8 @@ async fn new_generation(
 
 /// Mark `used` compromised if its generation is still current.
 ///
-/// A new generation, the rule-2 cascade and the `*_compromised` event.
+/// A new generation, the rule-2 cascade (every session that signed in with
+/// `used` ends) and the `*_compromised` event with `ended_sessions`.
 /// Returns whether anything changed. For the recovery-code set this
 /// invalidates the set (there is no state or event for it).
 #[tracing::instrument(skip(conn, ctx))]
@@ -282,6 +284,22 @@ pub async fn mark_compromised_tx(
     used: FactorRef,
     cause: StateCause,
     actor: Actor,
+) -> AuthResult<bool> {
+    mark_compromised_except_tx(conn, ctx, user_id, used, cause, actor, None).await
+}
+
+/// [`mark_compromised_tx`] that keeps the session `keep` alive: the owner
+/// rule's part 2 acts from a session that may have signed in with `used`
+/// and has just proved a fresh factor in this transaction.
+#[tracing::instrument(skip(conn, ctx))]
+pub async fn mark_compromised_except_tx(
+    conn: &mut PgConnection,
+    ctx: &AuthCtx<'_>,
+    user_id: Uuid,
+    used: FactorRef,
+    cause: StateCause,
+    actor: Actor,
+    keep: Option<Uuid>,
 ) -> AuthResult<bool> {
     let current = locked_generation(conn, user_id, used.factor).await?;
     if current != used.generation {
@@ -296,7 +314,8 @@ pub async fn mark_compromised_tx(
         .execute(&mut *conn)
         .await?;
     }
-    crate::approvals::cascade::on_generation_ended(conn, ctx, user_id, used).await?;
+    let outcome =
+        crate::approvals::cascade::on_generation_ended(conn, ctx, user_id, used, keep).await?;
     let event_type = match used.factor {
         Factor::Password => Some(EventType::PasswordCompromised),
         Factor::Totp => Some(EventType::TotpCompromised),
@@ -309,7 +328,10 @@ pub async fn mark_compromised_tx(
                 user_id,
                 event_type,
                 actor,
-                serde_json::json!({ "cause": cause.as_str() }),
+                serde_json::json!({
+                    "cause": cause.as_str(),
+                    "ended_sessions": outcome.ended_sessions.len(),
+                }),
             ),
         )
         .await?;
@@ -357,6 +379,15 @@ pub async fn throttle_tx(
     Ok(())
 }
 
+/// What [`replaced_tx`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Replaced {
+    /// The new generation.
+    pub generation: i64,
+    /// How many sessions that signed in with the old generation ended.
+    pub ended_sessions: usize,
+}
+
 /// Replace (or remove) a factor: a new generation, state `active`, and the
 /// rule-2 cascade for the old generation. Returns the new generation. The
 /// caller stores the new value in the same transaction.
@@ -367,9 +398,21 @@ pub async fn replace_tx(
     user_id: Uuid,
     f: Factor,
 ) -> AuthResult<i64> {
+    Ok(replaced_tx(conn, ctx, user_id, f).await?.generation)
+}
+
+/// [`replace_tx`], also returning how many sessions ended (the change's
+/// event records it as `details.ended_sessions`).
+#[tracing::instrument(skip(conn, ctx))]
+pub async fn replaced_tx(
+    conn: &mut PgConnection,
+    ctx: &AuthCtx<'_>,
+    user_id: Uuid,
+    f: Factor,
+) -> AuthResult<Replaced> {
     let old = locked_generation(conn, user_id, f).await?;
     let new = new_generation(conn, user_id, f, FactorState::Active).await?;
-    crate::approvals::cascade::on_generation_ended(
+    let outcome = crate::approvals::cascade::on_generation_ended(
         conn,
         ctx,
         user_id,
@@ -377,9 +420,13 @@ pub async fn replace_tx(
             factor: f,
             generation: old,
         },
+        None,
     )
     .await?;
-    Ok(new)
+    Ok(Replaced {
+        generation: new,
+        ended_sessions: outcome.ended_sessions.len(),
+    })
 }
 
 /// Leave `throttled` or `compromised` by `why` where the B.1 exit table

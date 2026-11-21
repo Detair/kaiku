@@ -185,7 +185,7 @@ pub async fn mfa_verify(
         &StepUpTarget::None,
     )
     .await?;
-    let generation = super::factors::replace_tx(&mut tx, &ctx, auth_user.id, Factor::Totp).await?;
+    let replaced = super::factors::replaced_tx(&mut tx, &ctx, auth_user.id, Factor::Totp).await?;
     sqlx::query("UPDATE users SET mfa_secret = $2, updated_at = NOW() WHERE id = $1")
         .bind(auth_user.id)
         .bind(&encrypted_secret)
@@ -198,7 +198,11 @@ pub async fn mfa_verify(
             &auth_user,
             &grant,
             EventType::AuthenticatorAdded,
-            serde_json::json!({ "type": "totp", "generation": generation }),
+            serde_json::json!({
+                "type": "totp",
+                "generation": replaced.generation,
+                "ended_sessions": replaced.ended_sessions,
+            }),
         )
         .await?,
         step_up::record_action_tx(&mut tx, &auth_user, &grant, StepUpAction::TotpSet, "").await?,
@@ -252,7 +256,7 @@ pub async fn mfa_disable(
     if !had {
         return Err(AuthError::Validation("MFA not enabled".to_string()));
     }
-    super::factors::replace_tx(&mut tx, &ctx, auth_user.id, Factor::Totp).await?;
+    let replaced = super::factors::replaced_tx(&mut tx, &ctx, auth_user.id, Factor::Totp).await?;
     set_mfa_secret_tx(&mut tx, auth_user.id).await?;
     let events = vec![
         super::profile::record_own_with(
@@ -260,7 +264,11 @@ pub async fn mfa_disable(
             &auth_user,
             &grant,
             EventType::AuthenticatorRemoved,
-            serde_json::json!({ "type": "totp", "by": "self" }),
+            serde_json::json!({
+                "type": "totp",
+                "by": "self",
+                "ended_sessions": replaced.ended_sessions,
+            }),
         )
         .await?,
         step_up::record_action_tx(&mut tx, &auth_user, &grant, StepUpAction::TotpRemove, "")

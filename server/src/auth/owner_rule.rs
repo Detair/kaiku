@@ -45,6 +45,9 @@ pub enum OwnerAuthority {
     },
     Part2 {
         factor: &'static str,
+        /// The acting session: it has just proved a fresh factor, so it
+        /// survives the factor generations this action ends.
+        session_id: Option<Uuid>,
     },
     Contact {
         grant: ConsumedGrant,
@@ -58,6 +61,16 @@ pub enum OwnerAuthority {
 }
 
 impl OwnerAuthority {
+    /// The session that survives the factor generations the action ends
+    /// (part 2 only; part 1 acts from a full session, which used no factor).
+    #[must_use]
+    pub const fn keep_session(&self) -> Option<Uuid> {
+        match self {
+            Self::Part2 { session_id, .. } => *session_id,
+            _ => None,
+        }
+    }
+
     /// `cancelled_by.kind` / the event actor.
     #[must_use]
     pub const fn kind(&self) -> &'static str {
@@ -144,12 +157,16 @@ pub async fn authorize(
                 {
                     return Err(AuthError::InvalidMfaCode);
                 }
-                Ok(OwnerAuthority::Part2 { factor: "totp" })
+                Ok(OwnerAuthority::Part2 {
+                    factor: "totp",
+                    session_id: auth.session_id,
+                })
             }
             Part2Factor::RecoveryCode(code) => {
                 if super::recovery_codes::consume_tx(conn, t.subject, &code).await? {
                     Ok(OwnerAuthority::Part2 {
                         factor: "recovery_code",
+                        session_id: auth.session_id,
                     })
                 } else {
                     Err(AuthError::InvalidCredentials)

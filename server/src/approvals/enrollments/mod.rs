@@ -1517,12 +1517,17 @@ pub async fn finish_done_tx(
     .await?;
     if let Some(old) = replaced {
         let old = AuthenticatorRef::key_device(old);
-        super::cascade::on_authenticator_revoked(conn, ctx, row.subject_id, old).await?;
+        let outcome =
+            super::cascade::on_authenticator_revoked(conn, ctx, row.subject_id, old).await?;
         let mut ev = NewSecurityEvent::new(
             row.subject_id,
             EventType::AuthenticatorRemoved,
             actor,
-            serde_json::json!({"type": "key_device", "by": removed_by(actor)}),
+            serde_json::json!({
+                "type": "key_device",
+                "by": removed_by(actor),
+                "ended_sessions": outcome.ended_sessions.len(),
+            }),
         );
         ev.authenticator = Some(old);
         event_ids.push(record(conn, ev).await?);

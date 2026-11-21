@@ -262,14 +262,17 @@ pub async fn repudiate_tx(
         }
     }
     let mut compromised = Vec::new();
+    // The sessions that signed in with these generations end; the acting
+    // part-2 session stays (it has just proved a fresh factor).
     for f in fx.compromise {
-        if factors::mark_compromised_tx(
+        if factors::mark_compromised_except_tx(
             conn,
             ctx,
             ev.subject_id,
             f,
             StateCause::Repudiation,
             Actor::User(ev.subject_id),
+            by.keep_session(),
         )
         .await?
         {

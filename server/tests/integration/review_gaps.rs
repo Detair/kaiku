@@ -506,7 +506,7 @@ async fn part2_refuses_a_session_past_its_absolute_cap(pool: PgPool) {
     assert!(
         matches!(
             ok,
-            Ok(vc_server::auth::owner_rule::OwnerAuthority::Part2 { factor: "totp" })
+            Ok(vc_server::auth::owner_rule::OwnerAuthority::Part2 { factor: "totp", .. })
         ),
         "{ok:?}"
     );

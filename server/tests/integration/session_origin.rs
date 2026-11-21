@@ -495,3 +495,661 @@ async fn totp_after_phone_claim_records_no_approver(pool: PgPool) {
                "password_generation": 1, "totp_generation": 2})
     );
 }
+
+// ============================================================================
+// T3: removing a key device ends the sessions it confirmed
+// ============================================================================
+
+/// The proof: a PC signed in by QR loses its socket, its refresh and its
+/// bearer when the confirming phone is removed.
+#[sqlx::test]
+async fn removing_phone_ends_qr_sessions_it_approved(pool: PgPool) {
+    use tokio_tungstenite::tungstenite::Message;
+    let app = TestApp::with_pool(pool.clone()).await;
+    let server = spawn_test_server(app.router.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let phone = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    // A second phone, so the first is not the last strong authenticator.
+    let _second = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    let pc = qr_pc(&app, &phone).await;
+    let pc_access = pc["access_token"].as_str().unwrap().to_string();
+    let pc_refresh = pc["refresh_token"].as_str().unwrap().to_string();
+    assert_eq!(me(&app, &pc_access).await.0, 200);
+    let mut ws = ws_connect(&server, &pc_access).await;
+    next_ws_event(&mut ws, "ready", Duration::from_secs(5)).await;
+
+    // "Sign out and remove this phone" from the phone's own full session.
+    let (s, b) = remove_device(&app, &phone, phone.row_id).await;
+    assert_eq!(s, 200, "{b}");
+
+    let err = next_ws_event(&mut ws, "error", Duration::from_secs(5)).await;
+    assert_eq!(err["code"], "SESSION_REVOKED");
+    let close = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match ws.next().await {
+                Some(Ok(Message::Close(frame))) => return frame,
+                Some(Ok(_)) => {}
+                other => panic!("socket ended without a close frame: {other:?}"),
+            }
+        }
+    })
+    .await
+    .expect("closed in time");
+    let code: u16 = close.expect("close code").code.into();
+    assert_eq!(code, 1008);
+
+    let (s, b) = refresh(&app, &pc_refresh).await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (401, Some("INVALID_TOKEN")),
+        "{b}"
+    );
+    let (s, b) = me(&app, &pc_access).await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (401, Some("INVALID_TOKEN")),
+        "{b}"
+    );
+    assert_eq!(
+        ended(&pool, sid_of(&pc)).await,
+        (false, Some("authenticator_revoked".into()))
+    );
+    // The notice counts the phone's own session and the PC's.
+    let removed = event_details(&pool, user, "authenticator_removed").await;
+    assert_eq!(removed.len(), 1);
+    assert_eq!(removed[0]["ended_sessions"], 2, "{}", removed[0]);
+    assert_eq!(removed[0]["type"], "key_device");
+}
+
+#[sqlx::test]
+async fn removing_phone_ends_password_phone_sessions(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, name) = password_user(&pool, PASSWORD).await;
+    let phone = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    let other = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    let pc = password_phone_pc(&app, &phone, &name).await;
+    let (s, b) = remove_device(&app, &other, phone.row_id).await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(
+        ended(&pool, sid_of(&pc)).await,
+        (false, Some("authenticator_revoked".into()))
+    );
+    assert!(live(&pool, other.session_id.unwrap()).await);
+}
+
+#[sqlx::test]
+async fn admin_removal_ends_qr_sessions(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (admin, _) = create_test_user(&pool).await;
+    make_admin(&pool, admin).await;
+    let (admin_sid, admin_token) = create_session_with_token(&pool, &app.config, admin).await;
+    let (user, _) = create_test_user(&pool).await;
+    let phone = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    let pc = qr_pc(&app, &phone).await;
+    grant_step_up(
+        &pool,
+        admin_sid,
+        "admin.authenticator.remove",
+        &phone.row_id.to_string(),
+    )
+    .await;
+    let (s, b) = call(
+        &app,
+        Method::POST,
+        &format!(
+            "/api/admin/users/{user}/authenticators/{}/remove",
+            phone.row_id
+        ),
+        &admin_token,
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(s, 204, "{b}");
+    assert_eq!(
+        ended(&pool, sid_of(&pc)).await,
+        (false, Some("authenticator_revoked".into()))
+    );
+}
+
+#[derive(Default)]
+struct CliOut(Vec<String>);
+
+impl vc_server::cli::CliIo for CliOut {
+    fn print(&mut self, s: &str) {
+        self.0.push(s.to_string());
+    }
+
+    async fn read_line(&mut self, _prompt: &str) -> std::io::Result<String> {
+        Err(std::io::ErrorKind::UnexpectedEof.into())
+    }
+}
+
+#[sqlx::test]
+async fn cli_removal_ends_qr_sessions(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, name) = create_test_user(&pool).await;
+    let phone = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    let pc = qr_pc(&app, &phone).await;
+    let args: Vec<String> = [
+        "devices",
+        "remove",
+        name.as_str(),
+        &phone.row_id.to_string(),
+    ]
+    .iter()
+    .map(|s| (*s).to_string())
+    .collect();
+    let cmd = vc_server::cli::Command::parse(&args).unwrap();
+    let ctx = vc_server::cli::CliCtx {
+        db: app.pool.clone(),
+        redis: app.state.redis.clone(),
+        config: (*app.config).clone(),
+    };
+    vc_server::cli::run(&ctx, cmd, &mut CliOut::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        ended(&pool, sid_of(&pc)).await,
+        (false, Some("authenticator_revoked".into()))
+    );
+}
+
+/// "That wasn't me" on the phone's `authenticator_added` revokes it, and
+/// with it the PC it confirmed.
+#[sqlx::test]
+async fn repudiated_phone_ends_qr_sessions(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let old = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let phone = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    let added = {
+        let mut conn = pool.acquire().await.unwrap();
+        let mut ev = NewSecurityEvent::new(
+            user,
+            EventType::AuthenticatorAdded,
+            Actor::User(user),
+            json!({"type": "key_device"}),
+        );
+        ev.authenticator = Some(AuthenticatorRef::key_device(phone.row_id));
+        record(&mut conn, ev).await.unwrap()
+    };
+    let pc = qr_pc(&app, &phone).await;
+    grant_step_up(
+        &pool,
+        old.session_id.unwrap(),
+        "event.repudiate",
+        &added.to_string(),
+    )
+    .await;
+    let (s, b) = call(
+        &app,
+        Method::POST,
+        &format!("/api/me/security-events/{added}/repudiate"),
+        &old.access_token,
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(b["revoked_authenticator_ids"], json!([phone.row_id]));
+    assert_eq!(
+        ended(&pool, sid_of(&pc)).await,
+        (false, Some("authenticator_revoked".into()))
+    );
+    assert!(live(&pool, old.session_id.unwrap()).await);
+}
+
+#[sqlx::test]
+async fn invalidated_phone_ends_qr_sessions(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let phone = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    let pc = qr_pc(&app, &phone).await;
+    let (s, b) = call(
+        &app,
+        Method::POST,
+        &format!("/api/approval-devices/{}/invalidated", phone.row_id),
+        &phone.access_token,
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(
+        ended(&pool, sid_of(&pc)).await,
+        (false, Some("authenticator_revoked".into()))
+    );
+    let notice = event_details(&pool, user, "key_invalidated").await;
+    assert_eq!(notice.len(), 1);
+    assert_eq!(notice[0]["ended_sessions"], 2, "{}", notice[0]);
+}
+
+#[sqlx::test]
+async fn other_phones_sessions_survive(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let a = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    let b = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    let pc_a = qr_pc(&app, &a).await;
+    let pc_b = qr_pc(&app, &b).await;
+    // Another account's PC confirmed by its own phone.
+    let (stranger, _) = create_test_user(&pool).await;
+    let s_phone = KeyDeviceFixture::insert(&pool, &app.config, stranger, "active").await;
+    let pc_s = qr_pc(&app, &s_phone).await;
+
+    let (s, body) = remove_device(&app, &b, a.row_id).await;
+    assert_eq!(s, 200, "{body}");
+    assert!(!live(&pool, sid_of(&pc_a)).await);
+    assert!(
+        live(&pool, sid_of(&pc_b)).await,
+        "the other phone's PC stays"
+    );
+    assert!(live(&pool, b.session_id.unwrap()).await);
+    assert!(
+        live(&pool, sid_of(&pc_s)).await,
+        "another account is untouched"
+    );
+}
+
+/// Sessions from before the upgrade whose approver is unknown end when any
+/// key device of the account is revoked; sessions that no phone confirmed
+/// stay.
+#[sqlx::test]
+async fn unknown_approver_ends_on_any_device_removal(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, name) = password_user(&pool, PASSWORD).await;
+    let a = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    let b = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    let pc_b = qr_pc(&app, &b).await;
+    let unknown = raw_session(&pool, user, &["qr"], false).await;
+    sqlx::query("UPDATE sessions SET approved_by_type = 'key_device' WHERE id = $1")
+        .bind(unknown)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let legacy = raw_session(&pool, user, &["legacy"], false).await;
+    let totp = enable_totp(&pool, &app.config, user, &name).await;
+    let pw_totp = password_totp_pc(&app, user, &name, PASSWORD, &totp).await;
+
+    let (s, body) = remove_device(&app, &b, a.row_id).await;
+    assert_eq!(s, 200, "{body}");
+    assert_eq!(
+        ended(&pool, unknown).await,
+        (false, Some("authenticator_revoked".into()))
+    );
+    assert!(live(&pool, sid_of(&pc_b)).await, "known approver b stays");
+    assert!(live(&pool, legacy).await, "no phone confirmed it");
+    assert!(live(&pool, sid_of(&pw_totp)).await, "no phone confirmed it");
+}
+
+/// Collect and revoke race: whatever commits first, no live session is left
+/// that a revoked key device confirmed.
+#[sqlx::test]
+async fn collect_racing_revocation(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let mut collected = 0;
+    let mut refused = 0;
+    for round in 0..50u64 {
+        let (user, _) = create_test_user(&pool).await;
+        let keeper = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+        let phone = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+        let (id, secret) = approved_attempt(&app, &phone).await;
+        grant_step_up(
+            &pool,
+            keeper.session_id.unwrap(),
+            "key_device.remove",
+            &phone.row_id.to_string(),
+        )
+        .await;
+        let uri = format!("/auth/login-attempts/{id}/collect");
+        let remove_uri = format!("/api/approval-devices/{}", phone.row_id);
+        // A varying head start for the revocation, so both commit orders
+        // occur over the rounds.
+        let delay = Duration::from_micros((round % 10) * 400);
+        let collect = async {
+            tokio::time::sleep(delay).await;
+            pc_call(&app, &uri, &secret, json!({})).await
+        };
+        let revoke = call(
+            &app,
+            Method::DELETE,
+            &remove_uri,
+            &keeper.access_token,
+            None,
+        );
+        let ((cs, cb, _), (rs, rb)) = tokio::join!(collect, revoke);
+        assert_eq!(rs, 200, "{rb}");
+        match cs {
+            200 => collected += 1,
+            410 => refused += 1,
+            other => panic!("collect answered {other}: {cb}"),
+        }
+    }
+    let left: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM login_attempts a
+           JOIN sessions s ON s.id = a.session_id
+           JOIN approval_devices d ON d.id = a.claimed_by_device
+          WHERE s.ended_at IS NULL AND d.state = 'revoked'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    eprintln!("collect_racing_revocation: collected {collected}, refused {refused}");
+    assert_eq!(
+        left, 0,
+        "live sessions confirmed by a revoked device ({collected} collected, {refused} refused)"
+    );
+}
+
+// ============================================================================
+// T4: a factor change ends the sessions that used the factor
+// ============================================================================
+
+/// The proof: a password change from a passkey session ends the
+/// password + TOTP session and keeps the passkey session (and sessions that
+/// used no password).
+#[sqlx::test]
+async fn password_change_ends_password_sessions(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, name, totp, pk_sid, pk_token) = factor_account(&app).await;
+    let phone = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    let pw_totp = password_totp_pc(&app, user, &name, PASSWORD, &totp).await;
+    let pw_phone = password_phone_pc(&app, &phone, &name).await;
+    let qr = qr_pc(&app, &phone).await;
+
+    change_password(&app, pk_sid, &pk_token, NEW_PASSWORD).await;
+
+    assert_eq!(
+        ended(&pool, sid_of(&pw_totp)).await,
+        (false, Some("factor_ended".into()))
+    );
+    assert_eq!(
+        ended(&pool, sid_of(&pw_phone)).await,
+        (false, Some("factor_ended".into()))
+    );
+    assert!(
+        live(&pool, pk_sid).await,
+        "the acting passkey session stays"
+    );
+    assert!(
+        live(&pool, sid_of(&qr)).await,
+        "a QR sign-in used no password"
+    );
+    assert!(live(&pool, phone.session_id.unwrap()).await);
+    let (s, b) = refresh(&app, pw_totp["refresh_token"].as_str().unwrap()).await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (401, Some("INVALID_TOKEN")),
+        "{b}"
+    );
+    let changed = event_details(&pool, user, "password_changed").await;
+    assert_eq!(changed.len(), 1);
+    assert_eq!(changed[0]["ended_sessions"], 2, "{}", changed[0]);
+    assert_eq!(changed[0]["generation"], 2, "the old field stays");
+}
+
+/// A session of an older generation is not counted twice; a change ends
+/// only the sessions of the generation it ends.
+#[sqlx::test]
+async fn older_generation_session_unaffected(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, name, totp, pk_sid, pk_token) = factor_account(&app).await;
+    let first = password_totp_pc(&app, user, &name, PASSWORD, &totp).await;
+    change_password(&app, pk_sid, &pk_token, NEW_PASSWORD).await;
+    assert!(!live(&pool, sid_of(&first)).await);
+    let second = password_totp_pc(&app, user, &name, NEW_PASSWORD, &totp).await;
+    assert_eq!(
+        origin(&pool, sid_of(&second)).await["password_generation"],
+        2
+    );
+    assert!(live(&pool, sid_of(&second)).await, "made after the change");
+    change_password(&app, pk_sid, &pk_token, "Zweiter-Weg-5521-Bus").await;
+    assert_eq!(
+        ended(&pool, sid_of(&second)).await,
+        (false, Some("factor_ended".into()))
+    );
+    let counts: Vec<Value> = event_details(&pool, user, "password_changed")
+        .await
+        .into_iter()
+        .map(|d| d["ended_sessions"].clone())
+        .collect();
+    assert_eq!(counts, vec![json!(1), json!(1)]);
+}
+
+#[sqlx::test]
+async fn totp_renew_ends_totp_sessions(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, name, totp, pk_sid, pk_token) = factor_account(&app).await;
+    let phone = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    let pw_totp = password_totp_pc(&app, user, &name, PASSWORD, &totp).await;
+    let pw_phone = password_phone_pc(&app, &phone, &name).await;
+
+    grant_step_up(&pool, pk_sid, "totp.set", "").await;
+    let (s, setup) = call(&app, Method::POST, "/auth/mfa/setup", &pk_token, None).await;
+    assert_eq!(s, 200, "{setup}");
+    let renewed = totp_of(setup["secret"].as_str().unwrap(), &name);
+    forget_totp_step(&app, user).await;
+    let (s, b) = call(
+        &app,
+        Method::POST,
+        "/auth/mfa/verify",
+        &pk_token,
+        Some(json!({"code": renewed.generate_current().unwrap()})),
+    )
+    .await;
+    assert_eq!(s, 200, "{b}");
+
+    assert_eq!(
+        ended(&pool, sid_of(&pw_totp)).await,
+        (false, Some("factor_ended".into()))
+    );
+    assert!(
+        live(&pool, sid_of(&pw_phone)).await,
+        "it used the password, not the TOTP secret"
+    );
+    assert!(live(&pool, pk_sid).await);
+    let added = event_details(&pool, user, "authenticator_added").await;
+    let added: Vec<&Value> = added.iter().filter(|d| d["type"] == "totp").collect();
+    assert_eq!(added.len(), 1);
+    assert_eq!(added[0]["ended_sessions"], 1, "{}", added[0]);
+    assert_eq!(added[0]["generation"], 2, "the old field stays");
+}
+
+/// OIDC + TOTP sessions end with their TOTP generation (the generation is
+/// recorded by the same sign-in path as password + TOTP).
+#[sqlx::test]
+async fn totp_removal_ends_oidc_totp_sessions(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _, _, pk_sid, pk_token) = factor_account(&app).await;
+    let oidc_totp = raw_session(&pool, user, &["oidc", "totp"], false).await;
+    let oidc_old = raw_session(&pool, user, &["oidc", "totp"], false).await;
+    sqlx::query("UPDATE sessions SET totp_generation = 1 WHERE id = $1")
+        .bind(oidc_totp)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE sessions SET totp_generation = 0 WHERE id = $1")
+        .bind(oidc_old)
+        .execute(&pool)
+        .await
+        .unwrap();
+    grant_step_up(&pool, pk_sid, "totp.remove", "").await;
+    let (s, b) = call(&app, Method::POST, "/auth/mfa/disable", &pk_token, None).await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(
+        ended(&pool, oidc_totp).await,
+        (false, Some("factor_ended".into()))
+    );
+    assert!(live(&pool, oidc_old).await, "another generation");
+    let removed = event_details(&pool, user, "authenticator_removed").await;
+    assert_eq!(removed.len(), 1);
+    assert_eq!(removed[0]["ended_sessions"], 1, "{}", removed[0]);
+    assert_eq!(removed[0]["type"], "totp");
+}
+
+#[sqlx::test]
+async fn password_remove_ends(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, name, totp, pk_sid, pk_token) = factor_account(&app).await;
+    let pw_totp = password_totp_pc(&app, user, &name, PASSWORD, &totp).await;
+    grant_step_up(&pool, pk_sid, "password.remove", "").await;
+    let (s, b) = call(&app, Method::DELETE, "/auth/me/password", &pk_token, None).await;
+    assert_eq!(s, 204, "{b}");
+    assert_eq!(
+        ended(&pool, sid_of(&pw_totp)).await,
+        (false, Some("factor_ended".into()))
+    );
+    assert!(live(&pool, pk_sid).await);
+    let removed = event_details(&pool, user, "password_removed").await;
+    assert_eq!(removed.len(), 1);
+    assert_eq!(removed[0]["ended_sessions"], 1, "{}", removed[0]);
+}
+
+#[sqlx::test]
+async fn compromise_by_admin_ends(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (admin, _) = create_test_user(&pool).await;
+    make_admin(&pool, admin).await;
+    let (admin_sid, admin_token) = create_session_with_token(&pool, &app.config, admin).await;
+    let (user, name, totp, pk_sid, _) = factor_account(&app).await;
+    let pw_totp = password_totp_pc(&app, user, &name, PASSWORD, &totp).await;
+    grant_step_up(
+        &pool,
+        admin_sid,
+        "admin.factor.set_state",
+        &user.to_string(),
+    )
+    .await;
+    let (s, b) = call(
+        &app,
+        Method::PUT,
+        &format!("/api/admin/users/{user}/factors"),
+        &admin_token,
+        Some(json!({"totp": "compromised"})),
+    )
+    .await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(
+        ended(&pool, sid_of(&pw_totp)).await,
+        (false, Some("factor_ended".into()))
+    );
+    assert!(live(&pool, pk_sid).await);
+    let notice = event_details(&pool, user, "totp_compromised").await;
+    assert_eq!(notice, vec![json!({"cause": "admin", "ended_sessions": 1})]);
+}
+
+/// "I didn't start this" on a password attempt compromises the password:
+/// the sessions that used it end.
+#[sqlx::test]
+async fn compromise_by_phone_report_ends(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, name) = password_user(&pool, PASSWORD).await;
+    let totp = enable_totp(&pool, &app.config, user, &name).await;
+    let phone = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    let pw_totp = password_totp_pc(&app, user, &name, PASSWORD, &totp).await;
+    let (_, step, _) = login_native(&app, &name, PASSWORD).await;
+    let (token, bytes) = qr_token(&step["attempt"]);
+    let (_, c) = claim(&app, &phone, &token).await;
+    let (s, r) = answer_login(&app, &phone, &c, &bytes, Decision::Report).await;
+    assert_eq!((s, r["state"].as_str()), (200, Some("reported")), "{r}");
+    assert_eq!(
+        ended(&pool, sid_of(&pw_totp)).await,
+        (false, Some("factor_ended".into()))
+    );
+    assert!(live(&pool, phone.session_id.unwrap()).await);
+    assert_eq!(
+        event_details(&pool, user, "password_compromised").await,
+        vec![json!({"cause": "report", "ended_sessions": 1})]
+    );
+}
+
+/// Owner rule part 2 from a chat-only session that used the password: the
+/// repudiated sign-in and every other session of that password generation
+/// end; the acting session, which just proved a fresh factor, stays.
+#[sqlx::test]
+async fn part2_repudiation_keeps_acting_session(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, name) = password_user(&pool, PASSWORD).await;
+    let totp = enable_totp(&pool, &app.config, user, &name).await;
+    // No strong authenticator: part 2 applies.
+    let acting = password_totp_pc(&app, user, &name, PASSWORD, &totp).await;
+    let bystander = password_totp_pc(&app, user, &name, PASSWORD, &totp).await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let intruder = password_totp_pc(&app, user, &name, PASSWORD, &totp).await;
+    let intruder_sid = sid_of(&intruder);
+    let event: Uuid = sqlx::query_scalar(
+        "SELECT id FROM security_events WHERE subject_id = $1 AND event_type = 'sign_in'
+            AND session_id = $2",
+    )
+    .bind(user)
+    .bind(intruder_sid)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    forget_totp_step(&app, user).await;
+    let (s, b) = call(
+        &app,
+        Method::POST,
+        &format!("/api/me/security-events/{event}/repudiate"),
+        acting["access_token"].as_str().unwrap(),
+        Some(json!({"part2": {"factor": {"type": "totp",
+                                          "code": totp.generate_current().unwrap()}}})),
+    )
+    .await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(
+        ended(&pool, intruder_sid).await,
+        (false, Some("repudiated".into()))
+    );
+    assert_eq!(
+        ended(&pool, sid_of(&bystander)).await,
+        (false, Some("factor_ended".into()))
+    );
+    assert!(
+        live(&pool, sid_of(&acting)).await,
+        "the acting session stays"
+    );
+}
+
+// ============================================================================
+// T5: released clients still read the old fields
+// ============================================================================
+
+#[sqlx::test]
+async fn security_event_list_keeps_its_fields(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, name, totp, pk_sid, pk_token) = factor_account(&app).await;
+    password_totp_pc(&app, user, &name, PASSWORD, &totp).await;
+    change_password(&app, pk_sid, &pk_token, NEW_PASSWORD).await;
+    let (s, list) = call(
+        &app,
+        Method::GET,
+        "/api/me/security-events",
+        &pk_token,
+        None,
+    )
+    .await;
+    assert_eq!(s, 200, "{list}");
+    let ev = list["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .find(|e| e["event_type"] == "password_changed")
+        .expect("password_changed listed")
+        .clone();
+    for field in [
+        "id",
+        "event_type",
+        "severity",
+        "created_at",
+        "subject_id",
+        "actor",
+        "session_id",
+        "authenticator",
+        "details",
+        "actions",
+    ] {
+        assert!(ev.get(field).is_some(), "{field} in {ev}");
+    }
+    assert_eq!(ev["details"]["generation"], 2);
+    assert_eq!(ev["details"]["ended_sessions"], 1);
+}

@@ -374,22 +374,26 @@ pub async fn update_password(
         .bind(auth_user.id)
         .fetch_one(&mut *tx)
         .await?;
-    let generation =
-        super::factors::replace_tx(&mut tx, &ctx, auth_user.id, Factor::Password).await?;
+    let replaced =
+        super::factors::replaced_tx(&mut tx, &ctx, auth_user.id, Factor::Password).await?;
     queries::update_password_hash_tx(&mut tx, auth_user.id, &new_hash).await?;
     let event_type = if had {
         EventType::PasswordChanged
     } else {
         EventType::PasswordSet
     };
-    // The generation it made ("That wasn't me" marks exactly that one).
+    // The generation it made ("That wasn't me" marks exactly that one) and
+    // how many sessions of the old password ended.
     let mut events = vec![
         record_own_with(
             &mut tx,
             &auth_user,
             &grant,
             event_type,
-            serde_json::json!({ "generation": generation }),
+            serde_json::json!({
+                "generation": replaced.generation,
+                "ended_sessions": replaced.ended_sessions,
+            }),
         )
         .await?,
     ];
@@ -444,7 +448,8 @@ pub async fn remove_password(
         &StepUpTarget::None,
     )
     .await?;
-    super::factors::replace_tx(&mut tx, &ctx, auth_user.id, Factor::Password).await?;
+    let replaced =
+        super::factors::replaced_tx(&mut tx, &ctx, auth_user.id, Factor::Password).await?;
     sqlx::query(
         "UPDATE users SET password_hash = NULL, must_change_password = false, updated_at = NOW()
           WHERE id = $1",
@@ -452,8 +457,16 @@ pub async fn remove_password(
     .bind(auth_user.id)
     .execute(&mut *tx)
     .await?;
-    let mut events =
-        vec![record_own(&mut tx, &auth_user, &grant, EventType::PasswordRemoved).await?];
+    let mut events = vec![
+        record_own_with(
+            &mut tx,
+            &auth_user,
+            &grant,
+            EventType::PasswordRemoved,
+            serde_json::json!({ "ended_sessions": replaced.ended_sessions }),
+        )
+        .await?,
+    ];
     events.push(
         step_up::record_action_tx(
             &mut tx,
@@ -470,17 +483,8 @@ pub async fn remove_password(
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
-/// Record an own-account event of the caller's session and grant.
-pub(super) async fn record_own(
-    conn: &mut sqlx::PgConnection,
-    auth: &AuthUser,
-    grant: &step_up::ConsumedGrant,
-    event_type: EventType,
-) -> sqlx::Result<uuid::Uuid> {
-    record_own_with(conn, auth, grant, event_type, serde_json::json!({})).await
-}
-
-/// [`record_own`] with `details`.
+/// Record an own-account event of the caller's session and grant, with
+/// `details`.
 pub(super) async fn record_own_with(
     conn: &mut sqlx::PgConnection,
     auth: &AuthUser,

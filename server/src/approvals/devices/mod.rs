@@ -277,8 +277,9 @@ pub async fn key_device_session(
 
 /// Revoke a device in the caller's transaction.
 ///
-/// State, the B.7 rule-2 cascade (sessions, challenges, grants), and the
-/// notice event (`authenticator_removed`, or `key_invalidated`). Returns
+/// State, the B.7 rule-2 cascade (its own sessions and the sessions it
+/// confirmed, challenges, grants), and the notice event
+/// (`authenticator_removed`, or `key_invalidated`, with `ended_sessions`). Returns
 /// the revoked device and the event ids to deliver after commit.
 #[tracing::instrument(skip(conn, ctx))]
 pub async fn revoke_tx(
@@ -300,13 +301,23 @@ pub async fn revoke_tx(
     .await?
     .ok_or(ApprovalError::KeyDeviceRevoked)?;
     let a = AuthenticatorRef::key_device(row.id);
-    crate::approvals::cascade::on_authenticator_revoked(conn, ctx, row.user_id, a).await?;
+    let outcome =
+        crate::approvals::cascade::on_authenticator_revoked(conn, ctx, row.user_id, a).await?;
+    // `ended_sessions`: the device's own sessions and those it confirmed.
+    let ended = outcome.ended_sessions.len();
     let (event_type, details) = if reason == RevokeReason::KeyInvalidated {
-        (EventType::KeyInvalidated, serde_json::json!({}))
+        (
+            EventType::KeyInvalidated,
+            serde_json::json!({"ended_sessions": ended}),
+        )
     } else {
         (
             EventType::AuthenticatorRemoved,
-            serde_json::json!({"type": "key_device", "by": reason.removed_by()}),
+            serde_json::json!({
+                "type": "key_device",
+                "by": reason.removed_by(),
+                "ended_sessions": ended,
+            }),
         )
     };
     let mut ev = NewSecurityEvent::new(row.user_id, event_type, actor, details);
