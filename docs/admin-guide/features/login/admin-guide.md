@@ -322,8 +322,8 @@ disabled factor gets the neutral sign-in answer.
 The panel buttons (`PUT /api/admin/users/{id}/factors`, step-up `admin.factor.set_state`):
 
 - **Mark the password / authenticator app as unsafe** (`compromised`): offered while `active` or
-  `throttled`. It starts a new generation: every open sign-in attempt and account request that used
-  the old one ends.
+  `throttled`. It starts a new generation: every sign-in made with the old one ends at once, and so
+  does every open sign-in attempt and account request that used it.
 - **Allow the password / authenticator app again** (`active`): offered only while `throttled`. A
   `compromised` factor cannot be allowed again by an admin (`400 VALIDATION_ERROR`); the panel says
   the person must replace it. Only `kaiku-admin factor reset` restores a compromised factor without
@@ -357,6 +357,21 @@ allowed, so a stolen admin phone cannot lock the other admins out. Your own acco
 Removing an authenticator ends its sessions at once, voids its open challenges, its step-up grants,
 the setup codes it issued and the admin requests it started, and records `authenticator_removed`
 (high). A removed phone gets one last notice, then its push subscription is deleted.
+
+Removing a key phone, by any of the ways above, also ends at once every sign-in that phone
+confirmed: computers and browsers signed in by scanning a QR code with it, or with a password or an
+identity provider and a confirmation on it. A sign-in confirmed before the server recorded which
+phone confirmed it (sign-ins from before this version) ends when **any** key phone of the account is
+removed. Sign-ins that no phone confirmed (password and authenticator code, a passkey, another
+phone) are not affected. The notice's `details.ended_sessions` counts the sessions that ended, the
+phone's own included.
+
+**Changing a password or authenticator app** works the same way: when a password or TOTP secret is
+replaced, removed or marked unsafe (by its owner, an admin, a completed request, "I didn't start
+this" or "That wasn't me"), every session that signed in with the old one ends at once
+(`end_reason` `factor_ended`). The session that makes the change stays: it is a passkey or key-phone
+session, or, for "That wasn't me" without a strong authenticator, the session that has just entered
+a fresh code. A QR sign-in used no password and stays.
 
 **Order for a stolen phone:** remove it **first**, then start the recovery. A thief who knows the
 screen lock holds a full key and could cancel the recovery. Removing a request's only recorded
@@ -483,8 +498,8 @@ Examples:
 ```bash
 # A family member lost their only phone and the thief may know the PIN
 docker compose exec server kaiku-admin devices list oma
-docker compose exec server kaiku-admin devices remove oma 0d3c…-…
-docker compose exec server kaiku-admin sessions end oma --all
+docker compose exec server kaiku-admin devices remove oma 0d3c…-…  # also ends what it confirmed
+docker compose exec server kaiku-admin sessions end oma --all      # optional: every other sign-in
 docker compose exec server kaiku-admin enroll oma        # new phone, active at once
 
 # Someone hammered a password and it is throttled

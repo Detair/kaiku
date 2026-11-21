@@ -180,7 +180,24 @@ commit. After commit a listener republishes the end on `user:{id}`; sockets get 
 SESSION_REVOKED` and close 1008. Every socket also re-reads its row at least every 60 s.
 End reasons: `logout`, `revoked`, `others_revoked`, `password_changed`, `ban`, `account_deleted`,
 `refresh_reuse`, `limit`, `authenticator_revoked`, `superseded`, `repudiated`, `request_completed`,
-`upgrade`, `cli`, `absolute_cap`.
+`upgrade`, `cli`, `absolute_cap`, `factor_ended`.
+
+**What a session remembers about its sign-in** (`session_issue::issue_session_tx`, never changed
+afterwards): besides `auth_methods` and the authenticator of a full session,
+
+- `approved_by_type`/`approved_by_id`: the key device that confirmed a probation sign-in (QR,
+  password + phone, OIDC + phone; the attempt's `claimed_by_device`, re-checked active under the
+  account lock at collect). A TOTP sign-in has none, also when a phone had claimed the attempt.
+  Revoking that key device, for any reason, ends the session (`authenticator_revoked`). Sessions
+  from before the upgrade whose confirming device is no longer known have `approved_by_type` set
+  and `approved_by_id` `NULL`: they end when any key device of the account is revoked.
+- `password_generation`/`totp_generation`: the generations the sign-in used (the same values as the
+  `sign_in` event's `details.factors`). When such a generation ends (replaced, removed or marked
+  compromised), the session ends (`factor_ended`), except the acting session of owner-rule part 2.
+  A pre-v1 `{legacy}` session carries the account's generations at the upgrade.
+
+An ended session answers like any other: `error SESSION_REVOKED` and close 1008 on its socket, 401
+`INVALID_TOKEN` on refresh and on every bearer request.
 
 **Concurrent sessions:** at most `MAX_SESSIONS_PER_USER` (50) live sessions; a new sign-in beyond
 that ends the least recently used one (`limit`, notice `session_ended_limit`).
@@ -760,12 +777,14 @@ sweep after 30 minutes. The first admin cannot bind TOTP (403 `TOTP_UNAVAILABLE`
 | `sign_in` | normal | `{auth_methods, assurance}` (+ recorded factor generations) |
 | `sign_in_not_finished`, `second_factor_failed`, `guessing` | normal | `{factor, count}` |
 | `approval_reported` | normal | `{attempt_kind}` |
-| `authenticator_added` | high for `key_device`/`passkey`, normal for `totp` | `{type}` |
-| `authenticator_removed` | high | `{type, by: self|admin|request|cli}` |
-| `key_invalidated` | high | `{}` |
+| `authenticator_added` | high for `key_device`/`passkey`, normal for `totp` | `{type}`; TOTP: `generation`, `ended_sessions` |
+| `authenticator_removed` | high | `{type, by: self|admin|request|cli}`; a key device or TOTP: `ended_sessions` |
+| `key_invalidated` | high | `{ended_sessions}` |
 | `recovery_codes_created` | normal | `{}` |
-| `password_set`, `password_changed`, `password_removed` | normal | `{}` |
-| `password_throttled`, `password_compromised`, `totp_throttled`, `totp_compromised` | high | `{cause: guessing|report|repudiation|cancel|admin|cli}` |
+| `password_set`, `password_changed` | normal | `{generation, ended_sessions}` |
+| `password_removed` | normal | `{ended_sessions}` |
+| `password_throttled`, `totp_throttled` | high | `{cause: guessing}` |
+| `password_compromised`, `totp_compromised` | high | `{cause: guessing|report|repudiation|cancel|admin|cli, ended_sessions}` |
 | `step_up_action` | normal | `{action, target_label}` |
 | `repudiated` | high | `{event_id}` |
 | `request_started`, `request_completed`, `request_cancelled`, `request_withdrawn` | high | `{request_id, purpose, cancelled_by?}` |
@@ -816,9 +835,11 @@ who became admin cannot confirm. `counts_from = confirmed_at + ACCOUNT_REQUEST_D
    precondition, consumes its challenge or grant, applies the effect and writes the audit row.
 2. **Invalidation cascades** (`approvals/cascade.rs`), in the transaction of their cause: ending a
    session voids its grants, desktop flows and enrolments; revoking an authenticator ends its
-   sessions and voids its open challenges, grants, enrolments and `admin` requests; demoting an
-   admin voids the `admin` requests they started; a new factor generation ends attempts (`expired`)
-   and requests (`void`) that used the old one; a request with no route left is `void`; ending a
+   sessions and voids its open challenges, grants, enrolments and `admin` requests (a key device
+   also ends the sessions it confirmed, and those whose confirming device is unknown); demoting an
+   admin voids the `admin` requests they started; a new factor generation ends the sessions that
+   signed in with the old one (`factor_ended`), then attempts (`expired`) and requests (`void`)
+   that used it; a request with no route left is `void`; ending a
    request voids its child enrolment and pending authenticator.
 3. **Timers** run in a sweep every minute under rule 1.
 4. **Consumption re-checks authorisation:** collect only while the approving device is active and
@@ -829,7 +850,11 @@ who became admin cannot confirm. `counts_from = confirmed_at + ACCOUNT_REQUEST_D
 → login attempts. Device-side transitions (claim, answer, deny, release) lock accounts → device →
 session → challenge → attempt; the PC side (collect, TOTP step) locks the attempt's account →
 attempt; poll, cancel and the sweep touch only attempt rows. Logout and refresh do not take the
-account lock and touch only sessions, grants and enrolments. `FOR NO KEY UPDATE` still conflicts
+account lock and touch only sessions, grants and enrolments. The cascades of a revoked key device
+and of an ended factor generation run under the account lock of their cause and lock, in this
+order, session rows (ended), grants and enrolments, then challenges, attempts and requests; a
+collect that holds the same account lock (account → attempt → new session) can therefore neither
+interleave with them nor wait on them in a cycle. `FOR NO KEY UPDATE` still conflicts
 with itself, so transitions serialise, but it does not block the `FOR KEY SHARE` of foreign-key
 inserts (notices, events, sessions), which removed a class of deadlocks. Every claimed deadlock
 was reproduced (`40P01`) and pinned by a test (implementation notes).
@@ -899,7 +924,9 @@ Residual risks (spec B.6, as implemented):
    used generations compromised. The owner's own "That wasn't me" can void their own request (the
    apps warn first); during a bootstrap only an admin can help afterwards.
 7. **A stolen phone plus its screen lock** is the key until removed; remove it first ("Remove device
-   now").
+   now"). Removing it also ends at once every sign-in it confirmed (QR, password or OIDC + phone).
+   What it added while it was in the thief's hands (another phone, a passkey) stays until removed or
+   reported with "That wasn't me".
 8. **Full access on a PC needs a passkey;** Linux + Firefox means a FIDO2 security key or Chromium.
 9. **Lockout abuse** of phone-less users without a passkey (section 13).
 10. **Refresh retry window:** a refresh token stolen within 10 s of its rotation yields the same

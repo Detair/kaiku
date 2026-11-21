@@ -153,6 +153,18 @@ it. If that ever happens, the stranger can at most read and write chats until yo
 tells you about the new sign-in) and end it. They can never change your sign-in methods or lock
 you out. A passkey cannot be tricked this way, so it gives a full sign-in.
 
+**When a chat-only sign-in ends by itself.** Besides signing out or ending it in your session
+list:
+
+- when the phone that confirmed it is removed (by you, an admin or a recovery), every computer or
+  browser that this phone let in by scanning or by confirming your password ends at once;
+- when you change or remove your password or authenticator app, or it is marked unsafe, every
+  sign-in that used the old one ends at once. The sign-in you make the change from stays.
+
+So if one of your phones was stolen, removing it also signs out every PC it let in. Old phones you
+replace properly do the same: if a computer was signed in by scanning with the old phone, sign in
+on it again afterwards.
+
 **Confirmations.** Even in a full sign-in, important changes need one more confirmation right
 before you do them: a passkey on a PC, or your screen lock on your key phone. Each confirmation
 covers exactly one action (for example "Remove the device Pixel 8") and is valid for 5 minutes.

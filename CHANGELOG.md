@@ -157,6 +157,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Windows that open on demand (channel settings, new channel, new message, search, pinned messages, custom status, keyboard shortcuts, report and block, the first-run setup and tour) load when first opened, so the app has less to download at start. If one cannot load, the page says so and offers a reload.
 
 ### Security
+- Removing a key phone (by its owner, on the phone itself, by an admin, with `kaiku-admin` or through a recovery) now also ends at once every computer and browser sign-in that this phone confirmed by a scanned code or a password or sign-in provider confirmation. Sign-ins from before this version whose confirming phone is not known end when any key phone of the account is removed. Nobody is signed out by the upgrade itself.
+- Changing or removing your password or authenticator app, or having it marked unsafe, now ends at once every sign-in that used the old one; the sign-in that makes the change stays. The security notice records how many sign-ins ended.
 - The end-to-end encryption library was updated to a release that clears key material from memory more thoroughly.
 - Dependency advisories for the web client and the server were cleared.
 - Repeated wrong passwords or codes for one account slow further tries (from the 5th: 30 seconds, doubling up to an hour) and are reported to the account and the admins; after 100 the password or code is blocked. Signing in with a passkey or your phone is never blocked by this.
