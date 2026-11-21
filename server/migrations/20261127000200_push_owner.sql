@@ -32,3 +32,9 @@ UPDATE push_subscriptions p
         ORDER BY s.created_at DESC, s.id DESC
         LIMIT 1)
  WHERE p.device_id IS NOT NULL;
+
+-- A key backup remembers whether a chat-only session created it. A chat-only
+-- session may create only the account's first backup, with version 1; a full
+-- session may replace such a backup with any version. Existing backups count
+-- as made by a full session (the version rule applies as before).
+ALTER TABLE key_backups ADD COLUMN created_by_chat_only BOOLEAN NOT NULL DEFAULT false;

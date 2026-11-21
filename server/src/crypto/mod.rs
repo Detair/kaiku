@@ -538,12 +538,17 @@ pub async fn upload_backup(
     }
 
     // C27: a chat-only session may create the account's first backup (the
-    // released desktop app offers it after sign-in), never replace one. One
-    // statement, so two first uploads at once store exactly one.
+    // released desktop app offers it after sign-in, always as version 1),
+    // never replace one. One statement, so two first uploads at once store
+    // exactly one. The row remembers its origin, so a full session can always
+    // replace it.
     if auth_user.assurance() != crate::auth::assurance::Assurance::Full {
+        if req.version != 1 {
+            return Err(AuthError::FullSessionRequired);
+        }
         let created = sqlx::query(
-            "INSERT INTO key_backups (user_id, salt, nonce, ciphertext, version)
-             VALUES ($1, $2, $3, $4, $5)
+            "INSERT INTO key_backups (user_id, salt, nonce, ciphertext, version, created_by_chat_only)
+             VALUES ($1, $2, $3, $4, $5, true)
              ON CONFLICT (user_id) DO NOTHING",
         )
         .bind(user_id)
@@ -562,7 +567,9 @@ pub async fn upload_backup(
         return Ok(StatusCode::CREATED);
     }
 
-    // Enforce version monotonicity — new version must be strictly greater than existing
+    // Enforce version monotonicity — new version must be strictly greater than
+    // existing, unless a chat-only session made the existing one: a full
+    // session replaces that with any version.
     let result = sqlx::query(
         r"
         INSERT INTO key_backups (user_id, salt, nonce, ciphertext, version)
@@ -572,8 +579,9 @@ pub async fn upload_backup(
             nonce = EXCLUDED.nonce,
             ciphertext = EXCLUDED.ciphertext,
             version = EXCLUDED.version,
+            created_by_chat_only = false,
             created_at = NOW()
-        WHERE key_backups.version < EXCLUDED.version
+        WHERE key_backups.version < EXCLUDED.version OR key_backups.created_by_chat_only
         ",
     )
     .bind(user_id)

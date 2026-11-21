@@ -411,18 +411,33 @@ pub const MAX_SUBSCRIPTIONS_PER_USER: i64 = 10;
 /// recently used are pruned.
 pub const MAX_SUBSCRIPTIONS_PER_CHAT_ONLY_SESSION: i64 = 2;
 
+/// SQL condition (alias `p`): the row is a key phone's, i.e. its install id is
+/// the install of an active or pending key device of the same account. Such a
+/// row belongs to the device: no session end touches it, it goes with the
+/// device's revocation, and only a full session may register, overwrite or
+/// delete it.
+macro_rules! key_phone_row {
+    () => {
+        "(p.device_id IS NOT NULL AND EXISTS (SELECT 1 FROM approval_devices kd
+            WHERE kd.user_id = p.user_id AND kd.device_id = p.device_id
+              AND kd.state IN ('active', 'pending')))"
+    };
+}
+
 /// SQL condition (alias `p`): the row may be overwritten or deleted by the
-/// chat-only session `$sid`: it is that session's own row, has no owner, or
-/// its owning session is no longer live. Takes the session id as the
-/// placeholder given in `sid`.
+/// chat-only session `$sid`: it is not a key phone's row, and it is that
+/// session's own row, has no owner, or its owning session is no longer live.
+/// Takes the session id as the placeholder given in `sid`.
 macro_rules! takeable_by {
     ($sid:literal) => {
         concat!(
-            "(p.session_id IS NULL OR p.session_id = ",
+            "(NOT ",
+            key_phone_row!(),
+            " AND (p.session_id IS NULL OR p.session_id = ",
             $sid,
             " OR NOT EXISTS (SELECT 1 FROM sessions s WHERE s.id = p.session_id AND ",
             crate::live_clause!(),
-            "))"
+            ")))"
         )
     };
 }
@@ -544,6 +559,21 @@ pub async fn create_subscription(
     }
     let chat_only = auth.assurance() != crate::auth::assurance::Assurance::Full;
     if chat_only {
+        // A key phone's install id is out of reach, also before its row
+        // exists: only a full session registers for a key phone.
+        if let Some(device_id) = body.device_id {
+            let key_phone: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM approval_devices
+                  WHERE user_id = $1 AND device_id = $2 AND state IN ('active', 'pending'))",
+            )
+            .bind(auth.id)
+            .bind(device_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            if key_phone {
+                return Err(crate::auth::AuthError::FullSessionRequired.into());
+            }
+        }
         // Rows of this user that the upsert would overwrite or delete: the
         // same install id, or the same endpoint. Another live session's row
         // is out of reach; nothing is changed.
@@ -636,13 +666,15 @@ pub async fn create_subscription(
     if chat_only {
         // A chat-only session holds at most a few rows: its most recently
         // used ones and the row just written.
-        sqlx::query(
+        sqlx::query(concat!(
             "DELETE FROM push_subscriptions WHERE id IN (
-                 SELECT id FROM push_subscriptions
-                  WHERE user_id = $1 AND session_id = $2 AND id <> $3
-                  ORDER BY COALESCE(last_used_at, created_at) DESC, id
-                 OFFSET $4)",
-        )
+                 SELECT p.id FROM push_subscriptions p
+                  WHERE p.user_id = $1 AND p.session_id = $2 AND p.id <> $3 AND NOT ",
+            key_phone_row!(),
+            "
+                  ORDER BY COALESCE(p.last_used_at, p.created_at) DESC, p.id
+                 OFFSET $4)"
+        ))
         .bind(auth.id)
         .bind(sid)
         .bind(sub.id)
@@ -758,34 +790,38 @@ pub async fn delete_device_subscriptions(
     )
 }
 
-/// Delete the push subscriptions owned by `sids`, which just ended for a
-/// reason that does not keep them (in the transaction that ends them).
+/// Delete the push subscriptions owned by `sids`, which just ended (in the
+/// transaction that ends them, for every end reason).
 ///
-/// With `spare_key_device_install` (a sign-out, or the sessions ended because
-/// an authenticator was revoked), a key-device session's rows of its own
-/// install stay: a key phone keeps its subscription over a sign-out, and a
-/// revoked device's revocation decides about them (deleted after the removed
-/// phone's last notice, or at once when revoked for cause; kept when the same
-/// install is set up again).
+/// A key phone's row (install of an active or pending key device of the
+/// account) is never touched: it belongs to the device and goes with the
+/// device's revocation. With `device_revoked` (the sessions ended because an
+/// authenticator was revoked, and that device is already marked revoked), a
+/// key-device session's rows of its own install stay as well: the revocation
+/// decides about them (deleted after the removed phone's last notice, or at
+/// once when revoked for cause; kept when the same install is set up again).
 ///
 /// # Errors
 /// The delete failed.
 pub async fn delete_for_ended_sessions(
     conn: &mut sqlx::PgConnection,
     sids: &[Uuid],
-    spare_key_device_install: bool,
+    device_revoked: bool,
 ) -> Result<u64, sqlx::Error> {
-    Ok(sqlx::query(
+    Ok(sqlx::query(concat!(
         "DELETE FROM push_subscriptions p
           WHERE p.session_id = ANY($1)
+            AND NOT ",
+        key_phone_row!(),
+        "
             AND NOT ($2 AND p.device_id IS NOT NULL AND EXISTS (
                 SELECT 1 FROM sessions s
                   JOIN approval_devices d ON d.id = s.authenticator_id
                  WHERE s.id = p.session_id AND s.authenticator_type = 'key_device'
-                   AND d.user_id = p.user_id AND d.device_id = p.device_id))",
-    )
+                   AND d.user_id = p.user_id AND d.device_id = p.device_id))"
+    ))
     .bind(sids)
-    .bind(spare_key_device_install)
+    .bind(device_revoked)
     .execute(&mut *conn)
     .await?
     .rows_affected())

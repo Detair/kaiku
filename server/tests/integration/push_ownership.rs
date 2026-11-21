@@ -3,11 +3,11 @@
 //! A chat-only (probation) session may overwrite or delete only its own rows,
 //! rows without an owner, and rows whose owning session is no longer live; it
 //! holds at most two rows and never prunes another live session's rows. When a
-//! session ends, its rows stay for an explicit list of reasons (a new sign-in
-//! of the same phone, the session limit, the absolute lifetime) and go in the
-//! same transaction for every other reason, sign-out included; a key phone
-//! keeps the row of its own install over a sign-out. A device-key sign-in takes
-//! over the rows of its install.
+//! session ends, its rows go in the same transaction, whatever the reason. A
+//! key phone's row (the install of an active or pending key device) belongs to
+//! the device instead: no session end touches it, only a full session may
+//! register, overwrite or delete it, and it goes with the device's revocation.
+//! A device-key sign-in takes over the rows of its install.
 //!
 //! Run with: `cargo test --test integration push_ownership`
 
@@ -585,42 +585,38 @@ async fn revoked_session_drops_its_rows(pool: PgPool) {
     );
 }
 
-/// The reasons for which a session keeps its rows; every other reason drops
-/// them in the transaction that ends the session (a chat-only session here,
-/// so the key-phone exception does not apply).
+/// No end reason keeps a session's rows: every reason drops them in the
+/// transaction that ends the session (a chat-only session's rows here).
 #[sqlx::test]
-async fn session_end_reasons_keep_or_drop_rows(pool: PgPool) {
+async fn every_end_reason_drops_a_sessions_rows(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (user, _) = create_test_user(&pool).await;
     let all = [
-        (EndReason::Logout, false),
-        (EndReason::Superseded, true),
-        (EndReason::Limit, true),
-        (EndReason::AbsoluteCap, true),
-        (EndReason::Revoked, false),
-        (EndReason::OthersRevoked, false),
-        (EndReason::PasswordChanged, false),
-        (EndReason::Ban, false),
-        (EndReason::AccountDeleted, false),
-        (EndReason::RefreshReuse, false),
-        (EndReason::AuthenticatorRevoked, false),
-        (EndReason::Repudiated, false),
-        (EndReason::RequestCompleted, false),
-        (EndReason::Upgrade, false),
-        (EndReason::Cli, false),
+        EndReason::Logout,
+        EndReason::Superseded,
+        EndReason::Limit,
+        EndReason::AbsoluteCap,
+        EndReason::Revoked,
+        EndReason::OthersRevoked,
+        EndReason::PasswordChanged,
+        EndReason::Ban,
+        EndReason::AccountDeleted,
+        EndReason::RefreshReuse,
+        EndReason::AuthenticatorRevoked,
+        EndReason::Repudiated,
+        EndReason::RequestCompleted,
+        EndReason::Upgrade,
+        EndReason::Cli,
     ];
-    for (reason, keeps) in all {
+    for reason in all {
         let (sid, token) = create_probation_session_with_token(&pool, &app.config, user).await;
         let device = Uuid::new_v4();
         let (s, b) = register(&app, &token, reason.as_str(), Some(device)).await;
         assert_eq!(s, 201, "{b}");
+        let (s, b) = register(&app, &token, &format!("{}-legacy", reason.as_str()), None).await;
+        assert_eq!(s, 201, "{b}");
         end_session(&app, user, sid, reason).await;
-        assert_eq!(
-            row(&pool, user, device).await.is_some(),
-            keeps,
-            "{}",
-            reason.as_str()
-        );
+        assert_eq!(rows_of_session(&pool, sid).await, 0, "{}", reason.as_str());
     }
 }
 
@@ -654,32 +650,34 @@ async fn superseded_session_rows_follow_device_login(pool: PgPool) {
     assert_full_required(s, &b);
 }
 
+/// A row of the phone's install that another session owns (one written
+/// before the install became a key device) is not taken over by the
+/// device-key sign-in; the phone's own full registration replaces it.
 #[sqlx::test]
 async fn device_login_does_not_adopt_another_sessions_row(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (user, _) = create_test_user(&pool).await;
     let phone = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
-    // A chat-only session registered a row under the phone's install id while
-    // the phone had none.
-    let (intruder_sid, intruder) =
-        create_probation_session_with_token(&pool, &app.config, user).await;
-    let (s, b) = register(&app, &intruder, "intruder", Some(phone.device_id)).await;
-    assert_eq!(s, 201, "{b}");
+    let (other_sid, _) = create_probation_session_with_token(&pool, &app.config, user).await;
+    insert_row(&pool, user, "earlier", phone.device_id, Some(other_sid)).await;
 
-    device_sign_in(&app, &phone).await;
+    let (new_sid, token) = device_sign_in(&app, &phone).await;
     assert_eq!(
         row(&pool, user, phone.device_id).await,
-        Some(("intruder".into(), Some(intruder_sid))),
+        Some(("earlier".into(), Some(other_sid))),
         "the row stays with the session that registered it"
     );
-    // Ending that session removes it.
-    end_session(&app, user, intruder_sid, EndReason::Revoked).await;
-    assert!(row(&pool, user, phone.device_id).await.is_none());
+    let (s, b) = register(&app, &token, "phone", Some(phone.device_id)).await;
+    assert_eq!(s, 201, "{b}");
+    assert_eq!(
+        row(&pool, user, phone.device_id).await,
+        Some(("phone".into(), Some(new_sid)))
+    );
 }
 
-/// A key phone keeps its subscription over a sign-out (it can still be asked
-/// for confirmations) and its next device-key sign-in takes the row over. A
-/// row its session registered under another install id goes.
+/// A key phone keeps its subscription over a sign-out (it belongs to the key
+/// device) and its next device-key sign-in takes the row over. A row its
+/// session registered under another install id goes with the session.
 #[sqlx::test]
 async fn key_phone_row_survives_sign_out_and_is_adopted(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
@@ -867,4 +865,295 @@ async fn session_ended_while_registering_leaves_no_row(pool: PgPool) {
             "round {round}: a revoked session left a row"
         );
     }
+}
+
+// ============================================================================
+// A key phone's row belongs to its key device
+// ============================================================================
+
+/// The phone's install id as a chat-only session reads it from the device list.
+async fn install_from_device_list(app: &TestApp, token: &str, phone: &KeyDeviceFixture) -> Uuid {
+    let (s, b) = send(app, Method::GET, "/api/approval-devices", token, json!({})).await;
+    assert_eq!(s, 200, "{b}");
+    let list = b
+        .as_array()
+        .cloned()
+        .unwrap_or_else(|| b["devices"].as_array().cloned().unwrap_or_default());
+    let entry = list
+        .iter()
+        .find(|d| d["id"] == phone.row_id.to_string())
+        .unwrap_or_else(|| panic!("phone in the list: {b}"));
+    entry["device_id"].as_str().unwrap().parse().unwrap()
+}
+
+/// Every way a chat-only session could reach the phone's row: refused or
+/// skipped, the row unchanged.
+async fn chat_only_cannot_reach(
+    app: &TestApp,
+    pool: &PgPool,
+    user: Uuid,
+    phone: &KeyDeviceFixture,
+    state: &str,
+) {
+    let before = row(pool, user, phone.device_id).await;
+    assert!(before.is_some(), "{state}: the phone has a row");
+    let (_, chat_only) = create_probation_session_with_token(pool, &app.config, user).await;
+    let install = install_from_device_list(app, &chat_only, phone).await;
+    assert_eq!(install, phone.device_id);
+
+    let (s, b) = register(app, &chat_only, "hijack", Some(install)).await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (403, Some("FULL_SESSION_REQUIRED")),
+        "{state}: {b}"
+    );
+    let endpoint = before.clone().unwrap().0;
+    let (s, b) = register(app, &chat_only, &endpoint, Some(Uuid::new_v4())).await;
+    assert_eq!(s, 403, "{state}, same endpoint: {b}");
+    let (s, b) = register(app, &chat_only, &endpoint, None).await;
+    assert_eq!(s, 403, "{state}, same endpoint without install id: {b}");
+    assert_eq!(
+        delete_device(app, &chat_only, install).await,
+        204,
+        "{state}"
+    );
+    assert_eq!(
+        row(pool, user, phone.device_id).await,
+        before,
+        "{state}: row unchanged"
+    );
+}
+
+#[sqlx::test]
+async fn chat_only_cannot_take_a_key_phones_row_in_any_state(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    for state in [
+        "signed in",
+        "signed out",
+        "lapsed",
+        "lifetime cap",
+        "session limit",
+        "after the upgrade",
+    ] {
+        let (user, _) = create_test_user(&pool).await;
+        let phone = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+        let sid = phone.session_id.unwrap();
+        if state == "after the upgrade" {
+            insert_row(&pool, user, "phone", phone.device_id, None).await;
+        } else {
+            let (s, b) = register(&app, &phone.access_token, "phone", Some(phone.device_id)).await;
+            assert_eq!(s, 201, "{b}");
+        }
+        match state {
+            "signed out" => {
+                let (s, b) = send(
+                    &app,
+                    Method::POST,
+                    "/auth/logout",
+                    &phone.access_token,
+                    json!({}),
+                )
+                .await;
+                assert_eq!(s, 200, "{b}");
+            }
+            "lapsed" => {
+                sqlx::query(
+                    "UPDATE sessions SET created_at = NOW() - INTERVAL '9 days',
+                            auth_time = NOW() - INTERVAL '9 days',
+                            expires_at = NOW() - INTERVAL '1 day' WHERE id = $1",
+                )
+                .bind(sid)
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+            "lifetime cap" => end_session(&app, user, sid, EndReason::AbsoluteCap).await,
+            "session limit" => end_session(&app, user, sid, EndReason::Limit).await,
+            _ => {}
+        }
+        chat_only_cannot_reach(&app, &pool, user, &phone, state).await;
+    }
+}
+
+#[sqlx::test]
+async fn chat_only_cannot_pre_register_a_key_phones_install(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let phone = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    let (_, chat_only) = create_probation_session_with_token(&pool, &app.config, user).await;
+    let install = install_from_device_list(&app, &chat_only, &phone).await;
+    let (s, b) = register(&app, &chat_only, "first", Some(install)).await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (403, Some("FULL_SESSION_REQUIRED")),
+        "{b}"
+    );
+    assert!(
+        row(&pool, user, install).await.is_none(),
+        "nothing was stored"
+    );
+}
+
+#[sqlx::test]
+async fn chat_only_pruning_never_takes_a_key_phones_row(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let phone = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    register(&app, &phone.access_token, "phone", Some(phone.device_id)).await;
+    // The phone signed out: its row's owner is no longer live, and it is the
+    // least recently used row of the account.
+    send(
+        &app,
+        Method::POST,
+        "/auth/logout",
+        &phone.access_token,
+        json!({}),
+    )
+    .await;
+    sqlx::query(
+        "UPDATE push_subscriptions SET created_at = NOW() - INTERVAL '3 days' WHERE device_id = $1",
+    )
+    .bind(phone.device_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    for i in 0..9 {
+        insert_row(&pool, user, &format!("old{i}"), Uuid::new_v4(), None).await;
+    }
+    let (_, chat_only) = create_probation_session_with_token(&pool, &app.config, user).await;
+    for i in 0..3 {
+        let (s, b) = register(&app, &chat_only, &format!("c{i}"), Some(Uuid::new_v4())).await;
+        assert_eq!(s, 201, "{b}");
+        assert!(
+            row(&pool, user, phone.device_id).await.is_some(),
+            "round {i}"
+        );
+    }
+    assert_eq!(rows_of_user(&pool, user).await, 10);
+}
+
+#[sqlx::test]
+async fn pending_key_device_install_is_protected_revoked_is_not(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let pending = KeyDeviceFixture::insert(&pool, &app.config, user, "pending").await;
+    let revoked = KeyDeviceFixture::insert(&pool, &app.config, user, "revoked").await;
+    let (_, chat_only) = create_probation_session_with_token(&pool, &app.config, user).await;
+    let (s, b) = register(&app, &chat_only, "pending", Some(pending.device_id)).await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (403, Some("FULL_SESSION_REQUIRED")),
+        "{b}"
+    );
+    let (s, b) = register(&app, &chat_only, "revoked", Some(revoked.device_id)).await;
+    assert_eq!(s, 201, "{b}");
+}
+
+async fn fcm_tokens_pushed(mock: &super::helpers::FcmMock) -> Vec<String> {
+    mock.received
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|m| m["message"]["token"].as_str().map(str::to_string))
+        .collect()
+}
+
+/// The key phone's row is no session's to lose: ending its session from a
+/// PC ("end all other sessions", "end this session"), a password change or a
+/// sign-out leaves it, and the phone still gets a wake afterwards.
+#[sqlx::test]
+async fn key_phone_row_survives_every_session_end(pool: PgPool) {
+    use super::helpers::{spawn_fcm_mock, test_service_account, FcmMockResponse};
+    let mock = spawn_fcm_mock(FcmMockResponse::Ok).await;
+    let mut config = vc_server::config::Config::default_for_test();
+    config.fcm_service_account = Some(test_service_account(mock.token_uri()));
+    config.fcm_api_base.clone_from(&mock.base_url);
+    let app = TestApp::with_pool_and_config(pool.clone(), config).await;
+    let (user, _) = create_test_user(&pool).await;
+    let phone = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    let pc = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    let token = "fcm-key-phone-token:abcdefghijklmnop_0123";
+    let (s, b) = send(
+        &app,
+        Method::POST,
+        "/api/me/push-subscriptions",
+        &phone.access_token,
+        json!({"provider": "fcm", "endpoint": token, "device_id": phone.device_id}),
+    )
+    .await;
+    assert_eq!(s, 201, "{b}");
+    let stored = || async {
+        sqlx::query_scalar::<_, String>(
+            "SELECT endpoint FROM push_subscriptions WHERE user_id = $1 AND device_id = $2",
+        )
+        .bind(user)
+        .bind(phone.device_id)
+        .fetch_optional(&pool)
+        .await
+        .unwrap()
+    };
+
+    // "End all other sessions" from the PC, then the phone signs in again.
+    device_grant(&app, &pc, StepUpAction::SessionsEnd, "others").await;
+    let (s, b) = send(
+        &app,
+        Method::DELETE,
+        "/auth/sessions",
+        &pc.access_token,
+        json!({}),
+    )
+    .await;
+    assert_eq!(s, 200, "{b}");
+    assert!(b["revoked_count"].as_u64() >= Some(1), "{b}");
+    assert_eq!(
+        stored().await.as_deref(),
+        Some(token),
+        "after end-all-others"
+    );
+    let (phone_sid, phone_token) = device_sign_in(&app, &phone).await;
+    assert_eq!(
+        stored().await.as_deref(),
+        Some(token),
+        "after the device-key sign-in"
+    );
+
+    // "End this session" for the phone's session.
+    device_grant(&app, &pc, StepUpAction::SessionsEnd, &phone_sid.to_string()).await;
+    let (s, b) = send(
+        &app,
+        Method::DELETE,
+        &format!("/auth/sessions/{phone_sid}"),
+        &pc.access_token,
+        json!({}),
+    )
+    .await;
+    assert_eq!(s, 204, "{b}");
+    assert_eq!(
+        stored().await.as_deref(),
+        Some(token),
+        "after end-this-session"
+    );
+    drop(phone_token);
+
+    // A password change ending the session, the remaining reasons, a sign-out.
+    let (sid, _) = device_sign_in(&app, &phone).await;
+    end_session(&app, user, sid, EndReason::PasswordChanged).await;
+    let (sid, _) = device_sign_in(&app, &phone).await;
+    end_session(&app, user, sid, EndReason::RefreshReuse).await;
+    let (_, t) = device_sign_in(&app, &phone).await;
+    let (s, b) = send(&app, Method::POST, "/auth/logout", &t, json!({})).await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(stored().await.as_deref(), Some(token), "after every end");
+
+    vc_server::push::deliver(
+        &app.state,
+        user,
+        &vc_server::push::WakeSignal::dm(Uuid::now_v7(), 1),
+    )
+    .await
+    .unwrap();
+    assert!(
+        fcm_tokens_pushed(&mock).await.iter().any(|t| t == token),
+        "the phone still gets a wake"
+    );
 }

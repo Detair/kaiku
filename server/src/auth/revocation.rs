@@ -81,30 +81,18 @@ impl EndReason {
         }
     }
 
-    /// Whether the ended session's push subscriptions stay.
+    /// Whether a key-device session that ends for this reason leaves the rows
+    /// of its own install to the device's revocation.
     ///
-    /// They stay only for the reasons listed here: a newer sign-in of the
-    /// same phone (it takes the rows over), the per-account session limit and
-    /// the absolute lifetime (the same phone signs in again and re-registers
-    /// only once its local record is a day old). Every other reason, including
-    /// one added later, deletes them in the transaction that ends the session,
-    /// apart from the exception in [`Self::spares_key_device_install_rows`].
+    /// Only an ended session whose key device was just revoked: the revocation
+    /// deletes them after the removed phone's last notice, at once when revoked
+    /// for cause, and keeps them when the same install is set up again. No
+    /// reason keeps a session's other push subscriptions; a key phone's row
+    /// (install of an active or pending key device) is never a session's to
+    /// lose.
     #[must_use]
-    pub const fn keeps_push_subscriptions(self) -> bool {
-        matches!(self, Self::Superseded | Self::Limit | Self::AbsoluteCap)
-    }
-
-    /// Whether a key-device session that ends for this reason keeps the rows
-    /// of its own install (all its other rows go).
-    ///
-    /// A sign-out of a key phone keeps its subscription on purpose (it can
-    /// still be asked for confirmations; its next device-key sign-in takes the
-    /// row over). A revoked key device's install rows are left to the
-    /// revocation: deleted after the removed phone's last notice, at once when
-    /// revoked for cause, kept when the same install is set up again.
-    #[must_use]
-    pub const fn spares_key_device_install_rows(self) -> bool {
-        matches!(self, Self::Logout | Self::AuthenticatorRevoked)
+    pub const fn leaves_device_rows_to_revocation(self) -> bool {
+        matches!(self, Self::AuthenticatorRevoked)
     }
 }
 
@@ -321,18 +309,12 @@ async fn listen(pool: &PgPool, redis: &Client) -> Result<(), sqlx::Error> {
 mod tests {
     use super::EndReason;
 
-    /// The reasons that keep an ended session's push subscriptions. Every
-    /// other reason deletes them (a sign-out and a revoked key device spare
-    /// only a key device's own-install rows); a reason added later deletes
-    /// them too unless it is added here on purpose.
+    /// No end reason keeps a session's push subscriptions; only a revoked
+    /// key device's own install is left to its revocation. A reason added
+    /// later deletes them too.
     #[test]
-    fn push_subscriptions_are_kept_only_for_the_listed_reasons() {
-        let kept = [
-            EndReason::Superseded,
-            EndReason::Limit,
-            EndReason::AbsoluteCap,
-        ];
-        let deleted = [
+    fn no_end_reason_keeps_push_subscriptions() {
+        let all = [
             EndReason::Logout,
             EndReason::Revoked,
             EndReason::OthersRevoked,
@@ -340,23 +322,19 @@ mod tests {
             EndReason::Ban,
             EndReason::AccountDeleted,
             EndReason::RefreshReuse,
+            EndReason::Limit,
             EndReason::AuthenticatorRevoked,
+            EndReason::Superseded,
             EndReason::Repudiated,
             EndReason::RequestCompleted,
             EndReason::Upgrade,
             EndReason::Cli,
+            EndReason::AbsoluteCap,
         ];
-        for r in kept {
-            assert!(r.keeps_push_subscriptions(), "{}", r.as_str());
-        }
-        for r in deleted {
-            assert!(!r.keeps_push_subscriptions(), "{}", r.as_str());
-        }
-        // Only these spare a key device's own-install rows.
-        for r in kept.into_iter().chain(deleted) {
+        for r in all {
             assert_eq!(
-                r.spares_key_device_install_rows(),
-                matches!(r, EndReason::Logout | EndReason::AuthenticatorRevoked),
+                r.leaves_device_rows_to_revocation(),
+                r == EndReason::AuthenticatorRevoked,
                 "{}",
                 r.as_str()
             );

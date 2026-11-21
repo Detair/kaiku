@@ -291,27 +291,97 @@ async fn chat_only_can_create_the_first_backup(pool: PgPool) {
 #[sqlx::test]
 async fn probation_cannot_replace_backup(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
-    let (user, _) = create_test_user(&pool).await;
-    let (_, full) = create_session_with_token(&pool, &app.config, user).await;
-    let (status, body) = send(&app, Method::POST, "/api/keys/backup", &full, backup(1)).await;
-    assert_eq!(status, 201, "{body}");
-    let before = stored_backup(&pool, user).await.expect("stored");
+    // A backup a full session made, and one a chat-only session made.
+    for made_by_full in [true, false] {
+        let (user, _) = create_test_user(&pool).await;
+        let (_, chat_only) = create_probation_session_with_token(&pool, &app.config, user).await;
+        let maker = if made_by_full {
+            create_session_with_token(&pool, &app.config, user).await.1
+        } else {
+            chat_only.clone()
+        };
+        let (status, body) = send(&app, Method::POST, "/api/keys/backup", &maker, backup(1)).await;
+        assert_eq!(status, 201, "{body}");
+        let before = stored_backup(&pool, user).await.expect("stored");
 
+        for version in [1, 2, i32::MAX] {
+            let (status, body) = send(
+                &app,
+                Method::POST,
+                "/api/keys/backup",
+                &chat_only,
+                backup_with(version, b"someone else's backup"),
+            )
+            .await;
+            assert_full_required(status, &body, "POST /api/keys/backup over an existing one");
+        }
+        assert_eq!(
+            stored_backup(&pool, user).await,
+            Some(before),
+            "the stored backup is byte-identical (made by full: {made_by_full})"
+        );
+    }
+}
+
+/// The first backup from a chat-only session is version 1 (what the released
+/// desktop app sends); a higher one would block every later replacement.
+#[sqlx::test]
+async fn chat_only_first_backup_must_be_version_one(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let (_, chat_only) = create_probation_session_with_token(&pool, &app.config, user).await;
+    for version in [0, 2, i32::MAX] {
+        let (status, body) = send(
+            &app,
+            Method::POST,
+            "/api/keys/backup",
+            &chat_only,
+            backup(version),
+        )
+        .await;
+        assert_full_required(status, &body, "chat-only first backup with version != 1");
+    }
+    assert!(stored_backup(&pool, user).await.is_none(), "nothing stored");
+}
+
+/// A full session replaces a backup a chat-only session made, with any
+/// version (the released app always sends 1); afterwards today's rule holds.
+#[sqlx::test]
+async fn full_session_replaces_a_chat_only_backup(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
     let (_, chat_only) = create_probation_session_with_token(&pool, &app.config, user).await;
     let (status, body) = send(
         &app,
         Method::POST,
         "/api/keys/backup",
         &chat_only,
-        backup_with(2, b"someone else's backup"),
+        backup_with(1, b"planted"),
     )
     .await;
-    assert_full_required(status, &body, "POST /api/keys/backup over an existing one");
-    assert_eq!(
-        stored_backup(&pool, user).await,
-        Some(before),
-        "the stored backup is byte-identical"
-    );
+    assert_eq!(status, 201, "{body}");
+    let (_, full) = create_session_with_token(&pool, &app.config, user).await;
+    let (status, body) = send(
+        &app,
+        Method::POST,
+        "/api/keys/backup",
+        &full,
+        backup_with(1, b"the owner's"),
+    )
+    .await;
+    assert_eq!(status, 201, "{body}");
+    let stored = stored_backup(&pool, user).await.expect("stored");
+    assert_eq!((stored.2.as_slice(), stored.3), (&b"the owner's"[..], 1));
+    // Now a full session made it: the same version is refused as today.
+    let (status, body) = send(
+        &app,
+        Method::POST,
+        "/api/keys/backup",
+        &full,
+        backup_with(1, b"again"),
+    )
+    .await;
+    assert_eq!(status, 400, "{body}");
 }
 
 #[sqlx::test]
@@ -351,42 +421,27 @@ async fn two_first_backups_at_once_store_one(pool: PgPool) {
     }
 }
 
+/// A backup a full session made keeps today's version rule exactly.
 #[sqlx::test]
-async fn full_session_replaces_backup(pool: PgPool) {
+async fn full_made_backup_keeps_todays_version_rule(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (user, _) = create_test_user(&pool).await;
-    let (_, chat_only) = create_probation_session_with_token(&pool, &app.config, user).await;
-    let (status, body) = send(
-        &app,
-        Method::POST,
-        "/api/keys/backup",
-        &chat_only,
-        backup(1),
-    )
-    .await;
-    assert_eq!(status, 201, "{body}");
     let (_, full) = create_session_with_token(&pool, &app.config, user).await;
-    let (status, body) = send(
-        &app,
-        Method::POST,
-        "/api/keys/backup",
-        &full,
-        backup_with(2, b"newer"),
-    )
-    .await;
+    let (status, body) = send(&app, Method::POST, "/api/keys/backup", &full, backup(5)).await;
     assert_eq!(status, 201, "{body}");
+    for (version, expected) in [(4, 400), (5, 400), (6, 201)] {
+        let (status, body) = send(
+            &app,
+            Method::POST,
+            "/api/keys/backup",
+            &full,
+            backup_with(version, b"newer"),
+        )
+        .await;
+        assert_eq!(status, expected, "version {version}: {body}");
+    }
     let stored = stored_backup(&pool, user).await.expect("stored");
-    assert_eq!((stored.2.as_slice(), stored.3), (&b"newer"[..], 2));
-    // The version rule is unchanged for full sessions.
-    let (status, body) = send(
-        &app,
-        Method::POST,
-        "/api/keys/backup",
-        &full,
-        backup_with(2, b"same version"),
-    )
-    .await;
-    assert_eq!(status, 400, "{body}");
+    assert_eq!((stored.2.as_slice(), stored.3), (&b"newer"[..], 6));
 }
 
 /// With the backup made mandatory by the operator, the desktop prompt cannot
