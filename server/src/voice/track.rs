@@ -108,6 +108,23 @@ pub struct TrackRouter {
     pending_secondary: DashMap<(Uuid, Layer), Arc<TrackRemote>>,
 }
 
+/// A local track that forwards `source_type` of `source_user_id` to one subscriber.
+pub(crate) fn forwarded_track(
+    source_user_id: Uuid,
+    source_type: TrackSource,
+    codec: RTCRtpCodecCapability,
+) -> Arc<TrackLocalStaticRTP> {
+    Arc::new(TrackLocalStaticRTP::new(
+        codec,
+        // Track ID: "{source_user_id}:{source_type}" using Display format
+        // (e.g. "uuid:microphone", "uuid:screen_video:stream_uuid", "uuid:webcam").
+        // Clients split on the first colon to get [userId, sourceType].
+        format!("{source_user_id}:{source_type}"),
+        // Stream ID: same format so the browser groups tracks correctly.
+        format!("{source_user_id}:{source_type}"),
+    ))
+}
+
 impl TrackRouter {
     /// Create a new track router.
     pub fn new() -> Self {
@@ -129,7 +146,9 @@ impl TrackRouter {
         source_track: &TrackRemote,
     ) -> Result<Arc<TrackLocalStaticRTP>, VoiceError> {
         // Create a local track with the same codec as the source
-        let local_track = Arc::new(TrackLocalStaticRTP::new(
+        let local_track = forwarded_track(
+            source_user_id,
+            source_type,
             RTCRtpCodecCapability {
                 mime_type: source_track.codec().capability.mime_type,
                 clock_rate: source_track.codec().capability.clock_rate,
@@ -137,13 +156,7 @@ impl TrackRouter {
                 sdp_fmtp_line: source_track.codec().capability.sdp_fmtp_line,
                 rtcp_feedback: vec![],
             },
-            // Track ID: "{source_user_id}:{source_type}" using Display format
-            // (e.g. "uuid:microphone", "uuid:screen_video:stream_uuid", "uuid:webcam").
-            // Clients split on the first colon to get [userId, sourceType].
-            format!("{source_user_id}:{source_type}"),
-            // Stream ID: same format so the browser groups tracks correctly.
-            format!("{source_user_id}:{source_type}"),
-        ));
+        );
 
         // Store subscription (default: auto layer selection, assume high bandwidth)
         let subscription = Subscription {
