@@ -153,18 +153,27 @@ impl TrackRouter {
         subscriber: &Peer,
         source_track: &TrackRemote,
     ) -> Result<Arc<TrackLocalStaticRTP>, VoiceError> {
-        // Create a local track with the same codec as the source
-        let local_track = forwarded_track(
-            source_user_id,
-            source_type,
-            RTCRtpCodecCapability {
-                mime_type: source_track.codec().capability.mime_type,
-                clock_rate: source_track.codec().capability.clock_rate,
-                channels: source_track.codec().capability.channels,
-                sdp_fmtp_line: source_track.codec().capability.sdp_fmtp_line,
-                rtcp_feedback: vec![],
-            },
-        );
+        // A local track with the same codec as the source
+        let codec = RTCRtpCodecCapability {
+            mime_type: source_track.codec().capability.mime_type,
+            clock_rate: source_track.codec().capability.clock_rate,
+            channels: source_track.codec().capability.channels,
+            sdp_fmtp_line: source_track.codec().capability.sdp_fmtp_line,
+            rtcp_feedback: vec![],
+        };
+        Ok(self.subscribe_with_codec(source_user_id, source_type, subscriber, codec))
+    }
+
+    /// The part of [`Self::create_subscriber_track`] after the codec is
+    /// known: the forwarded track and its subscription.
+    pub(crate) fn subscribe_with_codec(
+        &self,
+        source_user_id: Uuid,
+        source_type: TrackSource,
+        subscriber: &Peer,
+        codec: RTCRtpCodecCapability,
+    ) -> Arc<TrackLocalStaticRTP> {
+        let local_track = forwarded_track(source_user_id, source_type, codec);
 
         // Store subscription (default: auto layer selection, assume high bandwidth)
         let subscription = Subscription {
@@ -188,7 +197,7 @@ impl TrackRouter {
             "Created subscriber track"
         );
 
-        Ok(local_track)
+        local_track
     }
 
     /// Forward an RTP packet from source to all subscribers whose active layer matches.
@@ -859,6 +868,84 @@ mod tests {
 #[cfg(test)]
 mod simulcast_tests {
     use super::*;
+
+    /// Two packets through `forward_rtp` with one buffer: the buffer holds
+    /// nothing after each packet, and a subscriber removed between them is
+    /// not written to (nor kept) for the second.
+    #[tokio::test]
+    async fn forward_rtp_reuses_its_buffer_without_stale_targets() {
+        let router = TrackRouter::new();
+        let source = Uuid::new_v4();
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        let key = (source, TrackSource::Microphone);
+        let track_of = |id: &str| {
+            Arc::new(TrackLocalStaticRTP::new(
+                RTCRtpCodecCapability {
+                    mime_type: "audio/opus".into(),
+                    clock_rate: 48_000,
+                    channels: 2,
+                    ..Default::default()
+                },
+                id.into(),
+                "s".into(),
+            ))
+        };
+        let removed_track = track_of("b");
+        for (viewer, track) in [(a, track_of("a")), (b, removed_track.clone())] {
+            router
+                .subscriptions
+                .entry(key)
+                .or_default()
+                .push(Subscription {
+                    subscriber_id: viewer,
+                    local_track: track,
+                    preferred_layer: LayerPreference::Auto,
+                    active_layer: Layer::High,
+                    remb_estimate: u64::MAX,
+                    last_layer_change: Instant::now(),
+                });
+        }
+        let packet = RtpPacket {
+            header: webrtc::rtp::header::Header {
+                version: 2,
+                payload_type: 111,
+                ssrc: 1,
+                ..Default::default()
+            },
+            payload: bytes::Bytes::from_static(&[0u8; 20]),
+        };
+        let mut targets = ForwardTargets::new();
+
+        router
+            .forward_rtp(
+                source,
+                TrackSource::Microphone,
+                Layer::High,
+                &packet,
+                &mut targets,
+            )
+            .await;
+        assert!(targets.is_empty(), "targets kept after the first packet");
+
+        router
+            .remove_subscriber(source, TrackSource::Microphone, b)
+            .await;
+        router
+            .forward_rtp(
+                source,
+                TrackSource::Microphone,
+                Layer::High,
+                &packet,
+                &mut targets,
+            )
+            .await;
+        assert!(targets.is_empty(), "targets kept after the second packet");
+        assert_eq!(
+            Arc::strong_count(&removed_track),
+            1,
+            "the removed subscriber's track is still held for forwarding"
+        );
+    }
 
     /// Forwarding reaches every subscriber of the packet's layer and none of
     /// another layer (with layers), and a subscriber removed between two

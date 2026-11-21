@@ -2811,6 +2811,8 @@ mod negotiation_tests {
         }
         let user = Uuid::from_u128(7);
         let mic = TrackSource::Microphone;
+        // Tracks are built the way forwarding builds them.
+        let router = crate::voice::track::TrackRouter::new();
         let live = |offer: &str, source: TrackSource| {
             offer
                 .lines()
@@ -2818,7 +2820,7 @@ mod negotiation_tests {
         };
 
         let first = seat(7).await;
-        let t1 = crate::voice::track::forwarded_track(user, mic, opus());
+        let t1 = router.subscribe_with_codec(user, mic, &listener, opus());
         listener
             .add_outgoing_track(&first, mic, t1.clone())
             .await
@@ -2829,7 +2831,7 @@ mod negotiation_tests {
         listener.remove_outgoing_track_if(user, mic, &t1).await;
         round(&listener, &mut rx, &client, "leave").await;
         let second = seat(7).await;
-        let t2 = crate::voice::track::forwarded_track(user, mic, opus());
+        let t2 = router.subscribe_with_codec(user, mic, &listener, opus());
         listener
             .add_outgoing_track(&second, mic, t2)
             .await
@@ -2839,7 +2841,7 @@ mod negotiation_tests {
 
         // (2) Another device takes over: removal and addition in one offer.
         let third = seat(7).await;
-        let t3 = crate::voice::track::forwarded_track(user, mic, opus());
+        let t3 = router.subscribe_with_codec(user, mic, &listener, opus());
         listener
             .add_outgoing_track(&third, mic, t3)
             .await
@@ -2849,14 +2851,14 @@ mod negotiation_tests {
 
         // (3) Camera off and on.
         let cam = TrackSource::Webcam;
-        let c1 = crate::voice::track::forwarded_track(user, cam, vp8());
+        let c1 = router.subscribe_with_codec(user, cam, &listener, vp8());
         listener
             .add_outgoing_track(&third, cam, c1.clone())
             .await
             .expect("camera");
         round(&listener, &mut rx, &client, "camera on").await;
         listener.remove_outgoing_track_if(user, cam, &c1).await;
-        let c2 = crate::voice::track::forwarded_track(user, cam, vp8());
+        let c2 = router.subscribe_with_codec(user, cam, &listener, vp8());
         listener
             .add_outgoing_track(&third, cam, c2)
             .await
