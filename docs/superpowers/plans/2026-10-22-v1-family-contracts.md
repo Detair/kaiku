@@ -366,8 +366,14 @@ changes); for `enroll` it verifies the signature first, then compares: wrong →
     Android app enrolling itself, SM2) → 201 `{enrollment_id, state: "done", authenticator_state:
     "active"|"pending", ready_at|null}` without a code.
   - `POST /auth/enrollments/status {enrollment_id, claim_secret, wait?: 0..25}` (browser: the claim
-    cookie) → 200 `{state, authenticator_state|null, ready_at|null}` (long-poll). Then device-key
-    sign-in.
+    cookie) → 200 `{state, authenticator_state|null, ready_at|null, enrollment_id}` (long-poll;
+    `enrollment_id` is additive). The answer is the stored state. `expired` is stored and final:
+    no later confirmation of the enrolment can succeed. For a `claimed` enrolment whose code
+    time is over, the call records `expired` under the enrolment's row lock. It does not wait
+    for the enrolment row while a confirmation or the sweep holds it: the answer then stays
+    `claimed`, and afterwards is the state stored then (`done` if the confirmation succeeded,
+    otherwise for example `failed` or `cancelled`), or `expired` if the enrolment is then still
+    `claimed` and past its code time. Then device-key sign-in.
   - Passkey claims from a browser: C29.
 - Limits: setup token 256-bit, single use, 10 min; code 6 digits (shown "123 456"), valid 5 min from
   the claim (unconfirmed → `expired`), 3 tries; ≤ 5 open per issuer (409 `ENROLLMENT_LIMIT`).
