@@ -5,6 +5,8 @@ import io.wolftown.kaiku.data.voice.statusText
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -38,6 +40,8 @@ internal class OngoingCallNotification(
     /** Posts the notification with the link's status line ([statusText]; null: connected). */
     private val post: (status: Int?) -> Unit,
     private val cancel: () -> Unit,
+    /** Whether the call is on, as it changes: the notification follows the call coming on too. */
+    private val callOn: Flow<Boolean> = flowOf(true),
 ) {
     private var updates: Job? = null
     private var following = -1L
@@ -53,10 +57,11 @@ internal class OngoingCallNotification(
         updates?.cancel()
         following = generation
         updates = scope.launch {
-            linkState
-                .map { it.statusText() }
+            // The link's status, and again when the call comes on: a call that comes on with
+            // the link already up shows as up (its connecting phase may never have been seen).
+            combine(linkState.map { it.statusText() }, callOn) { status, on -> status to on }
                 .distinctUntilChanged()
-                .collect { status -> gate.ifOpen(generation) { if (callIsOn()) post(status) } }
+                .collect { (status, on) -> if (on) gate.ifOpen(generation) { if (callIsOn()) post(status) } }
         }
     }
 

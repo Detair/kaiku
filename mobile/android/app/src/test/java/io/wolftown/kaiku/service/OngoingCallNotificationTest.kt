@@ -49,7 +49,10 @@ class OngoingCallNotificationTest {
 
     private class Harness(scope: TestScope) {
         val notifications = Notifications()
-        var callIsOn = true
+        val callOn = MutableStateFlow(true)
+        var callIsOn: Boolean
+            get() = callOn.value
+            set(value) { callOn.value = value }
         val link = MutableStateFlow<VoiceLinkState>(VoiceLinkState.Stable)
         val gate = CallNotificationGate()
 
@@ -58,6 +61,7 @@ class OngoingCallNotificationTest {
         val notification = OngoingCallNotification(
             scope = scope.backgroundScope,
             callIsOn = { callIsOn },
+            callOn = callOn,
             gate = gate,
             linkState = link,
             post = notifications::post,
@@ -254,5 +258,19 @@ class OngoingCallNotificationTest {
         // Stopped: nothing applies.
         gate.retire()
         org.junit.Assert.assertFalse(gate.actionApplies(second))
+    }
+
+    @Test
+    fun `a call that comes on after the link was already up shows as in the call`() = runTest {
+        val h = Harness(this)
+        // The service is held for a call: "Connecting…" from its start, the call not on yet.
+        h.callIsOn = false
+        h.start()
+        runCurrent()
+        // The whole connecting phase passed without the notification seeing it: the link is
+        // up already when the call comes on.
+        h.callIsOn = true
+        runCurrent()
+        assertEquals("post:in-call", h.notifications.calls.last())
     }
 }

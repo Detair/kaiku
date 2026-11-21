@@ -26,6 +26,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.map
 import java.util.logging.Logger
 import javax.inject.Inject
 
@@ -69,6 +70,7 @@ class VoiceCallService : Service() {
             linkState = voiceRepository.linkState,
             post = ::postNotification,
             cancel = { NotificationManagerCompat.from(this).cancel(NOTIFICATION_ID) },
+            callOn = voiceRepository.currentChannelId.map { it != null },
         )
     }
 
