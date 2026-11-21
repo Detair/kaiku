@@ -729,29 +729,23 @@ async fn simulcast_webcam_reaches_viewers(pool: PgPool) {
     );
 }
 
-/// With simulcast, a viewer's key-frame request reaches the layer it
-/// watches, also when another layer arrived first.
+/// A one-stream webcam: a viewer that chose a layer for it still gets its
+/// key-frame requests to the publisher's one stream; the layer choice does
+/// not divert them to a layer that does not exist.
 #[sqlx::test]
-#[ignore = "needs simulcast, which the server does not negotiate (no layer-id header extension)"]
-async fn keyframe_request_reaches_the_watched_layer(pool: PgPool) {
+async fn keyframe_request_reaches_a_one_stream_webcam_after_a_layer_choice(pool: PgPool) {
     let f = fixture(pool).await;
-    let (mut a, mut b) = two_in_call(&f).await;
+    let (mut a, b) = two_in_call(&f).await;
     a.send(serde_json::json!({ "type": "voice_webcam_start", "channel_id": f.voice, "quality": "medium" }));
     a.next_event("webcam_started", WAIT).await;
-    // Only the low layer flows at first, so it arrives first; the others
-    // follow.
-    let (layers, _sender) = a.add_simulcast_video("cam", &["l", "m", "h"], &["l"]).await;
+    a.add_track(true, "cam").await;
     a.publish().await;
-    tokio::time::sleep(Duration::from_millis(1500)).await;
-    a.start_writing(layers["m"].clone(), true);
-    a.start_writing(layers["h"].clone(), true);
     let id = format!("{}:webcam", a.user_id);
     assert!(
         b.wait_for_packets(&id, 5, WAIT).await,
         "{:?}",
         b.seen_tracks()
     );
-    // The viewer asks to watch the high layer.
     b.send(serde_json::json!({
         "type": "voice_set_layer_preference",
         "channel_id": f.voice,
@@ -759,31 +753,23 @@ async fn keyframe_request_reaches_the_watched_layer(pool: PgPool) {
         "track_source": "webcam",
         "preferred_layer": "high",
     }));
-    let _ = b
-        .try_next_event("voice_layer_changed", Duration::from_millis(500))
-        .await;
-    let room = f.app.state.sfu.get_room(f.voice).await.expect("room");
-    assert_eq!(
-        room.track_router
-            .active_layer(b.user_id, a.user_id, vc_server::voice::TrackSource::Webcam),
-        Some(vc_server::voice::Layer::High),
-        "precondition: the viewer watches the high layer"
-    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
 
-    let key = "cam@h";
-    let before = a.keyframe_requests(key);
+    let before = a.keyframe_requests("cam");
     let started = tokio::time::Instant::now();
     while started.elapsed() < Duration::from_millis(2500) {
         b.request_keyframe(&id).await;
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     tokio::time::sleep(Duration::from_millis(300)).await;
-    let got = a.keyframe_requests(key) - before;
-    let all = a.keyframe_requests.lock().unwrap().clone();
+    let got = a.keyframe_requests("cam") - before;
+    // Forwarded at most once per second, plus at most one of the server's
+    // own periodic requests.
     assert!(
         got >= 2,
-        "the high layer got {got} key-frame requests; all: {all:?}"
+        "the webcam got {got} key-frame requests after the layer choice"
     );
+    assert!(got <= 4, "requests were not coalesced: {got}");
 }
 
 /// A participant whose microphone sends nothing yet (muted, push-to-talk)
