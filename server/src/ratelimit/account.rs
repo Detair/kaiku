@@ -154,13 +154,42 @@ impl<'a> AccountLimiter<'a> {
     /// `d` once they committed; a pending claim older than
     /// [`THROTTLE_CLAIM_SECS`] is taken over (its claimant died, Codex r6).
     pub async fn count_failure(&self, key: &CounterKey) -> Result<Failure, RateLimitError> {
+        // An ungated count is never refused.
+        self.count(key, false)
+            .await?
+            .map_err(|_| RateLimitError::RedisUnavailable)
+    }
+
+    /// Reserve one try before it is checked: refused while the delay runs
+    /// (nothing counted), else counted as a failure at once, in the same
+    /// script as [`Self::count_failure`]. Parallel tries therefore never see
+    /// the same count, and at most [`FREE_FAILURES`] of them pass before
+    /// the delay starts. The caller then settles the try: a success resets
+    /// the counter ([`Self::reset_epoch`]), a failure applies the effects of
+    /// the returned count, and a try that was never checked is given back
+    /// ([`Self::give_back`]).
+    pub async fn reserve(&self, key: &CounterKey) -> Result<Result<Failure, Delay>, RateLimitError> {
+        self.count(key, true).await
+    }
+
+    async fn count(
+        &self,
+        key: &CounterKey,
+        gated: bool,
+    ) -> Result<Result<Failure, Delay>, RateLimitError> {
         use fred::interfaces::LuaInterface;
         let (n, epoch, claim): (i64, i64, String) = self
             .redis
             .eval(
-                "local c = redis.call('HINCRBY', KEYS[1], 'count', 1)
+                "local now = tonumber(ARGV[4])
+                 if ARGV[8] == '1' then
+                   local nxt = tonumber(redis.call('HGET', KEYS[1], 'next') or '0')
+                   if nxt and nxt > now then
+                     return {-1, nxt - now, ''}
+                   end
+                 end
+                 local c = redis.call('HINCRBY', KEYS[1], 'count', 1)
                  local e = tonumber(redis.call('HGET', KEYS[1], 'epoch') or '0')
-                 local now = tonumber(ARGV[4])
                  local free = tonumber(ARGV[1])
                  if c >= free then
                    local secs = tonumber(ARGV[3])
@@ -195,16 +224,62 @@ impl<'a> AccountLimiter<'a> {
                     COUNTER_TTL_SECS.to_string(),
                     THROTTLE_AT.to_string(),
                     THROTTLE_CLAIM_SECS.to_string(),
+                    if gated { "1" } else { "0" }.to_string(),
                 ],
             )
             .await
             .map_err(|_| RateLimitError::RedisUnavailable)?;
-        Ok(Failure {
+        if n < 0 {
+            return Ok(Err(Delay {
+                retry_after: u64::try_from(epoch).unwrap_or(1).max(1),
+            }));
+        }
+        Ok(Ok(Failure {
             count: u32::try_from(n).unwrap_or(u32::MAX),
             epoch,
             throttle: !claim.is_empty(),
             claim: (!claim.is_empty()).then_some(claim),
-        })
+        }))
+    }
+
+    /// Give back a reserved try whose check never ran (the check itself
+    /// could not be made): only while no other try or success has touched
+    /// the counter since (same epoch, same count), so a try is never taken
+    /// back from someone else. Below [`FREE_FAILURES`] the delay goes too,
+    /// and the try's throttle claim is released.
+    pub async fn give_back(
+        &self,
+        key: &CounterKey,
+        reserved: &Failure,
+    ) -> Result<(), RateLimitError> {
+        use fred::interfaces::LuaInterface;
+        let _: i64 = self
+            .redis
+            .eval(
+                "local e = tonumber(redis.call('HGET', KEYS[1], 'epoch') or '0')
+                 local c = tonumber(redis.call('HGET', KEYS[1], 'count') or '0')
+                 if e ~= tonumber(ARGV[1]) or c ~= tonumber(ARGV[2]) then
+                   return 0
+                 end
+                 c = redis.call('HINCRBY', KEYS[1], 'count', -1)
+                 if c < tonumber(ARGV[3]) then
+                   redis.call('HDEL', KEYS[1], 'next')
+                 end
+                 if ARGV[4] ~= '' and redis.call('HGET', KEYS[1], 'thr') == ARGV[4] then
+                   redis.call('HDEL', KEYS[1], 'thr')
+                 end
+                 return 1",
+                vec![key.redis_key()],
+                vec![
+                    reserved.epoch.to_string(),
+                    reserved.count.to_string(),
+                    FREE_FAILURES.to_string(),
+                    reserved.claim.clone().unwrap_or_default(),
+                ],
+            )
+            .await
+            .map_err(|_| RateLimitError::RedisUnavailable)?;
+        Ok(())
     }
 
     /// Give back `failure`'s throttle claim when its effects did not commit,
@@ -312,5 +387,164 @@ mod tests {
     #[test]
     fn password_key_ignores_case() {
         assert_eq!(CounterKey::password("Oma"), CounterKey::password("oma "));
+    }
+
+    /// Valkey from `REDIS_URL` (the test default otherwise).
+    async fn valkey() -> fred::clients::Client {
+        use fred::interfaces::ClientLike;
+        let url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
+        let client = fred::clients::Client::new(
+            fred::types::config::Config::from_url(&url).expect("REDIS_URL"),
+            None,
+            None,
+            None,
+        );
+        client.connect();
+        client.wait_for_connect().await.expect("connect Valkey");
+        client
+    }
+
+    /// A counter no other test touches.
+    fn fresh_key() -> CounterKey {
+        CounterKey::totp(Uuid::new_v4(), 1)
+    }
+
+    async fn reserve_ok(limiter: &AccountLimiter<'_>, key: &CounterKey) -> Failure {
+        limiter
+            .reserve(key)
+            .await
+            .expect("Valkey")
+            .expect("not delayed")
+    }
+
+    async fn next_of(redis: &fred::clients::Client, key: &CounterKey) -> Option<i64> {
+        redis.hget(key.redis_key(), "next").await.expect("Valkey")
+    }
+
+    async fn forget(redis: &fred::clients::Client, key: &CounterKey) {
+        use fred::interfaces::KeysInterface;
+        let _: i64 = redis.del(key.redis_key()).await.expect("Valkey");
+    }
+
+    #[tokio::test]
+    async fn reserve_refuses_after_free_failures() {
+        let redis = valkey().await;
+        let limiter = AccountLimiter::new(&redis);
+        let key = fresh_key();
+        for n in 1..=FREE_FAILURES {
+            assert_eq!(reserve_ok(&limiter, &key).await.count, n);
+        }
+        let refused = limiter.reserve(&key).await.expect("Valkey");
+        let delay = refused.expect_err("the 6th try waits");
+        assert!((1..=FIRST_DELAY_SECS).contains(&delay.retry_after), "{delay:?}");
+        // A refused try is not counted.
+        assert_eq!(limiter.read(&key).await.unwrap().0, i64::from(FREE_FAILURES));
+        forget(&redis, &key).await;
+    }
+
+    #[tokio::test]
+    async fn parallel_reservations_pass_at_most_free_failures() {
+        let redis = valkey().await;
+        let key = fresh_key();
+        let tries = (0..200).map(|_| {
+            let redis = redis.clone();
+            let key = key.clone();
+            tokio::spawn(async move { AccountLimiter::new(&redis).reserve(&key).await })
+        })
+        .collect::<Vec<_>>();
+        let mut passed = 0;
+        for t in tries {
+            if t.await.unwrap().expect("Valkey").is_ok() {
+                passed += 1;
+            }
+        }
+        assert_eq!(passed, FREE_FAILURES);
+        forget(&redis, &key).await;
+    }
+
+    #[tokio::test]
+    async fn success_resets_epoch() {
+        let redis = valkey().await;
+        let limiter = AccountLimiter::new(&redis);
+        let key = fresh_key();
+        let mut last = reserve_ok(&limiter, &key).await;
+        for _ in 1..FREE_FAILURES {
+            last = reserve_ok(&limiter, &key).await;
+        }
+        assert!(limiter.reserve(&key).await.unwrap().is_err());
+        limiter.reset_epoch(&key).await.unwrap();
+        let after = reserve_ok(&limiter, &key).await;
+        assert_eq!((after.count, after.epoch), (1, last.epoch + 1));
+        assert_eq!(next_of(&redis, &key).await, None);
+        forget(&redis, &key).await;
+    }
+
+    #[tokio::test]
+    async fn give_back_restores_count_and_next() {
+        let redis = valkey().await;
+        let limiter = AccountLimiter::new(&redis);
+        let key = fresh_key();
+        for _ in 1..FREE_FAILURES {
+            reserve_ok(&limiter, &key).await;
+        }
+        assert_eq!(next_of(&redis, &key).await, None);
+        // The try that starts the delay, never checked.
+        let fifth = reserve_ok(&limiter, &key).await;
+        assert!(next_of(&redis, &key).await.is_some());
+        limiter.give_back(&key, &fifth).await.unwrap();
+        assert_eq!(limiter.read(&key).await.unwrap().0, 4);
+        assert_eq!(next_of(&redis, &key).await, None, "no delay below five");
+        // The next try passes again.
+        let again = reserve_ok(&limiter, &key).await;
+        assert_eq!(again.count, FREE_FAILURES);
+        // A reservation of an older epoch gives nothing back.
+        limiter.reset_epoch(&key).await.unwrap();
+        let first = reserve_ok(&limiter, &key).await;
+        limiter.give_back(&key, &again).await.unwrap();
+        assert_eq!(limiter.read(&key).await.unwrap().0, 1);
+        // Nor one a later try has counted past (that try stays counted).
+        let second = reserve_ok(&limiter, &key).await;
+        limiter.give_back(&key, &first).await.unwrap();
+        assert_eq!(
+            limiter.read(&key).await.unwrap().0,
+            i64::from(second.count)
+        );
+        forget(&redis, &key).await;
+    }
+
+    #[tokio::test]
+    async fn throttle_claim_once_per_epoch() {
+        let redis = valkey().await;
+        let limiter = AccountLimiter::new(&redis);
+        let key = fresh_key();
+        let set_count = |n: i64| {
+            let redis = redis.clone();
+            let key = key.clone();
+            async move {
+                let _: i64 = redis
+                    .hset(key.redis_key(), ("count", n))
+                    .await
+                    .expect("Valkey");
+                let _: i64 = redis.hdel(key.redis_key(), "next").await.expect("Valkey");
+            }
+        };
+        set_count(i64::from(THROTTLE_AT) - 1).await;
+        let first = reserve_ok(&limiter, &key).await;
+        assert!(first.throttle, "the 100th claims the throttle");
+        set_count(i64::from(THROTTLE_AT)).await;
+        assert!(!reserve_ok(&limiter, &key).await.throttle, "once per epoch");
+        // Given back (its effects failed): the next try claims it.
+        limiter.release_throttle(&key, &first).await.unwrap();
+        set_count(i64::from(THROTTLE_AT) + 1).await;
+        let retaken = reserve_ok(&limiter, &key).await;
+        assert!(retaken.throttle);
+        limiter.confirm_throttle(&key, &retaken).await.unwrap();
+        set_count(i64::from(THROTTLE_AT) + 2).await;
+        assert!(!reserve_ok(&limiter, &key).await.throttle);
+        // A new epoch claims again.
+        limiter.reset_epoch(&key).await.unwrap();
+        set_count(i64::from(THROTTLE_AT) - 1).await;
+        assert!(reserve_ok(&limiter, &key).await.throttle);
+        forget(&redis, &key).await;
     }
 }
