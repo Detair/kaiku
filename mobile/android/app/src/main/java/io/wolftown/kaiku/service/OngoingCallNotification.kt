@@ -4,6 +4,7 @@ import io.wolftown.kaiku.data.voice.VoiceLinkState
 import io.wolftown.kaiku.data.voice.statusText
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import io.wolftown.kaiku.data.repository.VoiceRepository
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flowOf
@@ -42,7 +43,20 @@ internal class OngoingCallNotification(
     private val cancel: () -> Unit,
     /** Whether the call is on, as it changes: the notification follows the call coming on too. */
     private val callOn: Flow<Boolean> = flowOf(true),
+    /**
+     * Whether the call's voice is up (its first join done). Until then a link that reads
+     * stable only means its set-up has not started: no "in call" is shown before it.
+     */
+    private val callUp: Flow<Boolean> = flowOf(true),
 ) {
+    companion object {
+        /** "The call is on" as the service follows it: a voice session exists. */
+        fun callOn(voice: VoiceRepository): Flow<Boolean> = voice.currentChannelId.map { it != null }
+
+        /** "The call's voice is up" as the service follows it: the session's first join took the sound. */
+        fun callUp(voice: VoiceRepository): Flow<Boolean> = voice.current.map { it?.hasAudio == true }
+    }
+
     private var updates: Job? = null
     private var following = -1L
 
@@ -59,9 +73,14 @@ internal class OngoingCallNotification(
         updates = scope.launch {
             // The link's status, and again when the call comes on: a call that comes on with
             // the link already up shows as up (its connecting phase may never have been seen).
-            combine(linkState.map { it.statusText() }, callOn) { status, on -> status to on }
+            combine(linkState.map { it.statusText() }, callOn, callUp) { status, on, up ->
+                // A stable link (no status line) is "in call" only once the call's voice is up.
+                Triple(status, on, status != null || up)
+            }
                 .distinctUntilChanged()
-                .collect { (status, on) -> if (on) gate.ifOpen(generation) { if (callIsOn()) post(status) } }
+                .collect { (status, on, shows) ->
+                    if (on && shows) gate.ifOpen(generation) { if (callIsOn()) post(status) }
+                }
         }
     }
 

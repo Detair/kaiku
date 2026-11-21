@@ -367,6 +367,9 @@ internal class VoiceRig(
                     notifications += "cancel"
                     notificationShown = false
                 },
+                // As the service wires it.
+                callOn = io.wolftown.kaiku.service.OngoingCallNotification.callOn(repository),
+                callUp = io.wolftown.kaiku.service.OngoingCallNotification.callUp(repository),
             ).also { it.follow(generation) }
         }
 

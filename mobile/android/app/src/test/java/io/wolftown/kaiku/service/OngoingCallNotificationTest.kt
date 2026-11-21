@@ -54,6 +54,9 @@ class OngoingCallNotificationTest {
             get() = callOn.value
             set(value) { callOn.value = value }
         val link = MutableStateFlow<VoiceLinkState>(VoiceLinkState.Stable)
+
+        /** The call's voice is up (its first join done); before that, a stable link means nothing. */
+        val callUp = MutableStateFlow(true)
         val gate = CallNotificationGate()
 
         /** The order `VoiceCallService.start`/`stop` use, the production object. */
@@ -62,6 +65,7 @@ class OngoingCallNotificationTest {
             scope = scope.backgroundScope,
             callIsOn = { callIsOn },
             callOn = callOn,
+            callUp = callUp,
             gate = gate,
             linkState = link,
             post = notifications::post,
@@ -272,5 +276,23 @@ class OngoingCallNotificationTest {
         h.callIsOn = true
         runCurrent()
         assertEquals("post:in-call", h.notifications.calls.last())
+    }
+
+    @Test
+    fun `a call that is on before its voice set out shows no "in call" before "Connecting…"`() = runTest {
+        val h = Harness(this)
+        h.callIsOn = false
+        h.callUp.value = false
+        h.start()
+        runCurrent()
+        // The call's session exists, its signalling has not started: the link still reads stable.
+        h.callIsOn = true
+        runCurrent()
+        h.link.value = VoiceLinkState.Connecting
+        runCurrent()
+        h.callUp.value = true
+        h.link.value = VoiceLinkState.Stable
+        runCurrent()
+        assertEquals(listOf("foreground", "post:connecting", "post:in-call"), h.notifications.calls)
     }
 }
