@@ -259,8 +259,12 @@ class KaikuWebSocketTest {
             // for the state, do not read it at the instant the id arrived.
             assertEquals(
                 ConnectionState.Connected,
-                kotlinx.coroutines.withTimeout(10_000) {
-                    ws.connectionState.first { it == ConnectionState.Connected }
+                // In real time: the state comes from the socket's thread, which the test's virtual
+                // clock does not wait for.
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                    kotlinx.coroutines.withTimeout(10_000) {
+                        ws.connectionState.first { it == ConnectionState.Connected }
+                    }
                 },
             )
 
