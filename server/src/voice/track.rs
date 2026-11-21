@@ -3,6 +3,7 @@
 //! Manages RTP packet forwarding between participants in a voice room.
 //! Uses `DashMap` for lock-free concurrent access in the RTP hot path.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -108,20 +109,28 @@ pub struct TrackRouter {
     pending_secondary: DashMap<(Uuid, Layer), Arc<TrackRemote>>,
 }
 
+/// Numbers forwarded track instances (process-wide).
+static FORWARDED_TRACKS: AtomicU64 = AtomicU64::new(0);
+
 /// A local track that forwards `source_type` of `source_user_id` to one subscriber.
+///
+/// The stream id is `{source_user_id}:{source_type}` (e.g. `uuid:microphone`,
+/// `uuid:screen_video:stream_uuid`, `uuid:webcam`): clients identify the
+/// person and the source by it. Each forwarded track has its own track id,
+/// `{stream id}:{n}`, so a subscriber's session never lists the same stream
+/// id and track id twice when a person's source comes back (for example
+/// after leaving and joining again).
 pub(crate) fn forwarded_track(
     source_user_id: Uuid,
     source_type: TrackSource,
     codec: RTCRtpCodecCapability,
 ) -> Arc<TrackLocalStaticRTP> {
+    let stream_id = format!("{source_user_id}:{source_type}");
+    let n = FORWARDED_TRACKS.fetch_add(1, Ordering::Relaxed);
     Arc::new(TrackLocalStaticRTP::new(
         codec,
-        // Track ID: "{source_user_id}:{source_type}" using Display format
-        // (e.g. "uuid:microphone", "uuid:screen_video:stream_uuid", "uuid:webcam").
-        // Clients split on the first colon to get [userId, sourceType].
-        format!("{source_user_id}:{source_type}"),
-        // Stream ID: same format so the browser groups tracks correctly.
-        format!("{source_user_id}:{source_type}"),
+        format!("{stream_id}:{n}"),
+        stream_id,
     ))
 }
 

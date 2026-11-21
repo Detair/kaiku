@@ -1363,6 +1363,174 @@ mod renegotiate_tests {
 }
 
 #[cfg(test)]
+mod rejoin_offer_tests {
+    use super::*;
+    use crate::voice::track::forwarded_track;
+
+    fn opus() -> RTCRtpCodecCapability {
+        RTCRtpCodecCapability {
+            mime_type: "audio/opus".into(),
+            clock_rate: 48000,
+            channels: 2,
+            sdp_fmtp_line: "minptime=10;useinbandfec=1".into(),
+            rtcp_feedback: vec![],
+        }
+    }
+
+    async fn peer(sfu: &SfuServer, user: u128, channel_id: Uuid) -> Arc<Peer> {
+        let (tx, _rx) = mpsc::channel(64);
+        sfu.create_peer(
+            Uuid::from_u128(user),
+            format!("user{user}"),
+            format!("User {user}"),
+            channel_id,
+            tx,
+        )
+        .await
+        .expect("peer")
+    }
+
+    /// A source joining while `listener` is in the room: what `on_track`
+    /// does for each other peer.
+    async fn forward(listener: &Arc<Peer>, source: &Arc<Peer>) {
+        let track = forwarded_track(source.user_id, TrackSource::Microphone, opus());
+        listener
+            .add_outgoing_track(source.user_id, TrackSource::Microphone, track)
+            .await
+            .expect("add outgoing track");
+    }
+
+    /// Send the listener a new offer, check its `a=msid:` lines and answer it
+    /// the way a client does. `live` are the users whose microphone must be
+    /// in the offer.
+    async fn round(
+        listener: &Arc<Peer>,
+        rx: &mut mpsc::Receiver<OutboundMsg>,
+        client: &RTCPeerConnection,
+        step: &str,
+        live: &[Uuid],
+    ) {
+        SfuServer::renegotiate(listener).await.expect("offer");
+        let Ok(OutboundMsg::Event(ServerEvent::VoiceSubscriberOffer { sdp, .. })) = rx.try_recv()
+        else {
+            panic!("{step}: no subscriber offer sent");
+        };
+        let msids: Vec<&str> = sdp.lines().filter(|l| l.starts_with("a=msid:")).collect();
+        for (i, line) in msids.iter().enumerate() {
+            assert!(
+                !msids[..i].contains(line),
+                "{step}: two media sections carry the same line {line:?}; all: {msids:#?}"
+            );
+        }
+        let stream_ids: Vec<&str> = msids
+            .iter()
+            .filter_map(|l| l.strip_prefix("a=msid:")?.split_whitespace().next())
+            .collect();
+        for user in live {
+            let expected = format!("{user}:{}", TrackSource::Microphone);
+            assert!(
+                stream_ids.contains(&expected.as_str()),
+                "{step}: no section with stream id {expected}: {msids:#?}"
+            );
+        }
+
+        client
+            .set_remote_description(RTCSessionDescription::offer(sdp).expect("offer sdp"))
+            .await
+            .expect("client remote");
+        let answer = client.create_answer(None).await.expect("client answer");
+        client
+            .set_local_description(answer.clone())
+            .await
+            .expect("client local");
+        SfuServer::handle_subscriber_answer(listener, answer.sdp)
+            .await
+            .expect("answer");
+    }
+
+    /// One listener and one source; the source leaves and joins again, then a
+    /// third person joins. No offer the listener gets lists the same stream
+    /// id and track id on two media sections (a browser refuses such an
+    /// offer and takes no further change), and each forwarded microphone
+    /// keeps the stream id `{user}:microphone`.
+    #[tokio::test]
+    async fn listener_offer_never_repeats_an_msid_after_rejoin() {
+        // The connections start DTLS once answered; the server binary
+        // installs this provider at start.
+        let _ = rustls::crypto::CryptoProvider::install_default(
+            rustls::crypto::ring::default_provider(),
+        );
+        let sfu = SfuServer::new(Arc::new(Config::default_for_test()), None).expect("sfu");
+        let client_side = SfuServer::new(Arc::new(Config::default_for_test()), None).expect("sfu");
+        let client = client_side
+            .api
+            .new_peer_connection(RTCConfiguration::default())
+            .await
+            .expect("client pc");
+        let channel_id = Uuid::from_u128(100);
+        let room = sfu.get_or_create_room(channel_id).await;
+
+        let (tx, mut rx) = mpsc::channel(64);
+        let listener = sfu
+            .create_peer(
+                Uuid::from_u128(1),
+                "listener".into(),
+                "Listener".into(),
+                channel_id,
+                tx,
+            )
+            .await
+            .expect("listener");
+        room.add_peer(listener.clone()).await.expect("listener in");
+
+        let source = peer(&sfu, 7, channel_id).await;
+        room.add_peer(source.clone()).await.expect("source in");
+        forward(&listener, &source).await;
+        round(
+            &listener,
+            &mut rx,
+            &client,
+            "source joins",
+            &[source.user_id],
+        )
+        .await;
+
+        room.remove_peer(source.user_id).await;
+        source.close().await;
+        round(&listener, &mut rx, &client, "source leaves", &[]).await;
+
+        let source = peer(&sfu, 7, channel_id).await;
+        room.add_peer(source.clone()).await.expect("source back");
+        forward(&listener, &source).await;
+        round(
+            &listener,
+            &mut rx,
+            &client,
+            "source rejoins",
+            &[source.user_id],
+        )
+        .await;
+
+        let third = peer(&sfu, 8, channel_id).await;
+        room.add_peer(third.clone()).await.expect("third in");
+        forward(&listener, &third).await;
+        round(
+            &listener,
+            &mut rx,
+            &client,
+            "third joins",
+            &[source.user_id, third.user_id],
+        )
+        .await;
+
+        let _ = client.close().await;
+        for p in [listener, source, third] {
+            p.close().await;
+        }
+    }
+}
+
+#[cfg(test)]
 mod udp_range_tests {
     use super::*;
 
