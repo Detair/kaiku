@@ -120,7 +120,7 @@ static FORWARDED_TRACKS: AtomicU64 = AtomicU64::new(0);
 /// `{stream id}:{n}`, so a subscriber's session never lists the same stream
 /// id and track id twice when a person's source comes back (for example
 /// after leaving and joining again).
-pub(crate) fn forwarded_track(
+pub fn forwarded_track(
     source_user_id: Uuid,
     source_type: TrackSource,
     codec: RTCRtpCodecCapability,
