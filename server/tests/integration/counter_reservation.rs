@@ -661,3 +661,352 @@ async fn cli_reset_frees_reserved_counters(pool: PgPool) {
         429
     );
 }
+
+// ---------------------------------------------------------------------------
+// A try answered neutrally is settled like a wrong one
+// ---------------------------------------------------------------------------
+
+/// Why a right password still gets the neutral answer.
+#[derive(Clone, Copy, Debug)]
+enum NeutralReason {
+    /// The password factor is throttled.
+    Throttled,
+    /// The password factor is compromised.
+    Compromised,
+    /// No phone and no active sign-in code: no second step.
+    NoSecondStep,
+}
+
+/// Where the password is typed.
+#[derive(Clone, Copy, Debug)]
+enum PasswordRoute {
+    Login,
+    Bootstrap,
+}
+
+fn bootstrap_password_request(
+    name: &str,
+    password: &str,
+    code: Option<&str>,
+) -> axum::http::Request<Body> {
+    let mut body = json!({"username": name, "purpose": "bootstrap",
+                          "first": {"type": "password", "password": password}});
+    if let Some(code) = code {
+        body["totp_code"] = json!(code);
+    }
+    peer_request(Method::POST, "/auth/account-requests")
+        .header("Content-Type", "application/json")
+        .header("X-Kaiku-Client", "android")
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
+/// `(status, Retry-After present)` of one password try.
+async fn password_try(
+    app: &TestApp,
+    route: PasswordRoute,
+    name: &str,
+    password: &str,
+) -> (u16, bool) {
+    let req = match route {
+        PasswordRoute::Login => login_request(name, password, "198.51.100.7"),
+        PasswordRoute::Bootstrap => bootstrap_password_request(name, password, None),
+    };
+    let (s, _, retry) = send(&app.router, req).await;
+    (s, retry.is_some())
+}
+
+async fn neutral_account(app: &TestApp, reason: NeutralReason) -> String {
+    let (user, name) = password_user(&app.pool, PASSWORD).await;
+    let state = match reason {
+        NeutralReason::Throttled => "throttled",
+        NeutralReason::Compromised => "compromised",
+        NeutralReason::NoSecondStep => return name,
+    };
+    enable_totp(&app.pool, &app.config, user, &name).await;
+    sqlx::query("UPDATE users SET password_state = $2 WHERE id = $1")
+        .bind(user)
+        .bind(state)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    name
+}
+
+/// Five wrong tries, the delay ends, one candidate, then one more try:
+/// the answers to the candidate and to the try after it.
+async fn after_candidate(
+    app: &TestApp,
+    reason: NeutralReason,
+    route: PasswordRoute,
+    candidate: &str,
+) -> [(u16, bool); 2] {
+    let name = neutral_account(app, reason).await;
+    for i in 0..FREE_FAILURES {
+        let a = password_try(app, route, &name, "wrong-password-1").await;
+        assert_eq!(a, (401, false), "{reason:?} {route:?} try {i}");
+    }
+    let _: i64 = app
+        .state
+        .redis
+        .hdel(CounterKey::password(&name).redis_key(), "next")
+        .await
+        .unwrap();
+    [
+        password_try(app, route, &name, candidate).await,
+        password_try(app, route, &name, "wrong-password-2").await,
+    ]
+}
+
+#[sqlx::test]
+async fn a_neutral_answer_counts_like_a_wrong_password(pool: PgPool) {
+    use super::account_requests::admin_with_device;
+    let app = TestApp::with_pool(pool.clone()).await;
+    admin_with_device(&app).await;
+    for reason in [
+        NeutralReason::Throttled,
+        NeutralReason::Compromised,
+        NeutralReason::NoSecondStep,
+    ] {
+        for route in [PasswordRoute::Login, PasswordRoute::Bootstrap] {
+            let right = after_candidate(&app, reason, route, PASSWORD).await;
+            let wrong = after_candidate(&app, reason, route, "wrong-password-3").await;
+            assert_eq!(right, wrong, "{reason:?} {route:?}");
+            assert_eq!(wrong[1], (429, true), "{reason:?} {route:?}");
+        }
+    }
+}
+
+#[sqlx::test]
+async fn a_right_password_resets_on_every_route(pool: PgPool) {
+    use super::account_requests::{admin_with_device, bootstrap_user, PASSWORD as BP};
+    let app = TestApp::with_pool(pool.clone()).await;
+    admin_with_device(&app).await;
+    // Bootstrap: four wrong, then the right password and code.
+    let (user, name, totp) = bootstrap_user(&app).await;
+    for _ in 0..FREE_FAILURES - 1 {
+        let a = password_try(&app, PasswordRoute::Bootstrap, &name, "wrong-password-1").await;
+        assert_eq!(a, (401, false));
+    }
+    let code = totp.generate_current().unwrap();
+    let (s, b, _) = send(
+        &app.router,
+        bootstrap_password_request(&name, BP, Some(&code)),
+    )
+    .await;
+    assert_eq!(s, 201, "{b}");
+    assert_eq!(counted(&app, &CounterKey::password(&name)).await, 0);
+    let _ = user;
+    // Recovery with the password as second factor.
+    let (user, name) = password_user(&pool, PASSWORD).await;
+    enable_totp(&pool, &app.config, user, &name).await;
+    let ctx = vc_server::auth::ctx::AuthCtx::from(&app.state);
+    let mut tx = pool.begin().await.unwrap();
+    let codes = vc_server::auth::recovery_codes::replace_tx(&mut tx, &ctx, user)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    set_count(&app, &CounterKey::password(&name), 4).await;
+    let req = peer_request(Method::POST, "/auth/account-requests")
+        .header("Content-Type", "application/json")
+        .header("X-Kaiku-Client", "android")
+        .body(Body::from(
+            json!({"username": name, "purpose": "recovery", "recovery_code": codes[0],
+                   "second": {"type": "password", "password": PASSWORD}, "lost": "none"})
+            .to_string(),
+        ))
+        .unwrap();
+    let (s, b, _) = send(&app.router, req).await;
+    assert_eq!(s, 201, "{b}");
+    assert_eq!(counted(&app, &CounterKey::password(&name)).await, 0);
+}
+
+/// A right sign-in code on a bootstrap request that is answered
+/// neutrally (the account is not open for it) counts like a wrong one.
+#[sqlx::test]
+async fn a_neutral_bootstrap_answer_counts_like_a_wrong_code(pool: PgPool) {
+    use super::account_requests::admin_with_device;
+    let app = TestApp::with_pool(pool.clone()).await;
+    admin_with_device(&app).await;
+    let mut probes = Vec::new();
+    for right in [true, false] {
+        let (user, name) = password_user(&pool, PASSWORD).await;
+        let totp = enable_totp(&pool, &app.config, user, &name).await;
+        // Five wrong codes counted, the delay over.
+        set_count(&app, &totp_key(&pool, user).await, 5).await;
+        let code = if right {
+            totp.generate_current().unwrap()
+        } else {
+            wrong_code(&totp)
+        };
+        let (s, b, _) = send(
+            &app.router,
+            bootstrap_password_request(&name, PASSWORD, Some(&code)),
+        )
+        .await;
+        assert_eq!(
+            (s, b["error"].as_str()),
+            (401, Some("INVALID_CREDENTIALS")),
+            "{b}"
+        );
+        // The next code, on the sign-in step.
+        let (id, verifier) = password_step(&app, &name).await;
+        let (s, _, retry) = send(
+            &app.router,
+            totp_request(&id, &verifier, &wrong_code(&totp)),
+        )
+        .await;
+        probes.push((s, retry.is_some()));
+    }
+    assert_eq!(probes[0], probes[1]);
+    assert_eq!(probes[1], (429, true));
+}
+
+// ---------------------------------------------------------------------------
+// Order pinned by behaviour, and more bursts
+// ---------------------------------------------------------------------------
+
+/// A right code sent while the delay runs is refused unchecked: it is not
+/// used up and signs in once the delay is cleared. A code is accepted in
+/// its own 30-second step and the next one, so it stays valid for at least
+/// 30 seconds; both tries are sent well inside that.
+#[sqlx::test]
+async fn a_refused_right_code_is_not_used_up(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, name) = password_user(&pool, PASSWORD).await;
+    let totp = enable_totp(&pool, &app.config, user, &name).await;
+    let (id, verifier) = password_step(&app, &name).await;
+    let key = totp_key(&pool, user).await;
+    set_count(&app, &key, i64::from(FREE_FAILURES)).await;
+    let _: () = app
+        .state
+        .redis
+        .hset(
+            key.redis_key(),
+            ("next", chrono::Utc::now().timestamp() + 30),
+        )
+        .await
+        .unwrap();
+    let right = totp.generate_current().unwrap();
+    let (s, b, retry) = send(&app.router, totp_request(&id, &verifier, &right)).await;
+    assert_eq!((s, b["error"].as_str()), (429, Some("TOO_MANY_ATTEMPTS")));
+    assert!(retry.is_some());
+    super::cli_recovery::cli(&app, &["throttle", "reset", &name])
+        .await
+        .unwrap();
+    let (s, b, _) = send(&app.router, totp_request(&id, &verifier, &right)).await;
+    assert_eq!(s, 200, "the refused code was not used up: {b}");
+}
+
+#[sqlx::test]
+async fn bootstrap_password_burst(_: PgPoolOptions, db: PgConnectOptions) {
+    let pool = wide_pool(db).await;
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, name) = password_user(&pool, PASSWORD).await;
+    enable_totp(&pool, &app.config, user, &name).await;
+    let tries = (0..100)
+        .map(|_| {
+            let router = app.router.clone();
+            let req = bootstrap_password_request(&name, "wrong-password-1", None);
+            tokio::spawn(async move { send(&router, req).await })
+        })
+        .collect::<Vec<_>>();
+    let mut answers = Vec::with_capacity(100);
+    for t in tries {
+        answers.push(t.await.unwrap());
+    }
+    let (checked, refused) = tally(&answers, 401, "INVALID_CREDENTIALS");
+    assert!(
+        checked <= FREE_FAILURES as usize,
+        "{checked} checked, {refused} refused"
+    );
+    assert_eq!(checked + refused, 100);
+    assert_eq!(
+        counted(&app, &CounterKey::password(&name)).await,
+        i64::try_from(checked).unwrap()
+    );
+}
+
+#[sqlx::test]
+async fn recovery_password_burst(_: PgPoolOptions, db: PgConnectOptions) {
+    use super::account_requests::admin_with_device;
+    let pool = wide_pool(db).await;
+    let app = TestApp::with_pool(pool.clone()).await;
+    admin_with_device(&app).await;
+    let (user, name) = password_user(&pool, PASSWORD).await;
+    enable_totp(&pool, &app.config, user, &name).await;
+    let ctx = vc_server::auth::ctx::AuthCtx::from(&app.state);
+    let mut tx = pool.begin().await.unwrap();
+    let codes = vc_server::auth::recovery_codes::replace_tx(&mut tx, &ctx, user)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let key = CounterKey::password(&name);
+    set_count(&app, &key, 3).await;
+    let tries = codes
+        .iter()
+        .map(|code| {
+            let router = app.router.clone();
+            let req = peer_request(Method::POST, "/auth/account-requests")
+                .header("Content-Type", "application/json")
+                .header("X-Kaiku-Client", "android")
+                .body(Body::from(
+                    json!({"username": name, "purpose": "recovery", "recovery_code": code,
+                           "second": {"type": "password", "password": "wrong-password-1"},
+                           "lost": "none"})
+                    .to_string(),
+                ))
+                .unwrap();
+            tokio::spawn(async move { send(&router, req).await })
+        })
+        .collect::<Vec<_>>();
+    for t in tries {
+        let (s, b, _) = t.await.unwrap();
+        assert!(
+            matches!(
+                (s, b["error"].as_str()),
+                (401, Some("REQUEST_FACTOR_INVALID" | "INVALID_CREDENTIALS"))
+                    | (429, Some("TOO_MANY_ATTEMPTS"))
+            ),
+            "{s}: {b}"
+        );
+    }
+    let n = counted(&app, &key).await;
+    assert!(n <= i64::from(FREE_FAILURES), "{n} counted");
+    let mut conn = pool.acquire().await.unwrap();
+    let left = vc_server::auth::recovery_codes::left_conn(&mut conn, user)
+        .await
+        .unwrap();
+    assert_eq!(i64::try_from(codes.len()).unwrap() - left, n - 3);
+}
+
+/// The 200-code burst on a pool of eight connections: tries wait for the
+/// pool or the account lock, never fail with a server error.
+#[sqlx::test]
+async fn totp_burst_on_a_narrow_pool(_: PgPoolOptions, db: PgConnectOptions) {
+    let pool = PgPoolOptions::new()
+        .max_connections(8)
+        .connect_with(db)
+        .await
+        .expect("test pool");
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, name) = password_user(&pool, PASSWORD).await;
+    let totp = enable_totp(&pool, &app.config, user, &name).await;
+    let (id, verifier) = password_step(&app, &name).await;
+    let router = router_with_ip_limits(&app).await;
+    let wrong = wrong_code(&totp);
+    let tries = (0..BURST)
+        .map(|_| {
+            let router = router.clone();
+            let req = totp_request(&id, &verifier, &wrong);
+            tokio::spawn(async move { send(&router, req).await })
+        })
+        .collect::<Vec<_>>();
+    let mut answers = Vec::with_capacity(BURST);
+    for t in tries {
+        answers.push(t.await.unwrap());
+    }
+    let (checked, refused) = tally(&answers, 401, "INVALID_MFA");
+    assert!(checked <= FREE_FAILURES as usize);
+    assert_eq!(checked + refused, BURST);
+}

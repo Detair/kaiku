@@ -129,43 +129,28 @@ pub async fn login(
         Some(u) if u.password_hash.is_some() && !u.is_system && password_valid => Some(u),
         _ => None,
     };
-    // The reserved try settles: a correct password resets the counter, any
-    // other answer stays counted with its effects.
-    if user.is_some() {
-        let _ = limiter.record_success(&counter).await;
-    } else {
-        account_failure(&state, &counter, typed_account, reserved).await?;
-    }
-    let mut conn = state.db.acquire().await?;
     let step = match &user {
         Some(u) => {
-            super::login_attempts::core::next_step(
+            let mut conn = state.db.acquire().await?;
+            password_next_step(
                 &mut conn,
                 u.id,
-                super::login_attempts::core::AttemptKind::Password,
+                u.is_system,
+                u.password_hash.as_deref(),
+                password_valid,
             )
             .await?
         }
         None => None,
     };
-    drop(conn);
-    // Codex B2: the verified hash must still be the account's, with the
-    // generation the attempt records (a replacement in between → neutral).
-    let step = match (&user, step) {
-        (Some(u), Some((step, generation))) => {
-            let same: bool = sqlx::query_scalar(
-                "SELECT password_hash = $2 AND password_generation = $3 FROM users WHERE id = $1",
-            )
-            .bind(u.id)
-            .bind(u.password_hash.as_deref())
-            .bind(generation)
-            .fetch_optional(&state.db)
-            .await?
-            .unwrap_or(false);
-            same.then_some((step, generation))
-        }
-        _ => None,
-    };
+    // The reserved try settles: only a try answered with a next step resets
+    // the counter; a neutral answer stays counted with a failure's effects,
+    // whatever the password was.
+    if step.is_some() {
+        let _ = limiter.record_success(&counter).await;
+    } else {
+        account_failure(&state, &counter, typed_account, reserved).await?;
+    }
     let (Some(user), Some((step, generation))) = (user, step) else {
         record_failed_auth!();
         crate::observability::metrics::record_auth_login_attempt(false);
@@ -198,6 +183,45 @@ pub async fn login(
     }
     tracing::info!(user_id = %user.id, step = step.status, "Password correct; confirmation pending");
     Ok((status, jar, Json(step)))
+}
+
+/// The next step `/auth/login` gives `user_id` for a password checked
+/// against `checked_hash` (`valid`), or `None`: the neutral answer (a wrong
+/// password, the system account, a password factor that is not active, no
+/// usable second step, or a password replaced since `checked_hash` was
+/// read). Every route that checks a password resets its counter only when
+/// this returns a step; any other try stays counted as a failure.
+pub async fn password_next_step(
+    conn: &mut sqlx::PgConnection,
+    user_id: Uuid,
+    is_system: bool,
+    checked_hash: Option<&str>,
+    valid: bool,
+) -> AuthResult<Option<(super::login_attempts::core::NextStep, i64)>> {
+    let Some(hash) = checked_hash.filter(|_| valid && !is_system) else {
+        return Ok(None);
+    };
+    let Some((step, generation)) = super::login_attempts::core::next_step(
+        conn,
+        user_id,
+        super::login_attempts::core::AttemptKind::Password,
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    // The checked hash must still be the account's, with the generation the
+    // attempt records (a replacement in between → neutral).
+    let same: bool = sqlx::query_scalar(
+        "SELECT password_hash = $2 AND password_generation = $3 FROM users WHERE id = $1",
+    )
+    .bind(user_id)
+    .bind(hash)
+    .bind(generation)
+    .fetch_optional(&mut *conn)
+    .await?
+    .unwrap_or(false);
+    Ok(same.then_some((step, generation)))
 }
 
 /// B.5: reserve one password try on `counter` before the password is

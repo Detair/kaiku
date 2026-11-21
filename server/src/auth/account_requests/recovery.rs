@@ -118,8 +118,19 @@ pub async fn start_recovery(
             let key = crate::ratelimit::account::CounterKey::password(&user.username);
             let reserved = crate::auth::login::reserve_password(ctx.redis, &key).await?;
             let hash = st.has_password.then(|| hash_now.clone()).flatten();
-            let valid = password_ok(hash, password).await?;
-            if valid {
+            let valid = password_ok(hash.clone(), password).await?;
+            // B.5: reset only when `/auth/login` would answer this password
+            // with a next step; anything else counts as a failure.
+            let right = crate::auth::login::password_next_step(
+                &mut tx,
+                user.id,
+                false,
+                hash.as_deref(),
+                valid,
+            )
+            .await?
+            .is_some();
+            if right {
                 let _ = crate::ratelimit::account::AccountLimiter::new(ctx.redis)
                     .record_success(&key)
                     .await;

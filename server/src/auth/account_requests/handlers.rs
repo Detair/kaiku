@@ -216,9 +216,25 @@ async fn start_bootstrap(
     let (first_ok, oidc) = match &body.first {
         Some(StartFactor::Password { password }) => {
             let ok = password_ok(verified_hash.clone(), password).await?;
+            // B.5: reset only when `/auth/login` would answer this password
+            // with a next step; a neutral answer counts as a failure.
+            let right = match (&user, ok) {
+                (Some(u), true) => {
+                    let mut conn = state.db.acquire().await?;
+                    crate::auth::login::password_next_step(
+                        &mut conn,
+                        u.id,
+                        u.is_system,
+                        verified_hash.as_deref(),
+                        ok,
+                    )
+                    .await?
+                    .is_some()
+                }
+                _ => false,
+            };
             match reserved {
-                // B.5: a correct password resets its counter (Flash r5).
-                _ if ok => {
+                _ if right => {
                     let _ = AccountLimiter::new(ctx.redis)
                         .record_success(&password_key)
                         .await;
@@ -303,6 +319,8 @@ async fn start_bootstrap(
         factor: Factor::Password,
         generation: st.password.generation,
     });
+    let password_active =
+        oidc || (st.has_password && st.password.state == factors::FactorState::Active);
     let totp_ok = match (&body.totp_code, &secret_now) {
         (Some(code), Some(secret)) if st.totp.state == factors::FactorState::Active => {
             // B.5: the code's try is reserved under the account lock. The
@@ -323,11 +341,13 @@ async fn start_bootstrap(
                 Err(AuthError::TooManyAttempts { .. }) => return Err(neutral()),
                 Err(e) => return Err(e),
             };
+            // A right code resets the counter only when the request is
+            // accepted; a neutral answer counts as a failure.
             crate::auth::totp_guard::settle(
                 ctx,
                 Some(state),
                 user.id,
-                ok,
+                ok && st.bootstrap_open && password_active,
                 crate::auth::totp_guard::Used {
                     totp_generation: st.totp.generation,
                     password: password_used,
@@ -339,8 +359,6 @@ async fn start_bootstrap(
         }
         _ => false,
     };
-    let password_active =
-        oidc || (st.has_password && st.password.state == factors::FactorState::Active);
     if !(st.bootstrap_open && password_active && totp_ok) {
         // The start stays counted.
         tx.commit().await?;
