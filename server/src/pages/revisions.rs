@@ -6,7 +6,7 @@ use tracing::error;
 use uuid::Uuid;
 
 use super::error::PagesError;
-use super::shared::check_manage_pages_permission;
+use super::shared::{check_manage_pages_permission, require_guild_member};
 use super::{queries, Page, PageRevision, RevisionListItem};
 use crate::api::AppState;
 use crate::auth::AuthUser;
@@ -14,9 +14,7 @@ use crate::permissions::is_system_admin;
 
 /// List revisions for a guild page.
 ///
-/// Note: Does not check guild membership — consistent with `list_guild_pages`.
-/// Guild information pages are intentionally readable by any authenticated user
-/// who has the guild ID. The `require_auth` middleware ensures authentication.
+/// Members only, like `list_guild_pages`.
 #[utoipa::path(
     get,
     path = "/api/guilds/{id}/pages/{page_id}/revisions",
@@ -30,8 +28,10 @@ use crate::permissions::is_system_admin;
 )]
 pub async fn list_guild_page_revisions(
     State(state): State<AppState>,
+    user: AuthUser,
     Path((guild_id, page_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<Vec<RevisionListItem>>, PagesError> {
+    require_guild_member(&state, guild_id, user.id).await?;
     let page = queries::get_page_by_id(&state.db, page_id)
         .await
         .map_err(|e| {
@@ -56,9 +56,7 @@ pub async fn list_guild_page_revisions(
 
 /// Get a specific revision of a guild page.
 ///
-/// Note: Does not check guild membership — consistent with `list_guild_pages`.
-/// Guild information pages are intentionally readable by any authenticated user
-/// who has the guild ID. The `require_auth` middleware ensures authentication.
+/// Members only, like `list_guild_pages`.
 #[utoipa::path(
     get,
     path = "/api/guilds/{id}/pages/{page_id}/revisions/{n}",
@@ -73,8 +71,10 @@ pub async fn list_guild_page_revisions(
 )]
 pub async fn get_guild_page_revision(
     State(state): State<AppState>,
+    user: AuthUser,
     Path((guild_id, page_id, n)): Path<(Uuid, Uuid, i32)>,
 ) -> Result<Json<PageRevision>, PagesError> {
+    require_guild_member(&state, guild_id, user.id).await?;
     let page = queries::get_page_by_id(&state.db, page_id)
         .await
         .map_err(|e| {

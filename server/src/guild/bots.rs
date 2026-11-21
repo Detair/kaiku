@@ -150,11 +150,24 @@ pub async fn remove_bot_from_guild(
         .await?
         .ok_or(GuildError::NotFound)?;
 
-    let rows_affected =
-        core_q::delete_bot_installation(&state.db, guild_id, application_id).await?;
+    // The uninstall also takes the bot's roles in this server away (one
+    // transaction, committed by the query function's last step): written
+    // like every other role change.
+    let (rows_affected, bumped) = crate::ws::access::bump_after_if(
+        Some(crate::ws::access::AccessChange::MemberRolesChanged {
+            guild_id,
+            user_id: bot_id,
+        }),
+        core_q::delete_bot_installation(&state.db, guild_id, application_id),
+        |rows| *rows > 0,
+    )
+    .await?;
 
     if rows_affected == 0 {
         return Err(GuildError::NotFound);
+    }
+    if let Some(bumped) = bumped {
+        crate::ws::access::access_changed(&state, bumped).await;
     }
 
     Ok(StatusCode::NO_CONTENT)

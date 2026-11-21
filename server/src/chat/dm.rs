@@ -206,6 +206,54 @@ async fn announce_dm_created(
     }
 }
 
+/// Refuse a new DM when the caller and any of `others` blocked each other.
+///
+/// Valkey cache first, then Postgres (the source of truth; the cache
+/// expires). Lookup failures follow `block_check_fail_open`, like
+/// `send::authorize_send`.
+async fn ensure_no_block_with(
+    state: &AppState,
+    caller: Uuid,
+    others: &[Uuid],
+) -> Result<(), ChatError> {
+    let refused = || ChatError::Validation("Cannot create DM with this user".to_string());
+    for &other in others {
+        match block_cache::is_blocked_either_direction(&state.redis, caller, other).await {
+            Ok(true) => return Err(refused()),
+            Ok(false) => {}
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    user_id = %caller,
+                    target_id = %other,
+                    fail_open = state.config.block_check_fail_open,
+                    "Redis block check failed, using failsafe policy"
+                );
+                if !state.config.block_check_fail_open {
+                    return Err(refused());
+                }
+            }
+        }
+    }
+    match queries::blocked_among(&state.db, caller, others).await {
+        Ok(blocked) if !blocked.is_empty() => Err(refused()),
+        Ok(_) => Ok(()),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                user_id = %caller,
+                fail_open = state.config.block_check_fail_open,
+                "DB block check failed, using failsafe policy"
+            );
+            if state.config.block_check_fail_open {
+                Ok(())
+            } else {
+                Err(refused())
+            }
+        }
+    }
+}
+
 /// List all DM channels for a user.
 pub async fn list_user_dms(pool: &sqlx::PgPool, user_id: Uuid) -> Result<Vec<Channel>, ChatError> {
     queries::list_user_dm_channels(pool, user_id).await
@@ -264,37 +312,11 @@ pub async fn create_dm(
             })?;
     }
 
-    // For 1:1 DMs, check if either user has blocked the other
-    if body.participant_ids.len() == 1 {
-        match block_cache::is_blocked_either_direction(
-            &state.redis,
-            auth.id,
-            body.participant_ids[0],
-        )
-        .await
-        {
-            Ok(true) => {
-                return Err(ChatError::Validation(
-                    "Cannot create DM with this user".to_string(),
-                ));
-            }
-            Ok(false) => {}
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    user_id = %auth.id,
-                    target_id = %body.participant_ids[0],
-                    fail_open = state.config.block_check_fail_open,
-                    "Redis block check failed, using failsafe policy"
-                );
-                if !state.config.block_check_fail_open {
-                    return Err(ChatError::Validation(
-                        "Cannot create DM with this user".to_string(),
-                    ));
-                }
-            }
-        }
-    }
+    // Blocks between the caller and each invited user, in either direction,
+    // refuse the DM (1:1 and group alike; sending into it would be refused
+    // too). Blocks between two other participants are theirs and not checked
+    // here, so the caller learns nothing about them.
+    ensure_no_block_with(&state, auth.id, &body.participant_ids).await?;
 
     let (channel, newly_created) = if body.participant_ids.len() == 1 {
         // 1:1 DM
@@ -427,10 +449,23 @@ pub async fn leave_dm(
     super::read_only::ensure_writable(&state.db, channel_id).await?;
 
     // Remove user from participants
-    let removed = queries::remove_dm_participant(&state.db, channel_id, auth.id).await?;
+    // The leaver's sockets stop getting this DM; a DM call they are in ends
+    // for them.
+    let (removed, bumped) = crate::ws::access::bump_after_if(
+        Some(crate::ws::access::AccessChange::DmLeft {
+            user_id: auth.id,
+            channel_id,
+        }),
+        queries::remove_dm_participant(&state.db, channel_id, auth.id),
+        |removed| *removed,
+    )
+    .await?;
 
     if !removed {
         return Err(ChatError::ChannelNotFound);
+    }
+    if let Some(bumped) = bumped {
+        crate::ws::access::access_changed(&state, bumped).await;
     }
 
     // Check if channel is now empty
@@ -438,7 +473,18 @@ pub async fn leave_dm(
 
     // If channel is empty, delete it
     if participant_count == 0 {
-        db::delete_channel(&state.db, channel_id).await?;
+        let (_, bumped) = crate::ws::access::bump_after_if(
+            Some(crate::ws::access::AccessChange::ChannelDeleted {
+                guild_id: None,
+                channel_id,
+            }),
+            db::delete_channel(&state.db, channel_id),
+            |deleted| *deleted,
+        )
+        .await?;
+        if let Some(bumped) = bumped {
+            crate::ws::access::access_changed(&state, bumped).await;
+        }
     }
 
     Ok(StatusCode::NO_CONTENT)

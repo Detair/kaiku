@@ -321,6 +321,42 @@ pub async fn find_guild_webhooks_for_event(
     })
 }
 
+/// A guild webhook together with its application's bot user.
+#[derive(Debug, sqlx::FromRow)]
+pub struct WebhookWithBot {
+    #[sqlx(flatten)]
+    pub webhook: Webhook,
+    pub bot_user_id: Uuid,
+}
+
+/// Like [`find_guild_webhooks_for_event`], with the bot user of each
+/// webhook's application. Applications without a bot user are left out.
+pub async fn find_guild_webhooks_with_bot(
+    pool: &PgPool,
+    guild_id: Uuid,
+    event_type: BotEventType,
+) -> sqlx::Result<Vec<WebhookWithBot>> {
+    sqlx::query_as::<_, WebhookWithBot>(
+        r"
+        SELECT w.id, w.application_id, w.url, w.signing_secret,
+               w.subscribed_events,
+               w.active, w.description, w.created_at, w.updated_at,
+               ba.bot_user_id
+        FROM webhooks w
+        JOIN guild_bot_installations gbi ON gbi.application_id = w.application_id
+        JOIN bot_applications ba ON ba.id = w.application_id
+        WHERE gbi.guild_id = $1
+          AND ba.bot_user_id IS NOT NULL
+          AND w.active = true
+          AND $2::webhook_event_type = ANY(w.subscribed_events)
+        ",
+    )
+    .bind(guild_id)
+    .bind(event_type.as_str())
+    .fetch_all(pool)
+    .await
+}
+
 /// Find active webhooks for a specific application that subscribe to an event type.
 pub async fn find_app_webhooks_for_event(
     pool: &PgPool,

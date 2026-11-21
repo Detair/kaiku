@@ -54,7 +54,6 @@ use utoipa::{Modify, OpenApi};
         (name = "setup", description = "Initial server setup"),
         (name = "uploads", description = "File upload operations"),
         (name = "overrides", description = "Channel permission overrides"),
-        (name = "screenshare", description = "Screen sharing"),
     ),
     modifiers(&SecurityAddon),
     paths(
@@ -169,9 +168,6 @@ use utoipa::{Modify, OpenApi};
         crate::chat::channels::get,
         crate::chat::channels::update,
         crate::chat::channels::delete,
-        crate::chat::channels::list_members,
-        crate::chat::channels::add_member,
-        crate::chat::channels::remove_member,
         crate::chat::channels::mark_as_read,
         // Messages
         crate::chat::messages::list,
@@ -318,10 +314,6 @@ use utoipa::{Modify, OpenApi};
         crate::voice::call_handlers::join_call,
         crate::voice::call_handlers::decline_call,
         crate::voice::call_handlers::leave_call,
-        // Screen share
-        crate::chat::screenshare::check,
-        crate::chat::screenshare::start,
-        crate::chat::screenshare::stop,
         // Crypto
         crate::crypto::upload_keys,
         crate::crypto::get_backup,
@@ -516,8 +508,6 @@ use utoipa::{Modify, OpenApi};
         crate::chat::types::ChannelResponse,
         crate::chat::types::CreateChannelRequest,
         crate::chat::types::UpdateChannelRequest,
-        crate::chat::types::AddMemberRequest,
-        crate::chat::types::MemberResponse,
         crate::chat::types::MarkChannelAsReadRequest,
         // Incoming (Discord-compatible) webhooks
         crate::incoming_webhooks::types::WebhookResponse,

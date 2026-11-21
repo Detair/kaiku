@@ -564,7 +564,8 @@ pub fn spawn_subscriber_remb_reader(
                         );
 
                         let _ = signal_tx
-                            .send(crate::ws::OutboundMsg::Event(
+                            .send(crate::ws::OutboundMsg::voice(
+                                channel_id,
                                 crate::ws::ServerEvent::VoiceLayerChanged {
                                     channel_id,
                                     source_user_id,

@@ -20,6 +20,7 @@ mod peer;
 mod quality;
 mod queries;
 pub mod rate_limit;
+pub mod revoke;
 pub mod screen_share;
 pub mod sfu;
 mod stats;
@@ -33,11 +34,8 @@ use axum::Router;
 // Re-exports
 pub use error::VoiceError;
 pub use quality::Quality;
-pub use screen_share::{
-    ScreenShareCheckResponse, ScreenShareError, ScreenShareInfo, ScreenShareLimiter,
-    ScreenShareStartRequest, ScreenShareStopRequest,
-};
-pub use sfu::{ParticipantInfo, Room, SfuServer, StalePeer, PEER_FAILED_GRACE};
+pub use screen_share::{ScreenShareError, ScreenShareInfo, ScreenShareLimiter};
+pub use sfu::{ParticipantInfo, ReplacedMedia, Room, SfuServer, StalePeer, PEER_FAILED_GRACE};
 pub use stats::{UserStats, VoiceStats};
 pub use track_types::{Layer, LayerPreference, TrackInfo, TrackKind, TrackSource};
 pub use webcam::WebcamInfo;

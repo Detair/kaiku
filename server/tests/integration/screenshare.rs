@@ -1,36 +1,14 @@
 //! Screen Share integration tests.
 //!
-//! Tests for screen sharing REST endpoints and WebSocket broadcast events.
+//! Tests for screen share types, room state and WebSocket broadcast events.
 //!
 //! Run with: `cargo test --test integration screenshare`
-//! Run ignored (integration) tests: `cargo test --test integration screenshare -- --ignored`
 
 use uuid::Uuid;
 // ============================================================================
 // Unit Tests (no database/Redis required)
 // ============================================================================
-use vc_server::voice::{
-    Quality, ScreenShareCheckResponse, ScreenShareError, ScreenShareInfo, ScreenShareStartRequest,
-};
-
-#[test]
-fn test_screen_share_check_response_allowed_serialization() {
-    let resp = ScreenShareCheckResponse::allowed(Quality::High);
-    let json = serde_json::to_string(&resp).unwrap();
-
-    assert!(json.contains("\"allowed\":true"));
-    assert!(json.contains("\"granted_quality\""));
-    assert!(!json.contains("\"error\""));
-}
-
-#[test]
-fn test_screen_share_check_response_denied_serialization() {
-    let resp = ScreenShareCheckResponse::denied(ScreenShareError::NoPermission);
-    let json = serde_json::to_string(&resp).unwrap();
-
-    assert!(json.contains("\"allowed\":false"));
-    assert!(json.contains("\"error\":\"NO_PERMISSION\""));
-}
+use vc_server::voice::{Quality, ScreenShareError, ScreenShareInfo};
 
 #[test]
 fn test_screen_share_error_into_response_status_codes() {
@@ -53,20 +31,6 @@ fn test_screen_share_error_into_response_status_codes() {
         let json = serde_json::to_string(&error).unwrap();
         assert_eq!(json, format!("\"{expected_str}\""));
     }
-}
-
-#[test]
-fn test_screen_share_start_request_deserialization() {
-    let stream_id = Uuid::new_v4();
-    let json = format!(
-        r#"{{"stream_id":"{stream_id}","quality":"high","has_audio":true,"source_label":"Display 1"}}"#
-    );
-    let req: ScreenShareStartRequest = serde_json::from_str(&json).unwrap();
-
-    assert_eq!(req.stream_id, stream_id);
-    assert_eq!(req.quality, Quality::High);
-    assert!(req.has_audio);
-    assert_eq!(req.source_label, "Display 1");
 }
 
 #[test]
@@ -387,231 +351,43 @@ async fn test_remove_nonexistent_stream_returns_none() {
     assert!(result.is_none());
 }
 
-/// `ScreenShareStopRequest` deserializes correctly with `stream_id`.
-#[test]
-fn test_screen_share_stop_request_deserialization() {
-    use vc_server::voice::ScreenShareStopRequest;
-
-    let stream_id = Uuid::new_v4();
-    let json = format!(r#"{{"stream_id":"{stream_id}"}}"#);
-    let req: ScreenShareStopRequest = serde_json::from_str(&json).unwrap();
-
-    assert_eq!(req.stream_id, stream_id);
-}
-
 // ============================================================================
-// Integration Tests (require database + Redis)
+// Removed REST routes
 // ============================================================================
 
-use axum::body::Body;
-use axum::http::{Method, Request, StatusCode};
-use http_body_util::BodyExt;
-use sqlx::PgPool;
-use vc_server::permissions::GuildPermissions;
-
-use super::helpers::{
-    create_guild_with_default_role, create_test_user, create_voice_channel, generate_access_token,
-    TestApp,
-};
-
-/// Screen share check endpoint requires authentication.
+/// Screen shares start and stop over the WebSocket only; the old REST
+/// routes are gone.
 #[sqlx::test]
-async fn test_screen_share_check_requires_auth(pool: PgPool) {
-    let app = TestApp::with_pool(pool.clone()).await;
-    let channel_id = Uuid::now_v7();
+async fn screen_share_rest_routes_are_gone(pool: sqlx::PgPool) {
+    use axum::body::Body;
+    use axum::http::{Method, StatusCode};
 
-    let body = serde_json::json!({
-        "stream_id": Uuid::new_v4(),
-        "quality": "medium",
-        "has_audio": false,
-        "source_label": "Display 1"
-    });
+    use super::helpers::{
+        create_guild, create_test_user, create_voice_channel, generate_access_token, TestApp,
+    };
 
-    let req = Request::builder()
-        .method(Method::POST)
-        .uri(format!("/api/channels/{channel_id}/screenshare/check"))
-        .header("content-type", "application/json")
-        .body(Body::from(serde_json::to_vec(&body).unwrap()))
-        .unwrap();
-
-    let resp = app.oneshot(req).await;
-    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-}
-
-/// Screen share check endpoint requires `SCREEN_SHARE` permission.
-#[sqlx::test]
-async fn test_screen_share_check_requires_permission(pool: PgPool) {
     let app = TestApp::with_pool_and_screen_share_limiter(pool.clone()).await;
-    let (owner_id, _) = create_test_user(&app.pool).await;
-    let (member_id, _) = create_test_user(&app.pool).await;
-
-    // Guild with VIEW_CHANNEL + VOICE_CONNECT but NOT SCREEN_SHARE
-    let perms = GuildPermissions::VIEW_CHANNEL | GuildPermissions::VOICE_CONNECT;
-    let guild_id = create_guild_with_default_role(&app.pool, owner_id, perms).await;
-    let channel_id = create_voice_channel(&app.pool, guild_id, "voice-test").await;
-
-    // Add a non-owner member who only has the @everyone role permissions
-    sqlx::query("INSERT INTO guild_members (user_id, guild_id) VALUES ($1, $2)")
-        .bind(member_id)
-        .bind(guild_id)
-        .execute(&app.pool)
-        .await
-        .expect("Failed to add member");
-
-    // Use the non-owner member (owner bypasses permission checks)
-    let token = generate_access_token(&app.config, member_id);
+    let (owner, _) = create_test_user(&pool).await;
+    let guild = create_guild(&pool, owner).await;
+    let channel = create_voice_channel(&pool, guild, "voice").await;
+    let token = generate_access_token(&app.config, owner);
     let body = serde_json::json!({
         "stream_id": Uuid::new_v4(),
         "quality": "medium",
         "has_audio": false,
-        "source_label": "Display 1"
-    });
-
-    let req = Request::builder()
-        .method(Method::POST)
-        .uri(format!("/api/channels/{channel_id}/screenshare/check"))
-        .header("content-type", "application/json")
-        .header("authorization", format!("Bearer {token}"))
-        .body(Body::from(serde_json::to_vec(&body).unwrap()))
+        "source_label": "Display 1",
+    })
+    .to_string();
+    for action in ["check", "start", "stop"] {
+        let req = TestApp::request(
+            Method::POST,
+            &format!("/api/channels/{channel}/screenshare/{action}"),
+        )
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(body.clone()))
         .unwrap();
-
-    let resp = app.oneshot(req).await;
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["allowed"], false);
-    assert_eq!(json["error"], "NO_PERMISSION");
-}
-
-/// Screen share check allows permitted users.
-#[sqlx::test]
-async fn test_screen_share_check_allowed(pool: PgPool) {
-    let app = TestApp::with_pool_and_screen_share_limiter(pool.clone()).await;
-    let (user_id, _username) = create_test_user(&app.pool).await;
-
-    let perms = GuildPermissions::VIEW_CHANNEL
-        | GuildPermissions::VOICE_CONNECT
-        | GuildPermissions::SCREEN_SHARE;
-    let guild_id = create_guild_with_default_role(&app.pool, user_id, perms).await;
-    let channel_id = create_voice_channel(&app.pool, guild_id, "voice-test").await;
-
-    let token = generate_access_token(&app.config, user_id);
-    let body = serde_json::json!({
-        "stream_id": Uuid::new_v4(),
-        "quality": "medium",
-        "has_audio": false,
-        "source_label": "Display 1"
-    });
-
-    let req = Request::builder()
-        .method(Method::POST)
-        .uri(format!("/api/channels/{channel_id}/screenshare/check"))
-        .header("content-type", "application/json")
-        .header("authorization", format!("Bearer {token}"))
-        .body(Body::from(serde_json::to_vec(&body).unwrap()))
-        .unwrap();
-
-    let resp = app.oneshot(req).await;
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["allowed"], true);
-    assert!(json.get("granted_quality").is_some());
-}
-
-/// Screen share start requires voice room membership.
-#[sqlx::test]
-#[ignore = "Requires SFU ScreenShareLimiter in test app"]
-async fn test_screen_share_start_requires_room_membership(pool: PgPool) {
-    let app = TestApp::with_pool(pool.clone()).await;
-    let (user_id, _username) = create_test_user(&app.pool).await;
-
-    let perms = GuildPermissions::VIEW_CHANNEL
-        | GuildPermissions::VOICE_CONNECT
-        | GuildPermissions::SCREEN_SHARE;
-    let guild_id = create_guild_with_default_role(&app.pool, user_id, perms).await;
-    let channel_id = create_voice_channel(&app.pool, guild_id, "voice-test").await;
-
-    let token = generate_access_token(&app.config, user_id);
-    let body = serde_json::json!({
-        "stream_id": Uuid::new_v4(),
-        "quality": "medium",
-        "has_audio": false,
-        "source_label": "Display 1"
-    });
-
-    let req = Request::builder()
-        .method(Method::POST)
-        .uri(format!("/api/channels/{channel_id}/screenshare/start"))
-        .header("content-type", "application/json")
-        .header("authorization", format!("Bearer {token}"))
-        .body(Body::from(serde_json::to_vec(&body).unwrap()))
-        .unwrap();
-
-    let resp = app.oneshot(req).await;
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-}
-
-/// Screen share stop is a no-op when not sharing.
-#[sqlx::test]
-async fn test_screen_share_stop_noop(pool: PgPool) {
-    let app = TestApp::with_pool_and_screen_share_limiter(pool.clone()).await;
-    let (user_id, _username) = create_test_user(&app.pool).await;
-
-    let perms = GuildPermissions::VIEW_CHANNEL
-        | GuildPermissions::VOICE_CONNECT
-        | GuildPermissions::SCREEN_SHARE;
-    let guild_id = create_guild_with_default_role(&app.pool, user_id, perms).await;
-    let channel_id = create_voice_channel(&app.pool, guild_id, "voice-test").await;
-
-    let token = generate_access_token(&app.config, user_id);
-
-    let stop_body = serde_json::json!({
-        "stream_id": Uuid::new_v4()
-    });
-    let req = Request::builder()
-        .method(Method::POST)
-        .uri(format!("/api/channels/{channel_id}/screenshare/stop"))
-        .header("content-type", "application/json")
-        .header("authorization", format!("Bearer {token}"))
-        .body(Body::from(serde_json::to_vec(&stop_body).unwrap()))
-        .unwrap();
-
-    let resp = app.oneshot(req).await;
-    assert_eq!(resp.status(), StatusCode::OK);
-}
-
-/// Screen share check rejects invalid source labels (XSS attempt).
-#[sqlx::test]
-#[ignore = "Requires SFU ScreenShareLimiter in test app"]
-async fn test_screen_share_check_invalid_source_label(pool: PgPool) {
-    let app = TestApp::with_pool(pool.clone()).await;
-    let (user_id, _username) = create_test_user(&app.pool).await;
-
-    let perms = GuildPermissions::VIEW_CHANNEL
-        | GuildPermissions::VOICE_CONNECT
-        | GuildPermissions::SCREEN_SHARE;
-    let guild_id = create_guild_with_default_role(&app.pool, user_id, perms).await;
-    let channel_id = create_voice_channel(&app.pool, guild_id, "voice-test").await;
-
-    let token = generate_access_token(&app.config, user_id);
-    let body = serde_json::json!({
-        "stream_id": Uuid::new_v4(),
-        "quality": "medium",
-        "has_audio": false,
-        "source_label": "<script>alert(1)</script>"
-    });
-
-    let req = Request::builder()
-        .method(Method::POST)
-        .uri(format!("/api/channels/{channel_id}/screenshare/check"))
-        .header("content-type", "application/json")
-        .header("authorization", format!("Bearer {token}"))
-        .body(Body::from(serde_json::to_vec(&body).unwrap()))
-        .unwrap();
-
-    let resp = app.oneshot(req).await;
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let resp = app.oneshot(req).await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{action}");
+    }
 }

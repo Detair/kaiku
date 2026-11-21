@@ -127,8 +127,10 @@ pub async fn add_reaction(
         return Err(ReactionsError::InvalidEmoji);
     }
 
-    // Check channel exists
-    let _ = db::find_channel_by_id(&state.db, channel_id)
+    // Check channel exists (its server is needed for reaction roles below;
+    // read here, so that nothing asks the pool for a second connection while
+    // the transaction holds one).
+    let channel = db::find_channel_by_id(&state.db, channel_id)
         .await?
         .ok_or(ReactionsError::ChannelNotFound)?;
 
@@ -168,9 +170,6 @@ pub async fn add_reaction(
     // Reaction-role hook (only for guild channels, only when newly inserted).
     let mut hook_outcome = None;
     if result.rows_affected() > 0 {
-        let channel = db::find_channel_by_id(&state.db, channel_id)
-            .await?
-            .ok_or(ReactionsError::ChannelNotFound)?;
         if let Some(guild_id) = channel.guild_id {
             hook_outcome = crate::guild::reaction_roles::apply_on_reaction_add(
                 &mut tx,
@@ -200,7 +199,22 @@ pub async fn add_reaction(
     .fetch_one(&mut *tx)
     .await?;
 
-    tx.commit().await?;
+    // A reaction role changes what the member may view: fenced right at
+    // the commit.
+    let ((), bumped) = crate::ws::access::bump_after_if(
+        hook_outcome.as_ref().map(|(guild_id, _)| {
+            crate::ws::access::AccessChange::MemberRolesChanged {
+                guild_id: *guild_id,
+                user_id: auth_user.id,
+            }
+        }),
+        tx.commit(),
+        |()| true,
+    )
+    .await?;
+    if let Some(bumped) = bumped {
+        crate::ws::access::access_changed(&state, bumped).await;
+    }
 
     // Broadcast after commit.
     if result.rows_affected() > 0 {
@@ -291,8 +305,10 @@ pub async fn remove_reaction(
     Path((channel_id, message_id, emoji)): Path<(Uuid, Uuid, String)>,
     auth_user: AuthUser,
 ) -> Result<impl IntoResponse, ReactionsError> {
-    // Check channel exists
-    let _ = db::find_channel_by_id(&state.db, channel_id)
+    // Check channel exists (its server is needed for reaction roles below;
+    // read here, so that nothing asks the pool for a second connection while
+    // the transaction holds one).
+    let channel = db::find_channel_by_id(&state.db, channel_id)
         .await?
         .ok_or(ReactionsError::ChannelNotFound)?;
 
@@ -328,10 +344,7 @@ pub async fn remove_reaction(
 
     let mut hook_outcome = None;
     if result.rows_affected() > 0 {
-        if let Some(guild_id) = db::find_channel_by_id(&state.db, channel_id)
-            .await?
-            .and_then(|c| c.guild_id)
-        {
+        if let Some(guild_id) = channel.guild_id {
             hook_outcome = crate::guild::reaction_roles::apply_on_reaction_remove(
                 &mut tx,
                 guild_id,
@@ -348,7 +361,22 @@ pub async fn remove_reaction(
         }
     }
 
-    tx.commit().await?;
+    // A reaction role changes what the member may view: fenced right at
+    // the commit.
+    let ((), bumped) = crate::ws::access::bump_after_if(
+        hook_outcome.as_ref().map(|(guild_id, _)| {
+            crate::ws::access::AccessChange::MemberRolesChanged {
+                guild_id: *guild_id,
+                user_id: auth_user.id,
+            }
+        }),
+        tx.commit(),
+        |()| true,
+    )
+    .await?;
+    if let Some(bumped) = bumped {
+        crate::ws::access::access_changed(&state, bumped).await;
+    }
 
     // Only broadcast if a row was actually deleted
     if result.rows_affected() > 0 {

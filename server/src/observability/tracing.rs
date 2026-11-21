@@ -320,10 +320,7 @@ mod tests {
         let ws = include_str!("../ws/handlers.rs");
         // The attribute may be formatted across multiple lines by rustfmt; check
         // for the skip list fragment which must always be present.
-        assert_contains(
-            ws,
-            "skip(state, tx, subscribed_channels, admin_subscribed, msg_state, text),",
-        );
+        assert_contains(ws, "skip(state, tx, access, msg_state, text),");
 
         let voice = include_str!("../voice/call_handlers.rs");
         assert_contains(

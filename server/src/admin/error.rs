@@ -113,10 +113,13 @@ impl IntoResponse for AdminError {
                 StatusCode::FORBIDDEN,
                 serde_json::json!({"error": "PERMISSION_DENIED", "message": e.to_string()}),
             ),
-            Self::Internal(msg) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                serde_json::json!({"error": "INTERNAL_ERROR", "message": msg}),
-            ),
+            Self::Internal(msg) => {
+                tracing::error!(error = %msg, "Admin endpoint internal error");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    serde_json::json!({"error": "INTERNAL_ERROR", "message": "Internal server error"}),
+                )
+            }
         };
         (status, Json(body)).into_response()
     }
