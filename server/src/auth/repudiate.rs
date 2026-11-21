@@ -187,6 +187,22 @@ pub async fn repudiate_tx(
     }
     let may_revoke = !matches!(by, OwnerAuthority::Part2 { .. });
     let fx = effects(conn, &ev, may_revoke).await?;
+    // A newly added authenticator does not have an older one revoked: the
+    // whole report is refused before anything is written (the caller rolls
+    // back, so the grant stays). Ending sessions and marking factors alone
+    // stay allowed.
+    if let (OwnerAuthority::Part1 { grant }, Some(a)) = (by, fx.revoke) {
+        if super::strong::is_live(conn, a).await? {
+            super::strong::ensure_settled(
+                conn,
+                ev.subject_id,
+                grant.by,
+                Some(a),
+                ctx.config.account_request_delay_hours,
+            )
+            .await?;
+        }
+    }
     let open_before: Vec<Uuid> = sqlx::query_scalar(
         "SELECT id FROM account_requests WHERE user_id = $1 AND state IN ('waiting', 'ready')",
     )
@@ -331,7 +347,7 @@ pub struct RepudiateRequest {
     request_body = RepudiateRequest,
     responses(
         (status = 200, body = RepudiationOutcome),
-        (status = 403, description = "REPUDIATE_NOT_ALLOWED or STEP_UP_REQUIRED"),
+        (status = 403, description = "REPUDIATE_NOT_ALLOWED, STEP_UP_REQUIRED or AUTHENTICATOR_TOO_NEW {allowed_at}"),
         (status = 409, description = "EVENT_ALREADY_REPUDIATED"),
     ),
     security(("bearer_auth" = [])),

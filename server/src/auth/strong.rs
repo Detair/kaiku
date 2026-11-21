@@ -93,6 +93,23 @@ pub async fn is_active(conn: &mut sqlx::PgConnection, a: AuthenticatorRef) -> sq
     }
 }
 
+/// Whether the authenticator is not revoked (`pending` or `active`): a
+/// revocation would still change it.
+pub async fn is_live(conn: &mut sqlx::PgConnection, a: AuthenticatorRef) -> sqlx::Result<bool> {
+    let sql = match a.kind {
+        AuthenticatorKind::KeyDevice => {
+            "SELECT EXISTS (SELECT 1 FROM approval_devices WHERE id = $1 AND state <> 'revoked')"
+        }
+        AuthenticatorKind::Passkey => {
+            "SELECT EXISTS (SELECT 1 FROM passkeys WHERE id = $1 AND state <> 'revoked')"
+        }
+    };
+    sqlx::query_scalar(sql)
+        .bind(a.id)
+        .fetch_one(&mut *conn)
+        .await
+}
+
 /// Whether the authenticator is a row of `user_id` (any state).
 pub async fn belongs_to(
     conn: &mut sqlx::PgConnection,

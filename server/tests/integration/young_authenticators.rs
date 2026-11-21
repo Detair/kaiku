@@ -651,3 +651,256 @@ async fn unknown_producer_is_never_old(pool: PgPool) {
         );
     }
 }
+
+// "That wasn't me": a newly added authenticator cannot have an older one
+// revoked by reporting the older one's sign-in or addition.
+
+/// Record an event of `user` now.
+async fn record_event(
+    pool: &PgPool,
+    user: Uuid,
+    t: vc_server::security_events::EventType,
+    session: Option<Uuid>,
+    a: Option<AuthenticatorRef>,
+    details: Value,
+) -> Uuid {
+    use vc_server::security_events::{record, Actor, NewSecurityEvent};
+    let mut conn = pool.acquire().await.unwrap();
+    let mut ev = NewSecurityEvent::new(user, t, Actor::User(user), details);
+    ev.session_id = session;
+    ev.authenticator = a;
+    record(&mut conn, ev).await.unwrap()
+}
+
+/// "That wasn't me" on `event` from `by`'s session, with a step-up `by` made.
+async fn report(app: &TestApp, by: &KeyDeviceFixture, event: Uuid) -> (u16, Value) {
+    grant(
+        app,
+        by.session_id.unwrap(),
+        StepUpAction::EventRepudiate,
+        &event.to_string(),
+        kd(by),
+    )
+    .await;
+    send(
+        app,
+        Method::POST,
+        &format!("/api/me/security-events/{event}/repudiate"),
+        &by.access_token,
+        Some(json!({})),
+    )
+    .await
+}
+
+/// A device-key sign-in of `dev` (its own session), recorded now.
+async fn device_sign_in(pool: &PgPool, user: Uuid, dev: &KeyDeviceFixture, factors: Value) -> Uuid {
+    record_event(
+        pool,
+        user,
+        vc_server::security_events::EventType::SignIn,
+        dev.session_id,
+        Some(kd(dev)),
+        json!({"auth_methods": ["device_key"], "assurance": "full", "factors": factors}),
+    )
+    .await
+}
+
+async fn session_live(pool: &PgPool, sid: Uuid) -> bool {
+    sqlx::query_scalar("SELECT ended_at IS NULL FROM sessions WHERE id = $1")
+        .bind(sid)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+async fn password_state(pool: &PgPool, user: Uuid) -> String {
+    sqlx::query_scalar("SELECT password_state FROM users WHERE id = $1")
+        .bind(user)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+async fn repudiated(pool: &PgPool, event: Uuid) -> bool {
+    sqlx::query_scalar("SELECT repudiated_at IS NOT NULL FROM security_events WHERE id = $1")
+        .bind(event)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// Older phone (30 days) and a phone added a minute ago.
+async fn old_and_young_phone(app: &TestApp) -> (Uuid, KeyDeviceFixture, KeyDeviceFixture) {
+    let (user, old, young) = old_and_new_phone(app).await;
+    added_ago(&app.pool, kd(&young), Duration::minutes(1)).await;
+    (user, old, young)
+}
+
+#[sqlx::test]
+async fn fresh_device_cannot_have_older_phone_revoked_by_report(pool: PgPool) {
+    let app = TestApp::with_passkeys(pool).await;
+    let (user, old, young) = old_and_young_phone(&app).await;
+    // The older phone signs in after the young one was added.
+    let ev = device_sign_in(&app.pool, user, &old, json!([])).await;
+    let r = report(&app, &young, ev).await;
+    assert_too_new(&app.pool, r, kd(&young), 24).await;
+    assert_eq!(device_state(&app.pool, old.row_id).await, "active");
+    assert!(session_live(&app.pool, old.session_id.unwrap()).await);
+    assert!(!repudiated(&app.pool, ev).await);
+    assert_eq!(password_state(&app.pool, user).await, "active");
+    assert_eq!(open_grants(&app.pool, young.session_id.unwrap()).await, 1);
+
+    // After the waiting time the same report is carried out.
+    added_ago(&app.pool, kd(&young), Duration::hours(25)).await;
+    let (s, b) = send(
+        &app,
+        Method::POST,
+        &format!("/api/me/security-events/{ev}/repudiate"),
+        &young.access_token,
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(device_state(&app.pool, old.row_id).await, "revoked");
+}
+
+#[sqlx::test]
+async fn fresh_device_cannot_have_older_passkey_revoked_by_report(pool: PgPool) {
+    let app = TestApp::with_passkeys(pool).await;
+    let (user, _old, young) = old_and_young_phone(&app).await;
+    let (_, pk) = seed_passkey(&app, user, PasskeyState::Active).await;
+    let passkey = AuthenticatorRef::passkey(pk.id);
+    added_ago(&app.pool, passkey, Duration::days(3)).await;
+    let (sid, _) = passkey_session(&app.pool, &app.config, user, pk.id).await;
+    let ev = record_event(
+        &app.pool,
+        user,
+        vc_server::security_events::EventType::SignIn,
+        Some(sid),
+        Some(passkey),
+        json!({"auth_methods": ["passkey"], "assurance": "full"}),
+    )
+    .await;
+    let r = report(&app, &young, ev).await;
+    assert_too_new(&app.pool, r, kd(&young), 24).await;
+    let state: String = sqlx::query_scalar("SELECT state FROM passkeys WHERE id = $1")
+        .bind(pk.id)
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    assert_eq!(state, "active");
+    assert!(session_live(&app.pool, sid).await);
+}
+
+#[sqlx::test]
+async fn older_phone_reports_young_one(pool: PgPool) {
+    let app = TestApp::with_passkeys(pool).await;
+    let (user, old, young) = old_and_young_phone(&app).await;
+    let younger = KeyDeviceFixture::insert(&app.pool, &app.config, user, "active").await;
+    // Its addition.
+    let added = record_event(
+        &app.pool,
+        user,
+        vc_server::security_events::EventType::AuthenticatorAdded,
+        None,
+        Some(kd(&young)),
+        json!({"type": "key_device", "label": "Pixel 8"}),
+    )
+    .await;
+    let (s, b) = report(&app, &old, added).await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(device_state(&app.pool, young.row_id).await, "revoked");
+    // A sign-in of another young one.
+    let ev = device_sign_in(&app.pool, user, &younger, json!([])).await;
+    let (s, b) = report(&app, &old, ev).await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(device_state(&app.pool, younger.row_id).await, "revoked");
+}
+
+#[sqlx::test]
+async fn fresh_device_reports_password_sign_in(pool: PgPool) {
+    let app = TestApp::with_passkeys(pool).await;
+    let (user, old, young) = old_and_young_phone(&app).await;
+    let pc = Uuid::new_v4();
+    crate::helpers::insert_session_row(&app.pool, pc, user, false).await;
+    let ev = record_event(
+        &app.pool,
+        user,
+        vc_server::security_events::EventType::SignIn,
+        Some(pc),
+        None,
+        json!({"auth_methods": ["password", "totp"], "assurance": "probation",
+               "factors": [{"factor": "password", "generation": 1}]}),
+    )
+    .await;
+    let (s, b) = report(&app, &young, ev).await;
+    assert_eq!(s, 200, "{b}");
+    assert!(!session_live(&app.pool, pc).await);
+    assert_eq!(b["compromised"], json!(["password"]));
+    assert_eq!(device_state(&app.pool, old.row_id).await, "active");
+}
+
+#[sqlx::test]
+async fn fresh_device_reports_younger_one(pool: PgPool) {
+    let app = TestApp::with_passkeys(pool).await;
+    let (user, _old, young) = old_and_young_phone(&app).await;
+    added_ago(&app.pool, kd(&young), Duration::hours(1)).await;
+    let younger = KeyDeviceFixture::insert(&app.pool, &app.config, user, "active").await;
+    let ev = device_sign_in(&app.pool, user, &younger, json!([])).await;
+    let (s, b) = report(&app, &young, ev).await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(device_state(&app.pool, younger.row_id).await, "revoked");
+}
+
+#[sqlx::test]
+async fn only_young_authenticator_reports_freely(pool: PgPool) {
+    // The only active authenticator is young; an older phone that waits as
+    // pending (staged long ago) can still be reported.
+    let app = TestApp::with_passkeys(pool).await;
+    let (user, _) = create_test_user(&app.pool).await;
+    let staged = KeyDeviceFixture::insert(&app.pool, &app.config, user, "pending").await;
+    added_ago(&app.pool, kd(&staged), Duration::days(2)).await;
+    let young = KeyDeviceFixture::insert(&app.pool, &app.config, user, "active").await;
+    added_ago(&app.pool, kd(&young), Duration::minutes(1)).await;
+    let added = record_event(
+        &app.pool,
+        user,
+        vc_server::security_events::EventType::AuthenticatorAdded,
+        None,
+        Some(kd(&staged)),
+        json!({"type": "key_device", "label": "Pixel 8"}),
+    )
+    .await;
+    let (s, b) = report(&app, &young, added).await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(device_state(&app.pool, staged.row_id).await, "revoked");
+}
+
+#[sqlx::test]
+async fn refused_report_changes_nothing(pool: PgPool) {
+    // A sign-in whose report would revoke the older phone and also end its
+    // session and mark the password: refused as a whole.
+    let app = TestApp::with_passkeys(pool).await;
+    let (user, old, young) = old_and_young_phone(&app).await;
+    let ev = device_sign_in(
+        &app.pool,
+        user,
+        &old,
+        json!([{"factor": "password", "generation": 1}]),
+    )
+    .await;
+    let r = report(&app, &young, ev).await;
+    assert_too_new(&app.pool, r, kd(&young), 24).await;
+    assert_eq!(device_state(&app.pool, old.row_id).await, "active");
+    assert!(session_live(&app.pool, old.session_id.unwrap()).await);
+    assert_eq!(password_state(&app.pool, user).await, "active");
+    assert!(!repudiated(&app.pool, ev).await);
+    let n: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM security_events WHERE subject_id = $1 AND event_type = 'repudiated'",
+    )
+    .bind(user)
+    .fetch_one(&app.pool)
+    .await
+    .unwrap();
+    assert_eq!(n, 0);
+}
