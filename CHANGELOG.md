@@ -220,7 +220,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Android: signing the phone in by scanning a QR code from the desktop without any confirmation. The phone's scanner now only reads Kaiku sign-in and setup codes of its own server.
 
 ### Fixed
-- Phone setup: once a phone's setup is reported as `expired`, it stays expired and a later confirmation of its code is refused; a confirmation already in progress when the code runs out finishes first and the phone is told `done`. The setup status now also names the enrolment (`enrollment_id`).
+- Phone setup: once a phone's setup is reported as `expired`, it stays expired and a later confirmation of its code is refused. While a confirmation is running when the code runs out, the setup status stays `claimed`; it becomes `done` only if that confirmation succeeds, else `expired`. The setup status now also names the enrolment (`enrollment_id`).
 - Client: a chat-only sign-in without a passkey now says exactly how to add a passkey for the computer, in the banner and in the security settings.
 - Client: in the desktop app and in browsers other than Firefox, avatars are now round, icons have their intended size, selected options and primary buttons show their accent background, QR codes have a white background, and clickable items show a hand cursor. These styles were dropped from the app's CSS; Firefox already showed them.
 - The message for actions that need a full session now says that a computer needs a passkey sign-in and that a phone can do it in the Kaiku app.
