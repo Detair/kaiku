@@ -23,7 +23,9 @@ use super::helpers::{
     body_to_json_lenient, create_session_with_token, create_test_user, grant_step_up, make_admin,
     next_ws_event, spawn_test_server, ws_connect, TestApp,
 };
-use super::login_attempts::{answer_login, approved_attempt, attempt_id, claim, pc_call, qr_token};
+use super::login_attempts::{
+    answer_login, approved_attempt, attempt_id, claim, pc_call, qr_token, verifier_pair, Secret,
+};
 use super::login_password::login_native;
 
 const ORIGIN_MIGRATION: i64 = 20_261_127_000_000;
@@ -256,7 +258,7 @@ async fn change_password(app: &TestApp, sid: Uuid, token: &str, new_password: &s
 }
 
 // ============================================================================
-// T1: back-fill
+// The upgrade: back-fill of live sessions
 // ============================================================================
 
 async fn raw_user(pool: &PgPool, name: &str, password: bool, totp: bool) -> Uuid {
@@ -275,7 +277,12 @@ async fn raw_user(pool: &PgPool, name: &str, password: bool, totp: bool) -> Uuid
 
 async fn raw_session(pool: &PgPool, user: Uuid, methods: &[&str], ended: bool) -> Uuid {
     let id = Uuid::now_v7();
-    let full = methods == ["device_key"];
+    let full = methods == ["device_key"] || methods == ["passkey"];
+    let kind = if methods == ["passkey"] {
+        "passkey"
+    } else {
+        "key_device"
+    };
     sqlx::query(
         "INSERT INTO sessions (id, user_id, token_hash, expires_at, assurance, auth_methods,
                                client_class, authenticator_type, authenticator_id,
@@ -289,7 +296,7 @@ async fn raw_session(pool: &PgPool, user: Uuid, methods: &[&str], ended: bool) -
     .bind(format!("hash-{id}"))
     .bind(if full { "full" } else { "probation" })
     .bind(methods.iter().map(|m| (*m).to_string()).collect::<Vec<_>>())
-    .bind(full.then_some("key_device"))
+    .bind(full.then_some(kind))
     .bind(full.then(Uuid::new_v4))
     .bind(ended)
     .execute(pool)
@@ -349,48 +356,81 @@ async fn raw_sign_in_event(pool: &PgPool, user: Uuid, session: Uuid, details: Va
 #[sqlx::test(migrations = false)]
 async fn session_origin_backfill(pool: PgPool) {
     apply_until(&pool, ORIGIN_MIGRATION).await;
+    // The account is at password generation 4 and TOTP generation 2.
     let u = raw_user(&pool, "origin_all", true, true).await;
     let bare = raw_user(&pool, "origin_bare", false, false).await;
     let dev = raw_device(&pool, u).await;
+    let removed = raw_device(&pool, u).await;
+    sqlx::query(
+        "UPDATE approval_devices SET state = 'revoked', revoked_at = NOW(),
+                revoke_reason = 'owner'
+          WHERE id = $1",
+    )
+    .bind(removed)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let factors = |pw: Option<i64>, totp: Option<i64>| {
+        let mut f = Vec::new();
+        if let Some(g) = pw {
+            f.push(json!({"factor": "password", "generation": g}));
+        }
+        if let Some(g) = totp {
+            f.push(json!({"factor": "totp", "generation": g}));
+        }
+        json!({ "factors": f })
+    };
 
+    // Healthy sessions: filled, and they stay signed in.
     // A QR session whose attempt still exists: the exact approver.
     let qr_known = raw_session(&pool, u, &["qr"], false).await;
     raw_consumed_attempt(&pool, u, dev, qr_known).await;
-    // A QR session whose attempt is gone: "some key device".
+    // A QR session whose attempt is gone: "some key device" (every device of
+    // the account but the removed one is active; it is not known which one).
     let qr_unknown = raw_session(&pool, u, &["qr"], false).await;
-    // Password + phone, attempt gone, event with the generation.
+    // Password + phone, attempt gone, event with the current generation.
     let pw_phone = raw_session(&pool, u, &["password", "phone_confirm"], false).await;
-    raw_sign_in_event(
-        &pool,
-        u,
-        pw_phone,
-        json!({"auth_methods": ["password", "phone_confirm"],
-               "factors": [{"factor": "password", "generation": 3}]}),
-    )
-    .await;
-    // Password + TOTP: both generations from the event, no approver.
+    raw_sign_in_event(&pool, u, pw_phone, factors(Some(4), None)).await;
+    // Password + TOTP: both current generations from the event.
     let pw_totp = raw_session(&pool, u, &["password", "totp"], false).await;
-    raw_sign_in_event(
-        &pool,
-        u,
-        pw_totp,
-        json!({"auth_methods": ["password", "totp"],
-               "factors": [{"factor": "password", "generation": 3},
-                           {"factor": "totp", "generation": 1}]}),
-    )
-    .await;
+    raw_sign_in_event(&pool, u, pw_totp, factors(Some(4), Some(2))).await;
     // OIDC + TOTP without an event (safety net): the current TOTP generation.
     let oidc_totp = raw_session(&pool, u, &["oidc", "totp"], false).await;
     // Pre-v1 sessions: the account's current generations of what it has.
     let legacy = raw_session(&pool, u, &["legacy"], false).await;
     let legacy_bare = raw_session(&pool, bare, &["legacy"], false).await;
-    // Untouched: an ended QR session (attempt present) and a device session.
-    let qr_ended = raw_session(&pool, u, &["qr"], true).await;
-    raw_consumed_attempt(&pool, u, dev, qr_ended).await;
     let device = raw_session(&pool, u, &["device_key"], false).await;
-    // A non-array `factors` must not break the migration.
+    let passkey = raw_session(&pool, u, &["passkey"], false).await;
+    // Odd old data must not break the migration: a non-array `factors`, and
+    // generations that are not whole numbers (skipped; the safety net fills
+    // the current generation).
     let odd = raw_session(&pool, u, &["password", "totp"], false).await;
     raw_sign_in_event(&pool, u, odd, json!({"factors": {"password": 9}})).await;
+    let odd_numbers = raw_session(&pool, u, &["password", "totp"], false).await;
+    raw_sign_in_event(
+        &pool,
+        u,
+        odd_numbers,
+        json!({"factors": [{"factor": "password", "generation": "abc"},
+                           {"factor": "totp", "generation": 3.5},
+                           {"factor": "password", "generation": 1.0e20_f64},
+                           {"factor": "totp", "generation": true}]}),
+    )
+    .await;
+    // Untouched: an ended QR session (attempt present).
+    let qr_ended = raw_session(&pool, u, &["qr"], true).await;
+    raw_consumed_attempt(&pool, u, dev, qr_ended).await;
+
+    // What is already over before the upgrade: these sessions end with it.
+    // Confirmed by a phone that was removed before the upgrade.
+    let qr_removed = raw_session(&pool, u, &["qr"], false).await;
+    raw_consumed_attempt(&pool, u, removed, qr_removed).await;
+    // The password was changed before the upgrade.
+    let pw_changed = raw_session(&pool, u, &["password", "phone_confirm"], false).await;
+    raw_sign_in_event(&pool, u, pw_changed, factors(Some(3), None)).await;
+    // The TOTP secret was renewed before the upgrade.
+    let totp_renewed = raw_session(&pool, u, &["password", "totp"], false).await;
+    raw_sign_in_event(&pool, u, totp_renewed, factors(Some(4), Some(1))).await;
 
     apply_from(&pool, ORIGIN_MIGRATION).await;
 
@@ -408,28 +448,114 @@ async fn session_origin_backfill(pool: PgPool) {
     );
     assert_eq!(
         origin(&pool, pw_phone).await,
-        o(Some("key_device"), None, Some(3), None)
+        o(Some("key_device"), None, Some(4), None)
     );
     assert_eq!(
         origin(&pool, pw_totp).await,
-        o(None, None, Some(3), Some(1))
+        o(None, None, Some(4), Some(2))
     );
     assert_eq!(origin(&pool, oidc_totp).await, o(None, None, None, Some(2)));
     assert_eq!(origin(&pool, legacy).await, o(None, None, Some(4), Some(2)));
     assert_eq!(origin(&pool, legacy_bare).await, o(None, None, None, None));
-    assert_eq!(origin(&pool, qr_ended).await, o(None, None, None, None));
     assert_eq!(origin(&pool, device).await, o(None, None, None, None));
+    assert_eq!(origin(&pool, passkey).await, o(None, None, None, None));
     assert_eq!(origin(&pool, odd).await, o(None, None, Some(4), Some(2)));
-    // Nobody is signed out by the upgrade.
+    assert_eq!(
+        origin(&pool, odd_numbers).await,
+        o(None, None, Some(4), Some(2))
+    );
+    assert_eq!(origin(&pool, qr_ended).await, o(None, None, None, None));
+    assert_eq!(
+        ended(&pool, qr_ended).await,
+        (false, Some("logout".into())),
+        "an ended session keeps its reason"
+    );
+    // Healthy sessions are not signed out by the upgrade.
     for sid in [
-        qr_known, qr_unknown, pw_phone, pw_totp, oidc_totp, legacy, device,
+        qr_known,
+        qr_unknown,
+        pw_phone,
+        pw_totp,
+        oidc_totp,
+        legacy,
+        legacy_bare,
+        device,
+        passkey,
+        odd,
+        odd_numbers,
     ] {
         assert!(live(&pool, sid).await, "{sid} stays live");
     }
+    // What was already over ends now, with the reason the rules give.
+    assert_eq!(
+        ended(&pool, qr_removed).await,
+        (false, Some("authenticator_revoked".into()))
+    );
+    assert_eq!(
+        ended(&pool, pw_changed).await,
+        (false, Some("factor_ended".into()))
+    );
+    assert_eq!(
+        ended(&pool, totp_renewed).await,
+        (false, Some("factor_ended".into()))
+    );
+}
+
+/// A session the upgrade ends is refused at once: its refresh token and its
+/// access token answer 401.
+#[sqlx::test(migrations = false)]
+async fn session_ended_by_the_upgrade_is_refused(pool: PgPool) {
+    apply_until(&pool, ORIGIN_MIGRATION).await;
+    let u = raw_user(&pool, "origin_refused", true, true).await;
+    let removed = raw_device(&pool, u).await;
+    sqlx::query(
+        "UPDATE approval_devices SET state = 'revoked', revoked_at = NOW(),
+                revoke_reason = 'owner'
+          WHERE id = $1",
+    )
+    .bind(removed)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let config = super::helpers::login::login_config();
+    let mut tokens = Vec::new();
+    for _ in 0..2 {
+        let sid = raw_session(&pool, u, &["qr"], false).await;
+        let pair = super::helpers::tokens::token_pair_for_session(
+            u,
+            sid,
+            &config.jwt_private_key,
+            config.jwt_access_expiry,
+            config.jwt_refresh_expiry,
+        )
+        .unwrap();
+        sqlx::query("UPDATE sessions SET token_hash = $2 WHERE id = $1")
+            .bind(sid)
+            .bind(vc_server::auth::hash_token(&pair.refresh_token))
+            .execute(&pool)
+            .await
+            .unwrap();
+        tokens.push((sid, pair));
+    }
+    // The first was confirmed by the phone removed before the upgrade.
+    raw_consumed_attempt(&pool, u, removed, tokens[0].0).await;
+    apply_from(&pool, ORIGIN_MIGRATION).await;
+
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (gone, healthy) = (&tokens[0].1, &tokens[1].1);
+    // Only status and error code in the messages: the bodies hold tokens.
+    let (s, b) = refresh(&app, &gone.refresh_token).await;
+    assert_eq!((s, b["error"].as_str()), (401, Some("INVALID_TOKEN")));
+    let (s, b) = me(&app, &gone.access_token).await;
+    assert_eq!((s, b["error"].as_str()), (401, Some("INVALID_TOKEN")));
+    // The control: a healthy session of the same account keeps working.
+    assert_eq!(me(&app, &healthy.access_token).await.0, 200);
+    let (s, b) = refresh(&app, &healthy.refresh_token).await;
+    assert_eq!(s, 200, "{}", b["error"]);
 }
 
 // ============================================================================
-// T2: recorded at creation
+// Recorded at sign-in
 // ============================================================================
 
 #[sqlx::test]
@@ -497,7 +623,7 @@ async fn totp_after_phone_claim_records_no_approver(pool: PgPool) {
 }
 
 // ============================================================================
-// T3: removing a key device ends the sessions it confirmed
+// Removing a key device ends the sessions it confirmed
 // ============================================================================
 
 /// The proof: a PC signed in by QR loses its socket, its refresh and its
@@ -755,7 +881,7 @@ async fn other_phones_sessions_survive(pool: PgPool) {
 /// stay.
 #[sqlx::test]
 async fn unknown_approver_ends_on_any_device_removal(pool: PgPool) {
-    let app = TestApp::with_pool(pool.clone()).await;
+    let app = TestApp::with_passkeys(pool.clone()).await;
     let (user, name) = password_user(&pool, PASSWORD).await;
     let a = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
     let b = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
@@ -769,6 +895,33 @@ async fn unknown_approver_ends_on_any_device_removal(pool: PgPool) {
     let legacy = raw_session(&pool, user, &["legacy"], false).await;
     let totp = enable_totp(&pool, &app.config, user, &name).await;
     let pw_totp = password_totp_pc(&app, user, &name, PASSWORD, &totp).await;
+
+    // Removing a passkey ends no session a key device confirmed.
+    let (_, pk_row) = super::helpers::passkeys::seed_passkey(
+        &app,
+        user,
+        vc_server::auth::passkeys::queries::PasskeyState::Active,
+    )
+    .await;
+    let pk = pk_row.id;
+    grant_step_up(
+        &pool,
+        b.session_id.unwrap(),
+        "passkey.remove",
+        &pk.to_string(),
+    )
+    .await;
+    let (s, body) = call(
+        &app,
+        Method::DELETE,
+        &format!("/auth/passkeys/{pk}"),
+        &b.access_token,
+        None,
+    )
+    .await;
+    assert!(s == 200 || s == 204, "{s} {body}");
+    assert!(live(&pool, unknown).await, "a passkey removal leaves it");
+    assert!(live(&pool, sid_of(&pc_b)).await);
 
     let (s, body) = remove_device(&app, &b, a.row_id).await;
     assert_eq!(s, 200, "{body}");
@@ -841,7 +994,7 @@ async fn collect_racing_revocation(pool: PgPool) {
 }
 
 // ============================================================================
-// T4: a factor change ends the sessions that used the factor
+// A factor change ends the sessions that used the factor
 // ============================================================================
 
 /// The proof: a password change from a passkey session ends the
@@ -954,6 +1107,87 @@ async fn totp_renew_ends_totp_sessions(pool: PgPool) {
     assert_eq!(added[0]["generation"], 2, "the old field stays");
 }
 
+/// An OIDC + TOTP sign-in through the TOTP step records its TOTP
+/// generation (and no password generation), and ends when TOTP is renewed.
+#[sqlx::test]
+async fn oidc_totp_sign_in_records_and_ends_with_its_totp(pool: PgPool) {
+    use vc_server::auth::login_attempts::core::{
+        create_tx, AttemptKind, CollectionBinding, NewAttempt,
+    };
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, name, totp, pk_sid, pk_token) = factor_account(&app).await;
+    sqlx::query("UPDATE users SET totp_generation = 3 WHERE id = $1")
+        .bind(user)
+        .execute(&pool)
+        .await
+        .unwrap();
+    // The attempt an OIDC callback opens for a native client.
+    let (verifier, challenge) = verifier_pair();
+    let id = {
+        let mut tx = pool.begin().await.unwrap();
+        let created = create_tx(
+            &mut tx,
+            &vc_server::auth::ctx::AuthCtx::from(&app.state),
+            NewAttempt {
+                kind: AttemptKind::Oidc,
+                user_id: Some(user),
+                first_factor: None,
+                client_class: vc_server::auth::client_class::ClientClass::Desktop,
+                client_label: "PC".into(),
+                client: vc_server::auth::session_issue::SessionClient::default(),
+                binding: CollectionBinding::S256(challenge),
+            },
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        created.attempt.attempt_id
+    };
+    forget_totp_step(&app, user).await;
+    let (s, auth, _) = pc_call(
+        &app,
+        &format!("/auth/login-attempts/{id}/totp"),
+        &Secret::Verifier(verifier),
+        json!({"code": totp.generate_current().unwrap()}),
+    )
+    .await;
+    assert_eq!(s, 200, "{auth}");
+    let sid = sid_of(&auth);
+    let methods: Vec<String> =
+        sqlx::query_scalar("SELECT auth_methods FROM sessions WHERE id = $1")
+            .bind(sid)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(methods, vec!["oidc", "totp"]);
+    assert_eq!(
+        origin(&pool, sid).await,
+        json!({"approved_by_type": null, "approved_by_id": null,
+               "password_generation": null, "totp_generation": 3})
+    );
+    // A password change leaves it; a TOTP renewal ends it.
+    change_password(&app, pk_sid, &pk_token, NEW_PASSWORD).await;
+    assert!(live(&pool, sid).await);
+    grant_step_up(&pool, pk_sid, "totp.set", "").await;
+    let (s, setup) = call(&app, Method::POST, "/auth/mfa/setup", &pk_token, None).await;
+    assert_eq!(s, 200, "{setup}");
+    let renewed = totp_of(setup["secret"].as_str().unwrap(), &name);
+    forget_totp_step(&app, user).await;
+    let (s, b) = call(
+        &app,
+        Method::POST,
+        "/auth/mfa/verify",
+        &pk_token,
+        Some(json!({"code": renewed.generate_current().unwrap()})),
+    )
+    .await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(
+        ended(&pool, sid).await,
+        (false, Some("factor_ended".into()))
+    );
+}
+
 /// OIDC + TOTP sessions end with their TOTP generation (the generation is
 /// recorded by the same sign-in path as password + TOTP).
 #[sqlx::test]
@@ -1062,11 +1296,36 @@ async fn compromise_by_phone_report_ends(pool: PgPool) {
     );
 }
 
-/// Owner rule part 2 from a chat-only session that used the password: the
-/// repudiated sign-in and every other session of that password generation
-/// end; the acting session, which just proved a fresh factor, stays.
+/// The sign-in event of a session.
+async fn sign_in_event(pool: &PgPool, user: Uuid, sid: Uuid) -> Uuid {
+    sqlx::query_scalar(
+        "SELECT id FROM security_events WHERE subject_id = $1 AND event_type = 'sign_in'
+            AND session_id = $2",
+    )
+    .bind(user)
+    .bind(sid)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+/// "That wasn't me" with owner rule part 2 from `token`.
+async fn part2_repudiate(app: &TestApp, token: &str, event: Uuid, factor: Value) -> (u16, Value) {
+    call(
+        app,
+        Method::POST,
+        &format!("/api/me/security-events/{event}/repudiate"),
+        token,
+        Some(json!({ "part2": { "factor": factor } })),
+    )
+    .await
+}
+
+/// Owner rule part 2 proved with the TOTP that the action itself marks as
+/// compromised: the acting session signed in with that TOTP and ends with
+/// the others.
 #[sqlx::test]
-async fn part2_repudiation_keeps_acting_session(pool: PgPool) {
+async fn part2_with_the_ended_totp_ends_the_acting_session(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (user, name) = password_user(&pool, PASSWORD).await;
     let totp = enable_totp(&pool, &app.config, user, &name).await;
@@ -1074,30 +1333,67 @@ async fn part2_repudiation_keeps_acting_session(pool: PgPool) {
     let acting = password_totp_pc(&app, user, &name, PASSWORD, &totp).await;
     let bystander = password_totp_pc(&app, user, &name, PASSWORD, &totp).await;
     tokio::time::sleep(Duration::from_millis(20)).await;
-    let intruder = password_totp_pc(&app, user, &name, PASSWORD, &totp).await;
-    let intruder_sid = sid_of(&intruder);
-    let event: Uuid = sqlx::query_scalar(
-        "SELECT id FROM security_events WHERE subject_id = $1 AND event_type = 'sign_in'
-            AND session_id = $2",
-    )
-    .bind(user)
-    .bind(intruder_sid)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let reported = password_totp_pc(&app, user, &name, PASSWORD, &totp).await;
+    let event = sign_in_event(&pool, user, sid_of(&reported)).await;
     forget_totp_step(&app, user).await;
-    let (s, b) = call(
+    let (s, b) = part2_repudiate(
         &app,
-        Method::POST,
-        &format!("/api/me/security-events/{event}/repudiate"),
         acting["access_token"].as_str().unwrap(),
-        Some(json!({"part2": {"factor": {"type": "totp",
-                                          "code": totp.generate_current().unwrap()}}})),
+        event,
+        json!({"type": "totp", "code": totp.generate_current().unwrap()}),
+    )
+    .await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(b["compromised"], json!(["password", "totp"]));
+    assert_eq!(
+        ended(&pool, sid_of(&reported)).await,
+        (false, Some("repudiated".into()))
+    );
+    assert_eq!(
+        ended(&pool, sid_of(&bystander)).await,
+        (false, Some("factor_ended".into()))
+    );
+    assert_eq!(
+        ended(&pool, sid_of(&acting)).await,
+        (false, Some("factor_ended".into())),
+        "the TOTP it proved is the one being ended"
+    );
+}
+
+/// Part 2 with a recovery code: the acting session stays, every other
+/// session of the ended generations ends.
+#[sqlx::test]
+async fn part2_with_a_recovery_code_keeps_the_acting_session(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, name) = password_user(&pool, PASSWORD).await;
+    let totp = enable_totp(&pool, &app.config, user, &name).await;
+    let codes = {
+        let mut tx = pool.begin().await.unwrap();
+        let codes = vc_server::auth::recovery_codes::replace_tx(
+            &mut tx,
+            &vc_server::auth::ctx::AuthCtx::from(&app.state),
+            user,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        codes
+    };
+    let acting = password_totp_pc(&app, user, &name, PASSWORD, &totp).await;
+    let bystander = password_totp_pc(&app, user, &name, PASSWORD, &totp).await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let reported = password_totp_pc(&app, user, &name, PASSWORD, &totp).await;
+    let event = sign_in_event(&pool, user, sid_of(&reported)).await;
+    let (s, b) = part2_repudiate(
+        &app,
+        acting["access_token"].as_str().unwrap(),
+        event,
+        json!({"type": "recovery_code", "code": codes[0]}),
     )
     .await;
     assert_eq!(s, 200, "{b}");
     assert_eq!(
-        ended(&pool, intruder_sid).await,
+        ended(&pool, sid_of(&reported)).await,
         (false, Some("repudiated".into()))
     );
     assert_eq!(
@@ -1106,12 +1402,55 @@ async fn part2_repudiation_keeps_acting_session(pool: PgPool) {
     );
     assert!(
         live(&pool, sid_of(&acting)).await,
-        "the acting session stays"
+        "a recovery code is not ended by this action"
+    );
+}
+
+/// Part 2 with a TOTP code while only the password is ended: the acting
+/// session stays, the other password sessions end.
+#[sqlx::test]
+async fn part2_with_a_totp_that_stays_keeps_the_acting_session(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, name) = password_user(&pool, PASSWORD).await;
+    let totp = enable_totp(&pool, &app.config, user, &name).await;
+    let acting = password_totp_pc(&app, user, &name, PASSWORD, &totp).await;
+    let bystander = password_totp_pc(&app, user, &name, PASSWORD, &totp).await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    // A sign-in that used only the password (with a phone confirmation).
+    let event = {
+        let mut conn = pool.acquire().await.unwrap();
+        let mut ev = NewSecurityEvent::new(
+            user,
+            EventType::SignIn,
+            Actor::User(user),
+            json!({"auth_methods": ["password", "phone_confirm"],
+                   "factors": [{"factor": "password", "generation": 1}]}),
+        );
+        ev.session_id = Some(Uuid::now_v7());
+        record(&mut conn, ev).await.unwrap()
+    };
+    forget_totp_step(&app, user).await;
+    let (s, b) = part2_repudiate(
+        &app,
+        acting["access_token"].as_str().unwrap(),
+        event,
+        json!({"type": "totp", "code": totp.generate_current().unwrap()}),
+    )
+    .await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(b["compromised"], json!(["password"]));
+    assert_eq!(
+        ended(&pool, sid_of(&bystander)).await,
+        (false, Some("factor_ended".into()))
+    );
+    assert!(
+        live(&pool, sid_of(&acting)).await,
+        "the TOTP it proved is not ended"
     );
 }
 
 // ============================================================================
-// T5: released clients still read the old fields
+// Released clients still read the old fields
 // ============================================================================
 
 #[sqlx::test]
@@ -1152,4 +1491,71 @@ async fn security_event_list_keeps_its_fields(pool: PgPool) {
     }
     assert_eq!(ev["details"]["generation"], 2);
     assert_eq!(ev["details"]["ended_sessions"], 1);
+}
+
+// ============================================================================
+// Ending every session takes the account lock first
+// ============================================================================
+
+/// `kaiku-admin sessions end --all` and the session end of an account
+/// deletion take the account lock before they end sessions, like every
+/// other path that ends many sessions of one account (lock order: accounts
+/// before sessions). Both wait for a holder of the lock and then complete.
+#[sqlx::test]
+async fn ending_every_session_waits_for_the_account_lock(pool: PgPool) {
+    use vc_server::approvals::transition::lock_accounts;
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, name) = create_test_user(&pool).await;
+    let (first, _) = create_session_with_token(&pool, &app.config, user).await;
+
+    // The command line.
+    let mut holder = pool.begin().await.unwrap();
+    lock_accounts(&mut holder, &[user]).await.unwrap();
+    let args: Vec<String> = ["sessions", "end", name.as_str(), "--all"]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    let cmd = vc_server::cli::Command::parse(&args).unwrap();
+    let ctx = vc_server::cli::CliCtx {
+        db: app.pool.clone(),
+        redis: app.state.redis.clone(),
+        config: (*app.config).clone(),
+    };
+    let mut out = CliOut::default();
+    let (ran, ()) = tokio::join!(vc_server::cli::run(&ctx, cmd, &mut out), async {
+        super::helpers::wait_for_lock_waiters(&pool, 1).await;
+        holder.commit().await.unwrap();
+    });
+    ran.unwrap();
+    assert_eq!(ended(&pool, first).await, (false, Some("cli".into())));
+
+    // An account deletion (a retry of one already scheduled ends again).
+    let (second, token) = create_session_with_token(&pool, &app.config, user).await;
+    sqlx::query(
+        "UPDATE users SET deletion_scheduled_at = NOW() + INTERVAL '30 days' WHERE id = $1",
+    )
+    .bind(user)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let mut holder = pool.begin().await.unwrap();
+    lock_accounts(&mut holder, &[user]).await.unwrap();
+    let ((s, b), ()) = tokio::join!(
+        call(
+            &app,
+            Method::POST,
+            "/api/me/delete-account",
+            &token,
+            Some(json!({"confirm": "DELETE"})),
+        ),
+        async {
+            super::helpers::wait_for_lock_waiters(&pool, 1).await;
+            holder.commit().await.unwrap();
+        }
+    );
+    assert_eq!(s, 409, "{b}");
+    assert_eq!(
+        ended(&pool, second).await,
+        (false, Some("account_deleted".into()))
+    );
 }

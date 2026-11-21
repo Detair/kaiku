@@ -10,7 +10,9 @@
 --   sign-in used (NULL = that factor was not used). The session ends when that
 --   generation ends (replaced, removed or marked compromised).
 --
--- Only live sessions are filled; ended rows stay as they are.
+-- Only live sessions are filled; ended rows stay as they are. Live sessions
+-- whose confirming device or factor generation had already ended before the
+-- upgrade end with it (see the end of this file).
 
 ALTER TABLE sessions
     ADD COLUMN approved_by_type TEXT
@@ -41,7 +43,8 @@ UPDATE sessions
    AND approved_by_type IS NULL
    AND auth_methods && ARRAY['qr', 'phone_confirm']::text[];
 
--- The generations each sign-in recorded in its `sign_in` event.
+-- The generations each sign-in recorded in its `sign_in` event (a value that
+-- is not a whole number is skipped; the next step then fills it).
 UPDATE sessions s
    SET password_generation = (f->>'generation')::bigint
   FROM security_events e, jsonb_array_elements(
@@ -50,6 +53,8 @@ UPDATE sessions s
    AND e.subject_id = s.user_id
    AND e.session_id = s.id
    AND f->>'factor' = 'password'
+   AND jsonb_typeof(f->'generation') = 'number'
+   AND f->>'generation' ~ '^[0-9]{1,18}$'
    AND s.ended_at IS NULL;
 
 UPDATE sessions s
@@ -60,6 +65,8 @@ UPDATE sessions s
    AND e.subject_id = s.user_id
    AND e.session_id = s.id
    AND f->>'factor' = 'totp'
+   AND jsonb_typeof(f->'generation') = 'number'
+   AND f->>'generation' ~ '^[0-9]{1,18}$'
    AND s.ended_at IS NULL;
 
 -- A session that used a factor without a recorded generation (none
@@ -82,6 +89,27 @@ UPDATE sessions s
    AND s.totp_generation IS NULL
    AND ('totp' = ANY(s.auth_methods)
         OR ('legacy' = ANY(s.auth_methods) AND u.mfa_secret IS NOT NULL));
+
+-- What was already over before the upgrade ends now, with the reason the
+-- rules give from now on: a session confirmed by a key device that is no
+-- longer active, and a session that signed in with a password or TOTP
+-- generation the account has left behind (replaced, removed or marked
+-- compromised). Every other session stays signed in.
+UPDATE sessions s
+   SET ended_at = NOW(), end_reason = 'authenticator_revoked'
+ WHERE s.ended_at IS NULL
+   AND s.approved_by_id IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM approval_devices d
+                    WHERE d.id = s.approved_by_id AND d.user_id = s.user_id
+                      AND d.state = 'active');
+
+UPDATE sessions s
+   SET ended_at = NOW(), end_reason = 'factor_ended'
+  FROM users u
+ WHERE u.id = s.user_id
+   AND s.ended_at IS NULL
+   AND (s.password_generation < u.password_generation
+        OR s.totp_generation < u.totp_generation);
 
 CREATE INDEX idx_sessions_approved_by ON sessions (user_id, approved_by_id)
     WHERE ended_at IS NULL AND approved_by_type IS NOT NULL;

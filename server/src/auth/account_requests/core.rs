@@ -625,10 +625,13 @@ pub async fn cancel_locked_tx(
     // `self`: the generations it used are compromised (a factor replaced
     // since is untouched); `admin`: nothing more.
     if row.kind == "self" {
-        for f in row.factor_refs() {
-            if f.factor == Factor::RecoveryCodes {
-                continue;
-            }
+        let ending: Vec<FactorRef> = row
+            .factor_refs()
+            .into_iter()
+            .filter(|f| f.factor != Factor::RecoveryCodes)
+            .collect();
+        let keep = by.keep_session(&ending);
+        for f in ending {
             factors::mark_compromised_except_tx(
                 conn,
                 ctx,
@@ -636,7 +639,7 @@ pub async fn cancel_locked_tx(
                 f,
                 StateCause::Cancel,
                 actor_of(by, actor_id, row.user_id),
-                by.keep_session(),
+                keep,
             )
             .await?;
         }

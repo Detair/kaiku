@@ -46,8 +46,11 @@ pub enum OwnerAuthority {
     Part2 {
         factor: &'static str,
         /// The acting session: it has just proved a fresh factor, so it
-        /// survives the factor generations this action ends.
+        /// survives the factor generations this action ends — unless that
+        /// factor is itself one of them ([`OwnerAuthority::keep_session`]).
         session_id: Option<Uuid>,
+        /// The TOTP generation proved (`None` for a recovery code).
+        totp_generation: Option<i64>,
     },
     Contact {
         grant: ConsumedGrant,
@@ -61,12 +64,29 @@ pub enum OwnerAuthority {
 }
 
 impl OwnerAuthority {
-    /// The session that survives the factor generations the action ends
-    /// (part 2 only; part 1 acts from a full session, which used no factor).
+    /// The session that survives the factor generations `ending` (part 2
+    /// only; part 1 acts from a full session, which used no factor). It is
+    /// kept when it proved a recovery code, or a TOTP generation that is not
+    /// among `ending`; a proof with the very TOTP being ended keeps nothing.
     #[must_use]
-    pub const fn keep_session(&self) -> Option<Uuid> {
+    pub fn keep_session(&self, ending: &[super::factors::FactorRef]) -> Option<Uuid> {
         match self {
-            Self::Part2 { session_id, .. } => *session_id,
+            Self::Part2 {
+                session_id,
+                totp_generation,
+                ..
+            } => {
+                let proof_ends = totp_generation.is_some_and(|g| {
+                    ending
+                        .iter()
+                        .any(|f| f.factor == super::factors::Factor::Totp && f.generation == g)
+                });
+                if proof_ends {
+                    None
+                } else {
+                    *session_id
+                }
+            }
             _ => None,
         }
     }
@@ -160,6 +180,7 @@ pub async fn authorize(
                 Ok(OwnerAuthority::Part2 {
                     factor: "totp",
                     session_id: auth.session_id,
+                    totp_generation: Some(totp_generation),
                 })
             }
             Part2Factor::RecoveryCode(code) => {
@@ -167,6 +188,7 @@ pub async fn authorize(
                     Ok(OwnerAuthority::Part2 {
                         factor: "recovery_code",
                         session_id: auth.session_id,
+                        totp_generation: None,
                     })
                 } else {
                     Err(AuthError::InvalidCredentials)
