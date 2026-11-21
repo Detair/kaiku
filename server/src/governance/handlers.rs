@@ -205,6 +205,10 @@ async fn end_all_for_deletion(
         GovernanceError::ServiceUnavailable
     };
     let mut tx = state.db.begin().await.map_err(|e| unavailable(&e))?;
+    // The account lock first (B.7 lock order: accounts before sessions).
+    crate::approvals::transition::lock_accounts(&mut tx, &[user_id])
+        .await
+        .map_err(|e| unavailable(&e))?;
     crate::auth::revocation::end_all_sessions_tx(
         &mut tx,
         &crate::auth::ctx::AuthCtx::from(state),
