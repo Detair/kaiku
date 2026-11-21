@@ -198,8 +198,8 @@ flowchart LR
 
 | Tool | URL | Purpose |
 |------|-----|---------|
-| Grafana | `http://<host>:3000` | Dashboards, Explore (Tempo/Loki/Prometheus) |
-| Prometheus | `http://<host>:9090` | Raw metrics, alert state |
+| Grafana | `http://localhost:3000` on the host (VPN or SSH tunnel) | Dashboards, Explore (Tempo/Loki/Prometheus) |
+| Prometheus | `http://localhost:9090` on the host (VPN or SSH tunnel) | Raw metrics, alert state |
 | Sentry | `https://sentry.io/<org>/kaiku/` | Error tracking, release health |
 | OTel Metrics | `http://localhost:8889/metrics` | Collector self-metrics (local only) |
 

@@ -146,7 +146,7 @@ docker run -d --name kaiku-web \
   --cap-drop ALL --security-opt no-new-privileges \
   -e KAIKU_MEDIA_ORIGINS="https://files.example.com" \
   -p 127.0.0.1:8081:8080 \
-  ghcr.io/detair/kaiku-web:1.0.0
+  ghcr.io/detair/kaiku-web:<version>
 ```
 
 ### Configuration

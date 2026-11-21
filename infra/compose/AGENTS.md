@@ -4,19 +4,23 @@
 
 ## Purpose
 
-Docker Compose configurations for running development and testing infrastructure services. Provides containerized PostgreSQL, Redis, RustFS (S3), and MailHog for local development.
+The production / self-hosting stack: server, web client, Caddy, PostgreSQL, Valkey, coturn, RustFS and an optional monitoring profile. The images are `ghcr.io/detair/kaiku-server` and `ghcr.io/detair/kaiku-web`, chosen with the required `KAIKU_VERSION`. The development services (PostgreSQL, Valkey, RustFS, MailHog) are defined in `docker-compose.dev.yml` in the repository root.
 
 ## Key Files
 
 | File | Purpose |
 |------|---------|
-| `docker-compose.yml` | Complete development environment definition |
+| `docker-compose.yml` | Production stack (see "Production stack" below) |
+| `Caddyfile` | Reverse proxy routing: server paths to `server`, the rest to `web` |
+| `.env.beta` | Template for `.env` (read by `scripts/check_compose_hardening.py`) |
 
 ## For AI Agents
 
-### Services
+### Development services (outdated)
 
-The compose file defines 4 services:
+> The sections from here to "Production stack" and below describe an older development stack and no longer match `docker-compose.dev.yml` (which uses `bitnami/postgresql`, `bitnami/valkey`, RustFS and MailHog, with `canis-dev-*` container names). Read that file for the current definition.
+
+The old description listed 4 services:
 
 | Service | Image | Purpose | Ports |
 |---------|-------|---------|-------|

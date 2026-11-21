@@ -33,7 +33,7 @@ otel-collector:4317 (gRPC) / :4318 (HTTP)
 |--------|--------|-----------|
 | Traces | vc-server (`tracing` + `opentelemetry` crates) | 30 days (Tempo) |
 | RED metrics | spanmetrics connector (derived from traces) | 90 days (Prometheus TSDB) |
-| Application metrics | vc-server Prometheus endpoint `:9090` | 90 days |
+| Application metrics | none yet: the server has no native Prometheus endpoint (the `vc-server` scrape job in `infra/monitoring/prometheus.yaml` is a placeholder and stays down) | — |
 | Structured logs | vc-server (`tracing-subscriber` OTLP layer) | 14 days (Loki) |
 | Crash / exception | Sentry SDK (client + server) | 90 days |
 
@@ -43,12 +43,15 @@ otel-collector:4317 (gRPC) / :4318 (HTTP)
 
 | Dashboard | Location | Purpose |
 |-----------|----------|---------|
-| **RED Metrics** | Grafana › Kaiku › API RED | Rate, Error, Duration for all HTTP routes |
-| **Voice Latency** | Grafana › Kaiku › Voice | Join latency P50/P95/P99, active sessions |
-| **Client Crash Rate** | Grafana › Kaiku › Client | Tauri crash rate, Sentry DSN breakdown |
-| **Log Volume** | Grafana › Loki › Log Explorer | Log volume by level/service, error spikes |
+| **Kaiku Overview** | Grafana › Kaiku › Kaiku Overview (provisioned by the compose stack) | Request rate, error rate and P95 latency (overall and by route), server log stream |
+| **Log Explorer** | Grafana › Explore › Loki | Ad-hoc log queries, e.g. `{service="vc-server"}` |
 
-> Grafana URL: `http://<host>:3000` — default org, folder **Kaiku**.
+There is no provisioned dashboard for voice join latency or client crashes; use
+Explore (Tempo, Loki) for those.
+
+> Grafana listens on `127.0.0.1:3000` of the host only (compose binds all
+> monitoring ports to localhost): open it through a VPN or an SSH tunnel.
+> Default org, folder **Kaiku**.
 
 ---
 
@@ -126,7 +129,7 @@ otel-collector:4317 (gRPC) / :4318 (HTTP)
 5. Confirm vc-server is still exporting OTLP: check server logs for `OpenTelemetry exporter error`.
 6. Restore collector first; then verify spanmetrics appear in Prometheus within 15s (flush interval).
 
-**Escalation:** If collector cannot start within 15 minutes, fall back to application-level Prometheus metrics on `:9090` and file an incident.
+**Escalation:** If collector cannot start within 15 minutes, fall back to the server logs (`docker compose logs server`) and file an incident; the server has no native Prometheus endpoint to fall back on.
 
 ---
 

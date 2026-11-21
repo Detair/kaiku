@@ -33,6 +33,9 @@ ask them. The admin side is described in the [admin guide](admin-guide.md).
   something was not you, tap **That wasn't me**.
 - If you lose your phone, tell your admin. If someone may know its screen lock, ask them to
   **Remove device now**.
+- The desktop app updates itself only between final releases. While your server runs a release
+  candidate (a version with "rc" in its name), install the newer version by hand when your admin
+  tells you to; the app will not offer it.
 
 ## What a key phone is
 

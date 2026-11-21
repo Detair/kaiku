@@ -34,11 +34,13 @@ Unlike platforms like Discord or TeamSpeak, a self-hosted Kaiku node grants you 
   [Incoming webhooks](features/incoming-webhooks.md).
 
 ## <span style="color: #88C0D0;">Infrastructure Overview</span>
-A standard Kaiku deployment consists of three primary services:
+A standard Kaiku deployment (the Docker Compose stack in `infra/compose/`) consists of:
 
-1. **The Kaiku Client (Desktop/Web)**: The fast, Tauri-based application that your users actually interact with.
-2. **The Signaling Server (Node)**: A lightweight WebSocket server responsible for matching peers and initiating WebRTC handshakes. 
-3. **TURN/STUN Relays**: Necessary for bypassing strict NATs and firewalls so your users can always connect directly to each other.
+1. **The Kaiku Server** (`ghcr.io/detair/kaiku-server`): API, WebSocket and the voice media server, backed by PostgreSQL and Valkey.
+2. **The Web Client** (`ghcr.io/detair/kaiku-web`): the browser application, served as static files. The desktop and Android apps connect to the same server.
+3. **Caddy**: the reverse proxy that terminates TLS and routes server paths to the server and everything else to the web client.
+4. **TURN/STUN Relay** (coturn): Necessary for bypassing strict NATs and firewalls so your users can always connect directly to each other.
+5. **Object storage** (RustFS, optional): S3-compatible storage for uploads, avatars and emoji.
 
 ### Recommended Specs (Initial Estimate)
 Because the Heavy Lifting (Voice Encoding/Decoding) is handled client-side via WebRTC, the server footprint is incredibly small.
@@ -48,12 +50,12 @@ Because the Heavy Lifting (Voice Encoding/Decoding) is handled client-side via W
 
 ---
 
-## <span style="color: #88C0D0;">Deployment Scenarios (Coming Soon)</span>
+## <span style="color: #88C0D0;">Deployment Scenarios</span>
 
 ### 1. The "Lone Wolf" (Docker Compose)
-The fastest way to get a node online. We will provide a pre-configured `docker-compose.yml` that spins up the Signaling Server, a coturn instance (for relaying), and a Redis cache in a single command. 
+The fastest way to get a node online: `infra/compose/docker-compose.yml` starts the server, the web client, Caddy, PostgreSQL, Valkey, coturn and RustFS with one command. Follow the [Deployment guide](ops/deployment.md). You choose the release with `KAIKU_VERSION`; release candidates are published only under their version, and the desktop app does not update itself to a release candidate (install the newer version by hand).
 
-### 2. The "Esports Org" (Kubernetes)
+### 2. The "Esports Org" (Kubernetes, coming soon)
 For massive communities. Detailed Helm charts and documentation for deploying scalable replicas of the Signaling server behind a load balancer, with dedicated external TURN clusters.
 
 ## <span style="color: #88C0D0;">Voice NAT Traversal & Sovereignty (STUN/TURN)</span>
@@ -124,8 +126,12 @@ networks that block all outgoing UDP cannot use voice through this TURN server.
 
 When you update an existing compose installation:
 
-1. **Add the required variables** to your `.env`: `VALKEY_PASSWORD` and
-   `CORS_ALLOWED_ORIGINS`. Compose refuses to start without them.
+1. **Add the required variables** to your `.env`: `KAIKU_VERSION` (the release to
+   run, e.g. `1.0.0-rc.5`; the compose file no longer falls back to a
+   `latest` image, which does not exist while only release candidates are
+   published), `VALKEY_PASSWORD` and `CORS_ALLOWED_ORIGINS`. Compose refuses to
+   start without them. The server image is now `ghcr.io/detair/kaiku-server`
+   (the old name `ghcr.io/detair/kaiku/server` is not published).
 2. **Use a hex Valkey password.** If your current password is base64 and
    contains `/`, `+` or `=`, generate a new one with `openssl rand -hex 24`,
    put it in `.env`, then recreate Valkey so it starts with the new password

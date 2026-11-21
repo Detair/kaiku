@@ -4,8 +4,10 @@
 > restore each piece, the periodic restore drill, and the one-time VPS
 > verification checklist.
 >
-> Created 2026-06-12 (Goal 4, beta ops hardening). Deploys and all commands
-> on the VPS are run by the operator — never automated.
+> Created 2026-06-12. Deploys and all commands on the host are run by the
+> operator — never automated. Container names (`canis-*`), the database name
+> `voicechat` and the volume name `compose_rustfs_data` are those of the
+> shipped `infra/compose/docker-compose.yml` started from `infra/compose/`.
 
 ## What is backed up
 
@@ -38,10 +40,10 @@ The repo cannot see the VPS; verify these once and tick them off:
 - [ ] RustFS volume name matches the script default:
       `docker volume ls | grep rustfs` — if it isn't `compose_rustfs_data`,
       set `RUSTFS_VOLUME=<actual>` in the cron line
-- [ ] Compose drift: `docker inspect canis-rustfs --format '{{.Config.Image}} {{.Mounts}}'`
-      matches the `rustfs` service added to `infra/compose/docker-compose.yml`
-      on 2026-06-12 (that service was reconstructed from the dev template
-      because the live container predated its compose definition)
+- [ ] The server really stores uploads in the bundled RustFS (the backup only
+      covers that): `S3_ENDPOINT=http://rustfs:9000` in the compose `.env`. If
+      you use another S3 storage, back that up separately; the RustFS part of
+      the script then archives an empty volume
 
 ## Restore: PostgreSQL
 
@@ -50,8 +52,7 @@ The repo cannot see the VPS; verify these once and tick them off:
 docker stop canis-server
 
 # 2. Recreate the database from the dump
-gunzip -c /var/lib/kaiku/backups/kaiku-<ts>.sql.gz | \
-  docker exec -i canis-postgres sh -c 'PGPASSWORD="$POSTGRESQL_PASSWORD" psql -U "$POSTGRESQL_USERNAME" -d postgres \
+docker exec canis-postgres sh -c 'PGPASSWORD="$POSTGRESQL_PASSWORD" psql -U "$POSTGRESQL_USERNAME" -d postgres \
     -c "DROP DATABASE IF EXISTS voicechat_restore;" \
     -c "CREATE DATABASE voicechat_restore OWNER voicechat;"'
 gunzip -c /var/lib/kaiku/backups/kaiku-<ts>.sql.gz | \

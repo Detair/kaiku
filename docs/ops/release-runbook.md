@@ -6,14 +6,15 @@
 
 A release builds the desktop clients (Linux AppImage/deb, Windows NSIS
 installer, macOS Intel and Apple Silicon DMG), the signed Android APK, the
-server image `ghcr.io/detair/kaiku-server:<version>` and the updater manifest
+server image `ghcr.io/detair/kaiku-server:<version>`, the web client image
+`ghcr.io/detair/kaiku-web:<version>` and the updater manifest
 `latest.json`, then creates a **draft** GitHub release. Nothing is visible to
 users until you publish the draft.
 
 Job order on a publish run: `prepare-release`, then the builds in parallel
-(`build-tauri` x4, `build-docker`, `build-android`), then `publish-release`
+(`build-tauri` x4, `build-docker`, `build-docker-web`, `build-android`), then `publish-release`
 (collects assets, writes and verifies `latest.json`, creates the draft), and
-only then `push-image` pushes the smoke-tested server image (and moves
+only then `push-image` pushes the smoke-tested server and web images (and moves
 `latest` for a final release). A failed build therefore never leaves a pushed
 image behind. Runs for the same tag are queued, never run in parallel or
 cancelled.
@@ -150,8 +151,9 @@ see no secrets at all.
 
 ### M4. GHCR package visibility
 
-The first publish creates the package `ghcr.io/detair/kaiku-server` as
-private. After that run: GitHub, your profile or org, Packages, `kaiku-server`,
+The first publish creates the packages `ghcr.io/detair/kaiku-server` and
+`ghcr.io/detair/kaiku-web` as private. After that run, for each of them:
+GitHub, your profile or org, Packages, `kaiku-server` (and `kaiku-web`),
 Package settings, Change visibility, **Public** (so `docker pull` works for
 self-hosters without a login). Link it to the repository if GitHub does not
 do so automatically.
@@ -208,8 +210,8 @@ git tag -d v0.9.0-rc.1
 git push --delete origin rehearsal/0.9.0-rc.1
 ```
 
-Delete the image version in the GitHub UI (Packages, `kaiku-server`, Package
-versions, `0.9.0-rc.1`, Delete) or:
+Delete the image versions in the GitHub UI (Packages, `kaiku-server` and
+`kaiku-web`, Package versions, `0.9.0-rc.1`, Delete) or, for each package:
 
 ```sh
 gh api --method DELETE /user/packages/container/kaiku-server/versions/<version-id>
@@ -286,7 +288,8 @@ sha256sum -c checksums.txt
       run's job summary and with your key backup record. The signer must be
       the same on every release or sideload upgrades break.
 - [ ] The image is pullable:
-      `docker pull ghcr.io/detair/kaiku-server:1.0.0-rc.1`, and
+      `docker pull ghcr.io/detair/kaiku-server:1.0.0-rc.1` (and the same for
+      `kaiku-web`), and
       `docker image inspect ... --format '{{ index .Config.Labels "org.opencontainers.image.version" }}'`
       prints `1.0.0-rc.1`. `latest` must **not** have moved.
 - [ ] The APK is the right one (version and signer, above). The in-app
@@ -368,7 +371,8 @@ offered, not the full download. Do the full test after publishing.
   releases reach `push-image` at nearly the same time, so each reads the other
   as absent or older; the semver check in `push-image` prevents any other
   regression). Set it by hand to the newest final version:
-  `docker buildx imagetools create -t ghcr.io/detair/kaiku-server:latest ghcr.io/detair/kaiku-server:<newest>`.
+  `docker buildx imagetools create -t ghcr.io/detair/kaiku-server:latest ghcr.io/detair/kaiku-server:<newest>`
+  (and the same for `kaiku-web`).
 - **Half-published run** (something public but the run failed afterwards,
   e.g. a manual image push): delete the draft and the GHCR version as in
   section 4, then use the next version.

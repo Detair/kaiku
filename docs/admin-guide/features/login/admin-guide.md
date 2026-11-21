@@ -85,6 +85,10 @@ flowchart LR
 v1.0.0-rc.3 contains the whole new login. The database migrations run at the first start of the
 new server. Read this section **before** you deploy.
 
+Release candidates are not offered to the desktop app's updater (it follows the latest final
+release). Tell your users to install each new release candidate by hand (desktop and Android);
+the web client updates with the server.
+
 ### What the migrations change
 
 | What | Effect |
