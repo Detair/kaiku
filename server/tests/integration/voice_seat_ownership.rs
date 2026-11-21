@@ -382,10 +382,13 @@ async fn expiry_ends_only_the_start_it_was_armed_for(pool: PgPool) {
 }
 
 /// Removing a room waits for no store: with a store that never answers,
-/// the last participant's leave does not hold up a join in another channel.
+/// the last participant's leave removes the room without holding the room
+/// list for the store; looking up rooms stays quick throughout, and a join
+/// in another channel is not held up.
 #[sqlx::test]
 async fn removing_a_room_waits_for_no_store(pool: PgPool) {
     use fred::interfaces::ClientLike;
+    const QUICK: Duration = Duration::from_millis(500);
     let r = room(pool).await;
     // A store that accepts connections and never answers.
     let silent = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -404,7 +407,8 @@ async fn removing_a_room_waits_for_no_store(pool: PgPool) {
     let _connecting = store.connect();
     let limiter = vc_server::voice::ScreenShareLimiter::new(store);
 
-    let room = r.app.state.sfu.get_room(r.voice).await.expect("room");
+    let sfu = r.app.state.sfu.clone();
+    let room = sfu.get_room(r.voice).await.expect("room");
     let viewer = room
         .peers
         .read()
@@ -413,29 +417,39 @@ async fn removing_a_room_waits_for_no_store(pool: PgPool) {
         .next()
         .cloned()
         .expect("seat");
-    let sfu = r.app.state.sfu.clone();
-    let pool = r.app.pool.clone();
-    let (user, voice) = (viewer.user_id, r.voice);
-    let leaving = tokio::spawn(async move {
-        vc_server::voice::leave::leave_voice_internal(
-            &sfu,
-            &pool,
-            user,
-            voice,
-            Some(&limiter),
-            Some(viewer.session_id),
-        )
+    drop(room);
+    // The leave stops right before it removes the room.
+    let pause = pause_voice_step(viewer.user_id, "room_cleanup");
+    let leaving = {
+        let (sfu, pool, voice) = (sfu.clone(), r.app.pool.clone(), r.voice);
+        tokio::spawn(async move {
+            vc_server::voice::leave::leave_voice_internal(
+                &sfu,
+                &pool,
+                viewer.user_id,
+                voice,
+                Some(&limiter),
+                Some(viewer.session_id),
+            )
+            .await
+        })
+    };
+    Room::reached(&pause).await;
+    pause.release.notify_one();
+
+    // Until the room is gone, every look-up of the room list is quick.
+    loop {
+        let listed = tokio::time::timeout(QUICK, sfu.get_room(r.voice))
+            .await
+            .expect("the room list was held while removing the room");
+        if listed.is_none() {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    tokio::time::timeout(QUICK, sfu.get_or_create_room(Uuid::new_v4()))
         .await
-    });
-    // Give the leave time to reach the room's removal.
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    let started = tokio::time::Instant::now();
-    let _other = r.app.state.sfu.get_or_create_room(Uuid::new_v4()).await;
-    assert!(
-        started.elapsed() < Duration::from_millis(150),
-        "a join elsewhere waited {:?} for the store",
-        started.elapsed()
-    );
+        .expect("a join elsewhere waited for the store");
     leaving.await.expect("join").expect("leave");
     held.abort();
 }

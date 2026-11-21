@@ -157,6 +157,7 @@ pub async fn leave_voice_internal(
         }
     }
 
+    crate::ws::test_hooks::voice_step(user_id, "room_cleanup").await;
     sfu.cleanup_room_if_empty(channel_id).await;
 
     info!(
