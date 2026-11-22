@@ -1112,6 +1112,69 @@ async fn session_ended_or_device_revoked_stops_every_transition(pool: PgPool) {
     );
 }
 
+/// State, reason, challenge and scanning key row of attempt `id`.
+async fn attempt_row(
+    pool: &PgPool,
+    id: &str,
+) -> (String, Option<String>, Option<Uuid>, Option<Uuid>) {
+    sqlx::query_as(
+        "SELECT state, reason, challenge_id, device_id FROM pc_setup_attempts WHERE id = $1::uuid",
+    )
+    .bind(id)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+/// The phone's install set up again (a new key on the same install, the old
+/// key revoked) does not reach the challenge its old key got: 404 before
+/// anything is locked, settled or revealed, and the attempt stays as it was.
+#[sqlx::test]
+async fn a_new_key_on_the_same_install_does_not_answer_the_old_challenge(pool: PgPool) {
+    let p = pc(&pool).await;
+    let (id, c, bytes) = claimed(&p).await;
+    sqlx::query(
+        "UPDATE approval_devices SET state = 'revoked', revoked_at = NOW(), revoke_reason = 'owner'
+          WHERE id = $1",
+    )
+    .bind(p.dev.row_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let mut new = KeyDeviceFixture::insert(&pool, &p.app.config, p.user, "active").await;
+    sqlx::query("UPDATE approval_devices SET device_id = $2 WHERE id = $1")
+        .bind(new.row_id)
+        .bind(p.dev.device_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    new.device_id = p.dev.device_id;
+    let before = attempt_row(&pool, &id).await;
+    let cid = c["challenge_id"].as_str().unwrap();
+    let (s, b) = call(
+        &p.app,
+        Method::POST,
+        &format!("/api/pc-setups/{cid}/refuse"),
+        &new.access_token,
+        None,
+    )
+    .await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (404, Some("APPROVAL_NOT_FOUND")),
+        "{b}"
+    );
+    let (s, b) = answer(&p.app, &new, &c, &bytes, Decision::Approve).await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (404, Some("APPROVAL_NOT_FOUND")),
+        "{b}"
+    );
+    let after = attempt_row(&pool, &id).await;
+    assert_eq!(after, before);
+    assert_eq!(after.0, "claimed");
+}
+
 #[sqlx::test]
 async fn context_comes_from_the_session_row_not_the_request(pool: PgPool) {
     let p = pc(&pool).await;

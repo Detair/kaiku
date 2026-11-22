@@ -1211,7 +1211,8 @@ pub struct PhoneLocked {
 ///
 /// The attempt first ([`lock_attempt`]: account → requesting session →
 /// attempt), then the key device and its session, then the challenge (bound
-/// to this device's account and install id). Another account's or kind's challenge → 404; a
+/// to this device's account and install id). Another account's or kind's challenge, or a key
+/// other than the one the attempt records as its scanner → 404; a
 /// stale attempt → 403 `APPROVAL_NOT_ALLOWED` (`may_approve` off) or 409; a
 /// challenge past due → 410 (its mark is kept by the caller's commit).
 pub async fn lock_for_phone(
@@ -1221,12 +1222,16 @@ pub async fn lock_for_phone(
 ) -> Result<PhoneLocked, ApprovalError> {
     // Anyone but the device the challenge was issued to learns nothing and
     // changes nothing (404 before any lock), a session without a key device
-    // too.
+    // too. While the attempt records the key row that scanned, only that row
+    // passes: a new key on the same install gets 404 as well. An attempt that
+    // records none (its claim went back to `waiting`) keeps its answers.
     let caller = require_key_device_snapshot(auth).map_err(|_| ApprovalError::NotFound)?;
     let head: Option<(String, Uuid, String, Uuid, bool)> = sqlx::query_as(
         "SELECT a.kind, a.approver_id, a.requester_kind, a.requester_id,
                 EXISTS (SELECT 1 FROM approval_devices d
-                         WHERE d.id = $2 AND d.user_id = a.approver_id AND d.device_id = a.device_id)
+                         WHERE d.id = $2 AND d.user_id = a.approver_id AND d.device_id = a.device_id
+                           AND NOT EXISTS (SELECT 1 FROM pc_setup_attempts p
+                                            WHERE p.id = a.requester_id AND p.device_id <> d.id))
            FROM approvals a WHERE a.id = $1",
     )
     .bind(challenge_id)
