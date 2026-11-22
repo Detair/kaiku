@@ -406,9 +406,15 @@ async fn subject_is_new(conn: &mut PgConnection, user_id: Uuid) -> Result<bool, 
 ///   on another admin's account, `ADMIN_TARGET_IS_ADMIN`. Its replacement belongs to the request's
 ///   completion (L1b). 400 `ENROLLMENT_DEVICE_IN_USE`: the phone offers to sign in with that key.
 ///
+/// - an `own` enrolment issued by a phone or passkey added less than the account request delay ago
+///   never replaces an older key: the install id is the claimant's word, so the replacement acts
+///   against that key (403 `AUTHENTICATOR_TOO_NEW`, `strong::ensure_settled` with the issuer as the
+///   acting authenticator and the replaced key as the target).
+///
 /// `lock` takes the row `FOR UPDATE` (confirm, under the account lock).
 async fn replaceable_on_install(
     conn: &mut PgConnection,
+    ctx: &AuthCtx<'_>,
     row: &EnrollmentRow,
     device_id: Uuid,
     will_be: DeviceState,
@@ -433,6 +439,27 @@ async fn replaceable_on_install(
     // enrolment would replace are both "this phone is already a key".
     if row.issuer_device_id == Some(live) || will_be != DeviceState::Active {
         return Err(ApprovalError::EnrollmentDeviceInUse);
+    }
+    if EnrollmentVariant::parse(&row.variant) == Some(EnrollmentVariant::Own) {
+        let issuer = row
+            .issuer_device_id
+            .map(AuthenticatorRef::key_device)
+            .or_else(|| row.issuer_passkey_id.map(AuthenticatorRef::passkey));
+        if let Some(issuer) = issuer {
+            crate::auth::strong::ensure_settled(
+                conn,
+                row.subject_id,
+                issuer,
+                Some(AuthenticatorRef::key_device(live)),
+                ctx.config.account_request_delay_hours,
+            )
+            .await
+            .map_err(|e| match e {
+                // The issuer is gone: the enrolment is no longer valid.
+                crate::auth::AuthError::StepUpRequired => ApprovalError::EnrollmentState,
+                other => ApprovalError::Auth(other),
+            })?;
+        }
     }
     Ok(Some(live))
 }
@@ -676,7 +703,7 @@ pub async fn pop_challenge(
     // Refused before any code exists; `confirm_tx` checks again under the lock.
     let variant = EnrollmentVariant::parse(&row.variant).ok_or(ApprovalError::EnrollmentState)?;
     let will_be = activation_state(variant, subject_is_new(&mut tx, row.subject_id).await?);
-    replaceable_on_install(&mut tx, &row, req.device_id, will_be, false).await?;
+    replaceable_on_install(&mut tx, ctx, &row, req.device_id, will_be, false).await?;
     sqlx::query(
         "UPDATE approvals SET state = 'expired'
           WHERE requester_kind = 'enrollment' AND requester_id = $1 AND kind = 'enroll_pop'
@@ -1467,7 +1494,7 @@ pub async fn finish_done_tx(
     // keyed by (account, install id) and now belongs to the new key of the
     // same install.
     let mut event_ids = Vec::with_capacity(2);
-    let replaced = replaceable_on_install(conn, row, claimed_device_id, state, true).await?;
+    let replaced = replaceable_on_install(conn, ctx, row, claimed_device_id, state, true).await?;
     if let Some(old) = replaced {
         // Out of the live index first; its cascade runs once the new key
         // exists (Fable r2 M-B: an admin whose only key re-enrols stays a

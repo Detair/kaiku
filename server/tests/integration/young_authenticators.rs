@@ -16,6 +16,7 @@ use vc_server::auth::passkeys::queries::PasskeyState;
 use vc_server::auth::step_up::{grant_tx, StepUpAction, StepUpTarget, StepUpVia};
 use vc_server::auth::strong::AuthenticatorRef;
 
+use crate::enrollments::{claim_with, good, Phone};
 use crate::helpers::approvals::KeyDeviceFixture;
 use crate::helpers::login::{auth_user, login_config, peer_request};
 use crate::helpers::passkeys::{passkey_session, seed_passkey};
@@ -903,4 +904,255 @@ async fn refused_report_changes_nothing(pool: PgPool) {
     .await
     .unwrap();
     assert_eq!(n, 0);
+}
+
+// Setting up a phone that takes over an existing phone's install id replaces
+// (revokes) that phone: a newly added issuer cannot replace an older one.
+
+/// `POST /auth/enrollments` from `sid` with an `enrollment.issue` step-up
+/// made by `by` → `(enrollment id, setup token)`.
+async fn issue_setup(
+    app: &TestApp,
+    sid: Uuid,
+    token: &str,
+    by: AuthenticatorRef,
+) -> (String, String) {
+    grant(app, sid, StepUpAction::EnrollmentIssue, "", by).await;
+    let (s, b) = send(
+        app,
+        Method::POST,
+        "/auth/enrollments",
+        token,
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(s, 201, "{b}");
+    (
+        b["enrollment_id"].as_str().unwrap().to_string(),
+        b["setup_token"].as_str().unwrap().to_string(),
+    )
+}
+
+/// The claimant asks for its challenge (`pop-challenge`).
+async fn pop(app: &TestApp, setup_token: &str, phone: &Phone) -> (u16, Value) {
+    let req = peer_request(Method::POST, "/auth/enrollments/pop-challenge")
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            json!({"setup_token": setup_token, "device_id": phone.device_id,
+                   "public_key": phone.public_key()})
+            .to_string(),
+        ))
+        .unwrap();
+    let resp = app.oneshot(req).await;
+    let status = resp.status().as_u16();
+    (status, crate::helpers::body_to_json_lenient(resp).await)
+}
+
+fn same_install_as(d: &KeyDeviceFixture) -> Phone {
+    Phone {
+        key: p256::ecdsa::SigningKey::random(&mut rand::rngs::OsRng),
+        device_id: d.device_id,
+    }
+}
+
+async fn claim(app: &TestApp, setup_token: &str, phone: &Phone) -> String {
+    let (s, b) = claim_with(app, setup_token, phone, "Pixel 9", good(), "per_use").await;
+    assert_eq!(s, 201, "{b}");
+    b["code"].as_str().unwrap().to_string()
+}
+
+/// The older phone is untouched: active, its session live.
+async fn assert_untouched(pool: &PgPool, d: &KeyDeviceFixture) {
+    assert_eq!(device_state(pool, d.row_id).await, "active");
+    assert!(session_live(pool, d.session_id.unwrap()).await);
+}
+
+#[sqlx::test]
+async fn fresh_phone_setup_cannot_replace_older_phone(pool: PgPool) {
+    let app = TestApp::with_passkeys(pool).await;
+    let (_, old, young) = old_and_young_phone(&app).await;
+    let (id, setup) = issue_setup(
+        &app,
+        young.session_id.unwrap(),
+        &young.access_token,
+        kd(&young),
+    )
+    .await;
+    // Refused when the claimant asks for its challenge, before any code.
+    let phone = same_install_as(&old);
+    let r = pop(&app, &setup, &phone).await;
+    assert_too_new(&app.pool, r, kd(&young), 24).await;
+    assert_untouched(&app.pool, &old).await;
+
+    // A claim that got past that step (the issuer counted as settled then)
+    // is refused again when the code is confirmed; nothing is revoked.
+    added_ago(&app.pool, kd(&young), Duration::hours(25)).await;
+    let code = claim(&app, &setup, &phone).await;
+    added_ago(&app.pool, kd(&young), Duration::minutes(1)).await;
+    let r = crate::enrollment_issuers::type_code_on(&app, &young, &id, &code).await;
+    assert_too_new(&app.pool, r, kd(&young), 24).await;
+    assert_untouched(&app.pool, &old).await;
+
+    // After the waiting time the same set-up replaces the older phone.
+    added_ago(&app.pool, kd(&young), Duration::hours(25)).await;
+    let (s, b) = crate::enrollment_issuers::type_code_on(&app, &young, &id, &code).await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(device_state(&app.pool, old.row_id).await, "revoked");
+}
+
+#[sqlx::test]
+async fn fresh_passkey_setup_cannot_replace_older_phone(pool: PgPool) {
+    let app = TestApp::with_passkeys(pool).await;
+    let (user, old, _) = old_and_young_phone(&app).await;
+    let (_, pk) = seed_passkey(&app, user, PasskeyState::Active).await;
+    let by = AuthenticatorRef::passkey(pk.id);
+    let (sid, token) = passkey_session(&app.pool, &app.config, user, pk.id).await;
+    let (id, setup) = issue_setup(&app, sid, &token, by).await;
+    let phone = same_install_as(&old);
+    let r = pop(&app, &setup, &phone).await;
+    assert_too_new(&app.pool, r, by, 24).await;
+    assert_untouched(&app.pool, &old).await;
+
+    added_ago(&app.pool, by, Duration::hours(25)).await;
+    let code = claim(&app, &setup, &phone).await;
+    added_ago(&app.pool, by, Duration::minutes(1)).await;
+    let path = format!("/auth/enrollments/{id}/confirm");
+    let r = send(
+        &app,
+        Method::POST,
+        &path,
+        &token,
+        Some(json!({ "code": code })),
+    )
+    .await;
+    assert_too_new(&app.pool, r, by, 24).await;
+    assert_untouched(&app.pool, &old).await;
+}
+
+#[sqlx::test]
+async fn settled_issuer_replaces_older_phone(pool: PgPool) {
+    let app = TestApp::with_passkeys(pool).await;
+    let (_, old, issuer) = old_and_young_phone(&app).await;
+    added_ago(&app.pool, kd(&issuer), Duration::days(10)).await;
+    let (id, setup) = issue_setup(
+        &app,
+        issuer.session_id.unwrap(),
+        &issuer.access_token,
+        kd(&issuer),
+    )
+    .await;
+    let code = claim(&app, &setup, &same_install_as(&old)).await;
+    let (s, b) = crate::enrollment_issuers::type_code_on(&app, &issuer, &id, &code).await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(device_state(&app.pool, old.row_id).await, "revoked");
+}
+
+#[sqlx::test]
+async fn fresh_issuer_own_install_and_younger_and_new(pool: PgPool) {
+    let app = TestApp::with_passkeys(pool).await;
+    let (user, old, young) = old_and_young_phone(&app).await;
+    added_ago(&app.pool, kd(&young), Duration::hours(1)).await;
+    let younger = KeyDeviceFixture::insert(&app.pool, &app.config, user, "active").await;
+    let sid = young.session_id.unwrap();
+
+    // Its own install: refused as before ("this phone is already a key").
+    let (id, setup) = issue_setup(&app, sid, &young.access_token, kd(&young)).await;
+    let (s, b) = pop(&app, &setup, &same_install_as(&young)).await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (400, Some("ENROLLMENT_DEVICE_IN_USE")),
+        "{b}"
+    );
+
+    // A younger phone's install: replaced.
+    let code = claim(&app, &setup, &same_install_as(&younger)).await;
+    let (s, b) = crate::enrollment_issuers::type_code_on(&app, &young, &id, &code).await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(device_state(&app.pool, younger.row_id).await, "revoked");
+
+    // A new install: added, nothing replaced.
+    let (id, setup) = issue_setup(&app, sid, &young.access_token, kd(&young)).await;
+    let phone = Phone::new();
+    let code = claim(&app, &setup, &phone).await;
+    let (s, b) = crate::enrollment_issuers::type_code_on(&app, &young, &id, &code).await;
+    assert_eq!(s, 200, "{b}");
+    assert_untouched(&app.pool, &old).await;
+}
+
+#[sqlx::test]
+async fn command_line_setup_still_replaces(pool: PgPool) {
+    use vc_server::approvals::enrollments::{
+        confirm_tx, issue_tx, Confirmer, EnrollmentVariant, IssueParams, Issuer,
+    };
+    let app = TestApp::with_passkeys(pool).await;
+    let (user, old, _young) = old_and_young_phone(&app).await;
+    let ctx = vc_server::auth::ctx::AuthCtx::from(&app.state);
+    let mut tx = app.pool.begin().await.unwrap();
+    let issued = issue_tx(
+        &mut tx,
+        &ctx,
+        IssueParams {
+            variant: EnrollmentVariant::Cli,
+            subject_id: user,
+            issuer: Issuer::Cli,
+            claimant: vc_server::approvals::context::ClaimantCheck::None,
+            claimant_note: None,
+            lost_device_ids: Vec::new(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let code = claim(&app, &issued.setup_token, &same_install_as(&old)).await;
+    let mut tx = app.pool.begin().await.unwrap();
+    confirm_tx(
+        &mut tx,
+        &ctx,
+        issued.enrollment_id,
+        Confirmer::Cli,
+        code.as_bytes(),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(device_state(&app.pool, old.row_id).await, "revoked");
+}
+
+#[sqlx::test]
+async fn newest_step_up_is_used(pool: PgPool) {
+    // Confirmed first with a new passkey (refused), then with an older one
+    // in the same session: the next try uses the older one's confirmation.
+    let app = TestApp::with_passkeys(pool).await;
+    let (_, sid, token, young) = old_phone_and_new_passkey(&app).await;
+    let user: Uuid = sqlx::query_scalar("SELECT user_id FROM sessions WHERE id = $1")
+        .bind(sid)
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    let (_, older) = seed_passkey(&app, user, PasskeyState::Active).await;
+    added_ago(
+        &app.pool,
+        AuthenticatorRef::passkey(older.id),
+        Duration::days(5),
+    )
+    .await;
+    grant(&app, sid, StepUpAction::RecoveryCodesCreate, "", young).await;
+    let r = send(&app, Method::POST, "/auth/recovery-codes", &token, None).await;
+    assert_too_new(&app.pool, r, young, 24).await;
+    // Make the young one's confirmation older than the next one.
+    sqlx::query("UPDATE step_up_grants SET created_at = created_at - INTERVAL '1 second', expires_at = expires_at - INTERVAL '1 second' WHERE session_id = $1")
+        .bind(sid)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    grant(
+        &app,
+        sid,
+        StepUpAction::RecoveryCodesCreate,
+        "",
+        AuthenticatorRef::passkey(older.id),
+    )
+    .await;
+    let (s, b) = send(&app, Method::POST, "/auth/recovery-codes", &token, None).await;
+    assert_eq!(s, 200, "{b}");
 }

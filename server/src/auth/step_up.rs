@@ -368,6 +368,10 @@ struct OpenGrant {
     authenticator_id: Uuid,
 }
 
+/// The newest open grant: every open grant of (`sid`, `action`, `target`) is
+/// the same person's confirmation in the same session, so the latest one is
+/// the one they meant (one made with an older authenticator after a refusal
+/// is used, not the refused one).
 async fn open_grant(
     conn: &mut PgConnection,
     sid: Uuid,
@@ -379,12 +383,12 @@ async fn open_grant(
         "SELECT id, via, authenticator_type, authenticator_id FROM step_up_grants
           WHERE session_id = $1 AND action = $2 AND target_hash = $3
             AND used_at IS NULL AND voided_at IS NULL AND expires_at > clock_timestamp()
-          ORDER BY created_at, id LIMIT 1 FOR UPDATE"
+          ORDER BY created_at DESC, id DESC LIMIT 1 FOR UPDATE"
     } else {
         "SELECT id, via, authenticator_type, authenticator_id FROM step_up_grants
           WHERE session_id = $1 AND action = $2 AND target_hash = $3
             AND used_at IS NULL AND voided_at IS NULL AND expires_at > clock_timestamp()
-          ORDER BY created_at, id LIMIT 1"
+          ORDER BY created_at DESC, id DESC LIMIT 1"
     };
     let grant: OpenGrant = sqlx::query_as(sql)
         .bind(sid)
@@ -424,7 +428,7 @@ pub async fn peek_tx(
     })
 }
 
-/// Consume the oldest usable grant for (`sid`, `action`, `target`) in the
+/// Consume the newest usable grant for (`sid`, `action`, `target`) in the
 /// caller's transaction (the action's own). None → 403 `STEP_UP_REQUIRED`.
 #[tracing::instrument(skip(conn, auth), fields(user_id = %auth.id, action = action.as_str()))]
 pub async fn consume_tx(
