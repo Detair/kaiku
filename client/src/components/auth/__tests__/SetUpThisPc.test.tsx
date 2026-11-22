@@ -1374,3 +1374,99 @@ describe("success only for a passkey this dialog registered", () => {
     expect(screen.getByText("The code was right. Now create a passkey on this computer.")).toBeTruthy();
   });
 });
+
+describe("a registration counts as this page's own once its finish was sent", () => {
+  const OTHER_PAGE = /A passkey was set up for this account from another page/;
+  const FINISHING = /This setup is being finished in the page where the code was typed/;
+  const SIGN_IN = { name: "Sign in with your passkey" };
+
+  /** First poll `code`, the second one answered by the returned function, later ones hang. */
+  function laterPoll() {
+    let later: (v: unknown) => void = () => undefined;
+    pc.pollPcSetup.mockReset();
+    pc.pollPcSetup
+      .mockResolvedValueOnce(status("code"))
+      .mockImplementationOnce(() => new Promise((r) => (later = r)))
+      .mockImplementation(never);
+    return (v: unknown) => later(v);
+  }
+
+  async function startRegistration() {
+    render(() => <SetUpThisPc onClose={vi.fn()} />);
+    pc.enterPcSetupCode.mockResolvedValue({ state: "enrolled", enrollment_id: "e1" });
+    fireEvent.input(await screen.findByLabelText("Code from your phone"), { target: { value: "123456" } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Create a passkey" }));
+    await waitFor(() => expect(pc.finishPcSetupPasskey).toHaveBeenCalled());
+  }
+
+  beforeEach(() => {
+    pc.startPcSetupPasskey.mockResolvedValue({ ceremony_id: "c1", options: {} });
+    createPasskeyCredential.mockResolvedValue({ id: "cred" });
+  });
+
+  it("a lost finish answer, a second press refused at the start, then completed: success", async () => {
+    const answer = laterPoll();
+    pc.finishPcSetupPasskey.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    await startRegistration();
+    // The person presses again; the attempt is already completed, so the start is refused.
+    pc.startPcSetupPasskey.mockRejectedValue(http("APPROVAL_STATE", 409));
+    fireEvent.click(await screen.findByRole("button", { name: "Create a passkey" }));
+    await waitFor(() => expect(pc.startPcSetupPasskey).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(pc.pollPcSetup).toHaveBeenCalledTimes(2), { timeout: 2_000 });
+    answer(status("completed"));
+    expect(await screen.findByRole("button", SIGN_IN)).toBeTruthy();
+    expect(screen.queryByText(OTHER_PAGE)).toBeNull();
+  });
+
+  it("a 502 to the finish after the passkey was stored, then completed: success", async () => {
+    const answer = laterPoll();
+    pc.finishPcSetupPasskey.mockRejectedValue(http("BAD_GATEWAY", 502));
+    await startRegistration();
+    await waitFor(() => expect(pc.pollPcSetup).toHaveBeenCalledTimes(2), { timeout: 2_000 });
+    answer(status("completed"));
+    expect(await screen.findByRole("button", SIGN_IN)).toBeTruthy();
+    expect(screen.queryByText(OTHER_PAGE)).toBeNull();
+  });
+
+  it("a 409 to the finish, then completed: the neutral end", async () => {
+    const answer = laterPoll();
+    pc.finishPcSetupPasskey.mockRejectedValue(http("APPROVAL_STATE", 409));
+    await startRegistration();
+    await waitFor(() => expect(pc.pollPcSetup).toHaveBeenCalledTimes(2), { timeout: 2_000 });
+    answer(status("completed"));
+    expect(await screen.findByText(OTHER_PAGE)).toBeTruthy();
+    expect(screen.queryByRole("button", SIGN_IN)).toBeNull();
+  });
+
+  it("completed with an unknown reason on the page that sent the finish: success", async () => {
+    const answer = laterPoll();
+    pc.finishPcSetupPasskey.mockImplementation(never);
+    await startRegistration();
+    await waitFor(() => expect(pc.pollPcSetup).toHaveBeenCalledTimes(2), { timeout: 2_000 });
+    answer(status("completed", "brand_new"));
+    expect(await screen.findByRole("button", SIGN_IN)).toBeTruthy();
+  });
+
+  it("a code request refused with 409, then enrolled: the hint of a page without the proof", async () => {
+    polls(status("code"), status("enrolled"));
+    render(() => <SetUpThisPc onClose={vi.fn()} />);
+    pc.enterPcSetupCode.mockRejectedValue(http("APPROVAL_STATE", 409));
+    fireEvent.input(await screen.findByLabelText("Code from your phone"), { target: { value: "123456" } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    expect(await screen.findByText(FINISHING, {}, { timeout: 3_000 })).toBeTruthy();
+    expect(screen.queryByText("The code was right. Now create a passkey on this computer.")).toBeNull();
+  });
+
+  it("a lost answer to the code request, then enrolled: the passkey step with the same proof", async () => {
+    polls(status("code"), status("enrolled"));
+    render(() => <SetUpThisPc onClose={vi.fn()} />);
+    pc.enterPcSetupCode.mockRejectedValue(new TypeError("Failed to fetch"));
+    pc.finishPcSetupPasskey.mockImplementation(never);
+    fireEvent.input(await screen.findByLabelText("Code from your phone"), { target: { value: "123456" } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Create a passkey" }, { timeout: 3_000 }));
+    await waitFor(() => expect(pc.startPcSetupPasskey).toHaveBeenCalled());
+    expect(pc.startPcSetupPasskey).toHaveBeenCalledWith(ID, pc.enterPcSetupCode.mock.calls[0][2]);
+  });
+});

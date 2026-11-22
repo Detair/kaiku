@@ -66,13 +66,13 @@ export interface PcSetupStepProps {
    */
   proofs: Map<string, string>;
   /**
-   * What became of this dialog's own registration of an attempt: its finish
-   * was sent, or its start or finish was refused (web only).
+   * What became of this dialog's own registration of an attempt (web only):
+   * a finish request was sent, or a sent finish was refused beyond doubt.
    */
   onFinish: (attemptId: string, phase: FinishPhase) => void;
 }
 
-/** This dialog's own registration of an attempt: finish sent, or refused. */
+/** A finish request of this dialog: sent, or refused beyond doubt. */
 export type FinishPhase = "sent" | "refused";
 
 /** The steps that differ between the web page and the desktop app (Task 6). */
@@ -92,6 +92,14 @@ export interface PcSetupPlatform {
 // Web steps
 // ---------------------------------------------------------------------------
 
+/**
+ * An answer that refuses a request beyond doubt: a 4xx other than 408 and
+ * 429. A lost answer, a timeout, a 5xx, a 408 or a 429 leave open whether the
+ * server acted on it.
+ */
+const refusedOutright = (err: unknown): boolean =>
+  err instanceof HttpError && err.status >= 400 && err.status < 500 && err.status !== 408 && err.status !== 429;
+
 /** The keypad: the code is typed in this page. */
 export const WebCodeStep: Component<PcSetupStepProps> = (props) => {
   const [code, setCode] = createSignal("");
@@ -100,20 +108,34 @@ export const WebCodeStep: Component<PcSetupStepProps> = (props) => {
   /** The step is gone: a late answer changes nothing. */
   let gone = false;
   onCleanup(() => (gone = true));
+  /**
+   * Attempts whose proof the server may have stored: a code request that
+   * carried it was accepted, or its answer is unknown.
+   */
+  const maybeStored = new Set<string>();
 
   const submit = async () => {
     const id = props.attemptId;
     // One proof per attempt: a retyped code (or a code sent again after a
     // lost answer) carries the same one.
-    let proof = props.proofs.get(id);
+    const proofs = props.proofs;
+    let proof = proofs.get(id);
     if (!proof) {
       proof = newPcSetupProof();
-      props.proofs.set(id, proof);
+      proofs.set(id, proof);
     }
     setBusy(true);
     setError(null);
     try {
-      const res = await enterPcSetupCode(id, code(), proof);
+      const res = await enterPcSetupCode(id, code(), proof).catch((err: unknown) => {
+        // The proof counts as held only while a request that carried it was
+        // accepted or its answer is unknown.
+        if (refusedOutright(err)) {
+          if (!maybeStored.has(id)) proofs.delete(id);
+        } else maybeStored.add(id);
+        throw err;
+      });
+      if (res.state === "enrolled") maybeStored.add(id);
       if (gone) return;
       if (res.state === "enrolled") props.onState(id, { state: "enrolled", reason: null, enrollment_id: res.enrollment_id });
       else if (res.state === "failed") props.onState(id, { state: "failed", reason: "too_many_codes" });
@@ -172,19 +194,22 @@ export const WebPasskeyStep: Component<PcSetupStepProps> = (props) => {
     ctl = mine;
     setBusy(true);
     setError(null);
+    let finishSent = false;
     try {
       // Only the proof sent with the right code starts it (409 otherwise).
       const start = await startPcSetupPasskey(id, props.proofs.get(id));
       const credential = await createPasskeyCredential(start.options, mine.signal);
       const finish = finishPcSetupPasskey(id, start.ceremony_id, credential, defaultPasskeyLabel(), props.proofs.get(id));
+      finishSent = true;
       props.onFinish(id, "sent");
       await finish;
       // The passkey exists: say so even if the step was left meanwhile (the
       // dialog drops it for another attempt or after a server-reported end).
       props.onState(id, { state: "completed", reason: null });
     } catch (err) {
-      // A refusal from the server: this dialog did not register a passkey.
-      if (err instanceof HttpError) props.onFinish(id, "refused");
+      // Only a finish the server refused beyond doubt means this dialog did
+      // not register a passkey; an error of the start never changes that.
+      if (finishSent && refusedOutright(err)) props.onFinish(id, "refused");
       if (!mine.signal.aborted) {
         // The attempt cannot take a passkey this way: only Start again helps.
         if (err instanceof HttpError && codeIs(err.code, "APPROVAL_STATE")) setError(t("pcSetup.ended.generic"));
@@ -334,12 +359,26 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
   const [checkFailed, setCheckFailed] = createSignal(false);
   /** The proofs sent with a code from this dialog, by attempt id. */
   const proofs = new Map<string, string>();
-  /** This dialog's own registrations, by attempt id. */
-  const [own, setOwn] = createSignal<Record<string, FinishPhase>>({});
-  const onFinish = (attemptId: string, phase: FinishPhase) => setOwn((o) => ({ ...o, [attemptId]: phase }));
-  /** `completed` of this attempt is this dialog's passkey (always so on the desktop). */
-  const registeredHere = (attemptId: string): boolean =>
-    !platform().registersHere || own()[attemptId] === "sent";
+  /**
+   * This dialog's finish requests by attempt id: how many were sent and how
+   * many of them the server refused beyond doubt.
+   */
+  const [own, setOwn] = createSignal<Record<string, { sent: number; refused: number }>>({});
+  const onFinish = (attemptId: string, phase: FinishPhase) =>
+    setOwn((o) => {
+      const cur = o[attemptId] ?? { sent: 0, refused: 0 };
+      return { ...o, [attemptId]: phase === "sent" ? { ...cur, sent: cur.sent + 1 } : { ...cur, refused: cur.refused + 1 } };
+    });
+  /**
+   * `completed` of this attempt is this dialog's passkey (always so on the
+   * desktop): a finish it sent was not refused beyond doubt, whatever reason
+   * the status carries.
+   */
+  const registeredHere = (attemptId: string): boolean => {
+    if (!platform().registersHere) return true;
+    const f = own()[attemptId];
+    return !!f && f.sent > f.refused;
+  };
   /** Bumped by every start, restart and the unmount: older loops and answers stop. */
   let generation = 0;
   let signIn: AbortController | null = null;
