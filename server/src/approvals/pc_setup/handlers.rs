@@ -250,6 +250,9 @@ pub struct PcSetupPasskeyFinish {
     /// 1..=64 characters; `null` → "Passkey".
     #[serde(default)]
     pub label: Option<String>,
+    /// The proof the page sent with the right code (as for `passkey/start`).
+    #[serde(default)]
+    pub proof: Option<String>,
 }
 
 /// `?wait=` of the poll routes (seconds, 0..=25).
@@ -618,7 +621,7 @@ pub async fn passkey_start(
         (status = 201, body = crate::auth::passkeys::types::PasskeyView),
         (status = 400, description = "PASSKEY_CEREMONY_INVALID, PASSKEY_INVALID, PASSKEY_NOT_DISCOVERABLE or VALIDATION_ERROR (label)"),
         (status = 404, description = "APPROVAL_NOT_FOUND"),
-        (status = 409, description = "APPROVAL_STATE (ended, restarted), PASSKEY_LIMIT or PASSKEY_ALREADY_REGISTERED: the attempt stays readable"),
+        (status = 409, description = "APPROVAL_STATE (ended, restarted, or not the proof sent with the right code: the ceremony is not taken), PASSKEY_LIMIT or PASSKEY_ALREADY_REGISTERED: the attempt stays readable"),
     ),
     security(("bearer_auth" = [])),
 )]
@@ -634,16 +637,15 @@ pub async fn passkey_finish(
     use crate::auth::AuthError;
     let rp = crate::auth::passkeys::rp_of(&state)?;
     // Another session's attempt is unknown before its ceremony is touched.
-    // A code typed in a desktop flow registers through that flow only: 409
-    // before the ceremony is taken (the locked check below decides again).
+    // Only an attempt whose right code was typed on the web registers here,
+    // and only with the proof sent with that code: anything else is refused
+    // under the locks before a ceremony is taken (the locked check below
+    // decides the rest again).
+    let proof = body.proof.as_deref().and_then(Secret256::from_b64u);
     {
         let mut conn = state.db.acquire().await?;
         let row = transition::of_session(&mut conn, &auth, id).await?;
-        // Only an attempt whose right code was typed on the web registers
-        // here; anything else is refused before a ceremony is taken.
-        if row.state() != crate::approvals::pc_setup::AttemptState::Enrolled
-            || row.code_via.as_deref() != Some("web")
-        {
+        if !enrolment::web_proof_matches(&AuthCtx::from(&state), &row, proof.as_ref()) {
             return Err(ApprovalError::State);
         }
     }
@@ -678,10 +680,12 @@ pub async fn passkey_finish(
     let mut tx = state.db.begin().await?;
     let result = async {
         let locked = lock_own(&mut tx, &auth, id).await?;
-        // The ceremony belongs to this attempt's enrolment.
+        // The ceremony belongs to this attempt's enrolment, and the proof
+        // is still the page's.
         if locked.attempt.enrollment_id != Some(enrollment_id) {
             return Err(ApprovalError::State);
         }
+        enrolment::web_proof_holds(&ctx, &locked, proof.as_ref())?;
         enrolment::complete_enrolment(
             &mut tx,
             &ctx,

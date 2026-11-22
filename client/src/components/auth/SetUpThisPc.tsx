@@ -163,7 +163,7 @@ export const WebPasskeyStep: Component<PcSetupStepProps> = (props) => {
       // Only the proof sent with the right code starts it (409 otherwise).
       const start = await startPcSetupPasskey(id, props.proofs.get(id));
       const credential = await createPasskeyCredential(start.options, mine.signal);
-      await finishPcSetupPasskey(id, start.ceremony_id, credential, defaultPasskeyLabel());
+      await finishPcSetupPasskey(id, start.ceremony_id, credential, defaultPasskeyLabel(), props.proofs.get(id));
       // The passkey exists: say so even if the step was left meanwhile (the
       // dialog drops it for another attempt or after a server-reported end).
       props.onState(id, { state: "completed", reason: null });

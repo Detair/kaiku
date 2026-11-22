@@ -18,7 +18,14 @@ vi.mock("@tauri-apps/api/core", async (orig) => ({
   isTauri: () => tauriMode.on,
 }));
 
-import { enterPcSetupCode, newPcSetupProof, pollPcSetup, startPcSetup, startPcSetupPasskey } from "../pcSetup";
+import {
+  enterPcSetupCode,
+  finishPcSetupPasskey,
+  newPcSetupProof,
+  pollPcSetup,
+  startPcSetup,
+  startPcSetupPasskey,
+} from "../pcSetup";
 import { isServerSetupComplete } from "../auth";
 import { setUpThisPcInBrowser, PasskeyError } from "../passkeys";
 import { browserState, clearBrowserTokens, setNativeAuthInfo } from "../common";
@@ -96,6 +103,20 @@ describe("the web page's proof", () => {
     expect(startUrl).toBe(`https://chat.example.com/auth/pc-setups/${ID}/passkey/start`);
     expect(JSON.parse(codeInit.body as string)).toEqual({ code: "123456", proof });
     expect(JSON.parse(startInit.body as string)).toEqual({ proof });
+  });
+
+  it("travels in the body of the passkey finish too", async () => {
+    const proof = newPcSetupProof();
+    fetchMock.mockResolvedValueOnce(json(201, { id: "p1" }));
+    await finishPcSetupPasskey(ID, "c1", { id: "cred" }, "Firefox on Linux", proof);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`https://chat.example.com/auth/pc-setups/${ID}/passkey/finish`);
+    expect(JSON.parse(init.body as string)).toEqual({
+      ceremony_id: "c1",
+      credential: { id: "cred" },
+      label: "Firefox on Linux",
+      proof,
+    });
   });
 
   it("a page without the proof starts with an empty body", async () => {

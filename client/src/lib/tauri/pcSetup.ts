@@ -111,16 +111,22 @@ export function startPcSetupPasskey(id: string, proof: string | undefined): Prom
   return httpRequest<PcSetupPasskeyStart>("POST", `${base(id)}/passkey/start`, proof ? { proof } : {});
 }
 
-/** Browser only: finish it. 409 `PASSKEY_LIMIT` / `PASSKEY_ALREADY_REGISTERED` leave the attempt `enrolled`. */
+/**
+ * Browser only: finish it, with the same proof as the start (409
+ * `APPROVAL_STATE` without it, the ceremony kept). 409 `PASSKEY_LIMIT` /
+ * `PASSKEY_ALREADY_REGISTERED` leave the attempt `enrolled`.
+ */
 export function finishPcSetupPasskey(
   id: string,
   ceremonyId: string,
   credential: unknown,
   label: string | null,
+  proof: string | undefined,
 ): Promise<unknown> {
   return httpRequest<unknown>("POST", `${base(id)}/passkey/finish`, {
     ceremony_id: ceremonyId,
     credential,
     label,
+    ...(proof ? { proof } : {}),
   });
 }

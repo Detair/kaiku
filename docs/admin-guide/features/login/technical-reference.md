@@ -577,7 +577,7 @@ sequenceDiagram
     S-->>P: 200 {attempt_id, code, code_expires_at}
     PC->>S: POST /auth/pc-setups/{id}/code {code, proof} (web)
     S-->>PC: 200 {state: enrolled, enrollment_id}
-    PC->>S: passkey/start {proof}, passkey/finish (web) or desktop flow + redeem
+    PC->>S: passkey/start {proof}, passkey/finish {…, proof} (web) or desktop flow + redeem
     S-->>PC: 201 Passkey (active), attempt completed
     PC->>S: F1 passkey sign-in (replaceSessionWithPasskey)
 ```
@@ -624,8 +624,9 @@ sequenceDiagram
   (`pc_setup_attempts.web_proof_hash`) in the update that records `code_via = web`, a wrong code stores
   nothing. `passkey/start` needs the requesting session and that proof (`{proof}`, compared in constant
   time under the locks; missing or different: 409 `APPROVAL_STATE`, nothing spent, the attempt stays
-  `enrolled`). `passkey/finish` needs the requesting session and the ceremony id that start returned;
-  it creates the `active` passkey (409 `PASSKEY_LIMIT` / `PASSKEY_ALREADY_REGISTERED` keep the attempt
+  `enrolled`). `passkey/finish` needs the requesting session, the ceremony id that start returned and
+  the same proof (checked before the ceremony is taken; missing or different: 409 `APPROVAL_STATE`, the
+  ceremony stays usable); it creates the `active` passkey (409 `PASSKEY_LIMIT` / `PASSKEY_ALREADY_REGISTERED` keep the attempt
   readable). A lost answer to the code is recovered by the poll and the page's own proof; a reload
   between the code and the passkey loses the proof, and the person starts again.
 - **Desktop:** purpose `pc_setup` of the F1 flow (C29). The app starts the flow with its session's bearer

@@ -284,25 +284,52 @@ pub async fn registration_open(
     Ok(enrollment_id)
 }
 
+/// The attempt is `enrolled` through the web path and `proof` is the page's.
+///
+/// The proof is compared in constant time with the one stored with the right
+/// code. A missing or different proof → 409 `APPROVAL_STATE`; nothing is
+/// spent and the attempt stays `enrolled` for the page that holds the proof.
+/// Returns the enrolment id.
+pub fn web_proof_holds(
+    ctx: &AuthCtx<'_>,
+    locked: &LockedAttempt,
+    proof: Option<&Secret256>,
+) -> Result<Uuid, ApprovalError> {
+    let enrollment_id = enrolled_through(locked, CodePath::Web)?;
+    if !web_proof_matches(ctx, &locked.attempt, proof) {
+        return Err(ApprovalError::State);
+    }
+    Ok(enrollment_id)
+}
+
+/// Whether `a` is `enrolled` through the web path and `proof` is the one
+/// stored with its right code (constant-time). The stored hash is written
+/// once, with the move to `enrolled`, so a read without the locks gives the
+/// same answer; the locked checks decide again.
+#[must_use]
+pub fn web_proof_matches(
+    ctx: &AuthCtx<'_>,
+    a: &super::transition::AttemptRow,
+    proof: Option<&Secret256>,
+) -> bool {
+    let (Some(proof), Some(stored)) = (proof, a.web_proof_hash.as_deref()) else {
+        return false;
+    };
+    a.state() == AttemptState::Enrolled
+        && CodePath::Web.matches(a)
+        && ct_eq(&proof_hash(ctx, proof), stored)
+}
+
 /// The checks of the web `passkey/start` under the locks.
 ///
-/// Those of [`registration_open`] for the web path, and the page's `proof`,
-/// compared in constant time with the one stored with the right code. A
-/// missing or different proof → 409 `APPROVAL_STATE`; nothing is spent and
-/// the attempt stays `enrolled` for the page that holds the proof.
+/// [`web_proof_holds`], then room for one more passkey.
 pub async fn web_registration_open(
     conn: &mut PgConnection,
     ctx: &AuthCtx<'_>,
     locked: &LockedAttempt,
     proof: Option<&Secret256>,
 ) -> Result<Uuid, ApprovalError> {
-    let enrollment_id = enrolled_through(locked, CodePath::Web)?;
-    let (Some(proof), Some(stored)) = (proof, locked.attempt.web_proof_hash.as_deref()) else {
-        return Err(ApprovalError::State);
-    };
-    if !ct_eq(&proof_hash(ctx, proof), stored) {
-        return Err(ApprovalError::State);
-    }
+    let enrollment_id = web_proof_holds(ctx, locked, proof)?;
     passkey_room(conn, locked.attempt.user_id).await?;
     Ok(enrollment_id)
 }

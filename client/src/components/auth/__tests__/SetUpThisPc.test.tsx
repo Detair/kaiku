@@ -321,7 +321,13 @@ describe("code and passkey on the web", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Create a passkey" }));
     await waitFor(() =>
       // Named like every passkey made in a browser ("Firefox on Linux").
-      expect(pc.finishPcSetupPasskey).toHaveBeenCalledWith(ID, "c1", { id: "cred" }, expect.stringMatching(/\S/)),
+      expect(pc.finishPcSetupPasskey).toHaveBeenCalledWith(
+        ID,
+        "c1",
+        { id: "cred" },
+        expect.stringMatching(/\S/),
+        expect.any(String),
+      ),
     );
     expect(createPasskeyCredential).toHaveBeenCalledWith({ publicKey: { challenge: "x" } }, expect.anything());
     fireEvent.click(await screen.findByRole("button", { name: "Sign in with your passkey" }));
@@ -381,6 +387,20 @@ describe("the page that typed the code registers the passkey", () => {
     expect(sent[0]).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(sent[1]).toBe(sent[0]);
     expect(pc.startPcSetupPasskey).toHaveBeenCalledWith(ID, sent[0]);
+  });
+
+  it("the passkey finish carries the same proof", async () => {
+    await openAt("code");
+    pc.enterPcSetupCode.mockResolvedValue({ state: "enrolled", enrollment_id: "e1" });
+    pc.startPcSetupPasskey.mockResolvedValue({ ceremony_id: "c1", options: {} });
+    createPasskeyCredential.mockResolvedValue({ id: "cred" });
+    pc.finishPcSetupPasskey.mockImplementation(never);
+    await typeCodeIn(document.body, "123456");
+    fireEvent.click(await screen.findByRole("button", { name: "Create a passkey" }));
+    await waitFor(() => expect(pc.finishPcSetupPasskey).toHaveBeenCalledOnce());
+    const proof = pc.enterPcSetupCode.mock.calls[0][2];
+    expect(proof).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(pc.finishPcSetupPasskey).toHaveBeenCalledWith(ID, "c1", { id: "cred" }, expect.any(String), proof);
   });
 
   it("another page of the same session cannot register, and this page still completes", async () => {

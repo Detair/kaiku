@@ -1582,7 +1582,8 @@ async fn ceremony(p: &Pc, id: &str) -> Value {
     let (s, start) = passkey_start(p, &p.token, id).await;
     assert_eq!(s, 200, "{start}");
     let credential = SoftAuthenticator::new().register(TEST_ORIGIN, &start["options"]);
-    json!({"ceremony_id": start["ceremony_id"], "credential": credential, "label": "Work PC"})
+    json!({"ceremony_id": start["ceremony_id"], "credential": credential, "label": "Work PC",
+           "proof": proof()})
 }
 
 /// Run the whole flow to a passkey: `(attempt id, passkey id)`.
@@ -2099,6 +2100,39 @@ async fn a_restart_reads_its_clock_after_the_challenge_lock(pool: PgPool) {
         attempt_state(&pool, &first).await,
         ("cancelled".into(), Some("restarted".into()))
     );
+}
+
+/// The web finish needs the page's proof too, checked before the ceremony
+/// is taken: without it or with another, 409, nothing is spent, and the
+/// page that holds the proof finishes the same ceremony.
+#[sqlx::test]
+async fn the_web_finish_needs_the_pages_proof(pool: PgPool) {
+    let p = pc(&pool).await;
+    let (id, eid) = enrolled(&p).await;
+    let body = ceremony(&p, &id).await;
+    let mut without = body.clone();
+    without.as_object_mut().unwrap().remove("proof");
+    let mut variants = vec![without];
+    for v in [json!(null), json!(other_proof()), json!("not a proof")] {
+        let mut b = body.clone();
+        b["proof"] = v;
+        variants.push(b);
+    }
+    for b in variants {
+        let (s, r) = passkey_finish(&p, &p.token, &id, b.clone()).await;
+        assert_eq!(
+            (s, r["error"].as_str()),
+            (409, Some("APPROVAL_STATE")),
+            "{b}: {r}"
+        );
+    }
+    assert_eq!(attempt_state(&pool, &id).await, ("enrolled".into(), None));
+    assert_eq!(enrollment_state(&pool, &eid).await, "issued");
+    assert_eq!(passkeys_of(&pool, p.user).await, 0);
+    // The ceremony was not taken: the page with the proof finishes it.
+    let (s, pk) = passkey_finish(&p, &p.token, &id, body).await;
+    assert_eq!(s, 201, "{pk}");
+    assert_eq!(attempt_state(&pool, &id).await.0, "completed");
 }
 
 /// The rule tying the path, the flow and the proof together decides every

@@ -257,7 +257,9 @@ a try is spent. The right code stores a keyed hash of the proof on the attempt, 
 records the web path; a wrong code stores nothing. `passkey/start` needs the requesting session's
 bearer **and** that proof, compared in constant time under the locks; without it, or with another, the
 answer is 409 `APPROVAL_STATE`, nothing is spent, and the attempt stays `enrolled` for the page that holds
-it. `passkey/finish` needs the ceremony id, which only the caller of that start received. If the answer
+it. `passkey/finish` needs the ceremony id that start returned and the same proof, checked before the
+ceremony is taken; without the proof, or with another, the answer is 409 `APPROVAL_STATE` and the
+ceremony stays for the page that holds it. If the answer
 to the code is lost, the page still holds its proof, the poll shows `enrolled` and the passkey step
 starts with it. A page reload between the code and the passkey loses the proof: **Start again**, as on
 the desktop path. The server still cannot tell which device or person the page runs on; it only knows

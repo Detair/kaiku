@@ -988,7 +988,7 @@ Nothing below changes an existing contract entry; a client that does not know it
   | `DELETE /auth/pc-setups/{id}` | → cancel (`cancelled`, also voids the enrolment) |
   | `POST /auth/pc-setups/{id}/code` | `{code, proof}` (6 digits; `proof` = 32 random bytes the page drew for this attempt, b64u without padding, kept in memory only) → 200 `{state: "enrolled", enrollment_id}`, `{state: "code", tries_left}` (wrong) or `{state: "failed", tries_left: 0}` (third wrong code). The right code stores a keyed hash of `proof`; a wrong code stores nothing. 400 `VALIDATION_ERROR` (not 6 digits, or no well-formed `proof`; no try spent); 409 `APPROVAL_STATE`; 410 `APPROVAL_EXPIRED` |
   | `POST /auth/pc-setups/{id}/passkey/start` | `{proof}` (the one sent with the right code) → `{ceremony_id, options}` (`enrolled` only; 409 `APPROVAL_STATE` when `proof` is missing or another, nothing spent; 409 `PASSKEY_LIMIT`) |
-  | `POST /auth/pc-setups/{id}/passkey/finish` | `{ceremony_id, credential, label\|null}` → 201 `Passkey` (`active`; attempt `completed`). 409 `PASSKEY_LIMIT` / `PASSKEY_ALREADY_REGISTERED` (the attempt stays readable) |
+  | `POST /auth/pc-setups/{id}/passkey/finish` | `{ceremony_id, credential, label\|null, proof}` (`proof` as for `passkey/start`) → 201 `Passkey` (`active`; attempt `completed`). 409 `APPROVAL_STATE` when `proof` is missing or another (checked before the ceremony is taken: it stays usable); 409 `PASSKEY_LIMIT` / `PASSKEY_ALREADY_REGISTERED` (the attempt stays readable) |
 
 - **Status** = `{attempt_id, state, reason\|null, qr_payload?, rotates_at?, enrollment_id?}`. `state` is one of
   `waiting`, `claimed`, `code`, `enrolled`, `completed`, `refused`, `reported`, `failed`, `cancelled`,
