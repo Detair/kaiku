@@ -1488,3 +1488,48 @@ async fn one_run_claims_at_most_its_bound(pool: PgPool) {
     }
     assert_eq!(due, 1, "one claimed, one left for a later run");
 }
+
+#[sqlx::test]
+async fn a_run_claims_the_oldest_due_notice_first(pool: PgPool) {
+    let mock = spawn_fcm_mock(FcmMockResponse::Ok).await;
+    let app = TestApp::with_pool_and_config(pool.clone(), fcm_config(&mock)).await;
+    let (a, _) = user_with_token(&app).await;
+    add_fcm_device(&pool, a).await;
+    let (b, _) = user_with_token(&app).await;
+    add_fcm_device(&pool, b).await;
+    // The first notice made falls due later than the second one.
+    let younger = due_notice(&app, a).await;
+    let older = due_notice(&app, b).await;
+    sqlx::query(
+        "UPDATE security_notices
+            SET last_pushed_at = last_pushed_at - INTERVAL '30 seconds',
+                push_due_at = push_due_at - INTERVAL '30 seconds'
+          WHERE id = $1",
+    )
+    .bind(older)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let sent = notices::push_due_follow_ups_bounded(&app.state, 1)
+        .await
+        .unwrap();
+    assert_eq!(sent, 1);
+    assert!(
+        push_due_at(&pool, older).await.is_none(),
+        "the older one is claimed"
+    );
+    assert!(
+        push_due_at(&pool, younger).await.is_some(),
+        "the younger one stays due"
+    );
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while pushes_for(&mock, older).len() < 2 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the older one was not sent"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(pushes_for(&mock, younger).len(), 1, "only its first push");
+}
