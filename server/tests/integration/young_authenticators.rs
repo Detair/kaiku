@@ -1325,3 +1325,159 @@ async fn admin_settled_phone_removes_own_older_phone(pool: PgPool) {
     assert_eq!(s, 204, "{b}");
     assert_eq!(device_state(&app.pool, old.row_id).await, "revoked");
 }
+
+#[sqlx::test]
+async fn totp_verify_checks_again_when_the_step_up_is_used(pool: PgPool) {
+    // An older phone becomes active between the early check and the use of
+    // the step-up (for example when an account request completes): the check
+    // at use refuses, TOTP stays off.
+    let app = TestApp::with_passkeys(pool).await;
+    let (user, _) = create_test_user(&app.pool).await;
+    let older = KeyDeviceFixture::insert(&app.pool, &app.config, user, "pending").await;
+    added_ago(&app.pool, kd(&older), Duration::days(2)).await;
+    let young = KeyDeviceFixture::insert(&app.pool, &app.config, user, "active").await;
+    let sid = young.session_id.unwrap();
+    grant(&app, sid, StepUpAction::TotpSet, "", kd(&young)).await;
+    let (s, b) = send(
+        &app,
+        Method::POST,
+        "/auth/mfa/setup",
+        &young.access_token,
+        None,
+    )
+    .await;
+    assert_eq!(s, 200, "{b}");
+    let username: String = sqlx::query_scalar("SELECT username FROM users WHERE id = $1")
+        .bind(user)
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    let code = totp_rs::TOTP::new(
+        totp_rs::Algorithm::SHA1,
+        6,
+        1,
+        30,
+        totp_rs::Secret::Encoded(b["secret"].as_str().unwrap().to_string())
+            .to_bytes()
+            .unwrap(),
+        Some("Kaiku".to_string()),
+        username,
+    )
+    .unwrap()
+    .generate_current()
+    .unwrap();
+
+    // Hold the step-up row: the request passes the early check and the code,
+    // then waits where it uses the step-up.
+    let mut hold = app.pool.begin().await.unwrap();
+    sqlx::query("SELECT id FROM step_up_grants WHERE session_id = $1 FOR UPDATE")
+        .bind(sid)
+        .fetch_all(&mut *hold)
+        .await
+        .unwrap();
+    let activate = async {
+        crate::helpers::wait_for_lock_waiters(&app.pool, 1).await;
+        sqlx::query(
+            "UPDATE approval_devices SET state = 'active', activated_at = NOW() WHERE id = $1",
+        )
+        .bind(older.row_id)
+        .execute(&mut *hold)
+        .await
+        .unwrap();
+        hold.commit().await.unwrap();
+    };
+    let (r, ()) = tokio::join!(
+        send(
+            &app,
+            Method::POST,
+            "/auth/mfa/verify",
+            &young.access_token,
+            Some(json!({ "code": code })),
+        ),
+        activate
+    );
+    assert_too_new(&app.pool, r, kd(&young), 24).await;
+    let has: bool = sqlx::query_scalar("SELECT mfa_secret IS NOT NULL FROM users WHERE id = $1")
+        .bind(user)
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    assert!(!has, "TOTP stays off");
+}
+
+#[sqlx::test]
+async fn setup_with_issuer_gone_is_no_longer_valid(pool: PgPool) {
+    // A PC set-up whose issuing passkey was removed while the PC session
+    // (signed in with another passkey) stays live.
+    let app = TestApp::with_passkeys(pool).await;
+    let (user, old, _) = old_and_young_phone(&app).await;
+    let (_, signed_in) = seed_passkey(&app, user, PasskeyState::Active).await;
+    let a = AuthenticatorRef::passkey(signed_in.id);
+    added_ago(&app.pool, a, Duration::days(30)).await;
+    let (_, issuing) = seed_passkey(&app, user, PasskeyState::Active).await;
+    let b = AuthenticatorRef::passkey(issuing.id);
+    added_ago(&app.pool, b, Duration::hours(25)).await;
+    let (sid, token) = passkey_session(&app.pool, &app.config, user, signed_in.id).await;
+
+    // At the challenge step.
+    let (_, setup) = issue_setup(&app, sid, &token, b).await;
+    // A second set-up, claimed while the issuer was still there.
+    let (id2, setup2) = issue_setup(&app, sid, &token, b).await;
+    let phone = same_install_as(&old);
+    let code = claim(&app, &setup2, &phone).await;
+    grant(
+        &app,
+        sid,
+        StepUpAction::PasskeyRemove,
+        &issuing.id.to_string(),
+        a,
+    )
+    .await;
+    let (s, r) = send(
+        &app,
+        Method::DELETE,
+        &format!("/auth/passkeys/{}", issuing.id),
+        &token,
+        None,
+    )
+    .await;
+    assert_eq!(s, 200, "{r}");
+    let (s, r) = pop(&app, &setup, &phone).await;
+    assert_eq!(
+        (s, r["error"].as_str()),
+        (409, Some("ENROLLMENT_STATE")),
+        "{r}"
+    );
+    assert_untouched(&app.pool, &old).await;
+    // At completion.
+    let (s, r) = send(
+        &app,
+        Method::POST,
+        &format!("/auth/enrollments/{id2}/confirm"),
+        &token,
+        Some(json!({ "code": code })),
+    )
+    .await;
+    assert_eq!(
+        (s, r["error"].as_str()),
+        (409, Some("ENROLLMENT_STATE")),
+        "{r}"
+    );
+    assert_untouched(&app.pool, &old).await;
+}
+
+#[sqlx::test]
+async fn admin_fresh_phone_removes_own_younger_and_itself(pool: PgPool) {
+    let app = TestApp::with_passkeys(pool).await;
+    let (admin, old, young) = old_and_young_phone(&app).await;
+    added_ago(&app.pool, kd(&young), Duration::hours(1)).await;
+    crate::helpers::make_admin(&app.pool, admin).await;
+    let younger = KeyDeviceFixture::insert(&app.pool, &app.config, admin, "active").await;
+    let (s, b) = admin_remove(&app, &young, admin, younger.row_id).await;
+    assert_eq!(s, 204, "{b}");
+    assert_eq!(device_state(&app.pool, younger.row_id).await, "revoked");
+    let (s, b) = admin_remove(&app, &young, admin, young.row_id).await;
+    assert_eq!(s, 204, "{b}");
+    assert_eq!(device_state(&app.pool, young.row_id).await, "revoked");
+    assert_eq!(device_state(&app.pool, old.row_id).await, "active");
+}
