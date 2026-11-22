@@ -107,10 +107,29 @@ out=$(PATH="$WORK/slowtail:$PATH" pf)
 check "preflight sigpipe: complete backup passes check 4" grep -q "dump complete (" <<<"$out"
 
 # --- preflight: rate limiter loaded (check 7) ----------------------------------
-out=$(FAKE_DOCKER_SERVER_LOG='{"level":"INFO","fields":{"message":"Rate limiter initialized"}}' pf)
-check "preflight: loaded limiter passes check 7" grep -q "no 'Rate limiter initialization failed'" <<<"$out"
-out=$(FAKE_DOCKER_SERVER_LOG='{"level":"WARN","fields":{"message":"Rate limiter initialization failed: NOPERM. Rate limiting disabled."}}' pf)
-check "preflight: limiter that did not load fails check 7" grep -q "runs without per-address limits" <<<"$out"
+LOADED='{"level":"INFO","fields":{"message":"Rate limiter initialized"}}'
+FAILED_LINE='{"level":"WARN","fields":{"message":"Rate limiter initialization failed: NOPERM. Rate limiting disabled."}}'
+out=$(FAKE_DOCKER_SERVER_LOG="$LOADED" pf)
+check "preflight: loaded limiter passes check 7" grep -q "✓ the server's log shows the rate limiter loaded" <<<"$out"
+out=$(FAKE_DOCKER_SERVER_LOG="$FAILED_LINE" pf)
+check "preflight: limiter that did not load fails check 7" grep -q "✗ the running server logged 'Rate limiter initialization failed'" <<<"$out"
+out=$(FAKE_DOCKER_SERVER_LOG="$LOADED
+$FAILED_LINE" pf)
+check "preflight: the last start counts (failed after loaded)" grep -q "✗ the running server logged" <<<"$out"
+out=$(FAKE_DOCKER_SERVER_LOG="$FAILED_LINE
+$LOADED" pf)
+check "preflight: the last start counts (loaded after failed)" grep -q "✓ the server's log shows the rate limiter loaded" <<<"$out"
+out=$(FAKE_DOCKER_SERVER_LOG='{"level":"INFO","fields":{"message":"Rate limiting disabled by configuration"}}' pf)
+check "preflight: switched-off limiter passes check 7" grep -q "✓ rate limiting is switched off" <<<"$out"
+out=$(FAKE_DOCKER_SERVER_LOG='{"level":"INFO","fields":{"message":"Server listening"}}' pf)
+check "preflight: log without the start lines cannot tell" grep -q "✗ cannot tell from the server's log" <<<"$out"
+check "preflight: cannot tell runs the direct test (accepted)" grep -q "accepted SCRIPT LOAD" <<<"$out"
+out=$(FAKE_DOCKER_SERVER_LOG='' pf)
+check "preflight: empty log cannot tell" grep -q "✗ cannot tell from the server's log" <<<"$out"
+out=$(FAKE_DOCKER_SERVER_LOG='' FAKE_DOCKER_SCRIPT_LOAD="NOPERM User default has no permissions to run the 'script|load' command" pf)
+check "preflight: cannot tell runs the direct test (refused)" grep -q "did not accept SCRIPT LOAD: NOPERM" <<<"$out"
+out=$(FAKE_DOCKER_LOGS_FAIL=1 pf)
+check "preflight: unreadable log fails check 7" grep -q "✗ could not read the canis-server logs" <<<"$out"
 
 if [ "$FAILED" -gt 0 ]; then
     echo "$FAILED check(s) failed"

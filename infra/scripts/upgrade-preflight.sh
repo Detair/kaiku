@@ -120,16 +120,34 @@ fi
 echo "    Current server image (pin this for rollback): $current_image"
 
 # --- 7. Rate limiter loaded on the running server -------------------------------
-echo "[7/7] Rate limiter loaded (newer versions do not start without it)"
-# Earlier versions logged this line and ran without per-address limits when
-# the limiter could not load its scripts into Valkey; newer versions refuse
-# to start in that case.
-if ! server_logs=$(docker logs canis-server 2>&1); then
+echo "[7/7] Rate limiter loaded at the last start (newer versions do not start without it)"
+# Earlier versions logged "Rate limiter initialization failed" and ran
+# without per-address limits when the limiter could not load its scripts
+# into Valkey; newer versions refuse to start in that case. Only a log that
+# shows the limiter loaded (or was switched off) at the last start passes.
+if ! last_start=$(docker logs canis-server 2>&1 \
+    | grep -oE 'Rate limiter initialization failed|Rate limiter initialized|Rate limiting disabled by configuration' \
+    | tail -n 1; exit "${PIPESTATUS[0]}"); then
     fail "could not read the canis-server logs"
-elif grep -q "Rate limiter initialization failed" <<<"$server_logs"; then
-    fail "the running server logged 'Rate limiter initialization failed': it runs without per-address limits and the new version will not start — allow SCRIPT LOAD and EVALSHA for the server's Valkey user first (docs: configuration/rate-limiting.md, The Server Does Not Start)"
 else
-    pass "no 'Rate limiter initialization failed' in the server logs"
+    case "$last_start" in
+        "Rate limiter initialized")
+            pass "the server's log shows the rate limiter loaded at its last start" ;;
+        "Rate limiting disabled by configuration")
+            pass "rate limiting is switched off (RATE_LIMIT_ENABLED=false); nothing to load" ;;
+        "Rate limiter initialization failed")
+            fail "the running server logged 'Rate limiter initialization failed' at its last start: it runs without per-address limits and the new version will not start — allow SCRIPT LOAD and EVALSHA for the server's Valkey user first (docs: configuration/rate-limiting.md, The Server Does Not Start)" ;;
+        *)
+            # The log no longer reaches back to the last start (rotated or
+            # emptied): it proves nothing either way. Test Valkey directly.
+            direct=$(docker exec canis-valkey sh -c 'REDISCLI_AUTH="$VALKEY_PASSWORD" valkey-cli SCRIPT LOAD "return 1"' 2>&1)
+            if grep -qE '^[0-9a-f]{40}$' <<<"$direct"; then
+                result="a direct test on canis-valkey with its default user (the one the bundled compose file gives the server) accepted SCRIPT LOAD"
+            else
+                result="a direct test on canis-valkey with its default user did not accept SCRIPT LOAD: $(head -n 1 <<<"$direct")"
+            fi
+            fail "cannot tell from the server's log whether the rate limiter loaded (its last start is no longer in the log); $result. If the server uses another Valkey user, check as that user: valkey-cli --user <user> SCRIPT LOAD \"return 1\" must print a hash" ;;
+    esac
 fi
 
 echo

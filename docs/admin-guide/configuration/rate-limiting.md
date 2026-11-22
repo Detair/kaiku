@@ -260,9 +260,13 @@ rate limiter could not load its scripts into Valkey: …` with the cause. Look f
 
 `RATE_LIMIT_ENABLED=false` lets the server start without rate limiting; it is meant only for tests.
 
-Before upgrading from a version that started without its limiter: `docker logs canis-server 2>&1 | grep
-'Rate limiter initialization failed'` must print nothing. If it prints a line, that server runs without
-per-address limits today and will not start after the upgrade until Valkey allows the scripts.
+Before upgrading from a version that started without its limiter: the last of these lines in
+`docker logs canis-server 2>&1 | grep -E 'Rate limiter (initialization failed|initialized)'` must be
+`Rate limiter initialized`. `initialization failed` means that server runs without per-address limits
+today and will not start after the upgrade until Valkey allows the scripts. No line at all means the
+log no longer reaches back to the last start; then test directly as the server's Valkey user:
+`valkey-cli SCRIPT LOAD "return 1"` must print a hash. `infra/scripts/upgrade-preflight.sh` runs these
+checks.
 
 ### Rate Limiting Not Working
 
