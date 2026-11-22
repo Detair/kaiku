@@ -705,8 +705,10 @@ pub struct Started {
 /// and `may_approve` on, else 403 `PC_SETUP_UNAVAILABLE`. A live attempt of
 /// the same session is cancelled (`restarted`) in the same transaction
 /// (Locking 6). Its lazy end is decided first, on the start's clock and
-/// before the start's own checks: a refused start still ends an attempt that
-/// can no longer advance, and the caller commits that end with the refusal.
+/// before the start's own checks: a start refused with 403 or 401 still ends
+/// an attempt that can no longer advance (the caller commits that end with
+/// the refusal); a start refused by its rate limit (429) writes nothing, and
+/// the next step or the minute sweep ends that attempt.
 #[tracing::instrument(skip_all, fields(user_id = %auth.id))]
 pub async fn start_tx(
     conn: &mut PgConnection,

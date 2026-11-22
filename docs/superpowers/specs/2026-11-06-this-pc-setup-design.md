@@ -303,7 +303,7 @@ These rules extend B.7; `server/src/approvals/cascade.rs` implements the cascade
 
    | Transition | Locks, in order, before the clock | Decided and issued on that clock |
    |---|---|---|
-   | start | account, requesting session, the session's live attempt (and its enrolment, then its open challenge) | the old attempt's lazy end (before any refusal of the start, and kept with it), session liveness, start bounds; creation time, QR rotation, 10 minutes |
+   | start | account, requesting session, the session's live attempt (and its enrolment, then its open challenge) | the old attempt's lazy end (decided before the start's own checks, and committed with a 403 or 401 refusal; a start refused by its rate limit, 429, writes nothing, and the next step or the minute sweep ends that attempt), session liveness, start bounds; creation time, QR rotation, 10 minutes |
    | PC poll, cancel, code entry, passkey | account, requesting session, attempt, its enrolment | liveness, QR rotation, code and enrolment expiry; the enrolment's creation and 10 minutes |
    | scan | account, requesting session, attempt; key device, its session | both sessions, QR rotation, attempt; the challenge's creation and expiry |
    | answer, refuse, release | account, requesting session, attempt; key device, its session; challenge | both sessions, attempt, challenge; the code's 5 minutes |
