@@ -827,6 +827,29 @@ pub async fn delete_for_ended_sessions(
     .rows_affected())
 }
 
+/// "End all other sessions": delete every row of `user_id` that is neither a
+/// key phone's row nor owned by `keep` (the acting session), whoever owns it,
+/// in the caller's transaction.
+///
+/// # Errors
+/// The delete failed.
+pub async fn delete_all_but_session_tx(
+    conn: &mut sqlx::PgConnection,
+    user_id: Uuid,
+    keep: Uuid,
+) -> Result<u64, sqlx::Error> {
+    Ok(sqlx::query(concat!(
+        "DELETE FROM push_subscriptions p
+          WHERE p.user_id = $1 AND p.session_id IS DISTINCT FROM $2 AND NOT ",
+        key_phone_row!()
+    ))
+    .bind(user_id)
+    .bind(keep)
+    .execute(&mut *conn)
+    .await?
+    .rows_affected())
+}
+
 /// A device-key sign-in on `install` takes over the install's rows.
 ///
 /// The rows of `user_id` that belonged to an earlier session of a key device

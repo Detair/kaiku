@@ -207,6 +207,11 @@ pub async fn revoke_all_other_sessions(
         super::revocation::EndReason::OthersRevoked,
     )
     .await?;
+    // Every other notification registration of the account goes too, whoever
+    // owns it (an ended, lapsed or cleaned-up session, or none): the owner's
+    // one way to remove a registration nobody can reach any more. A key
+    // phone's registration and the acting session's own stay.
+    crate::push::delete_all_but_session_tx(&mut tx, auth_user.id, current).await?;
     let event = step_up::record_action_tx(
         &mut tx,
         &auth_user,

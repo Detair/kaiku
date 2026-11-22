@@ -240,9 +240,18 @@ counts as "no longer live").
   rules above the owner of a key phone's row only matters once the device is
   revoked, and every revocation path removes the install's rows regardless of
   the owner.
+- "End all other sessions" (`auth::sessions::revoke_all_other_sessions` →
+  `delete_all_but_session_tx`) deletes every row of the account that is not a
+  key phone's and not the acting session's, whoever owns it.
+  `db::cleanup_expired_sessions` deletes the removed sessions' rows (never a
+  key phone's) in its transaction.
 - Deliveries ignore the owner. A phone whose row went with an ended sign-in
-  asks again within a day after it signs in again (the released app keeps its
-  local record up to 24 h).
+  asks again when its app next starts or its address changes, not earlier than
+  a day after its last registration (the released app keeps its local record
+  24 h).
+- Residual: a chat-only session may register under the install id of a
+  removed key phone; if that install is set up again, the row becomes the key
+  phone's row (not removed by session ends or "end all other sessions").
 
 ## Single replica
 

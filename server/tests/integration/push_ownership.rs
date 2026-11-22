@@ -1157,3 +1157,129 @@ async fn key_phone_row_survives_every_session_end(pool: PgPool) {
         "the phone still gets a wake"
     );
 }
+
+// ============================================================================
+// Registrations nobody else can reach any more
+// ============================================================================
+
+async fn lapse_long_ago(pool: &PgPool, sid: Uuid) {
+    sqlx::query(
+        "UPDATE sessions SET created_at = NOW() - INTERVAL '60 days',
+                auth_time = NOW() - INTERVAL '60 days',
+                expires_at = NOW() - INTERVAL '40 days',
+                absolute_expires_at = NOW() - INTERVAL '40 days' WHERE id = $1",
+    )
+    .bind(sid)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// "End all other sessions" removes every other registration of the account,
+/// whoever owns it: a lapsed sign-in's, one without owner from before the
+/// upgrade, one of a session already cleaned up. A key phone's registration
+/// and the acting session's own stay.
+#[sqlx::test]
+async fn end_all_others_removes_every_other_registration(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let phone = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    let pc = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    let (s, b) = register(&app, &phone.access_token, "phone", Some(phone.device_id)).await;
+    assert_eq!(s, 201, "{b}");
+    let acting = Uuid::new_v4();
+    let (s, b) = register(&app, &pc.access_token, "acting", Some(acting)).await;
+    assert_eq!(s, 201, "{b}");
+
+    // A chat-only sign-in registers, then lapses without an end.
+    let (lapsed_sid, chat_only) =
+        create_probation_session_with_token(&pool, &app.config, user).await;
+    let lapsed = Uuid::new_v4();
+    let (s, b) = register(&app, &chat_only, "lapsed", Some(lapsed)).await;
+    assert_eq!(s, 201, "{b}");
+    sqlx::query(
+        "UPDATE sessions SET created_at = NOW() - INTERVAL '9 days',
+                auth_time = NOW() - INTERVAL '9 days',
+                expires_at = NOW() - INTERVAL '1 day' WHERE id = $1",
+    )
+    .bind(lapsed_sid)
+    .execute(&pool)
+    .await
+    .unwrap();
+    // One without owner (from before the upgrade), one of a session that is
+    // already cleaned up.
+    let ownerless = Uuid::new_v4();
+    insert_row(&pool, user, "ownerless", ownerless, None).await;
+    let cleaned = Uuid::new_v4();
+    insert_row(&pool, user, "cleaned", cleaned, Some(Uuid::new_v4())).await;
+
+    device_grant(&app, &pc, StepUpAction::SessionsEnd, "others").await;
+    let (s, b) = send(
+        &app,
+        Method::DELETE,
+        "/auth/sessions",
+        &pc.access_token,
+        json!({}),
+    )
+    .await;
+    assert_eq!(s, 200, "{b}");
+
+    for (device, what) in [
+        (lapsed, "lapsed"),
+        (ownerless, "ownerless"),
+        (cleaned, "cleaned up"),
+    ] {
+        assert!(row(&pool, user, device).await.is_none(), "{what} row gone");
+    }
+    assert!(
+        row(&pool, user, phone.device_id).await.is_some(),
+        "key phone row stays"
+    );
+    assert_eq!(
+        row(&pool, user, acting).await,
+        Some(("acting".into(), pc.session_id)),
+        "the acting session's own row stays"
+    );
+}
+
+/// The routine that removes expired session rows takes their registrations
+/// with them, never a key phone's.
+#[sqlx::test]
+async fn cleanup_removes_a_lapsed_sessions_registrations(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let phone = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    let (s, b) = register(&app, &phone.access_token, "phone", Some(phone.device_id)).await;
+    assert_eq!(s, 201, "{b}");
+    let (lapsed_sid, chat_only) =
+        create_probation_session_with_token(&pool, &app.config, user).await;
+    let lapsed = Uuid::new_v4();
+    let (s, b) = register(&app, &chat_only, "lapsed", Some(lapsed)).await;
+    assert_eq!(s, 201, "{b}");
+    let (live_sid, live) = create_probation_session_with_token(&pool, &app.config, user).await;
+    let other = Uuid::new_v4();
+    let (s, b) = register(&app, &live, "live", Some(other)).await;
+    assert_eq!(s, 201, "{b}");
+
+    // Both the chat-only sign-in and the key phone's session lapsed long ago.
+    lapse_long_ago(&pool, lapsed_sid).await;
+    lapse_long_ago(&pool, phone.session_id.unwrap()).await;
+    let removed = vc_server::db::cleanup_expired_sessions(&pool)
+        .await
+        .unwrap();
+    assert!(removed >= 2, "{removed}");
+
+    assert!(
+        row(&pool, user, lapsed).await.is_none(),
+        "the lapsed sign-in's row went"
+    );
+    assert!(
+        row(&pool, user, phone.device_id).await.is_some(),
+        "a key phone's row stays"
+    );
+    assert_eq!(
+        row(&pool, user, other).await,
+        Some(("live".into(), Some(live_sid))),
+        "a live sign-in's row stays"
+    );
+}
