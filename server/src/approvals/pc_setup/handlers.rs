@@ -639,8 +639,9 @@ pub async fn passkey_finish(
     // Another session's attempt is unknown before its ceremony is touched.
     // Only an attempt whose right code was typed on the web registers here,
     // and only with the proof sent with that code: anything else is refused
-    // under the locks before a ceremony is taken (the locked check below
-    // decides the rest again).
+    // before a ceremony is taken, by a first comparison that reads the
+    // attempt without a lock (its proof hash is written once, with the move
+    // to `enrolled`); the locked check below decides again.
     let proof = body.proof.as_deref().and_then(Secret256::from_b64u);
     {
         let mut conn = state.db.acquire().await?;
