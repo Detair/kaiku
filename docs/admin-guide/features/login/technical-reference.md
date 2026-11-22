@@ -663,7 +663,14 @@ sequenceDiagram
   attempt, code, challenge, enrolment) and every deadline the transition issues (a start's creation time,
   QR rotation and 10 minutes, the code's 5 minutes, the enrolment's 10 minutes, the scan's challenge:
   created at that value, expiring at the earlier of it plus 2 minutes and the attempt's stored deadline,
-  in whole seconds), so a wait for a lock never shortens or extends a deadline. Steps that read their own
+  in whole seconds), so a wait for a lock never shortens or extends a deadline, with one exception: the
+  re-check's lazy writes (a claim whose challenge is gone going back to `waiting`, the end of a stale
+  attempt) void the attempt's challenge after the clock was read (a restart, and the phone's answer,
+  refusal and release for the challenge they act on, lock it first). Every other writer of a `pc_setup`
+  challenge holds the account lock, so the only wait there is for the minute sweep's single statement
+  that expires due challenges. Only the PC's poll and `current` issue a deadline after such a write: after
+  the return to `waiting`, the new QR's rotation (60 s) can be shorter by at most that statement's
+  duration. Steps that read their own
   clock: the unlocked reads before the locks (scanner check, other-account read, the polls' and the sweep's hints)
   use `clock_timestamp()` of their statement and the locked re-check decides; the account lock
   (`lock_accounts`, including the ban's expiry) is unchanged. The phone's steps use the checks of the

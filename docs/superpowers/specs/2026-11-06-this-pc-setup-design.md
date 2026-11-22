@@ -297,7 +297,7 @@ These rules extend B.7; `server/src/approvals/cascade.rs` implements the cascade
    `clock_timestamp()` once. That one value decides every liveness it checks (both sessions included)
    and every deadline it issues (the scan's challenge included: its creation time and expiry are that
    value and the earlier of that value plus 2 minutes and the attempt's stored deadline, in whole
-   seconds), so a wait for a lock never shortens or extends a deadline:
+   seconds), so a wait for a lock never shortens or extends a deadline, with the one exception below:
 
    | Transition | Locks, in order, before the clock | Decided and issued on that clock |
    |---|---|---|
@@ -305,6 +305,16 @@ These rules extend B.7; `server/src/approvals/cascade.rs` implements the cascade
    | PC poll, cancel, code entry, passkey | account, requesting session, attempt, its enrolment | liveness, QR rotation, code and enrolment expiry; the enrolment's creation and 10 minutes |
    | scan | account, requesting session, attempt; key device, its session | both sessions, QR rotation, attempt; the challenge's creation and expiry |
    | answer, refuse, release | account, requesting session, attempt; key device, its session; challenge | both sessions, attempt, challenge; the code's 5 minutes |
+
+   The exception: the re-check's two lazy writes, a claim whose challenge is gone going back to
+   `waiting` and the end of a stale attempt, void the attempt's challenge after the clock was read
+   (a restart, and the phone's answer, refusal and release for the challenge they act on, lock it
+   before their clock). Every other writer of a `pc_setup` challenge holds the account lock, so the only
+   wait there is for the minute sweep's single statement that expires due challenges. A transition that
+   makes one of these writes issues no deadline after it, except the PC's poll and `current`: after the
+   return to `waiting` they issue the new QR's 60-second rotation on the earlier clock, so that rotation
+   can be shorter by at most the duration of that one sweep statement. (A scan after the return finds no
+   current QR and issues nothing.)
 
    Where a step reads its own clock instead: the unlocked reads before the locks (the scanner check, the
    one read of another account's code, the polls' and the sweep's hints) use `clock_timestamp()` of
