@@ -440,7 +440,9 @@ count (up to 50 events listed); pushes for one notice go out at most once a minu
 back by that minute get one follow-up push with the count at that moment, which replaces the first
 one on the phone, one to two minutes after the first push (the server checks once a minute). There
 is no follow-up when the account owner answered the notice with "That wasn't me" after its newest
-event; this holds for the copies for admins and the recovery contact too. Pushes are
+event; this holds for the copies for admins and the recovery contact too. A push that fails (or
+is cut off by a server restart) is not sent again; the notice in the Kaiku chat always shows the
+current count. Pushes are
 always high priority, bypass notification settings, and high ones also bypass quiet hours.
 
 **Place:** v1.0 has no GeoIP lookup at all; the place field is empty. IP addresses are stored for

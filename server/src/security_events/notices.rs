@@ -553,8 +553,16 @@ pub async fn deliver_pending_bounded(state: &AppState, batch: i64) -> anyhow::Re
     Ok(n)
 }
 
-/// Follow-up pushes one sweep sends at most.
-pub const FOLLOW_UP_BATCH: i64 = 500;
+/// Follow-up pushes one sweep run claims at most.
+pub const FOLLOW_UP_BATCH: i64 = 100;
+/// Recipients whose follow-ups are sent at the same time.
+pub const FOLLOW_UP_PARALLEL: usize = 8;
+/// Time one recipient's follow-ups may take in a batch.
+///
+/// All of that recipient's subscriptions are sent one after another; what
+/// is left at the limit is dropped and logged, so a recipient whose
+/// addresses never answer holds only its own slot, and only this long.
+pub const FOLLOW_UP_RECIPIENT_LIMIT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// The sweep step: one follow-up push for each notice whose push was held
 /// back and whose push interval has passed (`push_due_at`). Returns how many
@@ -573,6 +581,18 @@ pub const FOLLOW_UP_BATCH: i64 = 500;
 /// the notice as it stands. The DM read position is not used, since any
 /// session of the account can move it.
 pub async fn push_due_follow_ups(state: &AppState) -> anyhow::Result<usize> {
+    push_due_follow_ups_bounded(state, FOLLOW_UP_BATCH).await
+}
+
+/// [`push_due_follow_ups`] with the claim bound given (tests).
+///
+/// At most one batch is in flight per process: while the previous batch is
+/// still being sent, nothing is claimed (the notices stay due for a later
+/// run). The batch is sent in the background, [`FOLLOW_UP_PARALLEL`]
+/// recipients at a time, each recipient's pushes one after another within
+/// [`FOLLOW_UP_RECIPIENT_LIMIT`]. A push recorded as sent that then fails
+/// (or is cut off by a server stop) is logged and not sent again.
+pub async fn push_due_follow_ups_bounded(state: &AppState, limit: i64) -> anyhow::Result<usize> {
     #[derive(sqlx::FromRow)]
     struct Due {
         id: Uuid,
@@ -585,6 +605,10 @@ pub async fn push_due_follow_ups(state: &AppState) -> anyhow::Result<usize> {
         actor_user_id: Option<Uuid>,
         dealt_with: bool,
     }
+    let Some(batch) = state.push.begin_follow_up_batch() else {
+        tracing::debug!("sweep: previous follow-up batch still sending; nothing claimed");
+        return Ok(0);
+    };
     let mut tx = state.db.begin().await?;
     let due: Vec<Due> = sqlx::query_as(
         "WITH due AS (
@@ -617,7 +641,7 @@ pub async fn push_due_follow_ups(state: &AppState) -> anyhow::Result<usize> {
                 LIMIT 1
            ) newest ON TRUE",
     )
-    .bind(FOLLOW_UP_BATCH)
+    .bind(limit)
     .fetch_all(&mut *tx)
     .await?;
     if due.is_empty() {
@@ -661,15 +685,46 @@ pub async fn push_due_follow_ups(state: &AppState) -> anyhow::Result<usize> {
     // Sent in the background, like the immediate pushes: a push service or
     // endpoint that does not answer never holds up the sweep's other steps.
     let sent = pushes.len();
+    if sent == 0 {
+        return Ok(0);
+    }
+    let mut by_recipient: Vec<(Uuid, Vec<SecurityPush>)> = Vec::new();
+    for (recipient, push) in pushes {
+        match by_recipient.iter_mut().find(|(r, _)| *r == recipient) {
+            Some((_, list)) => list.push(push),
+            None => by_recipient.push((recipient, vec![push])),
+        }
+    }
     let state = state.clone();
     tokio::spawn(async move {
-        for (recipient, push) in pushes {
-            if let Err(e) =
-                crate::push::deliver_with(&state.db, &state.push, recipient, &push).await
-            {
-                tracing::warn!(error = %e, "notice: follow-up push failed");
-            }
-        }
+        use futures::StreamExt as _;
+        futures::stream::iter(by_recipient)
+            .for_each_concurrent(FOLLOW_UP_PARALLEL, |(recipient, list)| {
+                let state = &state;
+                async move {
+                    let send = async {
+                        for push in &list {
+                            if let Err(e) =
+                                crate::push::deliver_with(&state.db, &state.push, recipient, push)
+                                    .await
+                            {
+                                tracing::warn!(error = %e, "notice: follow-up push failed");
+                            }
+                        }
+                    };
+                    if tokio::time::timeout(FOLLOW_UP_RECIPIENT_LIMIT, send)
+                        .await
+                        .is_err()
+                    {
+                        tracing::warn!(
+                            recipient = %recipient,
+                            "notice: follow-up pushes cut off after the time limit"
+                        );
+                    }
+                }
+            })
+            .await;
+        drop(batch);
     });
     Ok(sent)
 }

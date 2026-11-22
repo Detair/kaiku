@@ -923,8 +923,23 @@ fn security_pushes(got: &[Value]) -> Vec<Value> {
         .collect()
 }
 
+/// One sweep run, after the previous run's follow-up batch has been sent
+/// (a run while a batch is in flight claims nothing).
 async fn sweep(app: &TestApp) {
+    wait_for_follow_up_batch(app, Duration::from_secs(10)).await;
     vc_server::auth::timers::run_once(&app.state).await.unwrap();
+}
+
+/// Wait until no follow-up batch is being sent.
+async fn wait_for_follow_up_batch(app: &TestApp, limit: Duration) {
+    let deadline = tokio::time::Instant::now() + limit;
+    while app.state.push.follow_up_batch_in_flight() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the follow-up batch is still sending"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }
 
 #[sqlx::test]
@@ -1330,4 +1345,146 @@ async fn a_report_before_the_newest_event_still_gets_the_follow_up(pool: PgPool)
     let got = settle(&mock, 2).await;
     assert_eq!(got.len(), 2, "{got:?}");
     assert_eq!(got[1]["message"]["data"]["count"], "2");
+}
+
+// --- Follow-up batches are bounded ------------------------------------------
+
+/// A push subscription whose address accepts the request and never answers.
+async fn add_silent_fcm_device(pool: &PgPool, user: Uuid) {
+    sqlx::query(
+        "INSERT INTO push_subscriptions (user_id, provider, endpoint, device_id)
+         VALUES ($1, 'fcm', $2, $3)",
+    )
+    .bind(user)
+    .bind(format!("silent-{}", Uuid::new_v4().simple()))
+    .bind(Uuid::now_v7())
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// A notice of `user` with a held-back push that is due now.
+async fn due_notice(app: &TestApp, user: Uuid) -> Uuid {
+    let e1 = record_and_deliver(app, event(user, EventType::SignIn, Actor::User(user))).await;
+    let notice = notice_of(&app.pool, e1).await;
+    record_and_deliver(app, event(user, EventType::SignIn, Actor::User(user))).await;
+    pass_push_interval(&app.pool, notice).await;
+    notice
+}
+
+async fn push_due_at(pool: &PgPool, notice: Uuid) -> Option<chrono::DateTime<chrono::Utc>> {
+    sqlx::query_scalar("SELECT push_due_at FROM security_notices WHERE id = $1")
+        .bind(notice)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// Pushes the mock received for `notice`.
+fn pushes_for(mock: &FcmMock, notice: Uuid) -> Vec<Value> {
+    pushes(mock)
+        .into_iter()
+        .filter(|p| p["message"]["data"]["notice_id"] == notice.to_string())
+        .collect()
+}
+
+#[sqlx::test]
+async fn an_account_whose_addresses_never_answer_does_not_delay_another(pool: PgPool) {
+    let mock = spawn_fcm_mock(FcmMockResponse::Ok).await;
+    let app = TestApp::with_pool_and_config(pool.clone(), fcm_config(&mock)).await;
+    // Account A: its notice is due first, and its ten addresses never
+    // answer (added after the first push, which the test delivers inline).
+    let (a, _) = user_with_token(&app).await;
+    due_notice(&app, a).await;
+    for _ in 0..10 {
+        add_silent_fcm_device(&pool, a).await;
+    }
+    // Account B: one healthy address.
+    let (b, _) = user_with_token(&app).await;
+    add_fcm_device(&pool, b).await;
+    let notice_b = due_notice(&app, b).await;
+    assert_eq!(pushes_for(&mock, notice_b).len(), 1, "the first push");
+
+    vc_server::auth::timers::run_once(&app.state).await.unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while pushes_for(&mock, notice_b).len() < 2 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "B's follow-up waited behind A's addresses"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(
+        pushes_for(&mock, notice_b)[1]["message"]["data"]["count"],
+        "2"
+    );
+}
+
+#[sqlx::test]
+async fn nothing_is_claimed_while_a_batch_is_sending(pool: PgPool) {
+    let mock = spawn_fcm_mock(FcmMockResponse::Ok).await;
+    let app = TestApp::with_pool_and_config(pool.clone(), fcm_config(&mock)).await;
+    let (a, _) = user_with_token(&app).await;
+    let notice_a = due_notice(&app, a).await;
+    for _ in 0..10 {
+        add_silent_fcm_device(&pool, a).await;
+    }
+
+    // The batch with A's follow-up starts and keeps sending.
+    vc_server::auth::timers::run_once(&app.state).await.unwrap();
+    assert!(
+        push_due_at(&pool, notice_a).await.is_none(),
+        "A was claimed"
+    );
+    assert!(app.state.push.follow_up_batch_in_flight());
+
+    // B's follow-up falls due meanwhile: the next run claims nothing.
+    let (b, _) = user_with_token(&app).await;
+    add_fcm_device(&pool, b).await;
+    let notice_b = due_notice(&app, b).await;
+    vc_server::auth::timers::run_once(&app.state).await.unwrap();
+    assert!(
+        push_due_at(&pool, notice_b).await.is_some(),
+        "still due while the batch is sending"
+    );
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(pushes_for(&mock, notice_b).len(), 1, "only B's first push");
+
+    // A's slot ends at the per-recipient limit; then B is claimed and sent.
+    wait_for_follow_up_batch(&app, Duration::from_secs(45)).await;
+    vc_server::auth::timers::run_once(&app.state).await.unwrap();
+    assert!(push_due_at(&pool, notice_b).await.is_none());
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while pushes_for(&mock, notice_b).len() < 2 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "B's follow-up never came"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+#[sqlx::test]
+async fn one_run_claims_at_most_its_bound(pool: PgPool) {
+    let mock = spawn_fcm_mock(FcmMockResponse::Ok).await;
+    let app = TestApp::with_pool_and_config(pool.clone(), fcm_config(&mock)).await;
+    let (a, _) = user_with_token(&app).await;
+    add_fcm_device(&pool, a).await;
+    let (b, _) = user_with_token(&app).await;
+    add_fcm_device(&pool, b).await;
+    let first = due_notice(&app, a).await;
+    let second = due_notice(&app, b).await;
+
+    let sent = notices::push_due_follow_ups_bounded(&app.state, 1)
+        .await
+        .unwrap();
+    assert_eq!(sent, 1);
+    let still_due = [first, second];
+    let mut due = 0;
+    for n in still_due {
+        if push_due_at(&pool, n).await.is_some() {
+            due += 1;
+        }
+    }
+    assert_eq!(due, 1, "one claimed, one left for a later run");
 }

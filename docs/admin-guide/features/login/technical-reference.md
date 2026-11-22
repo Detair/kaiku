@@ -799,7 +799,13 @@ always high priority, collapse key `security-<notice_id>`, TTL 86400 s, at most 
 same collapse key once the 60 s have passed, so 60–120 s after the first push (row lock with
 `SKIP LOCKED`, so concurrent sweeps send it once; after downtime each due notice gets one). The
 sweep records the push as sent and commits before it hands the sends to a background task, so a
-push service that does not answer never delays the sweep's other steps. "Push now", "due" and
+push service that does not answer never delays the sweep's other steps. One run claims at most 100
+notices, and only when the previous batch has finished sending (otherwise the notices stay due for
+a later run); a batch sends for 8 recipients at a time, each recipient's pushes one after another
+for at most 30 s, so a recipient whose push addresses never answer delays only its own pushes. The
+order is deliberate: first record the push as sent, then send it. A crash or stop in between loses
+at most that one push and never sends one twice. A push recorded as sent that then fails, or is cut
+off by a server stop, is logged and not sent again; this holds for the immediate push too. The notice in the Kaiku DM stays correct. "Push now", "due" and
 "dealt with" are decided on the database clock at the moment of the statement; an event's
 `delivered_at` is the moment it joined its notices. No follow-up when the owner reported one of the
 notice's events ("That wasn't me") after its newest event joined (also for the admin and

@@ -1306,6 +1306,14 @@ pub async fn spawn_fcm_mock(responder: FcmMockResponse) -> FcmMock {
         if action != "messages:send" {
             return (StatusCode::NOT_FOUND, String::new());
         }
+        // A token starting with `silent-` stands for a device whose push
+        // address accepts the request and never answers.
+        if body["message"]["token"]
+            .as_str()
+            .is_some_and(|t| t.starts_with("silent-"))
+        {
+            std::future::pending::<()>().await;
+        }
         st.received.lock().unwrap().push(body);
         match st.responder {
             FcmMockResponse::Ok => (
