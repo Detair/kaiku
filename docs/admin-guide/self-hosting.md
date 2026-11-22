@@ -149,15 +149,25 @@ When you update an existing compose installation:
 7. **The server no longer starts without its rate limiter.** With rate
    limiting on (the default), a server whose limiter cannot load its scripts
    into Valkey now exits at start, before it changes the database. Check
-   before upgrading: `docker logs canis-server 2>&1 | grep -E 'Rate limiter
-   (initialization failed|initialized)' | tail -n 1` must print
-   `Rate limiter initialized`. `initialization failed` means your server
+   before upgrading:
+
+   ```bash
+   docker logs canis-server 2>&1 | grep -E 'Rate limiter (initialization failed|initialized)|Rate limiting disabled by configuration' | tail -n 1
+   ```
+
+   It must print `Rate limiter initialized`, or `Rate limiting disabled by
+   configuration` if you switched rate limiting off (that server starts as
+   before). `initialization failed` means your server
    runs without per-address limits today; fix Valkey first, see the
    [rate-limiting troubleshooting](configuration/rate-limiting.md#the-server-does-not-start).
    No line at all means the log no longer reaches back to the last start:
    then test Valkey directly as the server's user,
-   `valkey-cli SCRIPT LOAD "return 1"` must print a hash.
-   `infra/scripts/upgrade-preflight.sh` runs these checks. If you switched rate
+   `valkey-cli SCRIPT LOAD "return 1"` must print a hash. The log shows the
+   state at the last start: if you changed Valkey since then (its users,
+   renamed commands, another image or configuration), test directly as well.
+   `infra/scripts/upgrade-preflight.sh` runs these checks for the bundled
+   compose file; with a Valkey of your own, test by hand as the server's
+   user. If you switched rate
    limiting off, write exactly `RATE_LIMIT_ENABLED=false`: other spellings
    such as `0`, `False` or `no` mean "on".
 

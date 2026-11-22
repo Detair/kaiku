@@ -802,7 +802,9 @@ sweep records the push as sent and commits before it hands the sends to a backgr
 push service that does not answer never delays the sweep's other steps. One run claims at most 100
 notices, and only when the previous batch has finished sending (otherwise the notices stay due for
 a later run); a batch sends for 8 recipients at a time, each recipient's pushes one after another
-for at most 30 s, so a recipient whose push addresses never answer delays only its own pushes. The
+for at most 30 s, so a recipient whose push addresses never answer delays only its own pushes,
+unless many such recipients fill all slots: then the batch can outlast the minute and other
+accounts' follow-ups (never an immediate push) wait for a later run. The
 order is deliberate: first record the push as sent, then send it. A crash or stop in between loses
 at most that one push and never sends one twice. A push recorded as sent that then fails, or is cut
 off by a server stop, is logged and not sent again; this holds for the immediate push too. The notice in the Kaiku DM stays correct. "Push now", "due" and
