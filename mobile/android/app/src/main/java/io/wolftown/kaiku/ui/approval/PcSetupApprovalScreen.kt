@@ -96,7 +96,7 @@ fun PcSetupApprovalScreen(
 
     KeyScreen {
         when (val u = ui) {
-            PcSetupUi.Claiming, PcSetupUi.Working, PcSetupUi.Sending -> {
+            PcSetupUi.Claiming, PcSetupUi.Working, PcSetupUi.Sending, PcSetupUi.Refusing -> {
                 CircularProgressIndicator()
                 KeyBody(stringResource(R.string.approval_checking))
             }

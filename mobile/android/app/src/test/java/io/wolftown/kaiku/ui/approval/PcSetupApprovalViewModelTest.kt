@@ -377,6 +377,31 @@ class PcSetupApprovalViewModelTest {
         v.viewModelScope.coroutineContext[kotlinx.coroutines.Job]!!.cancel()
     }
 
+    @Test fun `back while the no is being sent leaves at once and the no still arrives`() = runTest {
+        val (v, _) = vm()
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        api.denyGate = gate
+        v.start(payload)
+        v.deny()
+        // The unsigned "No" brings nothing back that Back could lose.
+        assertEquals(PcSetupUi.Refusing, v.ui.value)
+        assertTrue(screenHandlesBack(v.ui.value))
+        assertTrue(v.requestBack())
+        v.back()
+        gate.complete(Unit)
+        assertEquals(listOf("claimPc", "refusePc:${SigFixtures.challengeId(16)}"), api.calls)
+        assertEquals(PcSetupUi.Finished(R.string.pc_setup_denied, ok = false), v.ui.value)
+    }
+
+    @Test fun `a refused answer on a completed attempt is shown as success`() = runTest {
+        val (v, _) = vm()
+        api.pcAnswerFailure = apiError(409, "APPROVAL_STATE")
+        api.pcStatuses.add(PcSetupPhoneStatus("completed", null))
+        v.start(payload)
+        v.approve(activity)
+        assertEquals(PcSetupUi.Finished(R.string.pc_setup_done, ok = true), v.ui.value)
+    }
+
     @Test fun `an unknown state or reason ends with the generic text and stops polling`() = runTest {
         val cases = listOf(
             PcSetupPhoneStatus("time_travel") to R.string.pc_setup_failed,

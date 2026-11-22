@@ -81,6 +81,7 @@ class FakeApprovalApi : ApprovalApi {
         return pcAnswer
     }
     override suspend fun refusePcSetup(challengeId: String) {
+        denyGate?.await()
         calls += "refusePc:$challengeId"
         pcRefuseFailure?.let { throw it }
     }

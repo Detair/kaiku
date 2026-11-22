@@ -46,8 +46,10 @@ sealed interface PcSetupUi {
     data class ConfirmReport(val ctx: PcSetupContext) : PcSetupUi
     /** The screen lock is being asked, or a step before it runs (the system handles Back). */
     data object Working : PcSetupUi
-    /** The signed answer (or the "No") is on its way; bounded by the HTTP timeouts. */
+    /** The signed answer is on its way; bounded by the HTTP timeouts. Back waits for it. */
     data object Sending : PcSetupUi
+    /** The unsigned "No" is on its way; it brings nothing back, so Back may leave meanwhile. */
+    data object Refusing : PcSetupUi
     /** The six digits for the PC. Held here only: never saved state, disk or a log line. */
     data class Code(val code: String) : PcSetupUi {
         override fun toString() = "Code"
@@ -230,9 +232,10 @@ class PcSetupApprovalViewModel @Inject constructor(
     fun deny() {
         val ch = challenge ?: return
         if (_ui.value !is PcSetupUi.Context) return
-        // Committed: a "No" is never turned into a release by leaving the screen meanwhile.
+        // Committed: a "No" is never turned into a release by leaving the screen meanwhile. It
+        // brings nothing back, so Back may leave while it is sent.
         open = false
-        _ui.value = PcSetupUi.Sending
+        _ui.value = PcSetupUi.Refusing
         viewModelScope.launch {
             try {
                 withContext(NonCancellable) { approvalApi.refusePcSetup(ch.challengeId) }
@@ -428,7 +431,8 @@ class PcSetupApprovalViewModel @Inject constructor(
                 null
             }
             val msg = status?.let(::endText)
-            if (msg != null) return PcSetupUi.Finished(msg, ok = false)
+            // `completed` means the passkey exists: success, as on the poll.
+            if (msg != null) return PcSetupUi.Finished(msg, ok = status.state == "completed")
         }
         // The server refused the answer: free the claim so a re-scan is not "already confirming".
         // A lost response (IOException) is not released: the answer may have been taken.
