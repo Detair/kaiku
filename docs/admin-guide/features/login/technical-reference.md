@@ -153,8 +153,12 @@ key device; every other registration lives as long as the sign-in that made it.
 - *Every other row* belongs to the session that registered it (`push_subscriptions.session_id`, no
   foreign key; a missing or ended session counts as not live) and is deleted in the transaction
   that ends that session, for every end reason (`approvals::cascade::on_sessions_ended`). A session
-  ended from another device loses its rows too; that phone asks again for notifications within a
-  day after it signs in again (the released Android app keeps its local record for up to 24 hours).
+  ended from another device loses its rows too; that phone asks again for notifications when its app next starts or its push address changes, and not earlier than a day after its last registration (the released Android app keeps its local record for 24 hours); a phone signed out from elsewhere whose app keeps running can be without notifications for longer than a day.
+- "End all other sessions" (`DELETE /auth/sessions`) also deletes, in the same transaction, every
+  registration of the account that is not a key phone's and not the acting session's, whoever owns
+  it (an ended, lapsed or already removed session, or none).
+- The routine that removes expired session rows (30 days after the end or the last expiry) deletes
+  their registrations in the same transaction, never a key phone's.
 - Registering stores the caller's `sid` as the owner, under the caller's session row lock (`FOR
   SHARE`), so a session that is being ended either waits for the registration and then deletes the
   row, or has ended and the registration answers 401 `INVALID_TOKEN`.
@@ -170,12 +174,22 @@ key device; every other registration lives as long as the sign-in that made it.
 - The upgrade gives rows of an active key device's install that device's newest live session; all
   other rows start without owner. Nothing is deleted.
 
-What stays possible (residual): a chat-only sign-in can still take over or delete a registration
-without an owner from before the upgrade and the registration of a sign-in that lapsed without an
-end (both not a key phone's); whoever holds a phone's exact endpoint (FCM token or UnifiedPush URL)
-can move it to another account by registering it there, as before. A chat-only sign-in reads the
-account's key phones including their install ids (`GET /api/approval-devices`); the install id alone
-no longer lets it touch a key phone's registration.
+What stays (residual):
+
+- The registration of a sign-in that lapsed without an end keeps receiving content-free wakes until
+  "end all other sessions" or until the clean-up removes the session row (30 days after its last
+  expiry). Any session of the account may take it over meanwhile.
+- A registration without an owner from before the upgrade keeps receiving wakes until its phone
+  registers again, "end all other sessions" is used, or the provider reports its address dead. Any
+  session of the account may take it over meanwhile.
+- Whoever holds a phone's exact endpoint (FCM token or UnifiedPush URL) can move it to another
+  account by registering it there, as before.
+- A chat-only sign-in reads the account's key phones including their install ids (`GET
+  /api/approval-devices`), also those of removed key phones. The install id no longer lets it touch
+  an active or pending key phone's registration. A chat-only sign-in may register under the install
+  id of a removed key phone; if that same phone is later set up again, that registration becomes the
+  key phone's row and stays until the device is removed or a full session replaces it ("end all
+  other sessions" does not remove it).
 
 ## 4. Sessions: refresh rotation and caps
 
