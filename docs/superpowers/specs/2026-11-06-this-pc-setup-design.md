@@ -67,8 +67,10 @@ from the same screen.
 Trust limits of option A: the code shows that whoever typed it got it from the person at the phone; the
 server cannot tell where that person stands. It is not a proximity check. The phone therefore says to
 type the code only on the computer where this was started, and every passkey made this way is
-announced with "That wasn't me". Passkeys over hybrid remain the only cross-device path with a
-proximity guarantee, and this flow does not replace them.
+announced with "That wasn't me". On the web the proof is held by the page, so anything that can act
+inside that page acts with it; and whoever types the right code first is, for the server, the page.
+Passkeys over hybrid remain the only cross-device path with a proximity guarantee, and this flow does
+not replace them.
 
 ## D2: who gets the button (decided: default unchanged)
 
@@ -262,8 +264,8 @@ ceremony is taken; without the proof, or with another, the answer is 409 `APPROV
 ceremony stays for the page that holds it. If the answer
 to the code is lost, the page still holds its proof, the poll shows `enrolled` and the passkey step
 starts with it. A page reload between the code and the passkey loses the proof: **Start again**, as on
-the desktop path. The server still cannot tell which device or person the page runs on; it only knows
-that the registering page is the one that typed the right code.
+the desktop path. The server still cannot tell which device or person the page runs on; what holds is
+that the registration requests carry the proof that came with the first right code.
 
 At `done` the passkey row is created as `active`. A failed or cancelled ceremony can be retried until
 the enrolment expires (10 minutes). Firefox on Linux gets the existing `LinuxPasskeyHint` guidance
