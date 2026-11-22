@@ -889,3 +889,273 @@ async fn a_concurrent_sweep_never_moves_the_cursor(pool: PgPool) {
     let _ = notices::deliver_pending_bounded(&app.state, 2).await;
     assert!(delivered(second).await);
 }
+
+// --- Follow-up push for a notice whose push was held back ------------------
+
+/// The notice an event joined.
+async fn notice_of(pool: &PgPool, event_id: Uuid) -> Uuid {
+    sqlx::query_scalar("SELECT notice_id FROM security_notice_events WHERE event_id = $1")
+        .bind(event_id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// Move the notice's clock past the push interval (no sleeping): its last
+/// push and its due follow-up both move 61 s into the past.
+async fn pass_push_interval(pool: &PgPool, notice_id: Uuid) {
+    sqlx::query(
+        "UPDATE security_notices
+            SET last_pushed_at = last_pushed_at - INTERVAL '61 seconds',
+                push_due_at = push_due_at - INTERVAL '61 seconds'
+          WHERE id = $1",
+    )
+    .bind(notice_id)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+fn security_pushes(got: &[Value]) -> Vec<Value> {
+    got.iter()
+        .filter(|p| p["message"]["data"]["t"] == "security")
+        .cloned()
+        .collect()
+}
+
+async fn sweep(app: &TestApp) {
+    vc_server::auth::timers::run_once(&app.state).await.unwrap();
+}
+
+#[sqlx::test]
+async fn held_back_push_gets_one_follow_up_with_the_final_count(pool: PgPool) {
+    let mock = spawn_fcm_mock(FcmMockResponse::Ok).await;
+    let app = TestApp::with_pool_and_config(pool.clone(), fcm_config(&mock)).await;
+    let (u, _) = user_with_token(&app).await;
+    add_fcm_device(&pool, u).await;
+
+    let e1 = record_and_deliver(&app, event(u, EventType::SignIn, Actor::User(u))).await;
+    let notice = notice_of(&pool, e1).await;
+    // Ten seconds later a second event joins: its push is held back.
+    sqlx::query(
+        "UPDATE security_notices SET last_pushed_at = last_pushed_at - INTERVAL '10 seconds'
+          WHERE id = $1",
+    )
+    .bind(notice)
+    .execute(&pool)
+    .await
+    .unwrap();
+    record_and_deliver(&app, event(u, EventType::SignIn, Actor::User(u))).await;
+    let got = settle(&mock, 2).await;
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert_eq!(got[0]["message"]["data"]["count"], "1");
+
+    // Before the interval has passed the sweep sends nothing.
+    sweep(&app).await;
+    assert_eq!(settle(&mock, 2).await.len(), 1, "not due yet");
+
+    pass_push_interval(&pool, notice).await;
+    sweep(&app).await;
+    let got = settle(&mock, 2).await;
+    assert_eq!(got.len(), 2, "{got:?}");
+    let follow = &got[1]["message"];
+    assert_eq!(follow["data"]["count"], "2");
+    assert_eq!(follow["data"]["notice_id"], notice.to_string());
+    assert_eq!(follow["data"], {
+        let mut first = got[0]["message"]["data"].clone();
+        first["count"] = Value::String("2".into());
+        first
+    });
+    assert_eq!(
+        follow["android"]["collapse_key"],
+        got[0]["message"]["android"]["collapse_key"]
+    );
+    assert_eq!(
+        follow["android"]["collapse_key"],
+        format!("security-{notice}")
+    );
+    assert_eq!(follow["android"]["priority"], "HIGH");
+
+    // Sent once: later sweeps send nothing more.
+    sweep(&app).await;
+    pass_push_interval(&pool, notice).await;
+    sweep(&app).await;
+    assert_eq!(settle(&mock, 3).await.len(), 2, "exactly one follow-up");
+}
+
+#[sqlx::test]
+async fn a_burst_gets_exactly_one_follow_up(pool: PgPool) {
+    let mock = spawn_fcm_mock(FcmMockResponse::Ok).await;
+    let app = TestApp::with_pool_and_config(pool.clone(), fcm_config(&mock)).await;
+    let (u, _) = user_with_token(&app).await;
+    add_fcm_device(&pool, u).await;
+
+    let e1 = record_and_deliver(&app, event(u, EventType::SignIn, Actor::User(u))).await;
+    let notice = notice_of(&pool, e1).await;
+    for _ in 0..4 {
+        record_and_deliver(&app, event(u, EventType::SignIn, Actor::User(u))).await;
+    }
+    assert_eq!(settle(&mock, 2).await.len(), 1);
+
+    pass_push_interval(&pool, notice).await;
+    sweep(&app).await;
+    sweep(&app).await;
+    let got = settle(&mock, 3).await;
+    assert_eq!(got.len(), 2, "{got:?}");
+    assert_eq!(got[1]["message"]["data"]["count"], "5");
+}
+
+#[sqlx::test]
+async fn events_after_a_follow_up_wait_for_the_next_interval(pool: PgPool) {
+    let mock = spawn_fcm_mock(FcmMockResponse::Ok).await;
+    let app = TestApp::with_pool_and_config(pool.clone(), fcm_config(&mock)).await;
+    let (u, _) = user_with_token(&app).await;
+    add_fcm_device(&pool, u).await;
+
+    let e1 = record_and_deliver(&app, event(u, EventType::SignIn, Actor::User(u))).await;
+    let notice = notice_of(&pool, e1).await;
+    record_and_deliver(&app, event(u, EventType::SignIn, Actor::User(u))).await;
+    pass_push_interval(&pool, notice).await;
+    sweep(&app).await;
+    assert_eq!(settle(&mock, 2).await.len(), 2);
+
+    // A third event right after the follow-up is held back again …
+    record_and_deliver(&app, event(u, EventType::SignIn, Actor::User(u))).await;
+    sweep(&app).await;
+    assert_eq!(settle(&mock, 3).await.len(), 2, "held within the interval");
+    // … and sent once the interval has passed.
+    pass_push_interval(&pool, notice).await;
+    sweep(&app).await;
+    let got = settle(&mock, 3).await;
+    assert_eq!(got.len(), 3, "{got:?}");
+    assert_eq!(got[2]["message"]["data"]["count"], "3");
+}
+
+#[sqlx::test]
+async fn an_event_after_the_interval_pushes_at_once_and_no_follow_up_remains(pool: PgPool) {
+    let mock = spawn_fcm_mock(FcmMockResponse::Ok).await;
+    let app = TestApp::with_pool_and_config(pool.clone(), fcm_config(&mock)).await;
+    let (u, _) = user_with_token(&app).await;
+    add_fcm_device(&pool, u).await;
+
+    let e1 = record_and_deliver(&app, event(u, EventType::SignIn, Actor::User(u))).await;
+    let notice = notice_of(&pool, e1).await;
+    record_and_deliver(&app, event(u, EventType::SignIn, Actor::User(u))).await;
+    pass_push_interval(&pool, notice).await;
+    // The next event comes before the sweep: it is pushed at once with the
+    // full count, and the held-back push is covered by it.
+    record_and_deliver(&app, event(u, EventType::SignIn, Actor::User(u))).await;
+    let got = settle(&mock, 2).await;
+    assert_eq!(got.len(), 2, "{got:?}");
+    assert_eq!(got[1]["message"]["data"]["count"], "3");
+    pass_push_interval(&pool, notice).await;
+    sweep(&app).await;
+    assert_eq!(settle(&mock, 3).await.len(), 2, "nothing left to follow up");
+}
+
+#[sqlx::test]
+async fn a_notice_without_held_back_push_gets_no_follow_up(pool: PgPool) {
+    let mock = spawn_fcm_mock(FcmMockResponse::Ok).await;
+    let app = TestApp::with_pool_and_config(pool.clone(), fcm_config(&mock)).await;
+    let (u, _) = user_with_token(&app).await;
+    add_fcm_device(&pool, u).await;
+
+    let e1 = record_and_deliver(&app, event(u, EventType::SignIn, Actor::User(u))).await;
+    let notice = notice_of(&pool, e1).await;
+    pass_push_interval(&pool, notice).await;
+    sweep(&app).await;
+    let got = settle(&mock, 2).await;
+    assert_eq!(security_pushes(&got).len(), 1, "{got:?}");
+}
+
+#[sqlx::test]
+async fn concurrent_sweeps_send_the_follow_up_once(pool: PgPool) {
+    let mock = spawn_fcm_mock(FcmMockResponse::Ok).await;
+    let app = TestApp::with_pool_and_config(pool.clone(), fcm_config(&mock)).await;
+    let (u, _) = user_with_token(&app).await;
+    add_fcm_device(&pool, u).await;
+
+    let e1 = record_and_deliver(&app, event(u, EventType::SignIn, Actor::User(u))).await;
+    let notice = notice_of(&pool, e1).await;
+    record_and_deliver(&app, event(u, EventType::SignIn, Actor::User(u))).await;
+    pass_push_interval(&pool, notice).await;
+
+    // A sweep that finds the notice locked by another one skips it.
+    let mut other = pool.begin().await.unwrap();
+    sqlx::query("SELECT id FROM security_notices WHERE id = $1 FOR UPDATE")
+        .bind(notice)
+        .execute(&mut *other)
+        .await
+        .unwrap();
+    sweep(&app).await;
+    assert_eq!(
+        settle(&mock, 2).await.len(),
+        1,
+        "a locked notice is skipped"
+    );
+    other.rollback().await.unwrap();
+
+    // Two sweeps at the same time, each on its own connection.
+    let (a, b) = tokio::join!(
+        vc_server::auth::timers::run_once(&app.state),
+        vc_server::auth::timers::run_once(&app.state)
+    );
+    a.unwrap();
+    b.unwrap();
+    let got = settle(&mock, 3).await;
+    assert_eq!(got.len(), 2, "{got:?}");
+    assert_eq!(got[1]["message"]["data"]["count"], "2");
+}
+
+#[sqlx::test]
+async fn no_follow_up_after_the_owner_reported_the_events(pool: PgPool) {
+    let mock = spawn_fcm_mock(FcmMockResponse::Ok).await;
+    let app = TestApp::with_pool_and_config(pool.clone(), fcm_config(&mock)).await;
+    let (u, _) = user_with_token(&app).await;
+    add_fcm_device(&pool, u).await;
+
+    let e1 = record_and_deliver(&app, event(u, EventType::SignIn, Actor::User(u))).await;
+    let notice = notice_of(&pool, e1).await;
+    let e2 = record_and_deliver(&app, event(u, EventType::SignIn, Actor::User(u))).await;
+    // The owner reports the newest event ("That wasn't me") after it joined.
+    sqlx::query("UPDATE security_events SET repudiated_at = NOW() WHERE id = $1")
+        .bind(e2)
+        .execute(&pool)
+        .await
+        .unwrap();
+    pass_push_interval(&pool, notice).await;
+    sweep(&app).await;
+    assert_eq!(settle(&mock, 2).await.len(), 1, "dealt with: no follow-up");
+    let due: Option<chrono::DateTime<chrono::Utc>> =
+        sqlx::query_scalar("SELECT push_due_at FROM security_notices WHERE id = $1")
+            .bind(notice)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(due.is_none(), "the follow-up is dropped, not kept");
+}
+
+#[sqlx::test]
+async fn a_report_before_the_newest_event_still_gets_the_follow_up(pool: PgPool) {
+    let mock = spawn_fcm_mock(FcmMockResponse::Ok).await;
+    let app = TestApp::with_pool_and_config(pool.clone(), fcm_config(&mock)).await;
+    let (u, _) = user_with_token(&app).await;
+    add_fcm_device(&pool, u).await;
+
+    let e1 = record_and_deliver(&app, event(u, EventType::SignIn, Actor::User(u))).await;
+    let notice = notice_of(&pool, e1).await;
+    // The owner reports the first event; a second one joins afterwards.
+    sqlx::query(
+        "UPDATE security_events SET repudiated_at = NOW() - INTERVAL '5 seconds' WHERE id = $1",
+    )
+    .bind(e1)
+    .execute(&pool)
+    .await
+    .unwrap();
+    record_and_deliver(&app, event(u, EventType::SignIn, Actor::User(u))).await;
+    pass_push_interval(&pool, notice).await;
+    sweep(&app).await;
+    let got = settle(&mock, 2).await;
+    assert_eq!(got.len(), 2, "{got:?}");
+    assert_eq!(got[1]["message"]["data"]["count"], "2");
+}

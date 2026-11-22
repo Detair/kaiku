@@ -75,7 +75,10 @@ channel.
 
 - `t=security` (`security_events::push::SecurityPush`), sent by
   `security_events::notices` for every new notice in the Kaiku DM and at most
-  once per notice per 60 s while it is updated. FCM data (strings):
+  once per notice per 60 s while it is updated; an update held back by the
+  60 s gets one follow-up push from the minute sweep
+  (`notices::push_due_follow_ups`, `security_notices.push_due_at`) with the
+  count at that moment and the same collapse key. FCM data (strings):
   `{"t":"security","notice_id","event_type","severity":"high"|"normal","count":"<n>","subject_id"}`,
   plus `actor_id` only when an admin or the recovery contact acted;
   UnifiedPush: the same JSON with `count` as a number.

@@ -42,6 +42,16 @@ pub async fn run_once(state: &AppState) -> anyhow::Result<()> {
         }
     }
 
+    // 1b. One follow-up push per notice whose push was held back.
+    match crate::security_events::notices::push_due_follow_ups(state).await {
+        Ok(n) if n > 0 => tracing::debug!(count = n, "sweep sent follow-up notice pushes"),
+        Ok(_) => {}
+        Err(e) => {
+            tracing::warn!(error = %e, "sweep: follow-up notice pushes failed");
+            first_err.get_or_insert(e);
+        }
+    }
+
     // 2. Expire challenges past their deadline (B.2).
     match state.db.acquire().await {
         Ok(mut conn) => {

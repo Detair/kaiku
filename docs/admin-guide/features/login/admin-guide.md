@@ -436,7 +436,9 @@ High: `authenticator_added` (key phone or passkey), `authenticator_removed`, `ke
 [technical reference](technical-reference.md#11-security-events-and-notices-c28).
 
 Notices of the same type for the same account within 10 minutes are coalesced into one with a
-count (up to 50 events listed); pushes for one notice go out at most once a minute. Pushes are
+count (up to 50 events listed); pushes for one notice go out at most once a minute. Events held
+back by that minute are not lost: one follow-up push with the final count replaces the first one on
+the phone after the minute. Pushes are
 always high priority, bypass notification settings, and high ones also bypass quiet hours.
 
 **Place:** v1.0 has no GeoIP lookup at all; the place field is empty. IP addresses are stored for

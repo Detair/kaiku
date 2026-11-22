@@ -794,7 +794,12 @@ recipient, subject and event type, events within 600 s of a notice's first event
 (count, up to 50 events, `events_truncated`). Push `t=security` (FCM data or UnifiedPush JSON),
 always high priority, collapse key `security-<notice_id>`, TTL 86400 s, at most one per notice per
 60 s, to every push subscription (lapsed key devices, devices named lost, and once to a device that
-"Remove device now" just removed). IP and place only in the owner's own copy and the admin log.
+"Remove device now" just removed). An update within the 60 s is not pushed at once: it sets
+`push_due_at`, and the minute sweep sends one follow-up push with the count at that moment and the
+same collapse key once the 60 s have passed (row lock with `SKIP LOCKED`, so concurrent sweeps send
+it once; after downtime each due notice gets one). No follow-up when the owner reported one of the
+notice's events ("That wasn't me") after its newest event joined; the read position in the Kaiku DM
+does not count, since any session of the account can move it. IP and place only in the owner's own copy and the admin log.
 
 **Actions** are computed per reader on every read and listed only where usable: `repudiate`
 (`via: step_up|part2`, with the warning), `cancel_request`, `remove_device`, `confirm_contact`.
