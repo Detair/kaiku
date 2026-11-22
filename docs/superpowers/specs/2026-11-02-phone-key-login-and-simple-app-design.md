@@ -1352,8 +1352,7 @@ these are the rules.
     bound to the session that showed the QR code, and it gives full access (sign-in methods, other
     sessions, on an admin account the admin panel). The server cannot tell where the person who types
     the code is: it is not a proximity check. Before a passkey exists, the person at the phone must
-    confirm with the screen lock and type the code on the computer in front of them. It is the same
-    class as B.6.1 with a higher impact. Limits: the
+    confirm with the screen lock and type the code on the computer in front of them. Limits: the
     code step (a scan alone creates nothing), the account match, `may_approve` off by default for family accounts (the
     button needs it on), the phone's wording ("Only continue if you started this on a computer in
     front of you, and nobody asked you to"), the notice to every address with "That wasn't me",

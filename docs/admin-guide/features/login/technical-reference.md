@@ -1071,7 +1071,7 @@ Residual risks (spec B.6, as implemented):
     the session that showed the QR code and gives full access (sign-in methods, sessions, admin panel
     for an admin). The server cannot tell where the person who types the code is; it is not a proximity
     check. Before a passkey exists, the person at the phone must confirm with the screen lock and type
-    the code on the computer in front of them. Same class as 1 with a higher impact. Limited by the code step, the account
+    the code on the computer in front of them. Limited by the code step, the account
     match, `may_approve` off by default for family accounts, the phone's wording, and the notice with
     "That wasn't me", which also ends the requesting session. A report marks no credential.
 

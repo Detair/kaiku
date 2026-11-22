@@ -378,7 +378,7 @@ To be applied with this feature, as revision 6:
   cannot tell where the person who types the code is. Before a passkey exists, the person at the phone
   must confirm with the screen lock and type the code on the computer in front of them. Limited by the
   account match, `may_approve` off by default for family accounts, the phone's wording and the notices
-  with "That wasn't me". Same class as B.6.1 with a higher impact.
+  with "That wasn't me".
 - **Open question 5:** record the answer. Admin work on a PC still needs a passkey, and this flow is a
   way to get one, not an exception.
 
