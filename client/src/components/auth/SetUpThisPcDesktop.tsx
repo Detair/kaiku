@@ -174,4 +174,8 @@ export const DesktopPasskeyStep: Component<PcSetupStepProps> = (props) => {
   );
 };
 
-export const DESKTOP_PLATFORM: PcSetupPlatform = { CodeStep: DesktopCodeStep, PasskeyStep: DesktopPasskeyStep };
+export const DESKTOP_PLATFORM: PcSetupPlatform = {
+  CodeStep: DesktopCodeStep,
+  PasskeyStep: DesktopPasskeyStep,
+  registersHere: false,
+};

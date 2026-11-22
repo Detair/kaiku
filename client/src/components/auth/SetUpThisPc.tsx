@@ -65,7 +65,15 @@ export interface PcSetupStepProps {
    * memory only: a reload loses them, and the passkey then needs Start again).
    */
   proofs: Map<string, string>;
+  /**
+   * What became of this dialog's own registration of an attempt: its finish
+   * was sent, or its start or finish was refused (web only).
+   */
+  onFinish: (attemptId: string, phase: FinishPhase) => void;
 }
+
+/** This dialog's own registration of an attempt: finish sent, or refused. */
+export type FinishPhase = "sent" | "refused";
 
 /** The steps that differ between the web page and the desktop app (Task 6). */
 export interface PcSetupPlatform {
@@ -73,6 +81,11 @@ export interface PcSetupPlatform {
   CodeStep: Component<PcSetupStepProps>;
   /** State `enrolled`: the passkey is created. */
   PasskeyStep: Component<PcSetupStepProps>;
+  /**
+   * Whether this dialog registers the passkey itself (the web page). Then
+   * `completed` is success only for a registration this dialog finished.
+   */
+  registersHere: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -163,11 +176,15 @@ export const WebPasskeyStep: Component<PcSetupStepProps> = (props) => {
       // Only the proof sent with the right code starts it (409 otherwise).
       const start = await startPcSetupPasskey(id, props.proofs.get(id));
       const credential = await createPasskeyCredential(start.options, mine.signal);
-      await finishPcSetupPasskey(id, start.ceremony_id, credential, defaultPasskeyLabel(), props.proofs.get(id));
+      const finish = finishPcSetupPasskey(id, start.ceremony_id, credential, defaultPasskeyLabel(), props.proofs.get(id));
+      props.onFinish(id, "sent");
+      await finish;
       // The passkey exists: say so even if the step was left meanwhile (the
       // dialog drops it for another attempt or after a server-reported end).
       props.onState(id, { state: "completed", reason: null });
     } catch (err) {
+      // A refusal from the server: this dialog did not register a passkey.
+      if (err instanceof HttpError) props.onFinish(id, "refused");
       if (!mine.signal.aborted) {
         // The attempt cannot take a passkey this way: only Start again helps.
         if (err instanceof HttpError && codeIs(err.code, "APPROVAL_STATE")) setError(t("pcSetup.ended.generic"));
@@ -181,24 +198,31 @@ export const WebPasskeyStep: Component<PcSetupStepProps> = (props) => {
     }
   };
 
+  // Only the page that typed the code holds its proof and can register; any
+  // other page of the session (another tab, a reload) says where it happens.
   return (
-    <div class="space-y-3">
-      <p>{t("pcSetup.registerIntro")}</p>
-      <LinuxPasskeyHint class="text-sm text-text-secondary" />
-      <Show when={busy()}>
-        <p role="status" class="text-sm text-text-secondary">{t("pcSetup.registering")}</p>
-      </Show>
-      <Show when={error()}>
-        <p role="alert" class="text-sm text-text-primary">{error()}</p>
-      </Show>
-      <button type="button" class="btn-primary min-h-11 text-base" disabled={busy()} onClick={() => void register()}>
-        {t("pcSetup.register")}
-      </button>
-    </div>
+    <Show
+      when={props.proofs.has(props.attemptId)}
+      fallback={<p role="status">{t("pcSetup.otherPageFinishing")}</p>}
+    >
+      <div class="space-y-3">
+        <p>{t("pcSetup.registerIntro")}</p>
+        <LinuxPasskeyHint class="text-sm text-text-secondary" />
+        <Show when={busy()}>
+          <p role="status" class="text-sm text-text-secondary">{t("pcSetup.registering")}</p>
+        </Show>
+        <Show when={error()}>
+          <p role="alert" class="text-sm text-text-primary">{error()}</p>
+        </Show>
+        <button type="button" class="btn-primary min-h-11 text-base" disabled={busy()} onClick={() => void register()}>
+          {t("pcSetup.register")}
+        </button>
+      </div>
+    </Show>
   );
 };
 
-const WEB_PLATFORM: PcSetupPlatform = { CodeStep: WebCodeStep, PasskeyStep: WebPasskeyStep };
+const WEB_PLATFORM: PcSetupPlatform = { CodeStep: WebCodeStep, PasskeyStep: WebPasskeyStep, registersHere: true };
 
 // ---------------------------------------------------------------------------
 // The dialog
@@ -310,6 +334,12 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
   const [checkFailed, setCheckFailed] = createSignal(false);
   /** The proofs sent with a code from this dialog, by attempt id. */
   const proofs = new Map<string, string>();
+  /** This dialog's own registrations, by attempt id. */
+  const [own, setOwn] = createSignal<Record<string, FinishPhase>>({});
+  const onFinish = (attemptId: string, phase: FinishPhase) => setOwn((o) => ({ ...o, [attemptId]: phase }));
+  /** `completed` of this attempt is this dialog's passkey (always so on the desktop). */
+  const registeredHere = (attemptId: string): boolean =>
+    !platform().registersHere || own()[attemptId] === "sent";
   /** Bumped by every start, restart and the unmount: older loops and answers stop. */
   let generation = 0;
   let signIn: AbortController | null = null;
@@ -440,7 +470,12 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
     setChecking(true);
     let old: PcSetupStatus | null = null;
     for (let i = 0; i < FINISH_READS; i++) {
-      const read = await pollPcSetup(p.oldId, 0).catch(() => null);
+      // The contract's "no such attempt" is a known end: it no longer exists.
+      const read = await pollPcSetup(p.oldId, 0).catch((err: unknown) =>
+        err instanceof HttpError && err.status === 404 && codeIs(err.code, "APPROVAL_NOT_FOUND")
+          ? ({ attempt_id: p.oldId, state: "expired", reason: "gone" } satisfies PcSetupStatus)
+          : null,
+      );
       if (pending !== p || p.mine !== generation) return;
       old = read && read.attempt_id === p.oldId && KNOWN_STATES.includes(read.state) ? read : null;
       if (old) break;
@@ -621,10 +656,25 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
               <p role="status">{t("pcSetup.claimed")}</p>
             </Match>
             <Match when={s().state === "code"}>
-              <Dynamic component={platform().CodeStep} attemptId={s().attempt_id} onState={patch} proofs={proofs} />
+              <Dynamic
+                component={platform().CodeStep}
+                attemptId={s().attempt_id}
+                onState={patch}
+                proofs={proofs}
+                onFinish={onFinish}
+              />
             </Match>
             <Match when={s().state === "enrolled"}>
-              <Dynamic component={platform().PasskeyStep} attemptId={s().attempt_id} onState={patch} proofs={proofs} />
+              <Dynamic
+                component={platform().PasskeyStep}
+                attemptId={s().attempt_id}
+                onState={patch}
+                proofs={proofs}
+                onFinish={onFinish}
+              />
+            </Match>
+            <Match when={s().state === "completed" && !registeredHere(s().attempt_id)}>
+              <p role="status">{t("pcSetup.ended.otherPage")}</p>
             </Match>
             <Match when={s().state === "completed"}>
               <div class="space-y-3">
