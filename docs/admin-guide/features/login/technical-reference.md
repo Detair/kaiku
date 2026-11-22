@@ -657,14 +657,14 @@ sequenceDiagram
   `account_banned`, `timeout`, `code_expired`, `restarted`, `cancelled`, `refused`, `reported`,
   `too_many_codes`, `enrollment_expired`.
 - **One clock:** every transition of an attempt takes its locks first (account, requesting session,
-  attempt, its enrolment; the phone's steps also the key device, its session and the challenge), then
+  attempt, its enrolment; a restart also the old attempt's open challenge; the phone's steps also the
+  key device, its session and the challenge), then
   reads `clock_timestamp()` once. That one value decides every liveness (both sessions, QR rotation,
   attempt, code, challenge, enrolment) and every deadline the transition issues (a start's creation time,
   QR rotation and 10 minutes, the code's 5 minutes, the enrolment's 10 minutes, the scan's challenge:
   created at that value, expiring at the earlier of it plus 2 minutes and the attempt's stored deadline,
   in whole seconds), so a wait for a lock never shortens or extends a deadline. Steps that read their own
-  clock: a restart voids the old attempt's challenge after its clock was read (deciding nothing); the
-  unlocked reads before the locks (scanner check, other-account read, the polls' and the sweep's hints)
+  clock: the unlocked reads before the locks (scanner check, other-account read, the polls' and the sweep's hints)
   use `clock_timestamp()` of their statement and the locked re-check decides; the account lock
   (`lock_accounts`, including the ban's expiry) is unchanged. The phone's steps use the checks of the
   shared key-device session helper and decide the session's expiry on the transition's clock. The other

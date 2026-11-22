@@ -385,8 +385,9 @@ pub async fn start(
 ) -> Result<(StatusCode, Json<PcSetupStarted>), ApprovalError> {
     let ctx = AuthCtx::from(&state);
     let mut tx = state.db.begin().await?;
-    let started = transition::start_tx(&mut tx, &ctx, &auth).await?;
-    tx.commit().await?;
+    // A refusal keeps the previous attempt's lazy end (`settle`).
+    let result = transition::start_tx(&mut tx, &ctx, &auth).await;
+    let started = settle(tx, result).await?;
     Ok((
         StatusCode::CREATED,
         Json(PcSetupStarted {

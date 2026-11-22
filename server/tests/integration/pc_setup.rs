@@ -1969,6 +1969,75 @@ async fn the_proof_belongs_to_its_attempt(pool: PgPool) {
     assert_eq!(s, 200, "{b}");
 }
 
+/// A restart that finds the account no longer eligible ends the previous
+/// attempt with its reason, in the same transaction as the refusal: a later
+/// finish of its ceremony is refused even once the account is eligible again.
+#[sqlx::test]
+async fn a_refused_restart_ends_the_previous_attempt(pool: PgPool) {
+    let p = pc(&pool).await;
+    let (id, eid) = enrolled(&p).await;
+    let body = ceremony(&p, &id).await;
+    set_may_approve(&pool, p.user, false).await;
+    let (s, b) = start(&p.app, &p.token).await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (403, Some("PC_SETUP_UNAVAILABLE")),
+        "{b}"
+    );
+    assert_eq!(
+        attempt_state(&pool, &id).await,
+        ("expired".into(), Some("may_approve_off".into()))
+    );
+    assert_eq!(enrollment_state(&pool, &eid).await, "expired");
+    set_may_approve(&pool, p.user, true).await;
+    let (s, b) = passkey_finish(&p, &p.token, &id, body).await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (409, Some("APPROVAL_STATE")),
+        "{b}"
+    );
+    assert_eq!(passkeys_of(&pool, p.user).await, 0);
+}
+
+/// A restart takes the previous attempt's challenge lock before it reads its
+/// clock: a wait for that lock never shortens the new attempt's deadlines.
+#[sqlx::test]
+async fn a_restart_reads_its_clock_after_the_challenge_lock(pool: PgPool) {
+    let p = pc(&pool).await;
+    let (first, c, _) = claimed(&p).await;
+    let mut holder = pool.begin().await.unwrap();
+    sqlx::query("SELECT 1 FROM approvals WHERE id = $1::uuid FOR UPDATE")
+        .bind(c["challenge_id"].as_str().unwrap())
+        .execute(&mut *holder)
+        .await
+        .unwrap();
+    let release = async {
+        super::helpers::wait_for_lock_waiters(&pool, 1).await;
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        let released: chrono::DateTime<chrono::Utc> =
+            sqlx::query_scalar("SELECT clock_timestamp()")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        holder.commit().await.unwrap();
+        released
+    };
+    let ((s, b), released) = tokio::join!(start(&p.app, &p.token), release);
+    assert_eq!(s, 201, "{b}");
+    let (created, expires): (chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>) =
+        sqlx::query_as("SELECT created_at, expires_at FROM pc_setup_attempts WHERE id = $1::uuid")
+            .bind(id_of(&b))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(created >= released, "{created} < {released}");
+    assert!(expires >= released + chrono::Duration::minutes(10));
+    assert_eq!(
+        attempt_state(&pool, &first).await,
+        ("cancelled".into(), Some("restarted".into()))
+    );
+}
+
 #[sqlx::test]
 async fn current_attempt_resumes_after_reload(pool: PgPool) {
     let p = pc(&pool).await;

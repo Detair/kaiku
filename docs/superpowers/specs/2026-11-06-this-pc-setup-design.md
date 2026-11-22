@@ -301,13 +301,12 @@ These rules extend B.7; `server/src/approvals/cascade.rs` implements the cascade
 
    | Transition | Locks, in order, before the clock | Decided and issued on that clock |
    |---|---|---|
-   | start | account, requesting session, the session's live attempt (and its enrolment) | session liveness, start bounds, the old attempt's lazy end; creation time, QR rotation, 10 minutes |
+   | start | account, requesting session, the session's live attempt (and its enrolment, then its open challenge) | the old attempt's lazy end (before any refusal of the start, and kept with it), session liveness, start bounds; creation time, QR rotation, 10 minutes |
    | PC poll, cancel, code entry, passkey | account, requesting session, attempt, its enrolment | liveness, QR rotation, code and enrolment expiry; the enrolment's creation and 10 minutes |
    | scan | account, requesting session, attempt; key device, its session | both sessions, QR rotation, attempt; the challenge's creation and expiry |
    | answer, refuse, release | account, requesting session, attempt; key device, its session; challenge | both sessions, attempt, challenge; the code's 5 minutes |
 
-   Where a step reads its own clock instead: a restart voids the old attempt's challenge after its clock
-   was read (that write decides nothing); the unlocked reads before the locks (the scanner check, the
+   Where a step reads its own clock instead: the unlocked reads before the locks (the scanner check, the
    one read of another account's code, the polls' and the sweep's hints) use `clock_timestamp()` of
    their own statement, and the locked re-check decides; the account lock (`lock_accounts`, the ban's
    expiry included) is as before this feature. The phone's steps use the checks of the shared

@@ -704,7 +704,9 @@ pub struct Started {
 /// Needs a live probation session of an account with an active key device
 /// and `may_approve` on, else 403 `PC_SETUP_UNAVAILABLE`. A live attempt of
 /// the same session is cancelled (`restarted`) in the same transaction
-/// (Locking 6).
+/// (Locking 6). Its lazy end is decided first, on the start's clock and
+/// before the start's own checks: a refused start still ends an attempt that
+/// can no longer advance, and the caller commits that end with the refusal.
 #[tracing::instrument(skip_all, fields(user_id = %auth.id))]
 pub async fn start_tx(
     conn: &mut PgConnection,
@@ -726,10 +728,26 @@ pub async fn start_tx(
     .fetch_optional(&mut *conn)
     .await?;
     let previous = match previous {
-        Some(id) => Some(lock_attempt_rows(conn, id).await?),
+        Some(id) => {
+            let rows = lock_attempt_rows(conn, id).await?;
+            // Its open challenge too (the restart voids it), so no wait
+            // after the clock shortens a deadline this start issues.
+            if let Some(challenge) = rows.attempt.challenge_id {
+                sqlx::query("SELECT 1 FROM approvals WHERE id = $1 FOR UPDATE")
+                    .bind(challenge)
+                    .execute(&mut *conn)
+                    .await?;
+            }
+            Some(rows)
+        }
         None => None,
     };
     let now = read_clock(conn).await?;
+    // The previous attempt's lazy end, before any refusal of this start.
+    let previous = match previous {
+        Some(rows) => Some(rows.settle(conn, now).await?),
+        None => None,
+    };
     let Some(session) = session.map(|s| s.at(now)).filter(|s| s.live) else {
         return Err(crate::auth::AuthError::InvalidToken.into());
     };
@@ -777,8 +795,7 @@ pub async fn start_tx(
         }
         .into());
     }
-    if let Some(previous) = previous {
-        let mut old = previous.settle(conn, now).await?;
+    if let Some(mut old) = previous {
         cancel_attempt_tx(conn, &mut old, EndCause::Restarted).await?;
     }
     let token = Secret256::random();
