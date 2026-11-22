@@ -70,11 +70,11 @@ Services are loosely coupled but coordinate via shared state:
 
 **Initialization order** (from `main.rs`):
 1. Config loaded from environment
-2. Database pool created and migrations run
-3. Redis client initialized
-4. S3 client created (optional, graceful degradation)
-5. SFU server initialized
-6. Rate limiter initialized (`ratelimit::start_rate_limiter`; with `RATE_LIMIT_ENABLED` on, a limiter that cannot load stops the start)
+2. Redis (Valkey) clients connected
+3. Rate limiter started (`ratelimit::start_rate_limiter`; with `RATE_LIMIT_ENABLED` on, a limiter that cannot load stops the start before the database is touched)
+4. Database pool created and migrations run
+5. S3 client created (optional, graceful degradation)
+6. SFU server initialized
 7. AppState assembled and passed to router
 
 **Graceful degradation:** S3 is optional: if its initialization fails, a warning is logged and the server continues without file uploads. Rate limiting is not: when it is enabled and the limiter cannot load its scripts into Valkey, the server refuses to start (`RATE_LIMIT_ENABLED=false` only for tests).

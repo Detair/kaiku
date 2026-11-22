@@ -3,6 +3,7 @@
 # container's `exec ... sh -c '<cmd>'` just enough for the ops-script tests.
 #   FAKE_DOCKER_LOG   file that receives one line per invocation
 #   FAKE_DOCKER_MODE  "fail" => print nothing, exit 1 for `exec`
+#   FAKE_DOCKER_SERVER_LOG  text that `docker logs` prints
 set -u
 [ -n "${FAKE_DOCKER_LOG:-}" ] && echo "$*" >> "$FAKE_DOCKER_LOG"
 
@@ -43,6 +44,7 @@ case "${1:-}" in
                 ;;
         esac
         ;;
+    logs) printf '%s\n' "${FAKE_DOCKER_SERVER_LOG:-}" ;;
     volume) exit 1 ;;
     inspect) echo "fake-container" ;;
     image) echo "fake-image" ;;

@@ -22,7 +22,7 @@
 - `constants.rs` — Default rate limit values (requests/window/block duration)
 - `error.rs` — `RateLimitError` type
 - `ip.rs` — IP extraction from request headers (X-Forwarded-For, X-Real-IP)
-- `start.rs` — `start_rate_limiter`: the start decision. Disabled by `RATE_LIMIT_ENABLED=false` → no limiter; enabled → the loaded limiter, or `LimiterStartError` and the server does not start (never "warn and run without limits")
+- `start.rs` — `start_rate_limiter`: the start decision. Disabled by `RATE_LIMIT_ENABLED=false` → no limiter; enabled → the loaded limiter, or `LimiterStartError` and the server does not start (never "warn and run without limits"). Runs in `main` before the database migrations. Only `false` is off; any other value but `true` stays on and is warned about (`EnabledValue`)
 
 ## For AI Agents
 

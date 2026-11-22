@@ -35,7 +35,7 @@ fail() {
 echo "=== Kaiku upgrade preflight ($(date)) ==="
 
 # --- 1. Core services healthy ------------------------------------------------
-echo "[1/6] Service health"
+echo "[1/7] Service health"
 for c in canis-server "$PG" canis-valkey canis-caddy; do
     state=$(docker inspect --format '{{.State.Status}}{{if .State.Health}}/{{.State.Health.Status}}{{end}}' "$c" 2>/dev/null || echo "missing")
     case "$state" in
@@ -45,7 +45,7 @@ for c in canis-server "$PG" canis-valkey canis-caddy; do
 done
 
 # --- 2. Server HTTP health ----------------------------------------------------
-echo "[2/6] Server /health endpoint"
+echo "[2/7] Server /health endpoint"
 if curl -sf --max-time 5 http://localhost:8080/health > /dev/null; then
     pass "server responds healthy"
 else
@@ -53,7 +53,7 @@ else
 fi
 
 # --- 3. Disk space -------------------------------------------------------------
-echo "[3/6] Disk space (need >${MIN_FREE_DISK_PCT}% free)"
+echo "[3/7] Disk space (need >${MIN_FREE_DISK_PCT}% free)"
 used_pct=$(df --output=pcent / | tail -1 | tr -dc '0-9')
 free_pct=$((100 - used_pct))
 if [ "$free_pct" -gt "$MIN_FREE_DISK_PCT" ]; then
@@ -63,7 +63,7 @@ else
 fi
 
 # --- 4. Backup recency ----------------------------------------------------------
-echo "[4/6] Backup recency (<${MAX_BACKUP_AGE_HOURS}h, integrity-checked)"
+echo "[4/7] Backup recency (<${MAX_BACKUP_AGE_HOURS}h, integrity-checked)"
 latest_backup=$(find "$BACKUP_DIR" -name 'kaiku-2*.sql.gz' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
 if [ -z "$latest_backup" ]; then
     fail "no postgres backup found in $BACKUP_DIR — run infra/scripts/backup.sh first"
@@ -78,7 +78,7 @@ else
 fi
 
 # --- 5. Pending migrations (informational gate) --------------------------------
-echo "[5/6] Migration delta (repo vs database)"
+echo "[5/7] Migration delta (repo vs database)"
 # Compare versions (numeric filename prefixes vs _sqlx_migrations.version),
 # not counts: a renamed or missing migration must not hide behind equal totals.
 repo_versions=$(find "$MIGRATIONS_DIR" -maxdepth 1 -name '*.sql' -printf '%f\n' 2>/dev/null \
@@ -103,7 +103,7 @@ else
 fi
 
 # --- 6. Compose config + rollback reference -------------------------------------
-echo "[6/6] Compose config & current image (record for rollback)"
+echo "[6/7] Compose config & current image (record for rollback)"
 if (cd "$COMPOSE_DIR" && docker compose config -q 2>/dev/null); then
     pass "docker compose config parses"
 else
@@ -118,6 +118,19 @@ if [ -n "$server_image" ]; then
 fi
 [ -n "$current_image" ] || current_image="unknown"
 echo "    Current server image (pin this for rollback): $current_image"
+
+# --- 7. Rate limiter loaded on the running server -------------------------------
+echo "[7/7] Rate limiter loaded (newer versions do not start without it)"
+# Earlier versions logged this line and ran without per-address limits when
+# the limiter could not load its scripts into Valkey; newer versions refuse
+# to start in that case.
+if ! server_logs=$(docker logs canis-server 2>&1); then
+    fail "could not read the canis-server logs"
+elif grep -q "Rate limiter initialization failed" <<<"$server_logs"; then
+    fail "the running server logged 'Rate limiter initialization failed': it runs without per-address limits and the new version will not start — allow SCRIPT LOAD and EVALSHA for the server's Valkey user first (docs: configuration/rate-limiting.md, The Server Does Not Start)"
+else
+    pass "no 'Rate limiter initialization failed' in the server logs"
+fi
 
 echo
 if [ "$FAILURES" -gt 0 ]; then

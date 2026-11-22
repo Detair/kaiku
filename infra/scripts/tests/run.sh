@@ -106,6 +106,12 @@ printf -- '-- PostgreSQL database dump\nSELECT 1;\n--\n-- PostgreSQL database du
 out=$(PATH="$WORK/slowtail:$PATH" pf)
 check "preflight sigpipe: complete backup passes check 4" grep -q "dump complete (" <<<"$out"
 
+# --- preflight: rate limiter loaded (check 7) ----------------------------------
+out=$(FAKE_DOCKER_SERVER_LOG='{"level":"INFO","fields":{"message":"Rate limiter initialized"}}' pf)
+check "preflight: loaded limiter passes check 7" grep -q "no 'Rate limiter initialization failed'" <<<"$out"
+out=$(FAKE_DOCKER_SERVER_LOG='{"level":"WARN","fields":{"message":"Rate limiter initialization failed: NOPERM. Rate limiting disabled."}}' pf)
+check "preflight: limiter that did not load fails check 7" grep -q "runs without per-address limits" <<<"$out"
+
 if [ "$FAILED" -gt 0 ]; then
     echo "$FAILED check(s) failed"
     exit 1

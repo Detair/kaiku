@@ -19,5 +19,5 @@ pub use error::*;
 pub use ip::*;
 pub use limiter::*;
 pub use middleware::{check_ip_not_blocked, rate_limit_by_ip, rate_limit_by_user, with_category};
-pub use start::{start_rate_limiter, LimiterStartError};
+pub use start::{start_rate_limiter, EnabledValue, LimiterStartError};
 pub use types::*;

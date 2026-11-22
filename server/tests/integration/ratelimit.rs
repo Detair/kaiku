@@ -838,10 +838,14 @@ fn unreachable_redis() -> fred::clients::Client {
 
 #[tokio::test]
 async fn start_refuses_an_enabled_limiter_without_valkey() {
-    let err = vc_server::ratelimit::start_rate_limiter(unreachable_redis(), start_config(true))
-        .await
-        .err()
-        .expect("an enabled limiter that cannot load is an error");
+    let err = vc_server::ratelimit::start_rate_limiter(
+        unreachable_redis(),
+        start_config(true),
+        &vc_server::ratelimit::EnabledValue::On,
+    )
+    .await
+    .err()
+    .expect("an enabled limiter that cannot load is an error");
     let text = err.to_string();
     assert!(text.contains("could not load its scripts"), "{text}");
     assert!(text.contains("RATE_LIMIT_ENABLED=false"), "{text}");
@@ -849,19 +853,27 @@ async fn start_refuses_an_enabled_limiter_without_valkey() {
 
 #[tokio::test]
 async fn start_without_rate_limiting_needs_no_valkey() {
-    let got = vc_server::ratelimit::start_rate_limiter(unreachable_redis(), start_config(false))
-        .await
-        .unwrap();
+    let got = vc_server::ratelimit::start_rate_limiter(
+        unreachable_redis(),
+        start_config(false),
+        &vc_server::ratelimit::EnabledValue::Off,
+    )
+    .await
+    .unwrap();
     assert!(got.is_none());
 }
 
 #[tokio::test]
 async fn start_loads_the_limiter_from_valkey() {
     let redis = create_test_redis().await;
-    let limiter = vc_server::ratelimit::start_rate_limiter(redis, start_config(true))
-        .await
-        .unwrap()
-        .expect("enabled and loaded");
+    let limiter = vc_server::ratelimit::start_rate_limiter(
+        redis,
+        start_config(true),
+        &vc_server::ratelimit::EnabledValue::Unset,
+    )
+    .await
+    .unwrap()
+    .expect("enabled and loaded");
     let result = limiter
         .check(RateLimitCategory::AuthLogin, "203.0.113.9")
         .await
@@ -900,8 +912,12 @@ async fn start_refuses_when_valkey_refuses_script_loading() {
         .unwrap();
     // The restricted user works otherwise.
     let _: Option<String> = restricted.get("test:rl:probe").await.unwrap();
-    let result =
-        vc_server::ratelimit::start_rate_limiter(restricted.clone(), start_config(true)).await;
+    let result = vc_server::ratelimit::start_rate_limiter(
+        restricted.clone(),
+        start_config(true),
+        &vc_server::ratelimit::EnabledValue::On,
+    )
+    .await;
     let _ = restricted.quit().await;
     let _: fred::types::Value = admin
         .custom(
