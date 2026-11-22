@@ -302,10 +302,12 @@ pub fn web_proof_holds(
     Ok(enrollment_id)
 }
 
-/// Whether `a` is `enrolled` through the web path and `proof` is the one
-/// stored with its right code (constant-time). The stored hash is written
-/// once, with the move to `enrolled`, so a read without the locks gives the
-/// same answer; the locked checks decide again.
+/// Whether `proof` is the one stored with the attempt's right code.
+///
+/// `a` must be `enrolled` through the web path; the comparison is constant
+/// time. The stored hash is written once, with the move to `enrolled`, so a
+/// read without the locks gives the same answer; the locked checks decide
+/// again.
 #[must_use]
 pub fn web_proof_matches(
     ctx: &AuthCtx<'_>,
