@@ -349,7 +349,7 @@ allowed, so a stolen admin phone cannot lock the other admins out. Your own acco
 |---|---|---|---|
 | The owner | Settings → Security → Your phones / Passkeys → Remove (full session + step-up `key_device.remove` / `passkey.remove`) | none, except from a new phone or passkey | Never the last strong authenticator (`LAST_STRONG_AUTHENTICATOR`). A phone or passkey added less than `ACCOUNT_REQUEST_DELAY_HOURS` ago cannot remove an older one (403 `AUTHENTICATOR_TOO_NEW {allowed_at}`); see below. |
 | The owner, on the phone itself | **Sign out and remove this phone** (screen lock) | none | Same last-authenticator rule. |
-| An admin | **Remove device now** (`POST /api/admin/users/{user_id}/authenticators/{id}/remove`, step-up `admin.authenticator.remove` for that id) | none | Works on key phones and passkeys, also on the last one and on a pending one. Not on another admin's account. |
+| An admin | **Remove device now** (`POST /api/admin/users/{user_id}/authenticators/{id}/remove`, step-up `admin.authenticator.remove` for that id) | none | Works on key phones and passkeys, also on the last one and on a pending one. Not on another admin's account. On the admin's own account, from a phone or passkey added less than the delay ago, not on an older one (`AUTHENTICATOR_TOO_NEW`). |
 | The operator | `kaiku-admin devices remove <username> <device-id>` | none | Key phones only; also on admin accounts. |
 | An account request | devices named lost are revoked when it completes | the request's delay | Naming a device lost never removes it early. |
 | The owner, on a notice | "That wasn't me" on a sign-in by a phone or passkey, or on its `authenticator_added` | none, except from a new phone or passkey | A phone or passkey added less than the delay ago cannot have an older one revoked this way (`AUTHENTICATOR_TOO_NEW`); the whole report is refused. |
@@ -370,6 +370,10 @@ someone who got a phone of their own into the account cannot throw out the owner
 before the owner sees the notice. It can still change the recovery contact and link a sign-in
 provider; both stay after the new phone is removed, so after removing an unknown phone, check the
 recovery contact and the linked sign-in methods in the member's security panel.
+
+This also holds for an admin on **their own** account: "Remove device now" and the factor states, used
+on the admin's own account from a phone or passkey added less than the delay ago, are refused like the
+owner's own routes. On other members' accounts admin actions are not held back.
 
 What to tell a member who replaces a phone: remove the old phone **on the old phone** with **Sign out
 and remove this phone**, which works at once. From the new phone, removing the old one works after the

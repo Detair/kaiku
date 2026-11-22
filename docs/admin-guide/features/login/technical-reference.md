@@ -682,7 +682,12 @@ administrator's and account requests' set-ups are not affected (the issuer's own
 replaceable).
 
 Other step-up actions (`sessions.end`, `recovery_contact.set`, `enrollment.issue`,
-`identity.link`/`unlink`, `request.cancel`, `account.delete`, `admin.*`) do not apply this rule.
+`identity.link`/`unlink`, `request.cancel`, `account.delete`) do not apply this rule. The admin routes
+apply it only on the admin's **own** account, where they do what the owner routes do:
+`admin.authenticator.remove` ("Remove device now", target = the authenticator removed) and
+`admin.factor.set_state` (no target) pass `ensure_settled` with the authenticator that made the admin
+step-up. On another member's account they are unchanged. (Admin set-up codes for the own account are
+refused anyway with `ENROLLMENT_TARGET_SELF`.)
 
 `admin.*` actions are refused before anything else for a non-admin (403 `NOT_ADMIN`). Each guarded
 action records `step_up_action {action, target_label}` besides its own event. Bodies that still
