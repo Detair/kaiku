@@ -95,6 +95,11 @@ The bundled `infra/compose/docker-compose.yml` ships with these settings:
 - **Valkey password.** Use a hex password (`openssl rand -hex 24`). It is
   embedded in `REDIS_URL`, so characters such as `/`, `+`, `=` or `@`
   (typical for base64) break the URL. `setup-beta.sh` generates a hex password.
+- **Valkey must allow scripts.** The rate limiter loads Lua scripts at start
+  and runs them: the server's Valkey user needs `SCRIPT LOAD` and `EVALSHA`
+  (and they must not be renamed or disabled). The bundled Valkey allows them.
+  A proxy or managed service without script support is not supported with
+  rate limiting on; the server does not start there.
 - **Trusted proxies.** The server trusts forwarded client addresses only from
   the compose network (`RATE_LIMIT_TRUSTED_PROXIES`, derived from
   `KAIKU_NET_SUBNET`).
@@ -141,6 +146,16 @@ When you update an existing compose installation:
 6. **Rate-limit proxy setting.** Remove `RATE_LIMIT_TRUST_PROXY` from `.env`;
    it is replaced by `RATE_LIMIT_TRUSTED_PROXIES`, which the compose file now
    sets from `KAIKU_NET_SUBNET`.
+7. **The server no longer starts without its rate limiter.** With rate
+   limiting on (the default), a server whose limiter cannot load its scripts
+   into Valkey now exits at start, before it changes the database. Check
+   before upgrading: `docker logs canis-server 2>&1 | grep 'Rate limiter
+   initialization failed'` must print nothing (if it prints a line, your
+   server runs without per-address limits today; fix Valkey first, see the
+   [rate-limiting troubleshooting](configuration/rate-limiting.md#the-server-does-not-start)).
+   `infra/scripts/upgrade-preflight.sh` runs this check. If you switched rate
+   limiting off, write exactly `RATE_LIMIT_ENABLED=false`: other spellings
+   such as `0`, `False` or `no` mean "on".
 
 ---
 *Documentation to be expanded as the implementation stabilizes.*

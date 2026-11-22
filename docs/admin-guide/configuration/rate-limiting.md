@@ -19,7 +19,7 @@ The rate limiting system is built on Valkey (a BSD-3-Clause licensed Redis fork)
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `RATE_LIMIT_ENABLED` | `true` | Enable or disable rate limiting entirely |
+| `RATE_LIMIT_ENABLED` | `true` | `false` switches rate limiting off entirely; meant only for tests. Accepted values: `true`, `false`. Any other value (`0`, `False`, `no` …) keeps rate limiting on and is logged as a warning at start |
 | `RATE_LIMIT_PREFIX` | `canis:rl` | Prefix for Valkey keys |
 | `RATE_LIMIT_FAIL_OPEN` | `false` | Also let authentication-limited requests through while Valkey is unavailable (general limits always fail open). Not recommended: weakens brute-force protection during an outage |
 | `RATE_LIMIT_TRUSTED_PROXIES` | unset (trust none) | Comma-separated CIDRs or IPs of reverse proxies whose `X-Forwarded-For` / `X-Real-IP` headers are trusted |
@@ -244,16 +244,25 @@ This ensures that clients cannot bypass rate limits by using multiple addresses 
 
 ### The Server Does Not Start
 
-With `RATE_LIMIT_ENABLED=true` (the default) the server refuses to start when the rate limiter cannot
-load its scripts into Valkey, and logs `rate limiting is enabled, but the rate limiter could not load
-its scripts into Valkey: …` with the cause. Look for:
+With rate limiting on (the default) the server refuses to start when the rate limiter cannot load its
+scripts into Valkey. It checks this before it changes the database, logs an ERROR line
+`the server does not start: rate limiter not loaded` and prints `rate limiting is enabled, but the
+rate limiter could not load its scripts into Valkey: …` with the cause. Look for:
 
 1. **Valkey not reachable at start**: Valkey stopped or restarted while the server started. Start
    Valkey first (the compose file in `infra/compose/` waits for its health check) and start the server again.
-2. **Valkey refuses script loading**: the server's Valkey user lacks `SCRIPT LOAD` / `EVALSHA` (ACL), or
-   those commands are renamed or disabled. Allow them for the server's user.
+2. **Valkey refuses scripts**: the server's Valkey user lacks `SCRIPT LOAD` or `EVALSHA` (ACL), or those
+   commands are renamed or disabled. Allow them for the server's user. A proxy or managed service without
+   script support is not supported with rate limiting on.
+3. **An unexpected spelling of `RATE_LIMIT_ENABLED`**: only `false` switches rate limiting off. A value such
+   as `0`, `False` or `no` keeps it on; the server logs a warning naming the value, and the start error
+   names it too.
 
 `RATE_LIMIT_ENABLED=false` lets the server start without rate limiting; it is meant only for tests.
+
+Before upgrading from a version that started without its limiter: `docker logs canis-server 2>&1 | grep
+'Rate limiter initialization failed'` must print nothing. If it prints a line, that server runs without
+per-address limits today and will not start after the upgrade until Valkey allows the scripts.
 
 ### Rate Limiting Not Working
 
