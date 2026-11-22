@@ -144,8 +144,9 @@ key device; every other registration lives as long as the sign-in that made it.
 
 - *A key phone's row* is a row whose install id is the install of an active or pending key device of
   the account. It belongs to the device: no session end touches it, whatever the reason; it goes when
-  the device is revoked (for cause in the revoking transaction; otherwise after the removed phone's
-  last notice) and with the account. Only a full session may register, overwrite or delete it. A
+  the device is revoked (for cause in the revoking transaction, also when an account request
+  withdraws or replaces its pending phone; otherwise after the removed phone's last notice) and with
+  the account. Only a full session may register, overwrite or delete it. A
   probation caller that names such an install id is refused (register: 403 `FULL_SESSION_REQUIRED`,
   nothing changed, also when no row exists yet; delete-by-install: skipped, 204), and neither its
   same-endpoint path nor its pruning touches such a row, whoever owns it. A revoked device's install

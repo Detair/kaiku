@@ -210,8 +210,10 @@ counts as "no longer live").
   active or pending key device of the account. No session end touches it
   (`delete_for_ended_sessions` skips it for every reason); it goes with the
   device's revocation (`RevokeReason::sends_last_notice` → `after_revoke`
-  after the last notice; any other reason in `revoke_tx`) and with the
-  account. Only a full caller may register, overwrite or delete it: a
+  after the last notice; any other reason in `revoke_tx`; a pending phone an
+  account request withdraws or replaces in `account_requests::core`, same
+  transaction) and with the account. The condition has one definition
+  (`key_phone_row!`), also used by the pre-registration check. Only a full caller may register, overwrite or delete it: a
   chat-only registration naming such an install id → 403
   `FULL_SESSION_REQUIRED`, also when no row exists yet; delete-by-device skips
   it; the same-endpoint check and the pruning never take it.
