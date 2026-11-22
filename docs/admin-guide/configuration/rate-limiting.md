@@ -242,6 +242,19 @@ This ensures that clients cannot bypass rate limits by using multiple addresses 
 
 ## Troubleshooting
 
+### The Server Does Not Start
+
+With `RATE_LIMIT_ENABLED=true` (the default) the server refuses to start when the rate limiter cannot
+load its scripts into Valkey, and logs `rate limiting is enabled, but the rate limiter could not load
+its scripts into Valkey: …` with the cause. Look for:
+
+1. **Valkey not reachable at start**: Valkey stopped or restarted while the server started. Start
+   Valkey first (the compose file in `infra/compose/` waits for its health check) and start the server again.
+2. **Valkey refuses script loading**: the server's Valkey user lacks `SCRIPT LOAD` / `EVALSHA` (ACL), or
+   those commands are renamed or disabled. Allow them for the server's user.
+
+`RATE_LIMIT_ENABLED=false` lets the server start without rate limiting; it is meant only for tests.
+
 ### Rate Limiting Not Working
 
 1. **Check if enabled**: Verify `RATE_LIMIT_ENABLED` is not set to `false`

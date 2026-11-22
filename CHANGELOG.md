@@ -97,6 +97,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Server and channel settings: rename and delete a channel, rename or delete your server (owner), leave a server (everyone else). Each asks first and names what it removes.
 
 ### Changed
+- **Breaking for operators:** with rate limiting enabled (the default), the server no longer starts when its rate limiter cannot load its scripts into Valkey; it exits with an error naming the cause and `RATE_LIMIT_ENABLED`. Before, it started without any per-address limit. Check that Valkey is reachable when the server starts and allows script loading (see the admin guide's troubleshooting).
 - The sign-in page puts passkey and phone first; the password field opens with "Sign in with a password".
 - **Breaking:** new accounts start by adding a passkey or a key phone (or an authenticator app) within 30 minutes; a password is optional, and registering no longer signs you in. Accounts that add nothing within 30 minutes are removed. The first admin of a new server adds a passkey or a key phone.
 - **Breaking for older apps:** after your password (or single sign-on), Kaiku asks you to confirm on your phone by scanning a code, or for your authenticator code if you have no key phone. Sessions created this way are limited to chat and calls. A wrong password, an unknown user name and an account without a second step all get the same answer. The desktop app receives single sign-on results through a page that hands a one-time code to the app.
@@ -157,6 +158,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Windows that open on demand (channel settings, new channel, new message, search, pinned messages, custom status, keyboard shortcuts, report and block, the first-run setup and tour) load when first opened, so the app has less to download at start. If one cannot load, the page says so and offers a reload.
 
 ### Security
+- A server with rate limiting enabled refuses to start without its rate limiter, instead of running without per-address request limits, failed sign-in counting and address blocks.
 - The end-to-end encryption library was updated to a release that clears key material from memory more thoroughly.
 - Dependency advisories for the web client and the server were cleared.
 - Repeated wrong passwords or codes for one account slow further tries (from the 5th: 30 seconds, doubling up to an hour) and are reported to the account and the admins; after 100 the password or code is blocked. Signing in with a passkey or your phone is never blocked by this.

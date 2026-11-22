@@ -569,6 +569,12 @@ real client address behind your proxy.
 | `ACCOUNT_REQUEST_DELAY_HOURS must be an integer from 24 to 72` | Out of range | Fix the value. |
 | `MAX_SESSIONS_PER_USER must be an integer from 1 to 1000` | Out of range | Fix the value. |
 | a message naming `AUTH_HMAC_KEY` | Not 64 hex characters | `openssl rand -hex 32`, or unset it. |
+| `rate limiting is enabled, but the rate limiter could not load its scripts into Valkey: …` | Rate limiting is on (`RATE_LIMIT_ENABLED`, default `true`) and Valkey did not accept the limiter's scripts: Valkey went away while the server started, or it refuses script loading (an ACL user without `SCRIPT LOAD`/`EVALSHA`, or those commands renamed or disabled) | Make Valkey reachable and allow script loading for the server's user, then start again. Earlier versions started without any per-address limit in this case. Do not set `RATE_LIMIT_ENABLED=false` in production: it is meant only for tests. |
+
+The server also needs Valkey when it starts: it exits when it cannot connect, and (with rate
+limiting on) when the limiter cannot load its scripts. In the compose file in `infra/compose/` the
+server waits for Valkey's health check and restarts unless stopped, so a Valkey that comes up late
+only delays the start. In other set-ups start Valkey first, or let the server restart.
 
 ### Admin and setup errors
 

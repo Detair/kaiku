@@ -133,32 +133,18 @@ async fn main() -> Result<()> {
         None
     };
 
-    // Initialize rate limiter (optional)
-    // Needs to be initialized before SFU to be passed to it
+    // Initialize rate limiter. Needs to be initialized before SFU to be
+    // passed to it. Enabled but not loadable: the server does not start.
     let rate_limiter = {
-        use vc_server::ratelimit::{RateLimitConfig, RateLimiter};
-
-        let rl_config = RateLimitConfig::from_env();
-        if rl_config.enabled {
-            // Clone redis for rate limiter
-            let mut limiter = RateLimiter::new(redis.clone(), rl_config);
-            match limiter.init().await {
-                Ok(()) => {
-                    info!("Rate limiter initialized");
-                    Some(limiter)
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "Rate limiter initialization failed: {}. Rate limiting disabled.",
-                        e
-                    );
-                    None
-                }
-            }
+        let rl_config = vc_server::ratelimit::RateLimitConfig::from_env();
+        let enabled = rl_config.enabled;
+        let limiter = vc_server::ratelimit::start_rate_limiter(redis.clone(), rl_config).await?;
+        if enabled {
+            info!("Rate limiter initialized");
         } else {
             info!("Rate limiting disabled by configuration");
-            None
         }
+        limiter
     };
 
     // Initialize screen share limiter

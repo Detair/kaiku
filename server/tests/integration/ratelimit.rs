@@ -809,3 +809,112 @@ async fn test_all_categories_work() {
 
     println!("All categories test passed");
 }
+
+// --- Start: an enabled limiter must load --------------------------------
+
+fn start_config(enabled: bool) -> RateLimitConfig {
+    RateLimitConfig {
+        enabled,
+        redis_key_prefix: format!("test:rl:{}", uuid::Uuid::new_v4()),
+        ..RateLimitConfig::default()
+    }
+}
+
+/// A Valkey client for an address nobody listens on (connecting is started,
+/// not awaited, as the server would find a Valkey that went away).
+fn unreachable_redis() -> fred::clients::Client {
+    use fred::interfaces::ClientLike;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let client = db::build_redis_client(
+        &format!("redis://127.0.0.1:{port}"),
+        std::time::Duration::from_millis(500),
+    )
+    .unwrap();
+    let _ = client.connect();
+    client
+}
+
+#[tokio::test]
+async fn start_refuses_an_enabled_limiter_without_valkey() {
+    let err = vc_server::ratelimit::start_rate_limiter(unreachable_redis(), start_config(true))
+        .await
+        .err()
+        .expect("an enabled limiter that cannot load is an error");
+    let text = err.to_string();
+    assert!(text.contains("could not load its scripts"), "{text}");
+    assert!(text.contains("RATE_LIMIT_ENABLED=false"), "{text}");
+}
+
+#[tokio::test]
+async fn start_without_rate_limiting_needs_no_valkey() {
+    let got = vc_server::ratelimit::start_rate_limiter(unreachable_redis(), start_config(false))
+        .await
+        .unwrap();
+    assert!(got.is_none());
+}
+
+#[tokio::test]
+async fn start_loads_the_limiter_from_valkey() {
+    let redis = create_test_redis().await;
+    let limiter = vc_server::ratelimit::start_rate_limiter(redis, start_config(true))
+        .await
+        .unwrap()
+        .expect("enabled and loaded");
+    let result = limiter
+        .check(RateLimitCategory::AuthLogin, "203.0.113.9")
+        .await
+        .unwrap();
+    assert!(result.allowed);
+}
+
+#[tokio::test]
+async fn start_refuses_when_valkey_refuses_script_loading() {
+    use fred::interfaces::{ClientLike, KeysInterface};
+    let admin = create_test_redis().await;
+    let user = format!("noscript-{}", uuid::Uuid::new_v4().simple());
+    let password = uuid::Uuid::new_v4().simple().to_string();
+    let _: fred::types::Value = admin
+        .custom(
+            fred::types::CustomCommand::new_static("ACL", None::<u16>, false),
+            vec![
+                "SETUSER".to_string(),
+                user.clone(),
+                "on".into(),
+                format!(">{password}"),
+                "~*".into(),
+                "+@all".into(),
+                "-script".into(),
+                "-eval".into(),
+                "-evalsha".into(),
+            ],
+        )
+        .await
+        .unwrap();
+    let base = Config::default_for_test().redis_url;
+    let host = base.trim_start_matches("redis://");
+    let host = host.rsplit_once('@').map_or(host, |(_, h)| h);
+    let restricted = db::create_redis_client(&format!("redis://{user}:{password}@{host}"))
+        .await
+        .unwrap();
+    // The restricted user works otherwise.
+    let _: Option<String> = restricted.get("test:rl:probe").await.unwrap();
+    let result =
+        vc_server::ratelimit::start_rate_limiter(restricted.clone(), start_config(true)).await;
+    let _ = restricted.quit().await;
+    let _: fred::types::Value = admin
+        .custom(
+            fred::types::CustomCommand::new_static("ACL", None::<u16>, false),
+            vec!["DELUSER".to_string(), user],
+        )
+        .await
+        .unwrap();
+    let err = result
+        .err()
+        .expect("a Valkey that refuses script loading stops the start");
+    assert!(
+        err.to_string().contains("could not load its scripts"),
+        "{err}"
+    );
+}

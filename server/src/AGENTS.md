@@ -74,10 +74,10 @@ Services are loosely coupled but coordinate via shared state:
 3. Redis client initialized
 4. S3 client created (optional, graceful degradation)
 5. SFU server initialized
-6. Rate limiter initialized (optional)
+6. Rate limiter initialized (`ratelimit::start_rate_limiter`; with `RATE_LIMIT_ENABLED` on, a limiter that cannot load stops the start)
 7. AppState assembled and passed to router
 
-**Graceful degradation:** S3 and rate limiting are optional. If initialization fails, warnings are logged and the server continues without those features.
+**Graceful degradation:** S3 is optional: if its initialization fails, a warning is logged and the server continues without file uploads. Rate limiting is not: when it is enabled and the limiter cannot load its scripts into Valkey, the server refuses to start (`RATE_LIMIT_ENABLED=false` only for tests).
 
 ### Security-Critical Patterns
 - All authentication handlers are in `auth/` - changes need security review
