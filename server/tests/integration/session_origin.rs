@@ -20,8 +20,8 @@ use super::helpers::login::{enable_totp, f4_sign_in, password_user, peer_request
 use super::helpers::migrations::{apply_from, apply_until};
 use super::helpers::passkeys::passkey_session;
 use super::helpers::{
-    body_to_json_lenient, create_session_with_token, create_test_user, grant_step_up, make_admin,
-    next_ws_event, spawn_test_server, ws_connect, TestApp,
+    body_to_json_lenient, create_session_with_token, create_test_user, make_admin, next_ws_event,
+    spawn_test_server, ws_connect, TestApp,
 };
 use super::login_attempts::{
     answer_login, approved_attempt, attempt_id, claim, pc_call, qr_token, verifier_pair, Secret,
@@ -147,6 +147,24 @@ async fn password_totp_pc(
 }
 
 /// Remove key device `target` from `actor`'s session (full + grant).
+/// A step-up grant, as `helpers::grant_step_up` gives it.
+///
+/// First every phone and passkey of the test counts as added 30 days earlier
+/// (once per row, so the order of the creation times stays): one added a
+/// moment ago may not act against an older one before the account request
+/// delay has passed, and the stories in this file are not about that wait.
+async fn grant_step_up(pool: &PgPool, sid: Uuid, action: &str, target: &str) {
+    for sql in [
+        "UPDATE approval_devices SET created_at = created_at - INTERVAL '30 days'
+          WHERE created_at > NOW() - INTERVAL '30 days'",
+        "UPDATE passkeys SET created_at = created_at - INTERVAL '30 days'
+          WHERE created_at > NOW() - INTERVAL '30 days'",
+    ] {
+        sqlx::query(sql).execute(pool).await.expect("settle");
+    }
+    super::helpers::grant_step_up(pool, sid, action, target).await;
+}
+
 async fn remove_device(app: &TestApp, actor: &KeyDeviceFixture, target: Uuid) -> (u16, Value) {
     grant_step_up(
         &app.pool,
