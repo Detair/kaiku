@@ -659,6 +659,28 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
     }
   };
 
+  /** "Sign in with your passkey" and its error; `primary` on the success screen. */
+  const signInButton = (primary: boolean) => (
+    <>
+      <button
+        type="button"
+        class={
+          primary
+            ? "btn-primary min-h-11 text-base"
+            : "min-h-11 px-3 rounded-lg text-base text-text-primary bg-surface-layer2 hover:bg-white/10"
+        }
+        disabled={signingIn()}
+        onClick={() => void signInWithPasskey()}
+      >
+        {t("pcSetup.signIn")}
+      </button>
+      <Show when={signInError()}>
+        <p role="alert" class="text-sm text-text-primary">{signInError()}</p>
+        <LinuxPasskeyHint class="text-sm text-text-secondary" />
+      </Show>
+    </>
+  );
+
   return (
     <DialogShell title={t("pcSetup.title")} onClose={() => props.onClose()} wide testId="set-up-this-pc">
       <Show when={starting() && !checking()}>
@@ -713,23 +735,16 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
               />
             </Match>
             <Match when={s().state === "completed" && !registeredHere(s().attempt_id)}>
-              <p role="status">{t("pcSetup.ended.otherPage")}</p>
+              <div class="space-y-3">
+                <p role="status">{t("pcSetup.ended.otherPage")}</p>
+                {/* If it was the person, the passkey signs in here too (secondary). */}
+                {signInButton(false)}
+              </div>
             </Match>
             <Match when={s().state === "completed"}>
               <div class="space-y-3">
                 <p>{t("pcSetup.completed")}</p>
-                <button
-                  type="button"
-                  class="btn-primary min-h-11 text-base"
-                  disabled={signingIn()}
-                  onClick={() => void signInWithPasskey()}
-                >
-                  {t("pcSetup.signIn")}
-                </button>
-                <Show when={signInError()}>
-                  <p role="alert" class="text-sm text-text-primary">{signInError()}</p>
-                  <LinuxPasskeyHint class="text-sm text-text-secondary" />
-                </Show>
+                {signInButton(true)}
               </div>
             </Match>
             <Match when={true}>

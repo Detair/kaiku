@@ -44,6 +44,8 @@ import type { User } from "@/lib/types";
 import { t } from "@/i18n";
 
 const ID = "00000000-0000-4000-8000-000000000001";
+/** The success text: only a passkey this dialog registered. */
+const READY = "Your passkey is ready. Sign in with it to get full access on this computer.";
 const status = (state: string, reason: string | null = null, extra: object = {}) => ({
   attempt_id: ID,
   state,
@@ -459,6 +461,7 @@ describe("the page that typed the code registers the passkey", () => {
     // The page that typed the code registers and then signs in.
     fireEvent.click(within(owner).getByRole("button", { name: "Create a passkey" }));
     expect(await within(owner).findByRole("button", { name: "Sign in with your passkey" })).toBeTruthy();
+    expect(within(owner).getByText(READY)).toBeTruthy();
     expect(finished).toBe(1);
   });
 });
@@ -535,6 +538,7 @@ describe("on the desktop", () => {
     await screen.findByText("This didn't work. Start again.");
     finish();
     expect(await screen.findByRole("button", { name: "Sign in with your passkey" })).toBeTruthy();
+    expect(screen.getByText(READY)).toBeTruthy();
   });
 
   it("opening the browser drives the pc_setup flow and ends on the sign-in step", async () => {
@@ -546,6 +550,7 @@ describe("on the desktop", () => {
     await screen.findByText(/Waiting for your browser/);
     finish();
     expect(await screen.findByRole("button", { name: "Sign in with your passkey" })).toBeTruthy();
+    expect(screen.getByText(READY)).toBeTruthy();
   });
 
   it("the flow survives the switch from code to enrolled and ends with the dialog", async () => {
@@ -650,6 +655,7 @@ describe("answers belong to their attempt", () => {
     await waitFor(() => expect(pc.pollPcSetup).toHaveBeenCalledTimes(2), { timeout: 2_000 });
     fireEvent.click(create);
     expect(await screen.findByRole("button", { name: "Sign in with your passkey" })).toBeTruthy();
+    expect(screen.getByText(READY)).toBeTruthy();
     // That poll answers only now, with what it read before the finish.
     late(status("enrolled"));
     await new Promise((r) => setTimeout(r, 0));
@@ -871,6 +877,7 @@ describe("an end is final", () => {
     await waitFor(() => expect(pc.pollPcSetup).toHaveBeenCalledTimes(2), { timeout: 2_000 });
     fireEvent.click(create);
     expect(await screen.findByRole("button", { name: "Sign in with your passkey" })).toBeTruthy();
+    expect(screen.getByText(READY)).toBeTruthy();
     // Entering the end closed the open poll.
     expect(lateSignal?.aborted).toBe(true);
     // Its refusal arrives anyway: the end stays.
@@ -934,6 +941,7 @@ describe("Start again against a finish", () => {
     pc.startPcSetup.mockResolvedValue({ attempt_id: NEW, qr_payload: "kaiku://pcsetup/v1?o=x&t=z", rotates_at: "" });
     fireEvent.click(screen.getByRole("button", { name: "Start again" }));
     expect(await screen.findByRole("button", { name: "Sign in with your passkey" })).toBeTruthy();
+    expect(screen.getByText(READY)).toBeTruthy();
     expect(screen.queryByRole("img", { name: "Code to scan with the Kaiku app on your phone" })).toBeNull();
     await waitFor(() => expect(pc.cancelPcSetup).toHaveBeenCalledWith(NEW));
   });
@@ -982,6 +990,7 @@ describe("an end the client made up gives way to the server's", () => {
     // The ceremony and the finish still succeed on the server.
     credential({});
     expect(await screen.findByRole("button", { name: "Sign in with your passkey" })).toBeTruthy();
+    expect(screen.getByText(READY)).toBeTruthy();
   });
 });
 
@@ -1046,7 +1055,7 @@ describe("a new code only once the earlier attempt's end is known", () => {
     pc.startPcSetup.mockResolvedValueOnce({ attempt_id: NEW, qr_payload: "kaiku://pcsetup/v1?o=x&t=z", rotates_at: "" });
     fireEvent.click(screen.getByRole("button", { name: "Start again" }));
     expect(await screen.findByText(/A passkey was set up for this account from another page/)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Sign in with your passkey" })).toBeNull();
+    expect(screen.queryByText(READY)).toBeNull();
     expect(pc.pollPcSetup).toHaveBeenCalledWith(ID, 0);
   });
 
@@ -1065,7 +1074,7 @@ describe("a new code only once the earlier attempt's end is known", () => {
     pc.startPcSetup.mockResolvedValue({ attempt_id: NEWER, qr_payload: "kaiku://pcsetup/v1?o=x&t=w", rotates_at: "" });
     fireEvent.click(screen.getByRole("button", { name: "Start again" }));
     expect(await screen.findByText(/A passkey was set up for this account from another page/)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Sign in with your passkey" })).toBeNull();
+    expect(screen.queryByText(READY)).toBeNull();
     await waitFor(() => expect(pc.cancelPcSetup).toHaveBeenCalledWith(NEW));
     await waitFor(() => expect(pc.cancelPcSetup).toHaveBeenCalledWith(NEWER));
     expect(pc.cancelPcSetup).not.toHaveBeenCalledWith(ID);
@@ -1098,7 +1107,7 @@ describe("a new code only once the earlier attempt's end is known", () => {
     pc.startPcSetup.mockResolvedValue({ attempt_id: NEW, qr_payload: "kaiku://pcsetup/v1?o=x&t=z", rotates_at: "" });
     fireEvent.click(screen.getByRole("button", { name: "Start again" }));
     expect(await screen.findByText(/A passkey was set up for this account from another page/)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Sign in with your passkey" })).toBeNull();
+    expect(screen.queryByText(READY)).toBeNull();
     expect(pc.pollPcSetup).toHaveBeenCalledWith(ID, 0);
     await waitFor(() => expect(pc.cancelPcSetup).toHaveBeenCalledWith(NEW));
   });
@@ -1137,7 +1146,7 @@ describe("a new code only once the earlier attempt's end is known, whatever the 
     pc.currentPcSetup.mockResolvedValue({ ...status("waiting"), attempt_id: NEW, qr_payload: "kaiku://pcsetup/v1?o=x&t=z" });
     render(() => <SetUpThisPc onClose={vi.fn()} />);
     expect(await screen.findByText(/A passkey was set up for this account from another page/)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Sign in with your passkey" })).toBeNull();
+    expect(screen.queryByText(READY)).toBeNull();
     expect(screen.queryByRole("img", QR)).toBeNull();
     expect(pc.pollPcSetup).toHaveBeenCalledWith(ID, 0);
     await waitFor(() => expect(pc.cancelPcSetup).toHaveBeenCalledWith(NEW));
@@ -1150,7 +1159,7 @@ describe("a new code only once the earlier attempt's end is known, whatever the 
     nextStart();
     fireEvent.click(screen.getByRole("button", { name: "Start again" }));
     expect(await screen.findByText(/A passkey was set up for this account from another page/)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Sign in with your passkey" })).toBeNull();
+    expect(screen.queryByText(READY)).toBeNull();
     expect(screen.queryByRole("img", QR)).toBeNull();
     expect(pc.pollPcSetup).toHaveBeenCalledWith(ID, 0);
     await waitFor(() => expect(pc.cancelPcSetup).toHaveBeenCalledWith(NEW));
@@ -1210,6 +1219,7 @@ describe("only the server's own not-found ends an attempt", () => {
     await screen.findByText("This didn't work. Start again.");
     credential({});
     expect(await screen.findByRole("button", { name: "Sign in with your passkey" })).toBeTruthy();
+    expect(screen.getByText(READY)).toBeTruthy();
   });
 });
 
@@ -1219,6 +1229,7 @@ describe("completed means the passkey exists", () => {
     tauri.on = true;
     await openAt("completed", "brand_new");
     expect(await screen.findByRole("button", { name: "Sign in with your passkey" })).toBeTruthy();
+    expect(screen.getByText(READY)).toBeTruthy();
   });
 });
 
@@ -1250,7 +1261,7 @@ describe("success only for a passkey this dialog registered", () => {
     render(() => <SetUpThisPc onClose={vi.fn()} />);
     expect(await screen.findByText(OTHER_PAGE, {}, { timeout: 3_000 })).toBeTruthy();
     expect(screen.getByText(/That wasn't me/)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Sign in with your passkey" })).toBeNull();
+    expect(screen.queryByText(READY)).toBeNull();
     expect(screen.queryByText("Your passkey is ready. Sign in with it to get full access on this computer.")).toBeNull();
   });
 
@@ -1269,7 +1280,7 @@ describe("success only for a passkey this dialog registered", () => {
     await waitFor(() => expect(pc.pollPcSetup).toHaveBeenCalledTimes(2), { timeout: 2_000 });
     later(status("completed"));
     expect(await screen.findByText(OTHER_PAGE)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Sign in with your passkey" })).toBeNull();
+    expect(screen.queryByText(READY)).toBeNull();
   });
 
   it("another page completes after this dialog's own finish was refused: a neutral end", async () => {
@@ -1289,7 +1300,7 @@ describe("success only for a passkey this dialog registered", () => {
     await waitFor(() => expect(pc.pollPcSetup).toHaveBeenCalledTimes(2), { timeout: 2_000 });
     later(status("completed"));
     expect(await screen.findByText(OTHER_PAGE)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Sign in with your passkey" })).toBeNull();
+    expect(screen.queryByText(READY)).toBeNull();
   });
 
   it("a poll that reports completed while this dialog's own finish is on its way shows success", async () => {
@@ -1309,6 +1320,7 @@ describe("success only for a passkey this dialog registered", () => {
     await waitFor(() => expect(pc.pollPcSetup).toHaveBeenCalledTimes(2), { timeout: 2_000 });
     later(status("completed"));
     expect(await screen.findByRole("button", { name: "Sign in with your passkey" })).toBeTruthy();
+    expect(screen.getByText(READY)).toBeTruthy();
     expect(screen.queryByText(OTHER_PAGE)).toBeNull();
   });
 
@@ -1416,6 +1428,7 @@ describe("a registration counts as this page's own once its finish was sent", ()
     await waitFor(() => expect(pc.pollPcSetup).toHaveBeenCalledTimes(2), { timeout: 2_000 });
     answer(status("completed"));
     expect(await screen.findByRole("button", SIGN_IN)).toBeTruthy();
+    expect(screen.getByText(READY)).toBeTruthy();
     expect(screen.queryByText(OTHER_PAGE)).toBeNull();
   });
 
@@ -1426,6 +1439,7 @@ describe("a registration counts as this page's own once its finish was sent", ()
     await waitFor(() => expect(pc.pollPcSetup).toHaveBeenCalledTimes(2), { timeout: 2_000 });
     answer(status("completed"));
     expect(await screen.findByRole("button", SIGN_IN)).toBeTruthy();
+    expect(screen.getByText(READY)).toBeTruthy();
     expect(screen.queryByText(OTHER_PAGE)).toBeNull();
   });
 
@@ -1436,7 +1450,23 @@ describe("a registration counts as this page's own once its finish was sent", ()
     await waitFor(() => expect(pc.pollPcSetup).toHaveBeenCalledTimes(2), { timeout: 2_000 });
     answer(status("completed"));
     expect(await screen.findByText(OTHER_PAGE)).toBeTruthy();
-    expect(screen.queryByRole("button", SIGN_IN)).toBeNull();
+    expect(screen.queryByText(READY)).toBeNull();
+  });
+
+  it("the neutral end offers the same sign-in below its text", async () => {
+    const answer = laterPoll();
+    pc.finishPcSetupPasskey.mockRejectedValue(http("APPROVAL_STATE", 409));
+    replaceSessionWithPasskey.mockResolvedValue({});
+    await startRegistration();
+    await waitFor(() => expect(pc.pollPcSetup).toHaveBeenCalledTimes(2), { timeout: 2_000 });
+    answer(status("completed"));
+    const text = await screen.findByText(OTHER_PAGE);
+    const button = screen.getByRole("button", SIGN_IN);
+    expect(text.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByText(READY)).toBeNull();
+    expect(screen.getByRole("button", { name: "Start again" })).toBeTruthy();
+    fireEvent.click(button);
+    await waitFor(() => expect(replaceSessionWithPasskey).toHaveBeenCalledOnce());
   });
 
   it("completed with an unknown reason on the page that sent the finish: success", async () => {
@@ -1446,6 +1476,7 @@ describe("a registration counts as this page's own once its finish was sent", ()
     await waitFor(() => expect(pc.pollPcSetup).toHaveBeenCalledTimes(2), { timeout: 2_000 });
     answer(status("completed", "brand_new"));
     expect(await screen.findByRole("button", SIGN_IN)).toBeTruthy();
+    expect(screen.getByText(READY)).toBeTruthy();
   });
 
   it("a code request refused with 409, then enrolled: the hint of a page without the proof", async () => {
