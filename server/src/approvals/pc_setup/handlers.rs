@@ -11,8 +11,8 @@
 //! only); `POST /api/approvals/{id}/release` releases a claim as for `login`.
 //!
 //! No push: both sides learn the state by polling (long-poll ≤ 25 s, re-read
-//! every 500 ms). The code is in the approving phone's answer and nowhere
-//! else: never in a PC response, a log line or an audit row.
+//! every 500 ms, the last sleep cut to the deadline). The code is in the approving phone's answer
+//! and nowhere else: never in a PC response, a log line or an audit row.
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -325,6 +325,12 @@ pub(crate) async fn settle<T>(
     }
 }
 
+/// How long a long-poll sleeps before its next check: one step, but never
+/// past its deadline, so the answer comes by then (plus one read).
+fn step_sleep(now: tokio::time::Instant, deadline: tokio::time::Instant) -> std::time::Duration {
+    POLL_STEP.min(deadline.saturating_duration_since(now))
+}
+
 /// Wait for a change of `id` (`rotation`: the PC's poll, which also mints
 /// due QR tokens). An ended attempt never changes, so it answers at once;
 /// so does a poll without a free place (process, user, attempt).
@@ -357,7 +363,7 @@ async fn long_poll(
         {
             return Ok((row, token));
         }
-        tokio::time::sleep(POLL_STEP).await;
+        tokio::time::sleep(step_sleep(tokio::time::Instant::now(), deadline)).await;
     }
 }
 
@@ -878,6 +884,16 @@ mod tests {
             "given back on drop"
         );
         drop((phone, more));
+    }
+
+    #[test]
+    fn a_long_poll_never_sleeps_past_its_deadline() {
+        let now = tokio::time::Instant::now();
+        let ms = std::time::Duration::from_millis;
+        assert_eq!(step_sleep(now, now + ms(5_000)), POLL_STEP);
+        assert_eq!(step_sleep(now, now + ms(120)), ms(120));
+        assert_eq!(step_sleep(now, now), ms(0));
+        assert_eq!(step_sleep(now + ms(10), now), ms(0));
     }
 
     #[test]
