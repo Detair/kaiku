@@ -804,10 +804,12 @@ notices, and only when the previous batch has finished sending (otherwise the no
 a later run); a batch sends for 8 recipients at a time, each recipient's pushes one after another
 for at most 30 s, so a recipient whose push addresses never answer delays only its own pushes,
 unless many such recipients fill all slots: then the batch can outlast the minute and other
-accounts' follow-ups (never an immediate push) wait for a later run. The
+accounts' follow-ups (never an immediate push) wait for a later run. When more than 100 notices
+fall due within a minute (a large server, or after downtime), they queue up, oldest first, and are
+worked off at 100 a minute; immediate pushes and the notice in the Kaiku DM are not affected. The
 order is deliberate: first record the push as sent, then send it. A crash or stop in between loses
 at most that one push and never sends one twice. A push recorded as sent that then fails, or is cut
-off by a server stop, is logged and not sent again; this holds for the immediate push too. The notice in the Kaiku DM stays correct. "Push now", "due" and
+off by the 30 s limit or a server stop, is logged and not sent again; this holds for the immediate push too. The notice in the Kaiku DM stays correct. "Push now", "due" and
 "dealt with" are decided on the database clock at the moment of the statement; an event's
 `delivered_at` is the moment it joined its notices. No follow-up when the owner reported one of the
 notice's events ("That wasn't me") after its newest event joined (also for the admin and
