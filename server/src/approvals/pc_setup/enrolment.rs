@@ -284,11 +284,12 @@ pub async fn registration_open(
     Ok(enrollment_id)
 }
 
-/// The checks of the web `passkey/start` under the locks: those of
-/// [`registration_open`] for the web path, and the page's `proof`, compared
-/// in constant time with the one stored with the right code. A missing or
-/// different proof → 409 `APPROVAL_STATE`; nothing is spent and the attempt
-/// stays `enrolled` for the page that holds the proof.
+/// The checks of the web `passkey/start` under the locks.
+///
+/// Those of [`registration_open`] for the web path, and the page's `proof`,
+/// compared in constant time with the one stored with the right code. A
+/// missing or different proof → 409 `APPROVAL_STATE`; nothing is spent and
+/// the attempt stays `enrolled` for the page that holds the proof.
 pub async fn web_registration_open(
     conn: &mut PgConnection,
     ctx: &AuthCtx<'_>,
