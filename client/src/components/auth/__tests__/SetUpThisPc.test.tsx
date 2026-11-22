@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, waitFor, cleanup } from "@solidjs/testing-library";
+import { render, screen, fireEvent, waitFor, cleanup, within } from "@solidjs/testing-library";
 
 const getMeSecurity = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/tauri/security", async (orig) => ({ ...(await orig<object>()), getMeSecurity }));
@@ -280,7 +280,7 @@ describe("code and passkey on the web", () => {
     pc.enterPcSetupCode.mockResolvedValue({ state: "code", tries_left: 2 });
     await typeCode("123456");
     expect(await screen.findByText("That code is wrong. 2 tries left.")).toBeTruthy();
-    expect(pc.enterPcSetupCode).toHaveBeenCalledWith(ID, "123456");
+    expect(pc.enterPcSetupCode).toHaveBeenCalledWith(ID, "123456", expect.any(String));
     expect(screen.getByLabelText("Code from your phone")).toBeTruthy();
   });
 
@@ -352,6 +352,69 @@ describe("code and passkey on the web", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Create a passkey" }));
     expect((await screen.findByRole("alert")).textContent).toBe(t("passkeys.error.notSupported"));
     expect(pc.finishPcSetupPasskey).not.toHaveBeenCalled();
+  });
+});
+
+describe("the page that typed the code registers the passkey", () => {
+  async function typeCodeIn(root: HTMLElement, digits: string) {
+    fireEvent.input(await within(root).findByLabelText("Code from your phone"), { target: { value: digits } });
+    fireEvent.click(within(root).getByRole("button", { name: "Confirm" }));
+  }
+
+  it("the passkey start carries the proof the code request sent, and a retyped code sends the same", async () => {
+    await openAt("code");
+    pc.enterPcSetupCode.mockResolvedValueOnce({ state: "code", tries_left: 2 });
+    pc.enterPcSetupCode.mockResolvedValueOnce({ state: "enrolled", enrollment_id: "e1" });
+    pc.startPcSetupPasskey.mockImplementation(never);
+    await typeCodeIn(document.body, "111111");
+    await screen.findByText("That code is wrong. 2 tries left.");
+    await typeCodeIn(document.body, "123456");
+    fireEvent.click(await screen.findByRole("button", { name: "Create a passkey" }));
+    await waitFor(() => expect(pc.startPcSetupPasskey).toHaveBeenCalledOnce());
+    const sent = pc.enterPcSetupCode.mock.calls.map((c) => c[2]);
+    // 32 random bytes, base64url without padding; one proof per attempt.
+    expect(sent[0]).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(sent[1]).toBe(sent[0]);
+    expect(pc.startPcSetupPasskey).toHaveBeenCalledWith(ID, sent[0]);
+  });
+
+  it("another page of the same session cannot register, and this page still completes", async () => {
+    // A server that keeps the proof sent with the right code and starts a
+    // registration only for that proof.
+    let stored: string | undefined;
+    let finished = 0;
+    pc.enterPcSetupCode.mockImplementation(async (_id: string, _code: string, proof?: string) => {
+      stored = proof;
+      return { state: "enrolled", enrollment_id: "e1" };
+    });
+    pc.startPcSetupPasskey.mockImplementation(async (_id: string, proof?: string) => {
+      if (proof === undefined || proof !== stored) throw http("APPROVAL_STATE", 409);
+      return { ceremony_id: "c1", options: {} };
+    });
+    pc.finishPcSetupPasskey.mockImplementation(async () => {
+      finished++;
+      return {};
+    });
+    createPasskeyCredential.mockResolvedValue({ id: "cred" });
+    polls();
+    pc.currentPcSetup.mockResolvedValue(status("code"));
+    render(() => <SetUpThisPc onClose={vi.fn()} />);
+    const owner = await screen.findByTestId("set-up-this-pc");
+    await typeCodeIn(owner, "123456");
+    await within(owner).findByRole("button", { name: "Create a passkey" });
+    // A second page of the same session sees the attempt `enrolled`.
+    pc.currentPcSetup.mockResolvedValue(status("enrolled"));
+    render(() => <SetUpThisPc onClose={vi.fn()} />);
+    await waitFor(() => expect(screen.getAllByTestId("set-up-this-pc")).toHaveLength(2));
+    const other = screen.getAllByTestId("set-up-this-pc").find((d) => d !== owner)!;
+    fireEvent.click(await within(other).findByRole("button", { name: "Create a passkey" }));
+    expect(await within(other).findByText("This didn't work. Start again.")).toBeTruthy();
+    expect(finished).toBe(0);
+    expect(within(owner).queryByRole("button", { name: "Sign in with your passkey" })).toBeNull();
+    // The page that typed the code registers and then signs in.
+    fireEvent.click(within(owner).getByRole("button", { name: "Create a passkey" }));
+    expect(await within(owner).findByRole("button", { name: "Sign in with your passkey" })).toBeTruthy();
+    expect(finished).toBe(1);
   });
 });
 
@@ -509,7 +572,7 @@ describe("answers belong to their attempt", () => {
     pc.enterPcSetupCode.mockImplementation(() => new Promise((r) => (answer = r)));
     fireEvent.input(await screen.findByLabelText("Code from your phone"), { target: { value: "123456" } });
     fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
-    await waitFor(() => expect(pc.enterPcSetupCode).toHaveBeenCalledWith(OLD, "123456"));
+    await waitFor(() => expect(pc.enterPcSetupCode).toHaveBeenCalledWith(OLD, "123456", expect.any(String)));
     pc.startPcSetup.mockResolvedValue({ attempt_id: NEW, qr_payload: "kaiku://pcsetup/v1?o=x&t=z", rotates_at: "" });
     // The old attempt's end is read before the new code shows.
     pc.pollPcSetup.mockReset();

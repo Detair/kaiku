@@ -196,6 +196,40 @@ impl std::fmt::Debug for PcSetupCodeEntry {
     }
 }
 
+/// `POST /auth/pc-setups/{id}/code` body from the web page: the code and the
+/// page's own proof. `Debug` hides both.
+#[derive(Deserialize, utoipa::ToSchema)]
+pub struct PcSetupWebCodeEntry {
+    pub code: String,
+    /// 32 random bytes the page drew for this attempt (base64url, no
+    /// padding). The page keeps them and sends them again with
+    /// `passkey/start`.
+    #[serde(default)]
+    pub proof: Option<String>,
+}
+
+impl std::fmt::Debug for PcSetupWebCodeEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PcSetupWebCodeEntry")
+            .finish_non_exhaustive()
+    }
+}
+
+/// `POST /auth/pc-setups/{id}/passkey/start` body: the proof the page sent
+/// with the right code. `Debug` hides it.
+#[derive(Default, Deserialize, utoipa::ToSchema)]
+pub struct PcSetupPasskeyStart {
+    #[serde(default)]
+    pub proof: Option<String>,
+}
+
+impl std::fmt::Debug for PcSetupPasskeyStart {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PcSetupPasskeyStart")
+            .finish_non_exhaustive()
+    }
+}
+
 /// What a typed code did: `enrolled` (with the enrolment), `code` (wrong,
 /// with the tries left) or `failed` (the third wrong code).
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -441,10 +475,10 @@ pub async fn cancel(
     path = "/auth/pc-setups/{id}/code",
     tag = "approvals",
     params(("id" = Uuid, Path, description = "Attempt id")),
-    request_body = PcSetupCodeEntry,
+    request_body = PcSetupWebCodeEntry,
     responses(
         (status = 200, body = PcSetupCodeResult),
-        (status = 400, description = "VALIDATION_ERROR: not 6 digits (no try spent)"),
+        (status = 400, description = "VALIDATION_ERROR: not 6 digits, or no well-formed proof (no try spent)"),
         (status = 404, description = "APPROVAL_NOT_FOUND"),
         (status = 409, description = "APPROVAL_STATE: no code to type (ended, or already typed)"),
         (status = 410, description = "APPROVAL_EXPIRED: the code's 5 minutes ran out"),
@@ -456,13 +490,28 @@ pub async fn code(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(id): Path<Uuid>,
-    Json(body): Json<PcSetupCodeEntry>,
+    Json(body): Json<PcSetupWebCodeEntry>,
 ) -> Result<Json<PcSetupCodeResult>, ApprovalError> {
+    // The page's proof is checked before any lock: without a well-formed
+    // one nothing is read, spent or written.
+    let proof = body
+        .proof
+        .as_deref()
+        .and_then(Secret256::from_b64u)
+        .ok_or_else(|| ApprovalError::Validation("proof must be 32 bytes, base64url".into()))?;
     let ctx = AuthCtx::from(&state);
     let mut tx = state.db.begin().await?;
     let result = async {
         let locked = lock_own(&mut tx, &auth, id).await?;
-        enrolment::enter_code(&mut tx, &ctx, &locked, &body.code, CodePath::Web).await
+        enrolment::enter_code(
+            &mut tx,
+            &ctx,
+            &locked,
+            &body.code,
+            CodePath::Web,
+            Some(&proof),
+        )
+        .await
     }
     .await;
     let out = match settle(tx, result).await? {
@@ -488,16 +537,19 @@ pub async fn code(
     Ok(Json(out))
 }
 
-/// Start the web registration of the attempt's passkey (`enrolled` only).
+/// Start the web registration of the attempt's passkey (`enrolled` only),
+/// from the page that typed the right code: its `proof` must match the one
+/// sent with that code.
 #[utoipa::path(
     post,
     path = "/auth/pc-setups/{id}/passkey/start",
     tag = "approvals",
     params(("id" = Uuid, Path, description = "Attempt id")),
+    request_body = PcSetupPasskeyStart,
     responses(
         (status = 200, body = crate::auth::passkeys::types::CeremonyStart),
         (status = 404, description = "APPROVAL_NOT_FOUND"),
-        (status = 409, description = "APPROVAL_STATE (no right code yet, or ended) or PASSKEY_LIMIT"),
+        (status = 409, description = "APPROVAL_STATE (no right code yet, ended, or not the proof sent with the right code) or PASSKEY_LIMIT"),
     ),
     security(("bearer_auth" = [])),
 )]
@@ -506,13 +558,23 @@ pub async fn passkey_start(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(id): Path<Uuid>,
+    body: axum::body::Bytes,
 ) -> Result<Json<crate::auth::passkeys::types::CeremonyStart>, ApprovalError> {
     use crate::auth::passkeys::register::{begin, RegistrationBinding};
     crate::auth::passkeys::rp_of(&state)?;
+    // A missing, unreadable or malformed body carries no proof: refused
+    // under the locks like a different one (409), nothing spent.
+    let proof = serde_json::from_slice::<PcSetupPasskeyStart>(&body)
+        .unwrap_or_default()
+        .proof
+        .as_deref()
+        .and_then(Secret256::from_b64u);
+    let ctx = AuthCtx::from(&state);
     let mut tx = state.db.begin().await?;
     let result = async {
         let locked = lock_own(&mut tx, &auth, id).await?;
-        let enrollment_id = enrolment::registration_open(&mut tx, &locked, CodePath::Web).await?;
+        let enrollment_id =
+            enrolment::web_registration_open(&mut tx, &ctx, &locked, proof.as_ref()).await?;
         Ok((locked.attempt.session_id, enrollment_id))
     }
     .await;

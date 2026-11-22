@@ -120,6 +120,8 @@ pub struct AttemptRow {
     /// How the right code arrived (`web` or `desktop_flow`), see [`CodePath`].
     pub code_via: Option<String>,
     pub code_flow_id: Option<Uuid>,
+    /// On the web path, the keyed hash of the typing page's proof.
+    pub web_proof_hash: Option<Vec<u8>>,
 }
 
 impl AttemptRow {

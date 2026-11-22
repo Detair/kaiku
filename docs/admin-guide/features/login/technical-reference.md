@@ -556,8 +556,9 @@ on `GET /auth/me` → `session.auth_methods`.
 
 ### 7.7 Set up this PC (F5e, SM5) → full by a new passkey sign-in
 
-A chat-only session asks for a passkey for its PC; only the account's key phone can grant it, and a
-6-digit code typed where the passkey is made binds the browser to the person holding the phone. Code:
+A chat-only session asks for a passkey for its PC; only the account's key phone can grant it, and the
+6-digit code from the phone, typed where the passkey is made, fixes the page or browser that may register
+it. Code:
 `server/src/approvals/pc_setup/` (`transition.rs` lifecycle, `enrolment.rs` code entry and passkey,
 `handlers.rs` routes) and `server/src/auth/passkeys/desktop_pc_setup.rs` (desktop purpose).
 
@@ -574,9 +575,9 @@ sequenceDiagram
     P->>P: check prefix + context, show it, UV, sign (response = scanned token)
     P->>S: POST /api/pc-setups/{cid}/answer {response, signature, decision}
     S-->>P: 200 {attempt_id, code, code_expires_at}
-    PC->>S: POST /auth/pc-setups/{id}/code {code} (web)
+    PC->>S: POST /auth/pc-setups/{id}/code {code, proof} (web)
     S-->>PC: 200 {state: enrolled, enrollment_id}
-    PC->>S: passkey/start, passkey/finish (web) or desktop flow + redeem
+    PC->>S: passkey/start {proof}, passkey/finish (web) or desktop flow + redeem
     S-->>PC: 201 Passkey (active), attempt completed
     PC->>S: F1 passkey sign-in (replaceSessionWithPasskey)
 ```
@@ -585,7 +586,7 @@ sequenceDiagram
   `may_approve` on (a full session or no such device: 403 `PC_SETUP_UNAVAILABLE`; an ended session: 401
   `INVALID_TOKEN`). The QR payload is
   `kaiku://pcsetup/v1?o=<origin>&t=<token>`; only keyed hashes are stored (`SecretPurpose::PcSetupToken`,
-  `PcSetupCode`, `PcSetupBrowser`). One session has at most one live attempt: a new start cancels the old
+  `PcSetupCode`, `PcSetupBrowser`, `PcSetupWebProof`). One session has at most one live attempt: a new start cancels the old
   one and its enrolment (reason `restarted`). `GET /auth/pc-setups/current` returns the live attempt after
   a reload and **always issues a fresh token while `waiting`**, so a QR scanned from an earlier response
   can then fail with `LOGIN_CODE_STALE`.
@@ -617,9 +618,16 @@ sequenceDiagram
   through a flow (409 `APPROVAL_STATE`), and a flow refuses an attempt whose code came another way. A
   `pc_setup` desktop flow starts only from a session whose stored client class is `desktop` (403
   `FORBIDDEN` otherwise).
-- **Browser (web):** `passkey/start` and `passkey/finish` need the requesting session (the bearer is the
-  only binding after the right code: whoever holds the session's access token holds the session); the finish creates
-  the `active` passkey (409 `PASSKEY_LIMIT` / `PASSKEY_ALREADY_REGISTERED` keep the attempt readable).
+- **Browser (web):** the page draws a proof (32 random bytes, b64u) before it sends the code and keeps
+  it in memory for that attempt (never in the URL, in storage or in a log). `POST …/code` needs it (400
+  `VALIDATION_ERROR` without a well-formed one, no try spent); the right code stores its keyed hash
+  (`pc_setup_attempts.web_proof_hash`) in the update that records `code_via = web`, a wrong code stores
+  nothing. `passkey/start` needs the requesting session and that proof (`{proof}`, compared in constant
+  time under the locks; missing or different: 409 `APPROVAL_STATE`, nothing spent, the attempt stays
+  `enrolled`). `passkey/finish` needs the requesting session and the ceremony id that start returned;
+  it creates the `active` passkey (409 `PASSKEY_LIMIT` / `PASSKEY_ALREADY_REGISTERED` keep the attempt
+  readable). A lost answer to the code is recovered by the poll and the page's own proof; a reload
+  between the code and the passkey loses the proof, and the person starts again.
 - **Desktop:** purpose `pc_setup` of the F1 flow (C29). The app starts the flow with its session's bearer
   and the attempt id; the flow URL is `/auth/passkeys/desktop/flows/{flow_id}`. The page asks for the
   code before any ceremony. The right code answers with a cookie `__Secure-kaiku_pcsetup` (HttpOnly,

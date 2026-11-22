@@ -338,6 +338,7 @@ pub async fn code(
             &locked,
             &body.code,
             CodePath::DesktopFlow(flow_id),
+            None,
         )
         .await
     }

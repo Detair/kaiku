@@ -1,7 +1,9 @@
 /**
  * "Set up this PC" (SM5), the PC's side: a chat-only session asks, the phone
  * grants. Every route needs the bearer session that started the attempt. The
- * phone's code is typed here (web) and never comes back from the server.
+ * phone's code is typed here (web) and never comes back from the server. On
+ * the web the page sends a proof of its own with the code; only that proof
+ * starts the passkey registration.
  */
 
 import { httpRequest } from "./common";
@@ -79,14 +81,34 @@ export async function cancelPcSetup(id: string): Promise<void> {
   await httpRequest<void>("DELETE", base(id));
 }
 
-/** Type the phone's 6 digits. A wrong code answers `{state: "code", tries_left}`. */
-export function enterPcSetupCode(id: string, code: string): Promise<PcSetupCodeResult> {
-  return httpRequest<PcSetupCodeResult>("POST", `${base(id)}/code`, { code });
+/**
+ * A fresh proof for one attempt's code: 32 random bytes, base64url without
+ * padding. The page keeps it in memory only (never in the URL, in storage or
+ * in a log) and sends it again with the passkey start.
+ */
+export function newPcSetupProof(): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  let bin = "";
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-/** Browser only (the desktop app runs `passkey_pc_setup`): start the registration of the attempt's passkey (`enrolled`). */
-export function startPcSetupPasskey(id: string): Promise<PcSetupPasskeyStart> {
-  return httpRequest<PcSetupPasskeyStart>("POST", `${base(id)}/passkey/start`, {});
+/**
+ * Type the phone's 6 digits with the page's proof. A wrong code answers
+ * `{state: "code", tries_left}`; a missing or malformed proof is 400.
+ */
+export function enterPcSetupCode(id: string, code: string, proof: string): Promise<PcSetupCodeResult> {
+  return httpRequest<PcSetupCodeResult>("POST", `${base(id)}/code`, { code, proof });
+}
+
+/**
+ * Browser only (the desktop app runs `passkey_pc_setup`): start the
+ * registration of the attempt's passkey (`enrolled`) with the proof this page
+ * sent with the right code. Without it, or with another, 409 `APPROVAL_STATE`.
+ */
+export function startPcSetupPasskey(id: string, proof: string | undefined): Promise<PcSetupPasskeyStart> {
+  return httpRequest<PcSetupPasskeyStart>("POST", `${base(id)}/passkey/start`, proof ? { proof } : {});
 }
 
 /** Browser only: finish it. 409 `PASSKEY_LIMIT` / `PASSKEY_ALREADY_REGISTERED` leave the attempt `enrolled`. */

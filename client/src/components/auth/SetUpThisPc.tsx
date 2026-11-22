@@ -27,6 +27,7 @@ import {
   currentPcSetup,
   enterPcSetupCode,
   finishPcSetupPasskey,
+  newPcSetupProof,
   pollPcSetup,
   startPcSetup,
   startPcSetupPasskey,
@@ -59,6 +60,11 @@ type Patch = Pick<PcSetupStatus, "state"> & Partial<Pick<PcSetupStatus, "reason"
 export interface PcSetupStepProps {
   attemptId: string;
   onState: (attemptId: string, patch: Patch) => void;
+  /**
+   * The proofs this dialog sent with a code on the web, by attempt id (in
+   * memory only: a reload loses them, and the passkey then needs Start again).
+   */
+  proofs: Map<string, string>;
 }
 
 /** The steps that differ between the web page and the desktop app (Task 6). */
@@ -84,10 +90,17 @@ export const WebCodeStep: Component<PcSetupStepProps> = (props) => {
 
   const submit = async () => {
     const id = props.attemptId;
+    // One proof per attempt: a retyped code (or a code sent again after a
+    // lost answer) carries the same one.
+    let proof = props.proofs.get(id);
+    if (!proof) {
+      proof = newPcSetupProof();
+      props.proofs.set(id, proof);
+    }
     setBusy(true);
     setError(null);
     try {
-      const res = await enterPcSetupCode(id, code());
+      const res = await enterPcSetupCode(id, code(), proof);
       if (gone) return;
       if (res.state === "enrolled") props.onState(id, { state: "enrolled", reason: null, enrollment_id: res.enrollment_id });
       else if (res.state === "failed") props.onState(id, { state: "failed", reason: "too_many_codes" });
@@ -147,7 +160,8 @@ export const WebPasskeyStep: Component<PcSetupStepProps> = (props) => {
     setBusy(true);
     setError(null);
     try {
-      const start = await startPcSetupPasskey(id);
+      // Only the proof sent with the right code starts it (409 otherwise).
+      const start = await startPcSetupPasskey(id, props.proofs.get(id));
       const credential = await createPasskeyCredential(start.options, mine.signal);
       await finishPcSetupPasskey(id, start.ceremony_id, credential, defaultPasskeyLabel());
       // The passkey exists: say so even if the step was left meanwhile (the
@@ -286,6 +300,8 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
   /** Reading the replaced attempt's end after a restart. */
   const [checking, setChecking] = createSignal(false);
   const [checkFailed, setCheckFailed] = createSignal(false);
+  /** The proofs sent with a code from this dialog, by attempt id. */
+  const proofs = new Map<string, string>();
   /** Bumped by every start, restart and the unmount: older loops and answers stop. */
   let generation = 0;
   let signIn: AbortController | null = null;
@@ -569,10 +585,10 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
               <p role="status">{t("pcSetup.claimed")}</p>
             </Match>
             <Match when={s().state === "code"}>
-              <Dynamic component={platform().CodeStep} attemptId={s().attempt_id} onState={patch} />
+              <Dynamic component={platform().CodeStep} attemptId={s().attempt_id} onState={patch} proofs={proofs} />
             </Match>
             <Match when={s().state === "enrolled"}>
-              <Dynamic component={platform().PasskeyStep} attemptId={s().attempt_id} onState={patch} />
+              <Dynamic component={platform().PasskeyStep} attemptId={s().attempt_id} onState={patch} proofs={proofs} />
             </Match>
             <Match when={s().state === "completed"}>
               <div class="space-y-3">

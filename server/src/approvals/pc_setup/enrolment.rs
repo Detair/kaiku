@@ -18,7 +18,7 @@ use uuid::Uuid;
 use super::transition::{audit, describe, end_tx, EndCause, LockedAttempt};
 use super::{AttemptState, CODE_DIGITS, ENROLLMENT_MINUTES, MAX_CODE_TRIES};
 use crate::approvals::error::ApprovalError;
-use crate::approvals::secrets::{ct_eq, keyed_hash, SecretPurpose};
+use crate::approvals::secrets::{ct_eq, keyed_hash, Secret256, SecretPurpose};
 use crate::auth::ctx::AuthCtx;
 use crate::auth::passkeys::queries::{PasskeyRow, PasskeyState};
 use crate::auth::passkeys::register::{complete_recorded_with, RegistrationVia};
@@ -40,8 +40,9 @@ fn one_row(r: sqlx::postgres::PgQueryResult) -> Result<(), ApprovalError> {
 
 /// Where the right code was typed: the only way its passkey may be registered.
 ///
-/// Spec Step 5: the code proves that whoever registers is with the person
-/// holding the phone, so registration takes the same path.
+/// Spec Step 5: the right code fixes the path that may register the passkey.
+/// On the web it also fixes the page: the page that typed it sent a proof of
+/// its own with the code, and the passkey start must present that proof.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodePath {
     /// The requesting session's own route (the page of the browser client).
@@ -63,6 +64,15 @@ impl CodePath {
         let (via, flow) = self.columns();
         a.code_via.as_deref() == Some(via) && a.code_flow_id == flow
     }
+}
+
+/// The keyed hash under which a web page's proof is stored and compared.
+fn proof_hash(ctx: &AuthCtx<'_>, proof: &Secret256) -> [u8; 32] {
+    keyed_hash(
+        ctx.hmac_key(),
+        SecretPurpose::PcSetupWebProof,
+        proof.as_bytes(),
+    )
 }
 
 /// What a typed code did. A wrong code and the third wrong code are
@@ -99,6 +109,11 @@ fn not_live(locked: &LockedAttempt, want: AttemptState) -> Option<ApprovalError>
 /// this transaction and moves the attempt to `enrolled`; the code is spent.
 /// A wrong one spends a try; the third ends the attempt. A malformed code is
 /// refused (400) without spending one.
+///
+/// On the web path `proof` is the page's own proof (required, else 400
+/// before a try is spent); the right code stores its keyed hash in the same
+/// update that records the path, a wrong code stores nothing. The desktop
+/// path has none (its browser gets the browser secret instead).
 #[tracing::instrument(skip_all, fields(attempt_id = %locked.attempt.id))]
 pub async fn enter_code(
     conn: &mut PgConnection,
@@ -106,7 +121,17 @@ pub async fn enter_code(
     locked: &LockedAttempt,
     code: &str,
     path: CodePath,
+    proof: Option<&Secret256>,
 ) -> Result<CodeOutcome, ApprovalError> {
+    let web_proof = match (path, proof) {
+        (CodePath::Web, Some(proof)) => Some(proof_hash(ctx, proof)),
+        (CodePath::Web, None) => {
+            return Err(ApprovalError::Validation(
+                "proof must be 32 bytes, base64url".into(),
+            ))
+        }
+        (CodePath::DesktopFlow(_), _) => None,
+    };
     if let Some(e) = not_live(locked, AttemptState::Code) {
         return Err(e);
     }
@@ -143,13 +168,14 @@ pub async fn enter_code(
         sqlx::query(
             "UPDATE pc_setup_attempts
                 SET state = 'enrolled', enrollment_id = $2, code_hash = NULL,
-                    code_via = $3, code_flow_id = $4
+                    code_via = $3, code_flow_id = $4, web_proof_hash = $5
               WHERE id = $1 AND state = 'code'",
         )
         .bind(a.id)
         .bind(enrollment_id)
         .bind(via)
         .bind(flow)
+        .bind(web_proof.map(|h| h.to_vec()))
         .execute(&mut *conn)
         .await
         .map(one_row)??;
@@ -230,7 +256,20 @@ async fn passkey_room(conn: &mut PgConnection, user_id: Uuid) -> Result<(), Appr
     Ok(())
 }
 
-/// The checks of `passkey/start` under the locks; returns the enrolment id.
+/// The attempt is `enrolled` through `path` and its enrolment is live (409
+/// otherwise); returns the enrolment id.
+fn enrolled_through(locked: &LockedAttempt, path: CodePath) -> Result<Uuid, ApprovalError> {
+    if let Some(e) = not_live(locked, AttemptState::Enrolled) {
+        return Err(e);
+    }
+    if !path.matches(&locked.attempt) {
+        return Err(ApprovalError::State);
+    }
+    live_enrolment(locked)
+}
+
+/// The checks of a registration step under the locks; returns the enrolment
+/// id.
 ///
 /// The attempt is `enrolled` through `path` (the code was typed the way the
 /// passkey is now registered), its enrolment live and the account has room.
@@ -240,13 +279,29 @@ pub async fn registration_open(
     locked: &LockedAttempt,
     path: CodePath,
 ) -> Result<Uuid, ApprovalError> {
-    if let Some(e) = not_live(locked, AttemptState::Enrolled) {
-        return Err(e);
-    }
-    if !path.matches(&locked.attempt) {
+    let enrollment_id = enrolled_through(locked, path)?;
+    passkey_room(conn, locked.attempt.user_id).await?;
+    Ok(enrollment_id)
+}
+
+/// The checks of the web `passkey/start` under the locks: those of
+/// [`registration_open`] for the web path, and the page's `proof`, compared
+/// in constant time with the one stored with the right code. A missing or
+/// different proof → 409 `APPROVAL_STATE`; nothing is spent and the attempt
+/// stays `enrolled` for the page that holds the proof.
+pub async fn web_registration_open(
+    conn: &mut PgConnection,
+    ctx: &AuthCtx<'_>,
+    locked: &LockedAttempt,
+    proof: Option<&Secret256>,
+) -> Result<Uuid, ApprovalError> {
+    let enrollment_id = enrolled_through(locked, CodePath::Web)?;
+    let (Some(proof), Some(stored)) = (proof, locked.attempt.web_proof_hash.as_deref()) else {
+        return Err(ApprovalError::State);
+    };
+    if !ct_eq(&proof_hash(ctx, proof), stored) {
         return Err(ApprovalError::State);
     }
-    let enrollment_id = live_enrolment(locked)?;
     passkey_room(conn, locked.attempt.user_id).await?;
     Ok(enrollment_id)
 }

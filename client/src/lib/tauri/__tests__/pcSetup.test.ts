@@ -18,7 +18,7 @@ vi.mock("@tauri-apps/api/core", async (orig) => ({
   isTauri: () => tauriMode.on,
 }));
 
-import { pollPcSetup, startPcSetup } from "../pcSetup";
+import { enterPcSetupCode, newPcSetupProof, pollPcSetup, startPcSetup, startPcSetupPasskey } from "../pcSetup";
 import { isServerSetupComplete } from "../auth";
 import { setUpThisPcInBrowser, PasskeyError } from "../passkeys";
 import { browserState, clearBrowserTokens, setNativeAuthInfo } from "../common";
@@ -73,6 +73,36 @@ describe("pollPcSetup", () => {
     const pending = pollPcSetup(ID, 20, ctl.signal);
     ctl.abort();
     await expect(pending).rejects.toBeTruthy();
+  });
+});
+
+describe("the web page's proof", () => {
+  it("is 32 fresh random bytes in base64url without padding", () => {
+    const a = newPcSetupProof();
+    const b = newPcSetupProof();
+    expect(a).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(b).not.toBe(a);
+  });
+
+  it("travels in the body of the code request and the passkey start, never in the URL", async () => {
+    const proof = newPcSetupProof();
+    fetchMock.mockResolvedValueOnce(json(200, { state: "enrolled", enrollment_id: "e1" }));
+    await enterPcSetupCode(ID, "123456", proof);
+    fetchMock.mockResolvedValueOnce(json(200, { ceremony_id: "c1", options: {} }));
+    await startPcSetupPasskey(ID, proof);
+    const [codeUrl, codeInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const [startUrl, startInit] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(codeUrl).toBe(`https://chat.example.com/auth/pc-setups/${ID}/code`);
+    expect(startUrl).toBe(`https://chat.example.com/auth/pc-setups/${ID}/passkey/start`);
+    expect(JSON.parse(codeInit.body as string)).toEqual({ code: "123456", proof });
+    expect(JSON.parse(startInit.body as string)).toEqual({ proof });
+  });
+
+  it("a page without the proof starts with an empty body", async () => {
+    fetchMock.mockResolvedValueOnce(json(409, { error: "APPROVAL_STATE", message: "x" }));
+    await expect(startPcSetupPasskey(ID, undefined)).rejects.toBeTruthy();
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toEqual({});
   });
 });
 

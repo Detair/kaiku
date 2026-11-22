@@ -40,15 +40,18 @@ CREATE TABLE pc_setup_attempts (
     -- `code_flow_id`, whose browser holds the browser secret).
     code_via TEXT CHECK (code_via IS NULL OR code_via IN ('web', 'desktop_flow')),
     code_flow_id UUID,
+    -- On the web path, the keyed hash of the proof the page that typed the
+    -- right code drew for itself: the passkey start must present that proof.
+    web_proof_hash BYTEA CHECK (web_proof_hash IS NULL OR octet_length(web_proof_hash) = 32),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     -- The 10 minutes bound `waiting` and `claimed`; the code and the
     -- enrolment run on their own clocks after that.
     expires_at TIMESTAMPTZ NOT NULL,
     CONSTRAINT pc_setup_attempts_ttl CHECK (expires_at <= created_at + INTERVAL '10 minutes'),
     CONSTRAINT pc_setup_attempts_code_path CHECK (
-        (code_via IS NULL AND code_flow_id IS NULL)
-        OR (code_via = 'web' AND code_flow_id IS NULL)
-        OR (code_via = 'desktop_flow' AND code_flow_id IS NOT NULL))
+        (code_via IS NULL AND code_flow_id IS NULL AND web_proof_hash IS NULL)
+        OR (code_via = 'web' AND code_flow_id IS NULL AND web_proof_hash IS NOT NULL)
+        OR (code_via = 'desktop_flow' AND code_flow_id IS NOT NULL AND web_proof_hash IS NULL))
 );
 
 -- One live attempt per session: a new start ends the old one (Locking 6).

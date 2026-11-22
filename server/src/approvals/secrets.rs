@@ -77,6 +77,8 @@ pub enum SecretPurpose {
     PcSetupCode,
     /// The browser secret set when the code is typed in the desktop flow.
     PcSetupBrowser,
+    /// The proof the web page sends with the code and the passkey start.
+    PcSetupWebProof,
 }
 
 impl SecretPurpose {
@@ -95,6 +97,7 @@ impl SecretPurpose {
             Self::PcSetupToken => "pc_setup_token",
             Self::PcSetupCode => "pc_setup_code",
             Self::PcSetupBrowser => "pc_setup_browser",
+            Self::PcSetupWebProof => "pc_setup_web_proof",
         }
     }
 }
@@ -174,6 +177,7 @@ mod tests {
             SecretPurpose::PcSetupToken,
             SecretPurpose::PcSetupCode,
             SecretPurpose::PcSetupBrowser,
+            SecretPurpose::PcSetupWebProof,
         ];
         let mut seen = std::collections::HashSet::new();
         for p in all {

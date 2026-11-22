@@ -206,8 +206,10 @@ new approval on the phone.
 
 ### Step 5: the passkey
 
-The code is entered where the passkey will be created, so that the browser registering it is proven to
-be with the person holding the phone.
+The code is entered where the passkey will be created. The right code fixes the path that may register
+the passkey: on the web the page that typed it, on the desktop the browser of the flow it was typed in.
+It shows that whoever typed it got it from the person at the phone; the server still cannot tell where
+that person stands (D1's trust limits).
 
 The right code moves the attempt to `enrolled` and creates an enrolment (SM2, new variant `pc_setup`)
 with a new `issuer_kind` recording both the approving key device (its `approval_devices` row id) and the
@@ -248,10 +250,18 @@ not come through that flow. A `pc_setup` desktop flow can be started only by a s
 client class is `desktop`; the request header alone is not enough. Starting in the browser and finishing
 in the desktop app (or the reverse) therefore needs **Start again**.
 
-**The web path's binding is the session's bearer.** After the right code the browser client's page
-registers with the same session's access token and nothing else. Whoever holds that token at that moment
-holds the session anyway (B.4, B.6); the desktop path adds the browser secret because there the code is
-typed outside the app.
+**The web path is bound to the page that typed the code.** Before it sends the code, the page draws 32
+random bytes, its proof, and sends them with the code. It keeps them in memory for that attempt only:
+never in the URL, in storage or in a log. A request without a well-formed proof is refused (400) before
+a try is spent. The right code stores a keyed hash of the proof on the attempt, in the same update that
+records the web path; a wrong code stores nothing. `passkey/start` needs the requesting session's
+bearer **and** that proof, compared in constant time under the locks; without it, or with another, the
+answer is 409 `APPROVAL_STATE`, nothing is spent, and the attempt stays `enrolled` for the page that holds
+it. `passkey/finish` needs the ceremony id, which only the caller of that start received. If the answer
+to the code is lost, the page still holds its proof, the poll shows `enrolled` and the passkey step
+starts with it. A page reload between the code and the passkey loses the proof: **Start again**, as on
+the desktop path. The server still cannot tell which device or person the page runs on; it only knows
+that the registering page is the one that typed the right code.
 
 At `done` the passkey row is created as `active`. A failed or cancelled ceremony can be retried until
 the enrolment expires (10 minutes). Firefox on Linux gets the existing `LinuxPasskeyHint` guidance

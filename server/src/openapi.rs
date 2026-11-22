@@ -587,6 +587,8 @@ use utoipa::{Modify, OpenApi};
         crate::approvals::pc_setup::handlers::PcSetupCode,
         crate::approvals::pc_setup::handlers::PcSetupReported,
         crate::approvals::pc_setup::handlers::PcSetupCodeEntry,
+        crate::approvals::pc_setup::handlers::PcSetupWebCodeEntry,
+        crate::approvals::pc_setup::handlers::PcSetupPasskeyStart,
         crate::approvals::pc_setup::handlers::PcSetupCodeResult,
         crate::approvals::pc_setup::handlers::PcSetupPasskeyFinish,
         crate::approvals::types::StepUpChallengeRequest,

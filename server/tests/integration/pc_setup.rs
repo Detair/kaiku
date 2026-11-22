@@ -1413,6 +1413,7 @@ async fn can_set_up_this_pc_matches_what_start_accepts(pool: PgPool) {
 // ============================================================================
 
 use vc_server::approvals::pc_setup::enrolment::{enter_code, CodeOutcome, CodePath};
+use vc_server::approvals::secrets::Secret256;
 
 use super::helpers::login::TEST_ORIGIN;
 use super::helpers::passkeys::SoftAuthenticator;
@@ -1431,14 +1432,30 @@ pub async fn with_code(p: &Pc) -> (String, String) {
     (id, ok["code"].as_str().unwrap().to_string())
 }
 
-/// Type `code` on the PC for attempt `id` with `bearer`.
+/// The proof the PC's page draws before it sends the code (32 bytes, b64u).
+pub fn proof() -> String {
+    b64u_encode(&[7u8; 32])
+}
+
+/// Another page's proof.
+pub fn other_proof() -> String {
+    b64u_encode(&[9u8; 32])
+}
+
+/// Type `code` on the PC for attempt `id` with `bearer`, from the page that
+/// holds [`proof`].
 pub async fn enter(p: &Pc, bearer: &str, id: &str, code: &str) -> (u16, Value) {
+    enter_body(p, bearer, id, json!({ "code": code, "proof": proof() })).await
+}
+
+/// `POST …/code` with this body.
+pub async fn enter_body(p: &Pc, bearer: &str, id: &str, body: Value) -> (u16, Value) {
     call(
         &p.app,
         Method::POST,
         &format!("/auth/pc-setups/{id}/code"),
         bearer,
-        Some(json!({ "code": code })),
+        Some(body),
     )
     .await
 }
@@ -1455,15 +1472,35 @@ async fn enrolled(p: &Pc) -> (String, String) {
     (id, body["enrollment_id"].as_str().unwrap().to_string())
 }
 
+/// Start the web registration from the page that holds [`proof`].
 pub async fn passkey_start(p: &Pc, bearer: &str, id: &str) -> (u16, Value) {
+    passkey_start_body(p, bearer, id, Some(json!({ "proof": proof() }))).await
+}
+
+/// `POST …/passkey/start` with this body (`None`: no body at all).
+pub async fn passkey_start_body(
+    p: &Pc,
+    bearer: &str,
+    id: &str,
+    body: Option<Value>,
+) -> (u16, Value) {
     call(
         &p.app,
         Method::POST,
         &format!("/auth/pc-setups/{id}/passkey/start"),
         bearer,
-        Some(json!({})),
+        body,
     )
     .await
+}
+
+/// The stored keyed hash of the page's proof, if any.
+async fn web_proof_hash(pool: &PgPool, id: &str) -> Option<Vec<u8>> {
+    sqlx::query_scalar("SELECT web_proof_hash FROM pc_setup_attempts WHERE id = $1::uuid")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
 }
 
 pub async fn passkey_finish(p: &Pc, bearer: &str, id: &str, body: Value) -> (u16, Value) {
@@ -1778,6 +1815,158 @@ async fn lost_code_entry_response_recovers_by_poll(pool: PgPool) {
     assert_eq!(linked.map(|u| u.to_string()), Some(eid));
     // The phone can say "Done".
     assert_eq!(phone_state(&p, &id).await["state"], "completed");
+}
+
+/// The right code binds the registration to the page that typed it: a second
+/// holder of the same session without that page's proof starts no ceremony,
+/// nothing is spent, and the page that typed the code still completes.
+#[sqlx::test]
+async fn only_the_page_that_typed_the_code_starts_the_registration(pool: PgPool) {
+    let p = pc(&pool).await;
+    let (id, eid) = enrolled(&p).await;
+    for body in [
+        None,
+        Some(json!({})),
+        Some(json!({ "proof": null })),
+        Some(json!({ "proof": other_proof() })),
+        Some(json!({ "proof": "not a proof" })),
+        Some(json!({ "proof": b64u_encode(&[7u8; 31]) })),
+    ] {
+        let (s, b) = passkey_start_body(&p, &p.token, &id, body.clone()).await;
+        assert_eq!(
+            (s, b["error"].as_str()),
+            (409, Some("APPROVAL_STATE")),
+            "{body:?}: {b}"
+        );
+    }
+    assert_eq!(attempt_state(&pool, &id).await, ("enrolled".into(), None));
+    assert_eq!(enrollment_state(&pool, &eid).await, "issued");
+    assert_eq!(passkeys_of(&pool, p.user).await, 0);
+    // The page that typed the code completes.
+    let body = ceremony(&p, &id).await;
+    let (s, pk) = passkey_finish(&p, &p.token, &id, body).await;
+    assert_eq!(s, 201, "{pk}");
+    assert_eq!(attempt_state(&pool, &id).await.0, "completed");
+    assert_eq!(passkeys_of(&pool, p.user).await, 1);
+}
+
+/// A lost answer to the code request: the page still holds its proof, the
+/// poll shows `enrolled`, and the passkey step starts with that proof only.
+#[sqlx::test]
+async fn a_lost_code_answer_continues_with_the_pages_proof(pool: PgPool) {
+    let p = pc(&pool).await;
+    let (id, code) = with_code(&p).await;
+    let _ = enter(&p, &p.token, &id, &code).await;
+    let (s, st) = pc_poll(&p, &id).await;
+    assert_eq!((s, st["state"].as_str()), (200, Some("enrolled")), "{st}");
+    let (s, b) =
+        passkey_start_body(&p, &p.token, &id, Some(json!({ "proof": other_proof() }))).await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (409, Some("APPROVAL_STATE")),
+        "{b}"
+    );
+    let (s, b) = passkey_start(&p, &p.token, &id).await;
+    assert_eq!(s, 200, "{b}");
+}
+
+/// The web code needs a well-formed proof: without one, or with a malformed
+/// one, it is refused with 400 before a try is spent or anything is written.
+#[sqlx::test]
+async fn a_web_code_without_a_well_formed_proof_spends_no_try(pool: PgPool) {
+    let p = pc(&pool).await;
+    let (id, code) = with_code(&p).await;
+    for body in [
+        json!({ "code": code }),
+        json!({ "code": code, "proof": null }),
+        json!({ "code": code, "proof": "" }),
+        json!({ "code": code, "proof": "not base64url!" }),
+        json!({ "code": code, "proof": b64u_encode(&[7u8; 31]) }),
+        json!({ "code": code, "proof": b64u_encode(&[7u8; 33]) }),
+        json!({ "code": code, "proof": format!("{}=", proof()) }),
+    ] {
+        let (s, b) = enter_body(&p, &p.token, &id, body.clone()).await;
+        assert_eq!(
+            (s, b["error"].as_str()),
+            (400, Some("VALIDATION_ERROR")),
+            "{body}: {b}"
+        );
+    }
+    let tries: i16 = sqlx::query_scalar("SELECT tries FROM pc_setup_attempts WHERE id = $1::uuid")
+        .bind(&id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(tries, 0);
+    assert_eq!(attempt_state(&pool, &id).await, ("code".into(), None));
+    assert!(code_hash_set(&pool, &id).await, "the code is not spent");
+    assert_eq!(web_proof_hash(&pool, &id).await, None);
+    let (s, b) = enter(&p, &p.token, &id, &code).await;
+    assert_eq!((s, b["state"].as_str()), (200, Some("enrolled")), "{b}");
+}
+
+/// A wrong code stores no proof; the right code stores a keyed hash of its
+/// own request's proof, and only that proof starts the registration.
+#[sqlx::test]
+async fn a_wrong_code_stores_no_proof(pool: PgPool) {
+    let p = pc(&pool).await;
+    let (id, code) = with_code(&p).await;
+    let (s, b) = enter_body(
+        &p,
+        &p.token,
+        &id,
+        json!({ "code": wrong(&code), "proof": proof() }),
+    )
+    .await;
+    assert_eq!((s, b["state"].as_str()), (200, Some("code")), "{b}");
+    assert_eq!(web_proof_hash(&pool, &id).await, None);
+    let (s, b) = enter_body(
+        &p,
+        &p.token,
+        &id,
+        json!({ "code": code, "proof": other_proof() }),
+    )
+    .await;
+    assert_eq!((s, b["state"].as_str()), (200, Some("enrolled")), "{b}");
+    let stored = web_proof_hash(&pool, &id).await.expect("stored");
+    assert_eq!(stored.len(), 32);
+    assert_ne!(stored, vec![9u8; 32], "a keyed hash, not the proof");
+    let (s, b) = passkey_start(&p, &p.token, &id).await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (409, Some("APPROVAL_STATE")),
+        "{b}"
+    );
+    let (s, b) =
+        passkey_start_body(&p, &p.token, &id, Some(json!({ "proof": other_proof() }))).await;
+    assert_eq!(s, 200, "{b}");
+}
+
+/// The proof belongs to its attempt: after Start again, the earlier
+/// attempt's proof does not start the new attempt's registration.
+#[sqlx::test]
+async fn the_proof_belongs_to_its_attempt(pool: PgPool) {
+    let p = pc(&pool).await;
+    let (first, _) = enrolled(&p).await;
+    let (id, code) = with_code(&p).await;
+    assert_eq!(attempt_state(&pool, &first).await.0, "cancelled");
+    let (s, b) = enter_body(
+        &p,
+        &p.token,
+        &id,
+        json!({ "code": code, "proof": other_proof() }),
+    )
+    .await;
+    assert_eq!((s, b["state"].as_str()), (200, Some("enrolled")), "{b}");
+    let (s, b) = passkey_start(&p, &p.token, &id).await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (409, Some("APPROVAL_STATE")),
+        "{b}"
+    );
+    let (s, b) =
+        passkey_start_body(&p, &p.token, &id, Some(json!({ "proof": other_proof() }))).await;
+    assert_eq!(s, 200, "{b}");
 }
 
 #[sqlx::test]
@@ -2494,11 +2683,16 @@ async fn refresh_reuse_against_code_entry(pool: PgPool) {
         vc_server::approvals::pc_setup::transition::lock_attempt(&mut holder, id.parse().unwrap())
             .await
             .unwrap();
-    let CodeOutcome::Enrolled { enrollment_id } =
-        enter_code(&mut holder, &ctx, &locked, &code, CodePath::Web)
-            .await
-            .unwrap()
-    else {
+    let CodeOutcome::Enrolled { enrollment_id } = enter_code(
+        &mut holder,
+        &ctx,
+        &locked,
+        &code,
+        CodePath::Web,
+        Some(&Secret256::random()),
+    )
+    .await
+    .unwrap() else {
         panic!("the right code enrols");
     };
     let end = async {
@@ -2721,7 +2915,15 @@ async fn a_stale_locked_value_never_advances_an_attempt(pool: PgPool) {
         .execute(&mut *tx)
         .await
         .unwrap();
-    let out = enter_code(&mut tx, &ctx, &locked, &code, CodePath::Web).await;
+    let out = enter_code(
+        &mut tx,
+        &ctx,
+        &locked,
+        &code,
+        CodePath::Web,
+        Some(&Secret256::random()),
+    )
+    .await;
     // An internal error: `settle` rolls the whole transition back.
     assert!(
         matches!(
