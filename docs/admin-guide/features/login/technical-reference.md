@@ -679,7 +679,8 @@ authenticator and the key to be replaced as the target, once when the claimant a
 transaction before anything is revoked. A refusal (403 `AUTHENTICATOR_TOO_NEW {allowed_at}`) revokes
 nothing. A settled issuer, a younger key, a new install id, the command line, registration and the
 administrator's and account requests' set-ups are not affected (the issuer's own install was never
-replaceable).
+replaceable). As in every use of the rule, an account without an older *active* phone or passkey is not
+held back, so an older key that is still `pending` is replaced then, as before.
 
 Other step-up actions (`sessions.end`, `recovery_contact.set`, `enrollment.issue`,
 `identity.link`/`unlink`, `request.cancel`, `account.delete`) do not apply this rule. The admin routes
@@ -974,7 +975,12 @@ Residual risks (spec B.6, as implemented):
     recovery contact, and link a sign-in provider identity. The last two outlast the newcomer's
     removal (a new contact counts as a canceller only one delay after confirming; a linked identity
     gives at most a chat-only first factor), so after removing an unknown device the owner checks the
-    recovery contact and the linked sign-in methods. An **old device in the wrong
+    recovery contact and the linked sign-in methods. Two more things stay as they are: a set-up that
+    the owner confirms on one of their phones replaces the key of *another* phone of the account when
+    the new device presents that phone's installation (the confirmation shows the new device, not that
+    an existing one is replaced; the confirming phone stays and can remove the new device at once), and
+    on *other* members' accounts an admin's actions are not held back by this rule, also when the
+    admin's own phone or passkey is new. An **old device in the wrong
     hands is not limited** by this rule: a stolen phone that has been a key for longer than the delay
     can still do all of the above until it is removed (risk 7). A phone set up again on the same
     install is new again, so an honest owner who re-installs the app waits one delay before acting

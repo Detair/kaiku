@@ -924,7 +924,8 @@ not sign in someone else by mistake. Additive; absent means no check.
   start of the request's wait, young for the rest of the delay when it was staged later. A key set up again on
   the same install is a new authenticator and young again.
 - C26 enrolment: an `own` set-up whose claim names the install id of a live key device replaces that key only
-  when the issuing phone or passkey is settled, or the key is not older than it; otherwise
+  when the issuing phone or passkey is settled, or the key is not older than it, or the account has no older
+  active phone or passkey (so an older key that is still `pending` can be replaced then, as before); otherwise
   `POST /auth/enrollments/pop-challenge` and the confirming step (`enroll` answer, `POST
   /auth/enrollments/{id}/confirm`) answer 403 `AUTHENTICATOR_TOO_NEW {allowed_at}` and nothing is revoked.
 - C27 step-up: of several open grants for the same session, action and target the newest is used.
