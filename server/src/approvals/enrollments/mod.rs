@@ -445,21 +445,21 @@ async fn replaceable_on_install(
             .issuer_device_id
             .map(AuthenticatorRef::key_device)
             .or_else(|| row.issuer_passkey_id.map(AuthenticatorRef::passkey));
-        if let Some(issuer) = issuer {
-            crate::auth::strong::ensure_settled(
-                conn,
-                row.subject_id,
-                issuer,
-                Some(AuthenticatorRef::key_device(live)),
-                ctx.config.account_request_delay_hours,
-            )
-            .await
-            .map_err(|e| match e {
-                // The issuer is gone: the enrolment is no longer valid.
-                crate::auth::AuthError::StepUpRequired => ApprovalError::EnrollmentState,
-                other => ApprovalError::Auth(other),
-            })?;
-        }
+        // An issuer that cannot be determined is never treated as settled.
+        let issuer = issuer.ok_or(ApprovalError::EnrollmentState)?;
+        crate::auth::strong::ensure_settled(
+            conn,
+            row.subject_id,
+            issuer,
+            Some(AuthenticatorRef::key_device(live)),
+            ctx.config.account_request_delay_hours,
+        )
+        .await
+        .map_err(|e| match e {
+            // The issuer is gone: the enrolment is no longer valid.
+            crate::auth::AuthError::StepUpRequired => ApprovalError::EnrollmentState,
+            other => ApprovalError::Auth(other),
+        })?;
     }
     Ok(Some(live))
 }

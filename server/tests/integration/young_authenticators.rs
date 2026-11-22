@@ -445,6 +445,19 @@ async fn fresh_device_totp_setup_refused_at_peek(pool: PgPool) {
         .unwrap();
     assert!(!has, "TOTP stays off");
     assert_eq!(open_grants(&app.pool, sid).await, 1);
+
+    // The refusal came before the code was checked: the same code and the
+    // same pending secret are accepted once the phone counts as settled.
+    added_ago(&app.pool, kd(&new), Duration::hours(30)).await;
+    let (s, b) = send(
+        &app,
+        Method::POST,
+        "/auth/mfa/verify",
+        &new.access_token,
+        Some(json!({ "code": code })),
+    )
+    .await;
+    assert_eq!(s, 200, "{b}");
 }
 
 #[sqlx::test]
@@ -1155,4 +1168,160 @@ async fn newest_step_up_is_used(pool: PgPool) {
     .await;
     let (s, b) = send(&app, Method::POST, "/auth/recovery-codes", &token, None).await;
     assert_eq!(s, 200, "{b}");
+}
+
+#[sqlx::test]
+async fn own_setup_without_issuer_never_replaces(pool: PgPool) {
+    // An own set-up whose issuing phone or passkey is not recorded (no path
+    // writes such a row; staged here by hand) never replaces a live key.
+    let app = TestApp::with_passkeys(pool).await;
+    let (_, old, issuer) = old_and_young_phone(&app).await;
+    added_ago(&app.pool, kd(&issuer), Duration::days(10)).await;
+    let (id, setup) = issue_setup(
+        &app,
+        issuer.session_id.unwrap(),
+        &issuer.access_token,
+        kd(&issuer),
+    )
+    .await;
+    sqlx::query(
+        "UPDATE enrollments SET issuer_device_id = NULL, issuer_passkey_id = NULL
+          WHERE id = $1::uuid",
+    )
+    .bind(&id)
+    .execute(&app.pool)
+    .await
+    .unwrap();
+    let (s, b) = pop(&app, &setup, &same_install_as(&old)).await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (409, Some("ENROLLMENT_STATE")),
+        "{b}"
+    );
+    assert_untouched(&app.pool, &old).await;
+}
+
+#[sqlx::test]
+async fn boundary_is_exact(pool: PgPool) {
+    let app = TestApp::with_passkeys(pool).await;
+    let (user, old, young) = old_and_young_phone(&app).await;
+    let at = created_at(&app.pool, kd(&young)).await + Duration::hours(24);
+    let mut conn = app.pool.acquire().await.unwrap();
+    // Exactly the waiting time after its creation: settled.
+    let r = vc_server::auth::strong::ensure_settled_at(
+        &mut conn,
+        user,
+        kd(&young),
+        Some(kd(&old)),
+        24,
+        at,
+    )
+    .await;
+    assert!(r.is_ok(), "{r:?}");
+    let r = vc_server::auth::strong::ensure_settled_at(
+        &mut conn,
+        user,
+        kd(&young),
+        Some(kd(&old)),
+        24,
+        at - Duration::microseconds(1),
+    )
+    .await;
+    assert!(
+        matches!(r, Err(vc_server::auth::AuthError::AuthenticatorTooNew { allowed_at }) if allowed_at == at),
+        "{r:?}"
+    );
+}
+
+// The admin routes on the admin's own account follow the same rule.
+
+async fn admin_remove(
+    app: &TestApp,
+    by: &KeyDeviceFixture,
+    account: Uuid,
+    target: Uuid,
+) -> (u16, Value) {
+    grant(
+        app,
+        by.session_id.unwrap(),
+        StepUpAction::AdminAuthenticatorRemove,
+        &target.to_string(),
+        kd(by),
+    )
+    .await;
+    send(
+        app,
+        Method::POST,
+        &format!("/api/admin/users/{account}/authenticators/{target}/remove"),
+        &by.access_token,
+        None,
+    )
+    .await
+}
+
+#[sqlx::test]
+async fn admin_fresh_phone_cannot_remove_own_older_phone(pool: PgPool) {
+    let app = TestApp::with_passkeys(pool).await;
+    let (admin, old, young) = old_and_young_phone(&app).await;
+    crate::helpers::make_admin(&app.pool, admin).await;
+    // Admin mode opens from the young phone.
+    grant(
+        &app,
+        young.session_id.unwrap(),
+        StepUpAction::AdminElevate,
+        "",
+        kd(&young),
+    )
+    .await;
+    let (s, b) = send(
+        &app,
+        Method::POST,
+        "/api/admin/elevate",
+        &young.access_token,
+        Some(json!({"reason": "test"})),
+    )
+    .await;
+    assert_eq!(s, 200, "{b}");
+    // "Remove device now" on the own older phone: refused.
+    let r = admin_remove(&app, &young, admin, old.row_id).await;
+    assert_too_new(&app.pool, r, kd(&young), 24).await;
+    assert_untouched(&app.pool, &old).await;
+    // Factor states on the own account: refused.
+    grant(
+        &app,
+        young.session_id.unwrap(),
+        StepUpAction::AdminFactorSetState,
+        &admin.to_string(),
+        kd(&young),
+    )
+    .await;
+    let r = send(
+        &app,
+        Method::PUT,
+        &format!("/api/admin/users/{admin}/factors"),
+        &young.access_token,
+        Some(json!({"password": "compromised"})),
+    )
+    .await;
+    assert_too_new(&app.pool, r, kd(&young), 24).await;
+    assert_eq!(password_state(&app.pool, admin).await, "active");
+
+    // Another account: not affected.
+    let (other, _) = create_test_user(&app.pool).await;
+    let theirs = KeyDeviceFixture::insert(&app.pool, &app.config, other, "active").await;
+    added_ago(&app.pool, kd(&theirs), Duration::days(30)).await;
+    let (s, b) = admin_remove(&app, &young, other, theirs.row_id).await;
+    assert_eq!(s, 204, "{b}");
+    assert_eq!(device_state(&app.pool, theirs.row_id).await, "revoked");
+}
+
+#[sqlx::test]
+async fn admin_settled_phone_removes_own_older_phone(pool: PgPool) {
+    let app = TestApp::with_passkeys(pool).await;
+    let (admin, old, settled) = old_and_young_phone(&app).await;
+    added_ago(&app.pool, kd(&settled), Duration::days(2)).await;
+    crate::helpers::make_admin(&app.pool, admin).await;
+    let (s, b) = admin_remove(&app, &settled, admin, old.row_id).await;
+    assert_eq!(s, 204, "{b}");
+    assert_eq!(device_state(&app.pool, old.row_id).await, "revoked");
 }

@@ -184,6 +184,31 @@ pub async fn ensure_settled(
     target: Option<AuthenticatorRef>,
     delay_hours: i64,
 ) -> crate::auth::AuthResult<()> {
+    settled_check(conn, user_id, by, target, delay_hours, None).await
+}
+
+/// [`ensure_settled`] at a fixed instant instead of the database's clock
+/// (tests of the exact boundary only).
+#[doc(hidden)]
+pub async fn ensure_settled_at(
+    conn: &mut sqlx::PgConnection,
+    user_id: Uuid,
+    by: AuthenticatorRef,
+    target: Option<AuthenticatorRef>,
+    delay_hours: i64,
+    at: chrono::DateTime<chrono::Utc>,
+) -> crate::auth::AuthResult<()> {
+    settled_check(conn, user_id, by, target, delay_hours, Some(at)).await
+}
+
+async fn settled_check(
+    conn: &mut sqlx::PgConnection,
+    user_id: Uuid,
+    by: AuthenticatorRef,
+    target: Option<AuthenticatorRef>,
+    delay_hours: i64,
+    at: Option<chrono::DateTime<chrono::Utc>>,
+) -> crate::auth::AuthResult<()> {
     let row: Option<(chrono::DateTime<chrono::Utc>, bool)> = sqlx::query_as(
         "WITH strong AS (
              SELECT 'key_device'::text AS kind, id, state, created_at
@@ -196,7 +221,7 @@ pub async fn ensure_settled(
                FROM strong WHERE kind = $2 AND id = $3 AND state = 'active'
          )
          SELECT p.allowed_at,
-                p.allowed_at > clock_timestamp()
+                p.allowed_at > COALESCE($7, clock_timestamp())
                 AND EXISTS (SELECT 1 FROM strong o
                              WHERE o.state = 'active' AND o.created_at < p.created_at)
                 AND ($5::text IS NULL
@@ -211,6 +236,7 @@ pub async fn ensure_settled(
     .bind(i32::try_from(delay_hours).unwrap_or(i32::MAX))
     .bind(target.map(|t| t.as_str()))
     .bind(target.map(|t| t.id))
+    .bind(at)
     .fetch_optional(&mut *conn)
     .await?;
     match row {
