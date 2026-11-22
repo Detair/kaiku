@@ -1453,6 +1453,22 @@ describe("a registration counts as this page's own once its finish was sent", ()
     expect(screen.queryByText(READY)).toBeNull();
   });
 
+  it("a lost finish answer, then a second finish refused with 409, then completed: success", async () => {
+    const answer = laterPoll();
+    pc.finishPcSetupPasskey.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    await startRegistration();
+    // The person presses again; this time the finish itself is refused.
+    pc.finishPcSetupPasskey.mockRejectedValueOnce(http("APPROVAL_STATE", 409));
+    fireEvent.click(await screen.findByRole("button", { name: "Create a passkey" }));
+    await waitFor(() => expect(pc.finishPcSetupPasskey).toHaveBeenCalledTimes(2));
+    await screen.findByText("This didn't work. Start again.");
+    await waitFor(() => expect(pc.pollPcSetup).toHaveBeenCalledTimes(2), { timeout: 2_000 });
+    answer(status("completed"));
+    expect(await screen.findByRole("button", SIGN_IN)).toBeTruthy();
+    expect(screen.getByText(READY)).toBeTruthy();
+    expect(screen.queryByText(OTHER_PAGE)).toBeNull();
+  });
+
   it("the neutral end offers the same sign-in below its text", async () => {
     const answer = laterPoll();
     pc.finishPcSetupPasskey.mockRejectedValue(http("APPROVAL_STATE", 409));
