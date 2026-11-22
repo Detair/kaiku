@@ -33,7 +33,7 @@ import {
   startPcSetupPasskey,
   type PcSetupStatus,
 } from "@/lib/tauri/pcSetup";
-import { replaceSessionWithPasskey } from "@/stores/auth";
+import { replaceSessionWithPasskey, sessionInfo } from "@/stores/auth";
 import DialogShell from "./DialogShell";
 import QrCodeImage from "./QrCodeImage";
 import CodeEntry from "./CodeEntry";
@@ -212,6 +212,14 @@ const rank = (state: string): number => RANK[state] ?? 5;
 
 /** States the client knows (C27); anything else reads as the generic text. */
 const KNOWN_ENDS = ["completed", "refused", "reported", "failed", "cancelled", "expired"];
+const KNOWN_STATES: readonly string[] = [...LIVE_PC_SETUP_STATES, ...KNOWN_ENDS];
+
+/**
+ * A replaced attempt whose end is not known yet, by session id. It outlives
+ * the dialog (closed after a failed restart, or while the read was open) but
+ * not a page reload, and it is read before a new or resumed code is shown.
+ */
+const unresolvedEnds = new Map<string, string>();
 
 /** Reasons the client knows (C27, plus its own `gone` and `poll_refused`). */
 const KNOWN_REASONS = [
@@ -395,10 +403,18 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
     }
   };
 
-  /** The attempt a restart created, held back until the replaced attempt's end is read. */
+  /**
+   * The attempt a restart created (or the one resumed after it), held back
+   * until the replaced attempt's end is read.
+   */
   let pending: { mine: number; oldId: string; started: { attempt_id: string; qr_payload: string } } | null = null;
-  /** A replaced attempt whose end is still unknown because the start after it failed. */
-  let unresolved: string | null = null;
+  /** The session this dialog belongs to: the key of its unresolved end. */
+  const sessionKey = sessionInfo()?.id ?? "";
+  const unresolved = (): string | null => unresolvedEnds.get(sessionKey) ?? null;
+  const setUnresolved = (id: string | null) => {
+    if (id) unresolvedEnds.set(sessionKey, id);
+    else unresolvedEnds.delete(sessionKey);
+  };
 
   const showStarted = (mine: number, started: { attempt_id: string; qr_payload: string }) => {
     setStatus({ attempt_id: started.attempt_id, state: "waiting", reason: null });
@@ -408,12 +424,14 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
   };
 
   /**
-   * After a restart from `code`, `enrolled` or an end the client made
-   * up, the replaced attempt's end is read before the new code is shown.
-   * The server decided "finish or restart" under one lock before the start
-   * answered, so this read is final: `completed` is shown (and the new
-   * attempt given up), anything else shows the new code. Three failed reads
-   * offer a retry, never the code.
+   * After a restart from a shown attempt whose end the server has not
+   * reported (any live state, or an end the client made up), the replaced
+   * attempt's end is read before the new code is shown. The server decided
+   * "finish or restart" under one lock before the start answered, so this
+   * read is final: `completed` is shown (and the new attempt given up),
+   * anything else shows the new code. Only an answer with that attempt's id
+   * and a state the client knows counts; three failed reads offer a retry,
+   * never the code.
    */
   const resolvePrevious = async () => {
     const p = pending;
@@ -422,8 +440,9 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
     setChecking(true);
     let old: PcSetupStatus | null = null;
     for (let i = 0; i < FINISH_READS; i++) {
-      old = await pollPcSetup(p.oldId, 0).catch(() => null);
+      const read = await pollPcSetup(p.oldId, 0).catch(() => null);
       if (pending !== p || p.mine !== generation) return;
+      old = read && read.attempt_id === p.oldId && KNOWN_STATES.includes(read.state) ? read : null;
       if (old) break;
       if (i + 1 < FINISH_READS) await sleep(FINISH_READ_GAP_MS * 2 ** i);
       if (pending !== p || p.mine !== generation) return;
@@ -433,6 +452,7 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
       return;
     }
     pending = null;
+    if (unresolved() === p.oldId) setUnresolved(null);
     setChecking(false);
     if (old.state === "completed") {
       void cancelPcSetup(p.started.attempt_id).catch(() => undefined);
@@ -447,15 +467,16 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
     const mine = ++generation;
     polling?.abort();
     // Locking 6: a finish may have won against this restart. The attempt
-    // whose end is not known yet (a check still open counts too) is read
-    // before the new code is shown.
+    // whose end is not known yet (a check still open counts too, and one
+    // left by an earlier dialog of this session) is read before the new
+    // code is shown, whatever state this dialog last saw.
     const previous = status();
     const unknownEnd =
       pending?.oldId ??
-      unresolved ??
-      (previous && (["code", "enrolled"].includes(previous.state) || clientMade(previous))
-        ? previous.attempt_id
-        : null);
+      unresolved() ??
+      (previous && (isLive(previous) || clientMade(previous)) ? previous.attempt_id : null);
+    // Until it is read, it outlives this dialog.
+    if (unknownEnd) setUnresolved(unknownEnd);
     if (pending) void cancelPcSetup(pending.started.attempt_id).catch(() => undefined);
     pending = null;
     setChecking(false);
@@ -472,7 +493,6 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
         if (closed) void cancelPcSetup(started.attempt_id).catch(() => undefined);
         return;
       }
-      unresolved = null;
       if (unknownEnd) {
         pending = { mine, oldId: unknownEnd, started };
         await resolvePrevious();
@@ -481,7 +501,6 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
       showStarted(mine, started);
     } catch (err) {
       // The replaced attempt's end stays unknown until a later start reads it.
-      if (unknownEnd) unresolved = unknownEnd;
       if (mine !== generation) return;
       setStarting(false);
       setStartError(
@@ -490,7 +509,11 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
     }
   };
 
-  /** Pick up the session's live attempt (a reload), else start a new one. */
+  /**
+   * Pick up the session's live attempt (a reload, a reopened dialog), else
+   * start a new one, but only on the server's own "no attempt": any other
+   * answer shows the start error with Start again and cancels nothing.
+   */
   const resumeOrBegin = async () => {
     const mine = ++generation;
     polling?.abort();
@@ -501,12 +524,21 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
         if (closed && isLive(res)) void cancelPcSetup(res.attempt_id).catch(() => undefined);
         return;
       }
+      const old = unresolved();
+      if (old === res.attempt_id) setUnresolved(null);
+      else if (old && res.state === "waiting") {
+        // A replacement whose QR code was never shown: the replaced
+        // attempt's end is read first.
+        pending = { mine, oldId: old, started: { attempt_id: res.attempt_id, qr_payload: res.qr_payload ?? "" } };
+        await resolvePrevious();
+        return;
+      }
       apply(res);
       setStarting(false);
       void pollLoop(mine);
     } catch (err) {
       if (mine !== generation) return;
-      if (err instanceof HttpError && err.status === 404) void begin();
+      if (err instanceof HttpError && err.status === 404 && codeIs(err.code, "APPROVAL_NOT_FOUND")) void begin();
       else {
         setStarting(false);
         setStartError(errorText(err, "pcSetup.startFailed"));
@@ -521,8 +553,12 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
     generation++;
     polling?.abort();
     signIn?.abort();
-    // Closing the dialog gives a live attempt up, and one a restart made.
-    if (pending) void cancelPcSetup(pending.started.attempt_id).catch(() => undefined);
+    // Closing the dialog gives a live attempt up, and one a restart made;
+    // the replaced attempt's unknown end stays for the next dialog.
+    if (pending) {
+      setUnresolved(pending.oldId);
+      void cancelPcSetup(pending.started.attempt_id).catch(() => undefined);
+    }
     pending = null;
     const s = status();
     if (s && isLive(s)) void cancelPcSetup(s.attempt_id).catch(() => undefined);
