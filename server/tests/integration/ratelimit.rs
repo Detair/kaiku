@@ -934,3 +934,35 @@ async fn start_refuses_when_valkey_refuses_script_loading() {
         "{err}"
     );
 }
+
+#[tokio::test]
+async fn start_warns_about_an_unexpected_value_and_names_it_in_the_error() {
+    let value = vc_server::ratelimit::EnabledValue::read(Some("0"));
+    let mut result = None;
+    let logs = super::oidc_flow_http::capture(async {
+        result = Some(
+            vc_server::ratelimit::start_rate_limiter(
+                unreachable_redis(),
+                start_config(true),
+                &value,
+            )
+            .await,
+        );
+    })
+    .await;
+    let warnings: Vec<&str> = logs
+        .lines()
+        .filter(|l| l.contains("WARN") && l.contains("RATE_LIMIT_ENABLED is \"0\""))
+        .collect();
+    assert_eq!(warnings.len(), 1, "one warning naming the value: {logs}");
+    assert!(warnings[0].contains("true, false"), "{logs}");
+    let err = result
+        .unwrap()
+        .err()
+        .expect("an enabled limiter that cannot load is an error");
+    let text = err.to_string();
+    assert!(
+        text.contains("RATE_LIMIT_ENABLED is \"0\", which is read as enabled"),
+        "{text}"
+    );
+}
