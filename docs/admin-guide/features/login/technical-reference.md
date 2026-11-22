@@ -190,7 +190,10 @@ What stays (residual):
   an active or pending key phone's registration. A chat-only sign-in may register under the install
   id of a removed key phone; if that same phone is later set up again, that registration becomes the
   key phone's row and stays until the device is removed or a full session replaces it ("end all
-  other sessions" does not remove it).
+  other sessions" does not remove it). Until then the phone itself gets no notifications and that
+  registration receives the account's content-free wakes. The phone's own next registration comes
+  from its full session and replaces it, so the state ends by itself (the app registers again when
+  it next starts, not earlier than a day after its last registration).
 
 ## 4. Sessions: refresh rotation and caps
 
