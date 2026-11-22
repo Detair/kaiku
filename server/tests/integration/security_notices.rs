@@ -1068,8 +1068,17 @@ async fn a_notice_without_held_back_push_gets_no_follow_up(pool: PgPool) {
     assert_eq!(security_pushes(&got).len(), 1, "{got:?}");
 }
 
+/// One sweep run, bounded: a sweep that waits for a locked notice (or for
+/// anything else) fails the test instead of hanging it.
+async fn sweep_within(app: &TestApp, limit: Duration) {
+    tokio::time::timeout(limit, vc_server::auth::timers::run_once(&app.state))
+        .await
+        .expect("the sweep returns without waiting")
+        .unwrap();
+}
+
 #[sqlx::test]
-async fn concurrent_sweeps_send_the_follow_up_once(pool: PgPool) {
+async fn a_sweep_skips_a_notice_another_one_holds(pool: PgPool) {
     let mock = spawn_fcm_mock(FcmMockResponse::Ok).await;
     let app = TestApp::with_pool_and_config(pool.clone(), fcm_config(&mock)).await;
     let (u, _) = user_with_token(&app).await;
@@ -1080,30 +1089,193 @@ async fn concurrent_sweeps_send_the_follow_up_once(pool: PgPool) {
     record_and_deliver(&app, event(u, EventType::SignIn, Actor::User(u))).await;
     pass_push_interval(&pool, notice).await;
 
-    // A sweep that finds the notice locked by another one skips it.
+    // Another sweep (or a delivery) holds the due notice: this sweep skips
+    // it at once, sends nothing for it and leaves it due.
     let mut other = pool.begin().await.unwrap();
     sqlx::query("SELECT id FROM security_notices WHERE id = $1 FOR UPDATE")
         .bind(notice)
         .execute(&mut *other)
         .await
         .unwrap();
-    sweep(&app).await;
-    assert_eq!(
-        settle(&mock, 2).await.len(),
-        1,
-        "a locked notice is skipped"
-    );
+    sweep_within(&app, Duration::from_secs(10)).await;
+    assert_eq!(settle(&mock, 2).await.len(), 1, "a held notice is skipped");
     other.rollback().await.unwrap();
+    let due: Option<chrono::DateTime<chrono::Utc>> =
+        sqlx::query_scalar("SELECT push_due_at FROM security_notices WHERE id = $1")
+            .bind(notice)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(due.is_some(), "still due after the skip");
 
-    // Two sweeps at the same time, each on its own connection.
-    let (a, b) = tokio::join!(
-        vc_server::auth::timers::run_once(&app.state),
-        vc_server::auth::timers::run_once(&app.state)
-    );
-    a.unwrap();
-    b.unwrap();
-    let got = settle(&mock, 3).await;
+    // Released: the next sweep sends it once, the one after nothing.
+    sweep_within(&app, Duration::from_secs(10)).await;
+    let got = settle(&mock, 2).await;
     assert_eq!(got.len(), 2, "{got:?}");
+    assert_eq!(got[1]["message"]["data"]["count"], "2");
+    sweep_within(&app, Duration::from_secs(10)).await;
+    assert_eq!(settle(&mock, 3).await.len(), 2, "sent once");
+}
+
+#[sqlx::test]
+async fn a_push_target_that_never_answers_does_not_hold_the_sweep(pool: PgPool) {
+    // Push sends go to an address that accepts connections and never
+    // answers (each send waits for its timeout).
+    let mock = spawn_fcm_mock(FcmMockResponse::Ok).await;
+    let silent = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut config = fcm_config(&mock);
+    config.fcm_api_base = format!("http://{}", silent.local_addr().unwrap());
+    let app = TestApp::with_pool_and_config(pool.clone(), config).await;
+    let (u, _) = user_with_token(&app).await;
+    for _ in 0..3 {
+        add_fcm_device(&pool, u).await;
+    }
+    let e1 = record_and_deliver(&app, event(u, EventType::SignIn, Actor::User(u))).await;
+    let notice = notice_of(&pool, e1).await;
+    record_and_deliver(&app, event(u, EventType::SignIn, Actor::User(u))).await;
+    pass_push_interval(&pool, notice).await;
+    // A challenge past its deadline: a later step of the same sweep run
+    // expires it.
+    let challenge = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO approvals (id, kind, approver_id, subject_id, device_id, requester_kind,
+                                requester_id, nonce, context_hash, context, display, state, expires_at)
+         VALUES ($1, 'login', $2, $2, $1, 'session', $1, $3, $3, '{}', '{}', 'issued',
+                 NOW() + INTERVAL '1 minute')",
+    )
+    .bind(challenge)
+    .bind(u)
+    .bind(vec![0u8; 32])
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE approvals SET created_at = created_at - INTERVAL '5 minutes',
+                              expires_at = NOW() - INTERVAL '1 second'
+          WHERE id = $1",
+    )
+    .bind(challenge)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let started = std::time::Instant::now();
+    sweep_within(&app, Duration::from_secs(5)).await;
+    assert!(started.elapsed() < Duration::from_secs(5));
+    let state: String = sqlx::query_scalar("SELECT state FROM approvals WHERE id = $1")
+        .bind(challenge)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(state, "expired", "the later steps ran in the same run");
+    // The follow-up was claimed: a second sweep does not send it again.
+    let due: Option<chrono::DateTime<chrono::Utc>> =
+        sqlx::query_scalar("SELECT push_due_at FROM security_notices WHERE id = $1")
+            .bind(notice)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(due.is_none());
+    drop(silent);
+}
+
+/// Wait until a statement of this test's database waits for a row lock.
+async fn until_a_statement_waits(pool: &PgPool) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let waiting: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pg_stat_activity
+              WHERE datname = current_database() AND wait_event_type = 'Lock'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        if waiting > 0 {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "nothing waited for the lock"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[sqlx::test]
+async fn whether_to_push_now_is_decided_when_the_event_joins(pool: PgPool) {
+    let mock = spawn_fcm_mock(FcmMockResponse::Ok).await;
+    let app = TestApp::with_pool_and_config(pool.clone(), fcm_config(&mock)).await;
+    let (u, _) = user_with_token(&app).await;
+    add_fcm_device(&pool, u).await;
+
+    let e1 = record_and_deliver(&app, event(u, EventType::SignIn, Actor::User(u))).await;
+    let notice = notice_of(&pool, e1).await;
+    assert_eq!(settle(&mock, 1).await.len(), 1);
+    let e2 = record_one(&pool, event(u, EventType::SignIn, Actor::User(u))).await;
+
+    // The delivery of the second event starts while the last push is 59.5 s
+    // old and waits for the notice ...
+    let mut holder = pool.begin().await.unwrap();
+    sqlx::query(
+        "UPDATE security_notices SET last_pushed_at = clock_timestamp() - INTERVAL '59.5 seconds'
+          WHERE id = $1",
+    )
+    .bind(notice)
+    .execute(&mut *holder)
+    .await
+    .unwrap();
+    let state = app.state.clone();
+    let delivery = tokio::spawn(async move { notices::deliver(&state, &[e2]).await });
+    until_a_statement_waits(&pool).await;
+    // ... until more than the interval has passed: it is pushed at once.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    holder.commit().await.unwrap();
+    delivery.await.unwrap().unwrap();
+    let got = settle(&mock, 2).await;
+    assert_eq!(got.len(), 2, "pushed when it joined: {got:?}");
+    assert_eq!(got[1]["message"]["data"]["count"], "2");
+}
+
+#[sqlx::test]
+async fn a_report_while_a_delivery_waits_keeps_the_follow_up(pool: PgPool) {
+    let mock = spawn_fcm_mock(FcmMockResponse::Ok).await;
+    let app = TestApp::with_pool_and_config(pool.clone(), fcm_config(&mock)).await;
+    let (u, _) = user_with_token(&app).await;
+    add_fcm_device(&pool, u).await;
+
+    let e1 = record_and_deliver(&app, event(u, EventType::SignIn, Actor::User(u))).await;
+    let notice = notice_of(&pool, e1).await;
+    let e2 = record_one(&pool, event(u, EventType::SignIn, Actor::User(u))).await;
+
+    // The delivery of the second event starts and waits for the notice.
+    let mut holder = pool.begin().await.unwrap();
+    sqlx::query("SELECT id FROM security_notices WHERE id = $1 FOR UPDATE")
+        .bind(notice)
+        .execute(&mut *holder)
+        .await
+        .unwrap();
+    let state = app.state.clone();
+    let delivery = tokio::spawn(async move { notices::deliver(&state, &[e2]).await });
+    until_a_statement_waits(&pool).await;
+    // Meanwhile the owner reports the first event: the second one is not in
+    // the notice yet, the owner cannot have seen it.
+    sqlx::query("UPDATE security_events SET repudiated_at = NOW() WHERE id = $1")
+        .bind(e1)
+        .execute(&pool)
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    holder.rollback().await.unwrap();
+    delivery.await.unwrap().unwrap();
+
+    pass_push_interval(&pool, notice).await;
+    sweep(&app).await;
+    let got = settle(&mock, 2).await;
+    assert_eq!(
+        got.len(),
+        2,
+        "the new event still gets its follow-up: {got:?}"
+    );
     assert_eq!(got[1]["message"]["data"]["count"], "2");
 }
 

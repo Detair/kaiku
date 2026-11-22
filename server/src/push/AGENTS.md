@@ -78,7 +78,8 @@ channel.
   once per notice per 60 s while it is updated; an update held back by the
   60 s gets one follow-up push from the minute sweep
   (`notices::push_due_follow_ups`, `security_notices.push_due_at`) with the
-  count at that moment and the same collapse key. FCM data (strings):
+  count at that moment and the same collapse key, sent from a background task
+  after the claim commits (the sweep never waits for a push service). FCM data (strings):
   `{"t":"security","notice_id","event_type","severity":"high"|"normal","count":"<n>","subject_id"}`,
   plus `actor_id` only when an admin or the recovery contact acted;
   UnifiedPush: the same JSON with `count` as a number.

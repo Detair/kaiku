@@ -186,7 +186,6 @@ struct NoticeRow {
     id: Uuid,
     message_id: Uuid,
     count: i32,
-    last_pushed_at: Option<DateTime<Utc>>,
 }
 
 /// Deliver these events (idempotent: an event already delivered, or being
@@ -275,7 +274,7 @@ async fn deliver_one(state: &AppState, id: Uuid) -> anyhow::Result<Vec<Outcome>>
         // Within the window around the notice's first event, both ways: an
         // event delivered late joins only a notice near its own time.
         let existing = sqlx::query_as::<_, NoticeRow>(
-            "SELECT id, message_id, count, last_pushed_at FROM security_notices
+            "SELECT id, message_id, count FROM security_notices
               WHERE recipient_id = $1 AND subject_id = $2 AND event_type = $3
                 AND first_at > $4 - make_interval(secs => $5)
                 AND first_at < $4 + make_interval(secs => $5)
@@ -291,32 +290,40 @@ async fn deliver_one(state: &AppState, id: Uuid) -> anyhow::Result<Vec<Outcome>>
         .fetch_optional(&mut *tx)
         .await?;
         let (notice_id, message_id, count, push_now, created_message) = if let Some(n) = existing {
-            let push_now = n
-                .last_pushed_at
-                .is_none_or(|t| Utc::now() - t >= chrono::Duration::seconds(PUSH_INTERVAL_SECS));
             let count = n.count + 1;
-            // A held-back push becomes due when the interval since the last
-            // push has passed (an earlier due time is kept); a push sent now
-            // carries the full count and covers any held-back one.
-            sqlx::query(
-                "UPDATE security_notices
-                    SET count = count + 1,
-                        severity = CASE WHEN $2 = 'high' THEN 'high' ELSE severity END,
-                        first_at = LEAST(first_at, $3),
-                        last_at = GREATEST(last_at, $3),
-                        last_pushed_at = CASE WHEN $4 THEN NOW() ELSE last_pushed_at END,
-                        push_due_at = CASE WHEN $4 THEN NULL
-                                           ELSE COALESCE(push_due_at,
-                                                         last_pushed_at + make_interval(secs => $5))
+            // Push now when the interval since the last push has passed,
+            // decided on the database clock at this statement (the same clock
+            // that sets `last_pushed_at` and serves `push_due_at`). A
+            // held-back push becomes due when the interval has passed (an
+            // earlier due time is kept); a push sent now carries the full
+            // count and covers any held-back one.
+            let push_now: bool = sqlx::query_scalar(
+                "WITH d AS (
+                     SELECT clock_timestamp() AS at,
+                            (last_pushed_at IS NULL
+                             OR last_pushed_at <= clock_timestamp() - make_interval(secs => $4))
+                                AS push_now
+                       FROM security_notices WHERE id = $1
+                 )
+                 UPDATE security_notices n
+                    SET count = n.count + 1,
+                        severity = CASE WHEN $2 = 'high' THEN 'high' ELSE n.severity END,
+                        first_at = LEAST(n.first_at, $3),
+                        last_at = GREATEST(n.last_at, $3),
+                        last_pushed_at = CASE WHEN d.push_now THEN d.at ELSE n.last_pushed_at END,
+                        push_due_at = CASE WHEN d.push_now THEN NULL
+                                           ELSE COALESCE(n.push_due_at,
+                                                         n.last_pushed_at + make_interval(secs => $4))
                                       END
-                  WHERE id = $1",
+                   FROM d
+                  WHERE n.id = $1
+              RETURNING d.push_now",
             )
             .bind(n.id)
             .bind(severity.as_str())
             .bind(ev.created_at)
-            .bind(push_now)
             .bind(PUSH_INTERVAL_SECS as f64)
-            .execute(&mut *tx)
+            .fetch_one(&mut *tx)
             .await?;
             sqlx::query("UPDATE messages SET content = $2, edited_at = NOW() WHERE id = $1")
                 .bind(n.message_id)
@@ -341,7 +348,7 @@ async fn deliver_one(state: &AppState, id: Uuid) -> anyhow::Result<Vec<Outcome>>
                 "INSERT INTO security_notices
                     (id, recipient_id, subject_id, event_type, severity, channel_id, message_id,
                      count, first_at, last_at, last_pushed_at)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, 1, $8, $8, NOW())",
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, 1, $8, $8, clock_timestamp())",
             )
             .bind(notice_id)
             .bind(r.user_id)
@@ -384,7 +391,9 @@ async fn deliver_one(state: &AppState, id: Uuid) -> anyhow::Result<Vec<Outcome>>
             push,
         });
     }
-    sqlx::query("UPDATE security_events SET delivered_at = NOW() WHERE id = $1")
+    // The moment the event joined its notices (statement time, not the
+    // start of this transaction, which may have waited for the notice).
+    sqlx::query("UPDATE security_events SET delivered_at = clock_timestamp() WHERE id = $1")
         .bind(ev.id)
         .execute(&mut *tx)
         .await?;
@@ -581,7 +590,7 @@ pub async fn push_due_follow_ups(state: &AppState) -> anyhow::Result<usize> {
         "WITH due AS (
              SELECT id, recipient_id, subject_id, event_type, severity, count
                FROM security_notices
-              WHERE push_due_at IS NOT NULL AND push_due_at <= NOW()
+              WHERE push_due_at IS NOT NULL AND push_due_at <= clock_timestamp()
               ORDER BY push_due_at
               LIMIT $1
               FOR UPDATE SKIP LOCKED
@@ -622,7 +631,7 @@ pub async fn push_due_follow_ups(state: &AppState) -> anyhow::Result<usize> {
         sqlx::query(
             "UPDATE security_notices
                 SET push_due_at = NULL,
-                    last_pushed_at = CASE WHEN $2 THEN NOW() ELSE last_pushed_at END
+                    last_pushed_at = CASE WHEN $2 THEN clock_timestamp() ELSE last_pushed_at END
               WHERE id = $1",
         )
         .bind(d.id)
@@ -649,12 +658,19 @@ pub async fn push_due_follow_ups(state: &AppState) -> anyhow::Result<usize> {
         ));
     }
     tx.commit().await?;
+    // Sent in the background, like the immediate pushes: a push service or
+    // endpoint that does not answer never holds up the sweep's other steps.
     let sent = pushes.len();
-    for (recipient, push) in pushes {
-        if let Err(e) = crate::push::deliver_with(&state.db, &state.push, recipient, &push).await {
-            tracing::warn!(error = %e, "notice: follow-up push failed");
+    let state = state.clone();
+    tokio::spawn(async move {
+        for (recipient, push) in pushes {
+            if let Err(e) =
+                crate::push::deliver_with(&state.db, &state.push, recipient, &push).await
+            {
+                tracing::warn!(error = %e, "notice: follow-up push failed");
+            }
         }
-    }
+    });
     Ok(sent)
 }
 

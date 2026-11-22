@@ -796,9 +796,14 @@ always high priority, collapse key `security-<notice_id>`, TTL 86400 s, at most 
 60 s, to every push subscription (lapsed key devices, devices named lost, and once to a device that
 "Remove device now" just removed). An update within the 60 s is not pushed at once: it sets
 `push_due_at`, and the minute sweep sends one follow-up push with the count at that moment and the
-same collapse key once the 60 s have passed (row lock with `SKIP LOCKED`, so concurrent sweeps send
-it once; after downtime each due notice gets one). No follow-up when the owner reported one of the
-notice's events ("That wasn't me") after its newest event joined; the read position in the Kaiku DM
+same collapse key once the 60 s have passed, so 60–120 s after the first push (row lock with
+`SKIP LOCKED`, so concurrent sweeps send it once; after downtime each due notice gets one). The
+sweep records the push as sent and commits before it hands the sends to a background task, so a
+push service that does not answer never delays the sweep's other steps. "Push now", "due" and
+"dealt with" are decided on the database clock at the moment of the statement; an event's
+`delivered_at` is the moment it joined its notices. No follow-up when the owner reported one of the
+notice's events ("That wasn't me") after its newest event joined (also for the admin and
+recovery-contact copies); the read position in the Kaiku DM
 does not count, since any session of the account can move it. IP and place only in the owner's own copy and the admin log.
 
 **Actions** are computed per reader on every read and listed only where usable: `repudiate`
