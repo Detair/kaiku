@@ -139,6 +139,18 @@ fn listen_for(expires_at: Option<&str>, cap: Duration) -> Duration {
         .min(cap)
 }
 
+/// How long this purpose's listener waits. A `pc_setup` flow waits `cap`
+/// (the server flow's lifetime) on this machine's monotonic clock only: the
+/// difference between the server's `expires_at` and this PC's wall clock
+/// would shorten it on a PC whose clock runs ahead. Sign-in and step-up wait
+/// until the flow's `expires_at`, never longer than `cap`.
+fn wait_for(purpose: &Purpose, expires_at: Option<&str>, cap: Duration) -> Duration {
+    match purpose {
+        Purpose::PcSetup(_) => cap,
+        Purpose::SignIn(_) | Purpose::StepUp => listen_for(expires_at, cap),
+    }
+}
+
 /// The shared desktop flow; `open` launches the browser (stubbed in tests),
 /// `listen_cap` bounds the wait (the flow's own expiry is the other bound).
 #[allow(clippy::too_many_arguments)]
@@ -192,7 +204,8 @@ pub async fn run_flow(
             attempt_id.is_some(),
         )
         .ok_or(FAILED)?;
-        let deadline = Instant::now() + listen_for(started["expires_at"].as_str(), listen_cap);
+        let deadline =
+            Instant::now() + wait_for(&purpose, started["expires_at"].as_str(), listen_cap);
         // 3. Browser.
         attempt.check()?;
         open(&url).map_err(|_| "PASSKEY_BROWSER_FAILED".to_string())?;
@@ -420,6 +433,20 @@ mod tests {
         );
         let later = (chrono::Utc::now() + chrono::Duration::minutes(40)).to_rfc3339();
         assert_eq!(listen_for(Some(&later), cap), cap);
+    }
+    #[test]
+    fn a_pc_setup_listener_waits_its_own_time_whatever_the_pc_clock_says() {
+        let cap = PC_SETUP_LISTEN_MAX;
+        // A PC clock 10 minutes ahead makes a fresh 15-minute flow look like 5.
+        let skewed = (chrono::Utc::now() + chrono::Duration::minutes(5)).to_rfc3339();
+        let pc = Purpose::PcSetup("a".into());
+        assert_eq!(wait_for(&pc, Some(&skewed), cap), cap);
+        assert_eq!(wait_for(&pc, None, cap), cap);
+        // Sign-in and step-up keep the flow's own end as the bound.
+        for other in [Purpose::SignIn(None), Purpose::StepUp] {
+            let wait = wait_for(&other, Some(&skewed), FLOW_LISTEN_MAX);
+            assert!(wait <= Duration::from_mins(5), "{other:?} {wait:?}");
+        }
     }
     use crate::commands::settings::PasskeyBrowser;
     use crate::session::store::MemoryTokenStore;
