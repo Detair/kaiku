@@ -569,14 +569,20 @@ async fn void_children(
     if let Some(a) = row.pending_authenticator() {
         match a.kind {
             AuthenticatorKind::KeyDevice => {
-                sqlx::query(
+                let revoked: Option<(Uuid, Uuid)> = sqlx::query_as(
                     "UPDATE approval_devices SET state = 'revoked', revoked_at = NOW(),
                             revoke_reason = 'request'
-                      WHERE id = $1 AND state = 'pending'",
+                      WHERE id = $1 AND state = 'pending'
+                      RETURNING user_id, device_id",
                 )
                 .bind(a.id)
-                .execute(&mut *conn)
+                .fetch_optional(&mut *conn)
                 .await?;
+                // Its install's push subscriptions go with it (they were a
+                // key phone's rows while it was pending).
+                if let Some((user_id, install)) = revoked {
+                    crate::push::delete_device_subscriptions_tx(conn, user_id, install).await?;
+                }
             }
             AuthenticatorKind::Passkey => {
                 sqlx::query("DELETE FROM passkeys WHERE id = $1 AND state = 'pending'")
@@ -1355,14 +1361,19 @@ pub async fn stage_authenticator_tx(
         if let (Some(t), Some(id)) = (old["type"].as_str(), old["id"].as_str()) {
             let id: Option<Uuid> = id.parse().ok();
             if t == "key_device" {
-                sqlx::query(
+                let revoked: Option<(Uuid, Uuid)> = sqlx::query_as(
                     "UPDATE approval_devices SET state = 'revoked', revoked_at = NOW(),
                             revoke_reason = 'request'
-                      WHERE id = $1 AND state = 'pending'",
+                      WHERE id = $1 AND state = 'pending'
+                      RETURNING user_id, device_id",
                 )
                 .bind(id)
-                .execute(&mut *conn)
+                .fetch_optional(&mut *conn)
                 .await?;
+                // Its install's push subscriptions go with it.
+                if let Some((user_id, install)) = revoked {
+                    crate::push::delete_device_subscriptions_tx(conn, user_id, install).await?;
+                }
             } else {
                 sqlx::query("DELETE FROM passkeys WHERE id = $1 AND state = 'pending'")
                     .bind(id)

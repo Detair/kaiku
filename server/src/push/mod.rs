@@ -562,10 +562,12 @@ pub async fn create_subscription(
         // A key phone's install id is out of reach, also before its row
         // exists: only a full session registers for a key phone.
         if let Some(device_id) = body.device_id {
-            let key_phone: bool = sqlx::query_scalar(
-                "SELECT EXISTS (SELECT 1 FROM approval_devices
-                  WHERE user_id = $1 AND device_id = $2 AND state IN ('active', 'pending'))",
-            )
+            let key_phone: bool = sqlx::query_scalar(concat!(
+                "SELECT EXISTS (SELECT 1 FROM (SELECT $1::uuid AS user_id, $2::uuid AS device_id) p
+                  WHERE ",
+                key_phone_row!(),
+                ")"
+            ))
             .bind(auth.id)
             .bind(device_id)
             .fetch_one(&mut *tx)

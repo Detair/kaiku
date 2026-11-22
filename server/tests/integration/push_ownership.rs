@@ -1283,3 +1283,81 @@ async fn cleanup_removes_a_lapsed_sessions_registrations(pool: PgPool) {
         "a live sign-in's row stays"
     );
 }
+
+/// A pending key device's install is protected on every path an active one
+/// is: register by install id or by endpoint, delete by install, and the
+/// per-account pruning. (A waiting phone normally has no session; its row is
+/// staged here without owner.)
+#[sqlx::test]
+async fn pending_key_device_install_is_protected_on_every_path(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let pending = KeyDeviceFixture::insert(&pool, &app.config, user, "pending").await;
+    insert_row(&pool, user, "waiting-phone", pending.device_id, None).await;
+    sqlx::query(
+        "UPDATE push_subscriptions SET created_at = NOW() - INTERVAL '3 days' WHERE device_id = $1",
+    )
+    .bind(pending.device_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let before = row(&pool, user, pending.device_id).await;
+
+    let (_, chat_only) = create_probation_session_with_token(&pool, &app.config, user).await;
+    let (s, b) = register(&app, &chat_only, "hijack", Some(pending.device_id)).await;
+    assert_eq!(s, 403, "by install id: {b}");
+    let (s, b) = register(&app, &chat_only, "waiting-phone", Some(Uuid::new_v4())).await;
+    assert_eq!(s, 403, "by endpoint: {b}");
+    let (s, b) = register(&app, &chat_only, "waiting-phone", None).await;
+    assert_eq!(s, 403, "by endpoint without install id: {b}");
+    assert_eq!(
+        delete_device(&app, &chat_only, pending.device_id).await,
+        204
+    );
+    assert_eq!(row(&pool, user, pending.device_id).await, before);
+
+    // Fill the account up: the waiting phone's row is the oldest.
+    for i in 0..9 {
+        insert_row(&pool, user, &format!("old{i}"), Uuid::new_v4(), None).await;
+    }
+    for i in 0..2 {
+        let (s, b) = register(&app, &chat_only, &format!("c{i}"), Some(Uuid::new_v4())).await;
+        assert_eq!(s, 201, "{b}");
+        assert_eq!(
+            row(&pool, user, pending.device_id).await,
+            before,
+            "pruning, round {i}"
+        );
+    }
+}
+
+/// The two-rows-per-session pruning of a chat-only caller never removes a key
+/// phone's row, also one that session itself registered before the install
+/// became a key device (active or pending).
+#[sqlx::test]
+async fn chat_only_session_pruning_never_takes_a_key_phones_row(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    for state in ["active", "pending"] {
+        let (user, _) = create_test_user(&pool).await;
+        let (sid, chat_only) = create_probation_session_with_token(&pool, &app.config, user).await;
+        let phone = KeyDeviceFixture::insert(&pool, &app.config, user, state).await;
+        insert_row(&pool, user, "phone", phone.device_id, Some(sid)).await;
+        sqlx::query(
+            "UPDATE push_subscriptions SET created_at = NOW() - INTERVAL '3 days'
+              WHERE device_id = $1",
+        )
+        .bind(phone.device_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        for i in 0..3 {
+            let (s, b) = register(&app, &chat_only, &format!("c{i}"), Some(Uuid::new_v4())).await;
+            assert_eq!(s, 201, "{state}: {b}");
+        }
+        assert_eq!(
+            row(&pool, user, phone.device_id).await,
+            Some(("phone".into(), Some(sid))),
+            "{state}: the key phone's row stays"
+        );
+    }
+}

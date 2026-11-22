@@ -920,3 +920,121 @@ async fn a_recovery_phone_never_replaces_a_live_key(pool: PgPool) {
         "{states:?}"
     );
 }
+
+async fn push_rows_of_install(pool: &PgPool, user: Uuid, install: Uuid) -> i64 {
+    sqlx::query_scalar(
+        "SELECT COUNT(*) FROM push_subscriptions WHERE user_id = $1 AND device_id = $2",
+    )
+    .bind(user)
+    .bind(install)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+async fn stage_push_row(pool: &PgPool, user: Uuid, install: Uuid, endpoint: &str) {
+    // A waiting phone normally has no session; its row is staged directly.
+    sqlx::query(
+        "INSERT INTO push_subscriptions (user_id, provider, endpoint, device_id)
+         VALUES ($1, 'unifiedpush', $2, $3)",
+    )
+    .bind(user)
+    .bind(endpoint)
+    .bind(install)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// A withdrawn request withdraws its pending phone, and that install's push
+/// subscriptions go in the same transaction.
+#[sqlx::test]
+async fn withdrawn_request_removes_the_pending_phones_push_rows(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let r = ready(&app).await;
+    let (phone, b) = own_phone(&app, &r).await;
+    assert_eq!(b["authenticator_state"], "pending", "{b}");
+    stage_push_row(
+        &pool,
+        r.user,
+        phone.device_id,
+        "https://push.example.com/waiting",
+    )
+    .await;
+
+    let (s, b) = rc(
+        &app,
+        Method::DELETE,
+        "/auth/account-requests/current",
+        Some(&r.secret),
+        json!({}),
+    )
+    .await;
+    assert_eq!(s, 204, "{b}");
+    let state: String = sqlx::query_scalar(
+        "SELECT state FROM approval_devices WHERE user_id = $1 AND device_id = $2",
+    )
+    .bind(r.user)
+    .bind(phone.device_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(state, "revoked");
+    assert_eq!(
+        push_rows_of_install(&pool, r.user, phone.device_id).await,
+        0
+    );
+}
+
+/// A later phone staged on the request replaces the pending one before it;
+/// the replaced install's push subscriptions go with it.
+#[sqlx::test]
+async fn replaced_pending_phone_loses_its_push_rows(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let r = ready(&app).await;
+    let (first, _) = own_phone(&app, &r).await;
+    stage_push_row(
+        &pool,
+        r.user,
+        first.device_id,
+        "https://push.example.com/first",
+    )
+    .await;
+    let (second, _) = own_phone(&app, &r).await;
+    stage_push_row(
+        &pool,
+        r.user,
+        second.device_id,
+        "https://push.example.com/second",
+    )
+    .await;
+    let (third, _) = own_phone(&app, &r).await;
+
+    let states: Vec<(Uuid, String)> = sqlx::query_as(
+        "SELECT device_id, state FROM approval_devices WHERE user_id = $1 ORDER BY created_at",
+    )
+    .bind(r.user)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert!(
+        states
+            .iter()
+            .any(|(d, s)| *d == first.device_id && s == "revoked"),
+        "{states:?}"
+    );
+    assert_eq!(
+        push_rows_of_install(&pool, r.user, first.device_id).await,
+        0
+    );
+    assert_eq!(
+        push_rows_of_install(&pool, r.user, second.device_id).await,
+        0
+    );
+    assert!(
+        states
+            .iter()
+            .any(|(d, s)| *d == third.device_id && s == "pending"),
+        "{states:?}"
+    );
+}
