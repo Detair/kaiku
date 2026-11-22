@@ -27,6 +27,11 @@ MAX_BACKUP_AGE_HOURS="${MAX_BACKUP_AGE_HOURS:-26}"
 FAILURES=0
 
 pass() { echo "  ✓ $1"; }
+WARNINGS=0
+warn_pass() { # passes, but must be read
+    echo "  ! WARNING: $1"
+    WARNINGS=$((WARNINGS + 1))
+}
 fail() {
     echo "  ✗ $1" >&2
     FAILURES=$((FAILURES + 1))
@@ -141,12 +146,12 @@ else
             # The log no longer reaches back to the last start (rotated or
             # emptied): it proves nothing either way. Test Valkey directly.
             direct=$(docker exec canis-valkey sh -c 'REDISCLI_AUTH="$VALKEY_PASSWORD" valkey-cli SCRIPT LOAD "return 1"' 2>&1)
+            other_user="If the server connects to Valkey as another, restricted user, check as that user: valkey-cli --user <user> SCRIPT LOAD \"return 1\" must print a hash"
             if grep -qE '^[0-9a-f]{40}$' <<<"$direct"; then
-                result="a direct test on canis-valkey with its default user (the one the bundled compose file gives the server) accepted SCRIPT LOAD"
+                warn_pass "the server's log could not confirm that the rate limiter loaded (its last start is no longer in the log); a direct test on canis-valkey with its default user (the one the bundled compose file gives the server) accepted SCRIPT LOAD. $other_user"
             else
-                result="a direct test on canis-valkey with its default user did not accept SCRIPT LOAD: $(head -n 1 <<<"$direct")"
-            fi
-            fail "cannot tell from the server's log whether the rate limiter loaded (its last start is no longer in the log); $result. If the server uses another Valkey user, check as that user: valkey-cli --user <user> SCRIPT LOAD \"return 1\" must print a hash" ;;
+                fail "cannot tell from the server's log whether the rate limiter loaded (its last start is no longer in the log), and a direct test on canis-valkey with its default user did not accept SCRIPT LOAD: $(head -n 1 <<<"$direct"). $other_user"
+            fi ;;
     esac
 fi
 
@@ -155,4 +160,8 @@ if [ "$FAILURES" -gt 0 ]; then
     echo "PREFLIGHT FAILED: $FAILURES check(s) — do not deploy."
     exit 1
 fi
-echo "Preflight OK — safe to deploy."
+if [ "$WARNINGS" -gt 0 ]; then
+    echo "Preflight OK with $WARNINGS warning(s) — read them before deploying."
+else
+    echo "Preflight OK — safe to deploy."
+fi

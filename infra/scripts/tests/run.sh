@@ -122,12 +122,15 @@ check "preflight: the last start counts (loaded after failed)" grep -q "✓ the 
 out=$(FAKE_DOCKER_SERVER_LOG='{"level":"INFO","fields":{"message":"Rate limiting disabled by configuration"}}' pf)
 check "preflight: switched-off limiter passes check 7" grep -q "✓ rate limiting is switched off" <<<"$out"
 out=$(FAKE_DOCKER_SERVER_LOG='{"level":"INFO","fields":{"message":"Server listening"}}' pf)
-check "preflight: log without the start lines cannot tell" grep -q "✗ cannot tell from the server's log" <<<"$out"
-check "preflight: cannot tell runs the direct test (accepted)" grep -q "accepted SCRIPT LOAD" <<<"$out"
+check "preflight: no start line, direct test ok: warns" grep -q "! WARNING: the server's log could not confirm that the rate limiter loaded" <<<"$out"
+check "preflight: no start line, direct test ok: names the direct test" grep -q "accepted SCRIPT LOAD" <<<"$out"
+check "preflight: no start line, direct test ok: names the other user" grep -q "valkey-cli --user <user>" <<<"$out"
+check "preflight: no start line, direct test ok: check 7 does not fail" bash -c '! grep -q "✗.*rate limiter" <<<"$1"' _ "$out"
 out=$(FAKE_DOCKER_SERVER_LOG='' pf)
-check "preflight: empty log cannot tell" grep -q "✗ cannot tell from the server's log" <<<"$out"
+check "preflight: empty log, direct test ok: warns" grep -q "! WARNING: the server's log could not confirm" <<<"$out"
 out=$(FAKE_DOCKER_SERVER_LOG='' FAKE_DOCKER_SCRIPT_LOAD="NOPERM User default has no permissions to run the 'script|load' command" pf)
-check "preflight: cannot tell runs the direct test (refused)" grep -q "did not accept SCRIPT LOAD: NOPERM" <<<"$out"
+check "preflight: no start line, direct test refused: fails" grep -q "✗ cannot tell from the server's log" <<<"$out"
+check "preflight: no start line, direct test refused: names the answer" grep -q "did not accept SCRIPT LOAD: NOPERM" <<<"$out"
 out=$(FAKE_DOCKER_LOGS_FAIL=1 pf)
 check "preflight: unreadable log fails check 7" grep -q "✗ could not read the canis-server logs" <<<"$out"
 
