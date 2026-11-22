@@ -360,13 +360,16 @@ the setup codes it issued and the admin requests it started, and records `authen
 
 **New phones and passkeys wait before they act against older ones.** For the account request delay
 (`ACCOUNT_REQUEST_DELAY_HOURS`, 24 h by default) after a phone or passkey was added, a confirmation
-from it cannot remove an older phone or passkey, cannot have one revoked through "That wasn't me", and
-cannot set or remove the password, set or turn off TOTP or replace the recovery codes (403
-`AUTHENTICATOR_TOO_NEW` with `allowed_at`). This only
+from it cannot remove an older phone or passkey, cannot have one revoked through "That wasn't me" or
+by setting up another phone that takes over an older phone's place, and cannot set or remove the
+password, set or turn off TOTP or replace the recovery codes (403 `AUTHENTICATOR_TOO_NEW` with
+`allowed_at`). This only
 applies while the account has an older active phone or passkey; a brand-new account with its first
 phone is never held back, and a new phone may always remove itself or one that is even newer. So
-someone who got a phone of their own into the account cannot throw out the owner's devices before
-the owner sees the notice.
+someone who got a phone of their own into the account cannot throw out the owner's older devices
+before the owner sees the notice. It can still change the recovery contact and link a sign-in
+provider; both stay after the new phone is removed, so after removing an unknown phone, check the
+recovery contact and the linked sign-in methods in the member's security panel.
 
 What to tell a member who replaces a phone: remove the old phone **on the old phone** with **Sign out
 and remove this phone**, which works at once. From the new phone, removing the old one works after the

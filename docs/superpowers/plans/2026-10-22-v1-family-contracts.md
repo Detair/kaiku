@@ -922,6 +922,11 @@ not sign in someone else by mistake. Additive; absent means no check.
   that waited as `pending` counts from when it was added: settled on activation when it was staged at the
   start of the request's wait, young for the rest of the delay when it was staged later. A key set up again on
   the same install is a new authenticator and young again.
+- C26 enrolment: an `own` set-up whose claim names the install id of a live key device replaces that key only
+  when the issuing phone or passkey is settled, or the key is not older than it; otherwise
+  `POST /auth/enrollments/pop-challenge` and the confirming step (`enroll` answer, `POST
+  /auth/enrollments/{id}/confirm`) answer 403 `AUTHENTICATOR_TOO_NEW {allowed_at}` and nothing is revoked.
+- C27 step-up: of several open grants for the same session, action and target the newest is used.
 - C28 "That wasn't me" (owner rule part 1): the same 403 `AUTHENTICATOR_TOO_NEW {allowed_at}` when the report
   would revoke a key device or passkey that is older than the reporting one (a `sign_in` by it or its
   `authenticator_added`) and the reporter is young on an account with an older active authenticator. The whole

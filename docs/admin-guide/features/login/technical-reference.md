@@ -648,7 +648,9 @@ device or a passkey). It refuses with 403 `AUTHENTICATOR_TOO_NEW {allowed_at}` w
 
 It runs on `key_device.remove`, `passkey.remove`, `recovery_codes.create`, `password.set`,
 `password.remove`, `totp.set` (at `/auth/mfa/setup` too, so the user hears it before scanning, and at
-the peek of `/auth/mfa/verify`, before the code is spent) and `totp.remove`. The refusal rolls the
+the peek of `/auth/mfa/verify`, before the code is spent) and `totp.remove`. When several open grants
+exist for the same session, action and target, the newest is used, so a confirmation with an older
+authenticator after a refusal counts at once. The refusal rolls the
 transaction back, so the grant is not used up. Removing itself or a younger authenticator, removing an
 old phone *on* that phone ("Sign out and remove this phone"), and an account's first authenticator are
 never refused. A producer that is not an active authenticator of the account is refused as a missing
@@ -667,6 +669,17 @@ anything is written. A young reporter on an account with an older active authent
 older one revoked: 403 `AUTHENTICATOR_TOO_NEW {allowed_at}`, and the whole report is refused (no session
 ended, no factor marked, the grant unused). Reports that only end sessions, mark password or TOTP
 generations compromised, or revoke a younger authenticator are carried out as before.
+
+**Setting up a phone that replaces an older key.** An `own` set-up (issued from a key phone or from a
+full PC session) whose claim names the install id of a live key device replaces that key when it
+completes (section 8). The install id is the claiming phone's own statement, so the replacement counts
+as acting against that key: `ensure_settled` runs with the issuing phone or passkey as the acting
+authenticator and the key to be replaced as the target, once when the claimant asks for its challenge
+(`POST /auth/enrollments/pop-challenge`, before a code is shown) and again in the confirming
+transaction before anything is revoked. A refusal (403 `AUTHENTICATOR_TOO_NEW {allowed_at}`) revokes
+nothing. A settled issuer, a younger key, a new install id, the command line, registration and the
+administrator's and account requests' set-ups are not affected (the issuer's own install was never
+replaceable).
 
 Other step-up actions (`sessions.end`, `recovery_contact.set`, `enrollment.issue`,
 `identity.link`/`unlink`, `request.cancel`, `account.delete`, `admin.*`) do not apply this rule.
@@ -951,8 +964,12 @@ Residual risks (spec B.6, as implemented):
     phone or passkey from removing or having revoked an older one and from replacing the password,
     TOTP or recovery codes. Such a newcomer can still disturb the account without taking it over: mark
     the password or TOTP compromised through "That wasn't me" or "I didn't start this" (the owner sets a
-    new one from an older device), end sessions, cancel an account request, add a further phone, and
-    schedule the account's deletion, which the owner can undo for 30 days. An **old device in the wrong
+    new one from an older device), end sessions, cancel an account request, add a further phone,
+    schedule the account's deletion, which the owner can undo for 30 days, change or remove the
+    recovery contact, and link a sign-in provider identity. The last two outlast the newcomer's
+    removal (a new contact counts as a canceller only one delay after confirming; a linked identity
+    gives at most a chat-only first factor), so after removing an unknown device the owner checks the
+    recovery contact and the linked sign-in methods. An **old device in the wrong
     hands is not limited** by this rule: a stolen phone that has been a key for longer than the delay
     can still do all of the above until it is removed (risk 7). A phone set up again on the same
     install is new again, so an honest owner who re-installs the app waits one delay before acting
