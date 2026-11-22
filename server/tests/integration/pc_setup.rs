@@ -2101,6 +2101,60 @@ async fn a_restart_reads_its_clock_after_the_challenge_lock(pool: PgPool) {
     );
 }
 
+/// The rule tying the path, the flow and the proof together decides every
+/// case: no path with a proof, the web path without one and the desktop path
+/// with one are refused.
+#[sqlx::test]
+async fn the_code_path_rule_decides_every_case(pool: PgPool) {
+    let (user, _) = create_test_user(&pool).await;
+    for (via, flow, hash) in [
+        (None, None, Some(vec![1u8; 32])),
+        (Some("web"), None, None),
+        (
+            Some("desktop_flow"),
+            Some(Uuid::new_v4()),
+            Some(vec![1u8; 32]),
+        ),
+        (None, Some(Uuid::new_v4()), None),
+    ] {
+        let sid = probation_session(&pool, user).await;
+        let id = insert_attempt(&pool, user, sid, "waiting").await.unwrap();
+        let e = sqlx::query(
+            "UPDATE pc_setup_attempts SET code_via = $2, code_flow_id = $3, web_proof_hash = $4
+              WHERE id = $1",
+        )
+        .bind(id)
+        .bind(via)
+        .bind(flow)
+        .bind(hash.clone())
+        .execute(&pool)
+        .await
+        .err()
+        .unwrap_or_else(|| panic!("accepted: {via:?} {flow:?} {hash:?}"));
+        assert!(is_check_violation(&e), "{via:?} {flow:?} {hash:?}: {e}");
+    }
+    // The three allowed forms.
+    for (via, flow, hash) in [
+        (None, None, None),
+        (Some("web"), None, Some(vec![1u8; 32])),
+        (Some("desktop_flow"), Some(Uuid::new_v4()), None),
+    ] {
+        let sid = probation_session(&pool, user).await;
+        let id = insert_attempt(&pool, user, sid, "waiting").await.unwrap();
+        sqlx::query(
+            "UPDATE pc_setup_attempts SET code_via = $2, code_flow_id = $3, web_proof_hash = $4
+              WHERE id = $1",
+        )
+        .bind(id)
+        .bind(via)
+        .bind(flow)
+        .bind(hash)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+}
+
 #[sqlx::test]
 async fn current_attempt_resumes_after_reload(pool: PgPool) {
     let p = pc(&pool).await;
