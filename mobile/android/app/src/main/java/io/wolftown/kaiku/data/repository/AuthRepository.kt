@@ -199,7 +199,11 @@ class AuthRepository @Inject constructor(
                     currentPassword = typedPassword
                 )
                 val installed = synchronized(pendingLock) {
-                    if (loginAttempt == attempt && tokenStorage.getServerUrl() == serverUrl) {
+                    // Not kept when it could never be installed: this phone's key waits for its
+                    // device sign-in on another server, and nothing is changed on this one.
+                    if (loginAttempt == attempt && tokenStorage.getServerUrl() == serverUrl &&
+                        !keyDevicePolicy.refusesSignInOn(serverUrl)
+                    ) {
                         pendingPasswordChange = pending
                         true
                     } else {
@@ -341,6 +345,12 @@ class AuthRepository @Inject constructor(
             replacePendingIf(pending, null)
             return cancelledResult()
         }
+        // This phone's key waits for its device sign-in on another server: the session could never
+        // be installed, so the password there is not changed and the session is ended.
+        if (keyDevicePolicy.refusesSignInOn(pending.serverUrl)) {
+            if (replacePendingIf(pending, null)) endUnused(pending.serverUrl, pending.asResponse())
+            return cancelledResult()
+        }
         return try {
             authApi.changePassword(pending.serverUrl, pending.accessToken, pending.currentPassword, newPassword)
             // The new password is now the current one: a retry after a failed
@@ -367,7 +377,7 @@ class AuthRepository @Inject constructor(
                 // Refused because this phone's key waits for its device sign-in on another server:
                 // the session that server minted is ended, and nothing of it stays pending.
                 if (keyDevicePolicy.refusesSignInOn(pending.serverUrl) && replacePendingIf(changed, null)) {
-                    endUnused(pending.serverUrl, AuthResponse(accessToken = pending.accessToken, refreshToken = pending.refreshToken, expiresIn = pending.expiresIn, tokenType = "Bearer"))
+                    endUnused(pending.serverUrl, pending.asResponse())
                 }
                 return cancelledResult()
             }
@@ -378,6 +388,10 @@ class AuthRepository @Inject constructor(
             Result.failure(e)
         }
     }
+
+    /** The pending session's tokens, to end it on its server. */
+    private fun PendingPasswordChange.asResponse() =
+        AuthResponse(accessToken = accessToken, refreshToken = refreshToken, expiresIn = expiresIn, tokenType = "Bearer")
 
     private fun isSameServer(pending: PendingPasswordChange): Boolean =
         tokenStorage.getServerUrl() == pending.serverUrl
