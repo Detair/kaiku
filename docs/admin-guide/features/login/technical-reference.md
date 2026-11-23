@@ -742,9 +742,15 @@ is longer, plus 2 minutes (a `Date` that runs ahead never shortens the wait; the
 confirmation that passed the server's expiry check just in time and is stored late). A confirmation
 stored more than 2 minutes after its expiry check, while the server still answers, is a known limit:
 it would leave a key device on the account whose key the phone has already let go; the next setup of
-the same phone replaces it, or the phone is removed from the account. For a claim without an answer, and for one
-whose code came without the server's time, it stays the claim's longest life: the challenge's expiry
-plus 10 minutes, and 25 minutes since the claim was recorded. Until then the key stays, the screen
+the same phone replaces it, or the phone is removed from the account. Against a server that stores
+`expired` under the enrolment's lock, a status `expired` is final and this cannot happen. The probe
+is reached in other ways too; two of them follow a final fact on the server (a status 404 comes only
+for an enrolment that ended at least 30 days ago and was deleted; `done` is already stored). For a
+claim without an answer, and for one whose code came without the server's time, it stays the claim's
+longest life: the challenge's expiry plus 10 minutes, and 25 minutes since the claim was recorded. A
+registration that completes by itself and whose claim answer was lost, restored without its link, is
+given up after these margins with no answer about its enrolment; a claim stored later than that
+leaves a key device without its key, also against such a server (a known limit). Until then the key stays, the screen
 says what is going on ("The setup code has run out. Kaiku keeps this phone's key for about N more min
 …" for a code that ran out), and the phone asks again by itself ("Try again" asks at once): a
 confirmation that was stored late is taken over. A setup link for the same server opened meanwhile is
@@ -810,7 +816,8 @@ However it ends (removed, refused, cancelled, its screen gone), nothing of it is
 nothing to clean up at the next start and an ordinary sign-in made meanwhile is not affected. Unless
 the server ended that session with the removal, the operation revokes it best effort (10 s) on the
 application's scope. If the app is killed half way, that session stays valid on the server until it
-runs out; no client holds its tokens. It is bounded at 5 minutes. An app updated from a version that
+runs out; no client holds its tokens. The operation on the phone is bounded at 5 minutes; the session
+it made ends when the server expires or revokes it. An app updated from a version that
 stored such a session removes it from storage at its first start, before anything reads it: one step
 reads the left-over flag and the key record and clears the session and then the flag, each clear
 tried twice. Until that step has found everything settled (a part that cannot be read, or a clear
