@@ -628,7 +628,7 @@ sequenceDiagram
   `enrolled`). `passkey/finish` needs the requesting session, the ceremony id that start returned and
   the same proof (checked before the ceremony is taken; missing or different: 409 `APPROVAL_STATE`, the
   ceremony stays usable); it creates the `active` passkey (409 `PASSKEY_LIMIT` / `PASSKEY_ALREADY_REGISTERED` keep the attempt
-  readable). A `proof` that is not a JSON string is refused with 422 and an empty body by the request
+  readable). A `proof` that is not a JSON string is refused with 422 and a plain-text message (no error code) by the request
   parser at `…/code` and `…/passkey/finish`, before the handler runs (no try spent, the ceremony kept);
   at `passkey/start` it counts as missing (409). A lost answer to the code is recovered by the poll and
   the page's own proof; a reload
