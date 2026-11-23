@@ -138,6 +138,15 @@ class ChangePasswordViewModelTest {
     }
 
     @Test
+    fun `a change refused for a key on another server says why`() = runTest {
+        coEvery { authRepository.completePasswordChange(any()) } returns Result.failure(io.wolftown.kaiku.data.repository.KeyOnOtherServerException())
+        enter("my-own-password")
+        viewModel.onSubmit()
+        advanceUntilIdle()
+        assertEquals(R.string.auth_key_on_other_server, viewModel.uiState.value.error)
+    }
+
+    @Test
     fun `cancel clears the pending change`() {
         viewModel.onCancel()
 

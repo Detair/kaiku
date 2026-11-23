@@ -112,15 +112,16 @@ class AuthRepositoryUnfinishedSetupTest {
             )
             keys.reload()
             every { tokenStorage.getServerUrl() } returns other
-            assertTrue(repository.completeAttempt(other, "pw") { response("a-$provisional") }.isFailure)
-            assertTrue(repository.installNativeSignIn(response("p-$provisional"), other).isFailure)
+            // Refused with the reason, so that the sign-in screen can say why.
+            assertTrue(repository.completeAttempt(other, "pw") { response("a-$provisional") }.exceptionOrNull() is KeyOnOtherServerException)
+            assertTrue(repository.installNativeSignIn(response("p-$provisional"), other).exceptionOrNull() is KeyOnOtherServerException)
             assertEquals(AuthSession.LoggedOut, authState.session.value)
             coVerify { authApi.logoutSession(other, "a-$provisional", any()) }
             coVerify { authApi.logoutSession(other, "p-$provisional", any()) }
             // A sign-in that first needs a new password: refused before anything is changed there, and ended.
             val change = response("c-$provisional").copy(passwordChangeRequired = true)
             val refused = repository.completeAttempt(other, "pw") { change }
-            assertTrue(refused.isFailure)
+            assertTrue(refused.exceptionOrNull() is KeyOnOtherServerException)
             assertFalse(refused.exceptionOrNull() is PasswordChangeRequiredException)
             assertFalse(repository.hasPendingPasswordChange())
             coVerify { authApi.logoutSession(other, "c-$provisional", any()) }
@@ -156,7 +157,7 @@ class AuthRepositoryUnfinishedSetupTest {
         assertTrue(repository.completeAttempt(other, "pw") { change }.exceptionOrNull() is PasswordChangeRequiredException)
         store.stored = StoredKeyDevice(LocalKeyDevice(null, "first-account", server, UvClass.PER_USE, "e1", null), KeyDevicePhase.ACTIVE)
         keys.reload()
-        assertTrue(repository.completePasswordChange("new-password").isFailure)
+        assertTrue(repository.completePasswordChange("new-password").exceptionOrNull() is KeyOnOtherServerException)
         coVerify(exactly = 0) { authApi.changePassword(any(), any(), any(), any()) }
         assertFalse(repository.hasPendingPasswordChange())
         coVerify { authApi.logoutSession(other, "c", any()) }

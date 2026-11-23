@@ -98,6 +98,8 @@ class ChangePasswordViewModel @Inject constructor(
 
     @StringRes
     private fun errorRes(e: Throwable): Int = when {
+        // This phone is a key for another server: nothing was changed; say why.
+        e is io.wolftown.kaiku.data.repository.KeyOnOtherServerException -> R.string.auth_key_on_other_server
         // No pending change (e.g. the app was restarted): sign in again.
         e is IllegalStateException -> R.string.auth_password_change_expired
         // The only server-side validation left is "must differ from the temporary password".

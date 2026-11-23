@@ -257,8 +257,12 @@ class AuthRepository @Inject constructor(
     /** A collected session that is not installed is ended on its server, so none is left live. */
     private suspend fun superseded(serverUrl: String, auth: AuthResponse): Result<User> {
         endUnused(serverUrl, auth)
-        return supersededResult()
+        return notInstalled(serverUrl)
     }
+
+    /** Why a sign-in on [serverUrl] was not installed: this phone's key waits on another server, or it was superseded. */
+    private fun notInstalled(serverUrl: String): Result<User> =
+        if (keyDevicePolicy.refusesSignInOn(serverUrl)) Result.failure(KeyOnOtherServerException()) else supersededResult()
 
     /** False while a session runs: a passkey sign-in then starts nothing. */
     fun canStartSignIn(): Boolean = signedInRefusal() == null
@@ -291,7 +295,7 @@ class AuthRepository @Inject constructor(
             )
             if (!persisted) {
                 endUnused(serverUrl, authResponse)
-                supersededResult()
+                notInstalled(serverUrl)
             } else {
                 Result.success(user)
             }
@@ -349,7 +353,7 @@ class AuthRepository @Inject constructor(
         // be installed, so the password there is not changed and the session is ended.
         if (keyDevicePolicy.refusesSignInOn(pending.serverUrl)) {
             if (replacePendingIf(pending, null)) endUnused(pending.serverUrl, pending.asResponse())
-            return cancelledResult()
+            return Result.failure(KeyOnOtherServerException())
         }
         return try {
             authApi.changePassword(pending.serverUrl, pending.accessToken, pending.currentPassword, newPassword)
@@ -376,8 +380,9 @@ class AuthRepository @Inject constructor(
             if (!persisted) {
                 // Refused because this phone's key waits for its device sign-in on another server:
                 // the session that server minted is ended, and nothing of it stays pending.
-                if (keyDevicePolicy.refusesSignInOn(pending.serverUrl) && replacePendingIf(changed, null)) {
-                    endUnused(pending.serverUrl, pending.asResponse())
+                if (keyDevicePolicy.refusesSignInOn(pending.serverUrl)) {
+                    if (replacePendingIf(changed, null)) endUnused(pending.serverUrl, pending.asResponse())
+                    return Result.failure(KeyOnOtherServerException())
                 }
                 return cancelledResult()
             }
@@ -664,6 +669,12 @@ class DeviceSignInStart internal constructor(
 ) {
     override fun toString(): String = "DeviceSignInStart(serverUrl=$serverUrl)"
 }
+
+/**
+ * An ordinary sign-in was refused because this phone is the key of another server and waits for its
+ * own sign-in there; that setup is finished, or the phone is removed as a key there, first.
+ */
+class KeyOnOtherServerException : IllegalStateException("This phone is a key for another server")
 
 /** A sign-in was refused because a session is running; sign out first. */
 class AlreadySignedInException : IllegalStateException("A session is running; sign out first")
