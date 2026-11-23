@@ -129,4 +129,16 @@ class AuthRepositoryUnfinishedSetupTest {
         every { tokenStorage.getServerUrl() } returns server
         assertTrue(repository.completeAttempt(server, "pw") { response("own") }.isSuccess)
     }
+
+    /** A key whose server was stored in another spelling (case, default port, trailing slash) is still on the same server. */
+    @Test fun `an ordinary sign-in on the key's own server is installed whatever spelling the key stored`() = runTest {
+        coEvery { authApi.authenticatedGetMe(any(), any()) } returns User(id = "other-account", username = "bob", displayName = "Bob")
+        store.stored = StoredKeyDevice(
+            LocalKeyDevice(null, "first-account", "HTTPS://Chat.Example.com:443/", UvClass.PER_USE, "e1", null),
+            KeyDevicePhase.ACTIVE,
+        )
+        keys.reload()
+        assertTrue(repository.completeAttempt(server, "pw") { response("own") }.isSuccess)
+        assertTrue(authState.session.value is AuthSession.LoggedIn)
+    }
 }

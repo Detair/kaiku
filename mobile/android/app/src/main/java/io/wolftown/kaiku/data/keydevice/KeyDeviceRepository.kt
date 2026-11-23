@@ -192,7 +192,10 @@ class KeyDeviceRepository @Inject constructor(
 
     override fun refusesSignInOn(serverUrl: String): Boolean {
         val rec = stored() ?: return false
-        return rec.phase == KeyDevicePhase.ACTIVE && io.wolftown.kaiku.domain.KaikuPayloads.canonicalOrigin(serverUrl) != rec.device.origin
+        if (rec.phase != KeyDevicePhase.ACTIVE) return false
+        // Both in one form: a server stored in another spelling is still the same server.
+        val keyOrigin = io.wolftown.kaiku.domain.KaikuPayloads.canonicalOrigin(rec.device.origin) ?: rec.device.origin
+        return io.wolftown.kaiku.domain.KaikuPayloads.canonicalOrigin(serverUrl) != keyOrigin
     }
 
     private fun derive(s: StoredKeyDevice?, session: AuthSession): KeyDeviceState = when {
