@@ -5,7 +5,8 @@ Usage: aapt2 dump xmltree --file AndroidManifest.xml app.apk | android_app_link_
 
 Passes only when MainActivity has an intent filter that is exactly the setup App Link:
 autoVerify, the VIEW action, the DEFAULT and BROWSABLE categories, and data of exactly
-scheme https, host <host> and path /setup.
+scheme https, host <host> and path /setup; MainActivity must be exported and enabled, in an
+enabled application.
 
 Every https filter of MainActivity, and of every activity-alias that targets it, is looked at.
 It fails the check when it reaches more of <host> than exact paths:
@@ -94,11 +95,17 @@ def components(nodes: list[dict]):
             yield alias, True
 
 
+TRUE = ("true", "0xffffffff", "-1")
+FALSE = ("false", "0x0", "0")
+
+
 def problems(tree: str, host: str) -> list[str]:
     """Everything wrong with the setup App Link for host; empty when it is exactly right."""
     found = False
     wrong: list[str] = []
-    for comp, alias in components(parse(tree)):
+    nodes = parse(tree)
+    app_enabled = all(a["attrs"].get("enabled", "true").lower() not in FALSE for a in walk(nodes, "application"))
+    for comp, alias in components(nodes):
         where = " (on an alias of MainActivity)" if alias else ""
         for f in walk(comp["children"], "intent-filter"):
             # Only the filter's own data: data inside a group is not read by every Android version.
@@ -151,7 +158,13 @@ def problems(tree: str, host: str) -> list[str]:
             elif schemes != {"https"} or hosts != {host} or paths != {"/setup"} or extra:
                 wrong.append("setup filter with other data than https://" + host + "/setup" + where)
             elif not alias:
-                found = True
+                # Only an activity other apps can start, that is turned on in an application that is.
+                if comp["attrs"].get("exported", "").lower() not in TRUE:
+                    wrong.append("setup filter on a MainActivity that is not exported")
+                elif comp["attrs"].get("enabled", "true").lower() in FALSE or not app_enabled:
+                    wrong.append("setup filter on a MainActivity that is not enabled")
+                else:
+                    found = True
     if not found and not wrong:
         wrong.append(f"no verified App Link filter for https://{host}/setup on MainActivity")
     return wrong

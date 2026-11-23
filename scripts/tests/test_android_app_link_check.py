@@ -27,6 +27,9 @@ def manifest(
     alias: tuple[str, ...] = (),
     alias_target: str = "io.wolftown.kaiku.ui.MainActivity",
     package: str | None = None,
+    exported: str | None = "true",
+    enabled: str | None = None,
+    app_enabled: str | None = None,
 ) -> str:
     """An aapt2 xmltree dump shaped like the real one, with the given intent filters on the activity.
 
@@ -37,8 +40,11 @@ def manifest(
         "  E: manifest (line=2)",
         *([attr(4, "package", package)] if package else []),
         "      E: application (line=10)",
+        *([attr(8, "enabled", app_enabled, raw=False)] if app_enabled is not None else []),
         "          E: activity (line=60)",
         attr(12, "name", activity),
+        *([attr(12, "exported", exported, raw=False)] if exported is not None else []),
+        *([attr(12, "enabled", enabled, raw=False)] if enabled is not None else []),
     ]
     lines += filters
     if alias:
@@ -171,6 +177,19 @@ class AppLinkCheckTest(unittest.TestCase):
                     widened = setup_filter(data=data, verify=False)
                     self.assertTrue(check.problems(manifest(setup_filter(), widened), HOST))
                     self.assertTrue(check.problems(manifest(setup_filter(), alias=(widened,)), HOST))
+
+    def test_the_setup_filter_counts_only_on_an_exported_enabled_activity(self):
+        # A filter on an activity other apps cannot start, or that is turned off, opens nothing.
+        for kwargs in (
+            {"exported": "false"},
+            {"exported": "0x0"},
+            {"exported": None},
+            {"enabled": "false"},
+            {"app_enabled": "false"},
+        ):
+            with self.subTest(kwargs):
+                self.assertTrue(check.problems(manifest(setup_filter(), **kwargs), HOST))
+        self.assertEqual([], check.problems(manifest(setup_filter(), exported="0xffffffff", enabled="true", app_enabled="true"), HOST))
 
     def test_a_port_fails(self):
         tree = manifest(setup_filter(data=[("scheme", "https"), ("host", HOST), ("port", "8443"), ("path", "/setup")]))
