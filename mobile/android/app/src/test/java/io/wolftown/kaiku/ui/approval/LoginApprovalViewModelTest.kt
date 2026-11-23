@@ -202,7 +202,7 @@ class LoginApprovalViewModelTest {
      * A key record that does not name its install id, and the app's id cannot be stored by the
      * time the answer is signed: the screen says so, nothing is signed or sent, and nothing crashes.
      */
-    @Test fun `an install id that cannot be stored when signing shows the storage text`() = runTest {
+    @Test fun `an install id that cannot be stored when signing says that saving failed`() = runTest {
         val f = KeyDeviceFixture(backgroundScope)
         f.store.stored = f.store.stored!!.copy(installId = null)
         f.repo.reload()
@@ -215,7 +215,7 @@ class LoginApprovalViewModelTest {
         v.start(payload)
         assertTrue(v.ui.value is LoginApprovalUi.Context)
         v.approve(activity)
-        assertEquals(LoginApprovalUi.Error(R.string.security_key_storage_unreadable, rescan = true), v.ui.value)
+        assertEquals(LoginApprovalUi.Error(R.string.security_key_storage_not_saved, rescan = true), v.ui.value)
         assertTrue(api.lastAnswer == null)
         assertTrue(f.verifier.prompts.isEmpty())
     }
