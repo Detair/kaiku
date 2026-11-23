@@ -104,24 +104,24 @@
 //!    anyway) does so at most once per [`ADMIN_SUBSCRIBE_COOLDOWN`], socket and user epoch — the
 //!    cooldown holds for the epoch the read was planned for, also when the epoch moved after the
 //!    request arrived, and counts from when that read began, also when it failed; meanwhile, at
-//!    that epoch, the socket's earlier answer stands, and without
-//!    one it is "not decided yet". A new user epoch gets one read of its own, also within the
-//!    cooldown. So within the cooldown an elevation that ran out without an epoch moving keeps its
-//!    earlier "yes": nothing is written on it, every frame is read on its own. The reads it asks
-//!    for run in a pool of their own ([`ADMIN_SUBSCRIBE_CONCURRENCY`]) and never take one of the
-//!    permits other revalidations wait for. It takes its socket's revalidation gate first, without
-//!    a deadline (a frame's read under way is waited for, so the answer is the same with and
-//!    without it, only later — except when that read fails: the socket is then in backoff, and a
-//!    subscribe that meets the backoff answers "not decided yet", whoever asked for the failed
-//!    read), and a permit of that pool second, for at most [`ADMIN_SUBSCRIBE_WAIT`]; then it lets
-//!    go of the gate and answers "not decided yet". No task holds a permit while it waits for a
-//!    gate. Per attempt a subscribe takes at most: the wait for the gate (its holder is bounded by
-//!    its own read's [`REFRESH_TIMEOUT`] plus its wait for a permit of the other revalidations, so
-//!    seconds while the database is saturated), the wait for the pool permit, and its own read
-//!    ([`REFRESH_TIMEOUT`]); up to [`DECISION_REVALIDATIONS`] attempts, each one only after the
-//!    epoch moved during the previous read. So a request costs at most one read per user epoch it
-//!    sees, and at most [`DECISION_REVALIDATIONS`] reads in all. Frames queued on that socket wait
-//!    behind it meanwhile.
+//!    that epoch, the socket's earlier answer stands, and without one it is "not decided yet". A
+//!    new user epoch gets one read of its own, also within the cooldown. So within the cooldown an
+//!    elevation that ran out without an epoch moving keeps its earlier "yes": nothing is written on
+//!    it, every frame is read on its own. The reads it asks for run in a pool of their own
+//!    ([`ADMIN_SUBSCRIBE_CONCURRENCY`]) and never take one of the permits other revalidations wait
+//!    for. It takes its socket's revalidation gate first, without a deadline (a frame's read under
+//!    way is waited for, so the answer is the same with and without it, only later — except when
+//!    that read fails: the socket is then in backoff, and a subscribe that meets the backoff
+//!    answers "not decided yet", whoever asked for the failed read), and a permit of that pool
+//!    second, for at most [`ADMIN_SUBSCRIBE_WAIT`]; then it lets go of the gate and answers "not
+//!    decided yet". No task holds a permit while it waits for a gate. Per attempt a subscribe takes
+//!    at most: the wait for the gate (its holder is bounded by its own read's [`REFRESH_TIMEOUT`]
+//!    plus its wait for a permit of the other revalidations, so seconds while the database is
+//!    saturated), the wait for the pool permit, and its own read ([`REFRESH_TIMEOUT`]); up to
+//!    [`DECISION_REVALIDATIONS`] attempts, each one only after the epoch moved during the previous
+//!    read. So a request costs at most one read per user epoch it sees, and at most
+//!    [`DECISION_REVALIDATIONS`] reads in all. Frames queued on that socket wait behind it
+//!    meanwhile.
 //!
 //! # Revalidation cost
 //!
@@ -4375,7 +4375,11 @@ mod tests {
         // The backoff is over, the cooldown is not.
         tokio::time::advance(RETRY_BASE + Duration::from_millis(50)).await;
         assert_eq!(access.subscribe_admin().await, AdminSubscription::Undecided);
-        assert_eq!(reads(u), 1, "a second read at one epoch within the cooldown");
+        assert_eq!(
+            reads(u),
+            1,
+            "a second read at one epoch within the cooldown"
+        );
     }
 
     /// The cooldown counts from when the read began, not from when the
@@ -4398,7 +4402,11 @@ mod tests {
         assert_eq!(subscribe.await, AdminSubscription::Allowed);
         assert_eq!(reads(u), 1);
         assert_eq!(access.subscribe_admin().await, AdminSubscription::Allowed);
-        assert_eq!(reads(u), 1, "read again within the cooldown of the last read");
+        assert_eq!(
+            reads(u),
+            1,
+            "read again within the cooldown of the last read"
+        );
     }
 
     /// A remembered reply that makes a stale admin scope requested again
