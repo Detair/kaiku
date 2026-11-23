@@ -133,7 +133,7 @@ class LoginApprovalViewModel @Inject constructor(
                 // The app's install id cannot be stored now: nothing is signed or sent.
                 logger.warning("Install id not stored: ${e.javaClass.simpleName}")
                 releaseQuietly(ch.challengeId)
-                _ui.value = LoginApprovalUi.Error(R.string.security_key_storage_not_saved, rescan = true)
+                _ui.value = LoginApprovalUi.Error(R.string.security_key_storage_not_saved_scan, rescan = true)
                 return@launch
             }
             val prompt = UvPrompt(

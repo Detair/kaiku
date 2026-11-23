@@ -215,7 +215,7 @@ class LoginApprovalViewModelTest {
         v.start(payload)
         assertTrue(v.ui.value is LoginApprovalUi.Context)
         v.approve(activity)
-        assertEquals(LoginApprovalUi.Error(R.string.security_key_storage_not_saved, rescan = true), v.ui.value)
+        assertEquals(LoginApprovalUi.Error(R.string.security_key_storage_not_saved_scan, rescan = true), v.ui.value)
         assertTrue(api.lastAnswer == null)
         assertTrue(f.verifier.prompts.isEmpty())
     }
