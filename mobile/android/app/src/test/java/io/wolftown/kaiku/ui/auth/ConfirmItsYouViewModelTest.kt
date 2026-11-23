@@ -145,8 +145,8 @@ class ConfirmItsYouViewModelTest {
 
     /**
      * What the phone was to note did not reach storage: this screen names its own buttons, not
-     * "Try again" (it has none). After a sign-in: "Confirm it's you" again; after a removal the server
-     * made: the phone is no longer a key, "Use another account" again.
+     * "Try again" (it has none). After a sign-in: "Confirm it's you" again; a removal that did not
+     * start: the phone is still a key; after a removal the server made: the phone is no longer a key.
      */
     @Test fun `a failed save names this screen's own buttons`() = runTest {
         val f = lapsedFixture()
@@ -154,10 +154,14 @@ class ConfirmItsYouViewModelTest {
         coEvery { deviceSignIn.signIn(any(), any()) } returns DeviceSignInResult.Failed("NOT_SAVED")
         signIn.confirm(activity)
         assertEquals(R.string.confirm_not_saved, signIn.ui.value.error)
-        val removal = vm(f)
+        val notStarted = vm(f)
         coEvery { signOut.removeSignedOutPhone(activity) } returns RemovalResult.Failed("NOT_SAVED")
-        removal.removeThisPhone(activity)
-        assertEquals(R.string.confirm_removal_not_saved, removal.ui.value.error)
+        notStarted.removeThisPhone(activity)
+        assertEquals(R.string.confirm_removal_not_started, notStarted.ui.value.error)
+        val removed = vm(f)
+        coEvery { signOut.removeSignedOutPhone(activity) } returns RemovalResult.Failed("REMOVED_NOT_SAVED")
+        removed.removeThisPhone(activity)
+        assertEquals(R.string.confirm_removal_not_saved, removed.ui.value.error)
     }
 
     private fun TestScope.lapsedFixture(): KeyDeviceFixture =

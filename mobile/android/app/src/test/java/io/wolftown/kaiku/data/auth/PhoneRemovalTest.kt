@@ -458,14 +458,48 @@ class PhoneRemovalTest {
         assertFalse(p.f.keyStore.hasKey())
     }
 
-    /** That note cannot be written: the server's removal stands, the phone keeps its record and says that saving failed. */
-    @Test fun `a provisional key whose note cannot be written says that saving failed`() = runTest {
+    /**
+     * The server accepted this provisional key's sign-in, but the phone cannot note that: the
+     * removal stops there (no step-up, no removal request), its session is ended, and the screen says
+     * the phone was not removed. With room again, the second tap removes it and the phone forgets it.
+     */
+    @Test fun `a provisional key whose note cannot be written is not removed, and the second tap removes it`() = runTest {
         val p = Phone(this)
         p.f.store.stored = p.f.store.stored!!.copy(provisionalFrom = io.wolftown.kaiku.data.keydevice.KeyDevicePhase.CLAIMED)
         p.f.repo.reload()
         p.f.store.failWrites = true
         assertEquals(RemovalResult.Failed("NOT_SAVED"), p.removal.run(activity))
-        assertEquals(io.wolftown.kaiku.R.string.confirm_removal_not_saved, io.wolftown.kaiku.ui.auth.removalFailedText("NOT_SAVED"))
+        testScheduler.runCurrent()
+        assertEquals(io.wolftown.kaiku.R.string.confirm_removal_not_started, io.wolftown.kaiku.ui.auth.removalFailedText("NOT_SAVED"))
+        assertTrue(p.api.calls.isEmpty())
+        assertEquals(listOf(removalSession), p.revoked)
+        assertEquals(io.wolftown.kaiku.data.keydevice.KeyDevicePhase.CLAIMED, p.f.repo.record.value!!.provisionalFrom)
         assertTrue(p.f.keyStore.hasKey())
+        // Room again: the second tap signs in, notes it, removes and forgets.
+        p.f.store.failWrites = false
+        assertEquals(RemovalResult.Removed, p.removal.run(activity))
+        assertEquals(listOf("me", "stepUp:key_device.remove:$KEY_DEVICE", "answer", "remove:$KEY_DEVICE"), p.api.calls)
+        assertNull(p.f.repo.record.value)
+        assertFalse(p.f.keyStore.hasKey())
+    }
+
+    /**
+     * The server removed this phone, but the phone cannot clear its record: the screen says the phone
+     * is no longer a key. The second tap is answered by the server's refusal for a removed key, and
+     * the phone forgets the record then.
+     */
+    @Test fun `a removal the server made but the phone could not note is said so, and the second tap clears it`() = runTest {
+        val p = Phone(this)
+        p.f.store.failWrites = true
+        assertEquals(RemovalResult.Failed("REMOVED_NOT_SAVED"), p.removal.run(activity))
+        assertEquals(io.wolftown.kaiku.R.string.confirm_removal_not_saved, io.wolftown.kaiku.ui.auth.removalFailedText("REMOVED_NOT_SAVED"))
+        assertTrue(p.api.calls.contains("remove:$KEY_DEVICE"))
+        assertNotNull(p.f.repo.record.value)
+        // Room again; the server answers the second tap as for a removed key.
+        p.f.store.failWrites = false
+        p.approval.failWith = io.wolftown.kaiku.testutil.apiError(403, "KEY_DEVICE_REVOKED")
+        assertEquals(RemovalResult.KeyGone(invalidated = false), p.removal.run(activity))
+        assertNull(p.f.repo.record.value)
+        assertFalse(p.f.keyStore.hasKey())
     }
 }

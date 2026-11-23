@@ -103,8 +103,6 @@ class PhoneRemoval @Inject constructor(
         var ask = Ask.DEVICE_LOGIN_CHALLENGE
         // The record every answer is settled on: [rec], or the same record no longer provisional.
         var current = rec
-        // A note that the server accepted this key did not reach storage.
-        var notSaved = false
         try {
             val ch = approvalApi.deviceLoginChallenge(userId, deviceId, origin)
             val login = try {
@@ -133,10 +131,12 @@ class PhoneRemoval @Inject constructor(
             val s = approvalApi.deviceLogin(ch.challengeId, loginSignature, origin)
             session = s
             // The server accepted a sign-in with this very key for this install: the key is no
-            // longer a key device only by the server's word about this install.
+            // longer a key device only by the server's word about this install. If the phone cannot
+            // note that, it could not take the removal's answer either: nothing is removed, and the
+            // session ends like after any other early stop.
             if (rec.provisionalFrom != null) {
                 val noted = keyDevices.update(rec) { it.copy(provisionalFrom = null) }
-                if (noted is Change.Done && noted.record != null) current = noted.record else notSaved = true
+                current = (noted as? Change.Done)?.record ?: return RemovalResult.Failed("NOT_SAVED")
             }
             ask = Ask.STEP_UP
             val me = api.me(origin, s.accessToken)
@@ -179,7 +179,11 @@ class PhoneRemoval @Inject constructor(
             // The server ended this session with the removal (the revocation's cascade).
             endedByServer = true
             if (!answers.settle(current, origin, ask, ServerAnswer(200)).forgotten) {
-                return RemovalResult.Failed(if (notSaved) "NOT_SAVED" else "NOT_FORGOTTEN")
+                // Removed on the server. Still this record, so the phone could not clear it: said so
+                // (the next tap is answered as for a removed key, and the phone forgets it then). A
+                // record that changed meanwhile is another one, and nothing of it is forgotten.
+                val same = keyDevices.record.value?.sameAs(current) == true
+                return RemovalResult.Failed(if (same) "REMOVED_NOT_SAVED" else "NOT_FORGOTTEN")
             }
             // The server dropped the phone's push subscription with the removal; what the phone
             // still keeps of that registration goes too (no request, nothing of another session).
