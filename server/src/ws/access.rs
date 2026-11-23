@@ -5146,9 +5146,10 @@ mod tests {
     /// What one schedule did, in ticks (one per step).
     #[derive(Default)]
     struct Trace {
-        /// Per read that covered the admin stream: when it began, and what
-        /// it said (`None`: it failed).
-        reads: Vec<(u64, Option<bool>)>,
+        /// Per read that covered the admin stream: when it began, what it
+        /// said (`None`: it failed), and when it returned (`None`: not within
+        /// the schedule).
+        reads: Vec<(u64, Option<bool>, Option<u64>)>,
         /// Per admin frame: when it was taken, when it was decided, and
         /// whether it was written.
         frames: Vec<(u64, u64, bool)>,
@@ -5190,11 +5191,13 @@ mod tests {
 
     impl Trace {
         /// Whether a read said `said` that began no earlier than `since`
-        /// and no later than `until`.
+        /// and had returned by `until`.
         fn read_between(&self, since: u64, until: u64, said: bool) -> bool {
-            self.reads
-                .iter()
-                .any(|(began, answer)| (since..=until).contains(began) && *answer == Some(said))
+            self.reads.iter().any(|(began, answer, returned)| {
+                *began >= since
+                    && returned.is_some_and(|returned| returned <= until)
+                    && *answer == Some(said)
+            })
         }
 
         /// What must hold for the frames and answers of every schedule, on
@@ -5291,7 +5294,7 @@ mod tests {
         // A frame taken at 3 is written at 5 on the read from 2; the next
         // frame's read at 8 does not make that right.
         let late = Trace {
-            reads: vec![(2, yes), (8, yes)],
+            reads: vec![(2, yes, Some(3)), (8, yes, Some(9))],
             frames: vec![(3, 5, true), (7, 9, true)],
             ..Trace::default()
         };
@@ -5301,7 +5304,7 @@ mod tests {
         );
         // With a read of its own at 4 it is.
         let own = Trace {
-            reads: vec![(2, yes), (4, yes), (8, yes)],
+            reads: vec![(2, yes, Some(3)), (4, yes, Some(5)), (8, yes, Some(9))],
             ..late
         };
         assert_eq!(own.check(true, Doing::Backstop), Ok(()));
@@ -5309,7 +5312,7 @@ mod tests {
         // A frame taken at 5 while the client had unsubscribed (4 to 7) is
         // written on a read of its own all the same.
         let unasked = Trace {
-            reads: vec![(5, yes)],
+            reads: vec![(5, yes, Some(6))],
             frames: vec![(5, 6, true)],
             withdrawn: Some((4, Some(7))),
             ..Trace::default()
@@ -5328,7 +5331,7 @@ mod tests {
             at_once: None,
         };
         let early = Trace {
-            reads: vec![(2, Some(false)), (7, yes)],
+            reads: vec![(2, Some(false), Some(3)), (7, yes, Some(8))],
             own_reads: vec![(2, Some(false), Some(3))],
             answers: vec![asked],
             bumped: Some(5),
@@ -5357,7 +5360,7 @@ mod tests {
                 answered: 8,
                 ..asked
             }],
-            reads: vec![(2, Some(false)), (7, yes)],
+            reads: vec![(2, Some(false), Some(3)), (7, yes, Some(8))],
             bumped: Some(5),
             began: Some(5),
             ..Trace::default()
@@ -5374,7 +5377,7 @@ mod tests {
                 answered: 8,
                 ..asked
             }],
-            reads: vec![(2, Some(false)), (7, yes)],
+            reads: vec![(2, Some(false), Some(3)), (7, yes, Some(8))],
             bumped: Some(5),
             began: Some(5),
             ..Trace::default()
@@ -5393,13 +5396,13 @@ mod tests {
             at_once: Some(AdminSubscription::Refused),
         };
         let in_hand = Trace {
-            reads: vec![(1, Some(false))],
+            reads: vec![(1, Some(false), Some(2))],
             answers: vec![cached],
             ..Trace::default()
         };
         assert_eq!(in_hand.check(false, Doing::Subscribe), Ok(()));
         let outdated = Trace {
-            reads: vec![(1, Some(false))],
+            reads: vec![(1, Some(false), Some(2))],
             answers: vec![cached],
             bumped: Some(3),
             ..Trace::default()
@@ -5410,7 +5413,7 @@ mod tests {
         );
         // It may not read for it either (answered only at 6).
         let slow = Trace {
-            reads: vec![(1, Some(false)), (5, Some(false))],
+            reads: vec![(1, Some(false), Some(2)), (5, Some(false), Some(6))],
             answers: vec![Asked {
                 answered: 6,
                 ..cached
@@ -5421,6 +5424,41 @@ mod tests {
             slow.check(false, Doing::Subscribe),
             Err("a subscribe that a decision in hand answers waited or read")
         );
+    }
+
+    /// The explorer's own judgement, on made-up traces: a read justifies a
+    /// frame only if it had returned when the frame was decided.
+    #[test]
+    fn the_explorer_wants_a_read_returned_by_each_decision() {
+        let yes = Some(true);
+        // A frame taken at 3 is written at 5 on a read that began at 4 and
+        // returned only at 8.
+        let in_flight = Trace {
+            reads: vec![(4, yes, Some(8))],
+            frames: vec![(3, 5, true)],
+            ..Trace::default()
+        };
+        assert_eq!(
+            in_flight.check(true, Doing::Backstop),
+            Err("a frame was written without a read of its own")
+        );
+        // Nor on one that has not returned at all.
+        let open = Trace {
+            reads: vec![(4, yes, None)],
+            frames: vec![(3, 5, true)],
+            ..Trace::default()
+        };
+        assert_eq!(
+            open.check(true, Doing::Backstop),
+            Err("a frame was written without a read of its own")
+        );
+        // Returned at 5, when the frame was decided, it does.
+        let returned = Trace {
+            reads: vec![(4, yes, Some(5))],
+            frames: vec![(3, 5, true)],
+            ..Trace::default()
+        };
+        assert_eq!(returned.check(true, Doing::Backstop), Ok(()));
     }
 
     /// What the schedules of one [`explore`] family have in common.
@@ -5496,7 +5534,7 @@ mod tests {
         let happened = std::cell::Cell::new(0_usize);
         let trace = std::cell::RefCell::new(Trace {
             // The read behind the socket's first answer.
-            reads: vec![(0, Some(elevated))],
+            reads: vec![(0, Some(elevated), Some(0))],
             ..Trace::default()
         });
 
@@ -5549,6 +5587,9 @@ mod tests {
         let mut state = [Task::Ready; 2];
         // Per task: whether the read it is in failed.
         let mut failing = [false; 2];
+        // Per task: the read it is in, if that read covered the admin
+        // stream (its place in `Trace::reads`).
+        let mut admin_read: [Option<usize>; 2] = [None; 2];
         let mut widths = Vec::new();
         // A read failed and the backoff has not passed since (time only
         // moves with `Up`).
@@ -5601,6 +5642,10 @@ mod tests {
                     let was_reading = state[i] == Task::Reading;
                     if was_reading {
                         seams.release.add_permits(1);
+                        // Its read returns in this step.
+                        if let Some(read) = admin_read[i].take() {
+                            trace.borrow_mut().reads[read].2 = Some(now);
+                        }
                     }
                     let gate_taken = matches!(state[1 - i], Task::Reading | Task::Next);
                     state[i] = loop {
@@ -5622,7 +5667,8 @@ mod tests {
                             // can be behind an admin decision.
                             if let Some(said) = served.1 {
                                 let mut trace = trace.borrow_mut();
-                                trace.reads.push((now, said));
+                                admin_read[i] = Some(trace.reads.len());
+                                trace.reads.push((now, said, None));
                                 if i == 1 {
                                     trace.own_reads.push((now, said, None));
                                     trace.own_world = Some(happened.get());
@@ -5752,7 +5798,8 @@ mod tests {
     /// recovers.
     ///
     /// In all of them: a frame is written only on a read that began after
-    /// it was taken (and after the last bump), a subscribe is answered only
+    /// it was taken (and after the last bump) and had returned when it was
+    /// decided, a subscribe is answered only
     /// by a read that began after it arrived or by the socket's own earlier
     /// answer, nothing owed is lost, a refused socket is never told to
     /// resynchronise, the backoff never outlives the scopes that need it,
