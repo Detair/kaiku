@@ -46,46 +46,6 @@ reason = "Accepted via deny.toml; zip <9 only in utoipa-swagger-ui build-dep (tr
 # ---------------------------------------------------------------------------
 
 [[IgnoredVulns]]
-id = "RUSTSEC-2024-0411"
-reason = "gdkwayland-sys unmaintained; Linux-only Tauri dep."
-
-[[IgnoredVulns]]
-id = "RUSTSEC-2024-0412"
-reason = "gdk unmaintained; Linux-only Tauri dep."
-
-[[IgnoredVulns]]
-id = "RUSTSEC-2024-0413"
-reason = "atk unmaintained; Linux-only Tauri dep."
-
-[[IgnoredVulns]]
-id = "RUSTSEC-2024-0414"
-reason = "gdkx11-sys unmaintained; Linux-only Tauri dep."
-
-[[IgnoredVulns]]
-id = "RUSTSEC-2024-0415"
-reason = "gtk unmaintained; Linux-only Tauri dep."
-
-[[IgnoredVulns]]
-id = "RUSTSEC-2024-0416"
-reason = "atk-sys unmaintained; Linux-only Tauri dep."
-
-[[IgnoredVulns]]
-id = "RUSTSEC-2024-0417"
-reason = "gdkx11 unmaintained; Linux-only Tauri dep."
-
-[[IgnoredVulns]]
-id = "RUSTSEC-2024-0418"
-reason = "gdk-sys unmaintained; Linux-only Tauri dep."
-
-[[IgnoredVulns]]
-id = "RUSTSEC-2024-0419"
-reason = "gtk3-macros unmaintained; Linux-only Tauri dep."
-
-[[IgnoredVulns]]
-id = "RUSTSEC-2024-0420"
-reason = "gtk-sys unmaintained; Linux-only Tauri dep."
-
-[[IgnoredVulns]]
 id = "RUSTSEC-2024-0429"
 # glib 0.18.5 has a fix (0.20.0) but the upgrade is blocked by Tauri's
 # pin on the gtk-rs 0.18 stack. Track upstream.
@@ -167,15 +127,6 @@ reason = "zbus_names unmaintained (merged into zbus 6); Linux-only Tauri/keyring
 [[IgnoredVulns]]
 id = "RUSTSEC-2026-0372"
 reason = "zvariant_derive unmaintained (merged into zbus 6); Linux-only Tauri/keyring transitive, no vuln."
-
-[[IgnoredVulns]]
-id = "GHSA-238p-pmpm-9mq7"
-# KaTeX: an *already existing* prototype pollution can bypass trust
-# restrictions (fix only in 0.18.2). katex is a transitive dep of mermaid,
-# which pins ^0.16 (mermaid 11.17.2 -> katex 0.16.47). Exploitation needs a
-# separate prototype-pollution primitive first; none known in the client.
-# Re-evaluate when mermaid moves to katex 0.18.
-reason = "katex 0.16.x via mermaid (pins ^0.16); requires a pre-existing prototype pollution, fix only in 0.18.2."
 
 [[IgnoredVulns]]
 id = "RUSTSEC-2026-0387"
