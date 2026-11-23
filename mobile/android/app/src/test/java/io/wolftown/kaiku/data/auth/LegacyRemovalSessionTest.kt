@@ -6,6 +6,7 @@ import io.wolftown.kaiku.approval.SoftwareApprovalKeyStore
 import io.wolftown.kaiku.approval.UvClass
 import io.wolftown.kaiku.approval.UvDecision
 import io.wolftown.kaiku.approval.UvPolicy
+import io.wolftown.kaiku.approval.keyId
 import io.wolftown.kaiku.data.api.AuthApi
 import io.wolftown.kaiku.data.keydevice.KeyDevicePhase
 import io.wolftown.kaiku.data.keydevice.KeyDeviceRepository
@@ -301,5 +302,107 @@ class LegacyRemovalSessionTest {
         val settled = answers.settle(repo.record.value!!, "https://chat.example.com", io.wolftown.kaiku.data.keydevice.Ask.DEVICE_LOGIN, io.wolftown.kaiku.data.keydevice.ServerAnswer(404, "KEY_DEVICE_UNKNOWN"))
         assertFalse(settled.forgotten)
         assertTrue(keys.hasKey())
+    }
+
+    // ── A write that did not reach the disk is not done (the store as Android keeps it) ────────
+
+    /** The key store's file on preferences that behave like Android's after a failed commit. */
+    private class Disk {
+        val prefs = InMemorySharedPreferences()
+        val store = io.wolftown.kaiku.data.keydevice.PrefsKeyDeviceStore(prefs)
+    }
+
+    /** The app's install id, kept in a file of its own that is not affected here. */
+    private class Ids : io.wolftown.kaiku.approval.DeviceIdProvider {
+        var kept: String? = null
+        override fun id(): String = (kept ?: "made-by-push").also { kept = it }
+        override fun storedId(): String? = kept
+    }
+
+    private fun kotlinx.coroutines.test.TestScope.gateOn(disk: Disk, keys: SoftwareApprovalKeyStore, ids: Ids): Pair<KeyStorageGate, KeyDeviceRepository> {
+        val repo = KeyDeviceRepository(disk.store, keys, AuthState(backgroundScope), backgroundScope)
+        return KeyStorageGate(repo, LegacyRemovalSession(disk.store, tokenStorage, authApi, backgroundScope), ids) to repo
+    }
+
+    /**
+     * An older key record without its install id, the app has kept none, and the disk refuses the
+     * note that the id is lost. Android still shows the note in memory; "Try again" opens nothing
+     * while it cannot be written, so nothing can make an id meanwhile. After a process death the
+     * old record is read again, the note is written then, and "no key device" costs no key.
+     */
+    @Test fun `try again does not take a binding that only reached memory`() = runTest {
+        val disk = Disk()
+        val keys = keyStore()
+        assertTrue(disk.store.save(StoredKeyDevice(device, KeyDevicePhase.ACTIVE, keyId = keys.keyId())))
+        val ids = Ids()
+        disk.prefs.failingCommits = 100
+        val (gate, _) = gateOn(disk, keys, ids)
+        assertFalse(gate.start())
+        // The disk still fails: "Try again" keeps the app closed, however often.
+        assertFalse(gate.retry())
+        assertFalse(gate.retry())
+        assertTrue(gate.unreadable())
+        // Push registration reads the stored session only through the gate (as PushRegistrar does).
+        if (!gate.unreadable()) ids.id()
+        assertNull(ids.kept)
+        // Process death; the disk works again.
+        disk.prefs.restart()
+        disk.prefs.failingCommits = 0
+        val (next, repo) = gateOn(disk, keys, ids)
+        assertTrue(next.start())
+        val rec = repo.record.value!!
+        assertTrue(rec.installIdLost)
+        assertNull(rec.installId)
+        val answers = io.wolftown.kaiku.data.keydevice.KeyAnswers(repo)
+        val settled = answers.settle(rec, "https://chat.example.com", io.wolftown.kaiku.data.keydevice.Ask.DEVICE_LOGIN, io.wolftown.kaiku.data.keydevice.ServerAnswer(404, "KEY_DEVICE_UNKNOWN"))
+        assertFalse(settled.forgotten)
+        assertTrue(keys.hasKey())
+    }
+
+    /** "Try again" opens the app once the pending note was written through, and only then; it is on the disk. */
+    @Test fun `try again opens the app only after the binding was written through`() = runTest {
+        val disk = Disk()
+        val keys = keyStore()
+        assertTrue(disk.store.save(StoredKeyDevice(device, KeyDevicePhase.ACTIVE, keyId = keys.keyId())))
+        disk.prefs.failingCommits = 100
+        val (gate, _) = gateOn(disk, keys, Ids())
+        assertFalse(gate.start())
+        assertFalse(gate.retry())
+        disk.prefs.failingCommits = 0
+        assertTrue(gate.retry())
+        assertFalse(gate.unreadable())
+        // What opened the app is on the disk: a process death reads the same.
+        disk.prefs.restart()
+        val rec = (disk.store.load() as io.wolftown.kaiku.data.keydevice.KeyStorage.Present).record
+        assertTrue(rec.installIdLost)
+    }
+
+    /**
+     * Both clears of an earlier version's flag fail: Android shows the flag as gone in memory.
+     * "Try again" keeps the app closed while that cannot be written, so nobody signs in; after a
+     * process death the flag is read again and clears only the same left-over session.
+     */
+    @Test fun `try again does not take a flag clear that only reached memory`() = runTest {
+        val disk = Disk()
+        val keys = keyStore()
+        assertTrue(disk.store.save(StoredKeyDevice(device, KeyDevicePhase.ACTIVE, keyId = keys.keyId(), installId = "install-1")))
+        assertTrue(disk.prefs.edit().putBoolean("removal_sign_in", true).commit())
+        tokenStorage.saveTokens("left-access", "left-refresh", 900, "u1")
+        disk.prefs.failingCommits = 100
+        val (gate, _) = gateOn(disk, keys, Ids())
+        assertFalse(gate.start())
+        assertNull(tokenStorage.getAccessToken())
+        // The disk still fails: closed.
+        assertFalse(gate.retry())
+        assertTrue(gate.unreadable())
+        // Process death; the disk works again: the flag is back and is cleared, nothing else.
+        disk.prefs.restart()
+        disk.prefs.failingCommits = 0
+        assertEquals(true, disk.store.legacyRemovalMark())
+        val (next, _) = gateOn(disk, keys, Ids())
+        assertTrue(next.start())
+        assertEquals(false, disk.store.legacyRemovalMark())
+        disk.prefs.restart()
+        assertEquals(false, disk.store.legacyRemovalMark())
     }
 }

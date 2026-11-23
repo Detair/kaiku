@@ -40,7 +40,8 @@ class LegacyRemovalSession @Inject constructor(
      * True when what an earlier version may have left is settled: nothing was left, or the
      * left-over session and then its flag are durably gone. False when anything about it cannot be
      * read (the flag, or the record beside it) or a clear did not reach storage (each is tried
-     * twice): then nothing may read the stored session yet, and nobody can sign in, so a flag that
+     * twice; a failed clear counts only once the store was written through, see
+     * [KeyStorageGate.retry]): then nothing may read the stored session yet, and nobody can sign in, so a flag that
      * stays behind can only ever clear the same left-over session again.
      */
     fun endIfLeft(): Boolean {
@@ -121,8 +122,13 @@ class KeyStorageGate @Inject constructor(
         val logger: Logger = Logger.getLogger("KeyStorageGate")
     }
 
-    /** True when the store can be read now. */
+    /**
+     * True when the store can be read now. A write of the start that failed (the install id's
+     * binding, the clear of an earlier version's flag) may still show in this process as if it
+     * had been made: the store is first written through, and nothing opens until that succeeded.
+     */
     fun retry(): Boolean {
+        if (!keyDevices.flush()) return false
         if (!keyDevices.reload()) return false
         return start()
     }

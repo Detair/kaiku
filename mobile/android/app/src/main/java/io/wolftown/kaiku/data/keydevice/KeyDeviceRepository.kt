@@ -228,6 +228,14 @@ class KeyDeviceRepository @Inject constructor(
     }
 
     /**
+     * Writes what the store holds through to storage ([KeyDeviceStore.flush]); true when it is
+     * there. Until then a write that was reported as failed is not taken as done, even where the
+     * store already shows it.
+     */
+    @Synchronized
+    fun flush(): Boolean = store.flush()
+
+    /**
      * Makes the key for a new setup. Only while the store is readable and holds no record; a key
      * the alias still holds then belongs to no record and is deleted first. Takes seconds: never
      * on the main thread.

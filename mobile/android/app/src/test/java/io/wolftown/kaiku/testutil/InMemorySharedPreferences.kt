@@ -16,6 +16,19 @@ class InMemorySharedPreferences : SharedPreferences {
      */
     @Volatile var failingCommits = 0
 
+    /**
+     * What reached the file: like Android, every commit that succeeds writes the whole map as it
+     * is in memory then (with what earlier failed commits left there); a failed one writes nothing.
+     */
+    private val disk = mutableMapOf<String, Any?>()
+
+    /** Process death and a new start: what is in memory goes, and the file is read again. */
+    @Synchronized
+    fun restart() {
+        values.clear()
+        values.putAll(disk)
+    }
+
     @Synchronized
     override fun getAll(): MutableMap<String, *> = HashMap(values)
 
@@ -87,6 +100,8 @@ class InMemorySharedPreferences : SharedPreferences {
                     failingCommits--
                     return false
                 }
+                disk.clear()
+                disk.putAll(values)
             }
             return true
         }

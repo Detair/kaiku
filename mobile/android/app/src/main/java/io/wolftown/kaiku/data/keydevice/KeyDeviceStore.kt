@@ -114,6 +114,14 @@ interface KeyDeviceStore {
     fun clear(): Boolean
 
     /**
+     * Writes what the store holds now through to storage again. A write reported as failed may
+     * still be what the store shows in this process (Android keeps a failed commit's values in
+     * memory and writes them with the next commit that succeeds); it counts only once this
+     * returns true. True without writing when nothing is behind.
+     */
+    fun flush(): Boolean
+
+    /**
      * A flag earlier versions stored while a sign-in made only to remove the phone was running;
      * null when the store cannot be read.
      */
@@ -280,6 +288,15 @@ class PrefsKeyDeviceStore(private val prefs: SharedPreferences) : KeyDeviceStore
         editor.commit()
     } catch (e: Exception) {
         logger.warning("Key-device store not cleared: ${e.javaClass.simpleName}")
+        false
+    }
+
+    @Synchronized
+    override fun flush(): Boolean = try {
+        // An empty commit writes the whole file when an earlier commit failed, and nothing otherwise.
+        prefs.edit().commit()
+    } catch (e: Exception) {
+        logger.warning("Key-device store not written through: ${e.javaClass.simpleName}")
         false
     }
 

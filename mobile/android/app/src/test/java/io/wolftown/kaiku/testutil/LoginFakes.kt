@@ -51,6 +51,7 @@ class InMemoryKeyDeviceStore : KeyDeviceStore {
         writes += "clear"
         return true
     }
+    override fun flush(): Boolean = !failWrites
     override fun legacyRemovalMark(): Boolean? = if (flagUnreadable) null else legacyMark
     override fun clearLegacyRemovalMark(): Boolean {
         if (failFlagClears > 0) {
