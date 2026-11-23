@@ -70,6 +70,18 @@ sealed interface SetupUi {
     data class Ended(@StringRes val msg: Int, val canRetry: Boolean, val arg: String? = null, val offerSignIn: Boolean = false) : SetupUi
 }
 
+/**
+ * The button of an ended setup that can go on, named as its text names the action: an unclear
+ * answer, no connection or a failed save is tried again; anything else starts the setup over.
+ */
+@StringRes
+fun endedRetryLabel(@StringRes msg: Int): Int = when (msg) {
+    R.string.setup_claim_unsure, R.string.security_network_error, R.string.errors_rate_limited,
+    R.string.setup_not_this_key, R.string.security_key_storage_not_saved -> R.string.common_try_again
+    R.string.setup_stopped_after_code -> R.string.setup_leave_stay
+    else -> R.string.setup_start_again
+}
+
 /** What the setup needs from the app around it (JVM-testable). */
 interface SetupEnvironment {
     /** The origin a session or a key ties the app to; null = unconfigured. */

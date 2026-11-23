@@ -1737,12 +1737,14 @@ class SetupOwnerTest {
         val v = SetupFlowViewModel(owner)
         installIdNotStored = true
         v.start(entry)
-        assertEquals(SetupUi.Ended(R.string.security_key_storage_unreadable, canRetry = true), v.ui.value)
+        // A write that failed: "free up space, then Try again", and the button says "Try again".
+        assertEquals(SetupUi.Ended(R.string.security_key_storage_not_saved, canRetry = true), v.ui.value)
+        assertEquals(R.string.common_try_again, endedRetryLabel(R.string.security_key_storage_not_saved))
         assertTrue(enroll.calls.isEmpty())
         assertNull(f.repo.record.value)
         // Still not stored: the same again.
         v.retry()
-        assertEquals(SetupUi.Ended(R.string.security_key_storage_unreadable, canRetry = true), v.ui.value)
+        assertEquals(SetupUi.Ended(R.string.security_key_storage_not_saved, canRetry = true), v.ui.value)
         // Stored now: the same link starts.
         installIdNotStored = false
         v.retry()

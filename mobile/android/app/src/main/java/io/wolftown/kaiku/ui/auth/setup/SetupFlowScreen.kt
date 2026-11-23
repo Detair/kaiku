@@ -274,14 +274,7 @@ internal fun SetupStatus(ui: SetupUi, onSignIn: () -> Unit, onRetry: (() -> Unit
         }
         is SetupUi.Ended -> {
             KeyNotice(if (ui.arg != null) stringResource(ui.msg, ui.arg) else stringResource(ui.msg), warning = true)
-            // An unclear answer or no connection is tried again; anything else starts the setup over.
-            val retryLabel = when (ui.msg) {
-                R.string.setup_claim_unsure, R.string.security_network_error, R.string.errors_rate_limited,
-                R.string.setup_not_this_key -> R.string.common_try_again
-                R.string.setup_stopped_after_code -> R.string.setup_leave_stay
-                else -> R.string.setup_start_again
-            }
-            if (ui.canRetry && onRetry != null) KeyPrimaryButton(stringResource(retryLabel), onClick = onRetry)
+            if (ui.canRetry && onRetry != null) KeyPrimaryButton(stringResource(endedRetryLabel(ui.msg)), onClick = onRetry)
             // Back leads to the sign-in, which for a key phone is "Confirm it's you" (its screen lock).
             if (ui.offerSignIn && onBack != null) {
                 KeyPrimaryButton(stringResource(R.string.setup_device_in_use_sign_in), onClick = onBack)

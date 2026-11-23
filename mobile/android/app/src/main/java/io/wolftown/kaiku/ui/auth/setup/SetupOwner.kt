@@ -566,7 +566,7 @@ class SetupOwner internal constructor(
             logger.warning("Install id not stored: ${x.javaClass.simpleName}")
             attempt = null
             withoutInstallId = e
-            _ui.value = SetupUi.Ended(R.string.security_key_storage_unreadable, canRetry = true)
+            _ui.value = SetupUi.Ended(R.string.security_key_storage_not_saved, canRetry = true)
             return
         }
         withoutInstallId = null
