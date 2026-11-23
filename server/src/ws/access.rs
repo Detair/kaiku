@@ -1973,14 +1973,20 @@ impl SocketAccess {
         // Only this socket's own answers count here, never what a frame's
         // read wrote: a refusal stands for its user epoch, and within the
         // cooldown so does an earlier "yes".
-        match admin.reply.filter(|(at, _)| *at == epoch).map(|(_, r)| r) {
-            Some(AdminSubscription::Refused) => {
-                return AdminRequest::Answered(AdminSubscription::Refused);
+        let answered = match admin.reply.filter(|(at, _)| *at == epoch).map(|(_, r)| r) {
+            Some(AdminSubscription::Refused) => Some(AdminSubscription::Refused),
+            Some(AdminSubscription::Allowed) if cooling => Some(AdminSubscription::Allowed),
+            _ => None,
+        };
+        if let Some(reply) = answered {
+            // The scope is requested again: if it is not current, the
+            // socket loop reads it, not the next admin frame.
+            let stale = self.admin_phase(admin) != Phase::Current;
+            drop(inner);
+            if stale {
+                self.attention.notify_one();
             }
-            Some(AdminSubscription::Allowed) if cooling => {
-                return AdminRequest::Answered(AdminSubscription::Allowed);
-            }
-            _ => {}
+            return AdminRequest::Answered(reply);
         }
         if cooling || backing_off {
             drop(inner);
@@ -4393,6 +4399,42 @@ mod tests {
         assert_eq!(reads(u), 1);
         assert_eq!(access.subscribe_admin().await, AdminSubscription::Allowed);
         assert_eq!(reads(u), 1, "read again within the cooldown of the last read");
+    }
+
+    /// A remembered reply that makes a stale admin scope requested again
+    /// wakes the socket loop: the scope is read by the socket's own
+    /// revalidation, not left to the next admin frame.
+    #[tokio::test(start_paused = true)]
+    async fn a_remembered_reply_that_revives_a_stale_scope_wakes_the_socket() {
+        let reads = |u: Uuid| crate::ws::test_hooks::access_reads(u).0;
+        let u = Uuid::new_v4();
+        let access = admin_socket(u, false).await;
+        access.unsubscribe_admin();
+        // The backstop: the admin scope is not read, it is not requested.
+        access.force_full();
+        let _ = access.refresh().await;
+        assert!(!access.is_stale());
+        // Whatever woke the socket loop so far is taken.
+        {
+            let pending = access.attention();
+            tokio::pin!(pending);
+            let _ = futures::poll!(pending.as_mut());
+        }
+        crate::ws::test_hooks::count_access_reads(u);
+        assert_eq!(access.subscribe_admin().await, AdminSubscription::Refused);
+        assert_eq!(reads(u), 0);
+        assert!(access.is_stale());
+        let woken = access.attention();
+        tokio::pin!(woken);
+        assert!(
+            futures::poll!(woken.as_mut()).is_ready(),
+            "the socket loop was not woken for the stale scope"
+        );
+        // The socket loop revalidates; the next frame needs no read.
+        let _ = access.refresh().await;
+        assert_eq!(reads(u), 1);
+        assert!(!access.admit_admin().await);
+        assert_eq!(reads(u), 1, "the frame paid for the scope's read");
     }
 
     /// The reply is remembered for the user epoch its read was planned for:
