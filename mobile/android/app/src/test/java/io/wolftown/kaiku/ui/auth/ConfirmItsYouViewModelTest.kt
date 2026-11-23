@@ -164,6 +164,29 @@ class ConfirmItsYouViewModelTest {
         assertEquals(R.string.confirm_removal_not_saved, removed.ui.value.error)
     }
 
+    /** The screen's own time limit is no answer of the server: the advice stays; the server's own "expired" takes it back. */
+    @Test fun `the screen's own time limit keeps the last-resort advice`() = runTest {
+        val f = lapsedFixture()
+        coEvery { probe.probe(any()) } returns ServerKeyState.Unknown
+        for (hours in listOf(0L, 12, 13)) {
+            now = now.plusSeconds(hours * 3600)
+            vm(f)
+        }
+        val hung = vm(f)
+        assertTrue(hung.ui.value.serverSilent)
+        coEvery { deviceSignIn.signIn(any(), any()) } coAnswers { kotlinx.coroutines.awaitCancellation() }
+        hung.confirm(activity)
+        advanceTimeBy(ConfirmItsYouViewModel.SIGN_IN_TIMEOUT_MS + 1)
+        runCurrent()
+        assertEquals(R.string.security_took_too_long, hung.ui.value.error)
+        assertTrue(hung.ui.value.serverSilent)
+        val expired = vm(f)
+        assertTrue(expired.ui.value.serverSilent)
+        coEvery { deviceSignIn.signIn(any(), any()) } returns DeviceSignInResult.Expired
+        expired.confirm(activity)
+        assertEquals(false, expired.ui.value.serverSilent)
+    }
+
     private fun TestScope.lapsedFixture(): KeyDeviceFixture =
         KeyDeviceFixture(backgroundScope).also { it.authState.setLoggedOut() } // an active key without its session: lapsed
 
