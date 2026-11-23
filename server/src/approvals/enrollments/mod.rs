@@ -328,6 +328,8 @@ pub struct StatusResponse {
     /// `active` or `pending` once done.
     pub authenticator_state: Option<String>,
     pub ready_at: Option<DateTime<Utc>>,
+    /// The enrolment this answer is about (additive; after the fields above).
+    pub enrollment_id: Uuid,
 }
 
 /// A claim that carries the issuing client's own request secret or ticket
@@ -1032,7 +1034,27 @@ pub async fn lock_issued_by(
 /// SM2 status for the claiming device (long-poll ≤ 25 s, re-read every 500 ms, DC13).
 ///
 /// Unknown id or wrong claim secret → 404 `ENROLLMENT_TOKEN_INVALID`; a known enrolment
-/// answers 200 with its state, also `cancelled`, `expired` or `failed`.
+/// answers 200 with its stored state, also `cancelled`, `expired` or `failed`.
+///
+/// `expired` is final: no later confirmation of this enrolment can succeed. It is stored
+/// once the code's time is over, and also earlier, for example when the issuing session
+/// ends or the issuing device is revoked.
+///
+/// The call answers the stored state. For a `claimed` row past its code time it first
+/// stores `expired` like the sweep (`expire_due`), in one statement that re-checks state
+/// and time under the row's lock. That statement locks at most the one enrolment row and
+/// skips it when a conflicting lock is held on that row (`SKIP LOCKED`): it does not wait
+/// for the row while a confirmation or the sweep holds it. Like every `UPDATE` it also takes
+/// the table's ordinary write lock, so it can wait behind a table lock that conflicts with
+/// that one (for example a queued `SHARE` lock). If it changed no row,
+/// the call reads the row once more (no lock, nothing stored) and answers that state.
+/// While a confirmation holds the row the answer stays `claimed`; afterwards it is the
+/// state stored then: `done` if the confirmation succeeded, `failed` or `cancelled` are
+/// possible too, and `expired` is stored by a status call or the sweep only if the row is
+/// then still `claimed` and past its code time. A long poll tries again with its next read
+/// (every 500 ms). The statement changes the row at most once per enrolment and runs at
+/// most once per call without waiting, at most once per 500 ms attempt of a long poll.
+/// Every other read is a plain `SELECT`.
 pub async fn status(
     ctx: &AuthCtx<'_>,
     enrollment_id: Uuid,
@@ -1047,11 +1069,12 @@ pub async fn status(
         claim_secret.as_bytes(),
     );
     let mut first_state: Option<String> = None;
+    // False only for the read right after a statement that changed no row.
+    let mut settle = true;
     loop {
-        // A code past due reads `expired` before the sweep marks it.
-        let row: Option<(String, Option<Vec<u8>>, Option<String>)> = sqlx::query_as(
-            "SELECT CASE WHEN e.state = 'claimed' AND e.code_expires_at <= NOW()
-                         THEN 'expired' ELSE e.state END,
+        let row: Option<(String, bool, Option<Vec<u8>>, Option<String>)> = sqlx::query_as(
+            "SELECT e.state,
+                    COALESCE(e.state = 'claimed' AND e.code_expires_at <= NOW(), false),
                     e.claim_secret_hash,
                     COALESCE(
                         (SELECT d.state FROM approval_devices d WHERE d.enrollment_id = e.id LIMIT 1),
@@ -1061,12 +1084,31 @@ pub async fn status(
         .bind(enrollment_id)
         .fetch_optional(ctx.db)
         .await?;
-        let Some((state, hash, device_state)) = row else {
+        let Some((state, past_due, hash, device_state)) = row else {
             return Err(ApprovalError::EnrollmentTokenInvalid);
         };
         if !hash.is_some_and(|h| ct_eq(&h, &want)) {
             return Err(ApprovalError::EnrollmentTokenInvalid);
         }
+        if past_due && settle {
+            // A row held by a running confirmation is skipped, not waited for.
+            let stored = sqlx::query(
+                "UPDATE enrollments SET state = 'expired', ended_at = NOW()
+                  WHERE id = (SELECT id FROM enrollments
+                               WHERE id = $1 AND state = 'claimed' AND code_expires_at <= NOW()
+                               FOR NO KEY UPDATE SKIP LOCKED)",
+            )
+            .bind(enrollment_id)
+            .execute(ctx.db)
+            .await?
+            .rows_affected();
+            // Changed: answer from the stored row. Not changed: read the row
+            // once more (no lock, nothing stored) and answer what is stored
+            // then; a row still held stays `claimed`.
+            settle = stored == 1;
+            continue;
+        }
+        settle = true;
         let changed = first_state.as_ref().is_some_and(|s| *s != state);
         if changed || state != "claimed" || started.elapsed() >= wait {
             let passkey_ready: Option<DateTime<Utc>> = if device_state.as_deref() == Some("pending")
@@ -1105,6 +1147,7 @@ pub async fn status(
                 state,
                 authenticator_state: device_state,
                 ready_at,
+                enrollment_id,
             });
         }
         first_state.get_or_insert(state);
