@@ -99,7 +99,7 @@ new server. Read this section **before** you deploy.
 | A user named `kaiku` | Renamed to `kaiku_` plus hex digits of its id (the name is reserved for the system account); the audit log records `system.username_reserved`. Tell the owner. |
 | Every account | `first_activity_at` is set, so every pre-existing account counts as *existing* (not new) for admin setups. |
 | Refresh tokens | Rotate into the new format at their first refresh. A token copied before the upgrade is only recognised as reused from the second refresh after the upgrade on. |
-| Sessions confirmed by a phone, or signed in with a password or TOTP code (upgrading from a 1.0 release candidate) | Remember the phone that confirmed them and the password and TOTP they used, so that later removals and changes end them. A session a phone confirmed ends with the upgrade when that phone was removed, set up again or reported its key as no longer usable since that sign-in; where the server does not know which phone confirmed it (most sessions older than a day), any phone of the account counts. A session that used a password or authenticator app that was changed, removed or marked unsafe since ends too (`authenticator_revoked` / `factor_ended`). The person signs in on that computer once more. Every other session stays signed in. The server reads the session row on every request, so such a session is refused from the first request after the restart; nothing else needs to be done. |
+| Sessions confirmed by a phone, or signed in with a password or TOTP code (upgrading from a 1.0 release candidate) | Remember the phone that confirmed them and the password and TOTP they used, so that later removals and changes end them. A session a phone confirmed ends with the upgrade when that phone was removed, set up again or reported its key as no longer usable since that sign-in; where the server does not know which phone confirmed it (most sessions older than a day), any phone of the account that had been in use counts (a phone that was only being set up counts for nothing), and a removal within a minute before the sign-in counts as after it. A session ends too when the server recorded which password or authenticator app it used and that one was changed, removed or marked unsafe since; where no such record can be read (sign-ins from before the 1.0 sign-in), the account's current password and authenticator app are taken, the session stays, and it ends at their next change or with its normal lifetime (`authenticator_revoked` / `factor_ended`). The person signs in on that computer once more. Every other session stays signed in. The server reads the session row on every request, so such a session is refused from the first request after the restart; nothing else needs to be done. |
 
 ### The one rule that decides day 1
 
@@ -364,8 +364,8 @@ confirmed: computers and browsers signed in by scanning a QR code with it, or wi
 identity provider and a confirmation on it. The same happens when the phone itself reports its key
 as no longer usable (for example after its screen lock or fingerprints changed) and when the same
 phone is set up again: both remove its old key. A sign-in confirmed before the server recorded which
-phone confirmed it (sign-ins from before this version) ends when **any** key phone of the account is
-removed. Sign-ins that no phone confirmed (password and authenticator code, a passkey, another
+phone confirmed it (sign-ins from before this version) ends when **any** key phone of the account that had
+been in use is removed. Sign-ins that no phone confirmed (password and authenticator code, a passkey, another
 phone) are not affected. The notice's `details.ended_sessions` counts the sessions that ended, the
 phone's own included.
 

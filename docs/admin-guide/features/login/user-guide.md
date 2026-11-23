@@ -355,7 +355,12 @@ unsafe:
 - with a code from your **authenticator app**, this sign-in ends too if it used the password or
   authenticator app that is now blocked, like every other sign-in that used them. Sign-ins that
   used neither stay. To get back in, sign in with your phone or a passkey; without one, start a
-  recovery with a recovery code (see [Lost phone, forgotten password](#lost-phone-forgotten-password-recovery)).
+  recovery with a recovery code (see [Lost phone, forgotten password](#lost-phone-forgotten-password-recovery)),
+  which takes at least the waiting period of your server (a day or more), or ask your admin.
+
+So if you have a recovery code at hand, use it to confirm the report: then you stay signed in where
+you are. Kaiku cannot tell from an authenticator code whether it is you, because anyone who signed
+in with it knows it too.
 
 If "That wasn't me" would also stop your own request to secure your account, Kaiku warns you
 first: *This also stops your own request to secure your account.* Read it before you continue.

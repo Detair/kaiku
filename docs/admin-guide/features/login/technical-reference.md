@@ -190,7 +190,8 @@ afterwards): besides `auth_methods` and the authenticator of a full session,
   account lock at collect). A TOTP sign-in has none, also when a phone had claimed the attempt.
   Revoking that key device, for any reason, ends the session (`authenticator_revoked`). Sessions
   from before the upgrade whose confirming device is no longer known have `approved_by_type` set
-  and `approved_by_id` `NULL`: they end when any key device of the account is revoked.
+  and `approved_by_id` `NULL`: they end when a key device of the account that had been active
+  (`activated_at` set) is revoked; one that was only ever pending confirmed nothing.
 - `password_generation`/`totp_generation`: the generations the sign-in used (the same values as the
   `sign_in` event's `details.factors`). When such a generation ends (replaced, removed or marked
   compromised), the session ends (`factor_ended`). Owner-rule part 2 (repudiation and request
@@ -855,7 +856,8 @@ who became admin cannot confirm. `counts_from = confirmed_at + ACCOUNT_REQUEST_D
 2. **Invalidation cascades** (`approvals/cascade.rs`), in the transaction of their cause: ending a
    session voids its grants, desktop flows and enrolments; revoking an authenticator ends its
    sessions and voids its open challenges, grants, enrolments and `admin` requests (a key device
-   also ends the sessions it confirmed, and those whose confirming device is unknown); demoting an
+   also ends the sessions it confirmed, and, if it had ever been active, those whose confirming
+   device is unknown); demoting an
    admin voids the `admin` requests they started; a new factor generation ends the sessions that
    signed in with the old one (`factor_ended`), then attempts (`expired`) and requests (`void`)
    that used it; a request with no route left is `void`; ending a
@@ -869,8 +871,9 @@ who became admin cannot confirm. `counts_from = confirmed_at + ACCOUNT_REQUEST_D
 → login attempts. Device-side transitions (claim, answer, deny, release) lock accounts → device →
 session → challenge → attempt; the PC side (collect, TOTP step) locks the attempt's account →
 attempt; poll, cancel and the sweep touch only attempt rows. `kaiku-admin sessions end` and the
-session end of an account deletion take the account lock before their sessions. Logout and refresh do not take the
-account lock and touch only sessions, grants and enrolments. The cascades of a revoked key device
+session end of an account deletion take the account lock before their sessions, and so does a
+logout that names two sessions. Refresh and a logout of one session do not take the account lock
+and touch only that session's row, its grants and enrolments. The cascades of a revoked key device
 and of an ended factor generation run under the account lock of their cause and lock, in this
 order, session rows (ended), grants and enrolments, then challenges, attempts and requests; a
 collect that holds the same account lock (account → attempt → new session) can therefore neither
@@ -957,12 +960,14 @@ Residual risks (spec B.6, as implemented):
     usable for weeks while used weekly); the 10 s window on PIN-only API 26–29 phones; attestation
     not verified against Google's roots (the server cannot itself confirm per-use UV or hardware
     backing); refresh tokens are bearer tokens (not sender-constrained).
-13. **Hostile use of owner-rule part 2** by someone with a session and the TOTP secret or a recovery
-    code while the account has no strong authenticator. With a TOTP code the acting session gets no
-    exception, so whoever acts on an event that blocks the password ends every session that used it,
-    their own included. A session that did not use the blocked factor (for example one made through
-    the identity provider) stays, whoever made the report. With a stolen recovery code the acting
-    session stays.
+13. **Owner-rule part 2 cannot tell who reports.** On an account without a strong authenticator a
+    report is confirmed with a TOTP code or a recovery code, and the server cannot tell the owner
+    from someone else who knows them. What the owner keeps and loses: a report confirmed with a
+    recovery code keeps the sign-in it is made from; one confirmed with an authenticator code ends
+    that sign-in too if it used the blocked password or authenticator app, like every other sign-in
+    that used it. Sign-ins that used neither (for example through the identity provider) stay. The
+    owner gets back in with a phone or passkey, through a recovery with a recovery code, or with the
+    admin's help.
 14. **Request-notice fatigue:** at most 3 self-service starts per account per delay period.
 
 Coordinator and maintainer decisions recorded in the implementation notes:

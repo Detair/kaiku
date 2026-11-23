@@ -916,7 +916,8 @@ behaviour and additive fields, no new code):**
   key device is revoked, for any reason (owner, "Sign out and remove this phone", key invalidated,
   "That wasn't me", admin, CLI, a completed request, re-enrolment of the same install). A session
   from before this amendment whose confirming device is not known ends when **any** key device of
-  the account is revoked. A TOTP sign-in has no confirming device, also when a phone had claimed the
+  the account that had been active (`activated_at` set) is revoked; a device that was only ever
+  pending confirmed nothing. A TOTP sign-in has no confirming device, also when a phone had claimed the
   attempt.
 - C27 "Sessions and assurance": a session that signed in with a password or TOTP generation ends
   (`factor_ended`) when that generation ends (replaced, removed or marked compromised by its owner,
