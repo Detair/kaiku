@@ -442,4 +442,30 @@ class PhoneRemovalTest {
         assertEquals(RemovalResult.KeyGone(invalidated = true), p.removal.run(activity))
         p.assertAppUntouched()
     }
+
+    /**
+     * A key that is a key device only by the server's word about this install: once the server
+     * accepted this key's sign-in for the removal, the key is no longer provisional, so the
+     * removal the server confirmed is also made on the phone and reported as done.
+     */
+    @Test fun `a provisional key whose removal the server confirmed is removed on the phone`() = runTest {
+        val p = Phone(this)
+        p.f.store.stored = p.f.store.stored!!.copy(provisionalFrom = io.wolftown.kaiku.data.keydevice.KeyDevicePhase.CLAIMED)
+        p.f.repo.reload()
+        assertEquals(RemovalResult.Removed, p.removal.run(activity))
+        assertEquals(listOf("me", "stepUp:key_device.remove:$KEY_DEVICE", "answer", "remove:$KEY_DEVICE"), p.api.calls)
+        assertNull(p.f.repo.record.value)
+        assertFalse(p.f.keyStore.hasKey())
+    }
+
+    /** That note cannot be written: the server's removal stands, the phone keeps its record and says that saving failed. */
+    @Test fun `a provisional key whose note cannot be written says that saving failed`() = runTest {
+        val p = Phone(this)
+        p.f.store.stored = p.f.store.stored!!.copy(provisionalFrom = io.wolftown.kaiku.data.keydevice.KeyDevicePhase.CLAIMED)
+        p.f.repo.reload()
+        p.f.store.failWrites = true
+        assertEquals(RemovalResult.Failed("NOT_SAVED"), p.removal.run(activity))
+        assertEquals(io.wolftown.kaiku.R.string.security_key_storage_not_saved, io.wolftown.kaiku.ui.auth.removalFailedText("NOT_SAVED"))
+        assertTrue(p.f.keyStore.hasKey())
+    }
 }

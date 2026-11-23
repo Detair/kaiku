@@ -84,6 +84,8 @@ internal fun removalFailedText(code: String?): Int {
         "NETWORK" -> R.string.security_network_error
         "APPROVAL_EXPIRED", "TOOK_TOO_LONG" -> R.string.security_took_too_long
         "ACCOUNT_BANNED" -> R.string.auth_login_banned
+        // The server's answer stands, but what the phone was to note of it did not reach storage.
+        "NOT_SAVED" -> R.string.security_key_storage_not_saved
         else -> R.string.security_sign_in_failed
     }
 }

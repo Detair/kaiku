@@ -19,6 +19,7 @@ import io.wolftown.kaiku.data.api.ApprovalApi
 import io.wolftown.kaiku.data.api.AuthApi
 import io.wolftown.kaiku.data.api.RemovalApi
 import io.wolftown.kaiku.data.keydevice.Ask
+import io.wolftown.kaiku.data.keydevice.Change
 import io.wolftown.kaiku.data.keydevice.KeyAnswers
 import io.wolftown.kaiku.data.keydevice.KeyDevicePhase
 import io.wolftown.kaiku.data.keydevice.KeyDeviceRepository
@@ -100,6 +101,10 @@ class PhoneRemoval @Inject constructor(
         var session: AuthResponse? = null
         var endedByServer = false
         var ask = Ask.DEVICE_LOGIN_CHALLENGE
+        // The record every answer is settled on: [rec], or the same record no longer provisional.
+        var current = rec
+        // A note that the server accepted this key did not reach storage.
+        var notSaved = false
         try {
             val ch = approvalApi.deviceLoginChallenge(userId, deviceId, origin)
             val login = try {
@@ -127,6 +132,12 @@ class PhoneRemoval @Inject constructor(
             ask = Ask.DEVICE_LOGIN
             val s = approvalApi.deviceLogin(ch.challengeId, loginSignature, origin)
             session = s
+            // The server accepted a sign-in with this very key for this install: the key is no
+            // longer a key device only by the server's word about this install.
+            if (rec.provisionalFrom != null) {
+                val noted = keyDevices.update(rec) { it.copy(provisionalFrom = null) }
+                if (noted is Change.Done && noted.record != null) current = noted.record else notSaved = true
+            }
             ask = Ask.STEP_UP
             val me = api.me(origin, s.accessToken)
             if (me.id != userId) return RemovalResult.Failed("OTHER_ACCOUNT")
@@ -167,7 +178,9 @@ class PhoneRemoval @Inject constructor(
             if (removed.id != id || removed.state != KeyDeviceStatus.REVOKED) return RemovalResult.Failed("UNEXPECTED_ANSWER")
             // The server ended this session with the removal (the revocation's cascade).
             endedByServer = true
-            if (!answers.settle(rec, origin, ask, ServerAnswer(200)).forgotten) return RemovalResult.Failed("NOT_FORGOTTEN")
+            if (!answers.settle(current, origin, ask, ServerAnswer(200)).forgotten) {
+                return RemovalResult.Failed(if (notSaved) "NOT_SAVED" else "NOT_FORGOTTEN")
+            }
             // The server dropped the phone's push subscription with the removal; what the phone
             // still keeps of that registration goes too (no request, nothing of another session).
             try {
@@ -183,7 +196,7 @@ class PhoneRemoval @Inject constructor(
         } catch (e: ApiException) {
             // The server's own answers for a key device that is gone, asked on the key's server
             // about the captured record: the phone forgets that record (and only that one).
-            val settled = answers.settle(rec, origin, ask, ServerAnswer.of(e))
+            val settled = answers.settle(current, origin, ask, ServerAnswer.of(e))
             if (settled.verdict == Verdict.KEY_GONE) {
                 return if (settled.forgotten) RemovalResult.KeyGone(invalidated = false) else RemovalResult.Failed("NOT_FORGOTTEN")
             }
