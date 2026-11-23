@@ -670,14 +670,16 @@ class SetupOwner internal constructor(
     /**
      * The setup screen was restored without its setup code (the code never goes into
      * saved state): a stored setup continues on the waiting screen, which reconciles it with the
-     * server; a finished one goes on; otherwise the person scans (or opens) the code again.
+     * server (also a key that is a key device only provisionally); a finished one goes on; otherwise the person scans (or opens) the code again.
      */
     fun resumeWithoutEntry() {
         if (started) return
         handed = true
         _startedFlow.value = true
         when {
-            keyDevices.current() is KeyDeviceState.Active -> _ui.value = SetupUi.Done
+            // Done only for a key whose own signature was accepted; a key device only by the
+            // server's word about this install still has its device sign-in ahead.
+            keyDevices.current() is KeyDeviceState.Active && keyDevices.record.value?.provisionalFrom == null -> _ui.value = SetupUi.Done
             keyDevices.record.value != null -> {
                 _waiting.value = true
                 _ui.value = SetupUi.Resume
@@ -1439,6 +1441,9 @@ class SetupOwner internal constructor(
         if ((now != SetupUi.SigningIn && now != SetupUi.SignInPaused && now != SetupUi.SignInTimedOut) || signingIn) return
         signingIn = true
         _ui.value = SetupUi.SigningIn
+        // A session that runs already (the same account, signed in another way) is no proof of
+        // this sign-in: only a session installed from now on is.
+        val before = env.sessionGeneration()
         // Its own fresh challenge, so a second screen-lock prompt; its text says why.
         val work = scope.async { deviceSignIn.signIn(activity, SignInPurpose.AFTER_SETUP) }
         signInJob = scope.launch {
@@ -1448,9 +1453,17 @@ class SetupOwner internal constructor(
                 signingIn = false
                 work.cancel()
             }
-            // A sign-in that got through just as the limit hit is a sign-in.
-            _ui.value = if (r == null && keyDevices.current() is KeyDeviceState.Active) SetupUi.Done else finalSignInUi(r)
+            // A sign-in that got through just as the limit hit is a sign-in: a session was
+            // installed meanwhile, and the key is a key device by its own signature.
+            _ui.value = if (r == null && installedSince(before)) SetupUi.Done else finalSignInUi(r)
         }
+    }
+
+    /** A session was installed since [before], and the stored key is a key device by its own accepted signature. */
+    private fun installedSince(before: Long?): Boolean {
+        val now = env.sessionGeneration()
+        return now != null && now != before && keyDevices.current() is KeyDeviceState.Active &&
+            keyDevices.record.value?.provisionalFrom == null
     }
 
     /**

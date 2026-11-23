@@ -97,6 +97,7 @@ class SetupFlowViewModelTest {
     /** The one setup of the phone [f]; every screen of a test shares it, as in the app. */
     private fun owner(f: KeyDeviceFixture): SetupOwner {
         env.hasRecord = { f.repo.record.value != null }
+        env.session = { (f.authState.session.value as? io.wolftown.kaiku.data.local.AuthSession.LoggedIn)?.sessionId }
         return setupOwner(enroll.api, f.repo, f.signer, deviceSignIn, probe, env, suitability, keyDispatcher)
     }
 

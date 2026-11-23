@@ -29,6 +29,9 @@ class FakeSetupEnvironment : SetupEnvironment {
     var hasRecord: () -> Boolean = { false }
     override fun pinnedOrigin() = pinFrom?.invoke() ?: pinned
     override fun signedInUserId() = signedInUser
+    /** The running session's number, as a test wires it (AuthState's session id); null: signed out. */
+    var session: () -> Long? = { null }
+    override fun sessionGeneration() = session()
     /** The app's server address as a test sets it; a setup never changes it. */
     var stored: String? = null
     override val deviceLabel = "Google Pixel 8"

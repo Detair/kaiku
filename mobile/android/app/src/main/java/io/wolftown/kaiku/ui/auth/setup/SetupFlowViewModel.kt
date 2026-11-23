@@ -75,6 +75,11 @@ interface SetupEnvironment {
     /** The origin a session or a key ties the app to; null = unconfigured. */
     fun pinnedOrigin(): String?
     fun signedInUserId(): String?
+    /**
+     * The running session's own number (a new one for every session installed); null while
+     * signed out. A change shows that a session was installed meanwhile.
+     */
+    fun sessionGeneration(): Long?
     val deviceLabel: String
     val apiLevel: Int
 }
@@ -85,6 +90,7 @@ class AndroidSetupEnvironment @Inject constructor(
 ) : SetupEnvironment {
     override fun pinnedOrigin() = originPin.pinned()
     override fun signedInUserId() = (authState.session.value as? AuthSession.LoggedIn)?.userId
+    override fun sessionGeneration() = (authState.session.value as? AuthSession.LoggedIn)?.sessionId
     override val deviceLabel: String = "${Build.MANUFACTURER} ${Build.MODEL}".trim()
     override val apiLevel: Int = Build.VERSION.SDK_INT
 }

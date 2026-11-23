@@ -114,11 +114,13 @@ class SetupOwnerTest {
     }
 
     /** A setup owner on the phone [f]: the app as it runs now, or (a second one) after a restart. */
-    private fun owner(f: KeyDeviceFixture): SetupOwner =
-        setupOwner(
+    private fun owner(f: KeyDeviceFixture): SetupOwner {
+        env.session = { (f.authState.session.value as? io.wolftown.kaiku.data.local.AuthSession.LoggedIn)?.sessionId }
+        return setupOwner(
             enroll.api, f.repo, f.signer, deviceSignIn, probe, env, clock = { now }, boot = boot, installId = { check(!installIdNotStored) { "push device id not stored" }; appInstallId },
             scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.Main.immediate).also { ownerScopes += it },
         )
+    }
 
     private fun noKeyDeviceAt(t: Instant?) = apiError(404, "KEY_DEVICE_UNKNOWN", ApiErrorFields(serverTime = t))
 
@@ -1765,5 +1767,90 @@ class SetupOwnerTest {
         assertEquals(SetupUi.Ended(R.string.setup_claim_unsure, canRetry = true), v.ui.value)
         assertEquals(KeyDevicePhase.CLAIMING, f.repo.phase())
         assertNull(f.repo.record.value!!.unanswered)
+    }
+
+    // ── A setup is finished only by its own device sign-in ───────────────────────────────────
+
+    /**
+     * The phone is already signed in to the same account (a passkey) while it is set up. The final
+     * sign-in's prompt never returns: the screen says it took too long; the session that was there
+     * before is no proof that this sign-in went through.
+     */
+    @Test fun `an existing session of the account does not finish a final sign-in that never returned`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        enroll.statuses += ClaimStatus(EnrollmentState.DONE, "active")
+        val (owner, f) = phone()
+        f.authState.setLoggedIn(FakeEnrollmentApi.SUBJECT_ID)
+        env.signedInUser = FakeEnrollmentApi.SUBJECT_ID
+        coEvery { deviceSignIn.signIn(any(), any()) } coAnswers { awaitCancellation() }
+        val v = SetupFlowViewModel(owner)
+        v.start(entry)
+        v.confirmSubject(activity)
+        runCurrent()
+        v.signIn(activity)
+        advanceTimeBy(SetupOwner.SIGN_IN_TIMEOUT_MS + 1)
+        runCurrent()
+        assertEquals(SetupUi.SignInTimedOut, v.ui.value)
+    }
+
+    /**
+     * Cold start: the setup screen comes back without its code; the stored key is a key device only
+     * by the server's word about this install (provisional), and a session of the same account
+     * exists. The setup is not finished: it goes back to the setup (the waiting screen, which signs
+     * in with this key), not home. A key whose own signature was accepted is done.
+     */
+    @Test fun `a restored setup whose key is only provisionally active goes back to the setup`() = runTest {
+        for (provisional in listOf(KeyDevicePhase.CLAIMED, null)) {
+            val f = KeyDeviceFixture(backgroundScope, active = false)
+            f.repo.seed(
+                io.wolftown.kaiku.data.keydevice.StoredKeyDevice(
+                    LocalKeyDevice("kd1", SigFixtures.USER_ID, SigFixtures.ORIGIN, UvClass.PER_USE, "e1", null),
+                    KeyDevicePhase.ACTIVE,
+                    keyId = f.keyStore.keyId(),
+                    attemptId = "earlier",
+                    provisionalFrom = provisional,
+                ),
+            )
+            f.authState.setLoggedIn(SigFixtures.USER_ID)
+            val v = SetupFlowViewModel(owner(f))
+            v.resumeWithoutEntry()
+            if (provisional != null) {
+                assertEquals(SetupUi.Resume, v.ui.value)
+                assertTrue(v.waiting.value)
+            } else {
+                assertEquals(SetupUi.Done, v.ui.value)
+            }
+        }
+    }
+
+    /**
+     * A key that is a key device only provisionally: a session installed while its final sign-in
+     * ran past the screen's limit does not show that this key's signature was accepted, so the
+     * screen does not say the setup is done.
+     */
+    @Test fun `a session installed meanwhile does not finish a provisional key's final sign-in`() = runTest {
+        val f = KeyDeviceFixture(backgroundScope, active = false)
+        f.authState.setLoggedOut()
+        f.repo.seed(
+            io.wolftown.kaiku.data.keydevice.StoredKeyDevice(
+                LocalKeyDevice("kd1", SigFixtures.USER_ID, SigFixtures.ORIGIN, UvClass.PER_USE, "e1", null),
+                KeyDevicePhase.ACTIVE,
+                keyId = f.keyStore.keyId(),
+                attemptId = "earlier",
+                provisionalFrom = KeyDevicePhase.CLAIMED,
+            ),
+        )
+        coEvery { deviceSignIn.signIn(any(), any()) } coAnswers {
+            delay(SetupOwner.SIGN_IN_TIMEOUT_MS - 1)
+            f.authState.setLoggedIn(SigFixtures.USER_ID)
+            awaitCancellation()
+        }
+        val owner = owner(f)
+        owner.openWaiting()
+        assertEquals(SetupUi.SigningIn, owner.ui.value)
+        owner.signIn(activity)
+        advanceTimeBy(SetupOwner.SIGN_IN_TIMEOUT_MS + 1)
+        runCurrent()
+        assertEquals(SetupUi.SignInTimedOut, owner.ui.value)
     }
 }
