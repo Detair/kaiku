@@ -122,9 +122,12 @@ class AuthRepository @Inject constructor(
      * and a collected attempt) can therefore never both install. While a
      * setup of this phone is stored and not finished (or the key storage
      * cannot be read) it installs nothing: that setup ends first
-     * ([KeyDevicePolicy.refusesOtherSignIn]). Returns whether it installed.
+     * ([KeyDevicePolicy.refusesOtherSignIn]); nor while this phone's key waits for its device
+     * sign-in on another server than [serverUrl] ([KeyDevicePolicy.refusesSignInOn]). Returns
+     * whether it installed.
      */
     private fun installSession(
+        serverUrl: String,
         accessToken: String,
         refreshToken: String?,
         expiresIn: Int,
@@ -133,10 +136,11 @@ class AuthRepository @Inject constructor(
         onInstalled: () -> Unit = {},
     ): Boolean = synchronized(pendingLock) {
         // Not while a setup creates its key record for the session it checked (see SessionKeyLock).
-        synchronized(io.wolftown.kaiku.data.keydevice.SessionKeyLock) { installLocked(accessToken, refreshToken, expiresIn, userId, precondition, onInstalled) }
+        synchronized(io.wolftown.kaiku.data.keydevice.SessionKeyLock) { installLocked(serverUrl, accessToken, refreshToken, expiresIn, userId, precondition, onInstalled) }
     }
 
     private fun installLocked(
+        serverUrl: String,
         accessToken: String,
         refreshToken: String?,
         expiresIn: Int,
@@ -144,7 +148,11 @@ class AuthRepository @Inject constructor(
         precondition: () -> Boolean,
         onInstalled: () -> Unit,
     ): Boolean {
-        if (authState.session.value is AuthSession.LoggedIn || keyDevicePolicy.refusesOtherSignIn() || !precondition()) return false
+        if (authState.session.value is AuthSession.LoggedIn || keyDevicePolicy.refusesOtherSignIn() ||
+            keyDevicePolicy.refusesSignInOn(serverUrl) || !precondition()
+        ) {
+            return false
+        }
         tokenStorage.saveTokens(
             accessToken = accessToken,
             refreshToken = refreshToken,
@@ -217,7 +225,7 @@ class AuthRepository @Inject constructor(
             // Persist only for the latest attempt and the server it went to: a
             // server change mid-attempt must not store server A's tokens under B.
             val persisted = installSession(
-                authResponse.accessToken, authResponse.refreshToken, authResponse.expiresIn, user.id,
+                serverUrl, authResponse.accessToken, authResponse.refreshToken, authResponse.expiresIn, user.id,
                 precondition = { loginAttempt == attempt && tokenStorage.getServerUrl() == serverUrl },
             )
             unsettled = null
@@ -274,7 +282,7 @@ class AuthRepository @Inject constructor(
             val user = authApi.authenticatedGetMe(authResponse.accessToken, serverUrl)
             sessionTeardown.awaitIdle()
             val persisted = installSession(
-                authResponse.accessToken, authResponse.refreshToken, authResponse.expiresIn, user.id,
+                serverUrl, authResponse.accessToken, authResponse.refreshToken, authResponse.expiresIn, user.id,
                 precondition = { loginAttempt == attempt && tokenStorage.getServerUrl() == serverUrl },
             )
             if (!persisted) {
@@ -351,11 +359,18 @@ class AuthRepository @Inject constructor(
 
             // Check and persist under the lock: a cancel can't slip in between.
             val persisted = installSession(
-                pending.accessToken, pending.refreshToken, pending.expiresIn, user.id,
+                pending.serverUrl, pending.accessToken, pending.refreshToken, pending.expiresIn, user.id,
                 precondition = { pendingPasswordChange === changed && isSameServer(pending) },
                 onInstalled = { pendingPasswordChange = null },
             )
-            if (!persisted) return cancelledResult()
+            if (!persisted) {
+                // Refused because this phone's key waits for its device sign-in on another server:
+                // the session that server minted is ended, and nothing of it stays pending.
+                if (keyDevicePolicy.refusesSignInOn(pending.serverUrl) && replacePendingIf(changed, null)) {
+                    endUnused(pending.serverUrl, AuthResponse(accessToken = pending.accessToken, refreshToken = pending.refreshToken, expiresIn = pending.expiresIn, tokenType = "Bearer"))
+                }
+                return cancelledResult()
+            }
             Result.success(user)
         } catch (e: CancellationException) {
             throw e

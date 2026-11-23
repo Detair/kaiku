@@ -20,12 +20,14 @@ import io.wolftown.kaiku.domain.model.User
 import io.wolftown.kaiku.push.PushRegistrar
 import io.wolftown.kaiku.testutil.InMemoryKeyDeviceStore
 import io.wolftown.kaiku.testutil.noTeardown
+import io.wolftown.kaiku.ui.auth.PasswordChangeRequiredException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.time.Instant
@@ -92,5 +94,39 @@ class AuthRepositoryUnfinishedSetupTest {
         stored(null)
         assertTrue(repository.completeAttempt(server, "pw") { response("a") }.isSuccess)
         assertTrue(authState.session.value is AuthSession.LoggedIn)
+    }
+
+    /**
+     * The key of this phone waits for its device sign-in on its own server (also while that word
+     * is only provisional): an ordinary sign-in on another server is not installed, and the session
+     * that server minted for it is ended. On the key's own server it completes as before.
+     */
+    @Test fun `no ordinary sign-in on another server is installed over a key that waits for its device sign-in`() = runTest {
+        val other = "https://other.example.org"
+        coEvery { authApi.authenticatedGetMe(any(), any()) } returns User(id = "other-account", username = "bob", displayName = "Bob")
+        for (provisional in listOf(null, KeyDevicePhase.CLAIMED)) {
+            store.stored = StoredKeyDevice(
+                LocalKeyDevice(null, "first-account", server, UvClass.PER_USE, "e1", null),
+                KeyDevicePhase.ACTIVE,
+                provisionalFrom = provisional,
+            )
+            keys.reload()
+            every { tokenStorage.getServerUrl() } returns other
+            assertTrue(repository.completeAttempt(other, "pw") { response("a-$provisional") }.isFailure)
+            assertTrue(repository.installNativeSignIn(response("p-$provisional"), other).isFailure)
+            assertEquals(AuthSession.LoggedOut, authState.session.value)
+            coVerify { authApi.logoutSession(other, "a-$provisional", any()) }
+            coVerify { authApi.logoutSession(other, "p-$provisional", any()) }
+            // A sign-in that first needs a new password: refused when it would be installed, and ended.
+            val change = response("c-$provisional").copy(passwordChangeRequired = true)
+            assertTrue(repository.completeAttempt(other, "pw") { change }.exceptionOrNull() is PasswordChangeRequiredException)
+            assertTrue(repository.completePasswordChange("new-password").isFailure)
+            assertFalse(repository.hasPendingPasswordChange())
+            coVerify { authApi.logoutSession(other, "c-$provisional", any()) }
+        }
+        verify(exactly = 0) { tokenStorage.saveTokens(any(), any(), any(), any()) }
+        // On the key's own server another account may sign in as before.
+        every { tokenStorage.getServerUrl() } returns server
+        assertTrue(repository.completeAttempt(server, "pw") { response("own") }.isSuccess)
     }
 }

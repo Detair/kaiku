@@ -56,6 +56,12 @@ fun interface KeyDevicePolicy {
      */
     fun refusesOtherSignIn(): Boolean = false
 
+    /**
+     * No sign-in other than with this phone's key may complete on [serverUrl]: the stored key
+     * waits for its device sign-in (also while that is only provisional) on another server.
+     */
+    fun refusesSignInOn(serverUrl: String): Boolean = false
+
     companion object {
         val NONE = KeyDevicePolicy { false }
     }
@@ -183,6 +189,11 @@ class KeyDeviceRepository @Inject constructor(
 
     override fun refusesOtherSignIn(): Boolean =
         appEntry(unreadable(), stored(), authState.session.value, hasServer = true).let { it == AppEntry.WAITING_SETUP || it == AppEntry.UNREADABLE }
+
+    override fun refusesSignInOn(serverUrl: String): Boolean {
+        val rec = stored() ?: return false
+        return rec.phase == KeyDevicePhase.ACTIVE && io.wolftown.kaiku.domain.KaikuPayloads.canonicalOrigin(serverUrl) != rec.device.origin
+    }
 
     private fun derive(s: StoredKeyDevice?, session: AuthSession): KeyDeviceState = when {
         s == null -> KeyDeviceState.None
