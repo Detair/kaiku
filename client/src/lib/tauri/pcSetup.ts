@@ -6,7 +6,13 @@
  * starts the passkey registration.
  */
 
-import { httpRequest } from "./common";
+import { httpRequest, httpRequestWith } from "./common";
+
+/**
+ * The requests that carry the code, the proof or the registration answer
+ * never follow a redirect: one fails the request.
+ */
+const NO_REDIRECT = { redirect: "error" } as const;
 
 /** SM5 states. */
 export type PcSetupState =
@@ -98,8 +104,8 @@ export function newPcSetupProof(): string {
  * Type the phone's 6 digits with the page's proof. A wrong code answers
  * `{state: "code", tries_left}`; a missing or malformed proof is 400.
  */
-export function enterPcSetupCode(id: string, code: string, proof: string): Promise<PcSetupCodeResult> {
-  return httpRequest<PcSetupCodeResult>("POST", `${base(id)}/code`, { code, proof });
+export async function enterPcSetupCode(id: string, code: string, proof: string): Promise<PcSetupCodeResult> {
+  return (await httpRequestWith<PcSetupCodeResult>("POST", `${base(id)}/code`, { code, proof }, NO_REDIRECT)).data;
 }
 
 /**
@@ -107,26 +113,38 @@ export function enterPcSetupCode(id: string, code: string, proof: string): Promi
  * registration of the attempt's passkey (`enrolled`) with the proof this page
  * sent with the right code. Without it, or with another, 409 `APPROVAL_STATE`.
  */
-export function startPcSetupPasskey(id: string, proof: string | undefined): Promise<PcSetupPasskeyStart> {
-  return httpRequest<PcSetupPasskeyStart>("POST", `${base(id)}/passkey/start`, proof ? { proof } : {});
+export async function startPcSetupPasskey(id: string, proof: string | undefined): Promise<PcSetupPasskeyStart> {
+  return (
+    await httpRequestWith<PcSetupPasskeyStart>("POST", `${base(id)}/passkey/start`, proof ? { proof } : {}, NO_REDIRECT)
+  ).data;
+}
+
+/** The passkey a finish stored (only its id is relied on). */
+export interface PcSetupPasskey {
+  id: string;
 }
 
 /**
  * Browser only: finish it, with the same proof as the start (409
  * `APPROVAL_STATE` without it, the ceremony kept). 409 `PASSKEY_LIMIT` /
- * `PASSKEY_ALREADY_REGISTERED` leave the attempt `enrolled`.
+ * `PASSKEY_ALREADY_REGISTERED` leave the attempt `enrolled`. Resolves with
+ * the passkey only on the server's own answer, a 201 that carries its `id`;
+ * any other success is unclear and resolves with `null` (the poll decides).
  */
-export function finishPcSetupPasskey(
+export async function finishPcSetupPasskey(
   id: string,
   ceremonyId: string,
   credential: unknown,
   label: string | null,
   proof: string | undefined,
-): Promise<unknown> {
-  return httpRequest<unknown>("POST", `${base(id)}/passkey/finish`, {
-    ceremony_id: ceremonyId,
-    credential,
-    label,
-    ...(proof ? { proof } : {}),
-  });
+): Promise<PcSetupPasskey | null> {
+  const { data, status } = await httpRequestWith<unknown>(
+    "POST",
+    `${base(id)}/passkey/finish`,
+    { ceremony_id: ceremonyId, credential, label, ...(proof ? { proof } : {}) },
+    NO_REDIRECT,
+  );
+  const stored =
+    status === 201 && !!data && typeof data === "object" && typeof (data as { id?: unknown }).id === "string";
+  return stored ? (data as PcSetupPasskey) : null;
 }

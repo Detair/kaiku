@@ -119,6 +119,38 @@ describe("the web page's proof", () => {
     });
   });
 
+  it("the code, start and finish requests do not follow redirects", async () => {
+    const proof = newPcSetupProof();
+    fetchMock.mockResolvedValueOnce(json(200, { state: "enrolled", enrollment_id: "e1" }));
+    await enterPcSetupCode(ID, "123456", proof);
+    fetchMock.mockResolvedValueOnce(json(200, { ceremony_id: "c1", options: {} }));
+    await startPcSetupPasskey(ID, proof);
+    fetchMock.mockResolvedValueOnce(json(201, { id: "p1" }));
+    await finishPcSetupPasskey(ID, "c1", {}, null, proof);
+    for (const [, init] of fetchMock.mock.calls as [string, RequestInit][]) expect(init.redirect).toBe("error");
+  });
+
+  it("a redirect the browser refuses rejects the request", async () => {
+    fetchMock.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    await expect(enterPcSetupCode(ID, "123456", newPcSetupProof())).rejects.toBeInstanceOf(TypeError);
+  });
+
+  it("a finish counts as stored only on a 201 that carries the passkey's id", async () => {
+    const proof = newPcSetupProof();
+    for (const [code, body, stored] of [
+      [201, { id: "p1", label: "x" }, true],
+      [200, { id: "p1" }, false],
+      [201, {}, false],
+      [204, null, false],
+    ] as const) {
+      fetchMock.mockResolvedValueOnce(
+        body === null ? new Response(null, { status: code }) : json(code, body),
+      );
+      const out = await finishPcSetupPasskey(ID, "c1", {}, null, proof);
+      expect(out !== null, `${code} ${JSON.stringify(body)}`).toBe(stored);
+    }
+  });
+
   it("a page without the proof starts with an empty body", async () => {
     fetchMock.mockResolvedValueOnce(json(409, { error: "APPROVAL_STATE", message: "x" }));
     await expect(startPcSetupPasskey(ID, undefined)).rejects.toBeTruthy();

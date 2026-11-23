@@ -66,6 +66,12 @@ export interface PcSetupStepProps {
    */
   proofs: Map<string, string>;
   /**
+   * Attempts whose proof this page may have had stored by the server: a code
+   * request that carried it was answered "right", or its answer is unknown.
+   * Kept per session for the page's lifetime, apart from the proof's value.
+   */
+  accepted: Set<string>;
+  /**
    * What became of this dialog's own registration of an attempt (web only):
    * a finish request was sent, or a sent finish was refused beyond doubt.
    */
@@ -108,17 +114,13 @@ export const WebCodeStep: Component<PcSetupStepProps> = (props) => {
   /** The step is gone: a late answer changes nothing. */
   let gone = false;
   onCleanup(() => (gone = true));
-  /**
-   * Attempts whose proof the server may have stored: a code request that
-   * carried it was accepted, or its answer is unknown.
-   */
-  const maybeStored = new Set<string>();
 
   const submit = async () => {
     const id = props.attemptId;
     // One proof per attempt: a retyped code (or a code sent again after a
     // lost answer) carries the same one.
     const proofs = props.proofs;
+    const accepted = props.accepted;
     let proof = proofs.get(id);
     if (!proof) {
       proof = newPcSetupProof();
@@ -128,14 +130,15 @@ export const WebCodeStep: Component<PcSetupStepProps> = (props) => {
     setError(null);
     try {
       const res = await enterPcSetupCode(id, code(), proof).catch((err: unknown) => {
-        // The proof counts as held only while a request that carried it was
-        // accepted or its answer is unknown.
-        if (refusedOutright(err)) {
-          if (!maybeStored.has(id)) proofs.delete(id);
-        } else maybeStored.add(id);
+        // An unknown answer may have stored the proof; a refusal beyond doubt
+        // changes nothing.
+        if (!refusedOutright(err)) accepted.add(id);
         throw err;
       });
-      if (res.state === "enrolled") maybeStored.add(id);
+      // "Right" stores the proof; "wrong" shows that no request with it was
+      // right (a right one would have moved the attempt on).
+      if (res.state === "enrolled") accepted.add(id);
+      else if (res.state === "code") accepted.delete(id);
       if (gone) return;
       if (res.state === "enrolled") props.onState(id, { state: "enrolled", reason: null, enrollment_id: res.enrollment_id });
       else if (res.state === "failed") props.onState(id, { state: "failed", reason: "too_many_codes" });
@@ -184,6 +187,8 @@ export const WebCodeStep: Component<PcSetupStepProps> = (props) => {
 export const WebPasskeyStep: Component<PcSetupStepProps> = (props) => {
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
+  /** The finish was answered, but not with the stored passkey: the poll decides. */
+  const [unclear, setUnclear] = createSignal(false);
   let ctl: AbortController | null = null;
   onCleanup(() => ctl?.abort());
 
@@ -194,6 +199,7 @@ export const WebPasskeyStep: Component<PcSetupStepProps> = (props) => {
     ctl = mine;
     setBusy(true);
     setError(null);
+    setUnclear(false);
     let finishSent = false;
     try {
       // Only the proof sent with the right code starts it (409 otherwise).
@@ -202,7 +208,13 @@ export const WebPasskeyStep: Component<PcSetupStepProps> = (props) => {
       const finish = finishPcSetupPasskey(id, start.ceremony_id, credential, defaultPasskeyLabel(), props.proofs.get(id));
       finishSent = true;
       props.onFinish(id, "sent");
-      await finish;
+      const stored = await finish;
+      // Only the server's own answer (a 201 with the passkey's id) says the
+      // passkey exists; any other success leaves it to the poll.
+      if (!stored || typeof stored.id !== "string") {
+        setUnclear(true);
+        return;
+      }
       // The passkey exists: say so even if the step was left meanwhile (the
       // dialog drops it for another attempt or after a server-reported end).
       props.onState(id, { state: "completed", reason: null });
@@ -227,7 +239,7 @@ export const WebPasskeyStep: Component<PcSetupStepProps> = (props) => {
   // other page of the session (another tab, a reload) says where it happens.
   return (
     <Show
-      when={props.proofs.has(props.attemptId)}
+      when={props.proofs.has(props.attemptId) && props.accepted.has(props.attemptId)}
       fallback={<p role="status">{t("pcSetup.otherPageFinishing")}</p>}
     >
       <div class="space-y-3">
@@ -235,6 +247,9 @@ export const WebPasskeyStep: Component<PcSetupStepProps> = (props) => {
         <LinuxPasskeyHint class="text-sm text-text-secondary" />
         <Show when={busy()}>
           <p role="status" class="text-sm text-text-secondary">{t("pcSetup.registering")}</p>
+        </Show>
+        <Show when={unclear()}>
+          <p role="status" class="text-sm text-text-secondary">{t("pcSetup.finishUnclear")}</p>
         </Show>
         <Show when={error()}>
           <p role="alert" class="text-sm text-text-primary">{error()}</p>
@@ -264,11 +279,27 @@ const KNOWN_ENDS = ["completed", "refused", "reported", "failed", "cancelled", "
 const KNOWN_STATES: readonly string[] = [...LIVE_PC_SETUP_STATES, ...KNOWN_ENDS];
 
 /**
- * A replaced attempt whose end is not known yet, by session id. It outlives
- * the dialog (closed after a failed restart, or while the read was open) but
- * not a page reload, and it is read before a new or resumed code is shown.
+ * What the page knows about its own attempts, by session id: in memory for
+ * the page's lifetime (never in storage), so it outlives the dialog but not
+ * a reload.
  */
-const unresolvedEnds = new Map<string, string>();
+interface PageMemory {
+  /** A replaced or left attempt whose end is not known yet: read before a new or resumed code. */
+  unresolved: string | null;
+  /** Per attempt: finish requests sent, and how many the server refused beyond doubt. */
+  finishes: Map<string, { sent: number; refused: number }>;
+  /** Attempts whose proof the server may have stored (see `PcSetupStepProps.accepted`). */
+  accepted: Set<string>;
+}
+const pageMemory = new Map<string, PageMemory>();
+function memoryOf(sessionKey: string): PageMemory {
+  let m = pageMemory.get(sessionKey);
+  if (!m) {
+    m = { unresolved: null, finishes: new Map(), accepted: new Set() };
+    pageMemory.set(sessionKey, m);
+  }
+  return m;
+}
 
 /** Reasons the client knows (C27, plus its own `gone` and `poll_refused`). */
 const KNOWN_REASONS = [
@@ -357,26 +388,30 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
   /** Reading the replaced attempt's end after a restart. */
   const [checking, setChecking] = createSignal(false);
   const [checkFailed, setCheckFailed] = createSignal(false);
-  /** The proofs sent with a code from this dialog, by attempt id. */
+  /** The proofs sent with a code from this dialog, by attempt id (the values). */
   const proofs = new Map<string, string>();
+  /** The session this dialog belongs to, and what the page knows about its attempts. */
+  const sessionKey = sessionInfo()?.id ?? "";
+  const memory = memoryOf(sessionKey);
+  /** Bumped when the page's record of its finishes changes (it is not reactive itself). */
+  const [finishTick, setFinishTick] = createSignal(0);
+  const onFinish = (attemptId: string, phase: FinishPhase) => {
+    const cur = memory.finishes.get(attemptId) ?? { sent: 0, refused: 0 };
+    memory.finishes.set(
+      attemptId,
+      phase === "sent" ? { ...cur, sent: cur.sent + 1 } : { ...cur, refused: cur.refused + 1 },
+    );
+    setFinishTick((n) => n + 1);
+  };
   /**
-   * This dialog's finish requests by attempt id: how many were sent and how
-   * many of them the server refused beyond doubt.
-   */
-  const [own, setOwn] = createSignal<Record<string, { sent: number; refused: number }>>({});
-  const onFinish = (attemptId: string, phase: FinishPhase) =>
-    setOwn((o) => {
-      const cur = o[attemptId] ?? { sent: 0, refused: 0 };
-      return { ...o, [attemptId]: phase === "sent" ? { ...cur, sent: cur.sent + 1 } : { ...cur, refused: cur.refused + 1 } };
-    });
-  /**
-   * `completed` of this attempt is this dialog's passkey (always so on the
+   * `completed` of this attempt is this page's passkey (always so on the
    * desktop): a finish it sent was not refused beyond doubt, whatever reason
    * the status carries.
    */
   const registeredHere = (attemptId: string): boolean => {
+    finishTick();
     if (!platform().registersHere) return true;
-    const f = own()[attemptId];
+    const f = memory.finishes.get(attemptId);
     return !!f && f.sent > f.refused;
   };
   /** Bumped by every start, restart and the unmount: older loops and answers stop. */
@@ -476,13 +511,27 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
    * The attempt a restart created (or the one resumed after it), held back
    * until the replaced attempt's end is read.
    */
-  let pending: { mine: number; oldId: string; started: { attempt_id: string; qr_payload: string } } | null = null;
-  /** The session this dialog belongs to: the key of its unresolved end. */
-  const sessionKey = sessionInfo()?.id ?? "";
-  const unresolved = (): string | null => unresolvedEnds.get(sessionKey) ?? null;
+  let pending: {
+    mine: number;
+    oldId: string;
+    started: { attempt_id: string; qr_payload: string };
+    /** A resumed attempt (any live state), shown as it is after the read. */
+    resumed?: PcSetupStatus;
+  } | null = null;
+  const unresolved = (): string | null => memory.unresolved;
   const setUnresolved = (id: string | null) => {
-    if (id) unresolvedEnds.set(sessionKey, id);
-    else unresolvedEnds.delete(sessionKey);
+    memory.unresolved = id;
+  };
+
+  /** One read of attempt `id`: its status if the answer is about it in a known state, else null. */
+  const readOld = async (id: string): Promise<PcSetupStatus | null> => {
+    // The contract's "no such attempt" is a known end: it no longer exists.
+    const read = await pollPcSetup(id, 0).catch((err: unknown) =>
+      err instanceof HttpError && err.status === 404 && codeIs(err.code, "APPROVAL_NOT_FOUND")
+        ? ({ attempt_id: id, state: "expired", reason: "gone" } satisfies PcSetupStatus)
+        : null,
+    );
+    return read && read.attempt_id === id && KNOWN_STATES.includes(read.state) ? read : null;
   };
 
   const showStarted = (mine: number, started: { attempt_id: string; qr_payload: string }) => {
@@ -509,14 +558,8 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
     setChecking(true);
     let old: PcSetupStatus | null = null;
     for (let i = 0; i < FINISH_READS; i++) {
-      // The contract's "no such attempt" is a known end: it no longer exists.
-      const read = await pollPcSetup(p.oldId, 0).catch((err: unknown) =>
-        err instanceof HttpError && err.status === 404 && codeIs(err.code, "APPROVAL_NOT_FOUND")
-          ? ({ attempt_id: p.oldId, state: "expired", reason: "gone" } satisfies PcSetupStatus)
-          : null,
-      );
+      old = await readOld(p.oldId);
       if (pending !== p || p.mine !== generation) return;
-      old = read && read.attempt_id === p.oldId && KNOWN_STATES.includes(read.state) ? read : null;
       if (old) break;
       if (i + 1 < FINISH_READS) await sleep(FINISH_READ_GAP_MS * 2 ** i);
       if (pending !== p || p.mine !== generation) return;
@@ -532,6 +575,12 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
       void cancelPcSetup(p.started.attempt_id).catch(() => undefined);
       setStarting(false);
       setStatus({ ...old, attempt_id: p.oldId });
+      return;
+    }
+    if (p.resumed) {
+      apply(p.resumed);
+      setStarting(false);
+      void pollLoop(p.mine);
       return;
     }
     showStarted(p.mine, p.started);
@@ -574,8 +623,20 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
       }
       showStarted(mine, started);
     } catch (err) {
-      // The replaced attempt's end stays unknown until a later start reads it.
       if (mine !== generation) return;
+      // The attempt this start wanted to replace is read first: an end it
+      // already has (a passkey that exists above all) is shown instead of the
+      // start's failure. Otherwise its end stays unknown for a later start.
+      if (unknownEnd) {
+        const old = await readOld(unknownEnd);
+        if (mine !== generation) return;
+        if (old && !isLive(old)) {
+          if (unresolved() === unknownEnd) setUnresolved(null);
+          setStarting(false);
+          setStatus(old);
+          return;
+        }
+      }
       setStarting(false);
       setStartError(
         errorText(err, "pcSetup.startFailed", { PC_SETUP_UNAVAILABLE: "pcSetup.unavailable" }),
@@ -600,10 +661,15 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
       }
       const old = unresolved();
       if (old === res.attempt_id) setUnresolved(null);
-      else if (old && res.state === "waiting") {
-        // A replacement whose QR code was never shown: the replaced
-        // attempt's end is read first.
-        pending = { mine, oldId: old, started: { attempt_id: res.attempt_id, qr_payload: res.qr_payload ?? "" } };
+      else if (old && isLive(res)) {
+        // A replacement, in whatever live state: the replaced attempt's end
+        // is read before it is shown.
+        pending = {
+          mine,
+          oldId: old,
+          started: { attempt_id: res.attempt_id, qr_payload: res.qr_payload ?? "" },
+          resumed: res,
+        };
         await resolvePrevious();
         return;
       }
@@ -635,7 +701,12 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
     }
     pending = null;
     const s = status();
-    if (s && isLive(s)) void cancelPcSetup(s.attempt_id).catch(() => undefined);
+    if (s && isLive(s)) {
+      // A finish this page sent may still have stored a passkey: that end is
+      // read before any new code.
+      if ((memory.finishes.get(s.attempt_id)?.sent ?? 0) > 0) setUnresolved(s.attempt_id);
+      void cancelPcSetup(s.attempt_id).catch(() => undefined);
+    }
   });
 
   const signInWithPasskey = async () => {
@@ -722,6 +793,7 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
                 attemptId={s().attempt_id}
                 onState={patch}
                 proofs={proofs}
+                accepted={memory.accepted}
                 onFinish={onFinish}
               />
             </Match>
@@ -731,6 +803,7 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
                 attemptId={s().attempt_id}
                 onState={patch}
                 proofs={proofs}
+                accepted={memory.accepted}
                 onFinish={onFinish}
               />
             </Match>

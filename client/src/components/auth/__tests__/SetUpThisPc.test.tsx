@@ -334,7 +334,7 @@ describe("code and passkey on the web", () => {
     pc.enterPcSetupCode.mockResolvedValue({ state: "enrolled", enrollment_id: "e1" });
     pc.startPcSetupPasskey.mockResolvedValue({ ceremony_id: "c1", options: { publicKey: { challenge: "x" } } });
     createPasskeyCredential.mockResolvedValue({ id: "cred" });
-    pc.finishPcSetupPasskey.mockResolvedValue({});
+    pc.finishPcSetupPasskey.mockResolvedValue({ id: "p1" });
     replaceSessionWithPasskey.mockResolvedValue({});
     await typeCode("123456");
     fireEvent.click(await screen.findByRole("button", { name: "Create a passkey" }));
@@ -438,7 +438,7 @@ describe("the page that typed the code registers the passkey", () => {
     });
     pc.finishPcSetupPasskey.mockImplementation(async () => {
       finished++;
-      return {};
+      return { id: "p1" };
     });
     createPasskeyCredential.mockResolvedValue({ id: "cred" });
     polls();
@@ -647,7 +647,7 @@ describe("answers belong to their attempt", () => {
       .mockImplementation(never);
     pc.startPcSetupPasskey.mockResolvedValue({ ceremony_id: "c1", options: {} });
     createPasskeyCredential.mockResolvedValue({});
-    pc.finishPcSetupPasskey.mockResolvedValue({});
+    pc.finishPcSetupPasskey.mockResolvedValue({ id: "p1" });
     render(() => <SetUpThisPc onClose={vi.fn()} />);
     await typeTheRightCode();
     const create = await screen.findByRole("button", { name: "Create a passkey" });
@@ -870,7 +870,7 @@ describe("an end is final", () => {
       .mockImplementation(never);
     pc.startPcSetupPasskey.mockResolvedValue({ ceremony_id: "c1", options: {} });
     createPasskeyCredential.mockResolvedValue({});
-    pc.finishPcSetupPasskey.mockResolvedValue({});
+    pc.finishPcSetupPasskey.mockResolvedValue({ id: "p1" });
     render(() => <SetUpThisPc onClose={vi.fn()} />);
     await typeTheRightCode();
     const create = await screen.findByRole("button", { name: "Create a passkey" });
@@ -977,7 +977,7 @@ describe("an end the client made up gives way to the server's", () => {
     let credential: (v: unknown) => void = () => undefined;
     pc.startPcSetupPasskey.mockResolvedValue({ ceremony_id: "c1", options: {} });
     createPasskeyCredential.mockImplementation(() => new Promise((r) => (credential = r)));
-    pc.finishPcSetupPasskey.mockResolvedValue({});
+    pc.finishPcSetupPasskey.mockResolvedValue({ id: "p1" });
     render(() => <SetUpThisPc onClose={vi.fn()} />);
     await typeTheRightCode();
     const create = await screen.findByRole("button", { name: "Create a passkey" });
@@ -1045,16 +1045,14 @@ describe("a new code only once the earlier attempt's end is known", () => {
     expect(await screen.findByRole("img", QR)).toBeTruthy();
   });
 
-  it("a failed start after Start again from enrolled still reads the old attempt before the next code", async () => {
+  it("a failed start after Start again from enrolled reads the old attempt and shows its end", async () => {
     oldReads("code", null, () => Promise.resolve(status("completed")));
     render(() => <SetUpThisPc onClose={vi.fn()} />);
     await typeTheRightCode();
     pc.startPcSetup.mockRejectedValueOnce(new Error("offline"));
     fireEvent.click(screen.getByRole("button", { name: "Start again" }));
-    await screen.findByText("Setting up this computer did not start. Please try again.");
-    pc.startPcSetup.mockResolvedValueOnce({ attempt_id: NEW, qr_payload: "kaiku://pcsetup/v1?o=x&t=z", rotates_at: "" });
-    fireEvent.click(screen.getByRole("button", { name: "Start again" }));
     expect(await screen.findByText(/A passkey was set up for this account from another page/)).toBeTruthy();
+    expect(screen.queryByText("Setting up this computer did not start. Please try again.")).toBeNull();
     expect(screen.queryByText(READY)).toBeNull();
     expect(pc.pollPcSetup).toHaveBeenCalledWith(ID, 0);
   });
@@ -1134,7 +1132,12 @@ describe("a new code only once the earlier attempt's end is known, whatever the 
     pc.startPcSetup.mockResolvedValue({ attempt_id: NEW, qr_payload: "kaiku://pcsetup/v1?o=x&t=z", rotates_at: "" });
 
   it("a dialog reopened after a failed restart reads the earlier attempt before it shows the resumed code", async () => {
-    oldReads("code", () => Promise.resolve(status("completed")));
+    // The read right after the failed start fails too; a later one answers.
+    let reads = 0;
+    oldReads("code", () => {
+      reads += 1;
+      return reads === 1 ? Promise.reject(new Error("offline")) : Promise.resolve(status("completed"));
+    });
     render(() => <SetUpThisPc onClose={vi.fn()} />);
     await typeTheRightCode();
     // The restart's answer is lost: the server made NEW and ended the old one.
@@ -1208,7 +1211,7 @@ describe("only the server's own not-found ends an attempt", () => {
     let credential: (v: unknown) => void = () => undefined;
     pc.startPcSetupPasskey.mockResolvedValue({ ceremony_id: "c1", options: {} });
     createPasskeyCredential.mockImplementation(() => new Promise((r) => (credential = r)));
-    pc.finishPcSetupPasskey.mockResolvedValue({});
+    pc.finishPcSetupPasskey.mockResolvedValue({ id: "p1" });
     render(() => <SetUpThisPc onClose={vi.fn()} />);
     await typeTheRightCode();
     const create = await screen.findByRole("button", { name: "Create a passkey" });
@@ -1515,5 +1518,161 @@ describe("a registration counts as this page's own once its finish was sent", ()
     fireEvent.click(await screen.findByRole("button", { name: "Create a passkey" }, { timeout: 3_000 }));
     await waitFor(() => expect(pc.startPcSetupPasskey).toHaveBeenCalled());
     expect(pc.startPcSetupPasskey).toHaveBeenCalledWith(ID, pc.enterPcSetupCode.mock.calls[0][2]);
+  });
+});
+
+describe("what the page knows about its own attempts outlives the dialog", () => {
+  const NEW = "00000000-0000-4000-8000-000000000002";
+  const NEWER = "00000000-0000-4000-8000-000000000003";
+  const QR = { name: "Code to scan with the Kaiku app on your phone" };
+  const OTHER_PAGE = /A passkey was set up for this account from another page/;
+  const FINISHING = /This setup is being finished in the page where the code was typed/;
+  const SIGN_IN = { name: "Sign in with your passkey" };
+  const started = (id: string) => ({ attempt_id: id, qr_payload: "kaiku://pcsetup/v1?o=x&t=z", rotates_at: "" });
+
+  /** First poll `code`; reads of the old attempt (wait 0) answered by `old()`; anything else hangs. */
+  function polling(old: () => Promise<unknown>) {
+    let first = true;
+    pc.pollPcSetup.mockReset();
+    pc.pollPcSetup.mockImplementation((id: string, wait: number) => {
+      if (first) {
+        first = false;
+        return Promise.resolve(status("code"));
+      }
+      if (id === ID && wait === 0) return old();
+      return never();
+    });
+  }
+
+  async function typeAndCreate() {
+    pc.enterPcSetupCode.mockResolvedValue({ state: "enrolled", enrollment_id: "e1" });
+    fireEvent.input(await screen.findByLabelText("Code from your phone"), { target: { value: "123456" } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Create a passkey" }));
+    await waitFor(() => expect(pc.finishPcSetupPasskey).toHaveBeenCalled());
+  }
+
+  beforeEach(() => {
+    pc.startPcSetupPasskey.mockResolvedValue({ ceremony_id: "c1", options: {} });
+    createPasskeyCredential.mockResolvedValue({ id: "cred" });
+  });
+
+  it("a finish sent before the dialog was closed during the read still counts as this page's", async () => {
+    let old: () => Promise<unknown> = never;
+    polling(() => old());
+    pc.finishPcSetupPasskey.mockRejectedValue(new TypeError("Failed to fetch"));
+    render(() => <SetUpThisPc onClose={vi.fn()} />);
+    await typeAndCreate();
+    pc.startPcSetup.mockResolvedValue(started(NEW));
+    fireEvent.click(await screen.findByRole("button", { name: "Start again" }));
+    await screen.findByText("Checking the earlier setup\u2026");
+    cleanup();
+    // Opened again: the old attempt is read, and the passkey is this page's.
+    old = () => Promise.resolve(status("completed"));
+    pc.startPcSetup.mockResolvedValue(started(NEWER));
+    render(() => <SetUpThisPc onClose={vi.fn()} />);
+    expect(await screen.findByText(READY)).toBeTruthy();
+    expect(screen.queryByText(OTHER_PAGE)).toBeNull();
+  });
+
+  it("a dialog closed after its finish was sent reads that attempt before any new code", async () => {
+    let old: () => Promise<unknown> = never;
+    polling(() => old());
+    pc.finishPcSetupPasskey.mockRejectedValue(new TypeError("Failed to fetch"));
+    render(() => <SetUpThisPc onClose={vi.fn()} />);
+    await typeAndCreate();
+    await screen.findByText("Can't reach the server. Check your connection.");
+    cleanup();
+    old = () => Promise.resolve(status("completed"));
+    pc.startPcSetup.mockResolvedValue(started(NEW));
+    render(() => <SetUpThisPc onClose={vi.fn()} />);
+    expect(await screen.findByText(READY)).toBeTruthy();
+    expect(screen.queryByRole("img", QR)).toBeNull();
+    expect(pc.pollPcSetup).toHaveBeenCalledWith(ID, 0);
+  });
+
+  it("after a wrong code the page does not count its proof as accepted", async () => {
+    polls(status("code"), status("enrolled"));
+    render(() => <SetUpThisPc onClose={vi.fn()} />);
+    pc.enterPcSetupCode.mockResolvedValue({ state: "code", tries_left: 2 });
+    fireEvent.input(await screen.findByLabelText("Code from your phone"), { target: { value: "111111" } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    await screen.findByText("That code is wrong. 2 tries left.");
+    expect(await screen.findByText(FINISHING, {}, { timeout: 3_000 })).toBeTruthy();
+    expect(screen.queryByText("The code was right. Now create a passkey on this computer.")).toBeNull();
+  });
+
+  it("a failed start reads the attempt it wanted to replace and reports its passkey", async () => {
+    polling(() => Promise.resolve(status("completed")));
+    pc.finishPcSetupPasskey.mockImplementation(never);
+    render(() => <SetUpThisPc onClose={vi.fn()} />);
+    await typeAndCreate();
+    pc.startPcSetup.mockRejectedValue(http("TOO_MANY_ATTEMPTS", 429));
+    fireEvent.click(screen.getByRole("button", { name: "Start again" }));
+    expect(await screen.findByText(READY)).toBeTruthy();
+    expect(screen.getByRole("button", SIGN_IN)).toBeTruthy();
+    expect(screen.queryByText(/did not start/)).toBeNull();
+    expect(pc.pollPcSetup).toHaveBeenCalledWith(ID, 0);
+  });
+
+  it("a resumed replacement in any live state waits for the read of the earlier attempt", async () => {
+    let reads = 0;
+    pc.pollPcSetup.mockReset();
+    let first = true;
+    pc.pollPcSetup.mockImplementation((id: string, wait: number) => {
+      if (first) {
+        first = false;
+        return Promise.resolve(status("claimed"));
+      }
+      if (id === ID && wait === 0) {
+        reads += 1;
+        // Still live while the start's answer is lost; completed later.
+        return Promise.resolve(reads === 1 ? status("claimed") : status("completed"));
+      }
+      return never();
+    });
+    render(() => <SetUpThisPc onClose={vi.fn()} />);
+    await screen.findByText(/Confirm on your phone to continue/);
+    pc.startPcSetup.mockRejectedValue(new TypeError("Failed to fetch"));
+    fireEvent.click(screen.getByRole("button", { name: "Start again" }));
+    await screen.findByText("Can't reach the server. Check your connection.");
+    cleanup();
+    // Opened again: the session's live attempt is the replacement, already `claimed`.
+    pc.currentPcSetup.mockResolvedValue({ ...status("claimed"), attempt_id: NEW });
+    render(() => <SetUpThisPc onClose={vi.fn()} />);
+    expect(await screen.findByRole("button", SIGN_IN)).toBeTruthy();
+    expect(reads).toBe(2);
+    expect(screen.queryByText(/Confirm on your phone to continue/)).toBeNull();
+    await waitFor(() => expect(pc.cancelPcSetup).toHaveBeenCalledWith(NEW));
+  });
+
+  for (const [what, answer] of [
+    ["an empty answer", null],
+    ["an answer without the passkey's id", {}],
+  ] as const) {
+    it(`a finish with ${what} is not a ready passkey; the poll decides`, async () => {
+      let later: (v: unknown) => void = () => undefined;
+      pc.pollPcSetup.mockReset();
+      pc.pollPcSetup
+        .mockResolvedValueOnce(status("code"))
+        .mockImplementationOnce(() => new Promise((r) => (later = r)))
+        .mockImplementation(never);
+      pc.finishPcSetupPasskey.mockResolvedValue(answer);
+      render(() => <SetUpThisPc onClose={vi.fn()} />);
+      await typeAndCreate();
+      expect(await screen.findByText("Checking whether the passkey was stored\u2026")).toBeTruthy();
+      expect(screen.queryByText(READY)).toBeNull();
+      await waitFor(() => expect(pc.pollPcSetup).toHaveBeenCalledTimes(2), { timeout: 2_000 });
+      later(status("completed"));
+      expect(await screen.findByText(READY)).toBeTruthy();
+    });
+  }
+
+  it("a code request that is redirected shows the request's failure text", async () => {
+    await openAt("code");
+    pc.enterPcSetupCode.mockRejectedValue(new TypeError("Failed to fetch"));
+    fireEvent.input(await screen.findByLabelText("Code from your phone"), { target: { value: "123456" } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    expect(await screen.findByText("Can't reach the server. Check your connection.")).toBeTruthy();
   });
 });

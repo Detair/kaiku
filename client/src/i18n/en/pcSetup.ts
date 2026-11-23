@@ -14,6 +14,7 @@ export const pcSetup = {
   "pcSetup.registerIntro": "The code was right. Now create a passkey on this computer.",
   "pcSetup.register": "Create a passkey",
   "pcSetup.registering": "Follow the prompt of your browser or security key\u2026",
+  "pcSetup.finishUnclear": "Checking whether the passkey was stored\u2026",
   "pcSetup.registerFailed": "The passkey could not be created. Please try again.",
   "pcSetup.completed": "Your passkey is ready. Sign in with it to get full access on this computer.",
   "pcSetup.signIn": "Sign in with your passkey",
