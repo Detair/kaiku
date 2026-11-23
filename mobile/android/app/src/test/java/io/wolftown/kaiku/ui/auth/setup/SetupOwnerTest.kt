@@ -73,6 +73,8 @@ class SetupOwnerTest {
     private val approval = FakeApprovalApi()
     /** The install id the app has now. */
     private var appInstallId = SigFixtures.DEVICE_ID
+    /** The app's install id cannot be stored (a full disk): asking for it fails, as the real store does. */
+    private var installIdNotStored = false
     private val probe = KeyDeviceProbe(approval) { appInstallId }
     private val base: Instant = Instant.parse("2026-11-20T09:00:00Z")
     /** The phone's running time; [now] moves it and the phone's clock together (the tests speak in clock times). */
@@ -114,7 +116,7 @@ class SetupOwnerTest {
     /** A setup owner on the phone [f]: the app as it runs now, or (a second one) after a restart. */
     private fun owner(f: KeyDeviceFixture): SetupOwner =
         setupOwner(
-            enroll.api, f.repo, f.signer, deviceSignIn, probe, env, clock = { now }, boot = boot, installId = { appInstallId },
+            enroll.api, f.repo, f.signer, deviceSignIn, probe, env, clock = { now }, boot = boot, installId = { check(!installIdNotStored) { "push device id not stored" }; appInstallId },
             scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.Main.immediate).also { ownerScopes += it },
         )
 
@@ -1724,5 +1726,25 @@ class SetupOwnerTest {
         assertEquals(SetupUi.Ended(R.string.confirm_install_unknown, canRetry = false), waiting.ui.value)
         assertTrue(approval.calls.isEmpty())
         assertTrue(f.keyStore.hasKey())
+    }
+
+    /** The install id cannot be stored: the setup says so and offers to try again; it neither crashes nor claims anything. */
+    @Test fun `a setup whose install id cannot be stored says so and starts on try again`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        val (owner, f) = phone()
+        val v = SetupFlowViewModel(owner)
+        installIdNotStored = true
+        v.start(entry)
+        assertEquals(SetupUi.Ended(R.string.security_key_storage_unreadable, canRetry = true), v.ui.value)
+        assertTrue(enroll.calls.isEmpty())
+        assertNull(f.repo.record.value)
+        // Still not stored: the same again.
+        v.retry()
+        assertEquals(SetupUi.Ended(R.string.security_key_storage_unreadable, canRetry = true), v.ui.value)
+        // Stored now: the same link starts.
+        installIdNotStored = false
+        v.retry()
+        assertTrue(v.ui.value is SetupUi.ConfirmSubject)
+        assertEquals(listOf(token), enroll.openTokens)
     }
 }

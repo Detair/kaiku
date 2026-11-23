@@ -272,6 +272,8 @@ class SetupOwner internal constructor(
      * is given up ([PendingSetupLinks]), and dropped if the claim finishes after all.
      */
     private var keptLink: SetupEntry? = null
+    /** A link that could not start because the install id could not be stored; "Try again" starts it. */
+    private var withoutInstallId: SetupEntry? = null
     /** The stored unfinished setup whose server could not be asked just now (see [discard]). */
     private var stuckOn: StoredKeyDevice? = null
     private var running: Step? = null
@@ -390,6 +392,7 @@ class SetupOwner internal constructor(
     private fun idle() {
         stop()
         attempt = null
+        withoutInstallId = null
         // The link of a claim without an answer is kept only while that claim is the stored record.
         if (claimKeeper?.rec?.let { it.phase == KeyDevicePhase.CLAIMING && it sameAs keyDevices.record.value } != true) claimKeeper = null
         nextLink = null
@@ -555,7 +558,19 @@ class SetupOwner internal constructor(
         }
         abandonUnclaimed()
         nextLink = null
-        val a = Attempt(e, o, deviceIds.id())
+        val installId = try {
+            deviceIds.id()
+        } catch (x: Exception) {
+            // The install id cannot be stored now: nothing starts under an id the phone may not
+            // keep. "Try again" starts this link once it can.
+            logger.warning("Install id not stored: ${x.javaClass.simpleName}")
+            attempt = null
+            withoutInstallId = e
+            _ui.value = SetupUi.Ended(R.string.security_key_storage_unreadable, canRetry = true)
+            return
+        }
+        withoutInstallId = null
+        val a = Attempt(e, o, installId)
         attempt = a
         _waiting.value = false
         _linkIgnored.value = false
@@ -747,7 +762,7 @@ class SetupOwner internal constructor(
                 stop()
                 resumeClaim(claim)
             }
-            else -> attempt?.entry?.let(::start)
+            else -> (attempt?.entry ?: withoutInstallId)?.let(::start)
         }
     }
 

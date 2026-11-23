@@ -57,4 +57,24 @@ class DeviceIdStoreTest {
         assertEquals(stored, DeviceIdStore(context).id())
         verify(exactly = 0) { editor.commit() }
     }
+
+    /**
+     * A full disk: Android keeps the id of a failed commit in memory. It is not handed out, not
+     * even as the kept one, until a commit of it succeeded; then it is the id for good.
+     */
+    @Test
+    fun `an id whose write failed is not handed out until a write succeeds`() {
+        val disk = io.wolftown.kaiku.testutil.InMemorySharedPreferences()
+        val ctx: Context = mockk { every { getSharedPreferences("push_prefs", Context.MODE_PRIVATE) } returns disk }
+        val store = DeviceIdStore(ctx)
+        disk.failingCommits = 2
+        assertEquals(true, runCatching { store.id() }.isFailure)
+        assertEquals(true, runCatching { store.id() }.isFailure)
+        assertEquals(null, store.storedId())
+        val id = store.id()
+        assertEquals(id, store.storedId())
+        // What was handed out is on the disk.
+        disk.restart()
+        assertEquals(id, DeviceIdStore(ctx).storedId())
+    }
 }
