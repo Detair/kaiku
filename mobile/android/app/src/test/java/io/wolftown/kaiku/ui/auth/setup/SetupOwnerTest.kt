@@ -1747,4 +1747,23 @@ class SetupOwnerTest {
         assertTrue(v.ui.value is SetupUi.ConfirmSubject)
         assertEquals(listOf(token), enroll.openTokens)
     }
+
+    /**
+     * The claim check is answered with a challenge that only repeats the claim's own: it proves
+     * nothing about the claim, but it is an answer of the server, so nothing is noted against it.
+     */
+    @Test fun `a challenge that repeats the claim's own still counts as an answer of the server`() = runTest {
+        val (v, f, _) = lostClaim()
+        enroll.popFailure = IOException("offline")
+        v.retry()
+        runCurrent()
+        assertEquals(1, f.repo.record.value!!.unanswered!!.occasions)
+        enroll.popFailure = null
+        enroll.replayFirstChallenge = true
+        v.retry()
+        runCurrent()
+        assertEquals(SetupUi.Ended(R.string.setup_claim_unsure, canRetry = true), v.ui.value)
+        assertEquals(KeyDevicePhase.CLAIMING, f.repo.phase())
+        assertNull(f.repo.record.value!!.unanswered)
+    }
 }

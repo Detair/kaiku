@@ -1083,6 +1083,8 @@ class SetupOwner internal constructor(
             try {
                 val p = enrollmentApi.popChallenge(a.entry.tokenB64u, a.installId, b64u(k.spki), a.origin)
                 live(a)
+                // The server answered, whatever the answer proves.
+                heard(rec)
                 // Only a challenge of this very enrolment, for this very key, says the enrolment is
                 // still open; any other answer under that status proves nothing.
                 val thisEnrolment = try {
