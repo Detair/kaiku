@@ -10,6 +10,7 @@ pub mod devices;
 pub mod enrollments;
 pub mod error;
 pub mod handlers;
+pub mod pc_setup;
 pub mod secrets;
 pub mod signing;
 pub mod transition;
@@ -35,6 +36,60 @@ pub fn approvals_router(state: &AppState) -> Router<AppState> {
         .route("/{id}/release", post(handlers::release))
         .layer(from_fn_with_state(state.clone(), rate_limit_by_user))
         .layer(from_fn(with_category(RateLimitCategory::ApprovalLogin)))
+}
+
+/// `/api/pc-setups` (bearer, the scanning key device; `ApprovalLogin` per
+/// user): "Set up this PC" on the phone (SM5).
+pub fn pc_setups_router(state: &AppState) -> Router<AppState> {
+    let steps = Router::new()
+        .route("/claim", post(pc_setup::handlers::claim))
+        .route("/{id}/answer", post(pc_setup::handlers::answer))
+        .route("/{id}/refuse", post(pc_setup::handlers::refuse))
+        .layer(from_fn_with_state(state.clone(), rate_limit_by_user))
+        .layer(from_fn(with_category(RateLimitCategory::ApprovalLogin)));
+    steps.layer(from_fn(no_store))
+}
+
+/// `GET /api/pc-setups/{attempt_id}`, the phone's status poll.
+///
+/// Mounted beside the per-user `Write`-limited API routes (only behind the
+/// bearer check), in the per-user `Read` bucket, so neither of the phone's
+/// limits is used up by polling.
+pub fn pc_setup_phone_poll_router(state: &AppState) -> Router<AppState> {
+    pc_setup_poll_router(
+        state,
+        "/api/pc-setups/{id}",
+        get(pc_setup::handlers::phone_poll),
+    )
+    .layer(from_fn(no_store))
+}
+
+/// `Cache-Control: no-store`: these answers may carry a single-use secret
+/// (a "Set up this PC" QR token or code, an enrolment's setup data).
+async fn no_store(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let mut response = next.run(request).await;
+    response.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    response
+}
+
+/// A "Set up this PC" status poll in the per-user `Read` bucket: the two
+/// clients' polls never use up the `ApprovalLogin` requests the steps
+/// (scan, answer, code, passkey) need, however long the person takes.
+fn pc_setup_poll_router(
+    state: &AppState,
+    path: &str,
+    route: axum::routing::MethodRouter<AppState>,
+) -> Router<AppState> {
+    Router::new()
+        .route(path, route)
+        .layer(from_fn_with_state(state.clone(), rate_limit_by_user))
+        .layer(from_fn(with_category(RateLimitCategory::Read)))
 }
 
 /// `/api/approval-devices` (bearer).
@@ -101,8 +156,28 @@ pub fn flow_router(state: &AppState) -> Router<AppState> {
             "/enrollments/{id}/challenge",
             post(enrollments::handlers::issuer_challenge),
         )
+        // "Set up this PC" on the requesting probation session (SM5).
+        .route("/pc-setups", post(pc_setup::handlers::start))
+        .route("/pc-setups/current", get(pc_setup::handlers::current))
+        .route("/pc-setups/{id}", delete(pc_setup::handlers::cancel))
+        .route("/pc-setups/{id}/code", post(pc_setup::handlers::code))
+        .route(
+            "/pc-setups/{id}/passkey/start",
+            post(pc_setup::handlers::passkey_start),
+        )
+        .route(
+            "/pc-setups/{id}/passkey/finish",
+            post(pc_setup::handlers::passkey_finish),
+        )
         .layer(from_fn_with_state(state.clone(), rate_limit_by_user))
         .layer(from_fn(with_category(RateLimitCategory::ApprovalLogin)))
+        .merge(pc_setup_poll_router(
+            state,
+            "/pc-setups/{id}",
+            get(pc_setup::handlers::poll),
+        ))
+        // Enrolment and attempt answers carry single-use secrets.
+        .layer(from_fn(no_store))
         .layer(from_fn_with_state(state.clone(), crate::auth::require_auth));
     public.merge(bearer)
 }

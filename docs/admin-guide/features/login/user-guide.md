@@ -247,16 +247,47 @@ Adding a passkey needs a full sign-in, so the first one comes from your key phon
   confirm with your screen lock. The phone's password manager (for example Google Password Manager)
   stores it. If that password manager syncs, the passkey may also appear in the same account's
   browser on your PC.
-- **For a browser on your computer:** on the key phone, **Add a phone → Share link**, send the link
+- **For the computer you are sitting at:** click **Set up this PC** (see
+  [Set up this PC](#set-up-this-pc) below). This is the easiest way.
+- **For a browser on another computer:** on the key phone, **Add a phone → Share link**, send the link
   to yourself and open it in the browser on the computer. The page asks *Set up a passkey for <name>
   on <server>?*. Create the passkey; the browser then shows a 6-digit code. Type that code on your
   key phone. (This needs "May confirm sign-ins"; otherwise ask your admin for a setup link.)
 - **Later passkeys:** in a browser where you signed in with a passkey, **Settings → Security →
   Passkeys → Add a passkey**, confirmed with an existing passkey.
 
-The desktop app cannot add passkeys itself; it tells you to use the browser or the Android app.
-You can have up to 10 passkeys. Rename them so you know which is which; removing one asks for a
+The desktop app cannot add passkeys inside its own window; with **Set up this PC** it opens your
+browser for that step. You can have up to 10 passkeys. Rename them so you know which is which; removing one asks for a
 confirmation, and removing the one you are signed in with signs you out.
+
+### Set up this PC
+
+If you are signed in for chat only and your account has a key phone that may confirm sign-ins, the
+banner and the empty passkey list show **Set up this PC**. It gives this computer a passkey, so that
+you can sign in with it and get full access here.
+
+1. Click **Set up this PC**. The computer shows a QR code.
+2. On your phone, open the Kaiku app's scanner and scan it. The phone asks *Give this computer full
+   access to your account?* and shows which browser and system it is, and when it signed in. Read it.
+   Only continue if you started this yourself on the computer in front of you and nobody asked you to.
+3. Choose **Yes, continue** and confirm with your screen lock. The phone now shows a **6-digit code**.
+   Keep the app open: the code stays on the screen even if the phone locks, but it is lost if the app
+   is closed. If that happens, press **Start again** on the computer and scan again.
+4. Type the code on the computer. In a browser it goes into the page itself. In the desktop app,
+   Kaiku opens your browser (press **Open the browser**) and you type the code there. You have 5
+   minutes and three tries; after three wrong codes the attempt ends and both screens say so.
+5. Create the passkey when the browser asks, then sign in with it (**Sign in with your passkey**).
+
+**Never tell the code to anyone and never type it on a page someone sent you.** Nobody, not even
+your admin, will ask for it. If someone asked you to do this, choose **I didn't start this** on the
+phone: it asks first whether to end that computer's session, and then ends it.
+
+On the phone, **No** simply declines. On the computer, **Start again** is always available. If the
+phone says *This computer is signed in with a different account*, you scanned the code of another
+account; sign in on the phone with the same account. Afterwards you get a notice in chat that names
+the computer and the phone, with **That wasn't me** to undo it: that removes the passkey and ends the
+computer's session as well. Without a key phone that may confirm sign-ins, the button is missing; ask
+your admin (see *Getting your first passkey* above for the other ways).
 
 ### Android
 

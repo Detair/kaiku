@@ -1,6 +1,6 @@
 # Kaiku: phone-as-key login (v1.0) and simple Android app (v1.2)
 
-**Status:** Revision 5 — frozen for C26–C29 and implementation planning (2026-11-03); design reviews: Fable READY, Gemini Argon READY, Codex READY (fix applied and confirmed).
+**Status:** Revision 6 — revision 5 (frozen for C26–C29 and implementation planning, 2026-11-03; design reviewed) plus the amendments for "Set up this PC" (2026-11-08, F5e, SM5), which are marked **(rev 6)**. The design is in [2026-11-06-this-pc-setup-design.md](2026-11-06-this-pc-setup-design.md).
 
 First draft 2026-11-02. Revision 1 added the maintainer decisions, a standards check and the
 approvals model; revisions 2 and 3 resolved two rounds of three independent design reviews (Fable,
@@ -22,7 +22,7 @@ repudiation voids their own request. The appendices map every finding to its res
 
 **How to read this document:** the maintainer decisions bind. Coordinator calls (CC1–CC10) are
 binding for the builder unless the maintainer or a design review overturns them; rules changed in
-revisions 3 to 5 are marked **(rev 3)**, **(rev 4)** and **(rev 5)**. Items marked **(design call)** are
+revisions 3 to 6 are marked **(rev 3)**, **(rev 4)**, **(rev 5)** and **(rev 6)**. Items marked **(design call)** are
 choices made where neither the decisions nor the coordinator calls say anything; reviewers should
 challenge them first. The state machines in B.7 are normative: where prose and a state machine
 disagree, the state machine wins.
@@ -550,8 +550,9 @@ forks the core.
 | `device_login` | B.4 | the device, at the sign-in endpoint | the key device itself | empty | 2 min |
 | `device_stepup` | F7, B.2 rule table | the device's full session | the key device itself | empty | 2 min; the grant ≤5 min |
 | `enroll_pop` | SM2 claim | enrolment | the new device | empty | the setup token's lifetime |
+| `pc_setup` **(rev 6)** | F5e | the attempt (SM5) | the active key device that scanned, `may_approve` on | the PC's QR token (32 bytes, a payload type distinct from F2's) | 2 min from the scan; attempt ≤10 min |
 
-`login` and `enroll` are **approvals**: they need a transfer, and only they can be denied or
+`login`, `enroll` and `pc_setup` (rev 6) are **approvals**: they need a transfer, and only they can be denied or
 reported. The others are **proofs**. All v1.0 kinds use the `login` limit class. Every challenge
 completes within 10 minutes (NIST §3.1.3.2); delays (SM3) live in `account_requests`, never in
 `approvals`. Passkey ceremonies are WebAuthn, not part of this format.
@@ -562,6 +563,11 @@ completes within 10 minutes (NIST §3.1.3.2); delays (SM3) live in `account_requ
   (`POST /api/approvals/claim`). The server finds the attempt by the token's keyed hash, checks that
   the device is eligible, creates the challenge and returns the bytes to sign with the canonical
   context. A token that matches nothing creates nothing.
+- **`pc_setup` (rev 6):** the key device sends the token it scanned in the Kaiku scanner
+  (`POST /api/pc-setups/claim`; `POST /api/approvals/claim` stays F2-only). The server finds the
+  attempt by the token's keyed hash and refuses unless the attempt's account is the phone's account
+  (`PC_SETUP_OTHER_ACCOUNT`, no account name). The context comes from the stored session row, never
+  from the request that started the attempt. Approve returns the 6-digit code to the phone only.
 - **`enroll`:** after the new device has claimed (SM2), the issuing key device asks for the challenge
   of the enrolment open on its own screen. The server returns the bytes and the context, which name
   the new device's model and the hash of its public key. The user types the code the new device
@@ -594,7 +600,10 @@ user_id[16] ‖ device_id[16] ‖ context_hash[32] ‖ decision[1] ‖ lp(respon
     and model label, and for `admin` the claimant-check method;
   - `device_login`: the client class (the session is minted in the response to this challenge);
   - `device_stepup`: the `sid`, the action and the target hash;
-  - `enroll_pop`: enrolment id, the new public key and the attestation challenge (the nonce).
+  - `enroll_pop`: enrolment id, the new public key and the attestation challenge (the nonce);
+  - `pc_setup` **(rev 6)**: attempt id, the hash of the requesting session's id (`sid_hash` = SHA-256
+    over the 16 raw `sid` bytes; the phone never sees the `sid`, which authorises the PC's routes),
+    the client description, the session's `created_at` and the place.
 - The server sends the canonical context with the bytes. **The device recomputes `context_hash` from
   the fields it displays** and refuses on a mismatch, so the signature covers exactly what the
   phone showed (ASVS 6.6.2). The server rebuilds every input from its stored rows.
@@ -624,7 +633,7 @@ HMAC under a server key held outside the database, never in plain or as a plain 
 table would reverse a 6-digit code).
 
 - **`approvals`** (the challenges): `id`, `kind`, `variant`, `approver_id`, `subject_id`,
-  `device_id`, `requester_kind` (`login_attempt`|`enrollment`|`device`|`session`), `requester_id`,
+  `device_id`, `requester_kind` (`login_attempt`|`enrollment`|`device`|`session`|`pc_setup_attempt` (rev 6)), `requester_id`,
   `nonce`, `context_hash`, `display`, the keyed transfer hash, `state`, `created_at`, `expires_at`
   (CHECK ≤ `created_at` + 10 min), `decided_at`, `consumed_at`, `limit_class`; the kind CHECK lists
   the v1.0 kinds only.
@@ -668,6 +677,8 @@ table would reverse a 6-digit code).
 | **No** (deny) | context screen after a scan | the device that claimed the challenge (unsigned) | the challenge and its attempt end |
 | **I didn't start this** (report) | context screen after a scan | the claiming device, signed with UV | as deny, plus `reported`; F3: the password is marked compromised (B.1); OIDC: the user is told to change the IdP password; notice |
 | **That wasn't me** | a notice about a sign-in, a new authenticator or a step-up action | the owner action rule | ends the reported session or revokes the reported authenticator, and marks compromised the password and TOTP generations that produced it; a passkey or key device that *signed in* is revoked. An authenticator that only approved or authorised the event (a relayed QR, a dictated enrolment code, a step-up) is not revoked: its owner was deceived and the key is sound **(rev 4)**. Notice; admin copy |
+| **I didn't start this** on a "Set up this PC" approval **(rev 6)** | context screen after a scan (F5e) | the claiming device, signed with UV, `decision = report` | ends the attempt and the requesting session (and only that session); high-severity `pc_setup_reported`; **marks no credential**: the session may be days old, and a stolen session says nothing about the password (B.6.15) |
+| **That wasn't me** on a new passkey made by `pc_setup` **(rev 6)** | the notice | the owner action rule | revokes the passkey, ends its sessions **and the requesting session**, which is the suspect here, not a trusted issuer as in F5a; marks no credential. Via part 2 (password/TOTP/recovery factor) the passkey is kept, as part 2 never revokes an authenticator, but the requesting session still ends: a part-2 holder is not necessarily the owner, and the owner can revoke the passkey from the key phone |
 | **Cancel** | a `waiting` or `ready` account request | the owner action rule; the confirmed recovery contact from a full session with a step-up; any admin from a full session with a step-up, including the one who started it | SM3 cancel effects |
 
 **Owner action rule (rev 4).** "That wasn't me" and an owner's Cancel are accepted from:
@@ -936,6 +947,31 @@ password on an account without TOTP whose key devices have `may_approve` off has
 eligible key device or TOTP), and the set-password screen says so. The `auth_method = 'local'`
 constraint gets a relaxed rule or a new method (builder's choice).
 
+**F5e. Set up this PC (rev 6) → full, by a new passkey sign-in.** A person at a PC whose session is
+chat-only gets a passkey on that PC without finding a phone menu or moving a link. Design and
+error texts: [2026-11-06-this-pc-setup-design.md](2026-11-06-this-pc-setup-design.md). Rules:
+
+1. The probation banner and the empty passkey list offer **Set up this PC** (`can_set_up_this_pc` in
+   `GET /api/me/security`) when the session is probation and the account has an active key device
+   with `may_approve` on. The server refuses the start otherwise, so an attempt never waits for a
+   phone that does not exist.
+2. The PC shows a QR (payload `kaiku://pcsetup/v1`, rotating every 60 s, bound to the session's
+   `sid`; only the session itself can collect, another session gets 404). The key device scans it in
+   the Kaiku scanner; a foreign account gets its own answer without a name.
+3. The phone says what is granted, shows what the server stored about that session, and asks for the
+   screen lock (`pc_setup` approval, B.2). **No** ends the attempt. **I didn't start this** ends the
+   attempt and the requesting session and marks no credential.
+4. On approval the phone alone gets a 6-digit code (5 min, 3 tries, kept in memory while the app
+   lives). The code is typed where the passkey will be created: in the page on the web, in the
+   system browser on the desktop (a browser secret cookie is set by the right code; `options` and
+   `finish` refuse without it). Only the path the code took may register the passkey, and only a
+   desktop-class session starts a desktop flow.
+5. **There is no setup token.** Registration is bound to the requesting session (web) or to the
+   desktop flow's `redeem` (C29), which stores the passkey as `active` (SM2 variant `pc_setup`).
+6. The PC then signs in with the passkey (F1). The existing "new passkey" notice goes to all
+   addresses, names the PC and the approving phone, and carries "That wasn't me" (B.2).
+7. It works without push notifications; the PC and the phone poll, never more than once a second.
+
 #### F6. Recovery (was B6) → never weaker than sign-in
 
 Three ways, plus the host CLI, in order of preference (bootstrap is a kind of account request):
@@ -1087,7 +1123,9 @@ only. None has a key device.
 
 Probation cannot change sign-in methods (passkeys, key devices, TOTP, recovery codes, password), end
 other sessions or devices, deny or report approvals, act under part 1 of the owner rule, create
-setup codes, elevate as admin, approve anything or delete the account. A session's assurance never
+setup codes, elevate as admin, approve anything or delete the account. **(rev 6)** The one exception is
+"Set up this PC" (F5e): probation may start its attempt, enter its code and register the passkey it
+unlocks, and nothing else about it. "Create setup codes" stays forbidden: no setup code exists in that flow. A session's assurance never
 changes (rev 3); the probation banner offers "Sign in with a passkey", which runs F1 and replaces
 the probation session with a new full one. Two server guards enforce this, "full session" and
 "step-up grant for this action"; every route in F7's list uses both, except the owner rule's
@@ -1310,11 +1348,22 @@ these are the rules.
     rule-2 cascade; the repudiation screen warns first (B.6.6) **(rev 5)**.
 14. **Request-notice fatigue (rev 4):** a holder of request factors can start and withdraw
     requests, at most three notice threads per account per delay period (B.5).
+15. **"Set up this PC": the passkey goes to the session that showed the code (rev 6).** The passkey is
+    bound to the session that showed the QR code, and it gives full access (sign-in methods, other
+    sessions, on an admin account the admin panel). The server cannot tell where the person who types
+    the code is: it is not a proximity check. Before a passkey exists, the person at the phone must
+    confirm with the screen lock and type the code on the computer in front of them. Limits: the
+    code step (a scan alone creates nothing), the account match, `may_approve` off by default for family accounts (the
+    button needs it on), the phone's wording ("Only continue if you started this on a computer in
+    front of you, and nobody asked you to"), the notice to every address with "That wasn't me",
+    which also ends the requesting session, and at most 3 wrong codes per approval. A report marks
+    no password or TOTP compromised: a report never costs the owner their own password. Passkeys over
+    hybrid remain the only cross-device path with a proximity guarantee.
 
 ### B.7 State machines (normative)
 
 Each machine lists its states, the transitions, who may trigger each one, the timers and what a
-cancel does. Four rules apply to all of them (rev 4; C27 fixes them for the builder):
+cancel does. Four rules apply to all of them (rev 4; C27 fixes them for the builder; SM5 adds locking rules 5 to 10, rev 6):
 
 1. **One transaction per transition, serialised per account.** A transition locks, in one
    statement and in ascending id order, the `users` rows of every account it changes or takes
@@ -1329,7 +1378,8 @@ cancel does. Four rules apply to all of them (rev 4; C27 fixes them for the buil
    depend on each other share a lock, so the first to commit wins. Read-only events take no lock;
    refresh rotation locks only its `sessions` row (B.4).
 2. **Invalidation cascades**, each in the transaction of its cause:
-   - ending a session voids its step-up grants, its desktop flows and the enrolments it issued;
+   - ending a session voids its step-up grants, its desktop flows and the enrolments it issued
+     (rev 6: including a `pc_setup` enrolment; the attempt row itself stays out of the cascade, rule 5);
    - revoking an authenticator ends its sessions and voids its open challenges, the grants it
      produced, and the enrolments and `admin` requests it issued; demoting an admin voids the
      `admin` requests that admin started;
@@ -1378,6 +1428,7 @@ Variants and their preconditions:
 | `request` (F6, F8) | a `ready` account request | the request secret | the request client |
 | `registration` (F8) | a registration ticket | ticket ≤30 min old | the ticket client |
 | `cli` (F6) | the host CLI | root on the host | the CLI |
+| `pc_setup` (F5e, rev 6) | an SM5 attempt whose code was entered; records the approving device (its `approval_devices` id) and the requesting session | the attempt is `enrolled` | no code and no setup token, no claim: the table's only route is "registration on the issuing client itself" (web: the page; desktop: `redeem`); authenticator: passkey only, `active` |
 
 | From | Event | Who may trigger | To | Rules and timers |
 |---|---|---|---|---|
@@ -1480,6 +1531,48 @@ Key-device sessions:
 | `live`, `lapsed` | the device is revoked | SM4 parties | `ended` |
 
 Session assurance has no state machine: it is set at creation (B.4) and never changes.
+
+#### SM5. "Set up this PC" attempt (F5e, rev 6)
+
+| From | Event | Who may trigger | To | Rules |
+|---|---|---|---|---|
+| – | start | live probation session with an eligible key device | `waiting` | one live per session; a new start is a restart (rule 6); token rotates every 60 s while `waiting`; ≤10 min |
+| `waiting` | scan | eligible key device of the same account | `claimed` | creates the `pc_setup` challenge, TTL 2 min; rotation pauses; the signed token stays the scanned one |
+| `claimed` | release, or the challenge expires | that device, or server | `waiting` | the challenge is voided; as in SM1 |
+| `claimed` | approve | that device, with UV | `code` | challenge consumed in the same transaction; code 5 min; the code goes only to the device |
+| `claimed` | No | that device | `refused` | |
+| `claimed` | report | that device, with UV | `reported` | ends the requesting session |
+| `code` | right code | the requesting session (web), or its desktop flow's page | `enrolled` | enrolment `pc_setup` created in the same transaction |
+| `code` | third wrong code | the same | `failed` | `pc_setup_failed` |
+| `enrolled` | enrolment `done` | passkey finish (web) or desktop redeem, by the requesting session | `completed` | passkey `active` |
+| `enrolled` | enrolment cancelled or expired | the requesting session, or server | `cancelled` / `expired` | |
+| `waiting`, `claimed`, `code` | cancel or restart | the requesting session | `cancelled` | the phone says it was cancelled |
+| `waiting`, `claimed`, `code` | timer, or the session or device is no longer valid | server | `expired` | with a reason the PC can read |
+
+Every state except `waiting`, `claimed`, `code` and `enrolled` is terminal. Timers: the 10-minute bound
+covers `waiting` and `claimed`; the code's 5 minutes run from the approval and the enrolment's
+10 minutes from the right code, each on its own clock (B.2's 10-minute limit binds challenges, and the
+only challenge lives 2 minutes). Locking, normative, extending rules 1 to 4:
+
+5. Attempts stay out of the session-ending cascade. Logout and refresh hold a session row without the
+   account lock and keep touching only sessions, grants and enrolments, so a session end or a device
+   revocation leaves the attempt row as it is.
+6. Every attempt transition (scan, approve, report, code entry, cancel, restart, finish, redeem) takes
+   the account lock first, then re-checks that the requesting session is live and that the device is
+   active with `may_approve` on; if not, the attempt becomes `expired` with a reason the PC can read.
+   The minute sweep expires what no transition reaches. A stale attempt can never advance.
+7. Code entry, finish, redeem and restart lock account → requesting session row → attempt →
+   enrolment, and hold the session lock through commit. They must not use enrolment confirmation's
+   enrolment-then-session order, which would deadlock with logout.
+8. The enrolment rides both cascades: ending the session or revoking the device voids it in the
+   cause's transaction.
+9. A report's `end_sessions_tx` runs in the answer transaction under the account lock, after the
+   challenge and attempt locks. Session-ending paths without the account lock never touch attempts or
+   challenges, so no cycle forms.
+10. **Start again** runs under the account lock: it cancels the previous attempt and its `issued`
+    enrolment; open ceremonies and desktop flows are voided because finish and redeem re-lock the
+    attempt and the enrolment and refuse a cancelled one. Either the finish wins and the PC reports
+    completion, or the restart wins and the old finish fails.
 
 ## Part C: Security notices in chat (v1.0)
 
@@ -1647,7 +1740,9 @@ plans):
    elevation, F7). On Linux with Firefox that means a FIDO2 security key or Chromium chosen under
    "Browser for passkey sign-in"; otherwise these tasks are done in the Android app, which is always
    fully trusted. Acceptable? A key-device path for PCs would need a proximity check that Kaiku
-   does not have.
+   does not have. **Answer (rev 6):** admin work on a PC still needs a passkey. "Set up this PC" (F5e)
+   is a way to get one from the key phone, with a code typed on the PC as the replacement for the
+   missing proximity check, not an exception to the rule; its trust limit is B.6.15.
 6. **Release branch:** cut `release/1.0` at RC3 so v1.1/v1.2 can merge to main earlier, or keep
    them open until the v1.0 tag?
 

@@ -302,6 +302,18 @@ export async function isPasswordChangePending(): Promise<boolean> {
   return me?.password_change_required === true;
 }
 
+/**
+ * Whether the server's first-time setup is finished (public
+ * `GET /api/setup/status`). Sign-in answers carry it as `setup_required`; a
+ * restored session asks here. Rejects when the request fails.
+ */
+export async function isServerSetupComplete(): Promise<boolean> {
+  const status = await httpRequest<{ setup_complete?: unknown }>("GET", "/api/setup/status");
+  // Only a real yes or no counts; anything else is "could not check".
+  if (typeof status?.setup_complete !== "boolean") throw new Error("unreadable setup status");
+  return status.setup_complete;
+}
+
 export async function getCurrentUser(): Promise<SessionRestoreResult> {
   if (isTauri()) {
     return invokeNativeAuth((invoke) =>

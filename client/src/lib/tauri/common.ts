@@ -824,8 +824,26 @@ export async function httpRequest<T>(
   method: string,
   path: string,
   body?: unknown,
+  signal?: AbortSignal,
 ): Promise<T> {
-  return (await sendHttpRequest<T>(method, path, body, false)).data;
+  return (await sendHttpRequest<T>(method, path, body, false, { signal })).data;
+}
+
+/** Options of one request beyond its body. */
+export interface HttpRequestOptions {
+  signal?: AbortSignal;
+  /** `"error"`: a redirect fails the request instead of being followed. */
+  redirect?: RequestRedirect;
+}
+
+/** Like `httpRequestWithStatus`, with request options. */
+export async function httpRequestWith<T>(
+  method: string,
+  path: string,
+  body: unknown,
+  options: HttpRequestOptions,
+): Promise<{ data: T; status: number }> {
+  return sendHttpRequest<T>(method, path, body, false, options);
 }
 
 /** Like `httpRequest`, but also returns the HTTP status of the success response. */
@@ -842,7 +860,9 @@ async function sendHttpRequest<T>(
   path: string,
   body: unknown,
   isRetry: boolean,
+  options: HttpRequestOptions = {},
 ): Promise<{ data: T; status: number }> {
+  const { signal, redirect } = options;
   const { baseUrl, accessToken: token } = await getAuthContext();
 
   const headers: Record<string, string> = {};
@@ -866,6 +886,8 @@ async function sendHttpRequest<T>(
     method,
     headers,
     body: body ? JSON.stringify(body) : undefined,
+    ...(signal ? { signal } : {}),
+    ...(redirect ? { redirect } : {}),
   };
   // Cookies (refresh cookie, CSRF) only exist in browser mode.
   if (!isTauri()) {
@@ -876,7 +898,7 @@ async function sendHttpRequest<T>(
 
   if (response.status === 401 && !isAuthEndpoint && !isRetry) {
     if (await refreshAccessToken()) {
-      return sendHttpRequest<T>(method, path, body, true);
+      return sendHttpRequest<T>(method, path, body, true, options);
     }
   }
 
@@ -952,11 +974,10 @@ async function sendHttpRequest<T>(
 
   try {
     return { data: JSON.parse(text) as T, status: response.status };
-  } catch (parseError) {
-    console.error(
-      `[httpRequest] Failed to parse success response as JSON for ${cleanPath}:`,
-      text.slice(0, 200),
-    );
+  } catch {
+    // Never a part of the body: a success answer may carry a secret (a QR
+    // token, a code).
+    console.error(`[httpRequest] Failed to parse success response as JSON for ${cleanPath}`);
     throw new HttpError(
       response.status,
       `Invalid JSON response from ${cleanPath}`,

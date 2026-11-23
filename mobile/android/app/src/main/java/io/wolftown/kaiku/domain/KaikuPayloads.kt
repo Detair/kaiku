@@ -11,6 +11,10 @@ sealed interface ScanPayload {
     data class Setup(val origin: String, val tokenB64u: String) : ScanPayload {
         override fun toString() = "Setup(origin=$origin)"
     }
+    /** `kaiku://pcsetup/v1`: the QR of a PC asking for "Set up this PC". Scanner only. */
+    data class PcSetup(val origin: String, val tokenB64u: String) : ScanPayload {
+        override fun toString() = "PcSetup(origin=$origin)"
+    }
     /** A Kaiku code of another server than the one this app is tied to. */
     data class OtherServer(val origin: String) : ScanPayload
     /** A newer payload version: "Update Kaiku". */
@@ -25,7 +29,8 @@ enum class ScanMode { SIGN_IN_OR_SETUP, SETUP_ONLY }
 
 /**
  * C27 payloads. Login: `kaiku://login/v1?o=<percent-encoded origin>&t=<43-char b64u>`
- * (scanner only, never a link). Setup: `{PUBLIC_URL}/setup#v=1&t=<43-char b64u>`
+ * (scanner only, never a link); `kaiku://pcsetup/v1?o=&t=` is the PC's "Set up this PC" code
+ * (scanner only). Setup: `{PUBLIC_URL}/setup#v=1&t=<43-char b64u>`
  * (the token is in the fragment) and its app form `kaiku://setup/v1?o=&t=`.
  * Parsing checks the shape only; [pin] then refuses another server's code
  * before any network call (B.1 origin pinning).
@@ -54,14 +59,18 @@ object KaikuPayloads {
         val host = uri.host?.lowercase() ?: uri.rawAuthority?.lowercase()
         val path = uri.rawPath ?: ""
         if (host == "qr" && path == "/login") return ScanPayload.OldKaikuCode
-        if (host != "login" && host != "setup") return ScanPayload.NotKaiku
+        if (host != "login" && host != "setup" && host != "pcsetup") return ScanPayload.NotKaiku
         val version = VERSION_PATH.matchEntire(path)?.groupValues?.get(1) ?: return ScanPayload.NotKaiku
         if (version != "1") return ScanPayload.NeedsUpdate
         val q = params(uri.rawQuery)
         val origin = q["o"]?.let(::canonicalOrigin) ?: return ScanPayload.NotKaiku
         if (!secureOrDev(origin)) return ScanPayload.NotKaiku
         val token = q["t"]?.takeIf { TOKEN.matches(it) } ?: return ScanPayload.NotKaiku
-        return if (host == "login") ScanPayload.Login(origin, token) else ScanPayload.Setup(origin, token)
+        return when (host) {
+            "login" -> ScanPayload.Login(origin, token)
+            "pcsetup" -> ScanPayload.PcSetup(origin, token)
+            else -> ScanPayload.Setup(origin, token)
+        }
     }
 
     private fun parseSetupUrl(uri: URI, scheme: String): ScanPayload {
@@ -115,6 +124,7 @@ object KaikuPayloads {
         return when (p) {
             is ScanPayload.Login -> if (p.origin == pinned) p else ScanPayload.OtherServer(p.origin)
             is ScanPayload.Setup -> if (p.origin == pinned) p else ScanPayload.OtherServer(p.origin)
+            is ScanPayload.PcSetup -> if (p.origin == pinned) p else ScanPayload.OtherServer(p.origin)
             else -> p
         }
     }

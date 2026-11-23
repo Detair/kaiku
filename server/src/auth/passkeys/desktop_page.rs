@@ -318,6 +318,22 @@ struct Texts {
     working: &'static str,
     expired: &'static str,
     unavailable: &'static str,
+    pc_title: &'static str,
+    pc_code_prompt: &'static str,
+    pc_code_label: &'static str,
+    pc_code_submit: &'static str,
+    pc_code_invalid: &'static str,
+    /// `{n}`: the tries left.
+    pc_code_wrong: &'static str,
+    pc_code_failed: &'static str,
+    /// `{n}`: seconds until another try.
+    pc_code_wait: &'static str,
+    pc_code_noscript: &'static str,
+    pc_refused: &'static str,
+    pc_passkey_prompt: &'static str,
+    pc_create: &'static str,
+    pc_failed: &'static str,
+    pc_already: &'static str,
 }
 
 const EN: Texts = Texts {
@@ -335,6 +351,22 @@ const EN: Texts = Texts {
     working: "Waiting for your passkey\u{2026}",
     expired: "This link has expired or was already used. Start again in the Kaiku app.",
     unavailable: "Kaiku is not reachable right now. Go back to the app and try again.",
+    pc_title: "Set up a passkey for the Kaiku desktop app on this computer",
+    pc_code_prompt: "Type the code your phone shows. Only type it here if you started this \
+                     in the Kaiku app on this computer.",
+    pc_code_label: "Code from your phone",
+    pc_code_submit: "Continue",
+    pc_code_invalid: "Type the 6 digits your phone shows.",
+    pc_code_wrong: "That code is wrong. Tries left: {n}.",
+    pc_code_failed: "Too many wrong codes. Start again in the Kaiku app.",
+    pc_code_wait: "Too many tries in a short time. Try again in {n} seconds.",
+    pc_code_noscript: "This page needs JavaScript. Turn it on, or go back to the app.",
+    pc_refused: "This didn't work here. Go back to the Kaiku app and try again.",
+    pc_passkey_prompt: "Create the passkey for this computer.",
+    pc_create: "Create passkey",
+    pc_failed: "That didn't work. Try again.",
+    pc_already:
+        "This passkey is already added to your account. Use another one, or go back to the app.",
 };
 
 const DE: Texts = Texts {
@@ -354,6 +386,21 @@ const DE: Texts = Texts {
     working: "Warte auf deinen Passkey\u{2026}",
     expired: "Dieser Link ist abgelaufen oder wurde schon benutzt. Starte in der Kaiku-App neu.",
     unavailable: "Kaiku ist gerade nicht erreichbar. Geh zur\u{fc}ck zur App und versuche es noch einmal.",
+    pc_title: "Einen Passkey f\u{fc}r die Kaiku-Desktop-App auf diesem Computer einrichten",
+    pc_code_prompt: "Gib den Code ein, den dein Handy zeigt. Gib ihn nur hier ein, wenn du das \
+                     in der Kaiku-App auf diesem Computer gestartet hast.",
+    pc_code_label: "Code von deinem Handy",
+    pc_code_submit: "Weiter",
+    pc_code_invalid: "Gib die 6 Ziffern ein, die dein Handy zeigt.",
+    pc_code_wrong: "Der Code ist falsch. Verbleibende Versuche: {n}.",
+    pc_code_failed: "Zu viele falsche Codes. Starte in der Kaiku-App neu.",
+    pc_code_wait: "Zu viele Versuche in kurzer Zeit. Versuch es in {n} Sekunden noch einmal.",
+    pc_code_noscript: "Diese Seite braucht JavaScript. Schalte es ein oder geh zur\u{fc}ck zur App.",
+    pc_refused: "Das hat hier nicht geklappt. Geh zur\u{fc}ck zur Kaiku-App und versuch es noch einmal.",
+    pc_passkey_prompt: "Erstelle den Passkey f\u{fc}r diesen Computer.",
+    pc_create: "Passkey erstellen",
+    pc_failed: "Das hat nicht geklappt. Versuch es noch einmal.",
+    pc_already: "Dieser Passkey ist schon bei deinem Konto. Nimm einen anderen oder geh zur\u{fc}ck zur App.",
 };
 
 const fn texts(lang: Lang) -> &'static Texts {
@@ -406,6 +453,18 @@ pub fn unavailable_page(lang: Lang) -> Response {
         lang,
         StatusCode::SERVICE_UNAVAILABLE,
         &format!("<h1>Kaiku</h1><p>{}</p>", esc(t.unavailable)),
+    )
+}
+
+/// 403: a `finish` or `cancel` of a `pc_setup` flow that did not come from
+/// the flow's own page. The flow is untouched; the person goes back to the
+/// app.
+pub fn refused_page(lang: Lang) -> Response {
+    let t = texts(lang);
+    page(
+        lang,
+        StatusCode::FORBIDDEN,
+        &format!("<h1>Kaiku</h1><p>{}</p>", esc(t.pc_refused)),
     )
 }
 
@@ -463,6 +522,100 @@ pub fn ceremony_page(lang: Lang, heading: &PageHeading, flow_id: Uuid) -> Respon
         base = format_args!("/auth/passkeys/desktop/{flow_id}"),
     );
     page(lang, StatusCode::OK, &body)
+}
+
+/// The `pc_setup` flow's page (spec Step 5): the code first, then the
+/// passkey.
+pub enum PcSetupStep {
+    /// The keypad: no ceremony before the right code.
+    Code,
+    /// The browser that typed the right code (it holds the cookie);
+    /// `failed` after a ceremony that did not finish.
+    Passkey { failed: bool },
+}
+
+/// The page of a `pc_setup` flow at `/auth/passkeys/desktop/flows/{id}`.
+///
+/// The keypad posts the code with `fetch` to `…/code`; the passkey step runs
+/// `ceremony.js` in `create` mode (options → `navigator.credentials.create`
+/// → a form POST to `…/finish`). Both send the browser-secret cookie; the
+/// phone's code is never in the page.
+pub fn pc_setup_page(lang: Lang, step: &PcSetupStep, flow_id: Uuid) -> Response {
+    let t = texts(lang);
+    let base = format!("/auth/passkeys/desktop/flows/{flow_id}");
+    let main = match step {
+        PcSetupStep::Code => format!(
+            // A posting form, disabled until ceremony.js has installed its
+            // handler: the code never lands in a URL, also without script.
+            "<p>{prompt}</p>\
+             <noscript><p>{noscript}</p></noscript>\
+             <form id=\"code-form\" method=\"post\" action=\"{base}/code\" novalidate \
+                data-invalid=\"{invalid}\" data-wrong=\"{wrong}\" \
+                data-failed=\"{failed}\" data-wait=\"{wait}\" data-expired=\"{expired}\" \
+                data-unavailable=\"{unavailable}\">\
+             <label for=\"code\">{label}</label>\
+             <input id=\"code\" name=\"code\" type=\"text\" inputmode=\"numeric\" \
+                maxlength=\"12\" autocomplete=\"one-time-code\" \
+                required disabled>\
+             <button type=\"submit\" disabled>{submit}</button></form>",
+            prompt = esc(t.pc_code_prompt),
+            invalid = esc(t.pc_code_invalid),
+            wrong = esc(t.pc_code_wrong),
+            failed = esc(t.pc_code_failed),
+            wait = esc(t.pc_code_wait),
+            noscript = esc(t.pc_code_noscript),
+            expired = esc(t.expired),
+            unavailable = esc(t.unavailable),
+            label = esc(t.pc_code_label),
+            submit = esc(t.pc_code_submit),
+        ),
+        PcSetupStep::Passkey { failed } => format!(
+            "<p>{prompt}</p>\
+             <button id=\"start\" type=\"button\" data-ceremony=\"create\" \
+                data-retry=\"{retry}\" data-already=\"{already}\">{start}</button>\
+             <form id=\"finish\" method=\"post\" action=\"{base}/finish\" hidden>\
+             <input type=\"hidden\" name=\"credential\" value=\"\">\
+             <input type=\"hidden\" name=\"ceremony_id\" value=\"\"></form>",
+            prompt = esc(if *failed {
+                t.pc_failed
+            } else {
+                t.pc_passkey_prompt
+            }),
+            retry = esc(t.retry),
+            already = esc(t.pc_already),
+            start = esc(if *failed { t.retry } else { t.pc_create }),
+        ),
+    };
+    let body = format!(
+        "<h1>{title}</h1>\
+         <p class=\"warning\">{forwarded}</p>\
+         <p id=\"status\" role=\"status\" aria-live=\"polite\" data-working=\"{working}\" \
+            data-cancelled=\"{cancelled}\"></p>\
+         <p id=\"unsupported\" hidden>{unsupported}</p>\
+         <p id=\"linux-firefox\" class=\"hint\" hidden>{linux_firefox}</p>\
+         <p id=\"linux-other\" class=\"hint\" hidden>{linux_other}</p>\
+         {main}\
+         <form id=\"cancel\" method=\"post\" action=\"{base}/cancel\">\
+         <button type=\"submit\" class=\"secondary\">{back}</button></form>\
+         <script src=\"/auth/passkeys/assets/ceremony.js\"></script>",
+        title = esc(t.pc_title),
+        forwarded = esc(t.forwarded),
+        working = esc(t.working),
+        cancelled = esc(t.cancelled),
+        unsupported = esc(t.unsupported),
+        linux_firefox = esc(t.linux_firefox),
+        linux_other = esc(t.linux_other),
+        back = esc(t.back),
+    );
+    // The page's own form posts (`finish`, `cancel`) then carry its real
+    // `Origin`, which those routes check; another origin, the loopback
+    // hand-off included, still gets no referrer.
+    let mut response = page(lang, StatusCode::OK, &body);
+    response.headers_mut().insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("same-origin"),
+    );
+    response
 }
 
 /// `GET /auth/passkeys/assets/ceremony.js`.

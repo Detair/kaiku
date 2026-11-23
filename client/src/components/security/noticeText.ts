@@ -49,6 +49,8 @@ export const NOTICE_KEYS: Record<SecurityEventType, MessageKey> = {
   factor_restored: "security.notice.factorRestored",
   throttle_reset: "security.notice.throttleReset",
   may_approve_changed: "security.notice.mayApproveChanged",
+  pc_setup_reported: "security.notice.pcSetupReported",
+  pc_setup_failed: "security.notice.pcSetupFailed",
   unknown: "security.notice.generic",
 };
 
@@ -92,6 +94,8 @@ export const PUSH_KEYS: Record<SecurityEventType, MessageKey> = {
   factor_restored: "security.push.factorRestored",
   throttle_reset: "security.push.throttleReset",
   may_approve_changed: "security.push.mayApproveChanged",
+  pc_setup_reported: "security.push.pcSetupReported",
+  pc_setup_failed: "security.push.pcSetupFailed",
   unknown: "security.push.generic",
 };
 
@@ -107,18 +111,39 @@ function subjectText(subject: Subject, meId: string): string {
     : t("security.notice.accountOf", { name: subject.display_name });
 }
 
+/** A non-empty string field of an event's details. */
+function detail(ev: SecurityEvent | undefined, key: string): string | undefined {
+  const v = ev?.details?.[key];
+  return typeof v === "string" && v.trim() !== "" ? v : undefined;
+}
+
 function params(ev: SecurityEvent | undefined, subject: Subject, meId: string, count: number) {
+  const device = ev?.authenticator?.label || ev?.client?.label || t("security.notice.aDevice");
   return {
     subject: subjectText(subject, meId),
     actor: ev?.actor?.username ?? t("security.notice.someone"),
-    device: ev?.authenticator?.label || ev?.client?.label || t("security.notice.aDevice"),
+    device,
+    // "Set up this PC": the computer (the requesting session) and the phone that approved it.
+    computer: detail(ev, "client_description") ?? t("security.notice.aComputer"),
+    phone: detail(ev, "approving_device_label") ?? t("security.notice.aDevice"),
     count,
   };
 }
 
+/**
+ * The notice key of an event: a new passkey from "Set up this PC" names the
+ * computer and the approving phone (spec "Notices and audit").
+ */
+function eventKey(type: unknown, ev: SecurityEvent | undefined): MessageKey {
+  if (type === "authenticator_added" && ev?.details?.via === "pc_setup") {
+    return "security.notice.authenticatorAddedPcSetup";
+  }
+  return noticeKey(type);
+}
+
 /** The notice sentence: placeholders filled, "(N times)" when coalesced. */
 export function noticeText(n: SecurityNotice, meId: string): string {
-  const text = t(noticeKey(n.event_type), params(n.events[0], n.subject, meId, n.count));
+  const text = t(eventKey(n.event_type, n.events[0]), params(n.events[0], n.subject, meId, n.count));
   return n.count > 1
     ? t("security.notice.repeated", { text, count: n.count })
     : t("security.notice.single", { text });
@@ -126,7 +151,7 @@ export function noticeText(n: SecurityNotice, meId: string): string {
 
 /** One event of the security log, worded like its notice. */
 export function eventText(ev: SecurityEvent, subject: Subject, meId: string): string {
-  return t("security.notice.single", { text: t(noticeKey(ev.event_type), params(ev, subject, meId, 1)) });
+  return t("security.notice.single", { text: t(eventKey(ev.event_type, ev), params(ev, subject, meId, 1)) });
 }
 
 /** The OS notification text for a new security message. */

@@ -12,6 +12,7 @@ import { security } from "./en/security";
 import { settings } from "./en/settings";
 import { voice } from "./en/voice";
 import { pages } from "./en/pages";
+import { pcSetup } from "./en/pcSetup";
 
 export const enLazy = {
   ...admin,
@@ -22,4 +23,5 @@ export const enLazy = {
   ...notifications,
   ...security,
   ...pages,
+  ...pcSetup,
 } as const;

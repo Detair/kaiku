@@ -197,8 +197,9 @@ Every key-device signature answers a single-use server **challenge** of the appr
 | `device_login` | 0x03 | – | `POST /auth/device-login` | empty | 120 s |
 | `device_stepup` | 0x04 | – | `POST /api/approvals/{id}/answer` | empty | 120 s; the grant ≤ 300 s |
 | `enroll_pop` | 0x05 | – | `POST /auth/enrollments/claim` | empty | the setup token's lifetime |
+| `pc_setup` | 0x06 | – | `POST /api/pc-setups/{cid}/answer` | the 32 scanned QR token bytes | 120 s from the scan (attempt ≤ 10 min) |
 
-`login` is answered approve or report; `enroll` approve only (its "No" is the unsigned deny, which
+`login` and `pc_setup` are answered approve or report (`pc_setup`'s "No" is the unsigned `refuse`); `enroll` approve only (its "No" is the unsigned deny, which
 cancels the enrolment); proofs approve only. Bytes 0x10–0x1F are reserved for v1.1 agent kinds; a
 v1.0 device refuses every kind byte it does not know. Every challenge is single use and expires
 within 10 minutes (DB CHECK); its `expires_at` is whole seconds.
@@ -231,6 +232,7 @@ lp(x)        = u32be(len(x)) ‖ x
 | `device_login` | `client_class` |
 | `device_stepup` | `sid ‖ lp(action) ‖ target_hash ‖ lp(target_label)` |
 | `enroll_pop` | `enrollment_id ‖ new_key_hash ‖ attestation_challenge ‖ lp(subject_username)` |
+| `pc_setup` | `attempt_id ‖ sid_hash ‖ lp(client_description) ‖ i64(session_created_at) ‖ lp(place)`; `sid_hash` = SHA-256 over the 16 raw `sid` bytes; `session_created_at` in Unix seconds |
 
 `client_class`: web 1, desktop 2, android 3. `authenticator_type`: key_device 1, passkey 2.
 `claimant_check`: none 0 (`own`), in_person 1, called_back 2. `collection_hash` is the attempt's S256
@@ -552,6 +554,156 @@ signature does not spend the challenge. Rate class `AUTH_FLOW`, never IP-blocked
 where `AuthResponse` gains only `session_id`, `assurance` and `absolute_expires_at`. The methods are
 on `GET /auth/me` → `session.auth_methods`.
 
+### 7.7 Set up this PC (F5e, SM5) → full by a new passkey sign-in
+
+A chat-only session asks for a passkey for its PC; only the account's key phone can grant it, and the
+6-digit code from the phone, typed where the passkey is made, fixes the page or browser that may register
+it. Code:
+`server/src/approvals/pc_setup/` (`transition.rs` lifecycle, `enrolment.rs` code entry and passkey,
+`handlers.rs` routes) and `server/src/auth/passkeys/desktop_pc_setup.rs` (desktop purpose).
+
+```mermaid
+sequenceDiagram
+    participant PC as PC (probation session)
+    participant S as Server
+    participant P as Key phone
+    PC->>S: POST /auth/pc-setups
+    S-->>PC: 201 {attempt_id, qr_payload, rotates_at}
+    PC->>S: GET /auth/pc-setups/{id}?wait= (new QR every 60 s while waiting)
+    P->>S: POST /api/pc-setups/claim {token}
+    S-->>P: 201 ApprovalChallenge (pc_setup, 120 s)
+    P->>P: check prefix + context, show it, UV, sign (response = scanned token)
+    P->>S: POST /api/pc-setups/{cid}/answer {response, signature, decision}
+    S-->>P: 200 {attempt_id, code, code_expires_at}
+    PC->>S: POST /auth/pc-setups/{id}/code {code, proof} (web)
+    S-->>PC: 200 {state: enrolled, enrollment_id}
+    PC->>S: passkey/start {proof}, passkey/finish {…, proof} (web) or desktop flow + redeem
+    S-->>PC: 201 Passkey (active), attempt completed
+    PC->>S: F1 passkey sign-in (replaceSessionWithPasskey)
+```
+
+- **Start** (`POST /auth/pc-setups`, 201) needs a live probation session and an active key device with
+  `may_approve` on (a full session or no such device: 403 `PC_SETUP_UNAVAILABLE`; an ended session: 401
+  `INVALID_TOKEN`). The QR payload is
+  `kaiku://pcsetup/v1?o=<origin>&t=<token>`; only keyed hashes are stored (`SecretPurpose::PcSetupToken`,
+  `PcSetupCode`, `PcSetupBrowser`, `PcSetupWebProof`). One session has at most one live attempt: a new start cancels the old
+  one and its enrolment (reason `restarted`). `GET /auth/pc-setups/current` returns the live attempt after
+  a reload and **always issues a fresh token while `waiting`**, so a QR scanned from an earlier response
+  can then fail with `LOGIN_CODE_STALE`.
+- **Every attempt route needs the bearer session of its `sid`**; another session of the account, or an
+  unknown id, gets 404. A QR photo yields nothing.
+- **Scan** (`POST /api/pc-setups/claim`): the account must match (`PC_SETUP_OTHER_ACCOUNT`, no name), the
+  device must be active with `may_approve` on (`may_approve` off: 403 `APPROVAL_NOT_ALLOWED`, and the
+  attempt expires with `may_approve_off`). The challenge is the `pc_setup` kind (0x06, C26) with
+  `requester_kind = pc_setup_attempt`; the context shows the client description, the session's creation
+  time and the place from the stored session row, and a `sid_hash`. The description is built from the
+  User-Agent stored when the session was created (`sessions.created_user_agent`) and nothing else; a
+  refresh updates `user_agent` but not this value, and a session created without one shows the fixed
+  description of its client class (for example "Web browser").
+- **Answer:** `approve` returns the code to the phone only (never to the PC, never again); `report` ends
+  the attempt and the requesting session, marks no credential and records `pc_setup_reported`.
+  **No** is `POST /api/pc-setups/{cid}/refuse` (unsigned). The phone polls
+  `GET /api/pc-setups/{attempt_id}` (`{state, reason}`) while it shows the code, until `completed`,
+  `cancelled`, `failed` or `expired`.
+- **Code** (5 min from approval, 3 tries, per attempt): the right code creates an enrolment (variant
+  `pc_setup`, recording the approving device and the requesting session; no setup token) and the attempt
+  becomes `enrolled`; a wrong code answers 200 `{state: "code", tries_left}`; the third gives `failed` and
+  `pc_setup_failed`. A code that is not 6 digits is refused (400) without spending a try; after the 5
+  minutes the answer is 410 `APPROVAL_EXPIRED`. On the web a lost response recovers by the PC's next
+  poll. On the desktop, if the browser does not receive the answer, the browser page cannot continue:
+  "Start again" on the PC begins a new attempt, which the phone approves again; otherwise the attempt
+  ends by itself when its time runs out.
+- **One path per attempt:** the right code records how it arrived (`code_via` = `web`, or `desktop_flow`
+  with the flow's id); only that path registers. The web routes refuse an attempt whose code came
+  through a flow (409 `APPROVAL_STATE`), and a flow refuses an attempt whose code came another way. A
+  `pc_setup` desktop flow starts only from a session whose stored client class is `desktop` (403
+  `FORBIDDEN` otherwise), and the web code route refuses such a session (409 `APPROVAL_STATE`, nothing
+  spent).
+- **Browser (web):** the page draws a proof (32 random bytes, b64u) before it sends the code and keeps
+  it in memory for that attempt (never in the URL, in storage or in a log). `POST …/code` needs it (400
+  `VALIDATION_ERROR` without a well-formed one, no try spent); the right code stores its keyed hash
+  (`pc_setup_attempts.web_proof_hash`) in the update that records `code_via = web`, a wrong code stores
+  nothing. `passkey/start` needs the requesting session and that proof (`{proof}`, compared in constant
+  time under the locks; missing or different: 409 `APPROVAL_STATE`, nothing spent, the attempt stays
+  `enrolled`). `passkey/finish` needs the requesting session, the ceremony id that start returned and
+  the same proof (checked before the ceremony is taken; missing or different: 409 `APPROVAL_STATE`, the
+  ceremony stays usable); it creates the `active` passkey (409 `PASSKEY_LIMIT` / `PASSKEY_ALREADY_REGISTERED` keep the attempt
+  readable). A `proof` that is not a JSON string is refused with 422 and a plain-text message (no error code) by the request
+  parser at `…/code` and `…/passkey/finish`, before the handler runs (no try spent, the ceremony kept);
+  at `passkey/start` it counts as missing (409). A lost answer to the code is recovered by the poll and
+  the page's own proof; a reload
+  between the code and the passkey loses the proof, and the person starts again.
+- **Desktop:** purpose `pc_setup` of the F1 flow (C29). The app starts the flow with its session's bearer
+  and the attempt id; the flow URL is `/auth/passkeys/desktop/flows/{flow_id}`. The page asks for the
+  code before any ceremony. The right code answers with a cookie `__Secure-kaiku_pcsetup` (HttpOnly,
+  Secure, SameSite=Strict, path = the flow), whose keyed hash is written to the flow *before* the code
+  entry commits. `options` and `finish` refuse without it, `cancel` does after the right code (before it,
+  anyone with the page may end the flow, as in F1), and a second code entry is refused. `code`,
+  `options`, `finish` and `cancel` accept only the page's own origin (`Origin`, or `Sec-Fetch-Site:
+  same-origin` when the origin is absent or `null`); the page is served with `Referrer-Policy:
+  same-origin` so its own posts carry its origin, and nothing goes to another origin. Otherwise 403 and
+  the flow untouched (`code`, `options`: `FORBIDDEN`; `finish`, `cancel`: a page that sends the person
+  back to the app). The code form posts and stays disabled until the page's script handles it; without
+  script a notice is shown and the keypad stays disabled. A `pc_setup` flow
+  lives 15 minutes (the code's 5 plus the enrolment's 10), and the right code keeps it at least the
+  enrolment's 10 minutes; the pending result lives 60 s. When the attempt can no longer register (the
+  passkey limit, an ended attempt), the page hands that answer to the app instead of offering a
+  ceremony.
+  `finish` verifies the registration and keeps it as the pending result; nothing takes effect before
+  `redeem` (hand-off code, verifier, the starting session's bearer), which stores the passkey and
+  returns no tokens. `redeem` consumes a flow only when it holds a pending result; a redeem before the
+  browser has finished changes nothing. The F1 routes refuse `pc_setup` flows.
+- **Notices:** `authenticator_added` (high) with `via: pc_setup`, `attempt_id`, `requesting_sid`, the PC's
+  `client_description` and the approving device (`approving_device_id`, `approving_device_label`), to
+  every address; "That wasn't me" revokes the passkey, ends its sessions and the
+  requesting session, and marks no credential (via part 2 the passkey stays and the requesting session
+  ends). Also `pc_setup_reported` (high) and `pc_setup_failed` (normal, account only).
+- **End reasons** the PC can read: `session_ended`, `device_revoked`, `no_key_device`, `may_approve_off`,
+  `account_banned`, `timeout`, `code_expired`, `restarted`, `cancelled`, `refused`, `reported`,
+  `too_many_codes`, `enrollment_expired`.
+- **One clock:** every transition of an attempt takes its locks first (account, requesting session,
+  attempt, its enrolment; a restart also the old attempt's open challenge; the phone's steps also the
+  key device, its session and the challenge), then
+  reads `clock_timestamp()` once. That one value decides every liveness (both sessions, QR rotation,
+  attempt, code, challenge, enrolment) and every deadline the transition issues (a start's creation time,
+  QR rotation and 10 minutes, the code's 5 minutes, the enrolment's 10 minutes, the scan's challenge:
+  created at that value, expiring at the earlier of it plus 2 minutes and the attempt's stored deadline,
+  in whole seconds), so a wait for a lock never shortens or extends a deadline, with one exception: the
+  re-check's lazy writes (a claim whose challenge is gone going back to `waiting`, the end of a stale
+  attempt) void the attempt's challenge after the clock was read (a restart, and the phone's answer,
+  refusal and release for the challenge they act on, lock it first). Every other writer of a `pc_setup`
+  challenge holds the account lock, so the only wait there is for the minute sweep's single statement
+  that expires due challenges. Only the PC's poll and `current` issue a deadline after such a write: after
+  the return to `waiting`, the new QR's rotation (60 s) can be shorter by at most that statement's
+  duration. Steps that read their own
+  clock: the unlocked reads before the locks (scanner check, other-account read, the polls' and the sweep's hints)
+  use `clock_timestamp()` of their statement and the locked re-check decides; the account lock
+  (`lock_accounts`, including the ban's expiry) is unchanged. The phone's steps use the checks of the
+  shared key-device session helper and decide the session's expiry on the transition's clock. The other
+  challenge kinds
+  (`login`, `enroll`, `enroll_pop`, `device_login`, `device_stepup`) keep their own timing on the
+  server's clock.
+- **Scan answers in order:** the scanner first, before the token is looked at, read without a lock: its
+  account's ban (403 `ACCOUNT_BANNED`), its key device (403 `KEY_DEVICE_REQUIRED`), its session (401), then
+  `may_approve` (403 `APPROVAL_NOT_ALLOWED`). A refused scanner gets the same answer whether or not the
+  token exists, and nothing is written for it. Then one read of the token: unknown, rotated or not live →
+  404 `LOGIN_CODE_STALE`; another account's live code (waiting or claimed, its timers, session, account and
+  phone all good, in that same read) → 409 `PC_SETUP_OTHER_ACCOUNT`, whatever its paused rotation time
+  says. The own account's code is re-checked under the locks, in the same order.
+- **Answers:** a code typed after the 5 minutes answers 410 also when a poll or the sweep ended the
+  attempt first; the phone's `answer`/`refuse`/`release` answer 404 to any caller but the claiming device
+  (a session without a key device too) before anything is locked; responses carry `Cache-Control: no-store`; a new passkey sends the
+  `authenticators_changed` hint to the account's sockets.
+- **Audit rows** `auth.pc_setup.start`, `.approve`, `.report`, `.refuse`, `.enrol` and `.complete` carry
+  only the attempt id.
+- **Rate limits:** every step is in the per-user `ApprovalLogin` class (30 per minute; the phone's steps
+  also pass the API's per-user `Write` class); the two status polls (`GET /auth/pc-setups/{id}`,
+  `GET /api/pc-setups/{attempt_id}`) pass neither and count only in the per-user `Read` class, so a slow
+  person's polling never blocks a step.
+- **No push is involved**; both sides poll at most once a second (long-poll `?wait=` ≤ 25 s; at most 32
+  attempt long-polls per server process, 4 per user and one per attempt and side; a poll without a free
+  place, and every poll of an ended attempt, answers at once).
+
 ## 8. Enrolment (SM2)
 
 One mechanism enrols a key device or passkey for every issuer.
@@ -563,6 +715,7 @@ One mechanism enrols a key device or passkey for every issuer.
 | `request` | a `ready` account request (`/auth/account-requests/current/enrollments`) | the request secret | the request client | pending until "Finish" |
 | `registration` | a registration ticket (`/auth/registration/enrollments`) | ticket ≤ 30 min old and unbound | the ticket client | active |
 | `cli` | `kaiku-admin enroll` | root on the host | the CLI | active |
+| `pc_setup` | an SM5 attempt whose code was typed (section 7.7) | none: no code, no setup token, no claim | the requesting PC's own passkey registration | active |
 
 ```mermaid
 stateDiagram-v2
@@ -829,7 +982,20 @@ who became admin cannot confirm. `counts_from = confirmed_at + ACCOUNT_REQUEST_D
 → login attempts. Device-side transitions (claim, answer, deny, release) lock accounts → device →
 session → challenge → attempt; the PC side (collect, TOTP step) locks the attempt's account →
 attempt; poll, cancel and the sweep touch only attempt rows. Logout and refresh do not take the
-account lock and touch only sessions, grants and enrolments. `FOR NO KEY UPDATE` still conflicts
+account lock and touch only sessions, grants and enrolments; a logout that ends two sessions (bearer
+and refresh token) ends each in its own transaction, so it never holds two session rows, and the
+bearer's own last, so a failed step leaves a request that can be sent again. **"Set up this
+PC" (SM5):** attempts stay
+out of the session-ending cascade; every attempt transition (scan, approve, report, code entry, cancel,
+restart, finish, redeem) locks account → requesting session row → attempt → enrolment, holds the session
+lock through commit, and first re-checks that the session is live and the device active with
+`may_approve` on, else the attempt becomes `expired`. Reads added under these locks (no new lock): the
+start counts the account's attempts of the last 10 minutes, and registration (web `passkey/start|finish`,
+desktop `options`, `finish`, `redeem`) checks the attempt's recorded code path. Phone-side transitions (scan, answer, refuse,
+release) then lock the key device, its own session and the challenge, all still under the account lock,
+which serialises them against device removal and reports. The sweep expires what no transition reaches. The
+enrolment rides both cascades. Restart runs under the account lock and voids the old ceremonies because
+finish and redeem re-lock and refuse a cancelled attempt. `FOR NO KEY UPDATE` still conflicts
 with itself, so transitions serialise, but it does not block the `FOR KEY SHARE` of foreign-key
 inserts (notices, events, sessions), which removed a class of deadlocks. Every claimed deadlock
 was reproduced (`40P01`) and pinned by a test (implementation notes).
@@ -913,6 +1079,13 @@ Residual risks (spec B.6, as implemented):
 13. **Hostile use of owner-rule part 2** by someone with a session and the TOTP secret or a recovery
     code while the account has no strong authenticator.
 14. **Request-notice fatigue:** at most 3 self-service starts per account per delay period.
+15. **"Set up this PC": the passkey goes to the session that showed the code.** The passkey is bound to
+    the session that showed the QR code and gives full access (sign-in methods, sessions, admin panel
+    for an admin). The server cannot tell where the person who types the code is; it is not a proximity
+    check. Before a passkey exists, the person at the phone must confirm with the screen lock and type
+    the code on the computer in front of them. Limited by the code step, the account
+    match, `may_approve` off by default for family accounts, the phone's wording, and the notice with
+    "That wasn't me", which also ends the requesting session. A report marks no credential.
 
 Coordinator and maintainer decisions recorded in the implementation notes:
 
@@ -965,6 +1138,8 @@ Known gaps between spec and clients (rc.3):
 | Session re-check on sockets | ≤ 60 s | `config.rs` |
 | Denylist TTL | access lifetime + 60 s | `auth/revocation.rs` |
 | Login attempt / QR token / claim / collect | 600 s / 60 s / 120 s / 60 s | `auth/login_attempts/core.rs` |
+| Set up this PC: attempt (`waiting`, `claimed`) / QR token / `pc_setup` challenge / code / tries / enrolment | 10 min / 60 s / 120 s / 5 min / 3 / 10 min | `approvals/pc_setup/mod.rs` |
+| Set up this PC: starts per session / per account / attempt rows kept | 10 / 30 per 10 min (429 `TOO_MANY_ATTEMPTS`, `Retry-After` until the oldest counted start leaves the window) / 30 days | `approvals/pc_setup/mod.rs`, `db/queries.rs` |
 | Long-poll wait / concurrent long-polls | ≤ 25 s / 32 | same |
 | Challenge maximum | 10 min | `approvals/core.rs` |
 | `device_login`, `device_stepup` challenge | 120 s | `approvals/device_login.rs`, `approvals/handlers.rs` |
@@ -1023,6 +1198,8 @@ All errors use the body `{"error": CODE, "message": string}`; listed extra field
 | `LOGIN_CODE_STALE` | 404 | The scanned token matches nothing |
 | `LOGIN_ATTEMPT_CLAIMED` | 409 | Another device holds the claim |
 | `LOGIN_ATTEMPT_OTHER_ACCOUNT` | 409 | A password/OIDC attempt of another account |
+| `PC_SETUP_UNAVAILABLE` | 403 | "Set up this PC": a full session, or no active key device with `may_approve` on (an ended session gets 401) |
+| `PC_SETUP_OTHER_ACCOUNT` | 409 | The scanned PC code belongs to another account (no name given) |
 | `REGISTRATION_TICKET_INVALID` | 404 | Unknown or expired registration ticket |
 | `PASSWORD_REJECTED` | 400 | `{reason: length|breached|context}` |
 

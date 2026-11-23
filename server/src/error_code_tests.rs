@@ -455,6 +455,8 @@ async fn platform_codes_are_upper_snake() {
                 E::LoginCodeStale,
                 E::LoginAttemptClaimed,
                 E::LoginAttemptOtherAccount,
+                E::PcSetupUnavailable,
+                E::PcSetupOtherAccount,
                 E::ResponseMismatch,
                 E::Validation(s()),
                 E::Unavailable,

@@ -379,8 +379,9 @@ pub async fn create_session(
 ) -> sqlx::Result<Session> {
     sqlx::query_as::<_, Session>(
         r"
-        INSERT INTO sessions (id, user_id, token_hash, expires_at, ip_address, user_agent, city, country)
-        VALUES ($1, $2, $3, $4, $5::inet, $6, $7, $8)
+        INSERT INTO sessions (id, user_id, token_hash, expires_at, ip_address, user_agent,
+                              created_user_agent, city, country)
+        VALUES ($1, $2, $3, $4, $5::inet, $6, $6, $7, $8)
         RETURNING id, user_id, token_hash, expires_at, host(ip_address) as ip_address, user_agent, city, country, created_at
         ",
     )
@@ -466,12 +467,20 @@ pub async fn cleanup_expired_sessions(pool: &PgPool) -> sqlx::Result<u64> {
     Ok(result.rows_affected())
 }
 
-/// Delete finished challenges and ended enrolments after 30 days (for background job).
+/// Delete finished challenges, ended enrolments and "Set up this PC"
+/// attempts after 30 days (for background job).
 ///
 /// Open challenges are swept to `expired` by the minute timer first; step-up
 /// grants go with their session rows.
 pub async fn cleanup_finished_approvals(pool: &PgPool) -> sqlx::Result<u64> {
     let mut tx = pool.begin().await?;
+    // "Set up this PC" attempts first: each lives at most about 25 minutes,
+    // so a 30-day-old one is long over, and its challenge and enrolment can go.
+    let attempts =
+        sqlx::query("DELETE FROM pc_setup_attempts WHERE created_at < NOW() - INTERVAL '30 days'")
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
     let challenges = sqlx::query(
         "DELETE FROM approvals
           WHERE state IN ('consumed', 'denied', 'reported', 'expired')
@@ -488,7 +497,7 @@ pub async fn cleanup_finished_approvals(pool: &PgPool) -> sqlx::Result<u64> {
     .await?
     .rows_affected();
     tx.commit().await?;
-    Ok(challenges + enrollments)
+    Ok(attempts + challenges + enrollments)
 }
 
 /// Clean up claimed prekeys older than 7 days (for background job).

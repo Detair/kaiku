@@ -44,6 +44,7 @@ fun ScanScreen(
     mode: ScanMode,
     onLogin: (ScanPayload.Login) -> Unit,
     onSetup: (ScanPayload.Setup) -> Unit,
+    onPcSetup: (ScanPayload.PcSetup) -> Unit = {},
     onBack: () -> Unit,
     viewModel: ScanViewModel = hiltViewModel(),
 ) {
@@ -59,6 +60,10 @@ fun ScanScreen(
             is ScanUi.OpenSetup -> {
                 viewModel.rescan()
                 onSetup(u.payload)
+            }
+            is ScanUi.OpenPcSetup -> {
+                viewModel.rescan()
+                onPcSetup(u.payload)
             }
             else -> Unit
         }

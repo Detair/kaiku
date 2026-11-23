@@ -60,6 +60,10 @@
     <string name="auth_totp_hint">If you just used a code, wait for the next one.</string>
     <string name="auth_totp_unavailable">Authenticator codes can\'t be used for this account right now. Use your phone or ask an admin.</string>
     <string name="auth_probation_banner">Signed in for chat only on this phone. To make it your key, use \'Add a phone\' on your key phone, or sign in with a passkey.</string>
+    <string name="auth_probation_banner_ask_admin">Signed in for chat only on this phone. To make it your key, ask your admin to set it up.</string>
+    <string name="auth_probation_banner_add_phone">Signed in for chat only on this phone. To make it your key, use \'Add a phone\' on your key phone.</string>
+    <string name="auth_probation_banner_passkey">Signed in for chat only on this phone. For everything else, sign in with a passkey.</string>
+    <string name="auth_probation_banner_neutral">Signed in for chat only on this phone.</string>
 
     <!-- Account creation -->
     <string name="auth_register_heading">Create an account</string>
@@ -351,6 +355,7 @@
     <string name="scan_old_kaiku_code">This code comes from an older Kaiku on the PC. Update Kaiku there.</string>
     <string name="scan_not_kaiku">This is not a Kaiku code.</string>
     <string name="scan_action">Scan</string>
+    <string name="scan_pc_setup_code_in_setup">This code is for setting up a computer. To set up this phone you need a setup code.</string>
 
     <!-- Confirming a PC sign-in on the key phone (F2, F3) -->
     <string name="approval_checking">Checking the code…</string>
@@ -380,6 +385,40 @@
     <string name="approval_other_account">This code belongs to another account.</string>
     <string name="approval_expired">That took too long. Scan the code again.</string>
     <string name="approval_mismatch">Something about this sign-in doesn\'t match. Nothing was confirmed.</string>
+
+    <!-- Set up this PC: the key phone confirms and shows the code -->
+    <string name="pc_setup_question">Give this computer full access to your account?</string>
+    <string name="pc_setup_field_signed_in">Signed in</string>
+    <string name="pc_setup_effect">It could change your sign-in methods and sign you out elsewhere.</string>
+    <string name="pc_setup_only_if">Only continue if you started this on a computer in front of you, and nobody asked you to.</string>
+    <string name="pc_setup_yes">Yes, continue</string>
+    <string name="pc_setup_end_session_title">End that computer\'s session?</string>
+    <string name="pc_setup_end_session_body">The computer that showed this code is signed out. Nothing else changes.</string>
+    <string name="pc_setup_end_session_yes">Yes, end it</string>
+    <string name="pc_setup_end_session_no">No, go back</string>
+    <string name="pc_setup_uv_approve">Give this computer access</string>
+    <string name="pc_setup_uv_report">End that computer\'s session</string>
+    <string name="pc_setup_code_title">Type this code on the computer in front of you.</string>
+    <string name="pc_setup_code_warning">Never tell it to anyone or type it on a site someone sent you.</string>
+    <string name="pc_setup_code_description">Code %1$s</string>
+    <string name="pc_setup_entered">Code accepted. Finish on the computer.</string>
+    <string name="pc_setup_done">Done. The computer has a passkey now.</string>
+    <string name="pc_setup_denied">Not confirmed. Nothing was changed.</string>
+    <string name="pc_setup_reported">Stopped. That computer\'s session was ended. Check the security log, and change your password if you are unsure.</string>
+    <string name="pc_setup_other_account">This computer is signed in with a different account.</string>
+    <string name="pc_setup_code_changed">This code isn\'t valid or has just changed. Scan the code on your computer again.</string>
+    <string name="pc_setup_already_claimed">Another phone is already confirming this.</string>
+    <string name="pc_setup_session_ended">That session has ended.</string>
+    <string name="pc_setup_too_many_codes">Too many wrong codes. Start again on the computer.</string>
+    <string name="pc_setup_timeout">This took too long. Start again on the computer.</string>
+    <string name="pc_setup_code_expired">The code ran out of time. Start again on the computer.</string>
+    <string name="pc_setup_cancelled">Cancelled. Start again on the computer if you want to continue.</string>
+    <string name="pc_setup_answer_lost">The answer may not have arrived. Press Start again on the computer.</string>
+    <string name="pc_setup_failed">That didn\'t work. Start again on the computer.</string>
+    <string name="pc_setup_leave_title">Leave the code?</string>
+    <string name="pc_setup_leave_body">The code will be gone. To finish, press Start again on the computer and scan again.</string>
+    <string name="pc_setup_leave_yes">Leave</string>
+    <string name="pc_setup_leave_no">Stay</string>
 
     <!-- Setting up this phone as a key (F5a, F5c, SM2) -->
     <string name="setup_title">Set up this phone</string>
@@ -559,6 +598,9 @@
     <string name="security_notice_factor_restored">An admin made a sign-in factor of %1$s usable again</string>
     <string name="security_notice_throttle_reset">An admin allowed sign-in attempts for %1$s again</string>
     <string name="security_notice_may_approve_changed">An admin changed whether the phones of %1$s may confirm sign-ins</string>
+    <string name="security_notice_pc_setup_reported">A computer asked for full access to %1$s and was stopped with \"I didn\'t start this\"; its session was ended</string>
+    <string name="security_notice_pc_setup_failed">Too many wrong codes ended setting up a computer for %1$s</string>
+    <string name="security_notice_authenticator_added_pc_setup">A passkey for %5$s was added to %1$s, confirmed with %6$s</string>
     <string name="security_notice_generic">Security notice for %1$s</string>
     <string name="security_push_sign_in">New sign-in to %1$s</string>
     <string name="security_push_sign_in_not_finished">A sign-in to %1$s was not finished</string>
@@ -599,6 +641,8 @@
     <string name="security_push_factor_restored">A sign-in factor of %1$s is usable again</string>
     <string name="security_push_throttle_reset">Sign-in attempts for %1$s are allowed again</string>
     <string name="security_push_may_approve_changed">\"May confirm sign-ins\" changed for %1$s</string>
+    <string name="security_push_pc_setup_reported">Computer setup stopped for %1$s</string>
+    <string name="security_push_pc_setup_failed">Computer setup failed for %1$s</string>
     <string name="security_push_generic">Security notice for %1$s</string>
 
     <!-- Security notices: channel, Kaiku DM, actions, log, open request -->

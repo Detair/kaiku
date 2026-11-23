@@ -62,6 +62,9 @@ pub enum EnrollmentVariant {
     Request,
     Registration,
     Cli,
+    /// "Set up this PC": a passkey for the requesting session, issued by an
+    /// attempt whose code was typed. No setup token, no claim.
+    PcSetup,
 }
 
 impl EnrollmentVariant {
@@ -73,6 +76,7 @@ impl EnrollmentVariant {
             Self::Request => "request",
             Self::Registration => "registration",
             Self::Cli => "cli",
+            Self::PcSetup => "pc_setup",
         }
     }
 
@@ -84,6 +88,7 @@ impl EnrollmentVariant {
             "request" => Some(Self::Request),
             "registration" => Some(Self::Registration),
             "cli" => Some(Self::Cli),
+            "pc_setup" => Some(Self::PcSetup),
             _ => None,
         }
     }
@@ -145,7 +150,8 @@ pub struct EnrollmentRow {
     pub issuer_grant_id: Option<Uuid>,
     pub issuer_request_id: Option<Uuid>,
     pub issuer_ticket_id: Option<Uuid>,
-    pub setup_token_hash: Vec<u8>,
+    /// `None` only for `pc_setup` (DB CHECK): there is no setup token.
+    pub setup_token_hash: Option<Vec<u8>>,
     pub nonce: Vec<u8>,
     pub code_hash: Option<Vec<u8>>,
     pub code_expires_at: Option<DateTime<Utc>>,
@@ -370,9 +376,10 @@ pub struct AfterDone {
 #[must_use]
 pub const fn activation_state(variant: EnrollmentVariant, subject_is_new: bool) -> DeviceState {
     match variant {
-        EnrollmentVariant::Own | EnrollmentVariant::Cli | EnrollmentVariant::Registration => {
-            DeviceState::Active
-        }
+        EnrollmentVariant::Own
+        | EnrollmentVariant::Cli
+        | EnrollmentVariant::Registration
+        | EnrollmentVariant::PcSetup => DeviceState::Active,
         EnrollmentVariant::Admin if subject_is_new => DeviceState::Active,
         EnrollmentVariant::Admin | EnrollmentVariant::Request => DeviceState::Pending,
     }
@@ -386,6 +393,8 @@ const fn replaced_reason(variant: EnrollmentVariant) -> &'static str {
         EnrollmentVariant::Admin => "admin",
         EnrollmentVariant::Request => "request",
         EnrollmentVariant::Cli => "cli",
+        // A passkey enrolment never replaces a key device.
+        EnrollmentVariant::PcSetup => "owner",
     }
 }
 
@@ -506,6 +515,13 @@ pub async fn issue_tx(
     }
     if acct.banned {
         return Err(ApprovalError::AccountBanned);
+    }
+    // An attempt's enrolment is created by the attempt (code entry), with no
+    // setup token; this issuer path never makes one.
+    if p.variant == EnrollmentVariant::PcSetup {
+        return Err(ApprovalError::Validation(
+            "pc_setup enrolments are not issued here".into(),
+        ));
     }
     let (kind, session, device, passkey, grant, request, ticket) = match p.issuer {
         Issuer::KeyDevice {
@@ -1316,6 +1332,10 @@ pub async fn confirm_tx(
     }
     let (locked, _live) = lock_confirm_scope(conn, id, &actors).await?;
     let row = lock_by_id(conn, id).await?;
+    // No confirmation acts on an attempt's enrolment (it has no code of its own).
+    if row.variant == "pc_setup" {
+        return Err(ApprovalError::NotFound);
+    }
     match row.state.as_str() {
         "claimed" => {}
         _ => return Err(ApprovalError::EnrollmentState),

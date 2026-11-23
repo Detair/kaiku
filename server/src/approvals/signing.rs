@@ -38,6 +38,7 @@ pub enum Kind {
     DeviceLogin = 3,
     DeviceStepup = 4,
     EnrollPop = 5,
+    PcSetup = 6,
 }
 
 impl Kind {
@@ -50,6 +51,7 @@ impl Kind {
             3 => Some(Self::DeviceLogin),
             4 => Some(Self::DeviceStepup),
             5 => Some(Self::EnrollPop),
+            6 => Some(Self::PcSetup),
             _ => None,
         }
     }
@@ -63,6 +65,7 @@ impl Kind {
             Self::DeviceLogin => "device_login",
             Self::DeviceStepup => "device_stepup",
             Self::EnrollPop => "enroll_pop",
+            Self::PcSetup => "pc_setup",
         }
     }
 
@@ -75,15 +78,16 @@ impl Kind {
             "device_login" => Some(Self::DeviceLogin),
             "device_stepup" => Some(Self::DeviceStepup),
             "enroll_pop" => Some(Self::EnrollPop),
+            "pc_setup" => Some(Self::PcSetup),
             _ => None,
         }
     }
 
-    /// `login` and `enroll` are approvals (a transfer, deny/report); the
-    /// others are proofs (approve only).
+    /// `login`, `enroll` and `pc_setup` are approvals (a transfer or a
+    /// code, and report); the others are proofs (approve only).
     #[must_use]
     pub const fn is_approval(self) -> bool {
-        matches!(self, Self::Login | Self::Enroll)
+        matches!(self, Self::Login | Self::Enroll | Self::PcSetup)
     }
 }
 

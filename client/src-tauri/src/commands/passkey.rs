@@ -21,7 +21,7 @@ use tauri::{command, State};
 use tokio::time::Instant;
 use tracing::info;
 
-use super::loopback_post::{self, HandBack, FLOW_LISTEN_MAX};
+use super::loopback_post::{self, HandBack, FLOW_LISTEN_MAX, PC_SETUP_LISTEN_MAX};
 use super::oidc_loopback::{new_secret, s256_challenge, READ_DEADLINE};
 use super::reauth::{registry, run_cancellable, Attempt, CANCELLED};
 use crate::session::{AuthResult, SessionError, SessionManager, TokenResponse};
@@ -33,6 +33,9 @@ pub enum Purpose {
     /// coordinator 2026-11-03): the server refuses another account's passkey.
     SignIn(Option<String>),
     StepUp,
+    /// "Set up this PC": the requesting session's attempt id. The flow
+    /// registers a passkey in the browser and returns no session.
+    PcSetup(String),
 }
 
 impl Purpose {
@@ -40,7 +43,13 @@ impl Purpose {
         match self {
             Self::SignIn(_) => "sign_in",
             Self::StepUp => "step_up",
+            Self::PcSetup(_) => "pc_setup",
         }
+    }
+
+    /// Step-up and `pc_setup` start and redeem with the session's bearer.
+    const fn needs_bearer(&self) -> bool {
+        matches!(self, Self::StepUp | Self::PcSetup(_))
     }
 }
 
@@ -63,6 +72,8 @@ fn bare_code(code: &str) -> String {
 pub enum FlowResult {
     SignedIn(AuthResult),
     Granted(Value),
+    /// `pc_setup`: the passkey is stored; no session, no data.
+    PcSetupDone,
 }
 
 const FAILED: &str = "PASSKEY_FAILED";
@@ -78,10 +89,11 @@ fn code_of(e: &SessionError) -> String {
 
 /// The server's ceremony URL, only if it is this server's own ceremony page
 /// for this flow: same origin as `server_url`, `https` (or `http` on a
-/// loopback host), path `/auth/passkeys/desktop/<flow_id>`, nothing else.
+/// loopback host), path `/auth/passkeys/desktop/<flow_id>` (`pc_setup`:
+/// `/auth/passkeys/desktop/flows/<flow_id>`), nothing else.
 /// The URL goes to the OS or onto a browser's command line, so anything else
 /// (an argument, a file, another scheme or site) is refused.
-fn ceremony_url(server_url: &str, raw: &str, flow_id: &str) -> Option<String> {
+fn ceremony_url(server_url: &str, raw: &str, flow_id: &str, pc_setup: bool) -> Option<String> {
     let url = url::Url::parse(raw).ok()?;
     let server = url::Url::parse(server_url).ok()?;
     let loopback = matches!(
@@ -93,7 +105,11 @@ fn ceremony_url(server_url: &str, raw: &str, flow_id: &str) -> Option<String> {
         url::Host::Domain(d) => d == "localhost",
     });
     let scheme_ok = url.scheme() == "https" || (url.scheme() == "http" && loopback);
-    let expected_path = format!("/auth/passkeys/desktop/{flow_id}");
+    let expected_path = if pc_setup {
+        format!("/auth/passkeys/desktop/flows/{flow_id}")
+    } else {
+        format!("/auth/passkeys/desktop/{flow_id}")
+    };
     let ok = scheme_ok
         && url.origin() == server.origin()
         && url.path() == expected_path
@@ -107,6 +123,32 @@ fn ceremony_url(server_url: &str, raw: &str, flow_id: &str) -> Option<String> {
 
 fn uuid_like(s: &str) -> bool {
     s.len() == 36 && s.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-')
+}
+
+/// How long to wait for the hand-off: until the flow's `expires_at`, never
+/// longer than `cap` (the purpose's bound); a missing or unreadable
+/// `expires_at` waits the whole `cap`.
+fn listen_for(expires_at: Option<&str>, cap: Duration) -> Duration {
+    expires_at
+        .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+        .map_or(cap, |t| {
+            (t.with_timezone(&chrono::Utc) - chrono::Utc::now())
+                .to_std()
+                .unwrap_or_default()
+        })
+        .min(cap)
+}
+
+/// How long this purpose's listener waits. A `pc_setup` flow waits `cap`
+/// (the server flow's lifetime) on this machine's monotonic clock only: the
+/// difference between the server's `expires_at` and this PC's wall clock
+/// would shorten it on a PC whose clock runs ahead. Sign-in and step-up wait
+/// until the flow's `expires_at`, never longer than `cap`.
+fn wait_for(purpose: &Purpose, expires_at: Option<&str>, cap: Duration) -> Duration {
+    match purpose {
+        Purpose::PcSetup(_) => cap,
+        Purpose::SignIn(_) | Purpose::StepUp => listen_for(expires_at, cap),
+    }
 }
 
 /// The shared desktop flow; `open` launches the browser (stubbed in tests),
@@ -130,7 +172,11 @@ pub async fn run_flow(
         let verifier = new_secret();
         let username = match &purpose {
             Purpose::SignIn(name) => name.as_deref().map(str::trim).filter(|n| !n.is_empty()),
-            Purpose::StepUp => None,
+            Purpose::StepUp | Purpose::PcSetup(_) => None,
+        };
+        let attempt_id = match &purpose {
+            Purpose::PcSetup(id) => Some(id.as_str()),
+            _ => None,
         };
         // The session this step-up belongs to (a sign-in in between replaces it).
         let identity = session.identity_generation();
@@ -139,6 +185,7 @@ pub async fn run_flow(
             "purpose": purpose.as_str(),
             "action": action,
             "target": target,
+            "attempt_id": attempt_id,
             "loopback_port": cb.port,
             "callback_path": cb.callback_path.as_str(),
             "client_challenge": s256_challenge(&verifier),
@@ -146,21 +193,19 @@ pub async fn run_flow(
         attempt.check()?;
         // 2. Start.
         let started = session
-            .start_passkey_flow(server_url, &body, purpose == Purpose::StepUp)
+            .start_passkey_flow(server_url, &body, purpose.needs_bearer())
             .await
             .map_err(|e| code_of(&e))?;
         let flow_id = started["flow_id"].as_str().ok_or(FAILED)?.to_string();
-        let url = ceremony_url(server_url, started["url"].as_str().ok_or(FAILED)?, &flow_id)
-            .ok_or(FAILED)?;
-        let expires_in = started["expires_at"]
-            .as_str()
-            .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
-            .map_or(FLOW_LISTEN_MAX, |t| {
-                (t.with_timezone(&chrono::Utc) - chrono::Utc::now())
-                    .to_std()
-                    .unwrap_or_default()
-            });
-        let deadline = Instant::now() + expires_in.min(listen_cap);
+        let url = ceremony_url(
+            server_url,
+            started["url"].as_str().ok_or(FAILED)?,
+            &flow_id,
+            attempt_id.is_some(),
+        )
+        .ok_or(FAILED)?;
+        let deadline =
+            Instant::now() + wait_for(&purpose, started["expires_at"].as_str(), listen_cap);
         // 3. Browser.
         attempt.check()?;
         open(&url).map_err(|_| "PASSKEY_BROWSER_FAILED".to_string())?;
@@ -186,7 +231,7 @@ pub async fn run_flow(
                 &flow_id,
                 &code,
                 &verifier,
-                purpose == Purpose::StepUp,
+                purpose.needs_bearer(),
             )
             .await
             .map_err(|e| code_of(&e))?;
@@ -205,6 +250,18 @@ pub async fn run_flow(
                     .await
                     .map_err(|e| code_of(&e))?;
                 Ok(FlowResult::SignedIn(result))
+            }
+            Purpose::PcSetup(_) => {
+                // Nothing is adopted: the answer is only checked to be this
+                // account's, in the session that started the flow.
+                let me = session.current_user_id();
+                if me.is_none()
+                    || redeemed["user_id"].as_str() != me.as_deref()
+                    || session.identity_generation() != identity
+                {
+                    return Err(FAILED.to_string());
+                }
+                Ok(FlowResult::PcSetupDone)
             }
             Purpose::StepUp => {
                 let me = session.current_user_id();
@@ -267,7 +324,7 @@ pub async fn passkey_sign_in(
         .await?;
         match result {
             FlowResult::SignedIn(r) => Ok(r),
-            FlowResult::Granted(_) => Err(FAILED.to_string()),
+            FlowResult::Granted(_) | FlowResult::PcSetupDone => Err(FAILED.to_string()),
         }
     })
     .await
@@ -302,7 +359,44 @@ pub async fn passkey_step_up(
         .await?;
         match result {
             FlowResult::Granted(g) => Ok(g),
-            FlowResult::SignedIn(_) => Err(FAILED.to_string()),
+            FlowResult::SignedIn(_) | FlowResult::PcSetupDone => Err(FAILED.to_string()),
+        }
+    })
+    .await
+}
+
+/// "Set up this PC": the phone approved, the person types its code and
+/// creates the passkey in the system browser; the app redeems the result
+/// (a stored passkey, no session). The verifier stays in this process.
+#[command]
+pub async fn passkey_pc_setup(
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+    server_url: String,
+    attempt_id: String,
+    cancel_id: String,
+) -> Result<(), String> {
+    let browser = super::settings::load_settings(&app_handle)
+        .await
+        .map(|s| s.passkey_browser)
+        .unwrap_or_default();
+    // `cancel_id` is this invocation's own handle (`passkey_cancel`), never
+    // the server's attempt id.
+    with_attempt(&cancel_id, async |attempt| {
+        let result = run_flow(
+            &state.session,
+            server_url.trim_end_matches('/'),
+            Purpose::PcSetup(attempt_id.clone()),
+            None,
+            None,
+            attempt,
+            |url| super::auth::open_browser_with(&app_handle, url, browser),
+            PC_SETUP_LISTEN_MAX,
+        )
+        .await?;
+        match result {
+            FlowResult::PcSetupDone => Ok(()),
+            _ => Err(FAILED.to_string()),
         }
     })
     .await
@@ -325,6 +419,35 @@ mod tests {
     use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
     use super::*;
+
+    #[test]
+    fn a_missing_or_unreadable_flow_end_falls_back_to_the_callers_cap() {
+        let cap = PC_SETUP_LISTEN_MAX;
+        assert_eq!(listen_for(None, cap), cap);
+        assert_eq!(listen_for(Some("not a time"), cap), cap);
+        let soon = (chrono::Utc::now() + chrono::Duration::minutes(12)).to_rfc3339();
+        let wait = listen_for(Some(&soon), cap);
+        assert!(
+            wait > Duration::from_mins(11) && wait <= Duration::from_mins(12),
+            "{wait:?}"
+        );
+        let later = (chrono::Utc::now() + chrono::Duration::minutes(40)).to_rfc3339();
+        assert_eq!(listen_for(Some(&later), cap), cap);
+    }
+    #[test]
+    fn a_pc_setup_listener_waits_its_own_time_whatever_the_pc_clock_says() {
+        let cap = PC_SETUP_LISTEN_MAX;
+        // A PC clock 10 minutes ahead makes a fresh 15-minute flow look like 5.
+        let skewed = (chrono::Utc::now() + chrono::Duration::minutes(5)).to_rfc3339();
+        let pc = Purpose::PcSetup("a".into());
+        assert_eq!(wait_for(&pc, Some(&skewed), cap), cap);
+        assert_eq!(wait_for(&pc, None, cap), cap);
+        // Sign-in and step-up keep the flow's own end as the bound.
+        for other in [Purpose::SignIn(None), Purpose::StepUp] {
+            let wait = wait_for(&other, Some(&skewed), FLOW_LISTEN_MAX);
+            assert!(wait <= Duration::from_mins(5), "{other:?} {wait:?}");
+        }
+    }
     use crate::commands::settings::PasskeyBrowser;
     use crate::session::store::MemoryTokenStore;
     use crate::AuthState;
@@ -586,6 +709,109 @@ mod tests {
         assert_eq!(r.unwrap_err(), "PASSKEY_FAILED");
     }
 
+    const ATTEMPT: &str = "0192f0c0-0000-7000-8000-0000000000bb";
+
+    fn pc_setup_url() -> Option<String> {
+        Some(format!("OWN/auth/passkeys/desktop/flows/{FLOW_ID}"))
+    }
+
+    async fn pc_setup(f: &Fixture, m: &SessionManager) -> Result<FlowResult, String> {
+        run_flow(
+            m,
+            &f.server.uri(),
+            Purpose::PcSetup(ATTEMPT.to_string()),
+            None,
+            None,
+            &Attempt::default(),
+            |_| Ok(()),
+            Duration::from_secs(5),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn pc_setup_flow_sends_attempt_id_and_bearer() {
+        let redeemed = json!({"purpose": "pc_setup", "user_id": USER, "passkey": {"id": "p"}});
+        let f = fixture_with_url(Some(("code", "c-1")), Some(redeemed), pc_setup_url()).await;
+        let m = signed_in_at(&f).await;
+        pc_setup(&f, &m).await.unwrap();
+        let seen = f.seen.lock().unwrap().clone().unwrap();
+        assert_eq!(seen["client"], "desktop");
+        assert_eq!(seen["bearer"], true);
+        let body = &seen["body"];
+        assert_eq!(body["purpose"], "pc_setup");
+        assert_eq!(body["attempt_id"], ATTEMPT);
+        assert!(body["username"].is_null());
+        assert!(body["action"].is_null());
+        assert!(body["target"].is_null());
+        // The redeem carries the bearer too.
+        let requests = f.server.received_requests().await.unwrap();
+        let redeem = requests
+            .iter()
+            .find(|r| r.url.path().ends_with("/redeem"))
+            .unwrap();
+        assert!(redeem.headers.get("authorization").is_some());
+        // The bound listener is the one the start named.
+        assert!(f.bound.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn pc_setup_redeem_returns_no_session() {
+        let redeemed = json!({"purpose": "pc_setup", "user_id": USER, "passkey": {"id": "p"}});
+        let f = fixture_with_url(Some(("code", "c-1")), Some(redeemed), pc_setup_url()).await;
+        let m = signed_in_at(&f).await;
+        let before = m.identity_generation();
+        assert!(matches!(
+            pc_setup(&f, &m).await.unwrap(),
+            FlowResult::PcSetupDone
+        ));
+        assert_eq!(m.identity_generation(), before, "no session was adopted");
+        // Another account's answer, or another purpose, is refused.
+        let mut other =
+            json!({"purpose": "pc_setup", "user_id": "0192f0c0-0000-7000-8000-00000000ffff"});
+        let f2 = fixture_with_url(Some(("code", "c-2")), Some(other.clone()), pc_setup_url()).await;
+        let m2 = signed_in_at(&f2).await;
+        assert_eq!(pc_setup(&f2, &m2).await.unwrap_err(), "PASSKEY_FAILED");
+        other["purpose"] = json!("sign_in");
+        other["user_id"] = json!(USER);
+        let f3 = fixture_with_url(Some(("code", "c-3")), Some(other), pc_setup_url()).await;
+        let m3 = signed_in_at(&f3).await;
+        assert_eq!(pc_setup(&f3, &m3).await.unwrap_err(), "PASSKEY_FAILED");
+    }
+
+    #[tokio::test]
+    async fn pc_setup_opens_only_the_flows_url() {
+        // The legacy `/desktop/<id>` page is not the pc_setup page.
+        let redeemed = json!({"purpose": "pc_setup", "user_id": USER});
+        let f = fixture(Some(("code", "c-1")), Some(redeemed)).await;
+        let m = signed_in_at(&f).await;
+        assert_eq!(pc_setup(&f, &m).await.unwrap_err(), "PASSKEY_FAILED");
+    }
+
+    #[tokio::test]
+    async fn pc_setup_redeem_refusals_reach_the_ui_as_their_codes() {
+        for code in ["PASSKEY_LIMIT", "PASSKEY_ALREADY_REGISTERED"] {
+            let f = fixture_with_url(Some(("code", "c-1")), None, pc_setup_url()).await;
+            Mock::given(method("POST"))
+                .and(path("/auth/passkeys/desktop/redeem"))
+                .respond_with(
+                    ResponseTemplate::new(409)
+                        .set_body_json(json!({"error": code, "message": "refused"})),
+                )
+                .mount(&f.server)
+                .await;
+            let m = signed_in_at(&f).await;
+            assert_eq!(pc_setup(&f, &m).await.unwrap_err(), code);
+        }
+    }
+
+    #[tokio::test]
+    async fn pc_setup_cancelled_in_the_browser_is_a_bare_code() {
+        let f = fixture_with_url(Some(("error", "PASSKEY_CANCELLED")), None, pc_setup_url()).await;
+        let m = signed_in_at(&f).await;
+        assert_eq!(pc_setup(&f, &m).await.unwrap_err(), "PASSKEY_CANCELLED");
+    }
+
     #[tokio::test]
     async fn step_up_returns_the_grant() {
         let grant = json!({"action": "admin.elevate", "target": "", "via": "passkey", "expires_at": "2027-01-01T00:00:00Z"});
@@ -608,7 +834,7 @@ mod tests {
         .await;
         match r.unwrap() {
             FlowResult::Granted(g) => assert_eq!(g, grant),
-            FlowResult::SignedIn(_) => panic!("expected a grant"),
+            _ => panic!("expected a grant"),
         }
     }
 
@@ -862,16 +1088,21 @@ mod ceremony_url_tests {
         let id = "4f1c5c43-6a0e-4f9a-9a3e-1f2d3c4b5a69";
         let u = format!("http://127.0.0.1:4100/auth/passkeys/desktop/{id}");
         assert_eq!(
-            super::ceremony_url("http://127.0.0.1:4100", &u, id),
+            super::ceremony_url("http://127.0.0.1:4100", &u, id, false),
             Some(u.clone())
         );
         let h = format!("https://chat.example.com/auth/passkeys/desktop/{id}");
         assert_eq!(
-            super::ceremony_url("https://chat.example.com", &h, id),
+            super::ceremony_url("https://chat.example.com", &h, id, false),
             Some(h.clone())
         );
         assert_eq!(
-            super::ceremony_url("http://chat.example.com", &h.replace("https", "http"), id),
+            super::ceremony_url(
+                "http://chat.example.com",
+                &h.replace("https", "http"),
+                id,
+                false
+            ),
             None
         );
     }

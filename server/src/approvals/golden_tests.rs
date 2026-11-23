@@ -43,6 +43,7 @@ fn kind_of(v: &Value) -> Kind {
         "device_login" => Kind::DeviceLogin,
         "device_stepup" => Kind::DeviceStepup,
         "enroll_pop" => Kind::EnrollPop,
+        "pc_setup" => Kind::PcSetup,
         other => panic!("unknown kind {other}"),
     }
 }
@@ -367,7 +368,7 @@ fn compressed_or_other_curve_keys_refused() {
 
 #[test]
 fn unknown_kind_byte_refused() {
-    for b in [0x00u8, 0x06, 0x10, 0x1f, 0xff] {
+    for b in [0x00u8, 0x07, 0x10, 0x1f, 0xff] {
         assert!(Kind::from_byte(b).is_none(), "{b:#x}");
     }
     for (b, k) in [
@@ -376,10 +377,11 @@ fn unknown_kind_byte_refused() {
         (3, Kind::DeviceLogin),
         (4, Kind::DeviceStepup),
         (5, Kind::EnrollPop),
+        (6, Kind::PcSetup),
     ] {
         assert_eq!(Kind::from_byte(b), Some(k));
     }
-    assert!(Kind::Login.is_approval() && Kind::Enroll.is_approval());
+    assert!(Kind::Login.is_approval() && Kind::Enroll.is_approval() && Kind::PcSetup.is_approval());
     assert!(!Kind::DeviceLogin.is_approval() && !Kind::EnrollPop.is_approval());
 }
 
@@ -441,4 +443,147 @@ fn from_json_refuses_wrong_shapes() {
     let mut ctx = v["context"].clone();
     ctx.as_object_mut().unwrap().remove("username");
     assert!(CanonicalContext::from_json(Kind::Login, &ctx).is_err());
+}
+
+// ---- pc_setup (kind 6): "Set up this PC", spec Step 3 ----
+
+fn pc_setup_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../mobile/android/app/src/test/resources/contract/pc_setup_sig_vectors.json")
+}
+
+fn load_pc_setup() -> Value {
+    let raw = std::fs::read_to_string(pc_setup_path()).expect("pc_setup vectors readable");
+    serde_json::from_str(&raw).expect("pc_setup vectors are JSON")
+}
+
+/// The test key of `golden/kaiku_sig_v1.json`: d = SHA-256("kaiku-sig-v1 golden key").
+fn golden_signing_key() -> p256::ecdsa::SigningKey {
+    let d = Sha256::digest(b"kaiku-sig-v1 golden key");
+    p256::ecdsa::SigningKey::from_bytes(&d).expect("valid scalar")
+}
+
+/// With `KAIKU_UPDATE_GOLDEN=1`, fills the computed fields and the signature
+/// (deterministic RFC 6979, low-s) of the `pc_setup` vectors; a no-op otherwise.
+fn maybe_update_pc_setup() {
+    use p256::ecdsa::signature::Signer;
+    if std::env::var(UPDATE_ENV).as_deref() != Ok("1") {
+        return;
+    }
+    let mut g = load_pc_setup();
+    for v in g["vectors"].as_array_mut().unwrap() {
+        let c = compute(v);
+        v["c_hex"] = Value::String(hex::encode(&c.c));
+        v["context_hash_hex"] = Value::String(hex::encode(c.hash));
+        v["signing_prefix_b64u"] = Value::String(b64u_encode(&c.prefix));
+        v["message_hex"] = Value::String(hex::encode(&c.message));
+        let sig: Signature = golden_signing_key().sign(&c.message);
+        let sig = sig.normalize_s().unwrap_or(sig);
+        v["signature"] = Value::String(b64u_encode(sig.to_der().as_bytes()));
+    }
+    let mut out = serde_json::to_string_pretty(&g).unwrap();
+    out.push('\n');
+    std::fs::write(pc_setup_path(), out).unwrap();
+}
+
+/// The vector rebuilt byte by byte from its inputs, without the encoder:
+/// ```text
+/// C = attempt_id ‖ sid_hash ‖ lp(client_description) ‖ i64(session_created_at) ‖ lp(place)
+/// M = magic ‖ 6 ‖ challenge_id ‖ nonce ‖ i64(expires_at) ‖ lp(origin) ‖ user_id ‖ device_id
+///     ‖ SHA-256("kaiku-sig-context-v1" ‖ 6 ‖ C) ‖ decision ‖ lp(response)
+/// ```
+fn check_pc_setup_vector(v: &Value, decision_byte: u8) {
+    let name = s(v, "name");
+    let ctx = &v["context"];
+    let lp = |out: &mut Vec<u8>, b: &[u8]| {
+        out.extend_from_slice(&u32::try_from(b.len()).unwrap().to_be_bytes());
+        out.extend_from_slice(b);
+    };
+    let mut c = Vec::new();
+    c.extend_from_slice(Uuid::parse_str(s(ctx, "attempt_id")).unwrap().as_bytes());
+    c.extend_from_slice(&b64u_decode(s(ctx, "sid_hash")).unwrap());
+    lp(&mut c, s(ctx, "client_description").as_bytes());
+    c.extend_from_slice(&ctx["session_created_at"].as_i64().unwrap().to_be_bytes());
+    lp(&mut c, s(ctx, "place").as_bytes());
+    assert_eq!(hex::encode(&c), s(v, "c_hex"), "{name} C");
+
+    let mut h = Sha256::new();
+    h.update(b"kaiku-sig-context-v1");
+    h.update([6u8]);
+    h.update(&c);
+    let hash: [u8; 32] = h.finalize().into();
+    assert_eq!(hex::encode(hash), s(v, "context_hash_hex"), "{name} hash");
+
+    let response = hex::decode(s(v, "response_hex")).unwrap();
+    assert_eq!(response.len(), 32, "response is the 32 token bytes");
+    let mut m = Vec::new();
+    m.extend_from_slice(b"kaiku-sig-v1");
+    m.push(6);
+    m.extend_from_slice(Uuid::parse_str(s(v, "challenge_id")).unwrap().as_bytes());
+    m.extend_from_slice(&hex::decode(s(v, "nonce_hex")).unwrap());
+    m.extend_from_slice(&v["expires_at"].as_i64().unwrap().to_be_bytes());
+    lp(&mut m, s(v, "origin").as_bytes());
+    m.extend_from_slice(Uuid::parse_str(s(v, "user_id")).unwrap().as_bytes());
+    m.extend_from_slice(Uuid::parse_str(s(v, "device_id")).unwrap().as_bytes());
+    m.extend_from_slice(&hash);
+    m.push(decision_byte);
+    lp(&mut m, &response);
+    assert_eq!(hex::encode(&m), s(v, "message_hex"), "{name} M");
+    assert_eq!(m[12], 6, "kind byte");
+    assert_eq!(compute(v).message, m, "encoder agrees with the hand build");
+
+    let key = parse_public_key(&b64u_decode(s(&load_pc_setup(), "public_key")).unwrap()).unwrap();
+    let sig = b64u_decode(s(v, "signature")).unwrap();
+    verify(&key, &m, &sig).unwrap_or_else(|e| panic!("{name}: {e:?}"));
+    // The phone signs the QR token: another response must not verify.
+    let mut other = m.clone();
+    let last = other.len() - 1;
+    other[last] ^= 1;
+    assert_eq!(verify(&key, &other, &sig), Err(SignatureError::Invalid));
+}
+
+#[test]
+fn pc_setup_approve_vector() {
+    maybe_update_pc_setup();
+    let g = load_pc_setup();
+    assert_eq!(g["version"], 1);
+    check_pc_setup_vector(vector(&g, "P01"), Decision::Approve as u8);
+    // Pinned, so a regenerated file cannot silently change the contract.
+    assert_eq!(
+        s(vector(&g, "P01"), "context_hash_hex"),
+        "c29c6937fa3cca93a1b6217bb5b3c24d72517d3cb41fbc978607c216f5ab063b"
+    );
+}
+
+#[test]
+fn pc_setup_report_vector() {
+    maybe_update_pc_setup();
+    let g = load_pc_setup();
+    let (p01, p02) = (vector(&g, "P01"), vector(&g, "P02"));
+    check_pc_setup_vector(p02, Decision::Report as u8);
+    // Approve and report differ only in challenge id (and so the decision
+    // byte and the signature); the context is the same.
+    assert_eq!(s(p01, "context_hash_hex"), s(p02, "context_hash_hex"));
+    assert_ne!(s(p01, "signature"), s(p02, "signature"));
+}
+
+#[test]
+fn pc_setup_context_json_round_trips() {
+    let g = load_pc_setup();
+    let v = vector(&g, "P01");
+    let ctx = CanonicalContext::from_json(Kind::PcSetup, &v["context"]).unwrap();
+    assert_eq!(ctx.kind(), Kind::PcSetup);
+    assert_eq!(ctx.to_json(), v["context"]);
+    let mut bad = v["context"].clone();
+    bad.as_object_mut().unwrap().remove("place");
+    assert!(CanonicalContext::from_json(Kind::PcSetup, &bad).is_err());
+}
+
+#[test]
+fn enroll_challenge_refuses_the_pc_setup_variant() {
+    let g = load();
+    let mut ctx = vector(&g, "V02")["context"].clone();
+    assert!(CanonicalContext::from_json(Kind::Enroll, &ctx).is_ok());
+    ctx["variant"] = Value::String("pc_setup".into());
+    assert!(CanonicalContext::from_json(Kind::Enroll, &ctx).is_err());
 }

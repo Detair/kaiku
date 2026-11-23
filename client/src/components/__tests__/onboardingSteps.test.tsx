@@ -19,6 +19,7 @@ vi.mock("@/stores/auth", () => ({
   authState: { isInitialized: true, setupRequired: false },
   currentUser: () => ({ id: "u1", display_name: "Ann" }),
   updateUser: vi.fn(),
+  setupStatusKnown: () => true,
 }));
 vi.mock("@/stores/preferences", () => ({
   preferences: () => ({ onboarding_completed: false }),

@@ -72,3 +72,24 @@ pub fn build_clear_legacy_cookie(config: &Config) -> Cookie<'static> {
     cookie.set_max_age(Duration::ZERO);
     cookie
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cookie_name_drops_the_secure_prefix_only_without_secure_cookies() {
+        let mut config = Config::default_for_test();
+        config.cookie_secure = false;
+        assert_eq!(
+            cookie_name("__Secure-kaiku_pcsetup", &config),
+            "kaiku_pcsetup"
+        );
+        assert_eq!(cookie_name("kaiku_refresh", &config), "kaiku_refresh");
+        config.cookie_secure = true;
+        assert_eq!(
+            cookie_name("__Secure-kaiku_pcsetup", &config),
+            "__Secure-kaiku_pcsetup"
+        );
+    }
+}

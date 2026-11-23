@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::PgConnection;
 use uuid::Uuid;
-use webauthn_rs::prelude::CreationChallengeResponse;
+use webauthn_rs::prelude::{CreationChallengeResponse, PasskeyRegistration};
 
 use super::ceremony::{self, CeremonyKind, CeremonyRecord, CeremonyState};
 use super::queries::{self, InsertError, NewPasskey, PasskeyRow, PasskeyState};
@@ -34,6 +34,8 @@ pub enum RegistrationVia {
     Request,
     /// A setup link opened in a browser (C29 enrolment claim, L1b).
     Enrollment,
+    /// "Set up this PC": the requesting session after the phone's code.
+    PcSetup,
 }
 
 /// What the ceremony is bound to besides the account. L1b appends
@@ -55,6 +57,12 @@ pub enum RegistrationBinding {
     Enrollment {
         enrollment_id: Uuid,
     },
+    /// A "Set up this PC" attempt's enrolment, in its requesting session.
+    PcSetup {
+        session_id: Uuid,
+        attempt_id: Uuid,
+        enrollment_id: Uuid,
+    },
 }
 
 impl RegistrationVia {
@@ -65,6 +73,7 @@ impl RegistrationVia {
             Self::Ticket => "ticket",
             Self::Request => "request",
             Self::Enrollment => "enrollment",
+            Self::PcSetup => "pc_setup",
         }
     }
 }
@@ -104,21 +113,7 @@ pub async fn begin(
     binding: RegistrationBinding,
     label: String,
 ) -> AuthResult<(Uuid, CreationChallengeResponse)> {
-    let rp = rp_of(state)?;
-    let handle = queries::user_handle(&state.db, user_id).await?;
-    let (username, display_name): (String, String) =
-        sqlx::query_as("SELECT username, display_name FROM users WHERE id = $1")
-            .bind(user_id)
-            .fetch_one(&state.db)
-            .await?;
-    let exclude = queries::list_live(&state.db, user_id)
-        .await?
-        .into_iter()
-        .map(|r| r.credential_id.into())
-        .collect();
-    let (ccr, st) = rp
-        .start_registration(handle, &username, &display_name, exclude)
-        .map_err(failure)?;
+    let (ccr, st) = options_for(state, user_id).await?;
     let ceremony_id = ceremony::new_ceremony_id();
     ceremony::put_new(
         &state.redis,
@@ -135,6 +130,28 @@ pub async fn begin(
     )
     .await?;
     Ok((ceremony_id, ccr))
+}
+
+/// Creation options and their state for `user_id`, not yet stored: the
+/// caller binds them in its own ceremony record.
+pub(crate) async fn options_for(
+    state: &AppState,
+    user_id: Uuid,
+) -> AuthResult<(CreationChallengeResponse, PasskeyRegistration)> {
+    let rp = rp_of(state)?;
+    let handle = queries::user_handle(&state.db, user_id).await?;
+    let (username, display_name): (String, String) =
+        sqlx::query_as("SELECT username, display_name FROM users WHERE id = $1")
+            .bind(user_id)
+            .fetch_one(&state.db)
+            .await?;
+    let exclude = queries::list_live(&state.db, user_id)
+        .await?
+        .into_iter()
+        .map(|r| r.credential_id.into())
+        .collect();
+    rp.start_registration(handle, &username, &display_name, exclude)
+        .map_err(failure)
 }
 
 /// Store a verified registration inside the caller's transaction.
@@ -193,6 +210,36 @@ pub async fn complete_recorded_by(
     via: RegistrationVia,
     actor: Actor,
 ) -> AuthResult<(PasskeyRow, Uuid)> {
+    complete_recorded_with(
+        conn,
+        user_id,
+        label,
+        verified,
+        passkey_state,
+        ready_at,
+        via,
+        actor,
+        serde_json::Map::new(),
+    )
+    .await
+}
+
+/// [`complete_recorded_by`] with more `authenticator_added` details.
+///
+/// The notice of a "Set up this PC" passkey names the PC and the phone. The
+/// fixed keys (`type`, `label`, `aaguid`, `backup_eligible`, `via`) win.
+#[allow(clippy::too_many_arguments)]
+pub async fn complete_recorded_with(
+    conn: &mut PgConnection,
+    user_id: Uuid,
+    label: &str,
+    verified: &VerifiedRegistration,
+    passkey_state: PasskeyState,
+    ready_at: Option<DateTime<Utc>>,
+    via: RegistrationVia,
+    actor: Actor,
+    extra: serde_json::Map<String, serde_json::Value>,
+) -> AuthResult<(PasskeyRow, Uuid)> {
     if queries::active_count(&mut *conn, user_id).await? >= MAX_ACTIVE_PASSKEYS as i64 {
         return Err(AuthError::PasskeyLimit);
     }
@@ -211,17 +258,22 @@ pub async fn complete_recorded_by(
         InsertError::Duplicate => AuthError::PasskeyAlreadyRegistered,
         InsertError::Db(e) => AuthError::Database(e),
     })?;
+    let mut details = extra;
+    details.extend([
+        ("type".to_string(), serde_json::json!("passkey")),
+        ("label".to_string(), serde_json::json!(row.label)),
+        ("aaguid".to_string(), serde_json::json!(row.aaguid)),
+        (
+            "backup_eligible".to_string(),
+            serde_json::json!(row.backup_eligible),
+        ),
+        ("via".to_string(), serde_json::json!(via.as_str())),
+    ]);
     let mut ev = NewSecurityEvent::new(
         user_id,
         EventType::AuthenticatorAdded,
         actor,
-        serde_json::json!({
-            "type": "passkey",
-            "label": row.label,
-            "aaguid": row.aaguid,
-            "backup_eligible": row.backup_eligible,
-            "via": via.as_str(),
-        }),
+        serde_json::Value::Object(details),
     );
     ev.authenticator = Some(AuthenticatorRef::passkey(row.id));
     let event = record(conn, ev).await?;

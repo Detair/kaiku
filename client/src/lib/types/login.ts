@@ -420,6 +420,9 @@ export const SECURITY_EVENT_TYPES = [
   "factor_restored",
   "throttle_reset",
   "may_approve_changed",
+  // "Set up this PC" (C28 additions 2026-11-08).
+  "pc_setup_reported",
+  "pc_setup_failed",
 ] as const;
 export type SecurityEventType = (typeof SECURITY_EVENT_TYPES)[number] | "unknown";
 
@@ -552,6 +555,8 @@ export interface MeSecurity {
   key_devices: number;
   passkeys: number;
   may_approve: boolean;
+  /** "Set up this PC" would be accepted now (false exactly when its start would 403). */
+  can_set_up_this_pc: boolean;
   bootstrap_open: boolean;
   recovery_contact: RecoveryContact | null;
   open_request: AccountRequestSummary | null;
@@ -577,6 +582,7 @@ export function decodeMeSecurity(raw: unknown): MeSecurity {
     key_devices: typeof s.key_devices === "number" ? s.key_devices : 0,
     passkeys: typeof s.passkeys === "number" ? s.passkeys : 0,
     may_approve: s.may_approve === true,
+    can_set_up_this_pc: s.can_set_up_this_pc === true,
     bootstrap_open: s.bootstrap_open === true,
     recovery_contact: (s.recovery_contact as RecoveryContact | null) ?? null,
     open_request: s.open_request ? decodeAccountRequestSummary(s.open_request) : null,

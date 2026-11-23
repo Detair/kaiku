@@ -11,3 +11,8 @@ button { display: block; width: 100%; min-height: 48px; margin: 0 0 0.75rem; fon
   border: 2px solid var(--accent); border-radius: 8px; background: var(--accent); color: #ffffff; cursor: pointer; }
 button.secondary { background: transparent; color: var(--fg); }
 button:focus-visible { outline: 3px solid var(--fg); outline-offset: 2px; }
+label { display: block; font-weight: 600; margin: 0 0 0.5rem; }
+input { display: block; box-sizing: border-box; width: 100%; min-height: 48px; margin: 0 0 0.75rem; padding: 0 0.75rem;
+  font: inherit; font-size: 1.5rem; letter-spacing: 0.3em; border: 2px solid var(--muted); border-radius: 8px;
+  background: var(--bg); color: var(--fg); }
+input:focus-visible { outline: 3px solid var(--fg); outline-offset: 2px; }

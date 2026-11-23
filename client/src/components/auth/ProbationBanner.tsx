@@ -8,13 +8,14 @@
 
 import { Component, Show, createEffect, createSignal, onCleanup } from "solid-js";
 import { ShieldAlert } from "lucide-solid";
-import { t } from "@/i18n";
+import { t, type MessageKey } from "@/i18n";
 import { isProbation, replaceSessionWithPasskey } from "@/stores/auth";
 import { meSecurity, refreshMeSecurity } from "@/stores/security";
 import { canUsePasskeys } from "@/lib/tauri/passkeys";
 import { passkeyFailureText } from "@/lib/authErrors";
 import { isTauri } from "@/lib/tauri/common";
 import LinuxPasskeyHint from "./LinuxPasskeyHint";
+import { SetUpThisPcButton, canSetUpThisPc } from "./SetUpThisPcButton";
 
 // Per chat-only session, not stored: the banner comes back after a restart
 // and for every new chat-only session.
@@ -41,6 +42,14 @@ const ProbationBanner: Component = () => {
   });
   const hasPasskey = () => (meSecurity()?.passkeys ?? 0) > 0;
   const canSignIn = () => hasPasskey() && canUsePasskeys();
+  // The text names only a way this account has: signing in with a passkey,
+  // "Set up this PC", or neither (then the hint below says to ask the admin).
+  // Until the overview has confirmed one (pending or failed), it names none.
+  const text = (): MessageKey => {
+    if (!meSecurity()) return "auth.probation.neutral";
+    if (canSignIn()) return "auth.probation.text";
+    return canSetUpThisPc() ? "pcSetup.banner.setUp" : "pcSetup.banner.noPasskey";
+  };
 
   const signIn = async () => {
     attempt?.abort();
@@ -83,23 +92,27 @@ const ProbationBanner: Component = () => {
         >
           <div class="flex items-start gap-3 flex-1 min-w-64">
             <ShieldAlert class="w-5 h-5 mt-0.5 text-status-warning shrink-0" aria-hidden="true" />
-            <p class="text-base text-text-primary">{t("auth.probation.text")}</p>
+            <p class="text-base text-text-primary">{t(text())}</p>
           </div>
           <Show when={error()}>
             <p role="alert" class="order-last w-full text-sm text-text-primary">{error()}</p>
           </Show>
           <div class="flex flex-wrap shrink-0 max-w-full items-center justify-end gap-2">
+            <Show when={canSignIn()}>
+              <button type="button" class="btn-primary min-h-11 text-base" disabled={busy()} onClick={() => void signIn()}>
+                {t("auth.probation.signIn")}
+              </button>
+            </Show>
             <Show
-              when={canSignIn()}
+              when={canSetUpThisPc()}
               fallback={
                 <Show when={meSecurity() && !hasPasskey()}>
                   <p class="text-sm text-text-primary">{t("auth.probation.addPasskeyHint")}</p>
                 </Show>
               }
             >
-              <button type="button" class="btn-primary min-h-11 text-base" disabled={busy()} onClick={() => void signIn()}>
-                {t("auth.probation.signIn")}
-              </button>
+              {/* With a passkey, signing in with it stays the first action. */}
+              <SetUpThisPcButton primary={!canSignIn()} />
             </Show>
             <Show when={isTauri() && busy()}>
               <div role="status" class="w-full space-y-1 text-sm">

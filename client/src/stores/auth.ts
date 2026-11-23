@@ -6,6 +6,7 @@
 
 import { loadServerFeatures, resetServerFeatures } from "@/stores/serverFeatures";
 import { createStore } from "solid-js/store";
+import { createSignal } from "solid-js";
 import { codeIs } from "@/lib/errorCode";
 import {
   decodeAuthSession,
@@ -542,6 +543,60 @@ export function abandonRestore(): void {
   setAuthState({ restorePending: false, isInitialized: true, isLoading: false });
 }
 
+/**
+ * Whether the server's setup state is known for this session: false while a
+ * restored session is still asking, so the first-run tour never starts over
+ * a setup wizard that is about to show.
+ */
+const [setupChecked, setSetupChecked] = createSignal(true);
+/** Bumped by every setup check: an older one stops. */
+let setupCheck = 0;
+/** First pause after a failed setup check; it doubles up to the max. */
+const SETUP_RETRY_MS = 2_000;
+const SETUP_RETRY_MAX_MS = 30_000;
+
+/** A sign-in answer carries the setup state: a running check is over. */
+function settleSetupCheck(): void {
+  setupCheck++;
+  setSetupChecked(true);
+}
+export const setupStatusKnown = setupChecked;
+
+/**
+ * A restored session learns whether the server setup is still open (only
+ * sign-in answers carry `setup_required`), so the first admin's setup wizard
+ * comes back after a reload. The answer counts only for the account it was
+ * asked for. A failed check keeps the state unknown (the first-run tour
+ * waits) and is asked again, with a growing pause, while that account stays
+ * signed in.
+ */
+async function restoreSetupRequired(userId: string): Promise<void> {
+  const mine = ++setupCheck;
+  setSetupChecked(false);
+  let pause = SETUP_RETRY_MS;
+  for (;;) {
+    // Another account, a sign-out or a newer check: this one is over.
+    if (mine !== setupCheck) return;
+    if (authState.user?.id !== userId) {
+      setSetupChecked(true);
+      return;
+    }
+    try {
+      const complete = await tauri.isServerSetupComplete();
+      if (mine !== setupCheck) return;
+      if (authState.user?.id === userId) setAuthState("setupRequired", !complete);
+      setSetupChecked(true);
+      return;
+    } catch {
+      // "Could not check" is not "checked": the tour keeps waiting and the
+      // check is asked again.
+      await new Promise((resolve) => setTimeout(resolve, pause));
+      pause = Math.min(pause * 2, SETUP_RETRY_MAX_MS);
+    }
+  }
+}
+
+
 /** One restore attempt; reschedules itself while the server is unreachable. */
 async function attemptRestore(): Promise<void> {
   if (restoreInFlight) return;
@@ -563,6 +618,7 @@ async function attemptRestore(): Promise<void> {
         passwordChangeRequired,
       });
 
+      void restoreSetupRequired(result.user.id);
       if (!passwordChangeRequired) await startSessionServices();
       return;
     }
@@ -681,6 +737,7 @@ export async function loginWithPasskey(
   stepPassword = null;
   // The security overview belongs to the account that signed in (L2a).
   resetMeSecurity();
+  settleSetupCheck();
   setAuthState({
     restorePending: false,
     user: result.user,
@@ -811,6 +868,7 @@ export async function completeSignIn(
   pendingTemporaryPassword = passwordChangeRequired ? stepPassword : null;
   stepPassword = null;
   resetMeSecurity();
+  settleSetupCheck();
   setAuthState({
     restorePending: false,
     user: result.user,

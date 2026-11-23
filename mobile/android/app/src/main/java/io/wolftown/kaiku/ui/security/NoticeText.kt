@@ -2,14 +2,40 @@ package io.wolftown.kaiku.ui.security
 
 import androidx.annotation.StringRes
 import io.wolftown.kaiku.R
+import io.wolftown.kaiku.domain.model.SecurityEvent
+import kotlinx.serialization.json.JsonPrimitive
 
 /**
  * C28 text keys (C15): web `security.notice.<eventType>` / `security.push.<eventType>`
  * map to these Android names. Literal `when`s, so every string is referenced; an
  * unknown event type uses the generic text. Arguments, in this order:
- * `%1$s` subject, `%2$s` actor, `%3$s` device, `%4$d` count.
+ * `%1$s` subject, `%2$s` actor, `%3$s` device, `%4$d` count, and for a new
+ * passkey from "Set up this PC" `%5$s` the computer and `%6$s` the phone.
  */
 object NoticeText {
+    /**
+     * The title of [event] (of type [eventType]): a new passkey from "Set up this
+     * PC" names the computer and the approving phone when the event has both.
+     */
+    @StringRes
+    fun title(eventType: String, event: SecurityEvent?): Int =
+        if (eventType == "authenticator_added" && detail(event, "via") == "pc_setup" &&
+            computer(event) != null && phone(event) != null
+        ) {
+            R.string.security_notice_authenticator_added_pc_setup
+        } else {
+            title(eventType)
+        }
+
+    /** The computer of a "Set up this PC" event (the requesting session's description). */
+    fun computer(event: SecurityEvent?): String? = detail(event, "client_description")
+
+    /** The phone that approved a "Set up this PC" event. */
+    fun phone(event: SecurityEvent?): String? = detail(event, "approving_device_label")
+
+    private fun detail(event: SecurityEvent?, key: String): String? =
+        (event?.details?.get(key) as? JsonPrimitive)?.takeIf { it.isString }?.content?.takeIf { it.isNotBlank() }
+
     @StringRes
     fun title(eventType: String): Int = when (eventType) {
         "sign_in" -> R.string.security_notice_sign_in
@@ -51,6 +77,8 @@ object NoticeText {
         "factor_restored" -> R.string.security_notice_factor_restored
         "throttle_reset" -> R.string.security_notice_throttle_reset
         "may_approve_changed" -> R.string.security_notice_may_approve_changed
+        "pc_setup_reported" -> R.string.security_notice_pc_setup_reported
+        "pc_setup_failed" -> R.string.security_notice_pc_setup_failed
         else -> R.string.security_notice_generic
     }
 
@@ -95,6 +123,8 @@ object NoticeText {
         "factor_restored" -> R.string.security_push_factor_restored
         "throttle_reset" -> R.string.security_push_throttle_reset
         "may_approve_changed" -> R.string.security_push_may_approve_changed
+        "pc_setup_reported" -> R.string.security_push_pc_setup_reported
+        "pc_setup_failed" -> R.string.security_push_pc_setup_failed
         else -> R.string.security_push_generic
     }
 }
