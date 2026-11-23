@@ -197,4 +197,26 @@ class LoginApprovalViewModelTest {
     private fun approvals_gate() {
         api.denyGate = kotlinx.coroutines.CompletableDeferred()
     }
+
+    /**
+     * A key record that does not name its install id, and the app's id cannot be stored by the
+     * time the answer is signed: the screen says so, nothing is signed or sent, and nothing crashes.
+     */
+    @Test fun `an install id that cannot be stored when signing shows the storage text`() = runTest {
+        val f = KeyDeviceFixture(backgroundScope)
+        f.store.stored = f.store.stored!!.copy(installId = null)
+        f.repo.reload()
+        api.nextChallenge = SigFixtures.challengeFor(SigKind.LOGIN, 1, SigFixtures.V01_CONTEXT, "qr")
+        var asked = 0
+        val v = LoginApprovalViewModel(api, f.signer, f.repo, {
+            if (asked++ > 0) throw IllegalStateException("push device id not stored")
+            SigFixtures.DEVICE_ID
+        }, appScope = backgroundScope)
+        v.start(payload)
+        assertTrue(v.ui.value is LoginApprovalUi.Context)
+        v.approve(activity)
+        assertEquals(LoginApprovalUi.Error(R.string.security_key_storage_unreadable, rescan = true), v.ui.value)
+        assertTrue(api.lastAnswer == null)
+        assertTrue(f.verifier.prompts.isEmpty())
+    }
 }
