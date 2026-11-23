@@ -391,9 +391,10 @@ async fn session_origin_backfill(pool: PgPool) {
     let bare = raw_user(&pool, "origin_bare", false, false).await;
     let dev = raw_device(&pool, u).await;
     let removed = raw_device(&pool, u).await;
+    // Removed well before every sign-in below (more than a minute).
     sqlx::query(
-        "UPDATE approval_devices SET state = 'revoked', revoked_at = NOW(),
-                revoke_reason = 'owner'
+        "UPDATE approval_devices SET state = 'revoked',
+                revoked_at = NOW() - INTERVAL '2 minutes', revoke_reason = 'owner'
           WHERE id = $1",
     )
     .bind(removed)
@@ -477,6 +478,13 @@ async fn session_origin_backfill(pool: PgPool) {
     let acct_before = raw_user(&pool, "origin_before", false, false).await;
     let dev_before = raw_device(&pool, acct_before).await;
     revoke_raw_device(&pool, dev_before).await;
+    sqlx::query(
+        "UPDATE approval_devices SET revoked_at = NOW() - INTERVAL '2 minutes' WHERE id = $1",
+    )
+    .bind(dev_before)
+    .execute(&pool)
+    .await
+    .unwrap();
     raw_device(&pool, acct_before).await;
     let unknown_before = unknown_on(acct_before).await;
     // Only a phone that was never active, revoked after the sign-in → stays.
@@ -519,6 +527,28 @@ async fn session_origin_backfill(pool: PgPool) {
     .execute(&pool)
     .await
     .unwrap();
+    // A removal that committed after the sign-in but carries a time 50 ms
+    // before it (its transaction began earlier) → ends.
+    let acct_margin = raw_user(&pool, "origin_margin", false, false).await;
+    let dev_margin = raw_device(&pool, acct_margin).await;
+    let unknown_margin = unknown_on(acct_margin).await;
+    revoke_raw_device(&pool, dev_margin).await;
+    sqlx::query(
+        "UPDATE approval_devices SET revoked_at =
+                (SELECT created_at FROM sessions WHERE id = $2) - INTERVAL '50 milliseconds'
+          WHERE id = $1",
+    )
+    .bind(dev_margin)
+    .bind(unknown_margin)
+    .execute(&pool)
+    .await
+    .unwrap();
+    // Two sign-in events of one session that disagree (generations 3 and
+    // 4, the account is at 4): the oldest counts → ends.
+    let two_events = raw_session(&pool, u, &["password", "totp"], false).await;
+    raw_sign_in_event(&pool, u, two_events, factors(Some(3), Some(2))).await;
+    raw_sign_in_event(&pool, u, two_events, factors(Some(4), Some(2))).await;
+
     // The revocations after the sign-ins.
     revoke_raw_device(&pool, dev_after).await;
     revoke_raw_device(&pool, pending).await;
@@ -605,7 +635,12 @@ async fn session_origin_backfill(pool: PgPool) {
         ended(&pool, totp_renewed).await,
         (false, Some("factor_ended".into()))
     );
-    for sid in [unknown_after, unknown_reenrol] {
+    assert_eq!(
+        ended(&pool, two_events).await,
+        (false, Some("factor_ended".into())),
+        "the oldest recorded generation counts"
+    );
+    for sid in [unknown_after, unknown_reenrol, unknown_margin] {
         assert_eq!(
             ended(&pool, sid).await,
             (false, Some("authenticator_revoked".into())),
@@ -928,6 +963,21 @@ async fn repudiated_phone_ends_qr_sessions(pool: PgPool) {
     .await;
     assert_eq!(s, 200, "{b}");
     assert_eq!(b["revoked_authenticator_ids"], json!([phone.row_id]));
+    // The answer names every session the report ended: the phone's own and
+    // the PC it confirmed.
+    let mut listed: Vec<String> = b["ended_session_ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    listed.sort();
+    let mut want = vec![
+        phone.session_id.unwrap().to_string(),
+        sid_of(&pc).to_string(),
+    ];
+    want.sort();
+    assert_eq!(listed, want);
     assert_eq!(
         ended(&pool, sid_of(&pc)).await,
         (false, Some("authenticator_revoked".into()))
@@ -1097,6 +1147,10 @@ async fn collect_racing_revocation(pool: PgPool) {
     .await
     .unwrap();
     eprintln!("collect_racing_revocation: collected {collected}, refused {refused}");
+    assert!(
+        collected > 0 && refused > 0,
+        "both commit orders must occur ({collected} collected, {refused} refused)"
+    );
     assert_eq!(
         left, 0,
         "live sessions confirmed by a revoked device ({collected} collected, {refused} refused)"
@@ -1941,4 +1995,212 @@ async fn ending_every_session_waits_for_the_account_lock(pool: PgPool) {
         ended(&pool, second).await,
         (false, Some("account_deleted".into()))
     );
+}
+
+// ============================================================================
+// Fix round: a pending phone, the report's answer, logout and the lock
+// ============================================================================
+
+async fn unknown_approver_session(pool: &PgPool, user: Uuid) -> Uuid {
+    let sid = raw_session(pool, user, &["qr"], false).await;
+    sqlx::query("UPDATE sessions SET approved_by_type = 'key_device' WHERE id = $1")
+        .bind(sid)
+        .execute(pool)
+        .await
+        .unwrap();
+    sid
+}
+
+/// A phone that was only being set up (pending) never confirmed a sign-in:
+/// removing it, by its owner or with "That wasn't me" on its
+/// `authenticator_added`, ends no session whose confirming phone is
+/// unknown. Removing a phone that had been active still does.
+#[sqlx::test]
+async fn removing_a_pending_phone_leaves_unknown_approver_sessions(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let phone = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    let pending = KeyDeviceFixture::insert(&pool, &app.config, user, "pending").await;
+    let unknown = unknown_approver_session(&pool, user).await;
+
+    // The owner removes the pending phone.
+    let (s, b) = remove_device(&app, &phone, pending.row_id).await;
+    assert_eq!(s, 200, "{b}");
+    assert!(
+        live(&pool, unknown).await,
+        "a pending phone confirmed nothing"
+    );
+    let removed = event_details(&pool, user, "authenticator_removed").await;
+    assert_eq!(removed.last().unwrap()["ended_sessions"], 0);
+
+    // "That wasn't me" on another pending phone's `authenticator_added`.
+    let pending2 = KeyDeviceFixture::insert(&pool, &app.config, user, "pending").await;
+    let added = {
+        let mut conn = pool.acquire().await.unwrap();
+        let mut ev = NewSecurityEvent::new(
+            user,
+            EventType::AuthenticatorAdded,
+            Actor::User(user),
+            json!({"type": "key_device"}),
+        );
+        ev.authenticator = Some(AuthenticatorRef::key_device(pending2.row_id));
+        record(&mut conn, ev).await.unwrap()
+    };
+    grant_step_up(
+        &pool,
+        phone.session_id.unwrap(),
+        "event.repudiate",
+        &added.to_string(),
+    )
+    .await;
+    let (s, b) = call(
+        &app,
+        Method::POST,
+        &format!("/api/me/security-events/{added}/repudiate"),
+        &phone.access_token,
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(b["revoked_authenticator_ids"], json!([pending2.row_id]));
+    assert!(
+        live(&pool, unknown).await,
+        "a pending phone confirmed nothing"
+    );
+
+    // A phone that had been active ends it.
+    let other = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    let (s, b) = remove_device(&app, &phone, other.row_id).await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(
+        ended(&pool, unknown).await,
+        (false, Some("authenticator_revoked".into()))
+    );
+}
+
+fn id_set(v: &Value) -> Vec<String> {
+    let mut ids: Vec<String> = v
+        .as_array()
+        .expect("ended_session_ids")
+        .iter()
+        .map(|x| x.as_str().unwrap().to_string())
+        .collect();
+    ids.sort();
+    ids
+}
+
+/// The answer to "That wasn't me" names every session the report ended,
+/// also those the blocked factor ended: with a recovery code the two other
+/// password sessions; with an authenticator code the reporter's own too.
+#[sqlx::test]
+async fn report_answer_names_every_ended_session(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    for proof in ["recovery_code", "totp"] {
+        let (user, name) = password_user(&pool, PASSWORD).await;
+        let totp = enable_totp(&pool, &app.config, user, &name).await;
+        let codes = recovery_codes(&app, user).await;
+        let acting = password_totp_pc(&app, user, &name, PASSWORD, &totp).await;
+        let a = password_totp_pc(&app, user, &name, PASSWORD, &totp).await;
+        let b = password_totp_pc(&app, user, &name, PASSWORD, &totp).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let event = unfinished_password_event(&app, user, &name, PASSWORD).await;
+        forget_totp_step(&app, user).await;
+        let factor = if proof == "totp" {
+            json!({"type": "totp", "code": totp.generate_current().unwrap()})
+        } else {
+            json!({"type": "recovery_code", "code": codes[0]})
+        };
+        let (s, r) = part2_repudiate(
+            &app,
+            acting["access_token"].as_str().unwrap(),
+            event,
+            factor,
+        )
+        .await;
+        assert_eq!(s, 200, "{r}");
+        let mut want = vec![sid_of(&a).to_string(), sid_of(&b).to_string()];
+        if proof == "totp" {
+            want.push(sid_of(&acting).to_string());
+        }
+        want.sort();
+        assert_eq!(id_set(&r["ended_session_ids"]), want, "{proof}");
+    }
+}
+
+/// A logout that names two sessions (its access token's and another
+/// refresh token's) takes the account lock first, like every other end of
+/// several sessions: it waits for a holder of the lock, then ends both.
+#[sqlx::test]
+async fn logout_of_two_sessions_takes_the_account_lock(pool: PgPool) {
+    use vc_server::approvals::transition::lock_accounts;
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, name) = password_user(&pool, PASSWORD).await;
+    let totp = enable_totp(&pool, &app.config, user, &name).await;
+    let first = password_totp_pc(&app, user, &name, PASSWORD, &totp).await;
+    let second = password_totp_pc(&app, user, &name, PASSWORD, &totp).await;
+    let logout = || {
+        let req = peer_request(Method::POST, "/auth/logout")
+            .header(
+                "Authorization",
+                format!("Bearer {}", first["access_token"].as_str().unwrap()),
+            )
+            .header("Content-Type", "application/json")
+            .header("X-Kaiku-Client", "desktop")
+            .body(Body::from(
+                json!({"refresh_token": second["refresh_token"]}).to_string(),
+            ))
+            .unwrap();
+        app.oneshot(req)
+    };
+    let mut holder = pool.begin().await.unwrap();
+    lock_accounts(&mut holder, &[user]).await.unwrap();
+    let (resp, ()) = tokio::join!(logout(), async {
+        super::helpers::wait_for_lock_waiters(&pool, 1).await;
+        holder.commit().await.unwrap();
+    });
+    assert_eq!(resp.status().as_u16(), 200);
+    for sid in [sid_of(&first), sid_of(&second)] {
+        assert_eq!(ended(&pool, sid).await, (false, Some("logout".into())));
+    }
+}
+
+/// A logout of two sessions racing a password change made from one of them
+/// that ends the other: both requests complete without a database error.
+#[sqlx::test]
+async fn logout_and_factor_change_never_deadlock(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    for round in 0..10 {
+        let (user, name, totp, pk_sid, pk_token) = factor_account(&app).await;
+        let pw = password_totp_pc(&app, user, &name, PASSWORD, &totp).await;
+        grant_step_up(&pool, pk_sid, "password.set", "").await;
+        let logout = async {
+            let req = peer_request(Method::POST, "/auth/logout")
+                .header("Authorization", format!("Bearer {pk_token}"))
+                .header("Content-Type", "application/json")
+                .header("X-Kaiku-Client", "desktop")
+                .body(Body::from(
+                    json!({"refresh_token": pw["refresh_token"]}).to_string(),
+                ))
+                .unwrap();
+            app.oneshot(req).await.status().as_u16()
+        };
+        let change = async {
+            call(
+                &app,
+                Method::POST,
+                "/auth/me/password",
+                &pk_token,
+                Some(json!({ "new_password": NEW_PASSWORD })),
+            )
+            .await
+        };
+        let (l, (c, cb)) = tokio::join!(logout, change);
+        assert_eq!(l, 200, "round {round}: logout");
+        assert!(
+            c == 200 || c == 401 || c == 403,
+            "round {round}: password change answered {c}: {cb}"
+        );
+        assert!(!live(&pool, sid_of(&pw)).await);
+        assert!(!live(&pool, pk_sid).await);
+    }
 }

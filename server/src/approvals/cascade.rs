@@ -12,13 +12,15 @@
 //! Lock order (B.7): the callers hold the account lock; then sessions (rows ended here), then
 //! grants and enrolments (the session cascade), then challenges, attempts and requests. Every
 //! other path that writes these sessions either holds the same account lock (sign-in, collect,
-//! the other revocations and factor changes) or touches a single session row and nothing that is
-//! locked here before sessions (logout, refresh).
+//! the other revocations and factor changes, a logout of more than one session) or touches a
+//! single session row and nothing that is locked here before sessions (refresh, a logout of one
+//! session).
 //!
 //! The session cascade deliberately leaves challenges alone: a `device_stepup` challenge is
 //! answerable only from its requesting session (re-read live under the account lock), and an
 //! `enroll`/`enroll_pop` effect re-checks its enrolment's state under the lock. Paths that end
-//! sessions without the account lock (logout, refresh) therefore never lock challenge rows.
+//! sessions without the account lock (refresh, a logout of one session) therefore never lock
+//! challenge rows.
 
 use sqlx::PgConnection;
 use uuid::Uuid;
@@ -111,10 +113,11 @@ pub async fn on_sessions_ended(
 ///
 /// Every live session it created (or that is its own device session) ends
 /// with `authenticator_revoked`. A key device also ends every live session it
-/// confirmed (`approved_by_id`) and every live session confirmed by an
-/// unknown key device of the account (`approved_by_type` set, id `NULL`:
-/// sessions from before the approver was recorded), whatever the reason of
-/// the revocation.
+/// confirmed (`approved_by_id`) and, if it had ever been active
+/// (`activated_at` set), every live session confirmed by an unknown key
+/// device of the account (`approved_by_type` set, id `NULL`: sessions from
+/// before the approver was recorded), whatever the reason of the
+/// revocation. A device that was only ever pending confirmed nothing.
 #[tracing::instrument(skip(conn, ctx))]
 pub async fn on_authenticator_revoked(
     conn: &mut PgConnection,
@@ -127,7 +130,10 @@ pub async fn on_authenticator_revoked(
           WHERE user_id = $1 AND ended_at IS NULL
             AND ((authenticator_type = $2 AND authenticator_id = $3)
                  OR ($2 = 'key_device' AND approved_by_type = 'key_device'
-                     AND (approved_by_id = $3 OR approved_by_id IS NULL)))",
+                     AND (approved_by_id = $3
+                          OR (approved_by_id IS NULL
+                              AND EXISTS (SELECT 1 FROM approval_devices d
+                                           WHERE d.id = $3 AND d.activated_at IS NOT NULL)))))",
     )
     .bind(user_id)
     .bind(a.as_str())

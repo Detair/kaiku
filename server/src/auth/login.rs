@@ -367,6 +367,12 @@ pub async fn logout(
     // End the sessions in the revocation order (B.4): `ended_at`, denylist,
     // NOTIFY, commit. Signing out the current session is always allowed.
     let mut tx = state.db.begin().await?;
+    // Two sessions: the account lock first (B.7 lock order: accounts before
+    // sessions), as every other end of several sessions of one account. One
+    // session needs no lock: a single row cannot wait in a cycle.
+    if session_ids.len() > 1 {
+        crate::approvals::transition::lock_accounts(&mut tx, &[auth_user.id]).await?;
+    }
     super::revocation::end_sessions_tx(
         &mut tx,
         &AuthCtx::from(&state),

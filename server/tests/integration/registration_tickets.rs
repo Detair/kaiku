@@ -295,6 +295,17 @@ async fn ticket_binds_totp_then_f4_with_bootstrap_open(pool: PgPool) {
         .await
         .unwrap();
     assert!(open);
+    // The notice carries the count like every factor change (nothing ended).
+    let added: serde_json::Value = sqlx::query_scalar(
+        "SELECT details FROM security_events
+          WHERE subject_id = $1 AND event_type = 'authenticator_added'",
+    )
+    .bind(user)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(added["type"], "totp");
+    assert_eq!(added["ended_sessions"], 0, "{added}");
     // Then F4.
     let resp =
         super::helpers::login::f4_sign_in(&app, user, "totp_neu", password, &totp, &[]).await;

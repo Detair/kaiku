@@ -44,29 +44,38 @@ UPDATE sessions
    AND auth_methods && ARRAY['qr', 'phone_confirm']::text[];
 
 -- The generations each sign-in recorded in its `sign_in` event (a value that
--- is not a whole number is skipped; the next step then fills it).
+-- is not a whole number is skipped; the next step then fills it). Where
+-- several events of one session disagree, the oldest generation counts.
 UPDATE sessions s
-   SET password_generation = (f->>'generation')::bigint
-  FROM security_events e, jsonb_array_elements(
-           CASE WHEN jsonb_typeof(e.details->'factors') = 'array' THEN e.details->'factors' END) f
- WHERE e.event_type = 'sign_in'
-   AND e.subject_id = s.user_id
-   AND e.session_id = s.id
-   AND f->>'factor' = 'password'
-   AND jsonb_typeof(f->'generation') = 'number'
-   AND f->>'generation' ~ '^[0-9]{1,18}$'
+   SET password_generation = r.generation
+  FROM (SELECT e.session_id, e.subject_id, min((f->>'generation')::bigint) AS generation
+          FROM security_events e, jsonb_array_elements(
+                   CASE WHEN jsonb_typeof(e.details->'factors') = 'array'
+                        THEN e.details->'factors' END) f
+         WHERE e.event_type = 'sign_in'
+           AND e.session_id IS NOT NULL
+           AND f->>'factor' = 'password'
+           AND jsonb_typeof(f->'generation') = 'number'
+           AND f->>'generation' ~ '^[0-9]{1,18}$'
+         GROUP BY e.session_id, e.subject_id) r
+ WHERE r.session_id = s.id
+   AND r.subject_id = s.user_id
    AND s.ended_at IS NULL;
 
 UPDATE sessions s
-   SET totp_generation = (f->>'generation')::bigint
-  FROM security_events e, jsonb_array_elements(
-           CASE WHEN jsonb_typeof(e.details->'factors') = 'array' THEN e.details->'factors' END) f
- WHERE e.event_type = 'sign_in'
-   AND e.subject_id = s.user_id
-   AND e.session_id = s.id
-   AND f->>'factor' = 'totp'
-   AND jsonb_typeof(f->'generation') = 'number'
-   AND f->>'generation' ~ '^[0-9]{1,18}$'
+   SET totp_generation = r.generation
+  FROM (SELECT e.session_id, e.subject_id, min((f->>'generation')::bigint) AS generation
+          FROM security_events e, jsonb_array_elements(
+                   CASE WHEN jsonb_typeof(e.details->'factors') = 'array'
+                        THEN e.details->'factors' END) f
+         WHERE e.event_type = 'sign_in'
+           AND e.session_id IS NOT NULL
+           AND f->>'factor' = 'totp'
+           AND jsonb_typeof(f->'generation') = 'number'
+           AND f->>'generation' ~ '^[0-9]{1,18}$'
+         GROUP BY e.session_id, e.subject_id) r
+ WHERE r.session_id = s.id
+   AND r.subject_id = s.user_id
    AND s.ended_at IS NULL;
 
 -- A session that used a factor without a recorded generation (none
@@ -90,6 +99,10 @@ UPDATE sessions s
    AND ('totp' = ANY(s.auth_methods)
         OR ('legacy' = ANY(s.auth_methods) AND u.mfa_secret IS NOT NULL));
 
+-- Fresh statistics for the filled columns, so the statements below are
+-- planned with them.
+ANALYZE sessions;
+
 -- What was already over before the upgrade ends now, with the reason the
 -- rules give from now on: a session confirmed by a key device that is no
 -- longer active, and a session that signed in with a password or TOTP
@@ -104,10 +117,12 @@ UPDATE sessions s
                       AND d.state = 'active');
 
 -- A session whose confirming key device is unknown ends, from now on, when
--- any key device of the account is revoked. The same rule for the time
--- before the upgrade: it ends if a key device of the account that had been
--- active was revoked at or after the session was created (a device that was
--- only ever pending confirmed nothing).
+-- a key device of the account that had been active is revoked. The same rule
+-- for the time before the upgrade: it ends if such a device was revoked at or
+-- after the session was created (a device that was only ever pending
+-- confirmed nothing). A removal's time is the start of its transaction, which
+-- can precede a sign-in that committed before the removal did; a removal up
+-- to one minute before the sign-in therefore counts as after it.
 UPDATE sessions s
    SET ended_at = NOW(), end_reason = 'authenticator_revoked'
  WHERE s.ended_at IS NULL
@@ -117,7 +132,7 @@ UPDATE sessions s
                 WHERE d.user_id = s.user_id
                   AND d.state = 'revoked'
                   AND d.activated_at IS NOT NULL
-                  AND d.revoked_at >= s.created_at);
+                  AND d.revoked_at >= s.created_at - INTERVAL '1 minute');
 
 UPDATE sessions s
    SET ended_at = NOW(), end_reason = 'factor_ended'

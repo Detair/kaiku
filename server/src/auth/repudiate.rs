@@ -38,6 +38,8 @@ pub const REPUDIABLE: &[&str] = &[
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct RepudiationOutcome {
     pub event: crate::security_events::SecurityEvent,
+    /// Every session the report ended: the reported sign-in's, and those
+    /// ended with a revoked authenticator or a blocked factor.
     pub ended_session_ids: Vec<Uuid>,
     pub revoked_authenticator_ids: Vec<Uuid>,
     /// `password` and/or `totp`.
@@ -193,8 +195,16 @@ pub async fn repudiate_tx(
     .bind(ev.subject_id)
     .fetch_all(&mut *conn)
     .await?;
+    // The answer names every session this report ends, also through the
+    // authenticator and factor cascades: the subject's live sessions now,
+    // compared after the effects.
+    let live_before: Vec<Uuid> =
+        sqlx::query_scalar("SELECT id FROM sessions WHERE user_id = $1 AND ended_at IS NULL")
+            .bind(ev.subject_id)
+            .fetch_all(&mut *conn)
+            .await?;
     let mut events = Vec::new();
-    let ended = match fx.session {
+    let mut ended = match fx.session {
         Some(sid) => {
             end_sessions_tx(conn, ctx, ev.subject_id, &[sid], EndReason::Repudiated).await?
         }
@@ -278,6 +288,17 @@ pub async fn repudiate_tx(
         .await?
         {
             compromised.push(f.factor.as_str().to_string());
+        }
+    }
+    let cascaded: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM sessions WHERE id = ANY($1) AND ended_at IS NOT NULL ORDER BY id",
+    )
+    .bind(&live_before)
+    .fetch_all(&mut *conn)
+    .await?;
+    for sid in cascaded {
+        if !ended.contains(&sid) {
+            ended.push(sid);
         }
     }
     sqlx::query("UPDATE security_events SET repudiated_at = NOW() WHERE id = $1")
