@@ -14,6 +14,8 @@ It fails the check when it reaches more of <host> than exact paths:
 - a wildcard host that covers <host> (Android matches a host that starts with * against every
   host that ends with the rest), whatever paths it names;
 - no host at all (Android then matches every https link, whatever paths it names);
+- any scheme-specific part matcher (ssp, sspPrefix, sspPattern, sspAdvancedPattern, sspSuffix),
+  whatever host and paths it names (Android matches it before hosts and paths);
 as does a setup filter with any other data. Only a filter's own <data> elements count; a
 uri-relative-filter-group inside an https filter for <host> fails the check (Android before 15
 ignores the group, so its paths would not limit the filter there). Other filters for <host> with
@@ -27,6 +29,7 @@ import sys
 
 VIEW = "android.intent.action.VIEW"
 CATEGORIES = {"android.intent.category.DEFAULT", "android.intent.category.BROWSABLE"}
+SSP = ("ssp", "sspPrefix", "sspPattern", "sspAdvancedPattern", "sspSuffix")
 LOOSE = ("pathPrefix", "pathPattern", "pathSuffix", "pathAdvancedPattern", "port")
 EXACT_DATA = {"scheme", "host", "path"}
 MAIN = "io.wolftown.kaiku.ui.MainActivity"
@@ -101,6 +104,12 @@ def problems(tree: str, host: str) -> list[str]:
             # Only the filter's own data: data inside a group is not read by every Android version.
             data = [d["attrs"] for d in f["children"] if d["tag"] == "data"]
             if not any(d.get("scheme") == "https" for d in data):
+                continue
+            # Android matches a scheme-specific part before hosts and paths: whatever host and
+            # paths the filter names, it may reach links of <host>.
+            ssp = sorted({k for d in data for k in d if k in SSP})
+            if ssp:
+                wrong.append(f"https filter with a scheme-specific part matcher: {', '.join(ssp)}" + where)
                 continue
             named = [d["host"] for d in data if "host" in d]
             if not named:

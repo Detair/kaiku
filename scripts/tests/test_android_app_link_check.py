@@ -158,6 +158,20 @@ class AppLinkCheckTest(unittest.TestCase):
         other = manifest(setup_filter(), alias=(whole_host,), alias_target="io.wolftown.kaiku.OtherActivity")
         self.assertEqual([], check.problems(other, HOST))
 
+    def test_a_scheme_specific_part_matcher_fails_whatever_host_and_path(self):
+        # Android matches a scheme-specific part before hosts and paths: such a filter can reach
+        # links of the host whatever its own host and paths say.
+        for ssp in ("ssp", "sspPrefix", "sspPattern", "sspAdvancedPattern", "sspSuffix"):
+            for data in (
+                [("scheme", "https"), ("host", HOST), ("path", "/callback"), (ssp, f"//{HOST}/")],
+                [("scheme", "https"), ("host", "other.example.org"), ("path", "/x"), (ssp, f"//{HOST}/")],
+                [("scheme", "https"), ("host", HOST), ("path", "/setup"), (ssp, f"//{HOST}/setup")],
+            ):
+                with self.subTest(ssp=ssp, data=data):
+                    widened = setup_filter(data=data, verify=False)
+                    self.assertTrue(check.problems(manifest(setup_filter(), widened), HOST))
+                    self.assertTrue(check.problems(manifest(setup_filter(), alias=(widened,)), HOST))
+
     def test_a_port_fails(self):
         tree = manifest(setup_filter(data=[("scheme", "https"), ("host", HOST), ("port", "8443"), ("path", "/setup")]))
         self.assertTrue(check.problems(tree, HOST))
