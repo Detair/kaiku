@@ -2491,9 +2491,12 @@ impl SocketAccess {
             }
         }
         let now = Instant::now();
+        // An earlier failure that expired while this attempt ran is not
+        // carried forward: this one counts from itself.
         let (since, attempts) = inner
             .failure
             .as_ref()
+            .filter(|f| now < f.retry_at + FAILURE_CLOSE_AFTER)
             .map_or((now, 0), |f| (f.since, f.attempts));
         let delay = RETRY_BASE
             .saturating_mul(1 << attempts.min(5))
@@ -3993,6 +3996,32 @@ mod tests {
             access.unsubscribe_admin();
             assert!(access.failing_for().is_none());
             tokio::time::advance(ADMIN_SUBSCRIBE_COOLDOWN).await;
+        }
+    }
+
+    /// A failure that nothing renewed for [`FAILURE_CLOSE_AFTER`] after its
+    /// retry time is over also when that time passes while the next read
+    /// runs: a read that fails then counts from itself and does not end the
+    /// socket. Here the subscribe's read begins 29 s after the first
+    /// failure (the failure still stands) and times out 5 s later.
+    #[tokio::test(start_paused = true)]
+    async fn a_failure_that_expires_during_a_read_does_not_end_the_socket() {
+        for wait in [29, 31] {
+            let u = Uuid::new_v4();
+            let access = SocketAccess::new(u, lazy_pool());
+            install(&access, &[FAILS], true, None);
+            let reply = reply_code(crate::ws::handlers::admin_subscribe_reply(&access).await);
+            assert_eq!(reply, Some(UNAVAILABLE));
+            access.unsubscribe_admin();
+            tokio::time::advance(Duration::from_secs(wait)).await;
+            // This read never returns: it times out.
+            let _seams = park_reads(&access);
+            let reply = reply_code(crate::ws::handlers::admin_subscribe_reply(&access).await);
+            assert_eq!(
+                reply,
+                Some(UNAVAILABLE),
+                "wait={wait}s: an expired failure ended the socket"
+            );
         }
     }
 
