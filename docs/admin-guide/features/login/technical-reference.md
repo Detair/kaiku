@@ -771,7 +771,10 @@ never rests on one failed request:
   server about this setup …", with "Try again") and noted with the key record: on how many separate
   occasions since its server last answered (failed questions less than an hour apart are one
   occasion). Any answer with the server's own error code, a refusal, "too many requests" or "no key
-  device" without a `Date` included, deletes the note.
+  device" without a `Date` included, deletes the note. If deleting it cannot be stored, the app keeps
+  in memory that the server answered: until then the stored notes do not count, and the next
+  unanswered question starts the count anew. After the app's process has ended, the stored notes
+  count again.
 - The silence counts as lasting only after at least three separate occasions with at least 24 hours
   between the first and the latest, both measured with the phone's running time (setting the clock
   changes nothing; a restart of the phone counts only the time since). A phone opened once without a connection, or while the server restarts,
@@ -809,7 +812,12 @@ never become the app's sign-in, and the connection, push registration and token 
 them. With them, on requests that name their server and carry that bearer explicitly, the operation
 reads the account, asks for and answers the `key_device.remove` step-up, and deletes the key device.
 The phone counts as removed only on the contract's own answer to that request: 200 with this very key
-device, in state `revoked`; a success without it decides nothing. The server drops the phone's push
+device, in state `revoked`; a success without it decides nothing. A key that is a key device only by
+the server's word about this install is noted as one for good once the server accepted its sign-in;
+if that note cannot be stored, nothing is removed (no step-up, no removal request), the session ends,
+and the screen says the phone is still a key. If the server removed the phone but the phone cannot
+clear its record, the screen says the phone is no longer a key; the next "Use another account" is
+answered as for a removed key, and the phone forgets the record then. The server drops the phone's push
 subscription with the removal; the operation then drops what the phone itself keeps of that
 registration, without a request, only for the removed account and only while no session is current.
 However it ends (removed, refused, cancelled, its screen gone), nothing of it is stored, so there is
