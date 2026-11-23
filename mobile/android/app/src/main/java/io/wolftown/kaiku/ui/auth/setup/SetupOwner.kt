@@ -558,6 +558,14 @@ class SetupOwner internal constructor(
         }
         abandonUnclaimed()
         nextLink = null
+        if (keyDevices.record.value?.provisionalFrom != null) {
+            // A key device only by the server's word about this install: its setup is not finished
+            // until this key signs in. The waiting step does that; it is not "already your key".
+            attempt = null
+            _waiting.value = true
+            _ui.value = SetupUi.Resume
+            return
+        }
         val installId = try {
             deviceIds.id()
         } catch (x: Exception) {

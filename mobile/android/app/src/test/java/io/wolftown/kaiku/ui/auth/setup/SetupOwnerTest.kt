@@ -1855,4 +1855,36 @@ class SetupOwnerTest {
         runCurrent()
         assertEquals(SetupUi.SignInTimedOut, owner.ui.value)
     }
+
+    /**
+     * A key that is a key device only by the server's word about this install (provisional): a
+     * setup link opened again leads to the waiting step, which signs in with this key, not to
+     * "already your key". A key whose own signature was accepted is "already your key" as before.
+     */
+    @Test fun `a link opened over a provisionally active key leads to the waiting step`() = runTest {
+        for (provisional in listOf(KeyDevicePhase.CLAIMED, null)) {
+            env.pinned = SigFixtures.ORIGIN
+            val f = KeyDeviceFixture(backgroundScope, active = false)
+            f.repo.seed(
+                io.wolftown.kaiku.data.keydevice.StoredKeyDevice(
+                    LocalKeyDevice("kd1", SigFixtures.USER_ID, SigFixtures.ORIGIN, UvClass.PER_USE, "e1", null),
+                    KeyDevicePhase.ACTIVE,
+                    keyId = f.keyStore.keyId(),
+                    attemptId = "earlier",
+                    provisionalFrom = provisional,
+                ),
+            )
+            f.authState.setLoggedIn(SigFixtures.USER_ID)
+            val v = SetupFlowViewModel(owner(f))
+            v.start(entry)
+            if (provisional != null) {
+                assertEquals(SetupUi.Resume, v.ui.value)
+                assertTrue(v.waiting.value)
+            } else {
+                assertEquals(SetupUi.Ended(R.string.setup_already_key, canRetry = false), v.ui.value)
+            }
+            assertTrue(enroll.openTokens.isEmpty())
+            assertTrue(f.keyStore.hasKey())
+        }
+    }
 }
