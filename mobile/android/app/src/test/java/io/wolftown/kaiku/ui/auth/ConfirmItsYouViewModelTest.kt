@@ -116,6 +116,33 @@ class ConfirmItsYouViewModelTest {
         assertTrue(f.keyStore.hasKey())
     }
 
+    /** The last-resort advice stays only while nothing of the server came back: any answer it decoded takes it back. */
+    @Test fun `a decoded answer takes the last-resort advice back`() = runTest {
+        val f = lapsedFixture()
+        coEvery { probe.probe(any()) } returns ServerKeyState.Unknown
+        for (hours in listOf(0L, 12, 13)) {
+            now = now.plusSeconds(hours * 3600)
+            vm(f)
+        }
+        // No answer: the advice stays.
+        val offline = vm(f)
+        assertTrue(offline.ui.value.serverSilent)
+        coEvery { deviceSignIn.signIn(any(), any()) } returns DeviceSignInResult.Network
+        offline.confirm(activity)
+        assertTrue(offline.ui.value.serverSilent)
+        // The server's own refusal of the sign-in, and of the removal: the advice goes.
+        val signIn = vm(f)
+        assertTrue(signIn.ui.value.serverSilent)
+        coEvery { deviceSignIn.signIn(any(), any()) } returns DeviceSignInResult.Failed("ACCOUNT_SUSPENDED")
+        signIn.confirm(activity)
+        assertEquals(false, signIn.ui.value.serverSilent)
+        val removal = vm(f)
+        assertTrue(removal.ui.value.serverSilent)
+        coEvery { signOut.removeSignedOutPhone(activity) } returns RemovalResult.Failed("LAST_STRONG_AUTHENTICATOR")
+        removal.removeThisPhone(activity)
+        assertEquals(false, removal.ui.value.serverSilent)
+    }
+
     private fun TestScope.lapsedFixture(): KeyDeviceFixture =
         KeyDeviceFixture(backgroundScope).also { it.authState.setLoggedOut() } // an active key without its session: lapsed
 

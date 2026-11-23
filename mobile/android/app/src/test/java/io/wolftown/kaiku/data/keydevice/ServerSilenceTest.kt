@@ -176,4 +176,37 @@ class ServerSilenceTest {
         assertEquals(rec.copy(unanswered = noted.unanswered), noted)
         assertTrue(keyStore.hasKey())
     }
+
+    /**
+     * The server answered, but taking the notes back did not reach storage: until it does, the
+     * silence does not count as lasting, so a discard is not offered on notes the server already
+     * answered.
+     */
+    @Test fun `an answer whose reset was not stored keeps the silence from counting`() = runTest {
+        val (s, repo) = phone(KeyDevicePhase.CLAIMING)
+        store.stored = store.stored!!.copy(codeClaim = true, written = clock.now())
+        repo.reload()
+        for (h in listOf(0L, 12, 25)) {
+            at(h)
+            s.noteUnanswered(repo.record.value!!)
+        }
+        val discards = SetupDiscard(repo, s)
+        assertTrue(s.lasting(repo.record.value!!))
+        assertTrue(discards.offered(repo.record.value!!))
+        // The server answers; the reset cannot be written.
+        store.failWrites = true
+        val after = s.noteAnswered(repo.record.value!!)
+        assertFalse(s.lasting(after))
+        assertFalse(discards.offered(repo.record.value!!))
+        // Silent again, still unwritable: still not lasting.
+        at(27)
+        assertFalse(s.lasting(s.noteUnanswered(repo.record.value!!)))
+        assertFalse(discards.offered(repo.record.value!!))
+        // Writable again: the count starts anew from this question.
+        store.failWrites = false
+        at(28)
+        val anew = s.noteUnanswered(repo.record.value!!)
+        assertEquals(1, anew.unanswered!!.occasions)
+        assertFalse(s.lasting(anew))
+    }
 }

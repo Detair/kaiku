@@ -179,6 +179,9 @@ class ConfirmItsYouViewModel @Inject constructor(
             _ui.update {
                 it.copy(
                     working = false,
+                    // The server answered (anything but no connection or a stop on the phone):
+                    // the advice for a server that stays silent goes.
+                    serverSilent = it.serverSilent && (r == DeviceSignInResult.Network || r == DeviceSignInResult.Cancelled),
                     error = if (r.keyIsGone()) gonePhoneText(r) else signInResultText(r),
                     keyGone = r.keyIsGone(),
                     readyAt = (r as? DeviceSignInResult.Pending)?.readyAt,
@@ -216,6 +219,11 @@ class ConfirmItsYouViewModel @Inject constructor(
             } else {
                 val r = withTimeoutOrNull(REMOVAL_TIMEOUT_MS) { signOut.removeSignedOutPhone(activity) }
                     ?: RemovalResult.Failed("TOOK_TOO_LONG")
+                // The server answered (anything but no connection, the phone's own limit or a stop):
+                // the advice for a server that stays silent goes.
+                if (!(r == RemovalResult.Cancelled || (r is RemovalResult.Failed && r.code in listOf("NETWORK", "TOOK_TOO_LONG")))) {
+                    _ui.update { it.copy(serverSilent = false) }
+                }
                 _ui.update {
                     when (r) {
                         RemovalResult.Removed -> it.copy(working = false, done = ConfirmDone.SIGNED_OUT)

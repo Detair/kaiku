@@ -17,6 +17,7 @@ import javax.inject.Inject
  * latest of them. All by the phone's running time ([BootClock]), which setting the clock does not
  * change and a reboot never lengthens; the notes are written through [KeyDeviceRepository.update].
  */
+@javax.inject.Singleton
 class ServerSilence @Inject constructor(
     private val keyDevices: KeyDeviceRepository,
     val clock: BootClock,
@@ -32,6 +33,13 @@ class ServerSilence @Inject constructor(
         val LASTING: Duration = Duration.ofHours(24)
     }
 
+    /**
+     * The server answered, but taking the notes back did not reach storage: until it does, the
+     * stored notes are about questions the server has since answered, and never count as lasting.
+     */
+    @Volatile
+    private var answeredUnsaved = false
+
     private fun after(u: Unanswered?): Unanswered {
         if (u == null) return Unanswered(clock.now(), 1, Duration.ZERO)
         val gap = clock.since(u.last)
@@ -45,20 +53,30 @@ class ServerSilence @Inject constructor(
     /** A question about [record] got no answer. Returns the record as stored afterwards. */
     fun noteUnanswered(record: StoredKeyDevice): StoredKeyDevice {
         val stored = keyDevices.record.value?.takeIf { it sameAs record } ?: return record
-        val next = after(stored.unanswered)
+        // After an answer whose reset was not stored, the count starts anew from this question.
+        val reset = answeredUnsaved
+        val next = after(if (reset) null else stored.unanswered)
         if (next == stored.unanswered) return stored
-        return (keyDevices.update(stored) { it.copy(unanswered = next) } as? Change.Done)?.record ?: stored
+        val done = keyDevices.update(stored) { it.copy(unanswered = next) } as? Change.Done
+        if (done != null && reset) answeredUnsaved = false
+        return done?.record ?: stored
     }
 
     /** The server of [record] answered: nothing is noted any more. Returns the record as stored afterwards. */
     fun noteAnswered(record: StoredKeyDevice): StoredKeyDevice {
         val stored = keyDevices.record.value?.takeIf { it sameAs record } ?: return record
-        if (stored.unanswered == null) return stored
-        return (keyDevices.update(stored) { it.copy(unanswered = null) } as? Change.Done)?.record ?: stored
+        if (stored.unanswered == null) {
+            answeredUnsaved = false
+            return stored
+        }
+        val done = keyDevices.update(stored) { it.copy(unanswered = null) } as? Change.Done
+        answeredUnsaved = done == null
+        return done?.record ?: stored
     }
 
     /** The server of [record] has stayed silent on [OCCASIONS] separate occasions over at least [LASTING]. */
     fun lasting(record: StoredKeyDevice): Boolean {
+        if (answeredUnsaved) return false
         val u = record.unanswered ?: return false
         return u.occasions >= OCCASIONS && u.span >= LASTING
     }
