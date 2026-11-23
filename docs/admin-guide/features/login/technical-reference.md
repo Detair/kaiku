@@ -640,7 +640,9 @@ server, a setup is held, or a registration is on its way ("This phone is a Kaiku
 it has now, or is being set up as one"), asked again right before it writes. Requests about a key
 never depend on the saved server anyway: each names the record's own server, and device signatures
 are pinned to it. The signed claim, the device-key sign-in, the answers to challenges and the
-registration reach the server at most once: the app's HTTP stack never sends them again by itself.
+registration are never sent again by the app's HTTP stack when an answer is lost or unclear. The
+one exception: a signed answer refused with 401 because the session had expired is sent once more
+after the session was renewed successfully (the server refused the first one before acting on it).
 
 **The key record and the key: compare-and-set.** The phone keeps one record (server, account, key
 device id, enrolment id, the key's id = SHA-256 of its public key, the setup that made it, the
