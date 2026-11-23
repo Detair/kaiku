@@ -103,7 +103,8 @@
 //!    without a read. A request that would read a "yes" again (for a fresh answer; frames are read
 //!    anyway) does so at most once per [`ADMIN_SUBSCRIBE_COOLDOWN`], socket and user epoch — the
 //!    cooldown holds for the epoch the read was planned for, also when the epoch moved after the
-//!    request arrived; meanwhile, at that epoch, the socket's earlier answer stands, and without
+//!    request arrived, and counts from when that read began, also when it failed; meanwhile, at
+//!    that epoch, the socket's earlier answer stands, and without
 //!    one it is "not decided yet". A new user epoch gets one read of its own, also within the
 //!    cooldown. So within the cooldown an elevation that ran out without an epoch moving keeps its
 //!    earlier "yes": nothing is written on it, every frame is read on its own. The reads it asks
@@ -886,8 +887,9 @@ struct AdminScope {
     /// What the last counting revalidation found.
     settled: settled::Settled,
     /// When an `admin_subscribe` last asked for this scope to be read, and
-    /// at which user epoch: the one its read was planned for once it has
-    /// answered (the epoch may have moved before the read). The cooldown
+    /// at which user epoch: set when it arrives, and again when its read
+    /// begins, to that moment and the epoch the read is planned for (the
+    /// epoch may have moved before the read; the read may fail). The cooldown
     /// ([`ADMIN_SUBSCRIBE_COOLDOWN`]) holds only at that epoch, so a new
     /// epoch gets one read of its own.
     read_asked: Option<(Instant, u64)>,
@@ -2125,6 +2127,14 @@ impl SocketAccess {
         }
         if Self::in_backoff(&inner) {
             return Planned::Backoff;
+        }
+        // An `admin_subscribe`'s own read: its cooldown counts from now and
+        // holds for the epoch it reads at, whatever the read finds (also
+        // when it fails).
+        if admin_read && admin.is_some() {
+            if let Some(scope) = inner.admin.as_mut() {
+                scope.read_asked = Some((Instant::now(), user_now));
+            }
         }
         let stale: HashSet<Uuid> = guild_targets.iter().map(|(g, _)| *g).collect();
         let mut guild_channels = Vec::new();
@@ -4333,6 +4343,56 @@ mod tests {
                 "elevated={elevated}: a second read at one epoch within the cooldown"
             );
         }
+    }
+
+    /// The cooldown also holds for the epoch of a read that failed: a
+    /// request arrives, the epoch moves before it reads, and its read at the
+    /// new epoch fails. Asked again at that epoch once the backoff is over
+    /// and within the cooldown, it reads nothing more.
+    #[tokio::test(start_paused = true)]
+    async fn the_cooldown_holds_for_the_epoch_of_a_failed_read() {
+        let reads = |u: Uuid| crate::ws::test_hooks::access_reads(u).0;
+        let u = Uuid::new_v4();
+        let access = admin_socket(u, true).await;
+        cooled_down().await;
+        install(&access, &[FAILS], true, None);
+        crate::ws::test_hooks::count_access_reads(u);
+        let gate = access.refresh_gate.lock().await;
+        let subscribe = access.subscribe_admin();
+        tokio::pin!(subscribe);
+        assert!(futures::poll!(subscribe.as_mut()).is_pending());
+        // The epoch moves before the request reads; its read then fails.
+        registry().bump_user(u);
+        drop(gate);
+        assert_eq!(subscribe.await, AdminSubscription::Undecided);
+        assert_eq!(reads(u), 1);
+        // The backoff is over, the cooldown is not.
+        tokio::time::advance(RETRY_BASE + Duration::from_millis(50)).await;
+        assert_eq!(access.subscribe_admin().await, AdminSubscription::Undecided);
+        assert_eq!(reads(u), 1, "a second read at one epoch within the cooldown");
+    }
+
+    /// The cooldown counts from when the read began, not from when the
+    /// request arrived: a subscribe that waited longer than the cooldown
+    /// for its socket's gate and then read, asked again at once, reads
+    /// nothing more.
+    #[tokio::test(start_paused = true)]
+    async fn the_cooldown_counts_from_the_read() {
+        let reads = |u: Uuid| crate::ws::test_hooks::access_reads(u).0;
+        let u = Uuid::new_v4();
+        let access = admin_socket(u, true).await;
+        cooled_down().await;
+        crate::ws::test_hooks::count_access_reads(u);
+        let gate = access.refresh_gate.lock().await;
+        let subscribe = access.subscribe_admin();
+        tokio::pin!(subscribe);
+        assert!(futures::poll!(subscribe.as_mut()).is_pending());
+        tokio::time::advance(ADMIN_SUBSCRIBE_COOLDOWN + Duration::from_secs(1)).await;
+        drop(gate);
+        assert_eq!(subscribe.await, AdminSubscription::Allowed);
+        assert_eq!(reads(u), 1);
+        assert_eq!(access.subscribe_admin().await, AdminSubscription::Allowed);
+        assert_eq!(reads(u), 1, "read again within the cooldown of the last read");
     }
 
     /// The reply is remembered for the user epoch its read was planned for:
