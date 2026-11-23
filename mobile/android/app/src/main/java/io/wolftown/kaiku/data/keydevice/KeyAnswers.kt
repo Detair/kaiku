@@ -357,7 +357,8 @@ class KeyAnswers @Inject constructor(
     private fun codeTimeLeft(expected: StoredKeyDevice): Duration? {
         if (expected.phase != KeyDevicePhase.CLAIMED) return null
         val received = expected.codeReceived ?: return null
-        val wait = expected.codeWait ?: return null
+        // A wait stored before it had its floor gets the floor a new one gets.
+        val wait = maxOf(expected.codeWait ?: return null, SERVER_CODE_LIFETIME.plus(CODE_MARGIN))
         val passed = boot.since(received)
         return if (passed >= wait) Duration.ZERO else wait.minus(passed)
     }

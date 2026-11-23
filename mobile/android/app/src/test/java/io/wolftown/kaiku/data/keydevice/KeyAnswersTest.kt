@@ -493,6 +493,27 @@ class KeyAnswersTest {
         assertTrue(p.answers.settle(rec, origin, probeAt(rec, serverPast), over = proof).forgotten)
     }
 
+    /**
+     * A record stored before a code's wait had its floor, with a wait of 2 minutes: it is read with
+     * the floor a new one gets (the server's code lifetime plus the margin, 7 minutes).
+     */
+    @Test fun `a stored code wait shorter than the floor is read as the floor`() = runTest {
+        val codeExpires = Instant.parse("2026-11-20T10:05:00Z")
+        boot.elapsedMs = 0
+        val (p, base) = phone(KeyDevicePhase.CLAIMED, secret = "s", voidAfter = codeExpires.plus(KeyAnswers.CODE_MARGIN), written = boot.now())
+        val rec = base.copy(codeReceived = boot.now(), codeWait = Duration.ofMinutes(2)).also { p.repo.seedForTest(it) }
+        val serverPast = codeExpires.plus(Duration.ofMinutes(3))
+        boot.advance(Duration.ofMinutes(3))
+        assertEquals(Duration.ofMinutes(4), p.answers.ownWaitLeft(rec))
+        val early = p.answers.settle(rec, origin, probeAt(rec, serverPast)) as KeyAnswers.Settled.Kept
+        assertNull(early.over)
+        assertEquals(Duration.ofMinutes(4), early.left)
+        boot.advance(Duration.ofMinutes(4))
+        val proof = (p.answers.settle(rec, origin, probeAt(rec, serverPast)) as KeyAnswers.Settled.Kept).over
+        assertNotNull(proof)
+        assertTrue(p.answers.settle(rec, origin, probeAt(rec, serverPast), over = proof).forgotten)
+    }
+
     /** A key whose install id was never recorded: "no key device for this install" forgets nothing either. */
     @Test fun `a key without its install id is never forgotten on no key device`() = runTest {
         for (phase in listOf(KeyDevicePhase.ACTIVE, KeyDevicePhase.PENDING)) {
