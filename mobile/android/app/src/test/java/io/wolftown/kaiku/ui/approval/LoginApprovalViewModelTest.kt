@@ -199,23 +199,24 @@ class LoginApprovalViewModelTest {
     }
 
     /**
-     * A key record that does not name its install id, and the app's id cannot be stored by the
-     * time the answer is signed: the screen says so, nothing is signed or sent, and nothing crashes.
+     * A key record that does not name its install id, and the app's id cannot be stored (the real
+     * id store on a disk whose commits fail): right after the scan the screen says that saving
+     * failed and to scan the code again; the claim is released, nothing is signed or sent.
      */
-    @Test fun `an install id that cannot be stored when signing says that saving failed`() = runTest {
+    @Test fun `an install id that cannot be stored says that saving failed and releases the claim`() = runTest {
         val f = KeyDeviceFixture(backgroundScope)
         f.store.stored = f.store.stored!!.copy(installId = null)
         f.repo.reload()
         api.nextChallenge = SigFixtures.challengeFor(SigKind.LOGIN, 1, SigFixtures.V01_CONTEXT, "qr")
-        var asked = 0
-        val v = LoginApprovalViewModel(api, f.signer, f.repo, {
-            if (asked++ > 0) throw IllegalStateException("push device id not stored")
-            SigFixtures.DEVICE_ID
-        }, appScope = backgroundScope)
+        val disk = io.wolftown.kaiku.testutil.InMemorySharedPreferences().apply { failingCommits = 100 }
+        val context: android.content.Context = mockk {
+            io.mockk.every { getSharedPreferences("push_prefs", android.content.Context.MODE_PRIVATE) } returns disk
+        }
+        val v = LoginApprovalViewModel(api, f.signer, f.repo, io.wolftown.kaiku.push.DeviceIdStore(context), appScope = backgroundScope)
         v.start(payload)
-        assertTrue(v.ui.value is LoginApprovalUi.Context)
-        v.approve(activity)
+        testScheduler.runCurrent()
         assertEquals(LoginApprovalUi.Error(R.string.security_key_storage_not_saved_scan, rescan = true), v.ui.value)
+        assertEquals(listOf("claim", "release:${SigFixtures.challengeId(1)}"), api.calls)
         assertTrue(api.lastAnswer == null)
         assertTrue(f.verifier.prompts.isEmpty())
     }
