@@ -465,7 +465,7 @@ class PhoneRemovalTest {
         p.f.repo.reload()
         p.f.store.failWrites = true
         assertEquals(RemovalResult.Failed("NOT_SAVED"), p.removal.run(activity))
-        assertEquals(io.wolftown.kaiku.R.string.security_key_storage_not_saved, io.wolftown.kaiku.ui.auth.removalFailedText("NOT_SAVED"))
+        assertEquals(io.wolftown.kaiku.R.string.confirm_removal_not_saved, io.wolftown.kaiku.ui.auth.removalFailedText("NOT_SAVED"))
         assertTrue(p.f.keyStore.hasKey())
     }
 }

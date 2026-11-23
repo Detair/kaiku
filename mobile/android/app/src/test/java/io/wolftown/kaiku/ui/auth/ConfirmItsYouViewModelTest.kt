@@ -143,6 +143,23 @@ class ConfirmItsYouViewModelTest {
         assertEquals(false, removal.ui.value.serverSilent)
     }
 
+    /**
+     * What the phone was to note did not reach storage: this screen names its own buttons, not
+     * "Try again" (it has none). After a sign-in: "Confirm it's you" again; after a removal the server
+     * made: the phone is no longer a key, "Use another account" again.
+     */
+    @Test fun `a failed save names this screen's own buttons`() = runTest {
+        val f = lapsedFixture()
+        val signIn = vm(f)
+        coEvery { deviceSignIn.signIn(any(), any()) } returns DeviceSignInResult.Failed("NOT_SAVED")
+        signIn.confirm(activity)
+        assertEquals(R.string.confirm_not_saved, signIn.ui.value.error)
+        val removal = vm(f)
+        coEvery { signOut.removeSignedOutPhone(activity) } returns RemovalResult.Failed("NOT_SAVED")
+        removal.removeThisPhone(activity)
+        assertEquals(R.string.confirm_removal_not_saved, removal.ui.value.error)
+    }
+
     private fun TestScope.lapsedFixture(): KeyDeviceFixture =
         KeyDeviceFixture(backgroundScope).also { it.authState.setLoggedOut() } // an active key without its session: lapsed
 

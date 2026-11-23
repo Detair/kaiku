@@ -48,7 +48,15 @@ data class ConfirmItsYouUi(
     val serverSilent: Boolean = false,
 )
 
-/** What "Confirm it's you" says after a device sign-in that did not succeed. */
+/**
+ * What "Confirm it's you" says after a device sign-in that did not succeed: as [signInResultText],
+ * but a failed save names this screen's own button (it has no "Try again").
+ */
+@StringRes
+internal fun confirmSignInText(r: DeviceSignInResult): Int? =
+    if (r is DeviceSignInResult.Failed && r.code == "NOT_SAVED") R.string.confirm_not_saved else signInResultText(r)
+
+/** What a device sign-in that did not succeed says (the setup's last step and, through [confirmSignInText], "Confirm it's you"). */
 @StringRes
 internal fun signInResultText(r: DeviceSignInResult): Int? = when (r) {
     DeviceSignInResult.Success, DeviceSignInResult.Cancelled, is DeviceSignInResult.Pending -> null
@@ -63,7 +71,7 @@ internal fun signInResultText(r: DeviceSignInResult): Int? = when (r) {
         "NOT_THIS_KEY" -> R.string.setup_not_this_key
         // The install id this key was enrolled under is lost: the key is kept, nothing changed.
         "INSTALL_ID_LOST" -> R.string.confirm_install_unknown
-        // Signed in, but what the phone was to note of it did not reach storage.
+        // Signed in, but what the phone was to note of it did not reach storage (setup: "Try again").
         "NOT_SAVED" -> R.string.security_key_storage_not_saved
         else -> R.string.security_sign_in_failed
     }
@@ -86,8 +94,8 @@ internal fun removalFailedText(code: String?): Int {
         "NETWORK" -> R.string.security_network_error
         "APPROVAL_EXPIRED", "TOOK_TOO_LONG" -> R.string.security_took_too_long
         "ACCOUNT_BANNED" -> R.string.auth_login_banned
-        // The server's answer stands, but what the phone was to note of it did not reach storage.
-        "NOT_SAVED" -> R.string.security_key_storage_not_saved
+        // The server removed this phone, but the phone could not note it: "Use another account" again.
+        "NOT_SAVED" -> R.string.confirm_removal_not_saved
         else -> R.string.security_sign_in_failed
     }
 }
@@ -184,7 +192,7 @@ class ConfirmItsYouViewModel @Inject constructor(
                     // The server answered (anything but no connection or a stop on the phone):
                     // the advice for a server that stays silent goes.
                     serverSilent = it.serverSilent && (r == DeviceSignInResult.Network || r == DeviceSignInResult.Cancelled),
-                    error = if (r.keyIsGone()) gonePhoneText(r) else signInResultText(r),
+                    error = if (r.keyIsGone()) gonePhoneText(r) else confirmSignInText(r),
                     keyGone = r.keyIsGone(),
                     readyAt = (r as? DeviceSignInResult.Pending)?.readyAt,
                     done = when (r) {

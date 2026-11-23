@@ -688,6 +688,8 @@
     <string name="security_key_storage_unreadable">Kaiku could not read what it has saved about this phone\'s key. Nothing was changed. Try again. If this stays, restart the phone and open Kaiku again.</string>
     <string name="security_key_storage_not_saved">Kaiku could not save to this phone\'s storage. If the storage is full, free up some space, then choose \"Try again\". Nothing is lost meanwhile.</string>
     <string name="security_key_storage_not_saved_scan">Kaiku could not save to this phone\'s storage. If the storage is full, free up some space, then scan the code again. Nothing is lost meanwhile.</string>
+    <string name="confirm_not_saved">Kaiku could not save to this phone\'s storage. If the storage is full, free up some space, then choose \"Confirm it\'s you\" again. Nothing is lost meanwhile.</string>
+    <string name="confirm_removal_not_saved">This phone is no longer a key for your account, but Kaiku could not save that on the phone. If the storage is full, free up some space, then choose \"Use another account\" again.</string>
     <string name="security_clear_storage_hint">Last resort if nothing else helps: in Android\'s settings open Apps, Kaiku, Storage and choose \"Clear storage\". Kaiku then starts like a newly installed app and this phone can be set up again. If this phone is your only key, ask your admin first.</string>
     <string name="auth_server_tied_to_key">This phone is a Kaiku key for the server it has now, or is being set up as one. The server can be changed once that has ended.</string>
     <string name="setup_cannot_ask_hint">Kaiku could not ask the server about this setup. It asks again each time you open Kaiku.</string>

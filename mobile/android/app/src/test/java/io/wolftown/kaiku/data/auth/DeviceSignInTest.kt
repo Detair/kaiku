@@ -407,6 +407,7 @@ class DeviceSignInTest {
             io.wolftown.kaiku.ui.auth.setup.SetupUi.Ended(io.wolftown.kaiku.R.string.security_key_storage_not_saved, canRetry = true),
             io.wolftown.kaiku.ui.auth.setup.finalSignInUi(r),
         )
+        assertEquals(io.wolftown.kaiku.R.string.common_try_again, io.wolftown.kaiku.ui.auth.setup.endedRetryLabel(io.wolftown.kaiku.R.string.security_key_storage_not_saved))
         assertEquals(KeyDevicePhase.CLAIMED, repo.record.value!!.provisionalFrom)
         assertTrue(authState.session.value is io.wolftown.kaiku.data.local.AuthSession.LoggedIn)
     }
