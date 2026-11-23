@@ -1042,9 +1042,11 @@ pub async fn lock_issued_by(
 ///
 /// The call answers the stored state. For a `claimed` row past its code time it first
 /// stores `expired` like the sweep (`expire_due`), in one statement that re-checks state
-/// and time under the row's lock. That statement takes only the enrolment row, and only if
-/// no conflicting lock is held on it (`SKIP LOCKED`): it does not wait for the row while a
-/// confirmation or the sweep holds it, and it holds no other lock. If it changed no row,
+/// and time under the row's lock. That statement locks at most the one enrolment row and
+/// skips it when a conflicting lock is held on that row (`SKIP LOCKED`): it does not wait
+/// for the row while a confirmation or the sweep holds it. Like every `UPDATE` it also takes
+/// the table's ordinary write lock, so it can wait behind a table lock that conflicts with
+/// that one (for example a queued `SHARE` lock). If it changed no row,
 /// the call reads the row once more (no lock, nothing stored) and answers that state.
 /// While a confirmation holds the row the answer stays `claimed`; afterwards it is the
 /// state stored then: `done` if the confirmation succeeded, `failed` or `cancelled` are
