@@ -381,11 +381,11 @@ class AuthRepository @Inject constructor(
                 onInstalled = { pendingPasswordChange = null },
             )
             if (!persisted) {
-                // Refused because this phone's key waits for its device sign-in on another server:
-                // the session that server minted is ended, and nothing of it stays pending.
-                if (keyDevicePolicy.refusesSignInOn(pending.serverUrl)) {
+                // Refused because a setup of this phone runs or its key waits on another server: the
+                // session that server minted is ended, and nothing of it stays pending.
+                if (installRefused(pending.serverUrl)) {
                     if (replacePendingIf(changed, null)) endUnused(pending.serverUrl, pending.asResponse())
-                    return Result.failure(KeyOnOtherServerException())
+                    return if (keyDevicePolicy.refusesSignInOn(pending.serverUrl)) Result.failure(KeyOnOtherServerException()) else cancelledResult()
                 }
                 return cancelledResult()
             }

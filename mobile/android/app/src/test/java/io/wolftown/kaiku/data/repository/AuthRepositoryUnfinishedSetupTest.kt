@@ -216,4 +216,22 @@ class AuthRepositoryUnfinishedSetupTest {
         assertFalse(repository.hasPendingPasswordChange())
         coVerify { authApi.logoutSession(other, "c", any()) }
     }
+
+    /** A setup of this phone starts while the new password is being set: the session is not installed and is ended. */
+    @Test fun `a setup started while the password was changed keeps the session out and ends it`() = runTest {
+        val other = "https://other.example.org"
+        every { tokenStorage.getServerUrl() } returns other
+        coEvery { authApi.authenticatedGetMe(any(), any()) } returns User(id = "other-account", username = "bob", displayName = "Bob")
+        val change = response("c").copy(passwordChangeRequired = true)
+        assertTrue(repository.completeAttempt(other, "pw") { change }.exceptionOrNull() is PasswordChangeRequiredException)
+        coEvery { authApi.changePassword(any(), any(), any(), any()) } coAnswers {
+            stored(KeyDevicePhase.CLAIMING)
+            Unit
+        }
+        assertTrue(repository.completePasswordChange("new-password").isFailure)
+        assertEquals(AuthSession.LoggedOut, authState.session.value)
+        verify(exactly = 0) { tokenStorage.saveTokens(any(), any(), any(), any()) }
+        assertFalse(repository.hasPendingPasswordChange())
+        coVerify { authApi.logoutSession(other, "c", any()) }
+    }
 }
