@@ -114,14 +114,16 @@
 //!    that read fails: the socket is then in backoff, and a subscribe that meets the backoff
 //!    answers "not decided yet", whoever asked for the failed read), and a permit of that pool
 //!    second, for at most [`ADMIN_SUBSCRIBE_WAIT`]; then it lets go of the gate and answers "not
-//!    decided yet". No task holds a permit while it waits for a gate. Per attempt a subscribe takes
-//!    at most: the wait for the gate (its holder is bounded by its own read's [`REFRESH_TIMEOUT`]
-//!    plus its wait for a permit of the other revalidations, so seconds while the database is
-//!    saturated), the wait for the pool permit, and its own read ([`REFRESH_TIMEOUT`]); up to
-//!    [`DECISION_REVALIDATIONS`] attempts, each one only after the epoch moved during the previous
-//!    read. So a request costs at most one read per user epoch it sees, and at most
-//!    [`DECISION_REVALIDATIONS`] reads in all. Frames queued on that socket wait behind it
-//!    meanwhile.
+//!    decided yet". That wait begins only once it has the gate, so a frame's read moves it: while
+//!    the database is slow and the pool is busy, the reply can be "not decided yet" without admin
+//!    frames and a refusal with them (no admin event is delivered in either case). No task holds a
+//!    permit while it waits for a gate. Per attempt a subscribe takes at most: the wait for the
+//!    gate (its holder is bounded by its own read's [`REFRESH_TIMEOUT`] plus its wait for a permit
+//!    of the other revalidations, so seconds while the database is saturated), the wait for the
+//!    pool permit, and its own read ([`REFRESH_TIMEOUT`]); up to [`DECISION_REVALIDATIONS`]
+//!    attempts, each one only after the epoch moved during the previous read. So a request costs at
+//!    most one read per user epoch it sees, and at most [`DECISION_REVALIDATIONS`] reads in all.
+//!    Frames queued on that socket wait behind it meanwhile.
 //!
 //! # Revalidation cost
 //!
