@@ -628,7 +628,10 @@ sequenceDiagram
   `enrolled`). `passkey/finish` needs the requesting session, the ceremony id that start returned and
   the same proof (checked before the ceremony is taken; missing or different: 409 `APPROVAL_STATE`, the
   ceremony stays usable); it creates the `active` passkey (409 `PASSKEY_LIMIT` / `PASSKEY_ALREADY_REGISTERED` keep the attempt
-  readable). A lost answer to the code is recovered by the poll and the page's own proof; a reload
+  readable). A `proof` that is not a JSON string is refused with 422 and an empty body by the request
+  parser at `…/code` and `…/passkey/finish`, before the handler runs (no try spent, the ceremony kept);
+  at `passkey/start` it counts as missing (409). A lost answer to the code is recovered by the poll and
+  the page's own proof; a reload
   between the code and the passkey loses the proof, and the person starts again.
 - **Desktop:** purpose `pc_setup` of the F1 flow (C29). The app starts the flow with its session's bearer
   and the attempt id; the flow URL is `/auth/passkeys/desktop/flows/{flow_id}`. The page asks for the

@@ -300,9 +300,10 @@ created. It needs **no push notifications** (a server without FCM works) and no 
   default, and every passkey made this way is announced with "That wasn't me". Keep `may_approve` off
   for the least experienced members, as with QR sign-in. Passkeys over hybrid remain the only
   cross-device path with a proximity guarantee.
-- **Limits:** a chat-only session can start at most 10 attempts within 10 minutes, an account 30. Someone
-  who signed in with the member's password could use up the account's starts for a while; the member
-  ends that session from the key phone.
+- **Limits:** a chat-only session can start at most 10 attempts within 10 minutes, an account 30 (all its
+  sessions together). When a limit is reached, the computer says to wait a moment and try again; the
+  oldest start leaves the count within 10 minutes. Ending the account's other sessions from the key phone
+  stops their starts.
 - **Desktop app:** the code is typed in the member's system browser, which must be able to create a
   passkey (Linux with Firefox needs a security key, or Chromium chosen under *Browser for passkey
   sign-in*).

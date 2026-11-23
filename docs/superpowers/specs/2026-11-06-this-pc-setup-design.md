@@ -64,8 +64,9 @@ A flow that starts on the PC reverses that direction, so it needs a deliberate s
 A code from the PC typed on the phone adds nothing: it travels in the same direction as the QR code,
 from the same screen.
 
-Trust limits of option A: the code shows that whoever typed it got it from the person at the phone; the
-server cannot tell where that person stands. It is not a proximity check. The phone therefore says to
+Trust limits of option A: the code shows that whoever typed it knew the code the phone showed, and it
+ties the registration to the page or flow that typed it; it does not show who supplied the digits, and
+the server cannot tell where the person at the phone stands. It is not a proximity check. The phone therefore says to
 type the code only on the computer where this was started, and every passkey made this way is
 announced with "That wasn't me". On the web the proof is held by the page, so anything that can act
 inside that page acts with it; and whoever types the right code first is, for the server, the page.
@@ -210,8 +211,9 @@ new approval on the phone.
 
 The code is entered where the passkey will be created. The right code fixes the path that may register
 the passkey: on the web the page that typed it, on the desktop the browser of the flow it was typed in.
-It shows that whoever typed it got it from the person at the phone; the server still cannot tell where
-that person stands (D1's trust limits).
+It shows that whoever typed it knew the code the phone showed, and it keeps the registration with the
+page or flow that typed it; it does not show who supplied the digits, and the server still cannot tell
+where the person at the phone stands (D1's trust limits).
 
 The right code moves the attempt to `enrolled` and creates an enrolment (SM2, new variant `pc_setup`)
 with a new `issuer_kind` recording both the approving key device (its `approval_devices` row id) and the
