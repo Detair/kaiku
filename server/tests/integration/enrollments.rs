@@ -2045,6 +2045,45 @@ async fn status_stores_expired_after_a_running_confirmation_rolls_back(pool: PgP
     assert!(ended_at.is_some(), "stored like the sweep stores it");
 }
 
+/// A long poll that is already running while a confirmation holds the
+/// enrolment row past the code time skips the held row, keeps answering
+/// nothing and stores nothing. When the confirmation rolls back, the same
+/// call tries again on a later read, stores `expired` and answers it well
+/// before its own wait is over.
+#[sqlx::test]
+async fn status_long_poll_stores_expired_once_a_held_confirmation_rolls_back(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let (id, code, secret) = claimed_cli(&app, user).await;
+    let (held, _after) = hold_confirmation_past_due(&app, id, &code).await;
+
+    let started = tokio::time::Instant::now();
+    let poll = spawn_status(&app, id, &secret, 25);
+    // Several 500 ms reads of the poll meet the held, past-due row.
+    for _ in 0..15 {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            !poll.is_finished(),
+            "the long poll waits while the row is held"
+        );
+        assert_eq!(stored(&pool, id).await, ("claimed".to_string(), None));
+    }
+
+    held.rollback().await.unwrap();
+    let (s, st) = tokio::time::timeout(std::time::Duration::from_secs(5), poll)
+        .await
+        .expect("the same long poll answers soon after the rollback")
+        .unwrap();
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(10),
+        "answered before the poll's wait is over"
+    );
+    assert_eq!((s, st["state"].as_str()), (200, Some("expired")), "{st}");
+    let (state, ended_at) = stored(&pool, id).await;
+    assert_eq!(state, "expired");
+    assert!(ended_at.is_some(), "stored like the sweep stores it");
+}
+
 /// Waits (≤ 10 s) until a backend of this test database runs a statement
 /// matching `pattern` and waits for a lock, seen from `watch`.
 async fn until_lock_wait(watch: &mut sqlx::PgConnection, pattern: &str) {
