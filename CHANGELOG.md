@@ -98,7 +98,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Android: on a phone that is not set up yet, the sign-in screen starts with "Set up this phone with a setup code"; the other ways to sign in follow below.
-- Android: setup links (https://<server>/setup) from the official release open the app directly instead of a web page first.
+- Android: setup links (https://<server>/setup) of the server the official release was built and verified for open that release directly instead of a web page first. Links of any other server, and links in builds made without that server, open the setup page in the browser first; its "Open in Kaiku" button hands the setup to the app.
 - Android: each screen-lock prompt says what it confirms (signing in, finishing the setup, removing this phone, staying signed in), including why the setup asks a second time.
 - Android: the screen-lock guide tells you to come back to Kaiku when the lock is on and shows "Add a fingerprint" only on phones with a fingerprint reader ("Add face or fingerprint unlock" otherwise).
 - Android: passkeys work only when the app uses the server's own public address; another address for the same server now says the passkey request is for a different website.
@@ -185,7 +185,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Android: while the phone's key storage cannot be read, a security notification no longer reads the stored session, and a message notification that was already queued is kept for its account until the storage can be read.
 - Android: a scanner screen restored over an unfinished setup shows that setup's waiting screen; tapping the link of the setup that is ending again no longer replaces a newer link kept for afterwards.
 - Android: when the server says that this phone is a key device, the setup takes that only provisionally until this phone's key has signed in; if the server refuses this key, the setup goes back to where it was instead of keeping a key the server does not hold.
-- Android: the setup request, the sign-in with the phone's key, signed answers and the registration are sent at most once; the app's network layer no longer repeats them by itself.
+- Android: the setup request, the sign-in with the phone's key, signed answers and the registration are no longer repeated by the app's network layer when an answer is lost or unclear. One exception: when the server refuses such a request because the sign-in had expired (401) and the app then renews the sign-in successfully, it sends the signed answer once more.
 - Android: a setup whose new key the server refuses because it already has another key of this phone says so and keeps asking; once that other key is removed it ends by itself. A key whose install id could not be established after an update is never deleted because the server does not know the install, and "Confirm it's you" says why it cannot sign in; what an earlier version left behind from a removal is settled (or blocks the start) before anything reads the stored sign-in, also when only part of it can be read.
 - Web: "Open in Kaiku" on the setup page hands the setup code only to the Kaiku app.
 - Android: Kaiku data is no longer copied by cloud backup or when moving to a new phone. "Confirm it's you" is protected against screenshots and taps through other apps like the other key screens.
