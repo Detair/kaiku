@@ -1,5 +1,7 @@
 package io.wolftown.kaiku.data.auth
 
+import androidx.annotation.StringRes
+import io.wolftown.kaiku.R
 import io.wolftown.kaiku.approval.DeviceIdProvider
 import io.wolftown.kaiku.data.api.AuthApi
 import io.wolftown.kaiku.data.keydevice.KeyDeviceRepository
@@ -44,21 +46,26 @@ class LegacyRemovalSession @Inject constructor(
      * [KeyStorageGate.retry]): then nothing may read the stored session yet, and nobody can sign in, so a flag that
      * stays behind can only ever clear the same left-over session again.
      */
-    fun endIfLeft(): Boolean {
+    fun endIfLeft(): Boolean = settle() == LeftOver.SETTLED
+
+    /** What [endIfLeft] found: settled, not readable, or a clear that did not reach storage. */
+    internal enum class LeftOver { SETTLED, UNREADABLE, NOT_WRITTEN }
+
+    internal fun settle(): LeftOver {
         // Not readable now: nothing is decided; the storage gate runs this again once it is.
-        if (store.load() is KeyStorage.Unreadable) return false
-        val mark = store.legacyRemovalMark() ?: return false
-        if (!mark) return true
+        if (store.load() is KeyStorage.Unreadable) return LeftOver.UNREADABLE
+        val mark = store.legacyRemovalMark() ?: return LeftOver.UNREADABLE
+        if (!mark) return LeftOver.SETTLED
         val serverUrl = tokenStorage.getServerUrl()
         val access = tokenStorage.getAccessToken()
         val refresh = tokenStorage.getRefreshToken()
         if (!(tokenStorage.clear() || tokenStorage.clear())) {
             logger.warning("Left-over removal session not cleared; the next start tries again")
-            return false
+            return LeftOver.NOT_WRITTEN
         }
         if (!(store.clearLegacyRemovalMark() || store.clearLegacyRemovalMark())) {
             logger.warning("Left-over removal flag not cleared; the next start tries again")
-            return false
+            return LeftOver.NOT_WRITTEN
         }
         if (serverUrl != null && (access != null || refresh != null)) {
             scope.launch {
@@ -69,8 +76,23 @@ class LegacyRemovalSession @Inject constructor(
                 }
             }
         }
-        return true
+        return LeftOver.SETTLED
     }
+}
+
+/** Why the storage gate is closed: what the phone saved cannot be read, or a write did not reach storage. */
+enum class KeyStorageProblem { CANNOT_READ, CANNOT_WRITE }
+
+/**
+ * What the closed gate's screen says for [p]: the notice, the button (named by the notice), and the
+ * last resort, which only data that cannot be read gets. A write that failed never leads to
+ * clearing the app's storage: that would delete this phone's key, and freeing up space is enough.
+ */
+data class KeyStorageTexts(@StringRes val notice: Int, @StringRes val button: Int, @StringRes val lastResort: Int?)
+
+fun keyStorageTexts(p: KeyStorageProblem): KeyStorageTexts = when (p) {
+    KeyStorageProblem.CANNOT_READ -> KeyStorageTexts(R.string.security_key_storage_unreadable, R.string.common_try_again, R.string.security_clear_storage_hint)
+    KeyStorageProblem.CANNOT_WRITE -> KeyStorageTexts(R.string.security_key_storage_not_saved, R.string.common_try_again, null)
 }
 
 /**
@@ -90,15 +112,25 @@ class KeyStorageGate @Inject constructor(
     @Volatile
     private var settled = false
 
+    /** The gate is closed because a write did not reach storage (not because something cannot be read). */
+    @Volatile
+    private var notWritten = false
+
+    /** Why the gate is closed now (meaningful while [unreadable]). */
+    fun problem(): KeyStorageProblem = if (notWritten) KeyStorageProblem.CANNOT_WRITE else KeyStorageProblem.CANNOT_READ
+
     override fun unreadable(): Boolean = keyDevices.unreadable() || !settled
 
     /** At the start of every process, before anything reads the stored session. True when readable. */
     fun start(): Boolean {
-        val left = legacy.endIfLeft()
+        val left = legacy.settle()
         // Here, where every process starts and before anything (push) can make an install id. A
         // binding that did not reach storage keeps everything closed: an id made meanwhile would
         // otherwise be taken for the key's at the next start.
-        settled = left && !keyDevices.unreadable() && bindInstallId()
+        val readable = left == LegacyRemovalSession.LeftOver.SETTLED && !keyDevices.unreadable()
+        settled = readable && bindInstallId()
+        // Readable, and still not settled: a clear or the binding did not reach storage.
+        notWritten = left == LegacyRemovalSession.LeftOver.NOT_WRITTEN || (readable && !settled)
         return !unreadable()
     }
 
@@ -128,8 +160,14 @@ class KeyStorageGate @Inject constructor(
      * had been made: the store is first written through, and nothing opens until that succeeded.
      */
     fun retry(): Boolean {
-        if (!keyDevices.flush()) return false
-        if (!keyDevices.reload()) return false
+        if (!keyDevices.flush()) {
+            notWritten = true
+            return false
+        }
+        if (!keyDevices.reload()) {
+            notWritten = false
+            return false
+        }
         return start()
     }
 }

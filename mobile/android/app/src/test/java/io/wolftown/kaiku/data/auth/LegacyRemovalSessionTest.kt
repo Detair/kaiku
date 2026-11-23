@@ -405,4 +405,53 @@ class LegacyRemovalSessionTest {
         disk.prefs.restart()
         assertEquals(false, disk.store.legacyRemovalMark())
     }
+
+    // ── What the closed gate says ────────────────────────────────────────────────────────────
+
+    /**
+     * A write of the start that did not reach the disk: the screen says that Kaiku could not save,
+     * to free up space and try again, and never advises to clear the app's storage (that would
+     * delete the key). Data that cannot be read keeps the present text and its last resort.
+     */
+    @Test fun `the closed gate tells a failed write from data that cannot be read`() = runTest {
+        val disk = Disk()
+        val keys = keyStore()
+        assertTrue(disk.store.save(StoredKeyDevice(device, KeyDevicePhase.ACTIVE, keyId = keys.keyId())))
+        disk.prefs.failingCommits = 100
+        val (gate, _) = gateOn(disk, keys, Ids())
+        assertFalse(gate.start())
+        assertEquals(KeyStorageProblem.CANNOT_WRITE, gate.problem())
+        assertFalse(gate.retry())
+        assertEquals(KeyStorageProblem.CANNOT_WRITE, gate.problem())
+        val write = keyStorageTexts(gate.problem())
+        assertEquals(io.wolftown.kaiku.R.string.security_key_storage_not_saved, write.notice)
+        assertNull(write.lastResort)
+        assertEquals(io.wolftown.kaiku.R.string.common_try_again, write.button)
+        // The disk takes writes again, but what it holds cannot be read now: the read text.
+        disk.prefs.failingCommits = 0
+        assertTrue(disk.prefs.edit().putString("phase", "NOT_A_PHASE").commit())
+        assertFalse(gate.retry())
+        assertEquals(KeyStorageProblem.CANNOT_READ, gate.problem())
+
+        // A failed clear of an earlier version's flag is a failed write too.
+        val flagDisk = Disk()
+        assertTrue(flagDisk.store.save(StoredKeyDevice(device, KeyDevicePhase.ACTIVE, keyId = keys.keyId(), installId = "install-1")))
+        assertTrue(flagDisk.prefs.edit().putBoolean("removal_sign_in", true).commit())
+        flagDisk.prefs.failingCommits = 100
+        val (flagGate, _) = gateOn(flagDisk, keys, Ids())
+        assertFalse(flagGate.start())
+        assertEquals(KeyStorageProblem.CANNOT_WRITE, flagGate.problem())
+
+        // Key data that cannot be read: the present text, with its last resort.
+        store.unreadable = true
+        val repo = KeyDeviceRepository(store, keys, AuthState(backgroundScope), backgroundScope)
+        val unreadable = KeyStorageGate(repo, LegacyRemovalSession(store, tokenStorage, authApi, backgroundScope)) { "install-1" }
+        assertFalse(unreadable.start())
+        assertEquals(KeyStorageProblem.CANNOT_READ, unreadable.problem())
+        assertFalse(unreadable.retry())
+        assertEquals(KeyStorageProblem.CANNOT_READ, unreadable.problem())
+        val read = keyStorageTexts(unreadable.problem())
+        assertEquals(io.wolftown.kaiku.R.string.security_key_storage_unreadable, read.notice)
+        assertEquals(io.wolftown.kaiku.R.string.security_clear_storage_hint, read.lastResort)
+    }
 }

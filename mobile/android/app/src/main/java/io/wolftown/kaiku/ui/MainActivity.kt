@@ -15,6 +15,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.fragment.app.FragmentActivity
@@ -93,7 +95,11 @@ class MainActivity : FragmentActivity() {
         if (keyStorage.unreadable()) {
             // A setup link that opened the app is kept (in memory) for after a successful "Try again".
             if (savedInstanceState == null && PendingSetupLinks.keep(intent?.data?.toString())) intent.data = null
-            setContent { KeyStorageUnreadable(onRetry = { if (keyStorage.retry()) recreate() }) }
+            setContent {
+                // Why it is closed can change at "Try again" (read again, or a write still fails).
+                var problem by remember { mutableStateOf(keyStorage.problem()) }
+                KeyStorageUnreadable(problem, onRetry = { if (keyStorage.retry()) recreate() else problem = keyStorage.problem() })
+            }
             return
         }
         authState.initialize(tokenStorage)
