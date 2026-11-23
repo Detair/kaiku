@@ -19,6 +19,7 @@ use super::transition::{audit, describe, end_tx, EndCause, LockedAttempt};
 use super::{AttemptState, CODE_DIGITS, ENROLLMENT_MINUTES, MAX_CODE_TRIES};
 use crate::approvals::error::ApprovalError;
 use crate::approvals::secrets::{ct_eq, keyed_hash, Secret256, SecretPurpose};
+use crate::auth::client_class::ClientClass;
 use crate::auth::ctx::AuthCtx;
 use crate::auth::passkeys::queries::{PasskeyRow, PasskeyState};
 use crate::auth::passkeys::register::{complete_recorded_with, RegistrationVia};
@@ -132,6 +133,16 @@ pub async fn enter_code(
         }
         (CodePath::DesktopFlow(_), _) => None,
     };
+    // The web route belongs to web sessions: a desktop-class session types
+    // the code in the browser page of its own flow (409, nothing spent).
+    if path == CodePath::Web
+        && locked
+            .session
+            .as_ref()
+            .is_some_and(|s| s.client_class == ClientClass::Desktop.as_str())
+    {
+        return Err(ApprovalError::State);
+    }
     if let Some(e) = not_live(locked, AttemptState::Code) {
         return Err(e);
     }

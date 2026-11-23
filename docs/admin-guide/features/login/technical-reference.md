@@ -617,7 +617,8 @@ sequenceDiagram
   with the flow's id); only that path registers. The web routes refuse an attempt whose code came
   through a flow (409 `APPROVAL_STATE`), and a flow refuses an attempt whose code came another way. A
   `pc_setup` desktop flow starts only from a session whose stored client class is `desktop` (403
-  `FORBIDDEN` otherwise).
+  `FORBIDDEN` otherwise), and the web code route refuses such a session (409 `APPROVAL_STATE`, nothing
+  spent).
 - **Browser (web):** the page draws a proof (32 random bytes, b64u) before it sends the code and keeps
   it in memory for that attempt (never in the URL, in storage or in a log). `POST …/code` needs it (400
   `VALIDATION_ERROR` without a well-formed one, no try spent); the right code stores its keyed hash

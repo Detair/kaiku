@@ -249,7 +249,9 @@ requesting session's own route (`web`), or through one specific desktop flow (it
 may register the passkey: the web `passkey/start` and `passkey/finish` refuse an attempt whose code came
 through a flow, and a desktop flow's `options`, `finish` and `redeem` refuse an attempt whose code did
 not come through that flow. A `pc_setup` desktop flow can be started only by a session whose stored
-client class is `desktop`; the request header alone is not enough. Starting in the browser and finishing
+client class is `desktop`; the request header alone is not enough. The web code route in turn refuses a
+session whose stored client class is `desktop` (409 `APPROVAL_STATE`, nothing spent): such a session types
+the code in the browser page of its own flow. Starting in the browser and finishing
 in the desktop app (or the reverse) therefore needs **Start again**.
 
 **The web path is bound to the page that typed the code.** Before it sends the code, the page draws 32

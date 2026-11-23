@@ -1961,9 +1961,16 @@ async fn wrong_codes_in_the_browser_count_on_the_attempt(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(tries, 2);
-    // The PC's own route shares the counter: its wrong code is the third.
+    // The web route refuses a desktop session and spends nothing.
     let (s, body) = crate::pc_setup::enter(&p, &p.token, &id, &wrong(&code)).await;
-    assert_eq!((s, body["state"].as_str()), (200, Some("failed")), "{body}");
+    assert_eq!(
+        (s, body["error"].as_str()),
+        (409, Some("APPROVAL_STATE")),
+        "{body}"
+    );
+    // The third wrong code in the browser ends the attempt.
+    let r = type_code(&p, &flow, &wrong(&code), None).await;
+    assert_eq!(r.json()["state"], "failed", "{}", r.body);
     let failed: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM security_events WHERE subject_id = $1 AND event_type = 'pc_setup_failed'",
     )
@@ -2310,26 +2317,35 @@ async fn a_code_typed_in_a_flow_registers_through_that_flow_only(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn a_code_typed_on_the_web_cannot_be_used_by_a_flow(pool: PgPool) {
+async fn a_desktop_session_cannot_type_the_code_on_the_web_route(pool: PgPool) {
     let p = desktop_pc(&pool).await;
     let (id, code) = with_code(&p).await;
     let flow = pc_flow(&p, &id).await;
+    // The web route belongs to web sessions: 409, nothing spent.
     let (s, body) = crate::pc_setup::enter(&p, &p.token, &id, &code).await;
     assert_eq!(
-        (s, body["state"].as_str()),
-        (200, Some("enrolled")),
+        (s, body["error"].as_str()),
+        (409, Some("APPROVAL_STATE")),
         "{body}"
     );
-    // The flow never gets a browser secret, so it has no ceremony to run.
-    assert_eq!(type_code(&p, &flow, &code, None).await.status, 409);
-    assert_eq!(pc_options(&p, &flow, None).await.status, 400);
+    let row: (String, i16, Option<String>, bool) = sqlx::query_as(
+        "SELECT state, tries, code_via, code_hash IS NOT NULL FROM pc_setup_attempts WHERE id = $1::uuid",
+    )
+    .bind(&id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(row, ("code".into(), 0, None, true));
+    // The code is typed in the browser page of the app's own flow, as before.
+    right_code(&p, &flow, &code).await;
     let path: (Option<String>, Option<Uuid>) =
         sqlx::query_as("SELECT code_via, code_flow_id FROM pc_setup_attempts WHERE id = $1::uuid")
             .bind(&id)
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!(path, (Some("web".into()), None));
+    assert_eq!(path.0.as_deref(), Some("desktop_flow"));
+    assert!(path.1.is_some());
 }
 
 #[sqlx::test]
