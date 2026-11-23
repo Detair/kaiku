@@ -345,6 +345,9 @@ async fn long_poll(
     wait: u8,
     rotation: bool,
 ) -> Result<(AttemptRow, Option<Secret256>), ApprovalError> {
+    // The phone's side answers for the key that scanned: the row it returns
+    // must still name that key, else 404, as a fresh request would answer.
+    let scanner = (!rotation).then_some(first.device_id);
     let ctx = AuthCtx::from(state);
     let wants = wait > 0 && !first.state().is_terminal();
     let permit = wants.then(|| LONG_POLLS.try_acquire().ok()).flatten();
@@ -364,6 +367,9 @@ async fn long_poll(
             || row.reason != first.reason
             || tokio::time::Instant::now() >= deadline
         {
+            if scanner.is_some_and(|key| row.device_id != key) {
+                return Err(ApprovalError::NotFound);
+            }
             return Ok((row, token));
         }
         tokio::time::sleep(step_sleep(tokio::time::Instant::now(), deadline)).await;

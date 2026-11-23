@@ -1175,6 +1175,58 @@ async fn a_new_key_on_the_same_install_does_not_answer_the_old_challenge(pool: P
     assert_eq!(after.0, "claimed");
 }
 
+/// A phone's long-poll answers for the key that scanned: when its claim is
+/// released and another key phone of the account claims the attempt during
+/// the wait, the poll answers 404, as a fresh request would.
+#[sqlx::test]
+async fn a_phone_poll_never_returns_another_phones_claim(pool: PgPool) {
+    let p = pc(&pool).await;
+    let other = KeyDeviceFixture::insert(&pool, &p.app.config, p.user, "active").await;
+    let (id, c, _) = claimed(&p).await;
+    let attempt: Uuid = id.parse().unwrap();
+    let uri = format!("/api/pc-setups/{id}?wait=5");
+    let poll = call(&p.app, Method::GET, &uri, &p.dev.access_token, None);
+    let meanwhile = async {
+        for _ in 0..250 {
+            if vc_server::approvals::pc_setup::handlers::long_poll_is_waiting(attempt, false) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let cid = c["challenge_id"].as_str().unwrap();
+        let (s, _) = call(
+            &p.app,
+            Method::POST,
+            &format!("/api/approvals/{cid}/release"),
+            &p.dev.access_token,
+            None,
+        )
+        .await;
+        assert_eq!(s, 204);
+        let (_, st) = pc_poll(&p, &id).await;
+        let (token, bytes) = qr_token(&st["qr_payload"]);
+        let (s, c2) = claim(&p.app, &other, &token).await;
+        assert_eq!(s, 201, "{c2}");
+        let (s, ok) = answer(&p.app, &other, &c2, &bytes, Decision::Approve).await;
+        assert_eq!(s, 200, "{ok}");
+    };
+    let ((s, b), ()) = tokio::join!(poll, meanwhile);
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (404, Some("APPROVAL_NOT_FOUND")),
+        "{b}"
+    );
+    let (s, _) = call(
+        &p.app,
+        Method::GET,
+        &format!("/api/pc-setups/{id}?wait=0"),
+        &p.dev.access_token,
+        None,
+    )
+    .await;
+    assert_eq!(s, 404);
+}
+
 #[sqlx::test]
 async fn context_comes_from_the_session_row_not_the_request(pool: PgPool) {
     let p = pc(&pool).await;
