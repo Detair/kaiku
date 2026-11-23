@@ -180,7 +180,7 @@ internal fun finalSignInUi(r: DeviceSignInResult?): SetupUi = when (r) {
     DeviceSignInResult.Cancelled -> SetupUi.SignInPaused
     is DeviceSignInResult.Pending -> SetupUi.Pending(r.readyAt)
     // The setup went back to its claim: it is asked again (and gets out once the server lets it).
-    is DeviceSignInResult.Failed -> SetupUi.Ended(signInResultText(r) ?: R.string.setup_failed_generic, canRetry = r.code == "NOT_THIS_KEY")
+    is DeviceSignInResult.Failed -> SetupUi.Ended(signInResultText(r) ?: R.string.setup_failed_generic, canRetry = r.code == "NOT_THIS_KEY" || r.code == "NOT_SAVED")
     else -> SetupUi.Ended(signInResultText(r) ?: R.string.setup_failed_generic, canRetry = false)
 }
 

@@ -160,8 +160,13 @@ class DeviceSignIn @Inject constructor(
                             return DeviceSignInResult.Failed("NO_KEY_DEVICE")
                         }
                         // The record is still this one; only what is kept beside it (the key-device
-                        // id, the session's cap) did not reach storage. The sign-in stands.
-                        Change.WriteFailed, Change.Unreadable -> logger.warning("Sign-in not noted on the key record: ${taken.javaClass.simpleName}")
+                        // id, the session's cap) did not reach storage. The sign-in stands, but a key
+                        // that is a key device only provisionally is not one for good on the phone
+                        // yet: that is said, not success.
+                        Change.WriteFailed, Change.Unreadable -> {
+                            logger.warning("Sign-in not noted on the key record: ${taken.javaClass.simpleName}")
+                            if (rec.provisionalFrom != null) return DeviceSignInResult.Failed("NOT_SAVED")
+                        }
                     }
                     DeviceSignInResult.Success
                 }

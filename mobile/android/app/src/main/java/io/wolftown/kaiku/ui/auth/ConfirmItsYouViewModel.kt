@@ -63,6 +63,8 @@ internal fun signInResultText(r: DeviceSignInResult): Int? = when (r) {
         "NOT_THIS_KEY" -> R.string.setup_not_this_key
         // The install id this key was enrolled under is lost: the key is kept, nothing changed.
         "INSTALL_ID_LOST" -> R.string.confirm_install_unknown
+        // Signed in, but what the phone was to note of it did not reach storage.
+        "NOT_SAVED" -> R.string.security_key_storage_not_saved
         else -> R.string.security_sign_in_failed
     }
 }

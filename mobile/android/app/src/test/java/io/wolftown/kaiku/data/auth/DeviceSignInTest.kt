@@ -388,4 +388,33 @@ class DeviceSignInTest {
         assertEquals(DeviceSignInResult.Failed("SIGNATURE_INVALID"), signIn.signIn(activity))
         assertEquals(KeyDevicePhase.ACTIVE, repo.phase())
     }
+
+    /**
+     * A provisional key device whose sign-in the server accepted, but the note that it is a key
+     * device for good cannot be written: the sign-in does not report success; it says that saving
+     * failed. The session stays installed, and the record is still provisional.
+     */
+    @Test fun `a provisional key whose note cannot be written says that saving failed`() = runTest {
+        val (signIn, repo) = setUp()
+        val rec = repo.record.value!!
+        repo.update(rec) { it.copy(provisionalFrom = KeyDevicePhase.CLAIMED) }
+        afterInstall = { store.failWrites = true }
+        val r = signIn.signIn(activity)
+        assertEquals(DeviceSignInResult.Failed("NOT_SAVED"), r)
+        assertEquals(io.wolftown.kaiku.R.string.security_key_storage_not_saved, io.wolftown.kaiku.ui.auth.signInResultText(r))
+        // The setup's final step says the same and offers to try again.
+        assertEquals(
+            io.wolftown.kaiku.ui.auth.setup.SetupUi.Ended(io.wolftown.kaiku.R.string.security_key_storage_not_saved, canRetry = true),
+            io.wolftown.kaiku.ui.auth.setup.finalSignInUi(r),
+        )
+        assertEquals(KeyDevicePhase.CLAIMED, repo.record.value!!.provisionalFrom)
+        assertTrue(authState.session.value is io.wolftown.kaiku.data.local.AuthSession.LoggedIn)
+    }
+
+    /** A key device for good whose note beside the record cannot be written: the sign-in stands. */
+    @Test fun `a key device for good whose note cannot be written still signs in`() = runTest {
+        val (signIn, _) = setUp()
+        afterInstall = { store.failWrites = true }
+        assertEquals(DeviceSignInResult.Success, signIn.signIn(activity))
+    }
 }
