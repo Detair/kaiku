@@ -88,6 +88,8 @@ class KeyForgetCallSitesTest {
                 "data/keydevice/KeyAnswers.kt",
                 "data/auth/DeviceSignIn.kt",
                 "data/auth/KeyDeviceSignOut.kt",
+                // Clears the provisional mark once the server accepted this key's sign-in for a removal.
+                "data/auth/PhoneRemoval.kt",
                 "data/keydevice/ServerSilence.kt",
                 "data/auth/LegacyRemovalSession.kt",
                 "ui/auth/setup/SetupOwner.kt",
