@@ -162,4 +162,58 @@ class AuthRepositoryUnfinishedSetupTest {
         assertFalse(repository.hasPendingPasswordChange())
         coVerify { authApi.logoutSession(other, "c", any()) }
     }
+
+    /**
+     * A setup of this phone for server A is still running (claim sent, code shown, or waiting for
+     * its ready time). A sign-in on server B that first needs a new password is refused before
+     * anything is kept or changed there: no pending change, no new password sent, its session ended.
+     * A change that was already waiting when such a setup started is not made either.
+     */
+    @Test fun `no password change is kept or made while a setup for another server runs`() = runTest {
+        val other = "https://other.example.org"
+        every { tokenStorage.getServerUrl() } returns other
+        for (phase in listOf(KeyDevicePhase.CLAIMING, KeyDevicePhase.CLAIMED, KeyDevicePhase.PENDING)) {
+            stored(phase)
+            val change = response("c-$phase").copy(passwordChangeRequired = true)
+            val refused = repository.completeAttempt(other, "pw") { change }
+            assertTrue(phase.name, refused.isFailure)
+            assertFalse(phase.name, refused.exceptionOrNull() is PasswordChangeRequiredException)
+            assertFalse(phase.name, repository.hasPendingPasswordChange())
+            coVerify { authApi.logoutSession(other, "c-$phase", any()) }
+
+            // Waiting already when the setup started.
+            stored(null)
+            val waiting = response("w-$phase").copy(passwordChangeRequired = true)
+            assertTrue(repository.completeAttempt(other, "pw") { waiting }.exceptionOrNull() is PasswordChangeRequiredException)
+            stored(phase)
+            assertTrue(phase.name, repository.completePasswordChange("new-password").isFailure)
+            assertFalse(phase.name, repository.hasPendingPasswordChange())
+            coVerify { authApi.logoutSession(other, "w-$phase", any()) }
+        }
+        coVerify(exactly = 0) { authApi.changePassword(any(), any(), any(), any()) }
+        verify(exactly = 0) { tokenStorage.saveTokens(any(), any(), any(), any()) }
+    }
+
+    /**
+     * The key became active for server A while the new password was being set on server B: the
+     * session on B is not installed and is ended, and the person is told why.
+     */
+    @Test fun `a key that became active while the password was changed keeps the session out`() = runTest {
+        val other = "https://other.example.org"
+        every { tokenStorage.getServerUrl() } returns other
+        coEvery { authApi.authenticatedGetMe(any(), any()) } returns User(id = "other-account", username = "bob", displayName = "Bob")
+        val change = response("c").copy(passwordChangeRequired = true)
+        assertTrue(repository.completeAttempt(other, "pw") { change }.exceptionOrNull() is PasswordChangeRequiredException)
+        coEvery { authApi.changePassword(any(), any(), any(), any()) } coAnswers {
+            store.stored = StoredKeyDevice(LocalKeyDevice(null, "first-account", server, UvClass.PER_USE, "e1", null), KeyDevicePhase.ACTIVE)
+            keys.reload()
+            Unit
+        }
+        val result = repository.completePasswordChange("new-password")
+        assertTrue(result.exceptionOrNull() is KeyOnOtherServerException)
+        assertEquals(AuthSession.LoggedOut, authState.session.value)
+        verify(exactly = 0) { tokenStorage.saveTokens(any(), any(), any(), any()) }
+        assertFalse(repository.hasPendingPasswordChange())
+        coVerify { authApi.logoutSession(other, "c", any()) }
+    }
 }

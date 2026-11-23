@@ -139,6 +139,13 @@ class AuthRepository @Inject constructor(
         synchronized(io.wolftown.kaiku.data.keydevice.SessionKeyLock) { installLocked(serverUrl, accessToken, refreshToken, expiresIn, userId, precondition, onInstalled) }
     }
 
+    /**
+     * What the phone's key refuses for an ordinary sign-in on [serverUrl]: a setup of this phone is
+     * stored and not finished, the key storage cannot be read, or the key waits on another server.
+     */
+    private fun installRefused(serverUrl: String): Boolean =
+        keyDevicePolicy.refusesOtherSignIn() || keyDevicePolicy.refusesSignInOn(serverUrl)
+
     private fun installLocked(
         serverUrl: String,
         accessToken: String,
@@ -148,9 +155,7 @@ class AuthRepository @Inject constructor(
         precondition: () -> Boolean,
         onInstalled: () -> Unit,
     ): Boolean {
-        if (authState.session.value is AuthSession.LoggedIn || keyDevicePolicy.refusesOtherSignIn() ||
-            keyDevicePolicy.refusesSignInOn(serverUrl) || !precondition()
-        ) {
+        if (authState.session.value is AuthSession.LoggedIn || installRefused(serverUrl) || !precondition()) {
             return false
         }
         tokenStorage.saveTokens(
@@ -199,11 +204,9 @@ class AuthRepository @Inject constructor(
                     currentPassword = typedPassword
                 )
                 val installed = synchronized(pendingLock) {
-                    // Not kept when it could never be installed: this phone's key waits for its
-                    // device sign-in on another server, and nothing is changed on this one.
-                    if (loginAttempt == attempt && tokenStorage.getServerUrl() == serverUrl &&
-                        !keyDevicePolicy.refusesSignInOn(serverUrl)
-                    ) {
+                    // Not kept when it could never be installed (a setup of this phone runs, or its
+                    // key waits on another server): nothing is changed on this server.
+                    if (loginAttempt == attempt && tokenStorage.getServerUrl() == serverUrl && !installRefused(serverUrl)) {
                         pendingPasswordChange = pending
                         true
                     } else {
@@ -349,11 +352,11 @@ class AuthRepository @Inject constructor(
             replacePendingIf(pending, null)
             return cancelledResult()
         }
-        // This phone's key waits for its device sign-in on another server: the session could never
-        // be installed, so the password there is not changed and the session is ended.
-        if (keyDevicePolicy.refusesSignInOn(pending.serverUrl)) {
+        // The session could never be installed (a setup of this phone runs, or its key waits on
+        // another server): the password there is not changed and the session is ended.
+        if (installRefused(pending.serverUrl)) {
             if (replacePendingIf(pending, null)) endUnused(pending.serverUrl, pending.asResponse())
-            return Result.failure(KeyOnOtherServerException())
+            return if (keyDevicePolicy.refusesSignInOn(pending.serverUrl)) Result.failure(KeyOnOtherServerException()) else cancelledResult()
         }
         return try {
             authApi.changePassword(pending.serverUrl, pending.accessToken, pending.currentPassword, newPassword)
