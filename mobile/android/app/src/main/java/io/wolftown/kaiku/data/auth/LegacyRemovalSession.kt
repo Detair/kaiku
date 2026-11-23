@@ -46,12 +46,12 @@ class LegacyRemovalSession @Inject constructor(
      * [KeyStorageGate.retry]): then nothing may read the stored session yet, and nobody can sign in, so a flag that
      * stays behind can only ever clear the same left-over session again.
      */
-    fun endIfLeft(): Boolean = settle() == LeftOver.SETTLED
+    fun endIfLeft(): Boolean = outcome() == LeftOver.SETTLED
 
     /** What [endIfLeft] found: settled, not readable, or a clear that did not reach storage. */
     internal enum class LeftOver { SETTLED, UNREADABLE, NOT_WRITTEN }
 
-    internal fun settle(): LeftOver {
+    internal fun outcome(): LeftOver {
         // Not readable now: nothing is decided; the storage gate runs this again once it is.
         if (store.load() is KeyStorage.Unreadable) return LeftOver.UNREADABLE
         val mark = store.legacyRemovalMark() ?: return LeftOver.UNREADABLE
@@ -123,7 +123,7 @@ class KeyStorageGate @Inject constructor(
 
     /** At the start of every process, before anything reads the stored session. True when readable. */
     fun start(): Boolean {
-        val left = legacy.settle()
+        val left = legacy.outcome()
         // Here, where every process starts and before anything (push) can make an install id. A
         // binding that did not reach storage keeps everything closed: an id made meanwhile would
         // otherwise be taken for the key's at the next start.
