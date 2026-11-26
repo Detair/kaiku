@@ -95,7 +95,7 @@ class DeviceSignInTest {
         val invalidation = io.wolftown.kaiku.data.keydevice.KeyInvalidation(api, repo, authRepository)
         val v = FakeUserVerifier(keyStore, uv).also { verifier = it }
         val signer = DeviceSigner(keyStore, v, checks, invalidation::handle)
-        return DeviceSignIn(api, signer, repo, { appInstallId }, authRepository, KeyAnswers(repo)) to repo
+        return DeviceSignIn(api, signer, repo, { appInstallId }, authRepository, KeyAnswers(repo), io.wolftown.kaiku.data.keydevice.ServerSilence(repo, io.wolftown.kaiku.testutil.FakeBootClock())) to repo
     }
 
     /** The install id the app has now. */
@@ -417,5 +417,52 @@ class DeviceSignInTest {
         val (signIn, _) = setUp()
         afterInstall = { store.failWrites = true }
         assertEquals(DeviceSignInResult.Success, signIn.signIn(activity))
+    }
+
+    private val silent = io.wolftown.kaiku.data.keydevice.Unanswered(io.wolftown.kaiku.data.keydevice.BootTime(1, 0), 3, java.time.Duration.ofHours(25))
+
+    /** Notes that the key's server stayed silent, as "Confirm it's you" shows them. */
+    private fun KeyDeviceRepository.noteSilence() {
+        update(record.value!!) { it.copy(unanswered = silent) }
+    }
+
+    /** The server's own refusal of the sign-in is an answer: the notes about its silence go. */
+    @Test fun `a decoded refusal of the sign-in takes the silence notes back`() = runTest {
+        val (signIn, repo) = setUp()
+        repo.noteSilence()
+        api.deviceLoginFailure = apiError(403, "ACCOUNT_BANNED")
+        assertEquals(DeviceSignInResult.Banned, signIn.signIn(activity))
+        assertNull(repo.record.value!!.unanswered)
+    }
+
+    /** What the phone decides by itself (no connection, a challenge it refused, a lost install id) keeps the notes. */
+    @Test fun `results the phone decides by itself keep the silence notes`() = runTest {
+        val (signIn, repo) = setUp()
+        repo.noteSilence()
+        api.deviceLoginFailure = java.io.IOException("offline")
+        assertEquals(DeviceSignInResult.Network, signIn.signIn(activity))
+        assertEquals(silent, repo.record.value!!.unanswered)
+        // A page in front of the server, without the server's own code: no answer either.
+        api.deviceLoginFailure = io.wolftown.kaiku.data.api.ApiException(io.ktor.http.HttpStatusCode.BadGateway, "bad gateway")
+        signIn.signIn(activity)
+        assertEquals(silent, repo.record.value!!.unanswered)
+        api.deviceLoginFailure = null
+        api.nextChallenge = SigFixtures.challengeFor(SigKind.LOGIN, 3, SigFixtures.V01_CONTEXT, "qr")
+        assertTrue((signIn.signIn(activity) as DeviceSignInResult.Failed).code.startsWith("CHALLENGE_"))
+        assertEquals(silent, repo.record.value!!.unanswered)
+        store.stored = store.stored!!.copy(installId = null, installIdLost = true)
+        repo.reload()
+        assertEquals(DeviceSignInResult.Failed("INSTALL_ID_LOST"), signIn.signIn(activity))
+        assertEquals(silent, repo.record.value!!.unanswered)
+    }
+
+    /** The server accepted the sign-in; even when the phone cannot note the rest, the notes about its silence went first. */
+    @Test fun `an accepted sign-in takes the silence notes back before anything else is noted`() = runTest {
+        val (signIn, repo) = setUp()
+        repo.noteSilence()
+        repo.update(repo.record.value!!) { it.copy(provisionalFrom = KeyDevicePhase.CLAIMED) }
+        afterInstall = { store.failWrites = true }
+        assertEquals(DeviceSignInResult.Failed("NOT_SAVED"), signIn.signIn(activity))
+        assertNull(repo.record.value!!.unanswered)
     }
 }

@@ -24,7 +24,9 @@ import io.wolftown.kaiku.data.keydevice.KeyAnswers
 import io.wolftown.kaiku.data.keydevice.KeyDevicePhase
 import io.wolftown.kaiku.data.keydevice.KeyDeviceRepository
 import io.wolftown.kaiku.data.keydevice.ServerAnswer
+import io.wolftown.kaiku.data.keydevice.ServerSilence
 import io.wolftown.kaiku.data.keydevice.Verdict
+import io.wolftown.kaiku.data.keydevice.isNoAnswer
 import io.wolftown.kaiku.di.AuthCoroutineScope
 import io.wolftown.kaiku.domain.KaikuPayloads
 import io.wolftown.kaiku.domain.model.AuthResponse
@@ -83,6 +85,8 @@ class PhoneRemoval @Inject constructor(
     private val deviceIds: DeviceIdProvider,
     private val removedPush: RemovedPhonePush,
     @AuthCoroutineScope private val appScope: CoroutineScope,
+    /** Takes back the notes that the key's server stayed silent, whenever it answered itself. */
+    private val silence: ServerSilence,
 ) {
     private companion object {
         val logger: Logger = Logger.getLogger("PhoneRemoval")
@@ -130,6 +134,8 @@ class PhoneRemoval @Inject constructor(
             ask = Ask.DEVICE_LOGIN
             val s = approvalApi.deviceLogin(ch.challengeId, loginSignature, origin)
             session = s
+            // The server answered itself.
+            silence.noteAnswered(rec)
             // The server accepted a sign-in with this very key for this install: the key is no
             // longer a key device only by the server's word about this install. If the phone cannot
             // note that, it could not take the removal's answer either: nothing is removed, and the
@@ -198,6 +204,8 @@ class PhoneRemoval @Inject constructor(
         } catch (e: CancellationException) {
             throw e
         } catch (e: ApiException) {
+            // An answer of the server itself (not a page in front of it): nothing is noted against it any more.
+            if (!e.isNoAnswer()) silence.noteAnswered(current)
             // The server's own answers for a key device that is gone, asked on the key's server
             // about the captured record: the phone forgets that record (and only that one).
             val settled = answers.settle(current, origin, ask, ServerAnswer.of(e))

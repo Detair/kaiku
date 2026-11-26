@@ -21,8 +21,10 @@ import io.wolftown.kaiku.data.keydevice.KeyAnswers
 import io.wolftown.kaiku.data.keydevice.KeyDevicePhase
 import io.wolftown.kaiku.data.keydevice.KeyDeviceRepository
 import io.wolftown.kaiku.data.keydevice.ServerAnswer
+import io.wolftown.kaiku.data.keydevice.ServerSilence
 import io.wolftown.kaiku.data.keydevice.StoredKeyDevice
 import io.wolftown.kaiku.data.keydevice.Verdict
+import io.wolftown.kaiku.data.keydevice.isNoAnswer
 import io.wolftown.kaiku.domain.KaikuPayloads
 import io.wolftown.kaiku.data.repository.AuthRepository
 import java.io.IOException
@@ -81,6 +83,8 @@ class DeviceSignIn @Inject constructor(
     private val deviceIds: DeviceIdProvider,
     private val authRepository: AuthRepository,
     private val answers: KeyAnswers,
+    /** Takes back the notes that the key's server stayed silent, whenever it answered itself. */
+    private val silence: ServerSilence,
 ) {
     private companion object {
         val logger: Logger = Logger.getLogger("DeviceSignIn")
@@ -122,6 +126,8 @@ class DeviceSignIn @Inject constructor(
                 is SignOutcome.Signed -> {
                     ask = Ask.DEVICE_LOGIN
                     val auth = approvalApi.deviceLogin(ch.challengeId, out.signatureB64u, origin)
+                    // The server answered itself.
+                    silence.noteAnswered(rec)
                     var installed: AuthSession.LoggedIn? = null
                     val user = authRepository.installDeviceSession(
                         auth, local.userId, start,
@@ -174,6 +180,8 @@ class DeviceSignIn @Inject constructor(
         } catch (e: CancellationException) {
             throw e
         } catch (e: ApiException) {
+            // An answer of the server itself (not a page in front of it): nothing is noted against it any more.
+            if (!e.isNoAnswer()) silence.noteAnswered(rec)
             // Only the server's own two answers for a removed key forget it (any other status
             // keeps it), asked on the key's server about the captured record.
             val settled = answers.settle(rec, origin, ask, ServerAnswer.of(e))

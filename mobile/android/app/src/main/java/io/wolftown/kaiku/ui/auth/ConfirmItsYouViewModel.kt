@@ -180,23 +180,18 @@ class ConfirmItsYouViewModel @Inject constructor(
         if (_ui.value.working || _ui.value.keyGone) return
         _ui.update { it.copy(working = true, error = null) }
         viewModelScope.launch {
-            // The screen's own limit ran out: that is no answer of the server.
-            var ownLimit = false
             val r = withTimeoutOrNull(SIGN_IN_TIMEOUT_MS) {
                 deviceSignIn.signIn(activity, if (stayingSignedIn) SignInPurpose.STAY_SIGNED_IN else SignInPurpose.SIGN_IN)
             } ?: if (!stayingSignedIn && keyDevices.current() is KeyDeviceState.Active) {
                 // It got through just as the limit hit (a renewal runs signed in: it cannot tell).
                 DeviceSignInResult.Success
             } else {
-                ownLimit = true
                 DeviceSignInResult.Expired
             }
             _ui.update {
                 it.copy(
                     working = false,
-                    // The server answered (anything but no connection, a stop on the phone or the
-                    // screen's own limit): the advice for a server that stays silent goes.
-                    serverSilent = it.serverSilent && (ownLimit || r == DeviceSignInResult.Network || r == DeviceSignInResult.Cancelled),
+                    serverSilent = it.serverSilent && stillSilent(),
                     error = if (r.keyIsGone()) gonePhoneText(r) else confirmSignInText(r),
                     keyGone = r.keyIsGone(),
                     readyAt = (r as? DeviceSignInResult.Pending)?.readyAt,
@@ -234,11 +229,6 @@ class ConfirmItsYouViewModel @Inject constructor(
             } else {
                 val r = withTimeoutOrNull(REMOVAL_TIMEOUT_MS) { signOut.removeSignedOutPhone(activity) }
                     ?: RemovalResult.Failed("TOOK_TOO_LONG")
-                // The server answered (anything but no connection, the phone's own limit or a stop):
-                // the advice for a server that stays silent goes.
-                if (!(r == RemovalResult.Cancelled || (r is RemovalResult.Failed && r.code in listOf("NETWORK", "TOOK_TOO_LONG")))) {
-                    _ui.update { it.copy(serverSilent = false) }
-                }
                 _ui.update {
                     when (r) {
                         RemovalResult.Removed -> it.copy(working = false, done = ConfirmDone.SIGNED_OUT)
@@ -252,9 +242,18 @@ class ConfirmItsYouViewModel @Inject constructor(
                     }
                 }
             }
+            _ui.update { it.copy(serverSilent = it.serverSilent && stillSilent()) }
             recheckKey()
         }
     }
+
+    /**
+     * The advice for a server that stays silent stays only while the notes about its silence still
+     * count: the sign-in and the removal take them back whenever the server answered itself;
+     * whatever the phone decided by itself (no connection, its own time limit, a stop, a check of
+     * its own) leaves them as they are.
+     */
+    private fun stillSilent(): Boolean = keyDevices.record.value?.let(silence::lasting) == true
 
     /** The key may have been forgotten while an action ran (the record observer waits for none). */
     private fun recheckKey() {

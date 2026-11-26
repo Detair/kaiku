@@ -119,28 +119,59 @@ class ConfirmItsYouViewModelTest {
     /** The last-resort advice stays only while nothing of the server came back: any answer it decoded takes it back. */
     @Test fun `a decoded answer takes the last-resort advice back`() = runTest {
         val f = lapsedFixture()
-        coEvery { probe.probe(any()) } returns ServerKeyState.Unknown
-        for (hours in listOf(0L, 12, 13)) {
-            now = now.plusSeconds(hours * 3600)
-            vm(f)
-        }
-        // No answer: the advice stays.
-        val offline = vm(f)
-        assertTrue(offline.ui.value.serverSilent)
-        coEvery { deviceSignIn.signIn(any(), any()) } returns DeviceSignInResult.Network
-        offline.confirm(activity)
-        assertTrue(offline.ui.value.serverSilent)
-        // The server's own refusal of the sign-in, and of the removal: the advice goes.
-        val signIn = vm(f)
-        assertTrue(signIn.ui.value.serverSilent)
-        coEvery { deviceSignIn.signIn(any(), any()) } returns DeviceSignInResult.Failed("ACCOUNT_SUSPENDED")
+        // The server's own refusal of the sign-in: the sign-in took the silence notes back.
+        val signIn = silentScreen(f)
+        coEvery { deviceSignIn.signIn(any(), any()) } coAnswers { heard(f); DeviceSignInResult.Failed("ACCOUNT_SUSPENDED") }
         signIn.confirm(activity)
         assertEquals(false, signIn.ui.value.serverSilent)
-        val removal = vm(f)
-        assertTrue(removal.ui.value.serverSilent)
-        coEvery { signOut.removeSignedOutPhone(activity) } returns RemovalResult.Failed("LAST_STRONG_AUTHENTICATOR")
+        // And of the removal.
+        val removal = silentScreen(f)
+        coEvery { signOut.removeSignedOutPhone(activity) } coAnswers { heard(f); RemovalResult.Failed("LAST_STRONG_AUTHENTICATOR") }
         removal.removeThisPhone(activity)
         assertEquals(false, removal.ui.value.serverSilent)
+    }
+
+    /**
+     * What the phone decides by itself is no answer of the server: no connection, a stop on the
+     * phone, another server, a lost install id, a challenge the phone refused. The advice stays,
+     * on the sign-in and on the removal.
+     */
+    @Test fun `results the phone decides by itself keep the last-resort advice`() = runTest {
+        val f = lapsedFixture()
+        for (r in listOf(
+            DeviceSignInResult.Network, DeviceSignInResult.Cancelled, DeviceSignInResult.Failed("OTHER_SERVER"),
+            DeviceSignInResult.Failed("INSTALL_ID_LOST"), DeviceSignInResult.Failed("CHALLENGE_EXPIRED"),
+            DeviceSignInResult.Failed("CHALLENGE_CONTEXT_MISMATCH"),
+        )) {
+            val v = silentScreen(f)
+            coEvery { deviceSignIn.signIn(any(), any()) } returns r
+            v.confirm(activity)
+            assertTrue(r.toString(), v.ui.value.serverSilent)
+        }
+        for (r in listOf(
+            RemovalResult.Cancelled, RemovalResult.Failed("NETWORK"), RemovalResult.Failed("TOOK_TOO_LONG"),
+            RemovalResult.Failed("OTHER_SERVER"), RemovalResult.Failed("INSTALL_ID_LOST"),
+            RemovalResult.Failed("CHALLENGE_CONTEXT_MISMATCH"),
+        )) {
+            val v = silentScreen(f)
+            coEvery { signOut.removeSignedOutPhone(activity) } returns r
+            v.removeThisPhone(activity)
+            assertTrue(r.toString(), v.ui.value.serverSilent)
+        }
+    }
+
+    /** A screen opened while the key's server has stayed silent for long: the advice is shown. */
+    private fun TestScope.silentScreen(f: KeyDeviceFixture): ConfirmItsYouViewModel {
+        f.repo.update(f.repo.record.value!!) {
+            it.copy(unanswered = io.wolftown.kaiku.data.keydevice.Unanswered(clock.now(), 3, java.time.Duration.ofHours(25)))
+        }
+        coEvery { probe.probe(any()) } returns ServerKeyState.Unknown
+        return vm(f).also { assertTrue(it.ui.value.serverSilent) }
+    }
+
+    /** What a sign-in or removal does when the server answered: the silence notes go. */
+    private fun heard(f: KeyDeviceFixture) {
+        io.wolftown.kaiku.data.keydevice.ServerSilence(f.repo, clock).noteAnswered(f.repo.record.value!!)
     }
 
     /**
@@ -182,7 +213,7 @@ class ConfirmItsYouViewModelTest {
         assertTrue(hung.ui.value.serverSilent)
         val expired = vm(f)
         assertTrue(expired.ui.value.serverSilent)
-        coEvery { deviceSignIn.signIn(any(), any()) } returns DeviceSignInResult.Expired
+        coEvery { deviceSignIn.signIn(any(), any()) } coAnswers { heard(f); DeviceSignInResult.Expired }
         expired.confirm(activity)
         assertEquals(false, expired.ui.value.serverSilent)
     }

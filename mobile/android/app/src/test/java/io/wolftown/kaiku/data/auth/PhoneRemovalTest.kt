@@ -122,6 +122,7 @@ class PhoneRemovalTest {
         val pushDrops = mutableListOf<String>()
         val removal = PhoneRemoval(
             approval, api, authApi, f.signer, f.repo, f.answers, { appInstallId }, { pushDrops += it }, scope.backgroundScope,
+            io.wolftown.kaiku.data.keydevice.ServerSilence(f.repo, io.wolftown.kaiku.testutil.FakeBootClock()),
         )
 
         init {
@@ -210,6 +211,7 @@ class PhoneRemovalTest {
         val removal = PhoneRemoval(
             p.approval, p.api, p.authApi, p.f.signer, p.f.repo, p.f.answers, { SigFixtures.DEVICE_ID },
             { throw IllegalStateException("push") }, backgroundScope,
+            io.wolftown.kaiku.data.keydevice.ServerSilence(p.f.repo, io.wolftown.kaiku.testutil.FakeBootClock()),
         )
         assertEquals(RemovalResult.Removed, removal.run(activity))
         assertNull(p.f.repo.record.value)
@@ -501,5 +503,39 @@ class PhoneRemovalTest {
         assertEquals(RemovalResult.KeyGone(invalidated = false), p.removal.run(activity))
         assertNull(p.f.repo.record.value)
         assertFalse(p.f.keyStore.hasKey())
+    }
+
+    private val silent = io.wolftown.kaiku.data.keydevice.Unanswered(io.wolftown.kaiku.data.keydevice.BootTime(1, 0), 3, java.time.Duration.ofHours(25))
+
+    /** The server's own refusal during the removal is an answer: the notes about its silence go. No connection keeps them. */
+    @Test fun `only an answer of the server takes the silence notes back`() = runTest {
+        val p = Phone(this)
+        p.f.repo.update(p.f.repo.record.value!!) { it.copy(unanswered = silent) }
+        p.approval.failWith = java.io.IOException("offline")
+        assertEquals(RemovalResult.Failed("NETWORK"), p.removal.run(activity))
+        assertEquals(silent, p.f.repo.record.value!!.unanswered)
+        // A page in front of the server, without the server's own code: no answer either.
+        p.approval.failWith = io.wolftown.kaiku.data.api.ApiException(io.ktor.http.HttpStatusCode.BadGateway, "bad gateway")
+        p.removal.run(activity)
+        assertEquals(silent, p.f.repo.record.value!!.unanswered)
+        // The server's own refusal of the challenge.
+        p.approval.failWith = io.wolftown.kaiku.testutil.apiError(429, "TOO_MANY_ATTEMPTS")
+        assertEquals(RemovalResult.Failed("TOO_MANY_ATTEMPTS"), p.removal.run(activity))
+        assertNull(p.f.repo.record.value!!.unanswered)
+        p.f.repo.update(p.f.repo.record.value!!) { it.copy(unanswered = silent) }
+        p.approval.failWith = null
+        p.api.failures["stepUp:key_device.remove:$KEY_DEVICE"] = io.wolftown.kaiku.testutil.apiError(403, "LAST_STRONG_AUTHENTICATOR")
+        assertEquals(RemovalResult.Failed("LAST_STRONG_AUTHENTICATOR"), p.removal.run(activity))
+        assertNull(p.f.repo.record.value!!.unanswered)
+    }
+
+    /** The server accepted the removal's sign-in: that is an answer, whatever the phone then refuses by itself. */
+    @Test fun `an accepted sign-in of the removal takes the silence notes back`() = runTest {
+        val p = Phone(this)
+        p.f.repo.update(p.f.repo.record.value!!) { it.copy(unanswered = silent) }
+        p.api.stepUpChallenge = SigFixtures.challengeFor(SigKind.DEVICE_STEPUP, 4, SigFixtures.V04_CONTEXT.replace(SID, "88888888-8888-4888-8888-888888888888"))
+        val r = p.removal.run(activity)
+        assertTrue(r.toString(), r is RemovalResult.Failed)
+        assertNull(p.f.repo.record.value!!.unanswered)
     }
 }
