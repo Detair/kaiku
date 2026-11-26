@@ -88,9 +88,11 @@ pub async fn actions_for(
     reader: &AuthUser,
     reader_is_admin: bool,
     ev: &SecurityEvent,
+    delay_hours: i64,
 ) -> sqlx::Result<Vec<Action>> {
     let mut out = Vec::new();
-    if let Some((via, warning)) = crate::auth::repudiate::repudiate_action(conn, reader, ev).await?
+    if let Some((via, warning)) =
+        crate::auth::repudiate::repudiate_action(conn, reader, ev, delay_hours).await?
     {
         out.push(Action {
             action: "repudiate".into(),
@@ -206,7 +208,14 @@ async fn render(
         let label = super::notices::authenticator_label(&mut conn, row).await?;
         // The owner's own log and the admin log show IP and place.
         let mut ev = row.to_wire(true, label);
-        ev.actions = actions_for(&mut conn, reader, reader_is_admin, &ev).await?;
+        ev.actions = actions_for(
+            &mut conn,
+            reader,
+            reader_is_admin,
+            &ev,
+            state.config.account_request_delay_hours,
+        )
+        .await?;
         items.push(ev);
     }
     let next_cursor = if has_more {

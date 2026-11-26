@@ -246,6 +246,45 @@ async fn settled_check(
     }
 }
 
+/// Whether some active strong authenticator of the account created before
+/// `before` (never the target itself) may act against `target` now, by the
+/// same rule as [`ensure_settled`] ("That wasn't me" is listed only where
+/// usable).
+pub async fn some_may_act_against(
+    conn: &mut sqlx::PgConnection,
+    user_id: Uuid,
+    before: chrono::DateTime<chrono::Utc>,
+    target: AuthenticatorRef,
+    delay_hours: i64,
+) -> sqlx::Result<bool> {
+    let candidates: Vec<(String, Uuid)> = sqlx::query_as(
+        "SELECT 'key_device', id FROM approval_devices
+          WHERE user_id = $1 AND state = 'active' AND created_at < $2
+         UNION ALL
+         SELECT 'passkey', id FROM passkeys
+          WHERE user_id = $1 AND state = 'active' AND created_at < $2",
+    )
+    .bind(user_id)
+    .bind(before)
+    .fetch_all(&mut *conn)
+    .await?;
+    for (kind, id) in candidates {
+        let Some(kind) = AuthenticatorKind::parse(&kind) else {
+            continue;
+        };
+        let a = AuthenticatorRef { kind, id };
+        if a == target {
+            continue;
+        }
+        match settled_check(conn, user_id, a, Some(target), delay_hours, None).await {
+            Ok(()) => return Ok(true),
+            Err(crate::auth::AuthError::Database(e)) => return Err(e),
+            Err(_) => {}
+        }
+    }
+    Ok(false)
+}
+
 /// B.0 "new account".
 ///
 /// Never an active authenticator, a password, TOTP, recovery codes or a

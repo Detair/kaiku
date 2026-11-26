@@ -161,7 +161,8 @@ pub async fn mfa_verify(
             "Start the authenticator setup first".to_string(),
         ));
     };
-    // Flash r5: a missing grant answers before the code is spent.
+    // Flash r5: a missing grant answers before the code is spent. This early
+    // answer decides nothing; the transaction below checks again.
     {
         let mut tx = state.db.begin().await?;
         let by = step_up::peek_tx(
@@ -172,7 +173,7 @@ pub async fn mfa_verify(
         )
         .await?;
         // A newly added phone or passkey does not change TOTP; said before
-        // the secret is shown (setup) and before the code is spent (verify).
+        // the secret is shown (setup) and before the code is checked.
         super::strong::ensure_settled(
             &mut tx,
             auth_user.id,
@@ -183,19 +184,11 @@ pub async fn mfa_verify(
         .await?;
         tx.commit().await?;
     }
-    // Accepted once per step (replay store).
-    if !reauth::accept_totp(
-        &state,
-        auth_user.id,
-        &encrypted_secret,
-        &auth_user.username,
-        &request.code,
-    )
-    .await?
-    {
-        return Err(AuthError::InvalidMfaCode);
-    }
 
+    // One transaction: the account lock, the grant, the waiting time for its
+    // producer, and only then the code (recorded as used) and the write. A
+    // refusal before the code leaves it unused; a wrong code keeps the grant
+    // (rollback).
     let ctx = AuthCtx::from(&state);
     let mut tx = state.db.begin().await?;
     lock_accounts(&mut tx, &[auth_user.id]).await?;
@@ -214,6 +207,18 @@ pub async fn mfa_verify(
         state.config.account_request_delay_hours,
     )
     .await?;
+    // Accepted once per step (replay store).
+    if !reauth::accept_totp(
+        &state,
+        auth_user.id,
+        &encrypted_secret,
+        &auth_user.username,
+        &request.code,
+    )
+    .await?
+    {
+        return Err(AuthError::InvalidMfaCode);
+    }
     let generation = super::factors::replace_tx(&mut tx, &ctx, auth_user.id, Factor::Totp).await?;
     sqlx::query("UPDATE users SET mfa_secret = $2, updated_at = NOW() WHERE id = $1")
         .bind(auth_user.id)

@@ -1403,6 +1403,132 @@ async fn totp_verify_checks_again_when_the_step_up_is_used(pool: PgPool) {
         .await
         .unwrap();
     assert!(!has, "TOTP stays off");
+    // The refusal came before the code: it is not recorded as used, and the
+    // same code is accepted after a confirmation from the older phone.
+    assert_eq!(totp_step_record(&app, user).await, None);
+    let (older_sid, older_token) =
+        crate::helpers::approvals::device_session(&app.pool, &app.config, user, older.row_id).await;
+    grant(&app, older_sid, StepUpAction::TotpSet, "", kd(&older)).await;
+    let (s, b) = send(
+        &app,
+        Method::POST,
+        "/auth/mfa/verify",
+        &older_token,
+        Some(json!({ "code": code })),
+    )
+    .await;
+    assert_eq!(s, 200, "{b}");
+}
+
+/// The step the replay store recorded as used for the account's TOTP codes.
+async fn totp_step_record(app: &TestApp, user: Uuid) -> Option<String> {
+    use fred::interfaces::KeysInterface;
+    app.state
+        .redis
+        .get::<Option<String>, _>(format!("mfa:totp_step:{user}"))
+        .await
+        .unwrap()
+}
+
+#[sqlx::test]
+async fn totp_verify_refused_early_leaves_the_code_unused(pool: PgPool) {
+    // The set-up started on a settled confirmation; the newest confirmation
+    // in the young phone's session is its own: refused before the code.
+    let app = TestApp::with_passkeys(pool).await;
+    let (user, old, young) = old_and_young_phone(&app).await;
+    let old_sid = old.session_id.unwrap();
+    grant(&app, old_sid, StepUpAction::TotpSet, "", kd(&old)).await;
+    let (s, b) = send(
+        &app,
+        Method::POST,
+        "/auth/mfa/setup",
+        &old.access_token,
+        None,
+    )
+    .await;
+    assert_eq!(s, 200, "{b}");
+    let username: String = sqlx::query_scalar("SELECT username FROM users WHERE id = $1")
+        .bind(user)
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    let code = totp_rs::TOTP::new(
+        totp_rs::Algorithm::SHA1,
+        6,
+        1,
+        30,
+        totp_rs::Secret::Encoded(b["secret"].as_str().unwrap().to_string())
+            .to_bytes()
+            .unwrap(),
+        Some("Kaiku".to_string()),
+        username,
+    )
+    .unwrap()
+    .generate_current()
+    .unwrap();
+    grant(
+        &app,
+        young.session_id.unwrap(),
+        StepUpAction::TotpSet,
+        "",
+        kd(&young),
+    )
+    .await;
+    let r = send(
+        &app,
+        Method::POST,
+        "/auth/mfa/verify",
+        &young.access_token,
+        Some(json!({ "code": code })),
+    )
+    .await;
+    assert_too_new(&app.pool, r, kd(&young), 24).await;
+    assert_eq!(totp_step_record(&app, user).await, None);
+    let (s, b) = send(
+        &app,
+        Method::POST,
+        "/auth/mfa/verify",
+        &old.access_token,
+        Some(json!({ "code": code })),
+    )
+    .await;
+    assert_eq!(s, 200, "{b}");
+}
+
+/// Whether the account's own log offers "That wasn't me" on `event`.
+async fn offers_report(app: &TestApp, token: &str, event: Uuid) -> bool {
+    let (s, page) = send(app, Method::GET, "/api/me/security-events", token, None).await;
+    assert_eq!(s, 200, "{page}");
+    let ev = page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["id"] == event.to_string())
+        .cloned()
+        .unwrap_or_else(|| panic!("{page}"));
+    ev["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|a| a["action"] == "repudiate")
+}
+
+#[sqlx::test]
+async fn report_offered_only_where_it_can_be_carried_out(pool: PgPool) {
+    // The older phone signs in after the young one was added: only the young
+    // one is older than the event, and it may not have the older phone
+    // revoked yet.
+    let app = TestApp::with_passkeys(pool).await;
+    let (user, old, young) = old_and_young_phone(&app).await;
+    let ev = device_sign_in(&app.pool, user, &old, json!([])).await;
+    assert!(!offers_report(&app, &young.access_token, ev).await);
+    assert!(!offers_report(&app, &old.access_token, ev).await);
+    // Once the young phone has waited, it is offered again (and works).
+    added_ago(&app.pool, kd(&young), Duration::hours(25)).await;
+    assert!(offers_report(&app, &young.access_token, ev).await);
+    assert!(offers_report(&app, &old.access_token, ev).await);
+    let (s, b) = report(&app, &young, ev).await;
+    assert_eq!(s, 200, "{b}");
 }
 
 #[sqlx::test]

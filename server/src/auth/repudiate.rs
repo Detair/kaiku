@@ -62,7 +62,11 @@ fn authenticator_of(ev: &EventRow) -> Option<AuthenticatorRef> {
 }
 
 fn methods(ev: &EventRow) -> Vec<String> {
-    ev.details["auth_methods"]
+    methods_of(&ev.details)
+}
+
+fn methods_of(details: &serde_json::Value) -> Vec<String> {
+    details["auth_methods"]
         .as_array()
         .map(|a| {
             a.iter()
@@ -101,6 +105,27 @@ fn recorded_factors(ev: &EventRow) -> Vec<FactorRef> {
         .unwrap_or_default()
 }
 
+/// The authenticator a report of this event would revoke: a passkey or key
+/// device that *signed in* (one that only approved a relayed QR is not), or
+/// one that was added (never for a TOTP addition).
+fn revoke_target(
+    event_type: &str,
+    details: &serde_json::Value,
+    authenticator: Option<AuthenticatorRef>,
+) -> Option<AuthenticatorRef> {
+    match event_type {
+        "sign_in"
+            if methods_of(details)
+                .iter()
+                .any(|x| x == "passkey" || x == "device_key") =>
+        {
+            authenticator
+        }
+        "authenticator_added" if details["type"].as_str() != Some("totp") => authenticator,
+        _ => None,
+    }
+}
+
 /// Decide the effects of `ev` (part 2 never revokes).
 pub async fn effects(
     conn: &mut PgConnection,
@@ -116,11 +141,8 @@ pub async fn effects(
     match ev.event_type.as_str() {
         "sign_in" => {
             out.session = ev.session_id;
-            let m = methods(ev);
-            // A passkey or key device that *signed in* is revoked; one that
-            // only approved (a relayed QR) is not.
-            if may_revoke && (m.iter().any(|x| x == "passkey" || x == "device_key")) {
-                out.revoke = authenticator_of(ev);
+            if may_revoke {
+                out.revoke = revoke_target(&ev.event_type, &ev.details, authenticator_of(ev));
             }
             // Exactly the generations the sign-in recorded; nothing for a
             // factor it did not record (mark_compromised_tx skips one
@@ -136,7 +158,9 @@ pub async fn effects(
         // The generation the event made, never the current one (B.7 rule 2).
         "authenticator_added" => match ev.details["type"].as_str() {
             Some("totp") => out.compromise.extend(made(ev, Factor::Totp)),
-            _ if may_revoke => out.revoke = authenticator_of(ev),
+            _ if may_revoke => {
+                out.revoke = revoke_target(&ev.event_type, &ev.details, authenticator_of(ev));
+            }
             _ => {}
         },
         "password_set" | "password_changed" => out.compromise.extend(made(ev, Factor::Password)),
@@ -423,6 +447,7 @@ pub async fn repudiate_action(
     conn: &mut PgConnection,
     reader: &AuthUser,
     ev: &crate::security_events::SecurityEvent,
+    delay_hours: i64,
 ) -> sqlx::Result<Option<(String, Option<String>)>> {
     if ev.subject_id != reader.id
         || ev.repudiated_at.is_some()
@@ -447,6 +472,28 @@ pub async fn repudiate_action(
     .fetch_one(&mut *conn)
     .await?;
     let via = if older {
+        // Listed only where usable: a report that would revoke a live
+        // authenticator needs a reporter that may act against it now.
+        let event_ref = ev.authenticator.as_ref().and_then(|a| {
+            Some(AuthenticatorRef {
+                kind: AuthenticatorKind::parse(&a.kind)?,
+                id: a.id,
+            })
+        });
+        if let Some(target) = revoke_target(&ev.event_type, &ev.details, event_ref) {
+            if super::strong::is_live(conn, target).await?
+                && !super::strong::some_may_act_against(
+                    conn,
+                    reader.id,
+                    ev.created_at,
+                    target,
+                    delay_hours,
+                )
+                .await?
+            {
+                return Ok(None);
+            }
+        }
         "step_up"
     } else {
         let any_strong = super::strong::active_strong_count(conn, reader.id)
