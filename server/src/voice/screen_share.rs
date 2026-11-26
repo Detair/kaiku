@@ -1,5 +1,6 @@
 //! Screen sharing data types and state.
 
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 
 use fred::clients::Client;
@@ -310,6 +311,68 @@ impl ScreenShareLimiter {
         } else {
             Err(ScreenShareError::LimitReached)
         }
+    }
+
+    /// Reserve a slot for a room whose own count of the slots it holds is
+    /// `held` (see [`crate::voice::sfu::Room::held_share_slots`]).
+    ///
+    /// The slot counts as held before the store is asked. When the store
+    /// refuses for the limit, its counter is compared with the slots the
+    /// room holds: a release that never reached the store (a store error
+    /// at a stop) left it higher, so it is lowered to the room's count and
+    /// the start is tried once more. Never lowered below what the room
+    /// holds, so a room really at its limit is still refused.
+    pub async fn reserve(
+        &self,
+        counter: &ShareCounter,
+        held: &AtomicI64,
+        max_shares: u32,
+    ) -> Result<(), ScreenShareError> {
+        held.fetch_add(1, Ordering::AcqRel);
+        let result = match self.start(counter, max_shares).await {
+            Err(ScreenShareError::LimitReached) => {
+                // This start is not in the store; every other slot the room
+                // counts may be (starts and stops in flight included).
+                let others = held.load(Ordering::Acquire) - 1;
+                match self
+                    .run_script_with_extra(counter, 0, "lower", &[others.max(0).to_string()])
+                    .await
+                {
+                    Ok((_, before_retry)) if before_retry < i64::from(max_shares) => {
+                        warn!(
+                            counter = %counter,
+                            count = before_retry,
+                            "Screen share counter compared with the room's shares; trying the start again"
+                        );
+                        self.start(counter, max_shares).await
+                    }
+                    Ok(_) => Err(ScreenShareError::LimitReached),
+                    Err(e) => {
+                        warn!(counter = %counter, error = ?e, "Could not compare the screen share counter");
+                        Err(ScreenShareError::LimitReached)
+                    }
+                }
+            }
+            other => other,
+        };
+        if result.is_err() {
+            held.fetch_sub(1, Ordering::AcqRel);
+        }
+        result
+    }
+
+    /// Release `count` slots of a room whose own count is `held`. The slots
+    /// stop counting as held once the store was asked, whatever it answered.
+    pub async fn release(&self, counter: &ShareCounter, held: &AtomicI64, count: usize) {
+        if count == 0 {
+            return;
+        }
+        if count == 1 {
+            self.stop(counter).await;
+        } else {
+            self.stop_n(counter, count).await;
+        }
+        held.fetch_sub(i64::try_from(count).unwrap_or(i64::MAX), Ordering::AcqRel);
     }
 
     /// Release a screen share slot (decrements if count > 0).

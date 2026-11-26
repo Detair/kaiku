@@ -602,3 +602,62 @@ async fn a_replaced_seats_connections_close_independently(pool: PgPool) {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
+
+/// A release that never reached the room's counter (as when the store
+/// fails at a stop) does not keep the room from sharing: a start that would
+/// be refused for the limit finds that the room holds fewer shares,
+/// corrects the counter and is accepted. A room really at its limit is
+/// still refused.
+#[sqlx::test]
+async fn a_lost_release_does_not_block_sharing(pool: PgPool) {
+    let mut r = room(pool).await;
+    sqlx::query("UPDATE channels SET max_screen_shares = 1 WHERE id = $1")
+        .bind(r.voice)
+        .execute(&r.app.pool)
+        .await
+        .expect("limit");
+    let mut old = joined(&r.server, &r.token, r.voice).await;
+    next_ws_event(&mut r.viewer, "voice_user_joined", WAIT).await;
+    send(&mut old, share_start(r.voice, Uuid::new_v4())).await;
+    next_ws_event(&mut old, "screen_share_started", WAIT).await;
+    next_ws_event(&mut r.viewer, "screen_share_started", WAIT).await;
+    assert_eq!(r.slots().await, 1);
+
+    // The user leaves; the release goes to a counter that is not the
+    // room's, so the room's counter keeps the slot.
+    let mut lost = vc_server::voice::ScreenShareLimiter::with_key_prefix(
+        r.app.state.redis.clone(),
+        format!("lost-release:{}:", Uuid::new_v4()),
+    );
+    lost.init().await.expect("script");
+    let sfu = r.app.state.sfu.clone();
+    let seat = sfu
+        .get_room(r.voice)
+        .await
+        .expect("room")
+        .get_peer(r.user)
+        .await
+        .expect("seat");
+    vc_server::voice::leave::leave_voice_internal(
+        &sfu,
+        &r.app.pool,
+        r.user,
+        r.voice,
+        Some(&lost),
+        Some(seat.session_id),
+    )
+    .await
+    .expect("leave");
+    next_ws_event(&mut r.viewer, "screen_share_stopped", WAIT).await;
+    assert_eq!(r.slots().await, 1, "the lost release changed the counter");
+
+    send(&mut r.viewer, share_start(r.voice, Uuid::new_v4())).await;
+    next_ws_event(&mut r.viewer, "screen_share_started", WAIT).await;
+    assert_eq!(r.slots().await, 1);
+
+    // Now the room really is at its limit.
+    send(&mut r.viewer, share_start(r.voice, Uuid::new_v4())).await;
+    let refused = next_ws_event(&mut r.viewer, "voice_error", WAIT).await;
+    assert_eq!(refused["code"], "SCREEN_SHARE_LIMIT", "{refused}");
+    assert_eq!(r.slots().await, 1);
+}

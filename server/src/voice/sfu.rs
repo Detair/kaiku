@@ -420,6 +420,12 @@ pub struct Room {
     /// expires by itself after a day without use; nothing clears it when the
     /// room is removed.
     pub share_counter: super::screen_share::ShareCounter,
+    /// The slots of `share_counter` this room holds, by its own count: live
+    /// shares plus starts and releases in flight (a slot counts from before
+    /// its reservation until its release was sent). Authoritative in this
+    /// single-process server; a start refused for the limit lowers the
+    /// store's counter to it (see `ScreenShareLimiter::reserve`).
+    pub held_share_slots: Arc<std::sync::atomic::AtomicI64>,
 }
 
 impl Room {
@@ -434,6 +440,7 @@ impl Room {
             screen_shares: RwLock::new(HashMap::new()),
             webcams: RwLock::new(HashMap::new()),
             share_counter: super::screen_share::ShareCounter::for_new_room(channel_id),
+            held_share_slots: Arc::new(std::sync::atomic::AtomicI64::new(0)),
         }
     }
 

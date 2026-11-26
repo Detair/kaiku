@@ -527,12 +527,13 @@ async fn release_replaced_media(
             // Freed beside the new join, not before its answer: until the
             // store has answered, a share start in this room can still see
             // the old count. Each slot is freed once (by this task).
-            let (limiter, counter, n) = (
+            let (limiter, counter, held, n) = (
                 limiter.clone(),
                 room.share_counter.clone(),
+                room.held_share_slots.clone(),
                 screen_shares.len(),
             );
-            tokio::spawn(async move { limiter.stop_n(&counter, n).await });
+            tokio::spawn(async move { limiter.release(&counter, &held, n).await });
         } else {
             warn!("Screen share limiter unavailable — replaced shares not released");
         }
@@ -1020,7 +1021,10 @@ async fn handle_screen_share_start(
     // Try to reserve a slot via limiter
     let limiter = screen_share_limiter
         .ok_or_else(|| VoiceError::Signaling("Screen share limiter unavailable".to_string()))?;
-    if let Err(e) = limiter.start(&room.share_counter, max_shares).await {
+    if let Err(e) = limiter
+        .reserve(&room.share_counter, &room.held_share_slots, max_shares)
+        .await
+    {
         warn!(user_id = %params.user_id, channel_id = %params.channel_id, error = ?e, "Screen share limit check failed");
         return Err(match e {
             ScreenShareError::LimitReached => {
@@ -1055,7 +1059,9 @@ async fn handle_screen_share_start(
     let media = peer.media.lock().await;
     if let Err(e) = room.try_add_screen_share_for(&peer, info.clone()).await {
         drop(media);
-        limiter.stop(&room.share_counter).await;
+        limiter
+            .release(&room.share_counter, &room.held_share_slots, 1)
+            .await;
         return Err(e);
     }
 
@@ -1255,7 +1261,9 @@ async fn end_screen_share(
     // announced at all is decided under the room's share state (a share live
     // again with this id is not announced as stopped).
     if let Some(limiter) = screen_share_limiter {
-        limiter.stop(&room.share_counter).await;
+        limiter
+            .release(&room.share_counter, &room.held_share_slots, 1)
+            .await;
     } else {
         tracing::warn!("Screen share limiter unavailable during stop — counter not decremented");
     }

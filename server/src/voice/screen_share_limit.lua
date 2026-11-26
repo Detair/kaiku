@@ -3,8 +3,9 @@
 -- Every change renews the key's expiry (a day): a room that is gone leaves
 -- nothing behind for long.
 -- ARGV[1] = max_shares
--- ARGV[2] = operation: "start" | "stop" | "stop_n" | "check"
--- ARGV[3] = count (only for "stop_n", number of slots to release)
+-- ARGV[2] = operation: "start" | "stop" | "stop_n" | "check" | "lower"
+-- ARGV[3] = count ("stop_n": slots to release; "lower": the most slots the
+--           room can hold, the counter is lowered to it if above)
 -- Returns: {allowed (1/0), current_count}
 
 local key = KEYS[1]
@@ -41,6 +42,15 @@ elseif op == "stop_n" then
     else
         return {1, 0}
     end
+elseif op == "lower" then
+    local held = tonumber(ARGV[3]) or 0
+    if held < 0 then held = 0 end
+    local count = tonumber(redis.call('GET', key) or '0')
+    if count > held then
+        redis.call('SET', key, tostring(held), 'EX', 86400)
+        return {1, held}
+    end
+    return {1, count}
 end
 
 return {0, -1}

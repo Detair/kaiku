@@ -73,7 +73,11 @@ pub async fn leave_voice_internal(
     if !removed_shares.is_empty() {
         if let Some(limiter) = screen_share_limiter {
             limiter
-                .stop_n(&room.share_counter, removed_shares.len())
+                .release(
+                    &room.share_counter,
+                    &room.held_share_slots,
+                    removed_shares.len(),
+                )
                 .await;
         } else {
             warn!("Screen share limiter unavailable during leave — counter not decremented");
