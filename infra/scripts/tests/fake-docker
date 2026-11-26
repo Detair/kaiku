@@ -6,6 +6,7 @@
 #   FAKE_DOCKER_SERVER_LOG  text that `docker logs` prints
 #   FAKE_DOCKER_LOGS_FAIL   "1" => `docker logs` fails
 #   FAKE_DOCKER_SCRIPT_LOAD  what `valkey-cli SCRIPT LOAD` prints (default: a hash)
+#   FAKE_DOCKER_VALKEY_EXEC_FAIL  "1" => `exec` into the Valkey container fails
 set -u
 [ -n "${FAKE_DOCKER_LOG:-}" ] && echo "$*" >> "$FAKE_DOCKER_LOG"
 
@@ -24,6 +25,10 @@ case "${1:-}" in
         done
         case "$cmd" in
             *valkey-cli*'SCRIPT LOAD'*)
+                if [ "${FAKE_DOCKER_VALKEY_EXEC_FAIL:-0}" = "1" ]; then
+                    echo "Error response from daemon: No such container: canis-valkey" >&2
+                    exit 1
+                fi
                 case "$cmd" in
                     *REDISCLI_AUTH=*'$VALKEY_PASSWORD'*) ;;
                     *)

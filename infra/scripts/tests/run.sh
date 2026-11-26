@@ -107,32 +107,48 @@ out=$(PATH="$WORK/slowtail:$PATH" pf)
 check "preflight sigpipe: complete backup passes check 4" grep -q "dump complete (" <<<"$out"
 
 # --- preflight: rate limiter loaded (check 7) ----------------------------------
+# Log lines as the server writes them (one JSON object per line).
+START='{"level":"INFO","fields":{"message":"Starting Kaiku Server","version":"1.0.0"}}'
 LOADED='{"level":"INFO","fields":{"message":"Rate limiter initialized"}}'
 FAILED_LINE='{"level":"WARN","fields":{"message":"Rate limiter initialization failed: NOPERM. Rate limiting disabled."}}'
-out=$(FAKE_DOCKER_SERVER_LOG="$LOADED" pf)
-check "preflight: loaded limiter passes check 7" grep -q "✓ the server's log shows the rate limiter loaded" <<<"$out"
-out=$(FAKE_DOCKER_SERVER_LOG="$FAILED_LINE" pf)
-check "preflight: limiter that did not load fails check 7" grep -q "✗ the running server logged 'Rate limiter initialization failed'" <<<"$out"
-out=$(FAKE_DOCKER_SERVER_LOG="$LOADED
-$FAILED_LINE" pf)
-check "preflight: the last start counts (failed after loaded)" grep -q "✗ the running server logged" <<<"$out"
-out=$(FAKE_DOCKER_SERVER_LOG="$FAILED_LINE
-$LOADED" pf)
-check "preflight: the last start counts (loaded after failed)" grep -q "✓ the server's log shows the rate limiter loaded" <<<"$out"
-out=$(FAKE_DOCKER_SERVER_LOG='{"level":"INFO","fields":{"message":"Rate limiting disabled by configuration"}}' pf)
-check "preflight: switched-off limiter passes check 7" grep -q "✓ rate limiting is switched off" <<<"$out"
-out=$(FAKE_DOCKER_SERVER_LOG='{"level":"INFO","fields":{"message":"Server listening"}}' pf)
-check "preflight: no start line, direct test ok: warns" grep -q "! WARNING: the server's log could not confirm that the rate limiter loaded" <<<"$out"
-check "preflight: no start line, direct test ok: names the direct test" grep -q "accepted SCRIPT LOAD" <<<"$out"
-check "preflight: no start line, direct test ok: names the other user" grep -q "valkey-cli --user <user>" <<<"$out"
-check "preflight: no start line, direct test ok: check 7 does not fail" bash -c '! grep -q "✗.*rate limiter" <<<"$1"' _ "$out"
-out=$(FAKE_DOCKER_SERVER_LOG='' pf)
-check "preflight: empty log, direct test ok: warns" grep -q "! WARNING: the server's log could not confirm" <<<"$out"
-out=$(FAKE_DOCKER_SERVER_LOG='' FAKE_DOCKER_SCRIPT_LOAD="NOPERM User default has no permissions to run the 'script|load' command" pf)
-check "preflight: no start line, direct test refused: fails" grep -q "✗ cannot tell from the server's log" <<<"$out"
-check "preflight: no start line, direct test refused: names the answer" grep -q "did not accept SCRIPT LOAD: NOPERM" <<<"$out"
+FATAL='{"level":"ERROR","fields":{"message":"the server does not start: rate limiter not loaded","error":"rate limiting is enabled, but …"}}'
+OFF='{"level":"INFO","fields":{"message":"Rate limiting disabled by configuration"}}'
+LISTEN='{"level":"INFO","fields":{"message":"Server listening","address":"0.0.0.0:8080"}}'
+REFUSED="NOPERM User default has no permissions to run the 'script|load' command"
+log() { printf '%s\n' "$@"; }
+
+out=$(FAKE_DOCKER_SERVER_LOG="$(log "$START" "$LOADED" "$LISTEN")" pf)
+check "preflight 7: clean start, live test ok: passes" grep -q "✓ the rate limiter loaded at the server's last start" <<<"$out"
+out=$(FAKE_DOCKER_SERVER_LOG="$(log "$START" "$LOADED" "$LISTEN")" FAKE_DOCKER_SCRIPT_LOAD="$REFUSED" pf)
+check "preflight 7: clean start, Valkey refuses now: fails" grep -q "✗ the rate limiter loaded at the server's last start, but Valkey now refuses" <<<"$out"
+out=$(FAKE_DOCKER_SERVER_LOG="$(log "$START" "$LOADED" "$LISTEN")" FAKE_DOCKER_VALKEY_EXEC_FAIL=1 pf)
+check "preflight 7: clean start, no live test: warns, not checked" grep -q "! WARNING: the rate limiter loaded at the server's last start; the live test on canis-valkey could not run" <<<"$out"
+check "preflight 7: clean start, no live test: never claims a check" bash -c '! grep -q "✓ the rate limiter loaded" <<<"$1"' _ "$out"
+out=$(FAKE_DOCKER_SERVER_LOG="$(log "$START" "$FAILED_LINE")" pf)
+check "preflight 7: earlier version without limiter: fails" grep -q "✗ the server's last start logged 'Rate limiter initialization failed'" <<<"$out"
+out=$(FAKE_DOCKER_SERVER_LOG="$(log "$START" "$LOADED" "$LISTEN" "$START" "$FATAL")" pf)
+check "preflight 7: earlier success, then a refused start: fails" grep -q "✗ the server's last start was refused" <<<"$out"
+check "preflight 7: earlier success, then a refused start: no ✓" bash -c '! grep -q "✓ the rate limiter loaded" <<<"$1"' _ "$out"
+out=$(FAKE_DOCKER_SERVER_LOG="$(log "$START" "$LOADED" "$LISTEN" "$START")" pf)
+check "preflight 7: an earlier start's success does not count" grep -q "! WARNING: the server's last start logged nothing about the rate limiter" <<<"$out"
+check "preflight 7: an earlier start's success: no ✓" bash -c '! grep -q "✓ the rate limiter loaded" <<<"$1"' _ "$out"
+out=$(FAKE_DOCKER_SERVER_LOG="$(log "$START" "$FAILED_LINE" "$START" "$LOADED" "$LISTEN")" pf)
+check "preflight 7: only the last start counts" grep -q "✓ the rate limiter loaded at the server's last start" <<<"$out"
+out=$(FAKE_DOCKER_SERVER_LOG="$(log "$START" "$FAILED_LINE" '{"level":"INFO","fields":{"message":"note","text":"Rate limiter initialized"}}')" pf)
+check "preflight 7: the words in another field do not count" grep -q "✗ the server's last start logged 'Rate limiter initialization failed'" <<<"$out"
+out=$(FAKE_DOCKER_SERVER_LOG="$(log "$START" "$OFF" "$LISTEN")" pf)
+check "preflight 7: switched off: passes" grep -q "✓ rate limiting is switched off" <<<"$out"
+out=$(FAKE_DOCKER_SERVER_LOG="$(log "$LISTEN")" pf)
+check "preflight 7: last start not in the log, live test ok: warns" grep -q "! WARNING: the server's log no longer shows its last start" <<<"$out"
+check "preflight 7: last start not in the log, live test ok: names the other user" grep -q "valkey-cli --user <user>" <<<"$out"
+check "preflight 7: last start not in the log, live test ok: no ✗" bash -c '! grep -q "✗.*rate limiter\|✗.*last start" <<<"$1"' _ "$out"
+out=$(FAKE_DOCKER_SERVER_LOG='' FAKE_DOCKER_SCRIPT_LOAD="$REFUSED" pf)
+check "preflight 7: empty log, Valkey refuses: fails" grep -q "✗ cannot tell from the server's log" <<<"$out"
+check "preflight 7: empty log, Valkey refuses: names the answer" grep -q "did not accept SCRIPT LOAD: NOPERM" <<<"$out"
+out=$(FAKE_DOCKER_SERVER_LOG='' FAKE_DOCKER_VALKEY_EXEC_FAIL=1 pf)
+check "preflight 7: empty log, no live test: fails" grep -q "✗ cannot tell from the server's log" <<<"$out"
 out=$(FAKE_DOCKER_LOGS_FAIL=1 pf)
-check "preflight: unreadable log fails check 7" grep -q "✗ could not read the canis-server logs" <<<"$out"
+check "preflight 7: unreadable log fails" grep -q "✗ could not read the canis-server logs" <<<"$out"
 
 if [ "$FAILED" -gt 0 ]; then
     echo "$FAILED check(s) failed"

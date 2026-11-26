@@ -128,30 +128,76 @@ echo "    Current server image (pin this for rollback): $current_image"
 echo "[7/7] Rate limiter loaded at the last start (newer versions do not start without it)"
 # Earlier versions logged "Rate limiter initialization failed" and ran
 # without per-address limits when the limiter could not load its scripts
-# into Valkey; newer versions refuse to start in that case. Only a log that
-# shows the limiter loaded (or was switched off) at the last start passes.
-if ! last_start=$(docker logs canis-server 2>&1 \
-    | grep -oE 'Rate limiter initialization failed|Rate limiter initialized|Rate limiting disabled by configuration' \
-    | tail -n 1; exit "${PIPESTATUS[0]}"); then
+# into Valkey; newer versions refuse to start in that case. Only the log of
+# the server's LAST start counts (from its last "Starting Kaiku Server"
+# line on), and only the server's own messages (the JSON "message" field).
+# A live test on the Valkey container shows whether scripts can be loaded
+# now; settings changed since the last start are only seen by that test.
+
+# Live test as the Valkey container's default user (the one the bundled
+# compose file gives the server). Prints: ok | refused:<answer> | unavailable:<why>
+live_script_test() {
+    local out
+    out=$(docker exec canis-valkey sh -c 'REDISCLI_AUTH="$VALKEY_PASSWORD" valkey-cli SCRIPT LOAD "return 1"' 2>&1)
+    if grep -qE '^[0-9a-f]{40}$' <<<"$out"; then
+        echo "ok"
+    elif grep -qE '(^|[ (])(NOPERM|ERR|WRONGPASS|NOAUTH)' <<<"$out"; then
+        echo "refused:$(head -n 1 <<<"$out")"
+    else
+        echo "unavailable:$(head -n 1 <<<"$out")"
+    fi
+}
+other_user="If the server connects to Valkey as another, restricted user, check as that user: valkey-cli --user <user> SCRIPT LOAD \"return 1\" must print a hash"
+see_docs="(docs: configuration/rate-limiting.md, The Server Does Not Start)"
+
+if ! last_start_log=$(docker logs canis-server 2>&1 \
+    | awk '/"message":"Starting Kaiku Server"/ { buf = ""; seen = 1 }
+           { buf = buf $0 "\n" }
+           END { if (seen) printf "%s", buf; else print "NO-START-LINE" }'
+    exit "${PIPESTATUS[0]}"); then
     fail "could not read the canis-server logs"
+elif [ "$last_start_log" = "NO-START-LINE" ]; then
+    # The log no longer reaches back to the last start (rotated or emptied):
+    # it proves nothing either way. Only the live test can tell.
+    live=$(live_script_test)
+    case "$live" in
+        ok)
+            warn_pass "the server's log no longer shows its last start, so it could not confirm that the rate limiter loaded; a live test on canis-valkey with its default user accepted SCRIPT LOAD. $other_user" ;;
+        refused:*)
+            fail "cannot tell from the server's log whether the rate limiter loaded (its last start is no longer in the log), and a live test on canis-valkey with its default user did not accept SCRIPT LOAD: ${live#refused:}. $other_user" ;;
+        *)
+            fail "cannot tell from the server's log whether the rate limiter loaded (its last start is no longer in the log), and the live test on canis-valkey could not run: ${live#unavailable:}. Test as the server's Valkey user: valkey-cli SCRIPT LOAD \"return 1\" must print a hash" ;;
+    esac
 else
-    case "$last_start" in
-        "Rate limiter initialized")
-            pass "the server's log shows the rate limiter loaded at its last start" ;;
+    outcome=$(grep -oE '"message":"(the server does not start: rate limiter not loaded"|Rate limiter initialization failed|Rate limiter initialized"|Rate limiting disabled by configuration")' <<<"$last_start_log" \
+        | tail -n 1 | sed -e 's/^"message":"//' -e 's/"$//')
+    case "$outcome" in
+        "the server does not start: rate limiter not loaded")
+            fail "the server's last start was refused: its rate limiter could not load its scripts into Valkey — allow SCRIPT LOAD for the server's Valkey user first $see_docs" ;;
+        "Rate limiter initialization failed")
+            fail "the server's last start logged 'Rate limiter initialization failed': it runs without per-address limits and the new version will not start — allow SCRIPT LOAD for the server's Valkey user first $see_docs" ;;
         "Rate limiting disabled by configuration")
             pass "rate limiting is switched off (RATE_LIMIT_ENABLED=false); nothing to load" ;;
-        "Rate limiter initialization failed")
-            fail "the running server logged 'Rate limiter initialization failed' at its last start: it runs without per-address limits and the new version will not start — allow SCRIPT LOAD and EVALSHA for the server's Valkey user first (docs: configuration/rate-limiting.md, The Server Does Not Start)" ;;
+        "Rate limiter initialized")
+            live=$(live_script_test)
+            case "$live" in
+                ok)
+                    pass "the rate limiter loaded at the server's last start, and a live test on canis-valkey with its default user accepts SCRIPT LOAD now" ;;
+                refused:*)
+                    fail "the rate limiter loaded at the server's last start, but Valkey now refuses SCRIPT LOAD for its default user (${live#refused:}): the new version will not start — allow it first $see_docs" ;;
+                *)
+                    warn_pass "the rate limiter loaded at the server's last start; the live test on canis-valkey could not run (${live#unavailable:}), so Valkey settings changed since that start are not checked. $other_user" ;;
+            esac ;;
         *)
-            # The log no longer reaches back to the last start (rotated or
-            # emptied): it proves nothing either way. Test Valkey directly.
-            direct=$(docker exec canis-valkey sh -c 'REDISCLI_AUTH="$VALKEY_PASSWORD" valkey-cli SCRIPT LOAD "return 1"' 2>&1)
-            other_user="If the server connects to Valkey as another, restricted user, check as that user: valkey-cli --user <user> SCRIPT LOAD \"return 1\" must print a hash"
-            if grep -qE '^[0-9a-f]{40}$' <<<"$direct"; then
-                warn_pass "the server's log could not confirm that the rate limiter loaded (its last start is no longer in the log); a direct test on canis-valkey with its default user (the one the bundled compose file gives the server) accepted SCRIPT LOAD. $other_user"
-            else
-                fail "cannot tell from the server's log whether the rate limiter loaded (its last start is no longer in the log), and a direct test on canis-valkey with its default user did not accept SCRIPT LOAD: $(head -n 1 <<<"$direct"). $other_user"
-            fi ;;
+            # The last start is in the log but says nothing about the limiter
+            # (for example still starting): only the live test can tell.
+            live=$(live_script_test)
+            case "$live" in
+                ok)
+                    warn_pass "the server's last start logged nothing about the rate limiter; a live test on canis-valkey with its default user accepted SCRIPT LOAD. $other_user" ;;
+                *)
+                    fail "cannot tell from the server's last start whether the rate limiter loaded, and the live test on canis-valkey did not succeed: ${live#*:}. $other_user" ;;
+            esac ;;
     esac
 fi
 
