@@ -458,6 +458,12 @@ async fn recovery_totp_burst(_: PgPoolOptions, db: PgConnectOptions) {
     );
 }
 
+/// A burst of owner-rule part-2 codes on one request: exactly the free
+/// tries are checked, the rest are refused, none fails with a server error
+/// (a check that took a second pool connection while the burst held the
+/// pool waiting for the account lock answered 500). On one request the
+/// account lock serialises this route; the reservation's atomicity itself
+/// is pinned by the unit burst in `ratelimit::account`.
 #[sqlx::test]
 async fn part2_totp_burst(_: PgPoolOptions, db: PgConnectOptions) {
     use super::account_requests::{admin_with_device, bootstrap_user, start_bootstrap};
@@ -490,8 +496,9 @@ async fn part2_totp_burst(_: PgPoolOptions, db: PgConnectOptions) {
         answers.push(t.await.unwrap());
     }
     let (checked, refused) = tally(&answers, 401, "INVALID_MFA");
-    assert!(
-        checked <= FREE_FAILURES as usize,
+    // The counter is fresh: exactly the free tries are checked.
+    assert_eq!(
+        checked, FREE_FAILURES as usize,
         "{checked} codes checked, {refused} refused"
     );
     assert_eq!(checked + refused, BURST);

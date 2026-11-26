@@ -528,14 +528,27 @@ When a try resets its counter:
   with all its effects — also a right password while the password is `throttled` or
   `compromised`, or on an account without a usable second step. On the bootstrap request a right
   password of an account with a next step resets the password counter even when the request as a
-  whole is refused (for example because the code was wrong).
+  whole is refused (for example because the code was wrong). A banned account is no exception: a
+  right password resets its counter, `/auth/login` then answers 403 `ACCOUNT_BANNED` and the
+  bootstrap request answers neutrally.
 - **Sign-in code**: on the sign-in step, the recovery request and a part-2 action when it is
-  right; on the bootstrap request only when the request is accepted.
+  right; on the bootstrap request when the request goes on past the code — it is accepted, or it
+  is refused with 409 because a request is already open or no canceller is left.
 
-If the server cannot complete a check because of an internal error, it answers 503, the try is
-given back (only while nothing else has touched the counter since) and the counter is not reset;
-a wait time that try started stays unless the count falls below five. The per-IP limits below
-stay in front, unchanged.
+The effects of the 20th and the 100th failure (the notice, the block) apply only while the counter
+is still in the epoch that failure was counted in: if the owner signs in or an administrator
+resets the counter while those effects are still pending, they no longer apply.
+
+If the server cannot complete a check, it answers with a server error: 503 when Valkey is
+unavailable, 500 for a database or other internal error. A try whose check could not run because
+the user lookup, the stored secret or the record of used codes failed is given back (only while
+nothing else has touched the counter since); a wait time that try started stays unless the count
+falls below five. Not every failed check is given back: a database error after the password was
+checked, or a stored password hash that cannot be read, leaves the try counted. A try that hit a
+server error never resets the counter. If Valkey fails exactly when a success resets its counter,
+the success still stands, the try stays counted until the next success and the server logs a
+warning with the account id (`kaiku-admin throttle reset` clears it). The per-IP limits below stay
+in front, unchanged.
 
 Counters live in Valkey and expire after 24 h without failures. If Valkey is down, password and
 TOTP steps answer 503 `SERVICE_UNAVAILABLE`. Passkeys, QR sign-in, device-key sign-in and existing

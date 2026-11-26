@@ -842,13 +842,18 @@ and `ratelimit:acct:totp:{user_id}:{generation}`.
 - One Lua script updates count, epoch, the next allowed time and the expiry atomically.
 - **Reserve before check.** Every password and TOTP check (`/auth/login`, the attempt's TOTP step,
   the bootstrap and recovery request factors, owner-rule part 2) first calls `reserve`: the same
-  script, gated on `next` — while the delay runs it answers 429 and counts nothing, else it counts
+  script, gated on `next` — while the delay runs it answers 429 and counts nothing (the bootstrap
+  request answers a waiting code neutrally, 401 without `Retry-After`), else it counts
   the try as a failure at once. Then the check runs and the try is settled: a success resets the
   counter (`reset_epoch`), a failure applies the effects below with the reserved count, and a try
   whose check failed with a server error (the user lookup, the stored secret or the record of used
   codes) is given back (`give_back`: its throttle claim is always released; the count goes back
   only while epoch and count are unchanged, else the try stays counted; a delay it started stays
-  unless the count falls below 5). Such a try never resets the counter. Parallel tries therefore
+  unless the count falls below 5). Such a try never resets the counter. Other server errors after
+  the reservation leave the try counted: a database error in `password_next_step`, an unreadable
+  stored password hash (verified as wrong). Server errors answer 503 when Valkey fails and 500 for
+  a database or other internal error. A success whose `reset_epoch` fails still answers as a
+  success; the try stays counted and a `warn` log names the factor and the account id. Parallel tries therefore
   get distinct counts, and a burst checks at most 5 before the delay. The TOTP sign-in step
   reserves under the account lock, after the attempt checks, so no early refusal needs a give-back. The bootstrap password is
   reserved before the request's transaction (a refusal answers before anything is written); the
@@ -858,11 +863,19 @@ and `ratelimit:acct:totp:{user_id}:{generation}`.
   step (password right, factor `active`, a usable second step, the hash unchanged) — the same
   decision on `/auth/login`, the bootstrap password and the recovery password; every other password
   try settles as a failure. On the bootstrap request this decision stands on its own: a right
-  password with a step resets the password counter also when the request is then refused. A TOTP
-  code resets when it is right, on the bootstrap request only when the request is accepted
-  (`bootstrap_open`, active password). `check` and
-  `count_failure` remain: `check` gives the early answer before a bootstrap OIDC code is spent,
-  and both serve the tests.
+  password with a step resets the password counter also when the request is then refused. A banned
+  account is no exception (`password_next_step` does not look at bans): `/auth/login` resets and
+  answers 403 `ACCOUNT_BANNED`, the bootstrap request resets and answers neutrally. A TOTP
+  code resets when it is right, on the bootstrap request only when the request goes on past the
+  code (`bootstrap_open`, active password): settled before `insert_tx`, so also when the request is
+  then refused with 409 `ACCOUNT_REQUEST_OPEN` / `NO_INDEPENDENT_CANCELLER`. `check` and
+  `count_failure` remain: `check` gives the early answer before a bootstrap OIDC code is spent
+  (a running delay → the neutral 401; a Valkey error → 503, a database error → 500; the one-time
+  code is not spent), and both serve the tests.
+- **Known property.** The store calls of the TOTP sign-in step and of the account-request routes
+  (the bootstrap code, both recovery factors) run inside the transaction under the account lock.
+  If Valkey hangs, each such call holds its database connection for up to the Valkey command
+  timeout (`VALKEY_COMMAND_TIMEOUT_MS`, 3 s by default) before it answers 503.
 - From the 5th consecutive failure the next try waits `30 s · 2^(n−5)`, at most 3600 s (from the
   12th failure on); 429 `TOO_MANY_ATTEMPTS` + `Retry-After`.
 - Every 20th failure records `guessing` (coalesced).
@@ -870,14 +883,17 @@ and `ratelimit:acct:totp:{user_id}:{generation}`.
   exactly one failure at or past 100 per epoch apply the effects; the claimant settles or releases
   it by compare-and-set; a claim older than 300 s is taken over. 100 TOTP failures after a correct
   password (sign-in attempt or bootstrap) also mark that password generation `compromised`.
-- A success starts a new epoch (`reset_epoch`); effects apply under the account lock only while
-  epoch, count and generation still match. **Decision:** effects that already read (≥ 100, epoch E)
+- A success starts a new epoch (`reset_epoch`); effects (password and TOTP alike) re-read the
+  counter under the account lock and apply only while epoch and count (and for TOTP the
+  generation) still match. **Decision:** effects that already read (≥ 100, epoch E)
   apply even if a success commits concurrently: crossing 100 wrong codes is decisive on its own,
   and the concurrent success may be the attacker's lucky guess.
 - The TOTP counter is keyed by generation, so a renewal starts fresh and failures against the old
   secret never throttle the new one.
 - Counters expire after 24 h without failures. Valkey down → 503.
-- The CLI resets call `reset_epoch` on both counters.
+- The CLI resets (`throttle reset`, `factor reset`) call `reset_epoch` on their counters inside
+  their transaction, under the account lock and before the commit, so effects of an earlier
+  failure that wait for that lock see the new epoch and do not apply.
 
 ## 14. What is deliberately not a security signal
 
