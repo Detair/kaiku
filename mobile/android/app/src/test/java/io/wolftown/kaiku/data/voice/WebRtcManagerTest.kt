@@ -835,6 +835,35 @@ class WebRtcManagerTest {
     }
 
     @Test
+    fun `an offer or answer created for connections that were closed meanwhile is not set on them`() = runTest {
+        val pcs = mutableListOf<PeerConnection>()
+        val manager = managerWithConnections(backgroundScope, pcs)
+        manager.initialize()
+        manager.createSubscriberPeerConnection()
+        manager.createPublisherOffer()
+        val (subscriber, publisher) = pcs[0] to pcs[1]
+        // The publisher's offer is being created.
+        val offerDone = io.mockk.slot<org.webrtc.SdpObserver>()
+        verify { publisher.createOffer(capture(offerDone), any()) }
+        // The subscriber's answer to the server's offer is being created.
+        io.mockk.every { subscriber.setRemoteDescription(any(), any()) } answers {
+            firstArg<org.webrtc.SdpObserver>().onSetSuccess()
+        }
+        val answerDone = io.mockk.slot<org.webrtc.SdpObserver>()
+        io.mockk.every { subscriber.createAnswer(capture(answerDone), any()) } answers {}
+        manager.handleSubscriberOffer("v=0")
+        assertTrue(answerDone.isCaptured)
+
+        // A hang-up or a rejoin closes the connections before WebRTC reports back.
+        manager.closePeerConnections()
+        offerDone.captured.onCreateSuccess(org.webrtc.SessionDescription(org.webrtc.SessionDescription.Type.OFFER, "v=0"))
+        answerDone.captured.onCreateSuccess(org.webrtc.SessionDescription(org.webrtc.SessionDescription.Type.ANSWER, "v=0"))
+
+        verify(exactly = 0) { publisher.setLocalDescription(any(), any()) }
+        verify(exactly = 0) { subscriber.setLocalDescription(any(), any()) }
+    }
+
+    @Test
     fun `a signal meant for connections that were replaced is not applied to the new ones`() = runTest {
         val pcs = mutableListOf<PeerConnection>()
         val manager = managerWithConnections(backgroundScope, pcs)

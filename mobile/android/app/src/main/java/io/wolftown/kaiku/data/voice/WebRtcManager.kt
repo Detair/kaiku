@@ -393,6 +393,8 @@ class WebRtcManager @Inject constructor(
         pub.createOffer(
             object : SdpObserverAdapter("createPublisherOffer", errorSink(gen)) {
                 override fun onCreateSuccess(desc: SessionDescription) {
+                    // The publisher was replaced or closed meanwhile: nothing is set on it.
+                    if (gen != generation) return
                     pub.setLocalDescription(
                         object : SdpObserverAdapter("setPublisherLocalDesc", errorSink(gen)) {
                             override fun onSetSuccess() {
@@ -523,6 +525,8 @@ class WebRtcManager @Inject constructor(
                 drainSubscriberCandidates()
                 pc.createAnswer(object : SdpObserverAdapter("createSubscriberAnswer", errorSink(gen)) {
                     override fun onCreateSuccess(desc: SessionDescription) {
+                        // The subscriber was replaced or closed meanwhile: nothing is set on it.
+                        if (gen != generation) return
                         pc.setLocalDescription(object : SdpObserverAdapter("setSubscriberLocalDesc", errorSink(gen)) {
                             override fun onSetSuccess() {
                                 super.onSetSuccess()
