@@ -59,6 +59,54 @@ pub async fn handle_voice_event_for_session(
     tx: &mpsc::Sender<OutboundMsg>,
     screen_share_limiter: Option<&ScreenShareLimiter>,
 ) -> Result<(), VoiceError> {
+    let share_start_channel = match &event {
+        ClientEvent::VoiceScreenShareStart { channel_id, .. } => Some(*channel_id),
+        _ => None,
+    };
+    let result = dispatch_voice_event(
+        sfu,
+        pool,
+        user_id,
+        auth_session,
+        event,
+        tx,
+        screen_share_limiter,
+    )
+    .await;
+    if let (Err(_), Some(channel_id)) = (&result, share_start_channel) {
+        note_refused_share(sfu, user_id, channel_id, tx).await;
+    }
+    result
+}
+
+/// A screen-share start of the socket `tx` was refused (any reason): its
+/// seat in `channel_id`, if it has one, drops the next video track that has
+/// no announcement (see [`super::peer::Peer::note_refused_share`]). Noted
+/// before the refusal is sent, so a track the client adds after it is
+/// covered too.
+async fn note_refused_share(
+    sfu: &Arc<SfuServer>,
+    user_id: Uuid,
+    channel_id: Uuid,
+    tx: &mpsc::Sender<OutboundMsg>,
+) {
+    let Some(room) = sfu.get_room(channel_id).await else {
+        return;
+    };
+    if let Ok(peer) = owned_peer(&room, user_id, tx).await {
+        peer.note_refused_share(tokio::time::Instant::now() + super::sfu::UNANNOUNCED_TRACK_GRACE);
+    }
+}
+
+async fn dispatch_voice_event(
+    sfu: &Arc<SfuServer>,
+    pool: &PgPool,
+    user_id: Uuid,
+    auth_session: Option<Uuid>,
+    event: ClientEvent,
+    tx: &mpsc::Sender<OutboundMsg>,
+    screen_share_limiter: Option<&ScreenShareLimiter>,
+) -> Result<(), VoiceError> {
     // Per-peer, per-event-class token bucket rate limiting.
     //
     // Events that exceed the limit are dropped silently (no error returned

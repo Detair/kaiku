@@ -68,9 +68,13 @@ pub struct Peer {
     /// The client sends e.g. `VoiceWebcamStart` before `addTrack()`, so the
     /// server can pop from this queue when `on_track` fires to identify the source.
     pending_track_sources: RwLock<Vec<TrackSource>>,
-    /// Woken whenever a source is announced (queued), for a track that
-    /// arrived before its announcement.
+    /// Woken whenever a source is announced (queued) or a screen-share start
+    /// is refused, for a track that arrived before its announcement.
     announced: tokio::sync::Notify,
+    /// Refused screen-share starts that have not yet used up a video track,
+    /// each with the instant until which it may (see
+    /// [`Peer::note_refused_share`]).
+    refused_shares: std::sync::Mutex<Vec<tokio::time::Instant>>,
     /// Whether this peer has already subscribed to existing tracks.
     /// Used for robust first-offer detection instead of checking `outgoing_tracks_count`.
     pub has_subscribed: AtomicBool,
@@ -198,6 +202,7 @@ impl Peer {
             connected_at: Utc::now(),
             pending_track_sources: RwLock::new(Vec::new()),
             announced: tokio::sync::Notify::new(),
+            refused_shares: std::sync::Mutex::new(Vec::new()),
             has_subscribed: AtomicBool::new(false),
             admission: std::sync::OnceLock::new(),
             negotiation: tokio::sync::Mutex::new(SubscriberNegotiation::default()),
@@ -414,6 +419,36 @@ impl Peer {
         self.announced.notify_waiters();
     }
 
+    /// Note a refused screen-share start. A client may add its screen track
+    /// before it sends the start and keep sending after a refusal, so the
+    /// refusal uses up the next video track of this seat that has no
+    /// announcement: one waiting for an announcement now, or one that
+    /// arrives before `until` while no announcement is queued. That track
+    /// is dropped like an unannounced one and never binds to a later start.
+    pub fn note_refused_share(&self, until: tokio::time::Instant) {
+        self.refused_shares
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(until);
+        self.announced.notify_waiters();
+    }
+
+    /// Use up the oldest refused share that may still take a track.
+    fn take_refused_share(&self) -> bool {
+        let now = tokio::time::Instant::now();
+        let mut refused = self
+            .refused_shares
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        refused.retain(|until| *until >= now);
+        if refused.is_empty() {
+            false
+        } else {
+            refused.remove(0);
+            true
+        }
+    }
+
     /// Drop queued announcements matching `pred` (their share or webcam
     /// ended before a track came).
     pub async fn remove_pending_sources(&self, pred: impl Fn(&TrackSource) -> bool) {
@@ -625,7 +660,9 @@ impl Peer {
     /// `deadline` for an announcement. `None`: the track stays unannounced.
     ///
     /// A track is matched to an announcement by arrival order, whichever of
-    /// the two comes first (contract C30).
+    /// the two comes first (contract C30). A video track without an
+    /// announcement is instead used up by a refused screen-share start (see
+    /// [`Peer::note_refused_share`]) and returns `None`.
     pub async fn take_source_until(
         &self,
         video: bool,
@@ -644,6 +681,9 @@ impl Peer {
             }
             if let Some(source) = self.pop_pending(video).await {
                 return Some(source);
+            }
+            if video && self.take_refused_share() {
+                return None;
             }
             if tokio::time::timeout_at(deadline, notified).await.is_err() {
                 return self.pop_pending(video).await;

@@ -2888,6 +2888,72 @@ mod negotiation_tests {
         assert!(got.is_none(), "a retired seat bound {got:?}");
     }
 
+    /// A refused share start uses up the video track waiting for an
+    /// announcement, or the next one within its period while no
+    /// announcement is queued; an announcement queued first still binds,
+    /// audio is not touched, and an expired refusal uses up nothing.
+    #[tokio::test]
+    async fn a_refused_share_uses_up_the_next_unannounced_video_track() {
+        let (_sfu, peer, _rx, _client) = setup().await;
+        let soon = || tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+
+        // A waiting track is used up by a refusal that comes meanwhile.
+        let waiting = {
+            let peer = peer.clone();
+            tokio::spawn(async move {
+                let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+                peer.take_source_until(true, deadline).await
+            })
+        };
+        tokio::task::yield_now().await;
+        peer.note_refused_share(soon());
+        let got = tokio::time::timeout(std::time::Duration::from_secs(2), waiting)
+            .await
+            .expect("the refusal ended the wait")
+            .expect("join");
+        assert!(got.is_none(), "the refused track bound {got:?}");
+
+        // An announcement queued first binds; the refusal stays for the
+        // next track without one.
+        peer.note_refused_share(soon());
+        peer.push_pending_source(TrackSource::Webcam).await;
+        let deadline = soon();
+        assert_eq!(
+            peer.take_source_until(true, deadline).await,
+            Some(TrackSource::Webcam)
+        );
+        // Audio is not used up.
+        peer.push_pending_source(TrackSource::ScreenAudio(Uuid::from_u128(9)))
+            .await;
+        assert_eq!(
+            peer.take_source_until(false, soon()).await,
+            Some(TrackSource::ScreenAudio(Uuid::from_u128(9)))
+        );
+        let at_once = tokio::time::Instant::now() + std::time::Duration::from_millis(50);
+        assert_eq!(peer.take_source_until(true, at_once).await, None);
+        // Used up: a later announcement binds the next track.
+        peer.push_pending_source(TrackSource::Webcam).await;
+        assert_eq!(
+            peer.take_source_until(true, soon()).await,
+            Some(TrackSource::Webcam)
+        );
+
+        // An expired refusal uses up nothing.
+        peer.note_refused_share(tokio::time::Instant::now());
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let later = {
+            let peer = peer.clone();
+            tokio::spawn(async move { peer.take_source_until(true, soon()).await })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        peer.push_pending_source(TrackSource::Webcam).await;
+        assert_eq!(
+            later.await.expect("join"),
+            Some(TrackSource::Webcam),
+            "an expired refusal took the track"
+        );
+    }
+
     /// An answer to an older offer with the same number of media sections
     /// (a track was removed in between, so a section changed direction) is
     /// ignored too.

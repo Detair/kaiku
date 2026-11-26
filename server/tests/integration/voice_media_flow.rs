@@ -1014,3 +1014,115 @@ async fn three_encoding_offer_without_ssrcs_sends_no_webcam_until_one_stream(poo
         b.seen_tracks()
     );
 }
+
+/// Deny `SCREEN_SHARE` to @everyone in the fixture's voice channel.
+async fn deny_screen_share(f: &Fixture) {
+    let everyone: Uuid =
+        sqlx::query_scalar("SELECT id FROM guild_roles WHERE guild_id = $1 AND is_default")
+            .bind(f.guild)
+            .fetch_one(&f.app.pool)
+            .await
+            .unwrap();
+    sqlx::query(
+        "INSERT INTO channel_overrides (id, channel_id, role_id, allow_permissions, deny_permissions)
+         VALUES ($1, $2, $3, 0, $4)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(f.voice)
+    .bind(everyone)
+    .bind(GuildPermissions::SCREEN_SHARE.to_db())
+    .execute(&f.app.pool)
+    .await
+    .unwrap();
+}
+
+fn webcam_start(channel: Uuid) -> serde_json::Value {
+    serde_json::json!({ "type": "voice_webcam_start", "channel_id": channel, "quality": "medium" })
+}
+
+/// The order of the previous release: the screen track goes out first, the
+/// share start is refused, and a second later the person starts the webcam
+/// (no webcam track at all). The refused screen never reaches a viewer, not
+/// under the webcam either.
+#[sqlx::test]
+async fn refused_early_share_track_never_becomes_the_webcam(pool: PgPool) {
+    let f = fixture(pool).await;
+    deny_screen_share(&f).await;
+    let (mut a, mut b) = two_in_call(&f).await;
+
+    a.add_track(true, "screen").await;
+    a.publish().await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    a.send(share_start(f.voice, Uuid::new_v4()));
+    let refused = a.next_event("voice_error", WAIT).await;
+    assert_eq!(refused["code"], "SCREEN_SHARE_FORBIDDEN", "{refused}");
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    a.send(webcam_start(f.voice));
+    b.next_event("webcam_started", WAIT).await;
+
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    let cam = format!("{}:webcam", a.user_id);
+    assert_eq!(
+        b.packets(&cam),
+        0,
+        "the refused screen reached the viewer as the webcam: {:?}",
+        b.seen_tracks()
+    );
+    assert!(
+        video_tracks_of(&b, a.user_id).is_empty(),
+        "{:?}",
+        b.seen_tracks()
+    );
+}
+
+/// A video track that arrives shortly after a refused share start, while no
+/// announcement is queued, is the refused screen: it is dropped and a
+/// webcam started right after it does not take it.
+#[sqlx::test]
+async fn track_after_a_refused_share_never_becomes_the_webcam(pool: PgPool) {
+    let f = fixture(pool).await;
+    deny_screen_share(&f).await;
+    let (mut a, mut b) = two_in_call(&f).await;
+
+    a.send(share_start(f.voice, Uuid::new_v4()));
+    let refused = a.next_event("voice_error", WAIT).await;
+    assert_eq!(refused["code"], "SCREEN_SHARE_FORBIDDEN", "{refused}");
+    a.add_track(true, "screen").await;
+    a.publish().await;
+    let dropped = a.next_event("voice_error", Duration::from_secs(2)).await;
+    assert_eq!(dropped["code"], "VIDEO_SOURCE_UNANNOUNCED", "{dropped}");
+    a.send(webcam_start(f.voice));
+    b.next_event("webcam_started", WAIT).await;
+
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    assert!(
+        video_tracks_of(&b, a.user_id).is_empty(),
+        "the refused screen reached the viewer: {:?}",
+        b.seen_tracks()
+    );
+}
+
+/// A client that follows the contract is not affected by a refusal: the
+/// webcam it starts right after a refused share, adding the camera only
+/// after the acknowledgement, is forwarded as the webcam.
+#[sqlx::test]
+async fn webcam_started_first_after_a_refused_share_is_forwarded(pool: PgPool) {
+    let f = fixture(pool).await;
+    deny_screen_share(&f).await;
+    let (mut a, b) = two_in_call(&f).await;
+
+    a.send(share_start(f.voice, Uuid::new_v4()));
+    let refused = a.next_event("voice_error", WAIT).await;
+    assert_eq!(refused["code"], "SCREEN_SHARE_FORBIDDEN", "{refused}");
+    a.send(webcam_start(f.voice));
+    a.next_event("webcam_started", WAIT).await;
+    a.add_track(true, "cam").await;
+    a.publish().await;
+
+    let cam = format!("{}:webcam", a.user_id);
+    assert!(
+        b.wait_for_packets(&cam, 5, WAIT).await,
+        "the webcam after a refused share did not reach the viewer: {:?}",
+        b.seen_tracks()
+    );
+}
