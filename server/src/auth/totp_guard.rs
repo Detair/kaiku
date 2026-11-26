@@ -111,12 +111,27 @@ pub async fn settle(
     reserved: Failure,
 ) {
     if ok {
-        let _ = AccountLimiter::new(ctx.redis)
-            .reset_epoch(&CounterKey::totp(user, used.totp_generation))
-            .await;
+        reset_after_success(ctx, user, used.totp_generation).await;
         return;
     }
     failure_effects(ctx, state, user, used, reserved);
+}
+
+/// Reset the counter of `generation` after a success. If the store fails
+/// here the success still stands and the try stays counted until the next
+/// success; the failure is logged so an administrator can reset it.
+async fn reset_after_success(ctx: &AuthCtx<'_>, user: Uuid, generation: i64) {
+    if let Err(e) = AccountLimiter::new(ctx.redis)
+        .reset_epoch(&CounterKey::totp(user, generation))
+        .await
+    {
+        tracing::warn!(
+            error = %e,
+            user_id = %user,
+            factor = "totp",
+            "the sign-in counter could not be reset after a success"
+        );
+    }
 }
 
 /// Count the outcome of a TOTP check made without a reservation (tools and
@@ -133,7 +148,7 @@ pub async fn after(
     // checked, for a success too; a renewal's counter is a fresh one.
     let key = CounterKey::totp(user, used.totp_generation);
     if ok {
-        let _ = limiter.reset_epoch(&key).await;
+        reset_after_success(ctx, user, used.totp_generation).await;
         return;
     }
     let Ok(failure) = limiter.count_failure(&key).await else {

@@ -147,10 +147,9 @@ pub async fn login(
     // The reserved try settles: only a try answered with a next step resets
     // the counter; a neutral answer stays counted with a failure's effects,
     // whatever the password was.
-    if step.is_some() {
-        let _ = limiter.record_success(&counter).await;
-    } else {
-        account_failure(&state, &counter, typed_account, reserved).await?;
+    match (&user, &step) {
+        (Some(u), Some(_)) => password_success(&state.redis, &counter, u.id).await,
+        _ => account_failure(&state, &counter, typed_account, reserved).await?,
     }
     let (Some(user), Some((step, generation))) = (user, step) else {
         record_failed_auth!();
@@ -245,6 +244,28 @@ pub async fn reserve_password(
             })
         }
         Err(_) => Err(AuthError::ServiceUnavailable),
+    }
+}
+
+/// B.5: a password try of `user` succeeded: reset `counter` (a new epoch).
+/// If the store fails here the sign-in still goes on and the try stays
+/// counted until the next success; the failure is logged so an
+/// administrator can reset the counter.
+pub async fn password_success(
+    redis: &fred::clients::Client,
+    counter: &crate::ratelimit::account::CounterKey,
+    user: Uuid,
+) {
+    if let Err(e) = crate::ratelimit::account::AccountLimiter::new(redis)
+        .record_success(counter)
+        .await
+    {
+        tracing::warn!(
+            error = %e,
+            user_id = %user,
+            factor = "password",
+            "the sign-in counter could not be reset after a success"
+        );
     }
 }
 

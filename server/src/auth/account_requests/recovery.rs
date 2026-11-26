@@ -131,9 +131,7 @@ pub async fn start_recovery(
             .await?
             .is_some();
             if right {
-                let _ = crate::ratelimit::account::AccountLimiter::new(ctx.redis)
-                    .record_success(&key)
-                    .await;
+                crate::auth::login::password_success(ctx.redis, &key, user.id).await;
             } else {
                 failure_effects(state, &key, user.id, reserved);
             }

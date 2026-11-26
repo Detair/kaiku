@@ -239,13 +239,11 @@ async fn start_bootstrap(
                 }
                 _ => false,
             };
-            match reserved {
-                _ if right => {
-                    let _ = AccountLimiter::new(ctx.redis)
-                        .record_success(&password_key)
-                        .await;
+            match (reserved, &user) {
+                (_, Some(u)) if right => {
+                    crate::auth::login::password_success(ctx.redis, &password_key, u.id).await;
                 }
-                Some(failure) => {
+                (Some(failure), _) => {
                     crate::auth::login::account_failure(
                         state,
                         &password_key,
@@ -254,7 +252,7 @@ async fn start_bootstrap(
                     )
                     .await?;
                 }
-                None => {}
+                (None, _) => {}
             }
             (ok, false)
         }
