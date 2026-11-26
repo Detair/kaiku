@@ -4451,6 +4451,38 @@ mod tests {
         );
     }
 
+    /// A subscribe whose attempt meets the backoff has not read, so it
+    /// starts no cooldown at the epoch it would have read at: the request
+    /// arrives, the epoch moves, a frame's read fails while the request
+    /// waits for its socket, and its attempt meets the backoff. Asked again
+    /// at the new epoch once the backoff is over, it reads.
+    #[tokio::test(start_paused = true)]
+    async fn a_subscribe_that_met_the_backoff_starts_no_cooldown() {
+        let reads = |u: Uuid| crate::ws::test_hooks::access_reads(u).0;
+        let u = Uuid::new_v4();
+        let access = admin_socket(u, true).await;
+        cooled_down().await;
+        install(&access, &[], true, None);
+        crate::ws::test_hooks::count_access_reads(u);
+        let gate = access.refresh_gate.lock().await;
+        let subscribe = access.subscribe_admin();
+        tokio::pin!(subscribe);
+        assert!(futures::poll!(subscribe.as_mut()).is_pending());
+        registry().bump_user(u);
+        // A frame's read fails while the request waits.
+        assert!(access.admin_frame_taken());
+        let Planned::Run(plan) = access.plan(false) else {
+            panic!("nothing planned");
+        };
+        access.fail(&plan);
+        drop(gate);
+        assert_eq!(subscribe.await, AdminSubscription::Undecided);
+        assert_eq!(reads(u), 0);
+        tokio::time::advance(RETRY_BASE + Duration::from_millis(50)).await;
+        assert_eq!(access.subscribe_admin().await, AdminSubscription::Allowed);
+        assert_eq!(reads(u), 1, "a request at the new epoch was refused a read");
+    }
+
     /// A remembered reply that makes a stale admin scope requested again
     /// wakes the socket loop: the scope is read by the socket's own
     /// revalidation, not left to the next admin frame.
