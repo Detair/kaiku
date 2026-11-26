@@ -7,6 +7,8 @@ use serde::Serialize;
 pub enum RateLimitCategory {
     /// Login attempts
     AuthLogin,
+    /// Bot gateway sign-ins per IP: the login's limits, its own bucket.
+    BotGateway,
     /// Registration attempts
     AuthRegister,
     /// Password reset requests
@@ -48,6 +50,7 @@ impl RateLimitCategory {
     pub const fn as_str(&self) -> &'static str {
         match self {
             Self::AuthLogin => "auth_login",
+            Self::BotGateway => "bot_gateway",
             Self::AuthRegister => "auth_register",
             Self::AuthPasswordReset => "auth_pwd_reset",
             Self::AuthOther => "auth_other",
@@ -76,6 +79,7 @@ impl RateLimitCategory {
         matches!(
             self,
             Self::AuthLogin
+                | Self::BotGateway
                 | Self::AuthRegister
                 | Self::AuthPasswordReset
                 | Self::AuthOther
@@ -99,6 +103,7 @@ impl RateLimitCategory {
     pub const fn all() -> &'static [Self] {
         &[
             Self::AuthLogin,
+            Self::BotGateway,
             Self::AuthRegister,
             Self::AuthPasswordReset,
             Self::AuthOther,
@@ -126,6 +131,7 @@ mod outage_policy_tests {
     fn only_auth_categories_are_auth_limits() {
         for category in [
             RateLimitCategory::AuthLogin,
+            RateLimitCategory::BotGateway,
             RateLimitCategory::AuthRegister,
             RateLimitCategory::AuthPasswordReset,
             RateLimitCategory::AuthOther,

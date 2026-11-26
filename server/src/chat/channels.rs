@@ -7,8 +7,7 @@ use uuid::Uuid;
 use validator::Validate;
 
 use super::types::{
-    AddMemberRequest, ChannelResponse, CreateChannelRequest, MarkChannelAsReadRequest,
-    MemberResponse, UpdateChannelRequest,
+    ChannelResponse, CreateChannelRequest, MarkChannelAsReadRequest, UpdateChannelRequest,
 };
 use super::{queries, ChatError};
 use crate::api::AppState;
@@ -261,122 +260,23 @@ pub async fn delete(
         return Err(ChatError::Forbidden);
     }
 
-    let deleted = db::delete_channel(&state.db, id).await?;
+    let guild_id = db::find_channel_by_id(&state.db, id)
+        .await?
+        .and_then(|c| c.guild_id);
+    let (deleted, bumped) = crate::ws::access::bump_after_if(
+        Some(crate::ws::access::AccessChange::ChannelDeleted {
+            guild_id,
+            channel_id: id,
+        }),
+        db::delete_channel(&state.db, id),
+        |deleted| *deleted,
+    )
+    .await?;
 
     if deleted {
-        Ok(StatusCode::NO_CONTENT)
-    } else {
-        Err(ChatError::ChannelNotFound)
-    }
-}
-
-/// List members of a channel.
-/// GET /api/channels/:id/members
-#[utoipa::path(
-    get,
-    path = "/api/channels/{id}/members",
-    tag = "channels",
-    params(("id" = Uuid, Path, description = "Channel ID")),
-    responses(
-        (status = 200, body = Vec<MemberResponse>),
-    ),
-    security(("bearer_auth" = [])),
-)]
-pub async fn list_members(
-    State(state): State<AppState>,
-    auth_user: AuthUser,
-    Path(id): Path<Uuid>,
-) -> Result<Json<Vec<MemberResponse>>, ChatError> {
-    // Check channel access (VIEW_CHANNEL permission or DM participant)
-    crate::permissions::require_channel_access(&state.db, auth_user.id, id)
-        .await
-        .map_err(|_| ChatError::Forbidden)?;
-
-    let users = db::list_channel_members_with_users(&state.db, id).await?;
-
-    let response: Vec<MemberResponse> = users
-        .into_iter()
-        .map(|u| MemberResponse {
-            user_id: u.id,
-            username: u.username,
-            display_name: u.display_name,
-            avatar_url: u.avatar_url,
-        })
-        .collect();
-
-    Ok(Json(response))
-}
-
-/// Add a member to a channel.
-/// POST /api/channels/:id/members
-#[utoipa::path(
-    post,
-    path = "/api/channels/{id}/members",
-    tag = "channels",
-    params(("id" = Uuid, Path, description = "Channel ID")),
-    request_body = AddMemberRequest,
-    responses(
-        (status = 201, description = "Member added"),
-    ),
-    security(("bearer_auth" = [])),
-)]
-pub async fn add_member(
-    State(state): State<AppState>,
-    auth_user: AuthUser,
-    Path(id): Path<Uuid>,
-    Json(body): Json<AddMemberRequest>,
-) -> Result<StatusCode, ChatError> {
-    // Check channel access and MANAGE_CHANNELS permission
-    let ctx = crate::permissions::require_channel_access(&state.db, auth_user.id, id)
-        .await
-        .map_err(|_| ChatError::Forbidden)?;
-
-    if !ctx.has_permission(crate::permissions::GuildPermissions::MANAGE_CHANNELS) {
-        return Err(ChatError::Forbidden);
-    }
-
-    // Check user exists
-    let _ = db::find_user_by_id(&state.db, body.user_id)
-        .await?
-        .ok_or(ChatError::Validation("User not found".to_string()))?;
-
-    db::add_channel_member(&state.db, id, body.user_id, body.role_id).await?;
-
-    Ok(StatusCode::CREATED)
-}
-
-/// Remove a member from a channel.
-/// DELETE /`api/channels/:id/members/:user_id`
-#[utoipa::path(
-    delete,
-    path = "/api/channels/{id}/members/{user_id}",
-    tag = "channels",
-    params(
-        ("id" = Uuid, Path, description = "Channel ID"),
-        ("user_id" = Uuid, Path, description = "User ID"),
-    ),
-    responses(
-        (status = 204, description = "Member removed"),
-    ),
-    security(("bearer_auth" = [])),
-)]
-pub async fn remove_member(
-    State(state): State<AppState>,
-    auth_user: AuthUser,
-    Path((channel_id, user_id)): Path<(Uuid, Uuid)>,
-) -> Result<StatusCode, ChatError> {
-    // Check channel access and MANAGE_CHANNELS permission
-    let ctx = crate::permissions::require_channel_access(&state.db, auth_user.id, channel_id)
-        .await
-        .map_err(|_| ChatError::Forbidden)?;
-
-    if !ctx.has_permission(crate::permissions::GuildPermissions::MANAGE_CHANNELS) {
-        return Err(ChatError::Forbidden);
-    }
-
-    let removed = db::remove_channel_member(&state.db, channel_id, user_id).await?;
-
-    if removed {
+        if let Some(bumped) = bumped {
+            crate::ws::access::access_changed(&state, bumped).await;
+        }
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(ChatError::ChannelNotFound)

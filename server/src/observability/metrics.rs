@@ -50,6 +50,9 @@ static WS_CONNECTIONS_ACTIVE: OnceLock<UpDownCounter<i64>> = OnceLock::new();
 /// Registered but not wired — needs reconnect token feature to distinguish
 /// new connections from re-connections.
 static WS_RECONNECTS_TOTAL: OnceLock<Counter<u64>> = OnceLock::new();
+static WS_REFUSED_TOTAL: OnceLock<Counter<u64>> = OnceLock::new();
+static WS_RESYNC_CLOSES_TOTAL: OnceLock<Counter<u64>> = OnceLock::new();
+static WS_ACCESS_CHECK_FAILURES_TOTAL: OnceLock<Counter<u64>> = OnceLock::new();
 static WS_MESSAGES_TOTAL: OnceLock<Counter<u64>> = OnceLock::new();
 static VOICE_SESSIONS_ACTIVE: OnceLock<UpDownCounter<i64>> = OnceLock::new();
 static VOICE_SESSION_DURATION_SECONDS: OnceLock<Histogram<f64>> = OnceLock::new();
@@ -230,6 +233,29 @@ pub fn register_metrics() {
             .build()
     });
 
+    WS_REFUSED_TOTAL.get_or_init(|| {
+        meter
+            .u64_counter("kaiku_ws_refused_total")
+            .with_description("WebSocket connections refused by a connection cap, by outcome")
+            .build()
+    });
+
+    WS_RESYNC_CLOSES_TOTAL.get_or_init(|| {
+        meter
+            .u64_counter("kaiku_ws_resync_closes_total")
+            .with_description(
+                "WebSockets closed by the server so the client reconnects and catches up, by outcome",
+            )
+            .build()
+    });
+
+    WS_ACCESS_CHECK_FAILURES_TOTAL.get_or_init(|| {
+        meter
+            .u64_counter("kaiku_ws_access_check_failures_total")
+            .with_description("Failed revalidations of a socket's channel access")
+            .build()
+    });
+
     WS_MESSAGES_TOTAL.get_or_init(|| {
         meter
             .u64_counter("kaiku_ws_messages_total")
@@ -295,6 +321,39 @@ pub fn register_metrics() {
             .u64_counter("kaiku_otel_dropped_spans_total")
             .with_description("Spans dropped due to queue overflow")
             .build()
+    });
+    register_storage_cleanup_gauges(&meter);
+}
+
+/// Object keys waiting for deletion (outbox `storage_pending_deletes`).
+static STORAGE_PENDING_DELETES: AtomicU64 = AtomicU64::new(0);
+/// Age in seconds of the oldest key waiting for deletion.
+static STORAGE_OLDEST_PENDING_SECONDS: AtomicU64 = AtomicU64::new(0);
+
+/// Record the object-cleanup queue state (set once per worker tick).
+pub fn set_storage_pending_deletes(pending: u64, oldest_age_seconds: u64) {
+    STORAGE_PENDING_DELETES.store(pending, Ordering::Relaxed);
+    STORAGE_OLDEST_PENDING_SECONDS.store(oldest_age_seconds, Ordering::Relaxed);
+}
+
+fn register_storage_cleanup_gauges(meter: &opentelemetry::metrics::Meter) {
+    static REGISTERED: std::sync::Once = std::sync::Once::new();
+    REGISTERED.call_once(|| {
+        meter
+            .u64_observable_gauge("kaiku_storage_pending_deletes")
+            .with_description("Stored objects waiting for deletion")
+            .with_callback(|observer| {
+                observer.observe(STORAGE_PENDING_DELETES.load(Ordering::Relaxed), &[]);
+            })
+            .build();
+        meter
+            .u64_observable_gauge("kaiku_storage_oldest_pending_delete_seconds")
+            .with_description("Age of the oldest stored object waiting for deletion")
+            .with_unit("s")
+            .with_callback(|observer| {
+                observer.observe(STORAGE_OLDEST_PENDING_SECONDS.load(Ordering::Relaxed), &[]);
+            })
+            .build();
     });
 }
 
@@ -540,6 +599,30 @@ pub fn record_http_error(status: u16) {
                 KeyValue::new("error.type", status.to_string()),
             ],
         );
+    }
+}
+
+/// Record a WebSocket connection refused by a cap (`outcome`:
+/// `per_address_limit|per_account_limit`).
+pub fn record_ws_refused(outcome: &'static str) {
+    if let Some(counter) = WS_REFUSED_TOTAL.get() {
+        counter.add(1, &[KeyValue::new("outcome", outcome)]);
+    }
+}
+
+/// Record a socket closed so that its client reconnects and catches up
+/// (close codes 1011 and 1013; `outcome` names the cause).
+pub fn record_ws_resync_close(outcome: &'static str) {
+    if let Some(counter) = WS_RESYNC_CLOSES_TOTAL.get() {
+        counter.add(1, &[KeyValue::new("outcome", outcome)]);
+    }
+}
+
+/// Record a failed revalidation of a socket's channel access (database
+/// error or timeout).
+pub fn record_ws_access_check_failure() {
+    if let Some(counter) = WS_ACCESS_CHECK_FAILURES_TOTAL.get() {
+        counter.add(1, &[]);
     }
 }
 

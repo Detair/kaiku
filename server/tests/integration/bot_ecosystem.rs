@@ -859,6 +859,20 @@ async fn test_add_bot_to_guild(pool: PgPool) {
     .unwrap();
 }
 
+/// `@everyone` role letting members and installed bots view channels.
+async fn everyone_can_view(pool: &PgPool, guild_id: uuid::Uuid) {
+    sqlx::query(
+        "INSERT INTO guild_roles (id, guild_id, name, permissions, position, is_default)
+         VALUES ($1, $2, '@everyone', $3, 0, true)",
+    )
+    .bind(uuid::Uuid::now_v7())
+    .bind(guild_id)
+    .bind(vc_server::permissions::GuildPermissions::VIEW_CHANNEL.to_db())
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
 /// Test slash command routing publishes invocation to bot gateway channel.
 #[sqlx::test]
 async fn test_slash_command_invocation_publishes_to_bot_channel(pool: PgPool) {
@@ -935,6 +949,8 @@ async fn test_slash_command_invocation_publishes_to_bot_channel(pool: PgPool) {
         .execute(&app.pool)
         .await
         .unwrap();
+    // Bots see a channel through @everyone (they are not members).
+    everyone_can_view(&app.pool, guild_id).await;
 
     sqlx::query("INSERT INTO guild_members (guild_id, user_id) VALUES ($1, $2)")
         .bind(guild_id)
@@ -1799,6 +1815,7 @@ async fn test_slash_command_does_not_leak_valkey_connections(pool: PgPool) {
         .execute(&app.pool)
         .await
         .unwrap();
+    everyone_can_view(&app.pool, guild_id).await;
     sqlx::query("INSERT INTO guild_members (guild_id, user_id) VALUES ($1, $2)")
         .bind(guild_id)
         .bind(user_id)

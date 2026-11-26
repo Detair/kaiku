@@ -369,8 +369,8 @@ async fn test_websocket_subscribe_denied_without_permission(pool: PgPool) {
     let ctx = PermissionTestContext::setup(pool).await;
 
     let (tx, mut rx) = mpsc::channel(10);
-    let subscribed_channels = Arc::new(tokio::sync::RwLock::new(std::collections::HashSet::new()));
-    let admin_subscribed = Arc::new(tokio::sync::RwLock::new(false));
+    let subscribed_channels =
+        vc_server::ws::access::SocketAccess::new(uuid::Uuid::new_v4(), ctx.state.db.clone());
     let mut msg_state = vc_server::ws::ClientMessageState::default();
 
     let subscribe_event = serde_json::json!({
@@ -385,7 +385,6 @@ async fn test_websocket_subscribe_denied_without_permission(pool: PgPool) {
         &ctx.state,
         &tx,
         &subscribed_channels,
-        &admin_subscribed,
         &mut msg_state,
     )
     .await;
@@ -393,9 +392,8 @@ async fn test_websocket_subscribe_denied_without_permission(pool: PgPool) {
     assert!(result.is_ok(), "Handler should not crash");
 
     // Check that user was NOT added to subscribed channels
-    let subscribed = subscribed_channels.read().await;
     assert!(
-        !subscribed.contains(&ctx.channel.id),
+        !subscribed_channels.is_allowed(ctx.channel.id),
         "User without VIEW_CHANNEL should NOT be subscribed"
     );
 
@@ -425,8 +423,8 @@ async fn test_websocket_subscribe_allowed_with_permission(pool: PgPool) {
     let ctx = PermissionTestContext::setup(pool).await;
 
     let (tx, mut rx) = mpsc::channel(10);
-    let subscribed_channels = Arc::new(tokio::sync::RwLock::new(std::collections::HashSet::new()));
-    let admin_subscribed = Arc::new(tokio::sync::RwLock::new(false));
+    let subscribed_channels =
+        vc_server::ws::access::SocketAccess::new(uuid::Uuid::new_v4(), ctx.state.db.clone());
     let mut msg_state = vc_server::ws::ClientMessageState::default();
 
     let subscribe_event = serde_json::json!({
@@ -440,7 +438,6 @@ async fn test_websocket_subscribe_allowed_with_permission(pool: PgPool) {
         &ctx.state,
         &tx,
         &subscribed_channels,
-        &admin_subscribed,
         &mut msg_state,
     )
     .await;
@@ -448,9 +445,8 @@ async fn test_websocket_subscribe_allowed_with_permission(pool: PgPool) {
     assert!(result.is_ok(), "Handler should succeed");
 
     // Check that user WAS added to subscribed channels
-    let subscribed = subscribed_channels.read().await;
     assert!(
-        subscribed.contains(&ctx.channel.id),
+        subscribed_channels.is_allowed(ctx.channel.id),
         "User with VIEW_CHANNEL should be subscribed"
     );
 
@@ -479,8 +475,8 @@ async fn test_websocket_subscribe_owner_bypass(pool: PgPool) {
     let ctx = PermissionTestContext::setup(pool).await;
 
     let (tx, mut rx) = mpsc::channel(10);
-    let subscribed_channels = Arc::new(tokio::sync::RwLock::new(std::collections::HashSet::new()));
-    let admin_subscribed = Arc::new(tokio::sync::RwLock::new(false));
+    let subscribed_channels =
+        vc_server::ws::access::SocketAccess::new(uuid::Uuid::new_v4(), ctx.state.db.clone());
     let mut msg_state = vc_server::ws::ClientMessageState::default();
 
     let subscribe_event = serde_json::json!({
@@ -494,7 +490,6 @@ async fn test_websocket_subscribe_owner_bypass(pool: PgPool) {
         &ctx.state,
         &tx,
         &subscribed_channels,
-        &admin_subscribed,
         &mut msg_state,
     )
     .await;
@@ -502,9 +497,8 @@ async fn test_websocket_subscribe_owner_bypass(pool: PgPool) {
     assert!(result.is_ok(), "Handler should succeed for owner");
 
     // Check that owner WAS added to subscribed channels
-    let subscribed = subscribed_channels.read().await;
     assert!(
-        subscribed.contains(&ctx.channel.id),
+        subscribed_channels.is_allowed(ctx.channel.id),
         "Guild owner should be able to subscribe"
     );
 
@@ -563,8 +557,8 @@ async fn test_ws_subscribe_denied_for_foreign_guild_outsider(pool: PgPool) {
     .expect("Create outsider failed");
 
     let (tx, mut rx) = mpsc::channel(10);
-    let subscribed_channels = Arc::new(tokio::sync::RwLock::new(std::collections::HashSet::new()));
-    let admin_subscribed = Arc::new(tokio::sync::RwLock::new(false));
+    let subscribed_channels =
+        vc_server::ws::access::SocketAccess::new(uuid::Uuid::new_v4(), ctx.state.db.clone());
     let mut msg_state = vc_server::ws::ClientMessageState::default();
 
     let subscribe_event = serde_json::json!({
@@ -578,14 +572,13 @@ async fn test_ws_subscribe_denied_for_foreign_guild_outsider(pool: PgPool) {
         &ctx.state,
         &tx,
         &subscribed_channels,
-        &admin_subscribed,
         &mut msg_state,
     )
     .await;
     assert!(result.is_ok(), "Handler should not crash");
 
     assert!(
-        !subscribed_channels.read().await.contains(&ctx.channel.id),
+        !subscribed_channels.is_allowed(ctx.channel.id),
         "Outsider must NOT be subscribed to a foreign guild's channel"
     );
 
@@ -709,8 +702,8 @@ async fn test_typing_in_unsubscribed_channel_not_broadcast(pool: PgPool) {
     // user_no_perm has no subscription (and no VIEW_CHANNEL) — typing must
     // be dropped before any broadcast happens.
     let (tx, _rx) = mpsc::channel(10);
-    let subscribed_channels = Arc::new(tokio::sync::RwLock::new(std::collections::HashSet::new()));
-    let admin_subscribed = Arc::new(tokio::sync::RwLock::new(false));
+    let subscribed_channels =
+        vc_server::ws::access::SocketAccess::new(uuid::Uuid::new_v4(), ctx.state.db.clone());
     let mut msg_state = vc_server::ws::ClientMessageState::default();
 
     let typing_event = serde_json::json!({
@@ -723,7 +716,6 @@ async fn test_typing_in_unsubscribed_channel_not_broadcast(pool: PgPool) {
         &ctx.state,
         &tx,
         &subscribed_channels,
-        &admin_subscribed,
         &mut msg_state,
     )
     .await;

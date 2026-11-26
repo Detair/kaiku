@@ -284,6 +284,35 @@ impl S3Client {
         Ok(())
     }
 
+    /// Delete a file, giving up after `limit` (SDK retries included).
+    ///
+    /// An object that is already gone counts as deleted (S3 answers 204 for
+    /// a missing key; a backend answering 404 is treated the same, except
+    /// for a missing bucket).
+    pub async fn delete_within(&self, key: &str, limit: Duration) -> Result<(), S3Error> {
+        let delete_future = self
+            .client
+            .delete_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .send();
+        match tokio::time::timeout(limit, delete_future).await {
+            Err(_) => Err(S3Error::Delete(format!(
+                "S3 delete timed out after {} ms",
+                limit.as_millis()
+            ))),
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(e))
+                if e.raw_response().is_some_and(|r| r.status().as_u16() == 404)
+                    && aws_sdk_s3::error::ProvideErrorMetadata::code(&e)
+                        != Some("NoSuchBucket") =>
+            {
+                Ok(())
+            }
+            Ok(Err(e)) => Err(S3Error::Delete(e.to_string())),
+        }
+    }
+
     /// Check if the bucket is accessible (health check).
     ///
     /// Protected by a 10-second timeout.

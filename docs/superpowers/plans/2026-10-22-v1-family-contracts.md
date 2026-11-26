@@ -908,3 +908,57 @@ not sign in someone else by mistake. Additive; absent means no check.
 **C27 amendment (2026-11-03, L1b review round 2; behaviour, no new code):**
 - A TOTP step on a QR login attempt answers 403 `TOTP_UNAVAILABLE`, as listed for the TOTP step; it no longer answers 409 `LOGIN_ATTEMPT_NOT_READY`.
 - The bootstrap request start answers the neutral 401 while its per-account TOTP counter is delayed, so a correct password is not revealed. The recovery start still answers 429 with `Retry-After` before consumption. Only a holder of a valid recovery code can reach that answer, so it reveals nothing.
+
+## C31 — Forced voice leave `voice_removed` (server → web, desktop, Android; added 2026-11-12)
+
+Server → client event, sent only to the socket that owned the removed voice peer:
+
+```json
+{ "type": "voice_removed", "channel_id": "<uuid>", "reason": "kicked" }
+```
+
+`reason` is one of `kicked`, `banned`, `permission_lost`, `channel_deleted`, `session_replaced`.
+
+- Server: sent when a user is removed from a voice room by something other than their own leave or their own
+  socket closing (kick → `kicked`; ban → `banned`; leaving the server, a role or permission change that takes
+  `VIEW_CHANNEL` or `VOICE_CONNECT` away → `permission_lost`; channel or server deleted → `channel_deleted`).
+  The other participants get the normal `voice_user_left`. `session_replaced` goes to the old socket when the
+  same user joins the same room from another socket (not sent yet; planned).
+- Client: tear down both peer connections, stop capture, clear voice state, show one line of text for the
+  reason. The client must not rejoin on its own (C32) after `voice_removed`.
+- Unknown `reason` values are treated like `kicked`. Clients that do not know the event ignore it.
+
+## C32 — Voice rejoin after a WebSocket reconnect (clients; no new wire messages)
+
+Binding for all clients (amended 2026-11-11).
+
+- Trigger: the WebSocket was re-established and the text re-subscription finished, and the local voice state
+  still names a channel the user did not leave themselves and no `voice_removed` arrived for it.
+- Action: discard the old peer connections, send `voice_join` for that channel, restore the local mute/deafen
+  state. Screen share and webcam are not restarted automatically.
+- Success: an attempt has succeeded when the publisher connection is connected. The subscriber connection is
+  not required (in a room without other publishers the server sends no subscriber offer at all).
+- Attempt timeout: an attempt that has not reached "publisher connected" after 15 s has failed.
+- Attempts: at most 3, spaced 1 s, 3 s, 9 s. While trying, the voice UI shows a "reconnecting" state. After the
+  third failure the client clears voice state and offers "rejoin".
+- Socket loss during an attempt: the attempt is cancelled and its connections are discarded without using up
+  one of the three attempts; the client waits for the next authenticated socket and resumes with the remaining
+  attempts.
+- Overall cap while offline: if no authenticated socket comes back within 60 s of the loss, the client gives up
+  exactly as after the third failed attempt (clear voice state, release the microphone and any foreground
+  service, offer "rejoin").
+- Leave and `voice_removed` win: both cancel the recovery and wait for a running attempt to finish cancelling
+  before tearing down; after them no `voice_join` is sent and no connection is created for that session.
+- "Already in voice channel": the current server replaces a stale peer of the same user on `voice_join` and
+  does not send this `voice_error`. A client may still answer it with `voice_leave` then `voice_join` once
+  (optional).
+- DM calls: rejoin only if C33 says the call is still active and this user is a participant.
+
+## C33 — Call state resync and local ring cap (clients, existing endpoints)
+
+- After every WebSocket re-establishment, for each DM whose local call state is incoming-ringing,
+  outgoing-ringing or connected: `GET /api/dm/{id}/call` and apply the answer. "No call" clears the local state
+  silently; an incoming ring that vanished this way is shown as a missed call.
+- Local ring cap: an incoming or outgoing ring ends locally 100 s after it started, whatever the server said
+  (server ring timeout is 90 s). An incoming ring that ends this way counts as missed.
+- A client stops ringing as soon as `call_participant_joined` names its own user (answered on another device).

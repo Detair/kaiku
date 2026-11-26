@@ -43,13 +43,92 @@ use vc_server::permissions::GuildPermissions;
 use vc_server::voice::screen_share::ScreenShareLimiter;
 use vc_server::voice::sfu::SfuServer;
 
+/// Object storage endpoint for S3 tests: `TEST_S3_ENDPOINT` (e.g.
+/// `http://127.0.0.1:55445`), default the dev compose `RustFS` on port 9000.
+pub fn test_s3_endpoint() -> String {
+    std::env::var("TEST_S3_ENDPOINT").unwrap_or_else(|_| "http://localhost:9000".to_string())
+}
+
+/// `host:port` of an object storage endpoint URL (scheme, path and
+/// trailing slash removed; `localhost` as `127.0.0.1`).
+fn endpoint_addr(endpoint: &str) -> String {
+    let rest = endpoint
+        .trim_start_matches("http://")
+        .trim_start_matches("https://");
+    let host_port = rest.split('/').next().unwrap_or(rest);
+    let host_port = host_port.replace("localhost", "127.0.0.1");
+    if host_port.contains(':') {
+        host_port
+    } else if endpoint.starts_with("https://") {
+        format!("{host_port}:443")
+    } else {
+        format!("{host_port}:80")
+    }
+}
+
+/// Whether the `CI` environment variable marks a CI run.
+fn running_in_ci(ci: Option<&str>) -> bool {
+    ci.is_some_and(|v| !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false"))
+}
+
+/// What an object-storage test does: run (`Ok(true)`), skip (`Ok(false)`,
+/// only outside CI) or fail (`Err`, CI without a reachable store).
+fn object_store_decision(reachable: bool, ci: bool) -> Result<bool, &'static str> {
+    match (reachable, ci) {
+        (true, _) => Ok(true),
+        (false, false) => Ok(false),
+        (false, true) => Err("CI is set but the object storage for tests is not reachable"),
+    }
+}
+
+/// Whether the object storage for tests is reachable.
+///
+/// In CI (`CI` set) an unreachable store fails the test instead of
+/// skipping it, so the storage tests cannot pass without running. Locally
+/// the test is skipped with one line on stderr.
 pub async fn rustfs_available() -> bool {
-    tokio::time::timeout(
+    let endpoint = test_s3_endpoint();
+    let reachable = tokio::time::timeout(
         std::time::Duration::from_millis(300),
-        tokio::net::TcpStream::connect("127.0.0.1:9000"),
+        tokio::net::TcpStream::connect(endpoint_addr(&endpoint)),
     )
     .await
-    .is_ok_and(|result| result.is_ok())
+    .is_ok_and(|result| result.is_ok());
+    match object_store_decision(
+        reachable,
+        running_in_ci(std::env::var("CI").ok().as_deref()),
+    ) {
+        Ok(true) => true,
+        Ok(false) => {
+            eprintln!(
+                "object storage at {endpoint} not reachable: skipping this test \
+                 (set TEST_S3_ENDPOINT; in CI it would fail)"
+            );
+            false
+        }
+        Err(msg) => panic!("{msg}: {endpoint}"),
+    }
+}
+
+#[test]
+fn object_store_tests_fail_in_ci_without_a_store() {
+    assert_eq!(object_store_decision(true, true), Ok(true));
+    assert_eq!(object_store_decision(true, false), Ok(true));
+    assert_eq!(object_store_decision(false, false), Ok(false));
+    assert!(object_store_decision(false, true).is_err());
+    assert!(running_in_ci(Some("true")));
+    assert!(running_in_ci(Some("1")));
+    assert!(!running_in_ci(None));
+    assert!(!running_in_ci(Some("")));
+    assert!(!running_in_ci(Some("false")));
+}
+
+#[test]
+fn endpoint_addr_ignores_path_and_trailing_slash() {
+    assert_eq!(endpoint_addr("http://localhost:9000"), "127.0.0.1:9000");
+    assert_eq!(endpoint_addr("http://127.0.0.1:55445/"), "127.0.0.1:55445");
+    assert_eq!(endpoint_addr("http://rustfs:9000/base"), "rustfs:9000");
+    assert_eq!(endpoint_addr("https://s3.example"), "s3.example:443");
 }
 
 // ============================================================================
@@ -148,10 +227,9 @@ impl TestApp {
     /// Pool-injecting constructor wired with a real `ScreenShareLimiter`
     /// backed by the shared Redis.
     ///
-    /// Use this for screen share integration tests that call the
-    /// `/screenshare/check`, `/screenshare/start`, or `/screenshare/stop`
-    /// endpoints — those handlers return 500 when `screen_share_limiter`
-    /// is `None`.
+    /// Use this for screen share tests over the WebSocket
+    /// (`voice_screen_share_start` is refused while `screen_share_limiter` is
+    /// `None`).
     pub async fn with_pool_and_screen_share_limiter(pool: PgPool) -> Self {
         let config = Config::default_for_test();
         let redis = db::create_redis_client(&config.redis_url)
@@ -328,7 +406,7 @@ pub async fn fresh_test_app_with_s3_and_config(
     mut config: Config,
 ) -> (TestApp, String) {
     let bucket = format!("test-{}", Uuid::now_v7());
-    config.s3_endpoint = Some("http://localhost:9000".to_string());
+    config.s3_endpoint = Some(test_s3_endpoint());
     config.s3_bucket = bucket.clone();
     config.s3_access_key = Some("rustfsdev".to_string());
     config.s3_secret_key = Some("rustfsdev_secret".to_string());
@@ -389,6 +467,17 @@ pub struct TestServer {
     pub url: String,
     /// Handle to the server task for cleanup.
     _handle: JoinHandle<()>,
+}
+
+impl TestServer {
+    /// A server the test runs itself (e.g. through `shutdown::serve`).
+    pub fn for_addr(addr: SocketAddr) -> Self {
+        Self {
+            addr,
+            url: format!("http://{addr}"),
+            _handle: tokio::spawn(async {}),
+        }
+    }
 }
 
 /// Spawn a real HTTP server on a random port.

@@ -83,7 +83,12 @@ pub struct Config {
     /// S3 bucket name
     pub s3_bucket: String,
 
-    /// S3 presigned URL expiry in seconds (default: 3600 = 1 hour)
+    /// S3 presigned URL expiry in seconds (default: 300 = 5 minutes).
+    ///
+    /// A presigned URL keeps working until it expires, even after the
+    /// viewer lost access to the channel; clients fetch it right before
+    /// use (the response carries `expires_in`), so a short lifetime costs
+    /// nothing. A download that started in time is not cut off.
     pub s3_presign_expiry: i64,
 
     /// Public S3 base URL for client-facing file URLs (e.g., avatar images).
@@ -111,7 +116,9 @@ pub struct Config {
 
     /// Maximum file upload size in bytes (default: 50MB)
     ///
-    /// Used by `DefaultBodyLimit` middleware as final safety net for all uploads.
+    /// Request body limit (`DefaultBodyLimit`) of the routes that accept files
+    /// (message uploads, DM icon, guild banner, emoji); all other routes use
+    /// `api::DEFAULT_BODY_LIMIT` (1 MiB).
     /// Should be ≥ all specific upload limits (avatar, emoji).
     pub max_upload_size: usize,
 
@@ -316,6 +323,14 @@ pub struct Config {
     /// WebSocket session re-check interval in seconds (≤ 60, B.4).
     pub session_recheck_secs: u64,
 
+    /// At most this many concurrent WebSocket connections per user
+    /// (`WS_MAX_CONNECTIONS_PER_USER`, default 10, at least 1).
+    pub ws_max_connections_per_user: usize,
+
+    /// At most this many concurrent WebSocket connections per client IP, IPv6
+    /// per /64 (`WS_MAX_CONNECTIONS_PER_IP`, default 30, at least 1).
+    pub ws_max_connections_per_ip: usize,
+
     /// Account-request delay in hours (`ACCOUNT_REQUEST_DELAY_HOURS`,
     /// default 24, 24..=72; SM3, Q1). A recovery contact counts as a
     /// canceller from `confirmed_at` + this delay.
@@ -444,7 +459,7 @@ impl Config {
             s3_presign_expiry: env::var("S3_PRESIGN_EXPIRY")
                 .ok()
                 .and_then(|v| v.parse().ok())
-                .unwrap_or(3600) // 1 hour
+                .unwrap_or(300) // 5 minutes
                 .max(1),
             s3_access_key: env_opt("AWS_ACCESS_KEY_ID"),
             s3_secret_key: env_opt("AWS_SECRET_ACCESS_KEY"),
@@ -609,6 +624,16 @@ impl Config {
                 env_opt("ACCOUNT_REQUEST_DELAY_HOURS").as_deref(),
             )?,
             session_recheck_secs: DEFAULT_SESSION_RECHECK_SECS,
+            ws_max_connections_per_user: parse_ws_cap(
+                "WS_MAX_CONNECTIONS_PER_USER",
+                env_opt("WS_MAX_CONNECTIONS_PER_USER").as_deref(),
+                crate::ws::connection_limit::DEFAULT_MAX_CONNECTIONS_PER_USER,
+            )?,
+            ws_max_connections_per_ip: parse_ws_cap(
+                "WS_MAX_CONNECTIONS_PER_IP",
+                env_opt("WS_MAX_CONNECTIONS_PER_IP").as_deref(),
+                crate::ws::connection_limit::DEFAULT_MAX_CONNECTIONS_PER_IP,
+            )?,
             fcm_service_account,
             fcm_api_base,
             optional_features,
@@ -762,6 +787,9 @@ impl Config {
             max_sessions_per_user: DEFAULT_MAX_SESSIONS_PER_USER,
             account_request_delay_hours: DEFAULT_ACCOUNT_REQUEST_DELAY_HOURS,
             session_recheck_secs: DEFAULT_SESSION_RECHECK_SECS,
+            ws_max_connections_per_user:
+                crate::ws::connection_limit::DEFAULT_MAX_CONNECTIONS_PER_USER,
+            ws_max_connections_per_ip: crate::ws::connection_limit::DEFAULT_MAX_CONNECTIONS_PER_IP,
             fcm_service_account: None,
             fcm_api_base: crate::push::fcm::FCM_API_BASE.into(),
             optional_features: crate::features::OptionalFeatures::default(),
@@ -788,6 +816,17 @@ fn parse_request_delay(raw: Option<&str>) -> Result<i64> {
     match raw.parse::<i64>() {
         Ok(n) if (24..=72).contains(&n) => Ok(n),
         _ => anyhow::bail!("ACCOUNT_REQUEST_DELAY_HOURS must be an integer from 24 to 72"),
+    }
+}
+
+/// A WebSocket connection cap: a positive integer, `default` when unset.
+fn parse_ws_cap(name: &str, raw: Option<&str>, default: usize) -> Result<usize> {
+    let Some(raw) = raw.map(str::trim) else {
+        return Ok(default);
+    };
+    match raw.parse::<usize>() {
+        Ok(n) if n >= 1 => Ok(n),
+        _ => anyhow::bail!("{name} must be a positive integer"),
     }
 }
 
@@ -1216,6 +1255,30 @@ mod valkey_command_timeout_tests {
                 .unwrap_err()
                 .to_string();
             assert!(err.contains("VALKEY_COMMAND_TIMEOUT_MS"), "{raw}: {err}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod ws_cap_tests {
+    use super::{parse_ws_cap, Config};
+
+    #[test]
+    fn defaults_are_ten_per_user_and_thirty_per_ip() {
+        let config = Config::default_for_test();
+        assert_eq!(config.ws_max_connections_per_user, 10);
+        assert_eq!(config.ws_max_connections_per_ip, 30);
+        assert_eq!(parse_ws_cap("X", None, 10).unwrap(), 10);
+    }
+
+    #[test]
+    fn accepts_positive_and_refuses_zero_or_garbage() {
+        assert_eq!(parse_ws_cap("X", Some(" 4 "), 10).unwrap(), 4);
+        for raw in ["0", "-1", "ten", ""] {
+            let err = parse_ws_cap("WS_MAX_CONNECTIONS_PER_IP", Some(raw), 30)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("WS_MAX_CONNECTIONS_PER_IP"), "{raw}: {err}");
         }
     }
 }

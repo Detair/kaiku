@@ -330,16 +330,25 @@ pub async fn update_role(
         }
     }
 
-    let role = queries::update_role(
-        &state.db,
-        role_id,
-        guild_id,
-        &body.name,
-        &body.color,
-        body.permissions.map(|p| p as i64),
-        body.position,
+    let (role, bumped) = crate::ws::access::bump_after_if(
+        body.permissions
+            .is_some()
+            .then_some(crate::ws::access::AccessChange::GuildRolesChanged { guild_id }),
+        queries::update_role(
+            &state.db,
+            role_id,
+            guild_id,
+            &body.name,
+            &body.color,
+            body.permissions.map(|p| p as i64),
+            body.position,
+        ),
+        |_| true,
     )
     .await?;
+    if let Some(bumped) = bumped {
+        crate::ws::access::access_changed(&state, bumped).await;
+    }
 
     Ok(Json(RoleResponse {
         id: role.0,
@@ -400,7 +409,12 @@ pub async fn delete_role(
     };
     can_manage_role(ctx.computed_permissions, actor_position, role.0, None)?;
 
-    queries::delete_role(&state.db, role_id).await?;
+    let ((), bumped) = crate::ws::access::bump_after(
+        crate::ws::access::AccessChange::GuildRolesChanged { guild_id },
+        queries::delete_role(&state.db, role_id),
+    )
+    .await?;
+    crate::ws::access::access_changed(&state, bumped).await;
 
     Ok(Json(
         serde_json::json!({"deleted": true, "role_id": role_id}),
@@ -455,15 +469,26 @@ pub async fn assign_role(
     };
     can_manage_role(ctx.computed_permissions, actor_position, role.0, None)?;
 
-    // Check target is a member
-    if !queries::is_guild_member(&state.db, guild_id, user_id).await? {
+    // Check target is a member or a bot installed in the guild (a bot's
+    // roles decide which channels it can see).
+    if !queries::is_guild_member(&state.db, guild_id, user_id).await?
+        && crate::permissions::bot_guild_context(&state.db, guild_id, user_id)
+            .await?
+            .is_none()
+    {
         return Err(RoleError::Validation(
             "User is not a member of this guild".to_string(),
         ));
     }
 
     // Assign role (ignore if already assigned)
-    queries::assign_role_to_member(&state.db, guild_id, user_id, role_id, auth.id).await?;
+    // A role can also take access away (channel overrides that deny).
+    let ((), bumped) = crate::ws::access::bump_after(
+        crate::ws::access::AccessChange::MemberRolesChanged { guild_id, user_id },
+        queries::assign_role_to_member(&state.db, guild_id, user_id, role_id, auth.id),
+    )
+    .await?;
+    crate::ws::access::access_changed(&state, bumped).await;
 
     // Broadcast the member's new role set so clients update live.
     let role_ids = queries::member_role_ids(&state.db, guild_id, user_id).await?;
@@ -528,11 +553,18 @@ pub async fn remove_role(
     };
     can_manage_role(ctx.computed_permissions, actor_position, position, None)?;
 
-    let rows_affected =
-        queries::remove_role_from_member(&state.db, guild_id, user_id, role_id).await?;
+    let (rows_affected, bumped) = crate::ws::access::bump_after_if(
+        Some(crate::ws::access::AccessChange::MemberRolesChanged { guild_id, user_id }),
+        queries::remove_role_from_member(&state.db, guild_id, user_id, role_id),
+        |n| *n > 0,
+    )
+    .await?;
 
     if rows_affected == 0 {
         return Err(RoleError::NotFound);
+    }
+    if let Some(bumped) = bumped {
+        crate::ws::access::access_changed(&state, bumped).await;
     }
 
     // Broadcast the member's new role set so clients update live.

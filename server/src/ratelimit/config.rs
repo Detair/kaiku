@@ -150,8 +150,14 @@ impl Default for RateLimits {
                 requests: 2000,
                 window_secs: 60,
             },
+            // New WebSocket connections per client address. After a server
+            // restart every device of a household behind one address
+            // reconnects at once (5 people x 3 devices = 15), possibly twice
+            // within the minute if the first attempt lands before the server
+            // is up; 60 leaves room for that and equals twice the per-address
+            // socket cap (30).
             ws_connect: LimitConfig {
-                requests: 20,
+                requests: 60,
                 window_secs: 60,
             },
             ws_message: LimitConfig {

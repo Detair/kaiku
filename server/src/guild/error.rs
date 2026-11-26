@@ -58,11 +58,15 @@ impl IntoResponse for GuildError {
                     "Database error".to_string(),
                 )
             }
-            Self::Internal(msg) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "INTERNAL_ERROR",
-                msg.clone(),
-            ),
+            Self::Internal(msg) => {
+                // The detail (e.g. a storage error) is for the log only.
+                tracing::error!(error = %msg, "Guild endpoint internal error");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "INTERNAL_ERROR",
+                    "Internal server error".to_string(),
+                )
+            }
         };
         (
             status,
