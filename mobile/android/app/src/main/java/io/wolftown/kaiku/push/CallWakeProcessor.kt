@@ -2,6 +2,7 @@ package io.wolftown.kaiku.push
 
 import io.wolftown.kaiku.data.auth.RefreshResult
 import io.wolftown.kaiku.data.auth.TokenRefresher
+import io.wolftown.kaiku.data.keydevice.KeyStorageCheck
 import io.wolftown.kaiku.data.local.TokenStorage
 import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
@@ -18,6 +19,9 @@ enum class CallOutcome {
     /** The notification was ready, but notifications are disabled. */
     NOTIFICATIONS_OFF,
     NOT_LOGGED_IN,
+
+    /** The key storage cannot be read yet: nothing was read; the work runs again later. */
+    DEFERRED,
 
     /** The wake was queued for another account or server than the signed-in one. */
     WRONG_ACCOUNT,
@@ -45,6 +49,7 @@ class CallWakeProcessor @Inject constructor(
     private val names: NotificationTitleResolver,
     private val store: CallNotificationStore,
     private val sink: CallNotificationSink,
+    private val keyStorage: KeyStorageCheck = KeyStorageCheck.READABLE,
 ) {
     companion object {
         /** The access token must stay valid at least this long for the name lookup. */
@@ -65,6 +70,9 @@ class CallWakeProcessor @Inject constructor(
     suspend fun process(signal: WakeSignal, owner: WakeOwner, isStopped: () -> Boolean = { false }): CallOutcome {
         val call = signal.call
         if (signal.kind != WakeKind.CALL || call == null) return CallOutcome.IGNORED
+        // Work queued earlier may run in a process that cannot read the key storage yet: it waits
+        // without reading, refreshing or clearing the stored session.
+        if (keyStorage.unreadable()) return CallOutcome.DEFERRED
         val generation = tokenStorage.getSessionGeneration()
         val userId = tokenStorage.getUserId()
         if (userId == null || tokenStorage.getRefreshToken() == null) return CallOutcome.NOT_LOGGED_IN

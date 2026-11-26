@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
-# Verify an Android APK: signature (v2), versionName/versionCode, signer cert.
-# Usage: android_verify_apk.sh <apk> <versionName> <versionCode> [--expect-unsigned]
+# Verify an Android APK: signature (v2), versionName/versionCode, signer cert, and optionally the
+# verified setup App Link.
+# Usage: android_verify_apk.sh <apk> <versionName> <versionCode> [--expect-unsigned] [--app-link-host <host>]
+#   --app-link-host: the APK's manifest must carry, on MainActivity, an autoVerify intent filter for
+#   exactly https://<host>/setup (VIEW, DEFAULT, BROWSABLE; the build flag -PkaikuAppLinkHosts); a
+#   release that lost it, or matches more than that exact path, fails (android_app_link_check.py).
 set -eu
 
 usage() {
-  echo "usage: $0 <apk> <versionName> <versionCode> [--expect-unsigned]" >&2
+  echo "usage: $0 <apk> <versionName> <versionCode> [--expect-unsigned] [--app-link-host <host>]" >&2
   exit 2
 }
 
@@ -13,15 +17,20 @@ fail() {
   exit 1
 }
 
-[ "$#" -ge 3 ] && [ "$#" -le 4 ] || usage
+[ "$#" -ge 3 ] || usage
 APK=$1
 NAME=$2
 CODE=$3
+shift 3
 EXPECT_UNSIGNED=0
-if [ "$#" -eq 4 ]; then
-  [ "$4" = "--expect-unsigned" ] || usage
-  EXPECT_UNSIGNED=1
-fi
+APP_LINK_HOST=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --expect-unsigned) EXPECT_UNSIGNED=1; shift ;;
+    --app-link-host) [ "$#" -ge 2 ] && [ -n "$2" ] || usage; APP_LINK_HOST=$2; shift 2 ;;
+    *) usage ;;
+  esac
+done
 
 [ -f "$APK" ] || fail "apk exists ($APK)"
 [ -n "${ANDROID_HOME:-}" ] || fail "ANDROID_HOME is set"
@@ -51,3 +60,9 @@ BADGING=$("$AAPT2" dump badging "$APK" 2>&1) || fail "aapt2 dump badging"
 echo "$BADGING" | grep -qF "versionCode='$CODE'" || fail "versionCode='$CODE'"
 echo "$BADGING" | grep -qF "versionName='$NAME'" || fail "versionName='$NAME'"
 echo "OK: $APK versionName=$NAME versionCode=$CODE"
+
+if [ -n "$APP_LINK_HOST" ]; then
+  TREE=$("$AAPT2" dump xmltree --file AndroidManifest.xml "$APK" 2>&1) || fail "aapt2 dump xmltree AndroidManifest.xml"
+  echo "$TREE" | python3 "$(dirname "$0")/android_app_link_check.py" "$APP_LINK_HOST" || fail "verified App Link filter for https://$APP_LINK_HOST/setup on MainActivity"
+  echo "OK: verified App Link https://$APP_LINK_HOST/setup"
+fi

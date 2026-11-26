@@ -8,6 +8,7 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.OutOfQuotaPolicy
 import androidx.work.WorkManager
 import dagger.hilt.android.qualifiers.ApplicationContext
+import io.wolftown.kaiku.data.keydevice.KeyStorageCheck
 import io.wolftown.kaiku.data.local.TokenStorage
 import java.util.logging.Logger
 import javax.inject.Inject
@@ -20,6 +21,14 @@ data class WakeOwner(val userId: String, val serverUrl: String?)
 interface WakeWorkEnqueuer {
     /** Schedules a fetch for [signal] on behalf of the signed-in account; no-op when signed out. */
     fun enqueue(signal: WakeSignal)
+
+    /**
+     * A wake kept while the key storage could not be read ([WakeDeferral]): with its [owner] it is
+     * scheduled only for that account (otherwise it is dropped), without one for the signed-in account.
+     */
+    fun enqueueHeld(signal: WakeSignal, owner: WakeOwner?) {
+        enqueue(signal)
+    }
 
     /**
      * Schedules the quick call path for a call wake (no message fetch); a
@@ -42,17 +51,45 @@ interface WakeWorkEnqueuer {
  * [CallWakeWorker] (`call-<channelId>`, REPLACE, no network constraint: the
  * name lookup has an offline fallback).
  */
-class WorkManagerWakeEnqueuer @Inject constructor(
-    @ApplicationContext private val context: Context,
+class WorkManagerWakeEnqueuer internal constructor(
+    private val context: Context,
     private val tokenStorage: TokenStorage,
+    private val keyStorage: KeyStorageCheck,
+    private val deferral: WakeDeferral,
+    /** Where a message fetch goes instead of WorkManager (tests); null: WorkManager. */
+    private val submitFetch: ((WakeSignal, WakeOwner) -> Unit)?,
 ) : WakeWorkEnqueuer {
+
+    @Inject
+    constructor(
+        @ApplicationContext context: Context,
+        tokenStorage: TokenStorage,
+        keyStorage: KeyStorageCheck,
+        deferral: WakeDeferral,
+    ) : this(context, tokenStorage, keyStorage, deferral, null)
 
     private val workManager: WorkManager
         get() = WorkManager.getInstance(context)
 
     override fun enqueue(signal: WakeSignal) {
+        // The stored session is not read while what the phone saved about its key cannot be: the
+        // wake is kept for when it can.
+        if (keyStorage.unreadable()) return deferral.hold(signal)
+        deferral.release(::enqueueHeld)
+        enqueueNow(signal)
+    }
+
+    override fun enqueueHeld(signal: WakeSignal, owner: WakeOwner?) {
+        if (keyStorage.unreadable()) return deferral.hold(signal, owner)
+        if (owner == null) return enqueueNow(signal)
+        val userId = tokenStorage.getUserId() ?: return
+        if (WakeOwner(userId, tokenStorage.getServerUrl()) == owner) enqueueNow(signal)
+    }
+
+    private fun enqueueNow(signal: WakeSignal) {
         val userId = tokenStorage.getUserId() ?: return
         val owner = WakeOwner(userId, tokenStorage.getServerUrl())
+        submitFetch?.let { return it(signal, owner) }
         val request = OneTimeWorkRequestBuilder<WakeFetchWorker>()
             .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
             .setConstraints(
@@ -69,6 +106,7 @@ class WorkManagerWakeEnqueuer @Inject constructor(
     }
 
     override fun enqueueCall(signal: WakeSignal) {
+        if (keyStorage.unreadable()) return
         val userId = tokenStorage.getUserId() ?: return
         val owner = WakeOwner(userId, tokenStorage.getServerUrl())
         val request = OneTimeWorkRequestBuilder<CallWakeWorker>()

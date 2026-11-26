@@ -34,6 +34,9 @@ class CallWakeWorker @AssistedInject constructor(
 
         fun uniqueWorkName(channelId: String) = "call-$channelId"
 
+        /** How often a call wake waits for the key storage before it gives up. */
+        const val MAX_DEFERRALS = 5
+
         fun inputData(signal: WakeSignal, owner: WakeOwner): Data {
             val builder = Data.Builder().putAll(WakeFetchWorker.inputData(signal, owner))
             signal.call?.let { call ->
@@ -73,7 +76,8 @@ class CallWakeWorker @AssistedInject constructor(
             return Result.success()
         }
         logger.info("call wake: state=${signal.call?.state} outcome=$outcome")
-        return Result.success()
+        // Waiting for the key storage: run again (a ringing call that is over by then shows nothing).
+        return if (outcome == CallOutcome.DEFERRED && runAttemptCount < MAX_DEFERRALS) Result.retry() else Result.success()
     }
 
     override suspend fun getForegroundInfo(): ForegroundInfo = wakeForegroundInfo(applicationContext)

@@ -139,4 +139,12 @@ class AuthErrorMapperTest {
         assertEquals(R.string.auth_register_ticket_expired,
             AuthErrorMapper.register(ApiException(HttpStatusCode.NotFound, "server text", "REGISTRATION_TICKET_INVALID")))
     }
+
+    @Test
+    fun `a sign-in refused for a key on another server says why on every screen`() {
+        val e = io.wolftown.kaiku.data.repository.KeyOnOtherServerException()
+        assertEquals(R.string.auth_key_on_other_server, AuthErrorMapper.login(e))
+        assertEquals(R.string.auth_key_on_other_server, AuthErrorMapper.oidc(e))
+        assertEquals(R.string.auth_key_on_other_server, passkeyErrorRes(e))
+    }
 }

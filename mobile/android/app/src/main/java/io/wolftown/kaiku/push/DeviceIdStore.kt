@@ -27,20 +27,42 @@ class DeviceIdStore @Inject constructor(
     @Volatile
     private var cached: String? = null
 
-    /** Also the C26 `device_id` of this install's key device, so C28 pushes reach it. */
+    /**
+     * A commit of the id failed in this process. Android still shows that id in memory, but it is
+     * not on the disk: it is handed out (by [id] or [storedId]) only once a commit of it succeeded.
+     */
+    private var unsaved = false
+
+    /**
+     * Also the C26 `device_id` of this install's key device, so C28 pushes reach it. Throws
+     * [IllegalStateException] while the id cannot be stored; it is never handed out before.
+     */
     override fun id(): String {
         cached?.let { return it }
         return synchronized(lock) {
             cached ?: run {
                 val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                 val stored = prefs.getString(KEY_DEVICE_ID, null)?.takeIf(::isUuid)
-                val id = stored ?: UUID.randomUUID().toString().also {
+                val id = if (stored != null && !unsaved) {
+                    stored
+                } else {
                     // Synchronous, so no second pass (or process) can mint another id.
-                    check(prefs.edit().putString(KEY_DEVICE_ID, it).commit()) { "push device id not stored" }
+                    val next = stored ?: UUID.randomUUID().toString()
+                    unsaved = true
+                    check(prefs.edit().putString(KEY_DEVICE_ID, next).commit()) { "push device id not stored" }
+                    unsaved = false
+                    next
                 }
                 cached = id
                 id
             }
+        }
+    }
+
+    override fun storedId(): String? {
+        cached?.let { return it }
+        return synchronized(lock) {
+            cached ?: if (unsaved) null else context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_DEVICE_ID, null)?.takeIf(::isUuid)
         }
     }
 

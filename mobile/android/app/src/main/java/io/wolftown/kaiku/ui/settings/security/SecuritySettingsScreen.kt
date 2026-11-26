@@ -13,6 +13,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -93,8 +94,19 @@ fun SecuritySettingsScreen(
         Column(
             Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp),
         ) {
-            if (ui.readOnly && !ui.loading) KeyNotice(stringResource(R.string.security_probation_read_only), warning = false)
+            if (ui.showsReadOnlyNotice) KeyNotice(stringResource(R.string.security_probation_read_only), warning = false)
             ui.message?.let { KeyNotice(stringResource(it), warning = true) }
+
+            // Nothing is shown as fact before it is loaded (no "not your key", no "0 codes").
+            if (ui.me == null) {
+                if (ui.loading) {
+                    CircularProgressIndicator(Modifier.padding(vertical = 24.dp).align(Alignment.CenterHorizontally))
+                } else {
+                    Action(stringResource(R.string.common_try_again), onClick = viewModel::reload)
+                    Action(stringResource(R.string.security_sign_out), onClick = viewModel::signOut)
+                }
+                return@Column
+            }
 
             Section(stringResource(R.string.security_this_phone))
             Body(stringResource(if (ui.isKeyDevice) R.string.security_this_phone_key else R.string.security_this_phone_not_key))

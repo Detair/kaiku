@@ -811,4 +811,42 @@ class WakeFetchProcessorTest {
         verify { sink.cancelAll() }
         assertEquals(1, enqueuer.cancelAllCount)
     }
+
+    /**
+     * While what the phone saved about its key cannot be read, a wake does not touch the stored
+     * session at all: not read, refreshed, cleared or "recovered" (any access would fail here).
+     */
+    @Test
+    fun `a wake leaves the stored session alone while the key storage cannot be read`() = runTest {
+        val untouchable: TokenStorage = mockk() // no answers: every access throws
+        val refreshes: TokenRefresher = mockk()
+        val gated = WakeFetchProcessor(
+            refreshes, untouchable, messages, unreadApi, titles, ledger, sink, enqueuer, active, chat, dms,
+            keyStorage = { true },
+        )
+        assertEquals(WakeOutcome.RETRY, gated.process(WakeSignal(WakeKind.DM, ch, 1), owner))
+        io.mockk.verify { untouchable wasNot io.mockk.Called }
+        io.mockk.verify { refreshes wasNot io.mockk.Called }
+        io.mockk.verify(exactly = 0) { sink.cancelAll() }
+    }
+
+    /**
+     * A queued wake that meets the closed storage is kept with its account (not retried until the
+     * work gives up), and goes out again only for that account once the storage can be read.
+     */
+    @Test
+    fun `a queued wake that meets the closed storage is kept with its account`() = runTest {
+        val untouchable: TokenStorage = mockk()
+        val deferral = WakeDeferral(InMemorySharedPreferences())
+        val gated = WakeFetchProcessor(
+            mockk(), untouchable, messages, unreadApi, titles, ledger, sink, enqueuer, active, chat, dms,
+            keyStorage = { true }, deferral = deferral,
+        )
+        val signal = WakeSignal(WakeKind.DM, ch, 1)
+        assertEquals(WakeOutcome.DEFERRED, gated.process(signal, owner))
+        io.mockk.verify { untouchable wasNot io.mockk.Called }
+        val out = mutableListOf<Pair<WakeSignal, WakeOwner?>>()
+        deferral.release { s, o -> out += s to o }
+        assertEquals(listOf(signal to owner), out)
+    }
 }

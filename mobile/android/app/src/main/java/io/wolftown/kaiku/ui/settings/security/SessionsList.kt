@@ -23,13 +23,22 @@ import io.wolftown.kaiku.ui.auth.setup.parseInstant
 import io.wolftown.kaiku.ui.auth.setup.readyText
 import io.wolftown.kaiku.ui.shared.KeyScreenSizes
 
+/** A session without a device name is named by its kind of client, never by the raw server value. */
+@androidx.annotation.StringRes
+internal fun clientClassText(clientClass: String): Int = when (clientClass) {
+    "desktop" -> R.string.approval_client_desktop
+    "web" -> R.string.approval_client_web
+    "android" -> R.string.approval_client_android
+    else -> R.string.security_session_unknown_client
+}
+
 /** Sessions with their assurance (icon + text), client and last use; a key device's row removes the device. */
 @Composable
 fun SessionsList(sessions: List<SessionItem>, readOnly: Boolean, onEnd: (SessionItem) -> Unit) {
     sessions.forEach { s ->
         Row(Modifier.fillMaxWidth().heightIn(min = KeyScreenSizes.otherAction).padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Text(s.device.ifEmpty { s.clientClass }, fontSize = 18.sp, color = MaterialTheme.colorScheme.onBackground)
+                Text(s.device.ifEmpty { stringResource(clientClassText(s.clientClass)) }, fontSize = 18.sp, color = MaterialTheme.colorScheme.onBackground)
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     if (s.assurance == "full") {
                         Icon(Icons.Filled.Lock, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(end = 4.dp))

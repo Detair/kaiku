@@ -116,4 +116,35 @@ class ApprovalApiTest {
         assertEquals("/auth/device-login/challenge", rec.last.path)
         assertNull(rec.last.headers["Authorization"])
     }
+
+    @Test fun `a refusal carries the server's own time when it sent one`() = runTest {
+        val withDate = ApiRecorder(extraHeaders = mapOf("Date" to "Fri, 20 Nov 2026 10:15:30 GMT"))
+        withDate.status = HttpStatusCode.NotFound
+        withDate.body = """{"error":"KEY_DEVICE_UNKNOWN","message":"x"}"""
+        try {
+            ApprovalApiImpl(withDate.client).deviceLoginChallenge("u", "d", origin = "https://key.example.com")
+            fail("expected ApiException")
+        } catch (e: ApiException) {
+            assertEquals(java.time.Instant.parse("2026-11-20T10:15:30Z"), e.fields.serverTime)
+        }
+        // No date, or something that is not one: no time.
+        for (bad in listOf(null, "yesterday")) {
+            val r = ApiRecorder(extraHeaders = bad?.let { mapOf("Date" to it) } ?: emptyMap())
+            r.status = HttpStatusCode.NotFound
+            r.body = """{"error":"KEY_DEVICE_UNKNOWN","message":"x"}"""
+            try {
+                ApprovalApiImpl(r.client).deviceLoginChallenge("u", "d")
+                fail("expected ApiException")
+            } catch (e: ApiException) {
+                assertNull(e.fields.serverTime)
+            }
+        }
+    }
+
+    @Test fun `the sign-in finish goes to the server it is told, without a bearer`() = runTest {
+        rec.body = javaClass.classLoader!!.getResource("contract/auth_response_full.json")!!.readText()
+        api.deviceLogin("c3", "MEUCIQ", origin = "https://key.example.com")
+        assertEquals("https://key.example.com/auth/device-login", rec.last.url)
+        assertNull(rec.last.headers["Authorization"])
+    }
 }

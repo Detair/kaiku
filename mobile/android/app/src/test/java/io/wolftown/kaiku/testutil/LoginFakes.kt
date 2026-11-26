@@ -4,7 +4,12 @@ import io.ktor.http.HttpStatusCode
 import io.wolftown.kaiku.data.api.ApiErrorFields
 import io.wolftown.kaiku.data.api.ApiException
 import io.wolftown.kaiku.data.api.ApprovalApi
+import io.wolftown.kaiku.data.keydevice.Forget
+import io.wolftown.kaiku.data.keydevice.KeyDevicePhase
+import io.wolftown.kaiku.data.keydevice.KeyDeviceRepository
 import io.wolftown.kaiku.data.keydevice.KeyDeviceStore
+import io.wolftown.kaiku.data.keydevice.KeyStorage
+import io.wolftown.kaiku.data.keydevice.LocalKeyDevice
 import io.wolftown.kaiku.data.keydevice.StoredKeyDevice
 import io.wolftown.kaiku.domain.model.AnswerResult
 import io.wolftown.kaiku.domain.model.ApprovalChallenge
@@ -15,12 +20,78 @@ import io.wolftown.kaiku.domain.model.KeyDeviceStatus
 fun apiError(status: Int, code: String, fields: ApiErrorFields = ApiErrorFields()) =
     ApiException(HttpStatusCode.fromValue(status), code, code = code, fields = fields)
 
-/** In-memory key-device store; survives "new repository instances" when shared. */
+/**
+ * In-memory key-device store; survives "new repository instances" when shared. [unreadable]: the
+ * file is there but cannot be read; [failWrites]: a write does not reach storage.
+ */
 class InMemoryKeyDeviceStore : KeyDeviceStore {
     var stored: StoredKeyDevice? = null
-    override fun load(): StoredKeyDevice? = stored
-    override fun save(s: StoredKeyDevice) { stored = s }
-    override fun clear() { stored = null }
+    var unreadable = false
+    var failWrites = false
+    var legacyMark = false
+    /** Only the flag an earlier version left cannot be read (the record can). As in the real store, the whole store then counts as unreadable. */
+    var flagUnreadable = false
+    /** How many clears of that flag still fail. */
+    var failFlagClears = 0
+    /** Every durable change, in order (`save:PHASE`, `clear`). */
+    val writes = mutableListOf<String>()
+    override fun load(): KeyStorage = when {
+        unreadable || flagUnreadable -> KeyStorage.Unreadable
+        else -> stored?.let { KeyStorage.Present(it) } ?: KeyStorage.Absent
+    }
+    override fun save(s: StoredKeyDevice): Boolean {
+        if (failWrites) return false
+        stored = s
+        writes += "save:${s.phase}"
+        return true
+    }
+    override fun clear(): Boolean {
+        if (failWrites) return false
+        stored = null
+        writes += "clear"
+        return true
+    }
+    override fun flush(): Boolean = !failWrites
+    override fun legacyRemovalMark(): Boolean? = if (flagUnreadable) null else legacyMark
+    override fun clearLegacyRemovalMark(): Boolean {
+        if (failFlagClears > 0) {
+            failFlagClears--
+            return false
+        }
+        legacyMark = false
+        return true
+    }
+}
+
+/**
+ * Test seam: puts the phone into the state [record] (what an install in that state has stored),
+ * whatever was stored before, and lets the repository read it. A record without a key id takes
+ * the key in the alias, as a record of an earlier version does. A record that names no install id
+ * (and is not marked as having lost it) is given the fixture's one, as every record written by this
+ * version is; [seedAsIs] stores a record of an earlier version exactly as given.
+ */
+fun KeyDeviceRepository.seed(record: StoredKeyDevice?) =
+    seedAsIs(record?.let { if (it.installId == null && !it.installIdLost) it.copy(installId = SigFixtures.DEVICE_ID) else it })
+
+fun KeyDeviceRepository.seedAsIs(record: StoredKeyDevice?) {
+    val f = KeyDeviceRepository::class.java.getDeclaredField("store").apply { isAccessible = true }
+    (f.get(this) as InMemoryKeyDeviceStore).stored = record
+    reload()
+}
+
+fun KeyDeviceRepository.saveClaiming(d: LocalKeyDevice) = seed(StoredKeyDevice(d, KeyDevicePhase.CLAIMING))
+fun KeyDeviceRepository.saveClaimed(d: LocalKeyDevice) = seed(StoredKeyDevice(d, KeyDevicePhase.CLAIMED))
+fun KeyDeviceRepository.markEnrolled(d: LocalKeyDevice) = seed(StoredKeyDevice(d.copy(claimSecret = null), KeyDevicePhase.ACTIVE))
+fun KeyDeviceRepository.markPending(d: LocalKeyDevice, readyAt: java.time.Instant) = seed(StoredKeyDevice(d, KeyDevicePhase.PENDING, readyAt))
+fun KeyDeviceRepository.markActive(userId: String, keyDeviceId: String?) {
+    val s = record.value ?: return
+    if (s.device.userId != userId) return
+    seed(s.copy(device = s.device.copy(keyDeviceId = keyDeviceId ?: s.device.keyDeviceId, claimSecret = null), phase = KeyDevicePhase.ACTIVE, readyAt = null))
+}
+
+/** Another part of the app found the key removed and forgot it. */
+fun KeyDeviceRepository.forget() {
+    record.value?.let { forget(it, Forget.SERVER_ANSWER) }
 }
 
 /** Scripted [ApprovalApi]: every call is recorded; set the next answers or failures. */
@@ -64,12 +135,21 @@ class FakeApprovalApi : ApprovalApi {
     override suspend fun release(challengeId: String) { calls += "release:$challengeId" }
     /** The origin the last device-login challenge was sent to (null: the configured server). */
     var deviceLoginOrigin: String? = null
+    /** Holds the next device-login challenge until completed (a slow probe). */
+    var challengeGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
     override suspend fun deviceLoginChallenge(userId: String, deviceId: String, origin: String?): ApprovalChallenge {
+        challengeGate?.await()
         deviceLoginOrigin = origin
         return challenge("deviceLoginChallenge:$userId:$deviceId")
     }
 
-    override suspend fun deviceLogin(challengeId: String, signatureB64u: String): AuthResponse {
+    /** The origin the last device-login finish was sent to (null: the configured server). */
+    var deviceLoginFinishOrigin: String? = null
+    /** Holds the next device-login finish until completed. */
+    var deviceLoginGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+    override suspend fun deviceLogin(challengeId: String, signatureB64u: String, origin: String?): AuthResponse {
+        deviceLoginGate?.await()
+        deviceLoginFinishOrigin = origin
         calls += "deviceLogin:$challengeId"
         deviceLoginFailure?.let { throw it }
         return deviceLoginResult
@@ -77,10 +157,13 @@ class FakeApprovalApi : ApprovalApi {
 
     override suspend fun keyDevices(): List<KeyDevice> { calls += "keyDevices"; return devices }
 
+    /** What the server answers a removal that went through. */
+    var removed: (String) -> KeyDevice = { KeyDevice(id = it, label = "Pixel 8", state = KeyDeviceStatus.REVOKED) }
+
     override suspend fun removeKeyDevice(id: String): KeyDevice {
         calls += "removeKeyDevice:$id"
         failWith?.let { throw it }
-        return KeyDevice(id = id, label = "Pixel 8", state = KeyDeviceStatus.REVOKED)
+        return removed(id)
     }
 
     /** The report hangs (until cancelled or timed out). */

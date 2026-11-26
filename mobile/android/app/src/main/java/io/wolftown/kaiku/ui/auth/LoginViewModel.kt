@@ -210,8 +210,10 @@ class LoginViewModel @Inject constructor(
 /** The sentence for a passkey failure (C16: never server text). */
 @StringRes
 fun passkeyErrorRes(e: Throwable): Int = when (e) {
+    is io.wolftown.kaiku.data.repository.KeyOnOtherServerException -> R.string.auth_key_on_other_server
     PasskeyFailure.NoCredential -> R.string.passkeys_android_none_on_device
     PasskeyFailure.NotAssociated -> R.string.passkeys_android_not_set_up_for_app
+    PasskeyFailure.WrongServer -> R.string.passkeys_error_wrong_server
     PasskeyFailure.Removed -> R.string.passkeys_error_removed
     is PasskeyFailure.Pending -> R.string.passkeys_error_ready_at
     is PasskeyFailure.Server -> when (e.code) {

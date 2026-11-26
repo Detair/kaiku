@@ -1,5 +1,7 @@
 package io.wolftown.kaiku.approval
 
+import io.wolftown.kaiku.testutil.saveClaimed
+import io.wolftown.kaiku.testutil.markActive
 import androidx.fragment.app.FragmentActivity
 import io.mockk.coEvery
 import io.mockk.every
@@ -21,6 +23,7 @@ import io.wolftown.kaiku.testutil.FakeApprovalApi
 import io.wolftown.kaiku.testutil.InMemoryKeyDeviceStore
 import io.wolftown.kaiku.testutil.SigFixtures
 import io.wolftown.kaiku.testutil.apiError
+import kotlinx.coroutines.async
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -179,5 +182,22 @@ class DeviceStepUpTest {
         every { activity.getString(any(), any()) } answers { "label=" + (secondArg<Array<Any>>().firstOrNull() ?: "") }
         s.stepUp(activity, StepUpAction.KEY_DEVICE_REMOVE, "99999999-9999-4999-8999-999999999999", "Evil label")
         assertEquals("label=", verifier.prompts.single().subtitle)
+    }
+
+    /**
+     * A step-up whose prompt never answers (it could not be shown, or its screen went away) does not
+     * keep its caller busy for good: after its limit (180 s) it is reported as having taken too long.
+     */
+    @Test fun `a step-up that never ends is given up after its limit`() = runTest {
+        val s = stepUp()
+        verifier.gate = kotlinx.coroutines.CompletableDeferred() // the prompt never answers
+        val out = async { s.stepUp(activity, StepUpAction.KEY_DEVICE_REMOVE, "99999999-9999-4999-8999-999999999999", "Pixel 8") }
+        testScheduler.advanceTimeBy(180_000L - 1)
+        testScheduler.runCurrent()
+        assertTrue(!out.isCompleted)
+        testScheduler.advanceTimeBy(2)
+        testScheduler.runCurrent()
+        assertEquals(StepUpOutcome.Failed("TOOK_TOO_LONG"), out.await())
+        assertTrue(api.calls.none { it.startsWith("answer") })
     }
 }

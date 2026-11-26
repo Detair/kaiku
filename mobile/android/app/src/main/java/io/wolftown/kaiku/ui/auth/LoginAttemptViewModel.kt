@@ -449,6 +449,12 @@ class LoginAttemptViewModel @Inject constructor(
                 current = null
                 _state.update { it.copy(screen = null, busy = false, passwordChangeRequired = true) }
             }
+            // This phone is a key for another server: the attempt ends and says why.
+            !totp && e is io.wolftown.kaiku.data.repository.KeyOnOtherServerException -> {
+                current = null
+                _state.update { it.copy(screen = LoginAttemptUi.Ended(R.string.auth_key_on_other_server, a.via), busy = false) }
+                pollJob?.cancel()
+            }
             e is ApiException && isUnknown(e) -> end(a, AttemptState.EXPIRED)
             e is ApiException && isEnded(e) -> end(a, endedState(e))
             !totp && e is ApiException && e.normalizedCode == "LOGIN_ATTEMPT_NOT_READY" -> {

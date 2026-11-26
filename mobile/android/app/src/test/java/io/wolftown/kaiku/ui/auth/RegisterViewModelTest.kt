@@ -40,7 +40,7 @@ class RegisterViewModelTest {
         authRepository = mockk(relaxed = true)
         enrollmentApi = mockk()
         val tokenStorage: TokenStorage = mockk { every { getServerUrl() } returns "https://chat.example.com" }
-        viewModel = RegisterViewModel(authRepository, enrollmentApi, tokenStorage)
+        viewModel = RegisterViewModel(authRepository, enrollmentApi, tokenStorage, Registrations())
     }
 
     @After
@@ -50,7 +50,7 @@ class RegisterViewModelTest {
 
     @Test
     fun `taken username exposes a string resource, not the server message`() = runTest {
-        coEvery { authRepository.register("anna", "pw", null, null) } returns
+        coEvery { authRepository.register("anna", "pw", null, null, "https://chat.example.com") } returns
             Result.failure(ApiException(HttpStatusCode.Conflict, "Username already exists", "USER_EXISTS"))
 
         viewModel.onUsernameChanged("anna")
@@ -65,7 +65,7 @@ class RegisterViewModelTest {
 
     @Test
     fun `unknown failure shows the generic registration copy and clearError resets it`() = runTest {
-        coEvery { authRepository.register("anna", "pw", null, null) } returns
+        coEvery { authRepository.register("anna", "pw", null, null, "https://chat.example.com") } returns
             Result.failure(IllegalStateException("raw"))
 
         viewModel.onUsernameChanged("anna")
@@ -80,9 +80,9 @@ class RegisterViewModelTest {
 
     @Test
     fun `register binds this phone with the ticket and no code`() = runTest {
-        coEvery { authRepository.register("anna", "pw", null, null) } returns
+        coEvery { authRepository.register("anna", "pw", null, null, "https://chat.example.com") } returns
             Result.success(RegistrationTicket("u", "anna", "2026-11-03T12:30:00Z", "ticket-secret"))
-        coEvery { enrollmentApi.issueWithTicket("ticket-secret") } returns
+        coEvery { enrollmentApi.issueWithTicket("ticket-secret", "https://chat.example.com") } returns
             EnrollmentIssued("e1", "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8", "https://chat.example.com/setup#v=1&t=x", "t")
 
         viewModel.onUsernameChanged("anna")
@@ -90,7 +90,7 @@ class RegisterViewModelTest {
         viewModel.onRegisterClicked()
         advanceUntilIdle()
 
-        coVerify { enrollmentApi.issueWithTicket("ticket-secret") }
+        coVerify { enrollmentApi.issueWithTicket("ticket-secret", "https://chat.example.com") }
         assertEquals(
             SetupEntry("https://chat.example.com", "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8", SetupEntry.Source.TICKET, ticket = "ticket-secret"),
             viewModel.uiState.value.setupEntry,
@@ -100,9 +100,9 @@ class RegisterViewModelTest {
 
     @Test
     fun `a failed issuance after the account was created retries with the same ticket`() = runTest {
-        coEvery { authRepository.register("anna", "pw", null, null) } returns
+        coEvery { authRepository.register("anna", "pw", null, null, "https://chat.example.com") } returns
             Result.success(io.wolftown.kaiku.domain.model.RegistrationTicket("u1", "anna", "2026-11-03T12:30:00Z", "ticket-1"))
-        coEvery { enrollmentApi.issueWithTicket("ticket-1") } throws java.io.IOException("offline") andThen
+        coEvery { enrollmentApi.issueWithTicket("ticket-1", "https://chat.example.com") } throws java.io.IOException("offline") andThen
             io.wolftown.kaiku.domain.model.EnrollmentIssued("e1", "setup-token", "https://chat.example.com/setup#v=1&t=x", "2026-11-03T12:10:00Z")
         viewModel.onUsernameChanged("anna")
         viewModel.onPasswordChanged("pw")
@@ -112,7 +112,7 @@ class RegisterViewModelTest {
 
         viewModel.onRegisterClicked() // "Create account" again
         advanceUntilIdle()
-        io.mockk.coVerify(exactly = 1) { authRepository.register(any(), any(), any(), any()) }
+        io.mockk.coVerify(exactly = 1) { authRepository.register(any(), any(), any(), any(), any()) }
         assertEquals("ticket-1", viewModel.uiState.value.setupEntry?.ticket)
         viewModel.onSetupStarted()
         assertNull(viewModel.uiState.value.setupEntry)
@@ -120,20 +120,20 @@ class RegisterViewModelTest {
 
     @Test
     fun `a double tap registers once`() = runTest {
-        coEvery { authRepository.register(any(), any(), any(), any()) } returns Result.failure(java.io.IOException("x"))
+        coEvery { authRepository.register(any(), any(), any(), any(), any()) } returns Result.failure(java.io.IOException("x"))
         viewModel.onUsernameChanged("anna")
         viewModel.onPasswordChanged("pw")
         viewModel.onRegisterClicked()
         viewModel.onRegisterClicked()
         advanceUntilIdle()
-        io.mockk.coVerify(exactly = 1) { authRepository.register(any(), any(), any(), any()) }
+        io.mockk.coVerify(exactly = 1) { authRepository.register(any(), any(), any(), any(), any()) }
     }
 
     @Test
     fun `an expired ticket is dropped so the next try registers again`() = runTest {
-        coEvery { authRepository.register("anna", "pw", null, null) } returns
+        coEvery { authRepository.register("anna", "pw", null, null, "https://chat.example.com") } returns
             Result.success(io.wolftown.kaiku.domain.model.RegistrationTicket("u1", "anna", "2026-11-03T12:30:00Z", "ticket-1"))
-        coEvery { enrollmentApi.issueWithTicket("ticket-1") } throws
+        coEvery { enrollmentApi.issueWithTicket("ticket-1", "https://chat.example.com") } throws
             ApiException(HttpStatusCode.NotFound, "x", "REGISTRATION_TICKET_INVALID")
         viewModel.onUsernameChanged("anna")
         viewModel.onPasswordChanged("pw")
@@ -142,6 +142,32 @@ class RegisterViewModelTest {
         assertEquals(io.wolftown.kaiku.R.string.auth_register_ticket_expired, viewModel.uiState.value.errorRes)
         viewModel.onRegisterClicked()
         advanceUntilIdle()
-        io.mockk.coVerify(exactly = 2) { authRepository.register(any(), any(), any(), any()) }
+        io.mockk.coVerify(exactly = 2) { authRepository.register(any(), any(), any(), any(), any()) }
+    }
+
+    /**
+     * A ticket is kept only for the server it was issued by: after the address changed, "Create
+     * account" registers anew on the new server and the old ticket is never sent there.
+     */
+    @Test
+    fun `a kept ticket is not used for another server`() = runTest {
+        var configured = "https://chat.example.com"
+        val tokens: TokenStorage = mockk { every { getServerUrl() } answers { configured } }
+        val vm = RegisterViewModel(authRepository, enrollmentApi, tokens, Registrations())
+        coEvery { authRepository.register("anna", "pw", null, null, any()) } returnsMany listOf(
+            Result.success(RegistrationTicket("u1", "anna", "2026-11-03T12:30:00Z", "ticket-a")),
+            Result.success(RegistrationTicket("u2", "anna", "2026-11-03T12:30:00Z", "ticket-b")),
+        )
+        coEvery { enrollmentApi.issueWithTicket(any(), any()) } throws java.io.IOException("offline")
+        vm.onUsernameChanged("anna")
+        vm.onPasswordChanged("pw")
+        vm.onRegisterClicked()
+        advanceUntilIdle()
+        configured = "https://other.example.org"
+        vm.onRegisterClicked()
+        advanceUntilIdle()
+        coVerify(exactly = 1) { authRepository.register("anna", "pw", null, null, "https://other.example.org") }
+        coVerify(exactly = 0) { enrollmentApi.issueWithTicket("ticket-a", "https://other.example.org") }
+        coVerify { enrollmentApi.issueWithTicket("ticket-b", "https://other.example.org") }
     }
 }

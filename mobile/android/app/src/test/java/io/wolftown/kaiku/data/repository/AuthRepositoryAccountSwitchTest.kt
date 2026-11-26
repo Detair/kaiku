@@ -41,7 +41,7 @@ class AuthRepositoryAccountSwitchTest {
         assertTrue(repository.completeAttempt("https://a.example.com", "pw") { collected++; session("b-access") }
             .exceptionOrNull() is AlreadySignedInException)
         assertTrue(repository.installNativeSignIn(session("b-access"), "https://a.example.com").exceptionOrNull() is AlreadySignedInException)
-        assertTrue(repository.register("b", "pw", null, null).exceptionOrNull() is AlreadySignedInException)
+        assertTrue(repository.register("b", "pw", null, null, "https://a.example.com").exceptionOrNull() is AlreadySignedInException)
 
         assertEquals(0, collected)
         coVerify(exactly = 0) { authApi.authenticatedGetMe(any(), any()) }

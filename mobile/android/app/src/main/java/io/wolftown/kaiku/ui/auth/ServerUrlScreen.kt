@@ -20,6 +20,7 @@ import io.wolftown.kaiku.BuildConfig
 import io.wolftown.kaiku.R
 import io.wolftown.kaiku.data.api.ProbeResult
 import io.wolftown.kaiku.data.api.ServerProbe
+import io.wolftown.kaiku.ui.auth.setup.ServerAddressRule
 import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.data.repository.AuthRepository
 import io.wolftown.kaiku.domain.InvalidServerAddressException
@@ -54,7 +55,8 @@ internal fun serverAddressErrorRes(error: Throwable): Int =
 class ServerUrlViewModel @Inject constructor(
     private val tokenStorage: TokenStorage,
     private val authRepository: AuthRepository,
-    private val serverProbe: ServerProbe
+    private val serverProbe: ServerProbe,
+    private val serverAddress: ServerAddressRule,
 ) : ViewModel() {
 
     // Shows the current server (or the family default) so most people only tap Connect.
@@ -70,8 +72,21 @@ class ServerUrlViewModel @Inject constructor(
         _uiState.update { it.copy(url = url, error = null) }
     }
 
+    @StringRes
+    private fun refusalText(why: ServerAddressRule.Refusal): Int = when (why) {
+        ServerAddressRule.Refusal.TIED -> R.string.auth_server_tied_to_key
+        ServerAddressRule.Refusal.REGISTRATION -> R.string.auth_server_registration_running
+    }
+
     fun onConnectClicked() {
         if (_uiState.value.isChecking) return
+        // A key, a setup that is not finished or running, or a session ties this phone to its
+        // server: the address is not changed under it (also while what the phone has saved about
+        // its key cannot be read). One rule, asked again right before the write below.
+        serverAddress.refusal()?.let { why ->
+            _uiState.update { it.copy(error = refusalText(why)) }
+            return
+        }
         val address = normalizeServerAddress(_uiState.value.url).getOrElse {
             _uiState.update { state -> state.copy(error = serverAddressErrorRes(it)) }
             return
@@ -81,6 +96,12 @@ class ServerUrlViewModel @Inject constructor(
         viewModelScope.launch {
             when (serverProbe.probe(address)) {
                 is ProbeResult.Ok -> {
+                    // Asked again now that the server answered, with nothing between it and the write:
+                    // a setup may have opened, or a key record come, meanwhile.
+                    serverAddress.refusal()?.let { why ->
+                        _uiState.update { it.copy(isChecking = false, error = refusalText(why)) }
+                        return@launch
+                    }
                     // Nothing from the old server may carry over: drop its pending
                     // password change and any stored session, then save.
                     authRepository.cancelPasswordChange()

@@ -61,6 +61,9 @@ class KaikuApplication : Application(), SingletonImageLoader.Factory, Configurat
     @Inject
     lateinit var pushRegistrar: PushRegistrar
 
+    @Inject
+    lateinit var keyStorageGate: io.wolftown.kaiku.data.auth.KeyStorageGate
+
     /** Creates @HiltWorker workers (wake fetch); WorkManager's default initializer is removed in the manifest. */
     @Inject
     lateinit var workerFactory: HiltWorkerFactory
@@ -72,6 +75,9 @@ class KaikuApplication : Application(), SingletonImageLoader.Factory, Configurat
 
     override fun onCreate() {
         super.onCreate()
+        // Before anything reads the stored session: a session an earlier version left behind from
+        // a removal that stopped half way is taken out of storage.
+        keyStorageGate.start()
         NotificationChannels.ensureCreated(this)
         // First connect waits for AuthState.initialize() in MainActivity, which runs after the ProviderInstaller TLS step below.
         // Observe Ready before the first connect can produce one.

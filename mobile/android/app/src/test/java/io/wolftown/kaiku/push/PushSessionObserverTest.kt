@@ -135,4 +135,16 @@ class PushSessionObserverTest {
 
         assertNotNull(callStore.shown("alice", "c1"))
     }
+
+    /** At a start while the key storage cannot be read the stored session is not read, and nothing is cleared. */
+    @Test
+    fun `a start while the key storage cannot be read reads and clears nothing`() = runTest {
+        val untouchable: TokenStorage = mockk() // no answers: every access throws
+        val authState = AuthState(backgroundScope)
+        PushSessionObserver(authState, untouchable, sink, enqueuer, callStore, backgroundScope, keyStorage = { true }).start()
+        runCurrent()
+        verify { untouchable wasNot io.mockk.Called }
+        verify(exactly = 0) { sink.cancelAll() }
+        assertEquals(0, enqueuer.cancelAllCount)
+    }
 }

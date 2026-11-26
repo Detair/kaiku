@@ -7,6 +7,7 @@ import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
+import io.ktor.http.HttpStatusCode
 import io.wolftown.kaiku.domain.model.ClaimResult
 import io.wolftown.kaiku.domain.model.ClaimStatus
 import io.wolftown.kaiku.domain.model.Enrollment
@@ -26,13 +27,15 @@ import javax.inject.Inject
  */
 interface EnrollmentApi {
     suspend fun issueOwn(): EnrollmentIssued
-    suspend fun issueWithTicket(ticket: String): EnrollmentIssued
+    /** A registration ticket goes only to the server that issued it ([origin], absolute). */
+    suspend fun issueWithTicket(ticket: String, origin: String): EnrollmentIssued
     suspend fun get(id: String): Enrollment
     suspend fun cancel(id: String)
-    suspend fun open(setupToken: String, origin: String? = null): EnrollmentOpen
-    suspend fun popChallenge(setupToken: String, deviceId: String, publicKeyB64u: String, origin: String? = null): PopChallenge
-    suspend fun claim(req: EnrollmentClaim, ticket: String? = null, origin: String? = null): ClaimResult
-    suspend fun status(enrollmentId: String, claimSecret: String, waitSeconds: Int, origin: String? = null): ClaimStatus
+    // A setup talks to the server its code was accepted for: [origin] is always named (absolute).
+    suspend fun open(setupToken: String, origin: String): EnrollmentOpen
+    suspend fun popChallenge(setupToken: String, deviceId: String, publicKeyB64u: String, origin: String): PopChallenge
+    suspend fun claim(req: EnrollmentClaim, ticket: String? = null, origin: String): ClaimResult
+    suspend fun status(enrollmentId: String, claimSecret: String, waitSeconds: Int, origin: String): ClaimStatus
 }
 
 const val TICKET_HEADER = "X-Kaiku-Ticket"
@@ -60,8 +63,8 @@ class EnrollmentApiImpl @Inject constructor(private val httpClient: HttpClient) 
         return r.body()
     }
 
-    override suspend fun issueWithTicket(ticket: String): EnrollmentIssued {
-        val r = httpClient.post("/auth/registration/enrollments") {
+    override suspend fun issueWithTicket(ticket: String, origin: String): EnrollmentIssued {
+        val r = httpClient.post(at(origin, "/auth/registration/enrollments")) {
             publicRoute()
             header(TICKET_HEADER, ticket)
             setBody(JsonObject(emptyMap()))
@@ -80,7 +83,7 @@ class EnrollmentApiImpl @Inject constructor(private val httpClient: HttpClient) 
         httpClient.delete("/auth/enrollments/$id").ensureSuccess("cancel failed")
     }
 
-    override suspend fun open(setupToken: String, origin: String?): EnrollmentOpen {
+    override suspend fun open(setupToken: String, origin: String): EnrollmentOpen {
         val r = httpClient.post(at(origin, "/auth/enrollments/open")) {
             publicRoute()
             setBody(OpenRequest(setupToken))
@@ -89,31 +92,32 @@ class EnrollmentApiImpl @Inject constructor(private val httpClient: HttpClient) 
         return r.body()
     }
 
-    override suspend fun popChallenge(setupToken: String, deviceId: String, publicKeyB64u: String, origin: String?): PopChallenge {
+    override suspend fun popChallenge(setupToken: String, deviceId: String, publicKeyB64u: String, origin: String): PopChallenge {
         val r = httpClient.post(at(origin, "/auth/enrollments/pop-challenge")) {
             publicRoute()
             setBody(PopChallengeRequest(setupToken, deviceId, publicKeyB64u))
         }
-        r.ensureSuccess("pop challenge failed")
+        r.ensureExactly(HttpStatusCode.Created, "pop challenge failed")
         return r.body()
     }
 
-    override suspend fun claim(req: EnrollmentClaim, ticket: String?, origin: String?): ClaimResult {
+    override suspend fun claim(req: EnrollmentClaim, ticket: String?, origin: String): ClaimResult {
         val r = httpClient.post(at(origin, "/auth/enrollments/claim")) {
             publicRoute()
+            sentOnce()
             if (ticket != null) header(TICKET_HEADER, ticket)
             setBody(req)
         }
-        r.ensureSuccess("claim failed")
-        return r.body()
+        r.ensureExactly(HttpStatusCode.Created, "claim failed")
+        return r.body<ClaimResult>().copy(serverTime = r.serverTime())
     }
 
-    override suspend fun status(enrollmentId: String, claimSecret: String, waitSeconds: Int, origin: String?): ClaimStatus {
+    override suspend fun status(enrollmentId: String, claimSecret: String, waitSeconds: Int, origin: String): ClaimStatus {
         val r = httpClient.post(at(origin, "/auth/enrollments/status")) {
             publicRoute()
             setBody(StatusRequest(enrollmentId, claimSecret, waitSeconds.coerceIn(0, 25)))
         }
-        r.ensureSuccess("status failed")
+        r.ensureExactly(HttpStatusCode.OK, "status failed")
         return r.body()
     }
 }

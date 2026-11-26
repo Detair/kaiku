@@ -21,6 +21,7 @@ import io.wolftown.kaiku.data.auth.OriginPin
 import io.wolftown.kaiku.data.auth.PasskeyStepUp
 import io.wolftown.kaiku.data.auth.StepUpProvider
 import io.wolftown.kaiku.data.keydevice.KeyDevicePolicy
+import io.wolftown.kaiku.data.keydevice.KeyStorageCheck
 import io.wolftown.kaiku.data.keydevice.KeyDeviceRepository
 import io.wolftown.kaiku.data.keydevice.KeyDeviceStore
 import io.wolftown.kaiku.data.keydevice.PrefsKeyDeviceStore
@@ -69,6 +70,13 @@ object ApprovalModule {
     @Provides
     fun provideKeyDevicePolicy(repo: KeyDeviceRepository): KeyDevicePolicy = repo
 
+    @Provides
+    fun provideKeyStorageCheck(gate: io.wolftown.kaiku.data.auth.KeyStorageGate): KeyStorageCheck = gate
+
+    @Provides
+    @Singleton
+    fun provideBootClock(clock: io.wolftown.kaiku.data.keydevice.AndroidBootClock): io.wolftown.kaiku.data.keydevice.BootClock = clock
+
     /** The C26 device id is the C19 push device id. */
     @Provides
     fun provideDeviceIdProvider(store: DeviceIdStore): DeviceIdProvider = store
@@ -100,4 +108,12 @@ object ApprovalModule {
         checks: ChallengeVerifier,
         invalidation: io.wolftown.kaiku.data.keydevice.KeyInvalidation,
     ): DeviceSigner = DeviceSigner(keyStore, verifier, checks, invalidation::handle)
+
+    /** The removal of a signed-out phone hands push only the account it was a key of. */
+    @Provides
+    fun provideRemovedPhonePush(push: io.wolftown.kaiku.push.PushRegistrar): io.wolftown.kaiku.data.auth.RemovedPhonePush =
+        io.wolftown.kaiku.data.auth.RemovedPhonePush { userId -> push.dropAfterRemoval(userId) }
+
+    @Provides
+    fun provideRemovalApi(impl: io.wolftown.kaiku.data.api.RemovalApiImpl): io.wolftown.kaiku.data.api.RemovalApi = impl
 }

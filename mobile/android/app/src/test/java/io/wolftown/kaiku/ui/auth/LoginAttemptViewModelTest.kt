@@ -315,4 +315,23 @@ class LoginAttemptViewModelTest {
             ?: error("no string $name")
         return raw.replace("\\'", "'").replace("\\\"", "\"")
     }
+
+    /** A sign-in refused because this phone is a key for another server says so, on the code step and at the end. */
+    @Test fun `a sign-in refused for a key on another server says why`() = runTest {
+        api.loginStep = LoginStep(LoginStepStatus.TOTP_REQUIRED, attempt("a-pw", "password"))
+        coEvery { repo.completeAttempt(any(), any(), any()) } returns Result.failure(io.wolftown.kaiku.data.repository.KeyOnOtherServerException())
+        val v = vm()
+        v.signInWithPassword("anna", "pw")
+        advanceUntilIdle()
+        v.submitTotp("123456")
+        advanceUntilIdle()
+        assertEquals(LoginAttemptUi.Totp(error = R.string.auth_key_on_other_server), v.state.value.screen)
+
+        api.loginStep = confirmationStep(totp = false)
+        api.polls += { attempt("a-pw", "password", state = AttemptState.APPROVED) }
+        val w = vm()
+        w.signInWithPassword("anna", "pw")
+        advanceUntilIdle()
+        assertEquals(LoginAttemptUi.Ended(R.string.auth_key_on_other_server, AttemptVia.PASSWORD), w.state.value.screen)
+    }
 }

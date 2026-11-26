@@ -66,6 +66,8 @@ class LoginApprovalViewModel @Inject constructor(
     private var payload: ScanPayload.Login? = null
     private var challenge: ApprovalChallenge? = null
     private var context: LoginContext? = null
+    /** The install id the claimed challenge is checked and signed with (read once, after the claim). */
+    private var installId: String? = null
 
     /** A claimed challenge that is not decided yet (to release on leave). */
     private var open = false
@@ -76,6 +78,7 @@ class LoginApprovalViewModel @Inject constructor(
     fun start(p: ScanPayload.Login) {
         payload = p
         challenge = null
+        installId = null
         open = false
         _ui.value = LoginApprovalUi.Claiming
         val local = keyDevices.local() ?: run {
@@ -93,8 +96,18 @@ class LoginApprovalViewModel @Inject constructor(
             }
             challenge = ch
             open = true
+            val id = try {
+                keyDevices.record.value?.installId ?: deviceIds.id()
+            } catch (e: Exception) {
+                // The app's install id cannot be stored now: the claim is released, nothing is signed.
+                logger.warning("Install id not stored: ${e.javaClass.simpleName}")
+                releaseQuietly(ch.challengeId)
+                _ui.value = LoginApprovalUi.Error(R.string.security_key_storage_not_saved_scan, rescan = true)
+                return@launch
+            }
+            installId = id
             try {
-                val verified = signer.check(ch, SigKind.LOGIN, local.userId, deviceIds.id())
+                val verified = signer.check(ch, SigKind.LOGIN, local.userId, id)
                 val ctx = verified.context as LoginContext
                 context = ctx
                 _ui.value = LoginApprovalUi.Context(ctx)
@@ -118,6 +131,7 @@ class LoginApprovalViewModel @Inject constructor(
         val p = payload ?: return
         val ctx = context ?: return
         val local = keyDevices.local() ?: return
+        val installId = installId ?: return
         if (_ui.value !is LoginApprovalUi.Context) return
         _ui.value = LoginApprovalUi.Working
         viewModelScope.launch {
@@ -131,7 +145,7 @@ class LoginApprovalViewModel @Inject constructor(
                 R.string.security_uv_title,
                 activity.getString(if (decision == Decision.APPROVE) R.string.approval_uv_approve else R.string.approval_uv_report),
             )
-            when (val out = signer.sign(activity, ch, SigKind.LOGIN, local.userId, deviceIds.id(), decision, token, prompt)) {
+            when (val out = signer.sign(activity, ch, SigKind.LOGIN, local.userId, installId, decision, token, prompt, keyDevices.record.value?.keyId)) {
                 is SignOutcome.Rejected -> {
                     releaseQuietly(ch.challengeId)
                     _ui.value = LoginApprovalUi.Error(R.string.approval_mismatch, rescan = true)

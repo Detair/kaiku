@@ -83,9 +83,18 @@ describe("SetupLink page", () => {
     open(`#v=1&t=${TOKEN}`);
     const link = await screen.findByRole("link", { name: "Open in Kaiku" });
     expect(link.getAttribute("href")).toBe(
-      `intent://setup/v1?o=${encodeURIComponent(window.location.origin)}&t=${TOKEN}#Intent;scheme=kaiku;end`,
+      `intent://setup/v1?o=${encodeURIComponent(window.location.origin)}&t=${TOKEN}#Intent;scheme=kaiku;package=io.wolftown.kaiku;` +
+        `S.browser_fallback_url=${encodeURIComponent(`${window.location.origin}/setup?app=missing`)};end`,
     );
     expect(screen.getByText("Don't have the Kaiku app? Ask the person who sent you this link.")).toBeTruthy();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("a phone without the app comes back to the guidance, not to an invalid link", async () => {
+    ua = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 Chrome/130 Mobile Safari/537.36";
+    open("?app=missing");
+    expect(await screen.findByText("Don't have the Kaiku app? Ask the person who sent you this link.")).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Open in Kaiku" })).toBeNull();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 

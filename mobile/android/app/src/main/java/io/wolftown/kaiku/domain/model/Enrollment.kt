@@ -90,6 +90,8 @@ data class ClaimResult(
     val claimSecret: String? = null,
     val authenticatorState: String? = null,
     val readyAt: String? = null,
+    /** The server's own time when it answered (its `Date`); not part of the body. */
+    @kotlinx.serialization.Transient val serverTime: java.time.Instant? = null,
 ) {
     override fun toString(): String =
         "ClaimResult(enrollmentId=$enrollmentId, state=$state, authenticatorState=$authenticatorState, readyAt=$readyAt)"

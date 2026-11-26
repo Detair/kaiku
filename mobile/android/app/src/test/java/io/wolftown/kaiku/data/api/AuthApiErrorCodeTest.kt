@@ -40,7 +40,7 @@ class AuthApiErrorCodeTest {
     @Test
     fun `register error carries the server code`() = runTest {
         val api = api(HttpStatusCode.Conflict, """{"error":"USER_EXISTS","message":"Username taken"}""")
-        assertEquals("USER_EXISTS", codeOf { api.register("anna", "pw-long-enough") })
+        assertEquals("USER_EXISTS", codeOf { api.register("anna", "pw-long-enough", origin = "https://chat.example.com") })
     }
 
     @Test
@@ -60,7 +60,7 @@ class AuthApiErrorCodeTest {
             body = """{"error":"TOO_MANY_ATTEMPTS","message":"slow down"}""", extraHeaders = mapOf("Retry-After" to "120"))
         val api = AuthApiImpl(rec.client)
         val e = try {
-            api.register("anna", "pw-long-enough")
+            api.register("anna", "pw-long-enough", origin = "https://chat.example.com")
             null
         } catch (x: ApiException) {
             x

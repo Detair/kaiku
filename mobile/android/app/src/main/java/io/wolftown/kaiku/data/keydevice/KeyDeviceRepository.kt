@@ -1,7 +1,10 @@
 package io.wolftown.kaiku.data.keydevice
 
 import io.wolftown.kaiku.approval.ApprovalKeyStore
+import io.wolftown.kaiku.approval.GeneratedKey
 import io.wolftown.kaiku.approval.UvClass
+import io.wolftown.kaiku.approval.UvDecision
+import io.wolftown.kaiku.approval.keyId
 import io.wolftown.kaiku.data.local.AuthSession
 import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.di.AuthCoroutineScope
@@ -9,9 +12,11 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import java.time.Instant
+import java.util.logging.Logger
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -45,17 +50,91 @@ data class LocalKeyDevice(
 fun interface KeyDevicePolicy {
     fun keepsPushOnSignOut(): Boolean
 
+    /**
+     * No sign-in other than with this phone's key may complete now: a setup of this phone is
+     * stored and not finished, or the key storage cannot be read ([appEntry]).
+     */
+    fun refusesOtherSignIn(): Boolean = false
+
+    /**
+     * No sign-in other than with this phone's key may complete on [serverUrl]: the stored key
+     * waits for its device sign-in (also while that is only provisional) on another server.
+     */
+    fun refusesSignInOn(serverUrl: String): Boolean = false
+
     companion object {
         val NONE = KeyDevicePolicy { false }
     }
 }
 
 /**
- * The key device outlives its sessions (B.4, SM4): metadata in [store], the key
- * in [keyStore]. [state] is derived from the stored phase and the session, so a
- * lapse (a refresh that ended the session, or a plain sign-out) shows as
- * [KeyDeviceState.Lapsed] the moment the session ends, with the key, the user
- * id and the push subscription kept.
+ * Whether what the phone saved about its key can be read now. While it cannot, nothing reads,
+ * refreshes, clears or recovers the stored session (the start, the background work, push): a
+ * damaged or locked store is never taken as "no session" or "no key".
+ */
+fun interface KeyStorageCheck {
+    fun unreadable(): Boolean
+
+    companion object {
+        val READABLE = KeyStorageCheck { false }
+    }
+}
+
+/**
+ * Creating the first key record and installing a session exclude each other: a setup's check of
+ * who is signed in, on which server, and the record it then creates see the same session.
+ */
+object SessionKeyLock
+
+/** What a change of the stored record did. Only [Done] changed anything. */
+sealed interface Change {
+    /** Written ([record]) or forgotten (null). */
+    data class Done(val record: StoredKeyDevice?) : Change
+    /** The stored record is not the one the caller expected: nothing changed. */
+    data object Mismatch : Change
+    /** The store cannot be read: nothing changed. */
+    data object Unreadable : Change
+    /** The write did not reach storage: nothing changed, here or in memory. */
+    data object WriteFailed : Change
+
+    val done: Boolean get() = this is Done
+}
+
+/** Why a record and its key are forgotten. Only these three exist (see [KeyDeviceRepository.forget]). */
+enum class Forget {
+    /** A server answer, decided by [KeyAnswers.settle]. */
+    SERVER_ANSWER,
+    /** Android invalidated this key (screen lock removed), found by a signature with it. */
+    KEY_INVALIDATED,
+    /** The person discarded a setup that can never finish and whose server stayed silent for long ([SetupDiscard]). */
+    DISCARDED_BY_PERSON,
+}
+
+/** What [KeyDeviceRepository.generateKey] did. */
+sealed interface NewKey {
+    class Made(val key: GeneratedKey) : NewKey
+    /** A record exists: no key is made beside it. */
+    data object RecordExists : NewKey
+    data object Unreadable : NewKey
+}
+
+/**
+ * The key device outlives its sessions (B.4, SM4): the record in [store], the key in [keyStore].
+ * This class is the only way to either of them, and every change names what it expects:
+ *
+ * - a record is written only where none is stored and the alias holds its key ([create]), or over
+ *   the very record the caller holds ([replace], [update]);
+ * - a record is forgotten only if it is the very record the caller holds ([forget]); its key goes
+ *   with it only if the alias holds that record's key;
+ * - a key is made only while no record is stored ([generateKey]); a key without a record is an
+ *   unclaimed left-over and is deleted by key id only ([deleteUnclaimedKey]);
+ * - while the store cannot be read ([unreadable]) nothing is written, forgotten, made or deleted,
+ *   and a durable write that fails changes nothing in memory either.
+ *
+ * "The very record" is [StoredKeyDevice.sameAs]. All changes run under one monitor.
+ * [state] is derived from the stored phase and the session, so a lapse (a refresh that ended the
+ * session, or a plain sign-out) shows as [KeyDeviceState.Lapsed] the moment the session ends, with
+ * the key, the user id and the push subscription kept.
  */
 @Singleton
 class KeyDeviceRepository @Inject constructor(
@@ -65,13 +144,59 @@ class KeyDeviceRepository @Inject constructor(
     @AuthCoroutineScope scope: CoroutineScope,
 ) : KeyDevicePolicy {
 
-    private val stored = MutableStateFlow(store.load())
+    private companion object {
+        val logger: Logger = Logger.getLogger("KeyDeviceRepository")
+    }
 
-    val state: StateFlow<KeyDeviceState> = combine(stored, authState.session) { s, session -> derive(s, session) }
-        .stateIn(scope, SharingStarted.Eagerly, derive(stored.value, authState.session.value))
+    /** What the store holds, as last read or written here. Set only through [set]. */
+    @Volatile
+    private var storage: KeyStorage = read()
+    private val _record = MutableStateFlow((storage as? KeyStorage.Present)?.record)
+    private val _unreadable = MutableStateFlow(storage is KeyStorage.Unreadable)
+
+    /**
+     * The stored record as it changes (null: none, or not readable). Its value is the record at
+     * this moment (set together with every change); unlike [state] it needs no session.
+     */
+    val record: StateFlow<StoredKeyDevice?> = _record.asStateFlow()
+
+    private fun set(s: KeyStorage) {
+        storage = s
+        _record.value = (s as? KeyStorage.Present)?.record
+        _unreadable.value = s is KeyStorage.Unreadable
+    }
+
+    private fun stored(): StoredKeyDevice? = _record.value
+
+    /** The store could not be read: nothing is known about a key device, and nothing is changed. */
+    fun unreadable(): Boolean = storage is KeyStorage.Unreadable
+
+    val state: StateFlow<KeyDeviceState> = combine(_record, authState.session) { s, session -> derive(s, session) }
+        .stateIn(scope, SharingStarted.Eagerly, derive(stored(), authState.session.value))
 
     /** The state now, computed synchronously (navigation decisions use it). */
-    fun current(): KeyDeviceState = derive(stored.value, authState.session.value)
+    fun current(): KeyDeviceState = derive(stored(), authState.session.value)
+
+    /**
+     * Where the running app belongs ([appEntry]), as it changes. The server address is a question
+     * of the start only: here a phone without a setup or key belongs to the sign-in.
+     */
+    val entry: StateFlow<AppEntry> = combine(_unreadable, _record, authState.session) { u, r, s -> appEntry(u, r, s, hasServer = true) }
+        .stateIn(scope, SharingStarted.Eagerly, appEntry(unreadable(), stored(), authState.session.value, hasServer = true))
+
+    /** Where the app opens now ([appEntry]); [hasServer]: a server address is saved or built in. */
+    fun entry(hasServer: Boolean): AppEntry = appEntry(unreadable(), stored(), authState.session.value, hasServer)
+
+    override fun refusesOtherSignIn(): Boolean =
+        appEntry(unreadable(), stored(), authState.session.value, hasServer = true).let { it == AppEntry.WAITING_SETUP || it == AppEntry.UNREADABLE }
+
+    override fun refusesSignInOn(serverUrl: String): Boolean {
+        val rec = stored() ?: return false
+        if (rec.phase != KeyDevicePhase.ACTIVE) return false
+        // Both in one form: a server stored in another spelling is still the same server.
+        val keyOrigin = io.wolftown.kaiku.domain.KaikuPayloads.canonicalOrigin(rec.device.origin) ?: rec.device.origin
+        return io.wolftown.kaiku.domain.KaikuPayloads.canonicalOrigin(serverUrl) != keyOrigin
+    }
 
     private fun derive(s: StoredKeyDevice?, session: AuthSession): KeyDeviceState = when {
         s == null -> KeyDeviceState.None
@@ -82,77 +207,188 @@ class KeyDeviceRepository @Inject constructor(
         else -> KeyDeviceState.Lapsed(s.device.userId)
     }
 
-    fun local(): LocalKeyDevice? = stored.value?.device
+    fun local(): LocalKeyDevice? = stored()?.device
 
-    fun phase(): KeyDevicePhase? = stored.value?.phase
+    fun phase(): KeyDevicePhase? = stored()?.phase
 
     /** The origin a key ties this app to (B.1 origin pinning); null without a key device. */
-    fun pinnedOrigin(): String? = stored.value?.device?.origin
+    fun pinnedOrigin(): String? = stored()?.device?.origin
+
+    fun sessionCap(): Instant? = stored()?.sessionCap
+
+    fun lastRenewalPromptAt(): Instant? = stored()?.lastRenewalPromptAt
+
+    override fun keepsPushOnSignOut(): Boolean = stored()?.phase == KeyDevicePhase.ACTIVE
 
     /**
-     * Written before the claim is sent: if its answer is lost (or the app dies), the key and
-     * this record stay, and the setup is reconciled with the server instead of deleting a key the
-     * server may already have enrolled.
+     * Reads the store. A record written before records named their key takes the key in the alias
+     * (there was always one alias and one record); it is not written back here.
      */
-    fun saveClaiming(d: LocalKeyDevice) = write(StoredKeyDevice(d, KeyDevicePhase.CLAIMING))
-
-    /** A setup claimed a code and waits for its confirmation (not a key yet). */
-    fun saveClaimed(d: LocalKeyDevice) = write(StoredKeyDevice(d, KeyDevicePhase.CLAIMED))
-
-    /**
-     * The enrolment is `done` and the key active on the server, before its first device-key
-     * sign-in: without a session this reads as [KeyDeviceState.Lapsed], so a restart opens
-     * "Confirm it's you". No claim secret is needed any more (a self-claim never had one, C26).
-     */
-    fun markEnrolled(d: LocalKeyDevice) = write(StoredKeyDevice(d.copy(claimSecret = null), KeyDevicePhase.ACTIVE))
-
-    fun markPending(d: LocalKeyDevice, readyAt: Instant) = write(StoredKeyDevice(d, KeyDevicePhase.PENDING, readyAt))
-
-    /** After a device-key sign-in of [userId]; the claim secret is no longer needed. */
-    fun markActive(userId: String, keyDeviceId: String?) {
-        val s = stored.value ?: return
-        if (s.device.userId != userId) return
-        write(
-            s.copy(
-                device = s.device.copy(keyDeviceId = keyDeviceId ?: s.device.keyDeviceId, claimSecret = null),
-                phase = KeyDevicePhase.ACTIVE,
-                readyAt = null,
-            ),
-        )
+    private fun read(): KeyStorage = when (val s = store.load()) {
+        is KeyStorage.Present -> if (s.record.keyId != null) s else try {
+            KeyStorage.Present(s.record.copy(keyId = keyStore.keyId()))
+        } catch (e: Exception) {
+            logger.warning("Key not readable: ${e.javaClass.simpleName}")
+            KeyStorage.Unreadable
+        }
+        else -> s
     }
 
-    /** Kept for L2-A8/A13 callers: a lapse is derived from the ended session, so nothing is written. */
-    fun markLapsed() = Unit
+    /** Reads the store again (after it could not be read); true when it can be read now. */
+    @Synchronized
+    fun reload(): Boolean {
+        set(read())
+        return storage !is KeyStorage.Unreadable
+    }
 
-    /** Deletes the key and the metadata (revoked, invalidated, removed, cancelled setup). */
-    fun forget() {
-        try {
-            keyStore.delete()
-        } finally {
-            // A failing Keystore delete never leaves the record (and the server pin) behind.
-            store.clear()
-            stored.value = null
+    /**
+     * Writes what the store holds through to storage ([KeyDeviceStore.flush]); true when it is
+     * there. Until then a write that was reported as failed is not taken as done, even where the
+     * store already shows it.
+     */
+    @Synchronized
+    fun flush(): Boolean = store.flush()
+
+    /**
+     * Makes the key for a new setup. Only while the store is readable and holds no record; a key
+     * the alias still holds then belongs to no record and is deleted first. Takes seconds: never
+     * on the main thread.
+     */
+    @Synchronized
+    fun generateKey(attestationChallenge: ByteArray, d: UvDecision.Use): NewKey {
+        when (storage) {
+            KeyStorage.Unreadable -> return NewKey.Unreadable
+            is KeyStorage.Present -> return NewKey.RecordExists
+            KeyStorage.Absent -> Unit
+        }
+        if (keyStore.hasKey()) {
+            check(keyStore.delete(keyStore.keyId())) { "unclaimed key not deleted" }
+        }
+        return NewKey.Made(keyStore.generate(attestationChallenge, d))
+    }
+
+    /** Deletes a key no record names, only if it is [keyId]; true when it did. */
+    @Synchronized
+    fun deleteUnclaimedKey(keyId: String): Boolean {
+        if (storage != KeyStorage.Absent) return false
+        return try {
+            keyStore.keyId() == keyId && keyStore.delete(keyId)
+        } catch (e: Exception) {
+            logger.warning("Unclaimed key not deleted: ${e.javaClass.simpleName}")
+            false
         }
     }
 
-    fun recordSessionCap(cap: Instant?) {
-        val s = stored.value ?: return
-        write(s.copy(sessionCap = cap))
+    /**
+     * The first record of a setup: only where none is stored, and only for the key in the alias.
+     * [refuse] is asked under [SessionKeyLock], right before the write, with no session being
+     * installed meanwhile: true refuses ([Change.Mismatch], nothing written).
+     */
+    @Synchronized
+    fun create(record: StoredKeyDevice, refuse: () -> Boolean = { false }): Change = synchronized(SessionKeyLock) {
+        if (refuse()) return Change.Mismatch
+        createLocked(record)
     }
 
-    fun sessionCap(): Instant? = stored.value?.sessionCap
-
-    fun lastRenewalPromptAt(): Instant? = stored.value?.lastRenewalPromptAt
-
-    fun markRenewalPrompted(at: Instant) {
-        val s = stored.value ?: return
-        write(s.copy(lastRenewalPromptAt = at))
+    private fun createLocked(record: StoredKeyDevice): Change {
+        when (storage) {
+            KeyStorage.Unreadable -> return Change.Unreadable
+            is KeyStorage.Present -> return Change.Mismatch
+            KeyStorage.Absent -> Unit
+        }
+        val key = try {
+            keyStore.keyId()
+        } catch (e: Exception) {
+            null
+        }
+        if (record.keyId == null || key != record.keyId) return Change.Mismatch
+        return write(record)
     }
 
-    override fun keepsPushOnSignOut(): Boolean = stored.value?.phase == KeyDevicePhase.ACTIVE
+    /**
+     * Puts [next] in place of [expected], only while [expected] is the stored record. A record
+     * never changes its server, account, key or setup this way, and an install id it names stays
+     * whatever [next] says.
+     */
+    @Synchronized
+    fun replace(expected: StoredKeyDevice, next: StoredKeyDevice): Change {
+        if (storage is KeyStorage.Unreadable) return Change.Unreadable
+        val now = stored()
+        if (now == null || !(now sameAs expected)) return Change.Mismatch
+        require(
+            next.device.origin == now.device.origin && next.device.userId == now.device.userId &&
+                next.keyId == now.keyId && next.attemptId == now.attemptId,
+        ) { "a record keeps its server, account, key and setup" }
+        // What the stored record says about its install id stays.
+        val kept = next.copy(installId = now.installId ?: next.installId, installIdLost = now.installIdLost || next.installIdLost)
+        return write(kept)
+    }
 
-    private fun write(s: StoredKeyDevice) {
-        store.save(s)
-        stored.value = s
+    /** [replace] with the stored record's current times kept: [change] gets the record as stored now. */
+    @Synchronized
+    fun update(expected: StoredKeyDevice, change: (StoredKeyDevice) -> StoredKeyDevice): Change {
+        val now = stored() ?: return if (unreadable()) Change.Unreadable else Change.Mismatch
+        if (!(now sameAs expected)) return Change.Mismatch
+        return replace(now, change(now))
+    }
+
+    /**
+     * A record written before records named their install id takes [id]: the id the app has kept,
+     * under which such a record was enrolled. Null: the app has no id kept (it would have to make
+     * a new one, which the server never heard of); the record then notes that its id is lost, for
+     * good. A record that names one, or whose id is lost, keeps that, whatever [id] is.
+     */
+    @Synchronized
+    fun bindInstallId(id: String?): Change {
+        if (storage is KeyStorage.Unreadable) return Change.Unreadable
+        val now = stored() ?: return Change.Mismatch
+        if (now.installId != null || now.installIdLost) return Change.Done(now)
+        return write(if (id != null) now.copy(installId = id) else now.copy(installIdLost = true))
+    }
+
+    /** The time of the last "stay signed in" prompt, kept beside [expected]. */
+    fun markRenewalPrompted(expected: StoredKeyDevice, at: Instant): Change = update(expected) { it.copy(lastRenewalPromptAt = at) }
+
+    /**
+     * Forgets [expected] and its key, only while [expected] is the stored record. The record is
+     * cleared durably first (a clear that fails deletes nothing); then the key goes if the alias
+     * holds this record's key. Three callers exist: [KeyAnswers.settle] for a server answer,
+     * [KeyInvalidation] for a key Android invalidated, and [SetupDiscard] for the person's own
+     * decision about a setup that can never finish.
+     */
+    @Synchronized
+    fun forget(expected: StoredKeyDevice, why: Forget): Change {
+        if (storage is KeyStorage.Unreadable) return Change.Unreadable
+        val now = stored()
+        if (now == null || !(now sameAs expected)) return Change.Mismatch
+        // A person's decision ends only a setup that can never finish: a claim that needs a code and
+        // never got its answer. Never a record whose code was shown, a waiting or an active key.
+        if (why == Forget.DISCARDED_BY_PERSON && !(now.phase == KeyDevicePhase.CLAIMING && now.codeClaim)) return Change.Mismatch
+        // The decision was made on [expected]: it forgets only a record that is the same in
+        // everything such a decision rests on, not merely the same record.
+        if ((
+                now.provisionalFrom != expected.provisionalFrom || now.notThisKey != expected.notThisKey ||
+                    now.installIdLost != expected.installIdLost || now.installId != expected.installId
+                )
+        ) {
+            return Change.Mismatch
+        }
+        if (!store.clear()) return Change.WriteFailed
+        set(KeyStorage.Absent)
+        logger.info("Key device forgotten: $why")
+        try {
+            // Another key in the alias is not this record's: it stays (no record names it, so the
+            // next setup removes it as an unclaimed key).
+            if (!keyStore.delete(now.keyId)) logger.warning("Alias holds another key than the forgotten record's")
+        } catch (e: Exception) {
+            logger.warning("Key not deleted: ${e.javaClass.simpleName}")
+        }
+        return Change.Done(null)
+    }
+
+    private fun write(s: StoredKeyDevice): Change {
+        if (!store.save(s)) return Change.WriteFailed
+        set(KeyStorage.Present(s))
+        return Change.Done(s)
     }
 }
