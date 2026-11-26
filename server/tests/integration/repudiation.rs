@@ -751,6 +751,15 @@ async fn a_password_change_compromises_only_the_generation_it_made(pool: PgPool)
     let (sid, token) = create_session_with_token(&pool, &app.config, user).await;
     make_session_full(&pool, sid).await;
     grant_step_up(&pool, sid, "password.set", "").await;
+    // The session's phone is the account's older one (a phone added after
+    // another may not change the password until the request delay passed).
+    sqlx::query(
+        "UPDATE approval_devices SET created_at = NOW() - INTERVAL '30 days' WHERE id = $1",
+    )
+    .bind(super::helpers::test_authenticator_id(user))
+    .execute(&pool)
+    .await
+    .unwrap();
     let (s, b) = call(
         &app,
         "/auth/me/password",

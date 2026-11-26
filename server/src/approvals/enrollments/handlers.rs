@@ -57,6 +57,8 @@ pub async fn open(
     responses(
         (status = 201, body = PopChallengeResponse),
         (status = 400, description = "ENROLLMENT_DEVICE_IN_USE: this phone is already a key of the account"),
+        (status = 403, description = "AUTHENTICATOR_TOO_NEW {allowed_at}: the set-up would replace an older phone and the phone or passkey that issued it was added too recently"),
+        (status = 409, description = "ENROLLMENT_STATE: the set-up is no longer valid"),
     ),
     security(()),
 )]
@@ -340,7 +342,11 @@ pub async fn cancel_issued(
     tag = "approvals",
     params(("id" = Uuid, Path, description = "Enrolment id")),
     request_body = crate::auth::registration::CodeRequest,
-    responses((status = 200, body = super::Enrollment), (status = 400, description = "ENROLL_CODE_WRONG")),
+    responses(
+        (status = 200, body = super::Enrollment),
+        (status = 400, description = "ENROLL_CODE_WRONG"),
+        (status = 403, description = "AUTHENTICATOR_TOO_NEW {allowed_at}: the set-up would replace an older phone and the issuing passkey was added too recently"),
+    ),
     security(("bearer_auth" = [])),
 )]
 #[tracing::instrument(skip_all, fields(user_id = %auth.id, enrollment_id = %id))]

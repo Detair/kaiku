@@ -72,9 +72,47 @@ async fn consume(
     action: StepUpAction,
     target: StepUpTarget,
 ) -> AuthResult<Uuid> {
+    consume_grant(conn, auth, action, target)
+        .await
+        .map(|(ev, _)| ev)
+}
+
+/// [`consume`], also returning the consumed grant.
+async fn consume_grant(
+    conn: &mut PgConnection,
+    auth: &AuthUser,
+    action: StepUpAction,
+    target: StepUpTarget,
+) -> AuthResult<(Uuid, step_up::ConsumedGrant)> {
     let label = step_up::target_label_tx(conn, auth.id, action, &target).await?;
     let grant = step_up::consume_tx(conn, auth, action, &target).await?;
-    Ok(step_up::record_action_tx(conn, auth, &grant, action, &label).await?)
+    let ev = step_up::record_action_tx(conn, auth, &grant, action, &label).await?;
+    Ok((ev, grant))
+}
+
+/// On the admin's own account the admin routes do what the owner routes do,
+/// so the same rule holds: a newly added phone or passkey does not act
+/// against older ones (`strong::ensure_settled`). Another account: no
+/// change.
+async fn ensure_settled_on_own(
+    conn: &mut PgConnection,
+    ctx: &AuthCtx<'_>,
+    auth: &AuthUser,
+    account: Uuid,
+    grant: &step_up::ConsumedGrant,
+    target: Option<AuthenticatorRef>,
+) -> AuthResult<()> {
+    if account != auth.id {
+        return Ok(());
+    }
+    crate::auth::strong::ensure_settled(
+        conn,
+        account,
+        grant.by,
+        target,
+        ctx.config.account_request_delay_hours,
+    )
+    .await
 }
 
 /// `PUT …/may-approve` body and answer.
@@ -166,7 +204,7 @@ pub struct FactorStatesView {
     tag = "admin",
     params(("user_id" = Uuid, Path, description = "The account")),
     request_body = FactorStatesBody,
-    responses((status = 200, body = FactorStatesView), (status = 400, description = "VALIDATION_ERROR"), (status = 403, description = "ADMIN_TARGET_IS_ADMIN")),
+    responses((status = 200, body = FactorStatesView), (status = 400, description = "VALIDATION_ERROR"), (status = 403, description = "ADMIN_TARGET_IS_ADMIN, or AUTHENTICATOR_TOO_NEW {allowed_at} on the own account")),
     security(("bearer_auth" = [])),
 )]
 #[tracing::instrument(skip_all, fields(user_id = %auth.id, account = %account))]
@@ -215,15 +253,15 @@ pub async fn set_factor_state(
             ));
         }
     }
-    let mut events = vec![
-        consume(
-            &mut tx,
-            &auth,
-            StepUpAction::AdminFactorSetState,
-            StepUpTarget::Id(account),
-        )
-        .await?,
-    ];
+    let (ev, grant) = consume_grant(
+        &mut tx,
+        &auth,
+        StepUpAction::AdminFactorSetState,
+        StepUpTarget::Id(account),
+    )
+    .await?;
+    ensure_settled_on_own(&mut tx, &ctx, &auth, account, &grant, None).await?;
+    let mut events = vec![ev];
     for (f, want) in wanted {
         let generation = match f {
             Factor::Password => st.password.generation,
@@ -299,7 +337,7 @@ pub async fn set_factor_state(
         ("user_id" = Uuid, Path, description = "The account"),
         ("id" = Uuid, Path, description = "Key device or passkey id"),
     ),
-    responses((status = 204), (status = 403, description = "ADMIN_TARGET_IS_ADMIN"), (status = 404, description = "Unknown authenticator")),
+    responses((status = 204), (status = 403, description = "ADMIN_TARGET_IS_ADMIN, or AUTHENTICATOR_TOO_NEW {allowed_at} on the own account"), (status = 404, description = "Unknown authenticator")),
     security(("bearer_auth" = [])),
 )]
 #[tracing::instrument(skip_all, fields(user_id = %auth.id, account = %account, authenticator = %id))]
@@ -344,15 +382,20 @@ pub async fn remove_authenticator_now(
     if device.is_none() && passkey.is_none() {
         return Err(AuthError::NotFound("authenticator".into()));
     }
-    let mut events = vec![
-        consume(
-            &mut tx,
-            &auth,
-            StepUpAction::AdminAuthenticatorRemove,
-            StepUpTarget::Id(id),
-        )
-        .await?,
-    ];
+    let (ev, grant) = consume_grant(
+        &mut tx,
+        &auth,
+        StepUpAction::AdminAuthenticatorRemove,
+        StepUpTarget::Id(id),
+    )
+    .await?;
+    let removing = if device.is_some() {
+        AuthenticatorRef::key_device(id)
+    } else {
+        AuthenticatorRef::passkey(id)
+    };
+    ensure_settled_on_own(&mut tx, &ctx, &auth, account, &grant, Some(removing)).await?;
+    let mut events = vec![ev];
     if device.is_some() {
         let (_, ev) = revoke_tx(
             &mut tx,

@@ -93,6 +93,23 @@ pub async fn is_active(conn: &mut sqlx::PgConnection, a: AuthenticatorRef) -> sq
     }
 }
 
+/// Whether the authenticator is not revoked (`pending` or `active`): a
+/// revocation would still change it.
+pub async fn is_live(conn: &mut sqlx::PgConnection, a: AuthenticatorRef) -> sqlx::Result<bool> {
+    let sql = match a.kind {
+        AuthenticatorKind::KeyDevice => {
+            "SELECT EXISTS (SELECT 1 FROM approval_devices WHERE id = $1 AND state <> 'revoked')"
+        }
+        AuthenticatorKind::Passkey => {
+            "SELECT EXISTS (SELECT 1 FROM passkeys WHERE id = $1 AND state <> 'revoked')"
+        }
+    };
+    sqlx::query_scalar(sql)
+        .bind(a.id)
+        .fetch_one(&mut *conn)
+        .await
+}
+
 /// Whether the authenticator is a row of `user_id` (any state).
 pub async fn belongs_to(
     conn: &mut sqlx::PgConnection,
@@ -141,6 +158,132 @@ pub async fn ensure_not_last_strong(
         return Err(crate::auth::AuthError::LastStrongAuthenticator);
     }
     Ok(())
+}
+
+/// A newly added authenticator may not act against older ones.
+///
+/// `by` produced the step-up of the caller's action (call this in the
+/// action's transaction, after the grant was consumed or peeked, under the
+/// account lock). Refused with 403 `AUTHENTICATOR_TOO_NEW {allowed_at}` when
+/// all hold:
+///
+/// 1. `by` was created less than `delay_hours` ago (`created_at`, on the database clock;
+///    `allowed_at` = `created_at` + the delay);
+/// 2. the account has another active strong authenticator created before `by` (an account whose
+///    oldest active authenticators are this young is never held back);
+/// 3. with a `target` (the removals): the target was created before `by` (removing itself or a
+///    younger one stays allowed).
+///
+/// A `by` that is not an active strong authenticator of `user_id` is refused
+/// as a missing grant (403 `STEP_UP_REQUIRED`), never treated as settled.
+/// Every kind of strong authenticator is one arm of the `strong` list below.
+pub async fn ensure_settled(
+    conn: &mut sqlx::PgConnection,
+    user_id: Uuid,
+    by: AuthenticatorRef,
+    target: Option<AuthenticatorRef>,
+    delay_hours: i64,
+) -> crate::auth::AuthResult<()> {
+    settled_check(conn, user_id, by, target, delay_hours, None).await
+}
+
+/// [`ensure_settled`] at a fixed instant instead of the database's clock
+/// (tests of the exact boundary only).
+#[doc(hidden)]
+pub async fn ensure_settled_at(
+    conn: &mut sqlx::PgConnection,
+    user_id: Uuid,
+    by: AuthenticatorRef,
+    target: Option<AuthenticatorRef>,
+    delay_hours: i64,
+    at: chrono::DateTime<chrono::Utc>,
+) -> crate::auth::AuthResult<()> {
+    settled_check(conn, user_id, by, target, delay_hours, Some(at)).await
+}
+
+async fn settled_check(
+    conn: &mut sqlx::PgConnection,
+    user_id: Uuid,
+    by: AuthenticatorRef,
+    target: Option<AuthenticatorRef>,
+    delay_hours: i64,
+    at: Option<chrono::DateTime<chrono::Utc>>,
+) -> crate::auth::AuthResult<()> {
+    let row: Option<(chrono::DateTime<chrono::Utc>, bool)> = sqlx::query_as(
+        "WITH strong AS (
+             SELECT 'key_device'::text AS kind, id, state, created_at
+               FROM approval_devices WHERE user_id = $1
+             UNION ALL
+             SELECT 'passkey'::text, id, state, created_at
+               FROM passkeys WHERE user_id = $1
+         ), producer AS (
+             SELECT created_at, created_at + make_interval(hours => $4) AS allowed_at
+               FROM strong WHERE kind = $2 AND id = $3 AND state = 'active'
+         )
+         SELECT p.allowed_at,
+                p.allowed_at > COALESCE($7, clock_timestamp())
+                AND EXISTS (SELECT 1 FROM strong o
+                             WHERE o.state = 'active' AND o.created_at < p.created_at)
+                AND ($5::text IS NULL
+                     OR EXISTS (SELECT 1 FROM strong t
+                                 WHERE t.kind = $5 AND t.id = $6
+                                   AND t.created_at < p.created_at))
+           FROM producer p",
+    )
+    .bind(user_id)
+    .bind(by.as_str())
+    .bind(by.id)
+    .bind(i32::try_from(delay_hours).unwrap_or(i32::MAX))
+    .bind(target.map(|t| t.as_str()))
+    .bind(target.map(|t| t.id))
+    .bind(at)
+    .fetch_optional(&mut *conn)
+    .await?;
+    match row {
+        None => Err(crate::auth::AuthError::StepUpRequired),
+        Some((allowed_at, true)) => Err(crate::auth::AuthError::AuthenticatorTooNew { allowed_at }),
+        Some((_, false)) => Ok(()),
+    }
+}
+
+/// Whether an older authenticator may act against `target` now.
+///
+/// Some active strong authenticator of the account created before `before`
+/// (never the target itself) passes the same rule as [`ensure_settled`]
+/// against `target` ("That wasn't me" is listed only where usable).
+pub async fn some_may_act_against(
+    conn: &mut sqlx::PgConnection,
+    user_id: Uuid,
+    before: chrono::DateTime<chrono::Utc>,
+    target: AuthenticatorRef,
+    delay_hours: i64,
+) -> sqlx::Result<bool> {
+    let candidates: Vec<(String, Uuid)> = sqlx::query_as(
+        "SELECT 'key_device', id FROM approval_devices
+          WHERE user_id = $1 AND state = 'active' AND created_at < $2
+         UNION ALL
+         SELECT 'passkey', id FROM passkeys
+          WHERE user_id = $1 AND state = 'active' AND created_at < $2",
+    )
+    .bind(user_id)
+    .bind(before)
+    .fetch_all(&mut *conn)
+    .await?;
+    for (kind, id) in candidates {
+        let Some(kind) = AuthenticatorKind::parse(&kind) else {
+            continue;
+        };
+        let a = AuthenticatorRef { kind, id };
+        if a == target {
+            continue;
+        }
+        match settled_check(conn, user_id, a, Some(target), delay_hours, None).await {
+            Ok(()) => return Ok(true),
+            Err(crate::auth::AuthError::Database(e)) => return Err(e),
+            Err(_) => {}
+        }
+    }
+    Ok(false)
 }
 
 /// B.0 "new account".

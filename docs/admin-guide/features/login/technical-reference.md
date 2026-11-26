@@ -637,6 +637,59 @@ session and cannot authorise a PC session.
 | `admin.factor.set_state` | user id | `PUT /api/admin/users/{user_id}/factors` |
 | `admin.recovery_contact.set` | user id | `PUT /api/admin/users/{user_id}/recovery-contact` |
 
+**A new authenticator does not act against older ones.** After the grant is consumed, in the same
+transaction, `strong::ensure_settled` looks at the authenticator that produced it (`grant.by`, a key
+device or a passkey). It refuses with 403 `AUTHENTICATOR_TOO_NEW {allowed_at}` when all of these hold:
+
+1. the producer was created less than `ACCOUNT_REQUEST_DELAY_HOURS` ago (row `created_at`, compared
+   with the database clock; `allowed_at` = `created_at` + the delay);
+2. the account has another **active** key device or passkey created before the producer;
+3. for `key_device.remove` and `passkey.remove` only: the target was created before the producer.
+
+It runs on `key_device.remove`, `passkey.remove`, `recovery_codes.create`, `password.set`,
+`password.remove`, `totp.set` (at `/auth/mfa/setup` too, so the user hears it before scanning, and at
+the peek of `/auth/mfa/verify`, before the code is spent) and `totp.remove`. When several open grants
+exist for the same session, action and target, the newest is used, so a confirmation with an older
+authenticator after a refusal counts at once. The refusal rolls the
+transaction back, so the grant is not used up. Removing itself or a younger authenticator, removing an
+old phone *on* that phone ("Sign out and remove this phone"), and an account's first authenticator are
+never refused. A producer that is not an active authenticator of the account is refused as a missing
+grant (`STEP_UP_REQUIRED`), never treated as old. Ages by origin: a phone or passkey added from a full
+session or a key phone, at registration, by an admin for a new account or by `kaiku-admin enroll` is
+active at once and young for one delay. A device that waited as `pending` (an account request, an admin
+setup of an existing account) counts from when it was staged. An admin's set-up of an existing account
+is staged when its request starts, so it is settled on activation. A phone added through a request the
+person started themself is staged only once the request is `ready` (after the wait), so it counts as new
+for one delay from then, while an older phone or passkey that was not named lost stays active. A phone
+set up again on the same install (a new key) is a new row and is young again.
+
+"That wasn't me" (`event.repudiate`, owner-rule part 1) follows the same rule: when carrying out the
+report would revoke a key device or passkey that is not yet revoked (a `sign_in` by a passkey or key
+device, or its `authenticator_added`), `ensure_settled` runs with that authenticator as the target before
+anything is written. A young reporter on an account with an older active authenticator cannot have an
+older one revoked: 403 `AUTHENTICATOR_TOO_NEW {allowed_at}`, and the whole report is refused (no session
+ended, no factor marked, the grant unused). Reports that only end sessions, mark password or TOTP
+generations compromised, or revoke a younger authenticator are carried out as before.
+
+**Setting up a phone that replaces an older key.** An `own` set-up (issued from a key phone or from a
+full PC session) that replaces a live key device of the account when it completes (as when a phone is
+set up again, section 8) acts against that key: `ensure_settled` runs with the issuing phone or passkey as the acting
+authenticator and the key to be replaced as the target, once when the claimant asks for its challenge
+(`POST /auth/enrollments/pop-challenge`, before a code is shown) and again in the confirming
+transaction before anything is revoked. A refusal (403 `AUTHENTICATOR_TOO_NEW {allowed_at}`) revokes
+nothing. A settled issuer, a younger key, a new install id, the command line, registration and the
+administrator's and account requests' set-ups are not affected (the issuer's own install was never
+replaceable). As in every use of the rule, an account without an older *active* phone or passkey is not
+held back, so an older key that is still `pending` is replaced then, as before.
+
+Other step-up actions (`sessions.end`, `recovery_contact.set`, `enrollment.issue`,
+`identity.link`/`unlink`, `request.cancel`, `account.delete`) do not apply this rule. The admin routes
+apply it only on the admin's **own** account, where they do what the owner routes do:
+`admin.authenticator.remove` ("Remove device now", target = the authenticator removed) and
+`admin.factor.set_state` (no target) pass `ensure_settled` with the authenticator that made the admin
+step-up. On another member's account they are unchanged. (Admin set-up codes for the own account are
+refused anyway with `ENROLLMENT_TARGET_SELF`.)
+
 `admin.*` actions are refused before anything else for a non-admin (403 `NOT_ADMIN`). Each guarded
 action records `step_up_action {action, target_label}` besides its own event. Bodies that still
 carry `current_password`, `revoke_others` or a TOTP code have them ignored. `GET /auth/reauth/methods`
@@ -913,6 +966,24 @@ Residual risks (spec B.6, as implemented):
 13. **Hostile use of owner-rule part 2** by someone with a session and the TOTP secret or a recovery
     code while the account has no strong authenticator.
 14. **Request-notice fatigue:** at most 3 self-service starts per account per delay period.
+15. **The waiting time for new authenticators has limits** (section 9). It stops a *newly added*
+    phone or passkey from removing or having revoked an older one and from replacing the password,
+    TOTP or recovery codes. Such a newcomer can still disturb the account without taking it over: mark
+    the password or TOTP compromised through "That wasn't me" or "I didn't start this" (the owner sets a
+    new one from an older device), end sessions, cancel an account request, add a further phone,
+    schedule the account's deletion, which the owner can undo for 30 days, change or remove the
+    recovery contact, and link a sign-in provider identity. The last two outlast the newcomer's
+    removal (a new contact counts as a canceller only one delay after confirming; a linked identity
+    gives at most a chat-only first factor), so after removing an unknown device the owner checks the
+    recovery contact and the linked sign-in methods. Two more things stay as they are: a set-up that
+    the owner confirms can replace the key of another phone of the account (after confirming a set-up,
+    check the phone list; the confirming phone can remove the new device at once), and
+    on *other* members' accounts an admin's actions are not held back by this rule, also when the
+    admin's own phone or passkey is new. An **old device in the wrong
+    hands is not limited** by this rule: a stolen phone that has been a key for longer than the delay
+    can still do all of the above until it is removed (risk 7). A phone set up again on the same
+    install is new again, so an honest owner who re-installs the app waits one delay before acting
+    against an older device from it.
 
 Coordinator and maintainer decisions recorded in the implementation notes:
 
@@ -1002,6 +1073,7 @@ All errors use the body `{"error": CODE, "message": string}`; listed extra field
 | `ACCOUNT_BANNED` | 403 | The account is banned |
 | `FULL_SESSION_REQUIRED` | 403 | The action needs a full session |
 | `STEP_UP_REQUIRED` | 403 | No valid grant for this action and target |
+| `AUTHENTICATOR_TOO_NEW` | 403 | `{allowed_at}`: the phone or passkey that confirmed was added less than the request delay ago and the action would act against an older one (section 9); the grant stays unused |
 | `NOT_ADMIN` | 403 | Not a system admin (also for `admin.*` step-ups) |
 | `ELEVATION_REQUIRED` | 403 | Admin mode is not open |
 | `SERVICE_UNAVAILABLE` | 503 | Valkey or the database is unavailable where it is required |

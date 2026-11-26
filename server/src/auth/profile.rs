@@ -330,7 +330,7 @@ pub async fn update_profile(
     responses(
         (status = 200, description = "Password set"),
         (status = 400, description = "PASSWORD_REJECTED {reason}"),
-        (status = 403, description = "FULL_SESSION_REQUIRED or STEP_UP_REQUIRED"),
+        (status = 403, description = "FULL_SESSION_REQUIRED, STEP_UP_REQUIRED or AUTHENTICATOR_TOO_NEW {allowed_at}"),
     ),
     security(("bearer_auth" = [])),
 )]
@@ -368,6 +368,14 @@ pub async fn update_password(
         &auth_user,
         StepUpAction::PasswordSet,
         &StepUpTarget::None,
+    )
+    .await?;
+    super::strong::ensure_settled(
+        &mut tx,
+        auth_user.id,
+        grant.by,
+        None,
+        state.config.account_request_delay_hours,
     )
     .await?;
     let had: bool = sqlx::query_scalar("SELECT password_hash IS NOT NULL FROM users WHERE id = $1")
@@ -420,7 +428,7 @@ pub async fn update_password(
     tag = "auth",
     responses(
         (status = 204, description = "Password removed"),
-        (status = 403, description = "FULL_SESSION_REQUIRED or STEP_UP_REQUIRED"),
+        (status = 403, description = "FULL_SESSION_REQUIRED, STEP_UP_REQUIRED or AUTHENTICATOR_TOO_NEW {allowed_at}"),
         (status = 409, description = "LAST_STRONG_AUTHENTICATOR"),
     ),
     security(("bearer_auth" = [])),
@@ -442,6 +450,14 @@ pub async fn remove_password(
         &auth_user,
         StepUpAction::PasswordRemove,
         &StepUpTarget::None,
+    )
+    .await?;
+    super::strong::ensure_settled(
+        &mut tx,
+        auth_user.id,
+        grant.by,
+        None,
+        state.config.account_request_delay_hours,
     )
     .await?;
     super::factors::replace_tx(&mut tx, &ctx, auth_user.id, Factor::Password).await?;

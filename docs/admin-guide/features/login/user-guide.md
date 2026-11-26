@@ -204,6 +204,18 @@ old phone shows a setup code (or **Share link**).
 Three wrong codes end the setup; start again. Both phones are now keys. If you no longer use the
 old one, remove it there with **Sign out and remove this phone**.
 
+For the first day (or the waiting time your server uses) a new phone or passkey cannot remove your
+older phones or passkeys (also not with "That wasn't me"), and cannot change your password,
+authenticator app or recovery codes. After that time it can. A phone you set up again, for example
+after reinstalling Kaiku, counts as new again. This keeps your account safe if someone else ever manages to add a
+phone of their own: your older devices stay in your hands long enough to see the notice and remove
+it. To retire the old phone now, use **Sign out and remove this phone** on the old phone; that always
+works at once. If the old phone is lost or stolen, do not wait for the new one: remove the old phone
+from another device you have had for longer (an older phone, or a computer signed in with an older
+passkey), or ask your admin to **Remove device now**. If you are an admin yourself, another admin
+cannot do that for you: use an older device of yours or ask the person who runs the server. From the
+new phone it works only after the waiting time.
+
 If you do not see **Add a phone**, your account may not confirm sign-ins (see above). Ask your
 admin: they can turn it on for a moment while you do this, or set up the new phone for you.
 

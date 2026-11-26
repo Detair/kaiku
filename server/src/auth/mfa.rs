@@ -31,6 +31,7 @@ use crate::security_events::{spawn_delivery, EventType};
     tag = "auth",
     responses(
         (status = 200, description = "MFA setup initiated", body = MfaSetupResponse),
+        (status = 403, description = "FULL_SESSION_REQUIRED, STEP_UP_REQUIRED or AUTHENTICATOR_TOO_NEW {allowed_at}"),
     ),
     security(("bearer_auth" = [])),
 )]
@@ -43,11 +44,21 @@ pub async fn mfa_setup(
     super::guards::require_full(&auth_user)?;
     {
         let mut tx = state.db.begin().await?;
-        step_up::peek_tx(
+        let by = step_up::peek_tx(
             &mut tx,
             &auth_user,
             StepUpAction::TotpSet,
             &StepUpTarget::None,
+        )
+        .await?;
+        // A newly added phone or passkey does not change TOTP; said before
+        // the secret is shown (setup) and before the code is spent (verify).
+        super::strong::ensure_settled(
+            &mut tx,
+            auth_user.id,
+            by,
+            None,
+            state.config.account_request_delay_hours,
         )
         .await?;
         tx.commit().await?;
@@ -129,7 +140,7 @@ pub async fn mfa_setup(
     responses(
         (status = 200, description = "TOTP set up"),
         (status = 401, description = "INVALID_MFA"),
-        (status = 403, description = "FULL_SESSION_REQUIRED or STEP_UP_REQUIRED"),
+        (status = 403, description = "FULL_SESSION_REQUIRED, STEP_UP_REQUIRED or AUTHENTICATOR_TOO_NEW {allowed_at}"),
     ),
     security(("bearer_auth" = [])),
 )]
@@ -150,18 +161,52 @@ pub async fn mfa_verify(
             "Start the authenticator setup first".to_string(),
         ));
     };
-    // Flash r5: a missing grant answers before the code is spent.
+    // A missing grant answers before the code is spent. This early answer
+    // decides nothing; the transaction below checks again.
     {
         let mut tx = state.db.begin().await?;
-        step_up::peek_tx(
+        let by = step_up::peek_tx(
             &mut tx,
             &auth_user,
             StepUpAction::TotpSet,
             &StepUpTarget::None,
         )
         .await?;
+        // A newly added phone or passkey does not change TOTP; said before
+        // the secret is shown (setup) and before the code is checked.
+        super::strong::ensure_settled(
+            &mut tx,
+            auth_user.id,
+            by,
+            None,
+            state.config.account_request_delay_hours,
+        )
+        .await?;
         tx.commit().await?;
     }
+
+    // One transaction: the account lock, the grant, the waiting time for its
+    // producer, and only then the code (recorded as used) and the write. A
+    // refusal before the code leaves it unused; a wrong code keeps the grant
+    // (rollback).
+    let ctx = AuthCtx::from(&state);
+    let mut tx = state.db.begin().await?;
+    lock_accounts(&mut tx, &[auth_user.id]).await?;
+    let grant = step_up::consume_tx(
+        &mut tx,
+        &auth_user,
+        StepUpAction::TotpSet,
+        &StepUpTarget::None,
+    )
+    .await?;
+    super::strong::ensure_settled(
+        &mut tx,
+        auth_user.id,
+        grant.by,
+        None,
+        state.config.account_request_delay_hours,
+    )
+    .await?;
     // Accepted once per step (replay store).
     if !reauth::accept_totp(
         &state,
@@ -174,17 +219,6 @@ pub async fn mfa_verify(
     {
         return Err(AuthError::InvalidMfaCode);
     }
-
-    let ctx = AuthCtx::from(&state);
-    let mut tx = state.db.begin().await?;
-    lock_accounts(&mut tx, &[auth_user.id]).await?;
-    let grant = step_up::consume_tx(
-        &mut tx,
-        &auth_user,
-        StepUpAction::TotpSet,
-        &StepUpTarget::None,
-    )
-    .await?;
     let generation = super::factors::replace_tx(&mut tx, &ctx, auth_user.id, Factor::Totp).await?;
     sqlx::query("UPDATE users SET mfa_secret = $2, updated_at = NOW() WHERE id = $1")
         .bind(auth_user.id)
@@ -225,7 +259,7 @@ pub async fn mfa_verify(
     tag = "auth",
     responses(
         (status = 200, description = "TOTP turned off"),
-        (status = 403, description = "FULL_SESSION_REQUIRED or STEP_UP_REQUIRED"),
+        (status = 403, description = "FULL_SESSION_REQUIRED, STEP_UP_REQUIRED or AUTHENTICATOR_TOO_NEW {allowed_at}"),
     ),
     security(("bearer_auth" = [])),
 )]
@@ -243,6 +277,14 @@ pub async fn mfa_disable(
         &auth_user,
         StepUpAction::TotpRemove,
         &StepUpTarget::None,
+    )
+    .await?;
+    super::strong::ensure_settled(
+        &mut tx,
+        auth_user.id,
+        grant.by,
+        None,
+        state.config.account_request_delay_hours,
     )
     .await?;
     let had: bool = sqlx::query_scalar("SELECT mfa_secret IS NOT NULL FROM users WHERE id = $1")

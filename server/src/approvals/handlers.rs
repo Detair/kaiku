@@ -252,6 +252,7 @@ pub async fn claim(
     responses(
         (status = 200, body = AnswerResponse),
         (status = 400, description = "SIGNATURE_INVALID, ENROLL_CODE_WRONG or VALIDATION_ERROR"),
+        (status = 403, description = "AUTHENTICATOR_TOO_NEW {allowed_at}: an enrolment answer whose set-up would replace an older phone, issued by a phone added too recently"),
         (status = 404, description = "APPROVAL_NOT_FOUND"),
         (status = 409, description = "APPROVAL_STATE"),
         (status = 410, description = "APPROVAL_EXPIRED or ENROLLMENT_FAILED"),
