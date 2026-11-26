@@ -966,3 +966,102 @@ async fn start_warns_about_an_unexpected_value_and_names_it_in_the_error() {
         "{text}"
     );
 }
+
+/// A Valkey user that may not load scripts, and the URL to connect as it.
+/// Returns (admin client, user name, URL).
+async fn valkey_user_without_scripts() -> (fred::clients::Client, String, String) {
+    use fred::interfaces::ClientLike;
+    let admin = create_test_redis().await;
+    let user = format!("noscript-{}", uuid::Uuid::new_v4().simple());
+    let password = uuid::Uuid::new_v4().simple().to_string();
+    let _: fred::types::Value = admin
+        .custom(
+            fred::types::CustomCommand::new_static("ACL", None::<u16>, false),
+            vec![
+                "SETUSER".to_string(),
+                user.clone(),
+                "on".into(),
+                format!(">{password}"),
+                "~*".into(),
+                "&*".into(),
+                "+@all".into(),
+                "-script".into(),
+                "-eval".into(),
+                "-evalsha".into(),
+            ],
+        )
+        .await
+        .unwrap();
+    let base = Config::default_for_test().redis_url;
+    let host = base.trim_start_matches("redis://");
+    let host = host.rsplit_once('@').map_or(host, |(_, h)| h);
+    let url = format!("redis://{user}:{password}@{host}");
+    (admin, user, url)
+}
+
+/// The server binary started against a Valkey that refuses script loading
+/// exits with an error before it touches the database: no migration ran.
+#[sqlx::test(migrations = false)]
+async fn the_server_refuses_to_start_before_it_changes_the_database(pool: sqlx::PgPool) {
+    use fred::interfaces::ClientLike;
+    let db_name: String = sqlx::query_scalar("SELECT current_database()")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let base = std::env::var("DATABASE_URL").expect("DATABASE_URL is set for the tests");
+    let (server_part, _) = base.rsplit_once('/').expect("a database URL with a path");
+    let database_url = format!("{server_part}/{db_name}");
+    let (admin, user, redis_url) = valkey_user_without_scripts().await;
+    let config = Config::default_for_test();
+
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_vc-server"));
+    command
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("DATABASE_URL", &database_url)
+        .env("REDIS_URL", &redis_url)
+        .env("JWT_PRIVATE_KEY", &config.jwt_private_key)
+        .env("JWT_PUBLIC_KEY", &config.jwt_public_key)
+        .env("PUBLIC_URL", "https://kaiku.test")
+        .env("BIND_ADDRESS", "127.0.0.1:0")
+        .env("RUST_LOG", "info")
+        // No `.env` file of a checkout may add settings.
+        .current_dir(std::env::temp_dir())
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(std::time::Duration::from_secs(60), command.output())
+        .await
+        .expect("the server exits instead of starting")
+        .expect("the server binary runs");
+
+    let _: fred::types::Value = admin
+        .custom(
+            fred::types::CustomCommand::new_static("ACL", None::<u16>, false),
+            vec!["DELUSER".to_string(), user],
+        )
+        .await
+        .unwrap();
+    let _ = admin.quit().await;
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!output.status.success(), "exit status: {:?}", output.status);
+    assert!(
+        stderr.contains("rate limiter could not load its scripts"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("the server does not start: rate limiter not loaded"),
+        "log: {stdout}"
+    );
+    let ledger: Option<String> = sqlx::query_scalar("SELECT to_regclass('_sqlx_migrations')::text")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(ledger.is_none(), "no migration ran");
+    let tables: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM pg_tables WHERE schemaname = 'public'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(tables, 0, "the database is untouched");
+}
