@@ -1091,6 +1091,94 @@ class CallControllerTest {
         assertEquals(emptyList<String>(), r.api.requests)
     }
 
+    // -- A ring that came by push while a connection was already live ------------------
+
+    /**
+     * The call started while the phone had no network, this user answered or declined it
+     * on another device, the phone's connection came back (its Ready found nothing to ask
+     * about), and only then the queued ring push arrived. What the connection would have
+     * said about the call was sent while it was down and does not come again.
+     */
+    private fun TestScope.liveBeforeTheRing(): CallRig {
+        val r = rig()
+        r.authSocket.value = 1L
+        r.socketOf("me")
+        assertEquals(emptyList<String>(), r.api.requests)
+        return r
+    }
+
+    @Test
+    fun `a ring by push for a call this user answered elsewhere while a connection was live stops at once`() = runTest {
+        val r = liveBeforeTheRing()
+        r.api.current = CallStateDto(r.dm, "c-1", "active", startedBy = "anna", participants = listOf("anna", "me"))
+        r.pushRing("c-1")
+        runCurrent()
+        assertEquals("asked once, at once", listOf("get"), r.api.requests)
+        assertEquals(CallState.Idle, r.state)
+        // Nothing more is asked, and no missed call comes for it later.
+        advanceTimeBy(CallMachine.RING_CAP_MS + CallController.CAP_CHECK_MS); runCurrent()
+        assertEquals(listOf("get"), r.api.requests)
+        assertTrue("a call answered elsewhere shows as missed: ${r.notifier.log}", r.notifier.log.none { it.startsWith("missed") })
+        r.pushEnded("c-1", reason = "last_left")
+        runCurrent()
+        assertTrue(r.notifier.log.none { it.startsWith("missed") })
+    }
+
+    @Test
+    fun `a ring by push for a call this user declined elsewhere while a connection was live stops at once`() = runTest {
+        val r = liveBeforeTheRing()
+        r.api.current = CallStateDto(r.dm, "c-1", "ringing", startedBy = "anna", declinedBy = listOf("me"))
+        r.pushRing("c-1")
+        runCurrent()
+        assertEquals(listOf("get"), r.api.requests)
+        assertEquals(CallState.Idle, r.state)
+        // The others let it ring out: not missed here, this user declined it.
+        r.pushEnded("c-1", reason = "no_answer")
+        runCurrent()
+        assertTrue("a declined call shows as missed: ${r.notifier.log}", r.notifier.log.none { it.startsWith("missed") })
+    }
+
+    @Test
+    fun `a ring by push for a call that is over while a connection was live stops at once without a claim`() = runTest {
+        val r = liveBeforeTheRing()
+        r.api.current = null
+        r.pushRing("c-1")
+        runCurrent()
+        assertEquals(listOf("get"), r.api.requests)
+        assertEquals(CallState.Idle, r.state)
+        assertTrue("claimed without an end reason: ${r.notifier.log}", r.notifier.log.none { it.startsWith("missed") })
+    }
+
+    @Test
+    fun `a ring by push that still rings while a connection was live rings on after one look`() = runTest {
+        val r = liveBeforeTheRing()
+        r.serverRings("c-1")
+        r.pushRing("c-1")
+        runCurrent()
+        assertEquals(listOf("get"), r.api.requests)
+        assertTrue(r.state is CallState.Incoming)
+        // The connection's events take over from here: no further looks.
+        advanceTimeBy(5 * CallController.RING_POLL_MS); runCurrent()
+        assertEquals(listOf("get"), r.api.requests)
+        assertTrue(r.state is CallState.Incoming)
+    }
+
+    @Test
+    fun `a ring by push gets no extra look when the connection came up after it`() = runTest {
+        val r = rig()
+        r.serverRings("c-1")
+        r.pushRing("c-1")
+        runCurrent()
+        assertEquals(emptyList<String>(), r.api.requests)
+        // The connection comes up while it rings: its Ready asks about the shown ring, once.
+        r.authSocket.value = 1L
+        r.socketOf("me")
+        assertEquals(listOf("get"), r.api.requests)
+        advanceTimeBy(5 * CallController.RING_POLL_MS); runCurrent()
+        assertEquals("asked more than the connection's own look", listOf("get"), r.api.requests)
+        assertTrue(r.state is CallState.Incoming)
+    }
+
     @Test
     fun `a ring by push in a process without a restored session sends no look`() = runTest {
         val r = CallRig(this, restored = false)

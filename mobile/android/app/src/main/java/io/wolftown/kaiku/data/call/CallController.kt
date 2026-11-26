@@ -16,6 +16,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
@@ -308,8 +309,9 @@ class CallController internal constructor(
         val owner = ownerFor(ticket) ?: return null
         val event = owner.eventOf(input) ?: return null
         if (!owner.offer(event, done)) return null
-        // A ring that came by push: until a connection is live, the server is asked how it goes.
-        if (input is CallInput.PushRing && event is CallEvent.Rang) owner.lookWhileRinging(event.channelId, event.callId)
+        // A ring that came by push: the server is asked how it goes (once at once over a live
+        // connection, else until a connection is live).
+        if (input is CallInput.PushRing && event is CallEvent.Rang) owner.lookWhileRinging(event.channelId, event.callId, done)
         return owner
     }
 
@@ -758,27 +760,50 @@ class CallController internal constructor(
          * stops). Ends with the ring, when a connection is live (its events and its own
          * resync take over), and with the session. Without a restored session nothing can
          * be asked, and nothing is.
+         *
+         * A connection that was already live when the ring came may have missed the call's
+         * answer while it was down, and that is not sent again; its resync ran before the
+         * ring was shown. So the server is asked once at once, as soon as the ring is
+         * shown ([handled]). A connection that comes up after the ring asks with its own
+         * resync; nothing is added for it.
          */
-        fun lookWhileRinging(channelId: String, callId: String) = synchronized(ringLooks) {
+        fun lookWhileRinging(channelId: String, callId: String, handled: Deferred<Unit>?) = synchronized(ringLooks) {
+            val liveAtRing = webSocket.authenticatedSocket.value != null
             ringLooks.remove(channelId)?.cancel()
             ringLooks[channelId] = scope.launch {
+                if (liveAtRing) {
+                    if (handled != null) {
+                        select<Unit> {
+                            handled.onAwait {}
+                            gone.onAwait {}
+                        }
+                    }
+                    lookAt(channelId, shownRing(channelId, callId) ?: return@launch)
+                }
                 while (true) {
                     delay(RING_POLL_MS)
-                    val ringing = (shown as? CallState.Incoming)?.takeIf { it.channelId == channelId && it.callId == callId }
-                        ?: break
+                    val ringing = shownRing(channelId, callId) ?: break
                     if (webSocket.authenticatedSocket.value != null) break
-                    val askedFor: CallState = ringing
-                    val answer = try {
-                        getCall(channelId)
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        // No restored session, no network: nothing known; looked at again later.
-                        continue
-                    }
-                    offer(CallEvent.Resynced(channelId, answer, clock.nowMs(), askedFor))
+                    lookAt(channelId, ringing)
                 }
             }
+        }
+
+        /** The ring of [callId] in [channelId] while it is the shown call; null once it is not. */
+        private fun shownRing(channelId: String, callId: String): CallState.Incoming? =
+            (shown as? CallState.Incoming)?.takeIf { it.channelId == channelId && it.callId == callId }
+
+        /** Asks the server about the ring [askedFor] and applies the answer like a resync's. */
+        private suspend fun lookAt(channelId: String, askedFor: CallState) {
+            val answer = try {
+                getCall(channelId)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // No restored session, no network: nothing known; looked at again later if still offline.
+                return
+            }
+            offer(CallEvent.Resynced(channelId, answer, clock.nowMs(), askedFor))
         }
 
         /**
