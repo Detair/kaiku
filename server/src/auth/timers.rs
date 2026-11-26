@@ -3,7 +3,8 @@
 //! One task runs [`run_once`] every 60 s. Its steps run in a fixed order;
 //! later tasks append steps (expiring challenges, enrolments, …). A failing
 //! step is logged and the loop continues; every step is idempotent, so the
-//! next tick retries.
+//! next tick retries. No step waits for a push service: the pushes of the
+//! notice steps are sent by background tasks after their commits.
 
 use std::time::Duration;
 

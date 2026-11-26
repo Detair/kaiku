@@ -83,8 +83,12 @@ channel.
   most one batch per process (`PushService::begin_follow_up_batch`; while it
   sends, the sweep claims nothing), at most `FOLLOW_UP_BATCH` = 100 notices
   per run, `FOLLOW_UP_PARALLEL` = 8 recipients at a time, 30 s per recipient
-  (`FOLLOW_UP_RECIPIENT_LIMIT`). A push recorded as sent that then fails is
-  logged, not retried (same for the immediate push). FCM data (strings):
+  (`FOLLOW_UP_RECIPIENT_LIMIT`). The pushes of events the sweep delivers from
+  the outbox go to a background task with the same bounds (the sweep never
+  waits for a push service on any step). A push recorded as sent that then
+  fails is not retried (same for the immediate push); a refused or timed-out
+  one leaves a WARN with the notice id and provider kind
+  (`deliver_with_report`), never the address or the payload. FCM data (strings):
   `{"t":"security","notice_id","event_type","severity":"high"|"normal","count":"<n>","subject_id"}`,
   plus `actor_id` only when an admin or the recovery contact acted;
   UnifiedPush: the same JSON with `count` as a number.

@@ -1533,3 +1533,96 @@ async fn a_run_claims_the_oldest_due_notice_first(pool: PgPool) {
     }
     assert_eq!(pushes_for(&mock, younger).len(), 1, "only its first push");
 }
+
+#[sqlx::test]
+async fn an_outbox_push_that_never_answers_does_not_hold_the_sweep(pool: PgPool) {
+    let mock = spawn_fcm_mock(FcmMockResponse::Ok).await;
+    let app = TestApp::with_pool_and_config(pool.clone(), fcm_config(&mock)).await;
+    // An event left in the outbox, for an account whose three push
+    // addresses never answer.
+    let (u, _) = user_with_token(&app).await;
+    for _ in 0..3 {
+        add_silent_fcm_device(&pool, u).await;
+    }
+    let event_id = record_one(&pool, event(u, EventType::SignIn, Actor::User(u))).await;
+    // A challenge past its deadline: a later step of the same run expires it.
+    let challenge = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO approvals (id, kind, approver_id, subject_id, device_id, requester_kind,
+                                requester_id, nonce, context_hash, context, display, state, expires_at)
+         VALUES ($1, 'login', $2, $2, $1, 'session', $1, $3, $3, '{}', '{}', 'issued',
+                 NOW() + INTERVAL '1 minute')",
+    )
+    .bind(challenge)
+    .bind(u)
+    .bind(vec![0u8; 32])
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE approvals SET created_at = created_at - INTERVAL '5 minutes',
+                              expires_at = NOW() - INTERVAL '1 second'
+          WHERE id = $1",
+    )
+    .bind(challenge)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let started = std::time::Instant::now();
+    sweep_within(&app, Duration::from_secs(5)).await;
+    assert!(started.elapsed() < Duration::from_secs(5));
+    let delivered: Option<chrono::DateTime<chrono::Utc>> =
+        sqlx::query_scalar("SELECT delivered_at FROM security_events WHERE id = $1")
+            .bind(event_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(delivered.is_some(), "the outbox step delivered the event");
+    let state: String = sqlx::query_scalar("SELECT state FROM approvals WHERE id = $1")
+        .bind(challenge)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(state, "expired", "the later steps ran in the same run");
+}
+
+#[sqlx::test]
+async fn a_follow_up_the_provider_refuses_is_logged_without_the_address(pool: PgPool) {
+    let mock = spawn_fcm_mock(FcmMockResponse::Status(
+        403,
+        r#"{"error":{"code":403,"status":"PERMISSION_DENIED"}}"#,
+    ))
+    .await;
+    let app = TestApp::with_pool_and_config(pool.clone(), fcm_config(&mock)).await;
+    let (u, _) = user_with_token(&app).await;
+    let notice = due_notice(&app, u).await;
+    let token = add_fcm_device(&pool, u).await;
+
+    let logs = super::oidc_flow_http::capture(async {
+        vc_server::auth::timers::run_once(&app.state).await.unwrap();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while pushes_for(&mock, notice).is_empty() {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "no follow-up was tried"
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        wait_for_follow_up_batch(&app, Duration::from_secs(15)).await;
+    })
+    .await;
+    let lines: Vec<&str> = logs
+        .lines()
+        .filter(|l| l.contains("security push not delivered"))
+        .collect();
+    assert_eq!(lines.len(), 1, "one line for the refused follow-up: {logs}");
+    assert!(lines[0].contains("WARN"), "{logs}");
+    assert!(
+        lines[0].contains(&notice.to_string()),
+        "names the notice: {logs}"
+    );
+    assert!(lines[0].contains("fcm"), "names the provider kind: {logs}");
+    assert!(!lines[0].contains(&token), "never the address: {logs}");
+    assert!(!lines[0].contains("\"count\""), "never the content: {logs}");
+}

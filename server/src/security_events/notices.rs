@@ -23,6 +23,7 @@ use super::push::SecurityPush;
 use super::queries::{events_of_notices, EventRow};
 use super::types::{EventType, SecurityEvent, Severity};
 use crate::api::AppState;
+use crate::push::FollowUpBatch;
 use crate::system_account::{kaiku_dm_created_tx, SYSTEM_USER_ID};
 use crate::ws::{broadcast_to_user, ServerEvent};
 
@@ -196,6 +197,21 @@ struct NoticeRow {
 /// returned at the end (so one bad event never holds back the sweep).
 #[tracing::instrument(skip(state, event_ids), fields(count = event_ids.len()))]
 pub async fn deliver(state: &AppState, event_ids: &[Uuid]) -> anyhow::Result<()> {
+    deliver_then(state, event_ids, PushMode::Inline).await
+}
+
+/// How the pushes of a delivery are sent.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PushMode {
+    /// After each event, in this task (the delivery itself runs in the
+    /// background or in a test).
+    Inline,
+    /// Handed to a background task after the last event (the minute sweep,
+    /// which must not wait for a push service).
+    Detached,
+}
+
+async fn deliver_then(state: &AppState, event_ids: &[Uuid], mode: PushMode) -> anyhow::Result<()> {
     let mut ordered: Vec<(DateTime<Utc>, Uuid)> =
         sqlx::query_as("SELECT created_at, id FROM security_events WHERE id = ANY($1)")
             .bind(event_ids)
@@ -203,14 +219,28 @@ pub async fn deliver(state: &AppState, event_ids: &[Uuid]) -> anyhow::Result<()>
             .await?;
     ordered.sort();
     let mut first_err: Option<anyhow::Error> = None;
+    let mut detached: Vec<(Uuid, SecurityPush)> = Vec::new();
     for (_, id) in ordered {
         match deliver_one(state, id).await {
-            Ok(outcomes) => after_commit(state, outcomes).await,
+            Ok(outcomes) => {
+                let pushes = after_commit(state, outcomes).await;
+                match mode {
+                    PushMode::Inline => {
+                        for (recipient, push) in pushes {
+                            send_security_push(state, recipient, &push).await;
+                        }
+                    }
+                    PushMode::Detached => detached.extend(pushes),
+                }
+            }
             Err(e) => {
                 tracing::warn!(event_id = %id, error = %e, "notice delivery of one event failed");
                 first_err.get_or_insert(e);
             }
         }
+    }
+    if !detached.is_empty() {
+        spawn_bounded_sends(state, detached, None);
     }
     first_err.map_or(Ok(()), Err)
 }
@@ -401,9 +431,10 @@ async fn deliver_one(state: &AppState, id: Uuid) -> anyhow::Result<Vec<Outcome>>
     Ok(outcomes)
 }
 
-/// WebSocket hints and pushes, after the delivery committed. Failures are
-/// logged; the notice itself is durable.
-async fn after_commit(state: &AppState, outcomes: Vec<Outcome>) {
+/// WebSocket hints after the delivery committed; returns the pushes to send.
+/// Failures are logged; the notice itself is durable.
+async fn after_commit(state: &AppState, outcomes: Vec<Outcome>) -> Vec<(Uuid, SecurityPush)> {
+    let mut pushes = Vec::new();
     for o in outcomes {
         if o.created_dm {
             match crate::chat::dm::dm_list_entry_by_id(&state.db, o.recipient, o.channel_id).await {
@@ -436,13 +467,76 @@ async fn after_commit(state: &AppState, outcomes: Vec<Outcome>) {
             }
         }
         if let Some(push) = o.push {
-            if let Err(e) =
-                crate::push::deliver_with(&state.db, &state.push, o.recipient, &push).await
-            {
-                tracing::warn!(error = %e, "notice: push failed");
-            }
+            pushes.push((o.recipient, push));
         }
     }
+    pushes
+}
+
+/// Send one security push to every subscription of `recipient`. A
+/// subscription that refuses it, fails or times out leaves one WARN line
+/// with the notice and the provider kind (never the address or the
+/// payload); the push is not sent again.
+async fn send_security_push(state: &AppState, recipient: Uuid, push: &SecurityPush) {
+    match crate::push::deliver_with_report(&state.db, &state.push, recipient, push).await {
+        Ok(report) if !report.failed_providers.is_empty() => tracing::warn!(
+            notice_id = %push.notice_id,
+            providers = ?report.failed_providers,
+            "notice: security push not delivered"
+        ),
+        Ok(_) => {}
+        Err(e) => tracing::warn!(
+            notice_id = %push.notice_id,
+            error = %e,
+            "notice: security push failed"
+        ),
+    }
+}
+
+/// Send `pushes` in a background task: [`FOLLOW_UP_PARALLEL`] recipients at
+/// a time, each recipient's pushes one after another within
+/// [`FOLLOW_UP_RECIPIENT_LIMIT`]. `batch` (the follow-up guard) is held
+/// until the last send ended.
+fn spawn_bounded_sends(
+    state: &AppState,
+    pushes: Vec<(Uuid, SecurityPush)>,
+    batch: Option<FollowUpBatch>,
+) {
+    let mut by_recipient: Vec<(Uuid, Vec<SecurityPush>)> = Vec::new();
+    for (recipient, push) in pushes {
+        match by_recipient.iter_mut().find(|(r, _)| *r == recipient) {
+            Some((_, list)) => list.push(push),
+            None => by_recipient.push((recipient, vec![push])),
+        }
+    }
+    let state = state.clone();
+    tokio::spawn(async move {
+        use futures::StreamExt as _;
+        futures::stream::iter(by_recipient)
+            .for_each_concurrent(FOLLOW_UP_PARALLEL, |(recipient, list)| {
+                let state = &state;
+                async move {
+                    let send = async {
+                        for push in &list {
+                            send_security_push(state, recipient, push).await;
+                        }
+                    };
+                    if tokio::time::timeout(FOLLOW_UP_RECIPIENT_LIMIT, send)
+                        .await
+                        .is_err()
+                    {
+                        let notice_ids: Vec<Uuid> = list.iter().map(|p| p.notice_id).collect();
+                        tracing::warn!(
+                            recipient = %recipient,
+                            notice_ids = ?notice_ids,
+                            "notice: security pushes cut off after the time limit"
+                        );
+                    }
+                }
+            })
+            .await;
+        drop(batch);
+    });
 }
 
 async fn message_event(
@@ -549,7 +643,7 @@ pub async fn deliver_pending_bounded(state: &AppState, batch: i64) -> anyhow::Re
         }
     }
     let n = ids.len();
-    deliver(state, &ids).await?;
+    deliver_then(state, &ids, PushMode::Detached).await?;
     Ok(n)
 }
 
@@ -614,7 +708,7 @@ pub async fn push_due_follow_ups_bounded(state: &AppState, limit: i64) -> anyhow
         "WITH due AS (
              SELECT id, recipient_id, subject_id, event_type, severity, count
                FROM security_notices
-              WHERE push_due_at IS NOT NULL AND push_due_at <= clock_timestamp()
+              WHERE push_due_at IS NOT NULL AND push_due_at <= statement_timestamp()
               ORDER BY push_due_at
               LIMIT $1
               FOR UPDATE SKIP LOCKED
@@ -688,44 +782,7 @@ pub async fn push_due_follow_ups_bounded(state: &AppState, limit: i64) -> anyhow
     if sent == 0 {
         return Ok(0);
     }
-    let mut by_recipient: Vec<(Uuid, Vec<SecurityPush>)> = Vec::new();
-    for (recipient, push) in pushes {
-        match by_recipient.iter_mut().find(|(r, _)| *r == recipient) {
-            Some((_, list)) => list.push(push),
-            None => by_recipient.push((recipient, vec![push])),
-        }
-    }
-    let state = state.clone();
-    tokio::spawn(async move {
-        use futures::StreamExt as _;
-        futures::stream::iter(by_recipient)
-            .for_each_concurrent(FOLLOW_UP_PARALLEL, |(recipient, list)| {
-                let state = &state;
-                async move {
-                    let send = async {
-                        for push in &list {
-                            if let Err(e) =
-                                crate::push::deliver_with(&state.db, &state.push, recipient, push)
-                                    .await
-                            {
-                                tracing::warn!(error = %e, "notice: follow-up push failed");
-                            }
-                        }
-                    };
-                    if tokio::time::timeout(FOLLOW_UP_RECIPIENT_LIMIT, send)
-                        .await
-                        .is_err()
-                    {
-                        tracing::warn!(
-                            recipient = %recipient,
-                            "notice: follow-up pushes cut off after the time limit"
-                        );
-                    }
-                }
-            })
-            .await;
-        drop(batch);
-    });
+    spawn_bounded_sends(state, pushes, Some(batch));
     Ok(sent)
 }
 
