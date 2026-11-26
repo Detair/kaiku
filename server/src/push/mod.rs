@@ -172,9 +172,11 @@ pub enum Delivery {
 // Dispatch
 // ============================================================================
 
-/// Deliver a wake signal to every subscription of `user_id`. Subscriptions that
-/// report `Gone` are pruned; successful ones get `last_used_at` updated (both
-/// only while the row still has the provider and address the send went to).
+/// Deliver a wake signal to every subscription of `user_id`.
+///
+/// Subscriptions that report `Gone` are pruned; successful ones get
+/// `last_used_at` updated (both only while the row still has the provider and
+/// address the send went to).
 ///
 /// # Errors
 /// Loading the user's subscriptions failed.
