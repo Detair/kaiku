@@ -32,6 +32,8 @@ import { t } from "@/i18n";
 import { voiceErrorText } from "@/lib/webrtc/voiceErrorText";
 import { PttController, createTauriPttListeners, type PttFullConfig } from "@/lib/pttManager";
 import { isTauri } from "@/lib/tauri/common";
+import * as webcamViewer from "@/stores/webcamViewer";
+import * as screenShareViewer from "@/stores/screenShareViewer";
 import { isSameSession, type VoiceSessionHandle } from "@/lib/webrtc/voiceSession";
 import {
   voiceOwner,
@@ -771,6 +773,9 @@ export async function joinVoice(channelId: string): Promise<void> {
     return;
   }
   removedChannels.delete(channelId);
+  // Stops remembered for late first tracks belong to the channel's session.
+  webcamViewer.beginStopMemory(channelId);
+  screenShareViewer.beginStopMemory(channelId);
   const wish = voiceOwner.wish("channel", channelId, channelHooks(channelId));
   channelWish = wish;
   const outcome = voiceOwner.request(wish);

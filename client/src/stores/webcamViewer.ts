@@ -26,12 +26,32 @@ export const STOPPED_CAMERA_MEMORY_MS = 10_000;
 /** People whose camera stopped before its first track arrived. */
 const stoppedCameras = new Map<string, ReturnType<typeof setTimeout>>();
 
+/** The voice channel the memory belongs to (set when a channel is joined). */
+let memoryChannel: string | null = null;
+
+function forgetStoppedCameras(): void {
+  for (const timer of stoppedCameras.values()) clearTimeout(timer);
+  stoppedCameras.clear();
+}
+
 /**
- * A camera stopped. If no picture of it is held yet, its first track may
- * still be on the way: it is refused until the person starts the camera
- * again or the memory runs out.
+ * A voice session in `channelId` begins: nothing remembered from an earlier
+ * session refuses a track of this one, and stops of other channels are not
+ * remembered.
  */
-export function noteCameraStopped(userId: string): void {
+export function beginStopMemory(channelId: string): void {
+  forgetStoppedCameras();
+  memoryChannel = channelId;
+}
+
+/**
+ * A camera stopped in `channelId`. If it is the joined channel and no
+ * picture of it is held yet, its first track may still be on the way: it
+ * is refused until the person starts the camera again or the memory runs
+ * out.
+ */
+export function noteCameraStopped(userId: string, channelId: string): void {
+  if (channelId !== memoryChannel) return;
   if (viewerState.availableTracks.has(userId)) return;
   clearTimeout(stoppedCameras.get(userId));
   stoppedCameras.set(
@@ -96,8 +116,7 @@ export function getWebcamUsers(): string[] {
  * Clear all webcam tracks (e.g., on disconnect).
  */
 export function clearAll(): void {
-  for (const timer of stoppedCameras.values()) clearTimeout(timer);
-  stoppedCameras.clear();
+  forgetStoppedCameras();
   setViewerState({ availableTracks: new Map() });
 }
 

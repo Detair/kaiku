@@ -44,7 +44,7 @@ export async function handleScreenShareStopped(event: Omit<Extract<ServerEvent, 
   // own when the stream ends).
   const shown = screenShareViewer.viewerState.availableTracks.get(event.stream_id)?.track ?? null;
   // A first track still on the way for this share is not shown.
-  screenShareViewer.noteStreamStopped(event.stream_id);
+  screenShareViewer.noteStreamStopped(event.stream_id, event.channel_id);
   const { voiceState, setVoiceState } = await import("@/stores/voice");
   const { produce } = await import("solid-js/store");
 
@@ -136,7 +136,7 @@ export async function handleWebcamStopped(event: Omit<Extract<ServerEvent, { typ
   // stays (a browser track only; the desktop app removes its own).
   const shown = webcamViewer.getTrack(event.user_id) ?? null;
   // A first track of this camera still on the way is not shown.
-  webcamViewer.noteCameraStopped(event.user_id);
+  webcamViewer.noteCameraStopped(event.user_id, event.channel_id);
   const { voiceState, setVoiceState } = await import("@/stores/voice");
   const { produce } = await import("solid-js/store");
 

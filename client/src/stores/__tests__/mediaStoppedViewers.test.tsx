@@ -42,6 +42,9 @@ beforeEach(() => {
   vi.stubGlobal("MediaStream", FakeMediaStream);
   vi.spyOn(console, "log").mockImplementation(() => {});
   setVoiceState({ channelId: CH, screenShares: [], webcams: [], participants: {} });
+  // Joined CH: stops of CH are remembered for late first tracks.
+  webcams.beginStopMemory(CH);
+  shares.beginStopMemory(CH);
 });
 afterEach(() => {
   cleanup();

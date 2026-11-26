@@ -160,12 +160,27 @@ export const STOPPED_STREAM_MEMORY_MS = 10_000;
 /** Shares that stopped before their first track arrived. */
 const stoppedStreams = new Map<string, ReturnType<typeof setTimeout>>();
 
+/** The voice channel the memory belongs to (set when a channel is joined). */
+let memoryChannel: string | null = null;
+
 /**
- * A share stopped. If no track of it is held yet, its first track may
- * still be on the way: it is refused, and a viewer waiting for it stops
- * waiting.
+ * A voice session in `channelId` begins: nothing remembered from an earlier
+ * session refuses a track of this one, and stops of other channels are not
+ * remembered.
  */
-export function noteStreamStopped(streamId: string): void {
+export function beginStopMemory(channelId: string): void {
+  for (const timer of stoppedStreams.values()) clearTimeout(timer);
+  stoppedStreams.clear();
+  memoryChannel = channelId;
+}
+
+/**
+ * A share stopped in `channelId`. If it is the joined channel and no track
+ * of it is held yet, its first track may still be on the way: it is
+ * refused, and a viewer waiting for it stops waiting.
+ */
+export function noteStreamStopped(streamId: string, channelId: string): void {
+  if (channelId !== memoryChannel) return;
   if (pendingStreamId === streamId) dropPendingStart();
   if (viewerState.availableTracks.has(streamId)) return;
   clearTimeout(stoppedStreams.get(streamId));

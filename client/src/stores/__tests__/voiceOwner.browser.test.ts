@@ -98,6 +98,7 @@ vi.mock("@/components/ui/Toast", () => ({
 
 vi.mock("@/stores/webcamViewer", () => ({
   clearAll: vi.fn(),
+  beginStopMemory: vi.fn(),
   addAvailableTrack: vi.fn(),
   removeAvailableTrack: vi.fn(),
 }));
