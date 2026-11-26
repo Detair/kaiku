@@ -938,6 +938,17 @@ Media of a participant reaches others only under a source the server accepted.
   sender (`replaceTrack`), not add a second audio track.
 - An announcement dies with its share or webcam: a stop (or the end of the share) removes it, and a track never
   binds to a share or webcam that has ended.
+- A forwarded track serves only the share or webcam it was bound to: when that source ends (stop, expiry, leave,
+  replacement) the server stops forwarding the track at its next packet, also if the sender keeps sending on it.
+  A later share or webcam of the same seat reaches viewers only with its own track.
+- A refused share start (any refusal code) uses up the next video track of that seat that has no announcement:
+  one already waiting for its announcement when the refusal is sent, or one that arrives within 3 s after the
+  refusal while no announcement is queued. That track is dropped as an unannounced one
+  (`VIDEO_SOURCE_UNANNOUNCED`) and never binds to a later start. A client that adds its track only after the
+  acknowledgement is not affected.
+- Share limit and store failures: if a stop or an expiry could not release its slot in the store, the next start
+  that would be refused for the channel limit compares the store's count with the shares the room really has,
+  corrects it and tries once more. A room really at its limit is still refused.
 - An accepted start whose track has not arrived 10 s after the acknowledgement ends by itself: the slot is
   released and the room gets the normal `screen_share_stopped` / `webcam_stopped` with `reason: "no_media"`.
 - `voice_screen_share_stop` and `voice_webcam_stop` are never rate-limited: a stop is always applied.
@@ -958,7 +969,9 @@ Media of a participant reaches others only under a source the server accepted.
 - Compatibility: rc.5 clients add the track right before they send the start and do not wait. An accepted
   start still binds that track (it waits for the announcement); a refused start leaves the track dropped and
   the client gets the refusal and then `VIDEO_SOURCE_UNANNOUNCED` (plus `AUDIO_SOURCE_UNANNOUNCED` when it also
-  added share audio).
+  added share audio). Known price of the rule on refused starts above: the previous release's desktop app also
+  adds its webcam track before it sends the start, so a webcam it starts within 3 s after a refused share is
+  dropped too (`VIDEO_SOURCE_UNANNOUNCED`, then `webcam_stopped` with `no_media`); starting it again works.
 
 ### `voice_error` codes (all voice requests)
 
@@ -1014,6 +1027,8 @@ Server → client event, sent only to the socket that owned the removed voice pe
   answers, ICE candidates, share/webcam starts and stops answer `voice_error` `PARTICIPANT_NOT_FOUND`, its mute
   and stats are ignored, and its disconnect removes nothing. Media the old connections still send is not
   forwarded.
+- Server: a socket that closes removes every seat it holds (a socket that sent `voice_join` for two rooms holds
+  one seat in each), each only while it is still that socket's seat.
 - Client: after `voice_removed` with `session_replaced`, a client sends neither `voice_leave` nor a REST
   `/call/leave` or `/call/decline` for that call. Server guard for older clients: `POST /api/dm/{id}/call/leave`
   and `/call/decline` answer 200 with the unchanged call state, and change nothing, while the user's seat in that
@@ -1061,8 +1076,10 @@ Binding for all clients (amended 2026-11-11).
   (server ring timeout is 90 s). An incoming ring that ends this way counts as missed.
 - A client stops ringing as soon as `call_participant_joined` names its own user (answered on another device).
 - Server restart (since 2026-11-20): at start the server ends every call that was still ringing
-  (`call_ended`, `reason: "no_answer"`), so the resync above finds no call. An answered call is kept for 60 s so
-  its participants can rejoin the room (C32); if its room is still empty then, it ends as `last_left`. Live
+  (`call_ended`, `reason: "no_answer"`), so the resync above finds no call. An answered call stays open for up
+  to 60 s after the start so its participants can rejoin the room (C32); if its room is still empty then, it ends
+  as `last_left`. Starting a new call in that DM ends it earlier. The 60 s are counted from each start, so
+  every further restart starts them anew (not a hard bound over several restarts). Live
   `call_ended` events from the start-up reach only sockets that are already connected, so the resync is what
   clients rely on.
 

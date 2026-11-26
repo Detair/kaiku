@@ -261,6 +261,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Webcams from the web app need the web app of the same release: update the server and the web client together.
 - A DM call that was ringing while the server restarted kept ringing; it now ends at the restart, and answered calls end shortly after if nobody comes back.
 - Someone blocked by a participant could still join a DM call directly.
+- A screen share the server refused could still reach everyone as the sharer's webcam when they turned on the camera right after the refusal.
+- After a short storage problem while a screen share ended, nobody in the call could share their screen until everyone had left.
 - Stopping the server (for example `docker stop` or a Kubernetes rollout, which send SIGTERM) now shuts it down cleanly within a few seconds instead of waiting to be killed. Voice participants leave their rooms normally, every open connection is closed with code 1012 (service restart) so apps reconnect right away, and buffered telemetry is written before the process exits. Open connections are told first, within moments of the stop signal, and neither a slow request nor a voice room that is slow to empty delays that. The whole shutdown takes at most 5 seconds from the signal; a request still running at that point is answered with 503. Bot connections are closed the same way.
 - An upload that is interrupted (the app closes, the connection drops, the server restarts) no longer leaves its file behind in storage.
 - Screen share slots no longer stay taken after a server restart, and joining a voice channel again from another device ends the screen share and camera of the previous connection instead of leaving them behind.
