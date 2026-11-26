@@ -185,15 +185,14 @@ What stays (residual):
   session of the account may take it over meanwhile.
 - Whoever holds a phone's exact endpoint (FCM token or UnifiedPush URL) can move it to another
   account by registering it there, as before.
-- A chat-only sign-in reads the account's key phones including their install ids (`GET
-  /api/approval-devices`), also those of removed key phones. The install id no longer lets it touch
-  an active or pending key phone's registration. A chat-only sign-in may register under the install
-  id of a removed key phone; if that same phone is later set up again, that registration becomes the
-  key phone's row and stays until the device is removed or a full session replaces it ("end all
-  other sessions" does not remove it). Until then the phone itself gets no notifications and that
-  registration receives the account's content-free wakes. The phone's own next registration comes
-  from its full session and replaces it, so the state ends by itself (the app registers again when
-  it next starts, not earlier than a day after its last registration).
+- Any address registered under an install id before that install became a key phone counts as the
+  key phone's registration once it is one: at a first setup, when a removed phone is set up again,
+  and for rows that existed before the upgrade. Normally that is the phone's own address. If it is
+  another, the phone gets no notifications through it and that address receives the account's
+  content-free wakes, without a fixed time limit, until the phone's next own registration (from its
+  full session; the app registers again when it next starts, not earlier than a day after its last
+  registration) replaces it, or until the phone is removed as a key. Session ends and "end all other
+  sessions" do not remove it.
 
 ## 4. Sessions: refresh rotation and caps
 

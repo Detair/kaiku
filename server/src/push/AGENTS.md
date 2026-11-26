@@ -147,6 +147,9 @@ channel.
   errorCode `UNREGISTERED`, or 403 together with `SENDER_ID_MISMATCH`
   (UnifiedPush: 404/410). A bare 404 (wrong URL or project) and any 400 (even
   one carrying `UNREGISTERED`) keep the row, or every device would lose push.
+  The delete on `Gone` and the `last_used_at` update on success apply only
+  while the row still has the provider and endpoint the wake was sent to, so a
+  late answer for an old token never touches a row that moved to a new one.
 - A failed OAuth2 token fetch puts the client in a 30 s cooldown: sends fail
   fast without contacting Google, so an outage does not queue behind the
   single-flight lock.
@@ -251,9 +254,11 @@ counts as "no longer live").
   asks again when its app next starts or its address changes, not earlier than
   a day after its last registration (the released app keeps its local record
   24 h).
-- Residual: a chat-only session may register under the install id of a
-  removed key phone; if that install is set up again, the row becomes the key
-  phone's row (not removed by session ends or "end all other sessions").
+- Residual: an address registered under an install id before that install
+  became a key phone (first setup, a removed phone set up again, rows from
+  before the upgrade) counts as the key phone's row; session ends and "end all
+  other sessions" do not remove it. The phone's next own registration from its
+  full session replaces it, and removing the phone deletes it.
 
 ## Single replica
 

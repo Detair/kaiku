@@ -139,7 +139,7 @@ Every sign-in is one of two kinds, decided when you sign in. It never changes af
 | Add or remove phones and passkeys, change password, authenticator app or recovery codes | yes, after a confirmation | no |
 | End your other sessions (this also removes every notification registration except your key phones' and this sign-in's), delete your account | yes, after a confirmation | no |
 | Delete a server you own | yes | no |
-| See or remove the devices that get your notifications | yes | no (only the notification device it registered itself, never a key phone's) |
+| See or remove the devices that get your notifications | yes | no; it cannot list them, and it can remove only a registration of its own, one from before the update without an owner, or one of a sign-in that has ended, never a key phone's |
 | Add an encryption key for a new device, replace your key backup | yes | no |
 | Create your first key backup | yes | yes; a full sign-in can replace it later (in the desktop app that needs a passkey) |
 | Admin area | yes (admins only) | no |

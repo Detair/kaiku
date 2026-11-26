@@ -501,8 +501,8 @@ pub async fn claim_prekey(
     tag = "crypto",
     request_body = UploadBackupRequest,
     responses(
-        (status = 200, description = "Backup uploaded"),
-        (status = 403, description = "FULL_SESSION_REQUIRED: replacing an existing backup needs a full session"),
+        (status = 201, description = "Backup stored"),
+        (status = 403, description = "FULL_SESSION_REQUIRED: replacing an existing backup, or a first backup other than version 1, needs a full session"),
     ),
     security(("bearer_auth" = [])),
 )]
