@@ -191,6 +191,21 @@ class AppLinkCheckTest(unittest.TestCase):
                 self.assertTrue(check.problems(manifest(setup_filter(), **kwargs), HOST))
         self.assertEqual([], check.problems(manifest(setup_filter(), exported="0xffffffff", enabled="true", app_enabled="true"), HOST))
 
+    def test_exported_and_enabled_are_read_in_every_form_the_tool_prints(self):
+        # Older and newer aapt2 print booleans differently; each form means the same.
+        for value in ("true", "0xffffffff", "-1", "(type 0x12)0xffffffff"):
+            with self.subTest(exported=value):
+                self.assertEqual([], check.problems(manifest(setup_filter(), exported=value, enabled=value, app_enabled=value), HOST))
+        for value in ("false", "0x0", "(type 0x12)0x0"):
+            for kwargs in ({"exported": value}, {"enabled": value}, {"app_enabled": value}):
+                with self.subTest(kwargs):
+                    self.assertTrue(check.problems(manifest(setup_filter(), **kwargs), HOST))
+        # A value from a resource cannot be known here: it fails, and says why.
+        for kwargs in ({"exported": "@0x7f050001"}, {"enabled": "@0x7f050001"}, {"app_enabled": "@0x7f050001"}):
+            with self.subTest(kwargs):
+                found = check.problems(manifest(setup_filter(), **kwargs), HOST)
+                self.assertTrue(any("resource" in p for p in found), found)
+
     def test_a_port_fails(self):
         tree = manifest(setup_filter(data=[("scheme", "https"), ("host", HOST), ("port", "8443"), ("path", "/setup")]))
         self.assertTrue(check.problems(tree, HOST))

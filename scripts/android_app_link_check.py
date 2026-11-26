@@ -6,7 +6,7 @@ Usage: aapt2 dump xmltree --file AndroidManifest.xml app.apk | android_app_link_
 Passes only when MainActivity has an intent filter that is exactly the setup App Link:
 autoVerify, the VIEW action, the DEFAULT and BROWSABLE categories, and data of exactly
 scheme https, host <host> and path /setup; MainActivity must be exported and enabled, in an
-enabled application.
+enabled application (in every form aapt2 prints those values; a value from a resource fails).
 
 Every https filter of MainActivity, and of every activity-alias that targets it, is looked at.
 It fails the check when it reaches more of <host> than exact paths:
@@ -99,12 +99,26 @@ TRUE = ("true", "0xffffffff", "-1")
 FALSE = ("false", "0x0", "0")
 
 
+def flag(attrs: dict, name: str, default: bool | None) -> bool | None:
+    """A boolean attribute in every form aapt2 prints ("true", "0xffffffff", "(type 0x12)0x0", ...);
+    default when it is absent; None when it cannot be known here (a value from a resource)."""
+    v = attrs.get(name)
+    if v is None:
+        return default
+    v = re.sub(r"^\(type 0x[0-9a-fA-F]+\)", "", v.strip()).lower()
+    if v in TRUE:
+        return True
+    if v in FALSE:
+        return False
+    return None
+
+
 def problems(tree: str, host: str) -> list[str]:
     """Everything wrong with the setup App Link for host; empty when it is exactly right."""
     found = False
     wrong: list[str] = []
     nodes = parse(tree)
-    app_enabled = all(a["attrs"].get("enabled", "true").lower() not in FALSE for a in walk(nodes, "application"))
+    app_flags = [flag(a["attrs"], "enabled", True) for a in walk(nodes, "application")]
     for comp, alias in components(nodes):
         where = " (on an alias of MainActivity)" if alias else ""
         for f in walk(comp["children"], "intent-filter"):
@@ -159,9 +173,13 @@ def problems(tree: str, host: str) -> list[str]:
                 wrong.append("setup filter with other data than https://" + host + "/setup" + where)
             elif not alias:
                 # Only an activity other apps can start, that is turned on in an application that is.
-                if comp["attrs"].get("exported", "").lower() not in TRUE:
+                exported = flag(comp["attrs"], "exported", False)
+                enabled = [flag(comp["attrs"], "enabled", True), *app_flags]
+                if exported is None or None in enabled:
+                    wrong.append("setup filter on a MainActivity whose exported or enabled value comes from a resource")
+                elif not exported:
                     wrong.append("setup filter on a MainActivity that is not exported")
-                elif comp["attrs"].get("enabled", "true").lower() in FALSE or not app_enabled:
+                elif not all(enabled):
                     wrong.append("setup filter on a MainActivity that is not enabled")
                 else:
                     found = True
