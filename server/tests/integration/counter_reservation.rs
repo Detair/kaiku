@@ -1053,3 +1053,217 @@ async fn recovery_password_resets_like_login(pool: PgPool) {
     assert_eq!(seen[0].2, 0, "a right password with a next step resets");
     assert_eq!(seen[1].2, 3, "without a next step the try stays counted");
 }
+
+// ---------------------------------------------------------------------------
+// The effects of a counted failure apply only to the epoch it was counted in
+// ---------------------------------------------------------------------------
+
+/// Sessions of this test's database that wait for a lock.
+async fn lock_waiters(pool: &PgPool) -> i64 {
+    sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pg_stat_activity
+          WHERE datname = current_database() AND wait_event_type = 'Lock'",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+async fn wait_for_lock_waiters(pool: &PgPool, n: i64) {
+    for _ in 0..1500 {
+        if lock_waiters(pool).await >= n {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("fewer than {n} sessions wait for the account lock");
+}
+
+/// Wait until no other session of this database is busy (the spawned
+/// effects have finished).
+async fn wait_for_quiet(pool: &PgPool) {
+    for _ in 0..1500 {
+        let busy: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pg_stat_activity
+              WHERE datname = current_database() AND pid <> pg_backend_pid()
+                AND state IS NOT NULL AND state <> 'idle'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        if busy == 0 {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("the database did not get quiet");
+}
+
+/// A transaction holding `user`'s account lock.
+async fn hold_account_lock(
+    pool: &PgPool,
+    user: Uuid,
+) -> sqlx::Transaction<'static, sqlx::Postgres> {
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query("SELECT id FROM users WHERE id = $1 FOR NO KEY UPDATE")
+        .bind(user)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx
+}
+
+/// `(password_state, totp_state)`.
+async fn factor_states(pool: &PgPool, user: Uuid) -> (String, String) {
+    sqlx::query_as("SELECT password_state::text, totp_state::text FROM users WHERE id = $1")
+        .bind(user)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// What starts a new epoch while the 100th failure's effects wait for the
+/// account lock.
+#[derive(Clone, Copy, Debug)]
+enum NewEpoch {
+    /// A success resets the counter.
+    Success,
+    /// `kaiku-admin throttle reset`.
+    ThrottleReset,
+    /// `kaiku-admin factor reset <user> <factor>`.
+    FactorReset,
+}
+
+fn cli_args<'a>(how: NewEpoch, name: &'a str, factor: &'a str) -> Vec<&'a str> {
+    match how {
+        NewEpoch::ThrottleReset => vec!["throttle", "reset", name],
+        NewEpoch::FactorReset => vec!["factor", "reset", name, factor],
+        NewEpoch::Success => unreachable!(),
+    }
+}
+
+/// The 100th wrong password's effects wait for the account lock while a
+/// success or an administrator's reset starts a new epoch: the password is
+/// not throttled, and the right password signs in.
+#[sqlx::test]
+async fn password_effects_skip_a_newer_epoch(_: PgPoolOptions, db: PgConnectOptions) {
+    let pool = wide_pool(db).await;
+    let app = TestApp::with_pool(pool.clone()).await;
+    for how in [
+        NewEpoch::Success,
+        NewEpoch::ThrottleReset,
+        NewEpoch::FactorReset,
+    ] {
+        let (user, name) = password_user(&pool, PASSWORD).await;
+        enable_totp(&pool, &app.config, user, &name).await;
+        let key = CounterKey::password(&name);
+        set_count(&app, &key, 99).await;
+        let hold = hold_account_lock(&pool, user).await;
+        let wrong = {
+            let router = app.router.clone();
+            let req = login_request(&name, "wrong-password-1", "198.51.100.7");
+            move || tokio::spawn(async move { send(&router, req).await })
+        };
+        let answer = match how {
+            NewEpoch::Success => {
+                let try_100 = wrong();
+                // The 100th try is reserved (and claims the throttle) …
+                for _ in 0..1500 {
+                    if counted(&app, &key).await == 100 {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+                assert_eq!(counted(&app, &key).await, 100, "{how:?}");
+                // … then a success starts a new epoch.
+                AccountLimiter::new(&app.state.redis)
+                    .reset_epoch(&key)
+                    .await
+                    .unwrap();
+                hold.commit().await.unwrap();
+                try_100.await.unwrap()
+            }
+            NewEpoch::ThrottleReset | NewEpoch::FactorReset => {
+                let args = cli_args(how, &name, "password");
+                let reset = super::cli_recovery::cli(&app, &args);
+                let driver = async {
+                    // The reset waits for the lock, then the try's effects
+                    // queue behind it.
+                    wait_for_lock_waiters(&pool, 1).await;
+                    let try_100 = wrong();
+                    wait_for_lock_waiters(&pool, 2).await;
+                    hold.commit().await.unwrap();
+                    try_100.await.unwrap()
+                };
+                let (reset, answer) = tokio::join!(reset, driver);
+                reset.unwrap();
+                answer
+            }
+        };
+        assert_eq!(answer.0, 401, "{how:?}: {}", answer.1);
+        assert_eq!(
+            factor_states(&pool, user).await.0,
+            "active",
+            "{how:?}: the effects of the old epoch throttled the password"
+        );
+        assert_eq!(counted(&app, &key).await, 0, "{how:?}");
+        let (s, b, _) = send(&app.router, login_request(&name, PASSWORD, "198.51.100.7")).await;
+        assert_eq!(s, 202, "{how:?}: {b}");
+    }
+}
+
+/// The 100th wrong sign-in code's effects wait for the account lock behind
+/// an administrator's reset: the code is not throttled afterwards, and the
+/// right code signs in.
+#[sqlx::test]
+async fn totp_effects_skip_the_cli_reset(_: PgPoolOptions, db: PgConnectOptions) {
+    use vc_server::auth::totp_guard::{after, Used};
+    let pool = wide_pool(db).await;
+    let app = TestApp::with_pool(pool.clone()).await;
+    for how in [NewEpoch::ThrottleReset, NewEpoch::FactorReset] {
+        let (user, name) = password_user(&pool, PASSWORD).await;
+        let totp = enable_totp(&pool, &app.config, user, &name).await;
+        let key = totp_key(&pool, user).await;
+        let generation: i64 = sqlx::query_scalar("SELECT totp_generation FROM users WHERE id = $1")
+            .bind(user)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        set_count(&app, &key, 99).await;
+        let hold = hold_account_lock(&pool, user).await;
+        let args = cli_args(how, &name, "totp");
+        let reset = super::cli_recovery::cli(&app, &args);
+        let driver = async {
+            wait_for_lock_waiters(&pool, 1).await;
+            // The 100th wrong code: counted, its effects spawned; they wait
+            // for the lock behind the reset.
+            let ctx = vc_server::auth::ctx::AuthCtx::from(&app.state);
+            after(
+                &ctx,
+                None,
+                user,
+                false,
+                Used {
+                    totp_generation: generation,
+                    password: None,
+                },
+            )
+            .await;
+            wait_for_lock_waiters(&pool, 2).await;
+            hold.commit().await.unwrap();
+        };
+        let (reset, ()) = tokio::join!(reset, driver);
+        reset.unwrap();
+        wait_for_quiet(&pool).await;
+        assert_eq!(
+            factor_states(&pool, user).await.1,
+            "active",
+            "{how:?}: the effects of the old epoch throttled the sign-in code"
+        );
+        assert_eq!(counted(&app, &key).await, 0, "{how:?}");
+        let (id, verifier) = password_step(&app, &name).await;
+        let right = totp.generate_current().unwrap();
+        let (s, b, _) = send(&app.router, totp_request(&id, &verifier, &right)).await;
+        assert_eq!(s, 200, "{how:?}: {b}");
+    }
+}

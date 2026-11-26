@@ -252,6 +252,10 @@ pub async fn reserve_password(
 /// so counted): at every 20th a coalesced `guessing` notice; the first
 /// failure at or past the 100th in an epoch throttles the password (its
 /// claim is given back if this fails, so the next failure throttles).
+/// Under the account lock the effects apply only while the counter is
+/// still in the epoch the try was counted in and its count has not fallen
+/// below this try's: a success or an administrator's reset since then
+/// means none of it applies.
 pub async fn account_failure(
     state: &AppState,
     counter: &crate::ratelimit::account::CounterKey,
@@ -267,7 +271,7 @@ pub async fn account_failure(
     if !n.is_multiple_of(NOTICE_EVERY) && !failure.throttle {
         return Ok(());
     }
-    let result = failure_effects(state, user, n, failure.throttle).await;
+    let result = failure_effects(state, counter, user, &failure).await;
     if failure.throttle {
         let _ = if result.is_ok() {
             limiter.confirm_throttle(counter, &failure).await
@@ -278,11 +282,28 @@ pub async fn account_failure(
     result
 }
 
-async fn failure_effects(state: &AppState, user: Uuid, n: u32, throttle: bool) -> AuthResult<()> {
-    use crate::ratelimit::account::NOTICE_EVERY;
+async fn failure_effects(
+    state: &AppState,
+    counter: &crate::ratelimit::account::CounterKey,
+    user: Uuid,
+    failure: &crate::ratelimit::account::Failure,
+) -> AuthResult<()> {
+    use crate::ratelimit::account::{AccountLimiter, NOTICE_EVERY};
+    let (n, throttle) = (failure.count, failure.throttle);
     let ctx = AuthCtx::from(state);
     let mut tx = state.db.begin().await?;
     crate::approvals::transition::lock_accounts(&mut tx, &[user]).await?;
+    // Under the lock: still the epoch this try was counted in, and the
+    // count still there (an unreadable counter is an error, so the claim
+    // is given back).
+    let (count_now, epoch_now) = AccountLimiter::new(&state.redis)
+        .read(counter)
+        .await
+        .map_err(|_| AuthError::ServiceUnavailable)?;
+    if !(epoch_now == failure.epoch && count_now >= i64::from(n)) {
+        tx.commit().await?;
+        return Ok(());
+    }
     let mut events = Vec::new();
     if n.is_multiple_of(NOTICE_EVERY) {
         events.push(
