@@ -94,6 +94,8 @@ internal fun removalFailedText(code: String?): Int {
         "NETWORK" -> R.string.security_network_error
         "APPROVAL_EXPIRED", "TOOK_TOO_LONG" -> R.string.security_took_too_long
         "ACCOUNT_BANNED" -> R.string.auth_login_banned
+        // The server's word about this install was about another key; the setup is back where it was.
+        "NOT_THIS_KEY" -> R.string.setup_not_this_key
         // The phone could not note that the server accepted its key: nothing was removed.
         "NOT_SAVED" -> R.string.confirm_removal_not_started
         // The server removed this phone, but the phone could not clear its record.

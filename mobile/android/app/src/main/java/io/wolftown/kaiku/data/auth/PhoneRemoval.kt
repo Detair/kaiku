@@ -209,9 +209,16 @@ class PhoneRemoval @Inject constructor(
             // The server's own answers for a key device that is gone, asked on the key's server
             // about the captured record: the phone forgets that record (and only that one).
             val settled = answers.settle(current, origin, ask, ServerAnswer.of(e))
-            if (settled.verdict == Verdict.KEY_GONE) {
-                return if (settled.forgotten) RemovalResult.KeyGone(invalidated = false) else RemovalResult.Failed("NOT_FORGOTTEN")
+            if (settled.forgotten) return RemovalResult.KeyGone(invalidated = false)
+            // As in the device sign-in: the server's word that this install is a key device was
+            // about another key. The record goes back to the unfinished setup it was, never takes
+            // that word again, and the phone belongs to that setup's waiting screen.
+            val from = current.provisionalFrom
+            if (from != null && (settled.verdict == Verdict.KEY_GONE || e.normalizedCode == "SIGNATURE_INVALID")) {
+                val back = keyDevices.update(current) { it.copy(phase = from, provisionalFrom = null, notThisKey = true) }
+                return RemovalResult.Failed(if (back.done) "NOT_THIS_KEY" else "NOT_FORGOTTEN")
             }
+            if (settled.verdict == Verdict.KEY_GONE) return RemovalResult.Failed("NOT_FORGOTTEN")
             return RemovalResult.Failed(e.normalizedCode ?: "HTTP_${e.status.value}")
         } catch (_: IOException) {
             return RemovalResult.Failed("NETWORK")

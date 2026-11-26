@@ -538,4 +538,45 @@ class PhoneRemovalTest {
         assertTrue(r.toString(), r is RemovalResult.Failed)
         assertNull(p.f.repo.record.value!!.unanswered)
     }
+
+    /**
+     * A key that is a key device only by the server's word about this install, and the server says
+     * its key device is gone (an admin removed it meanwhile): the removal does what the device
+     * sign-in does there. The record goes back to the setup it came from, is marked so, keeps its
+     * key, and the phone belongs to the waiting screen; nothing is asked of the server again.
+     */
+    @Test fun `a provisional key the server calls gone goes back to its setup`() = runTest {
+        val p = Phone(this)
+        p.f.store.stored = p.f.store.stored!!.copy(provisionalFrom = io.wolftown.kaiku.data.keydevice.KeyDevicePhase.CLAIMED)
+        p.f.repo.reload()
+        p.approval.failWith = io.wolftown.kaiku.testutil.apiError(403, "KEY_DEVICE_REVOKED")
+        assertEquals(RemovalResult.Failed("NOT_THIS_KEY"), p.removal.run(activity))
+        assertEquals(io.wolftown.kaiku.R.string.setup_not_this_key, io.wolftown.kaiku.ui.auth.removalFailedText("NOT_THIS_KEY"))
+        val rec = p.f.repo.record.value!!
+        assertEquals(io.wolftown.kaiku.data.keydevice.KeyDevicePhase.CLAIMED, rec.phase)
+        assertNull(rec.provisionalFrom)
+        assertTrue(rec.notThisKey)
+        assertTrue(p.f.keyStore.hasKey())
+        // Signed out, the phone now belongs to the waiting screen of that setup, not to "Confirm it's you".
+        assertEquals(io.wolftown.kaiku.data.keydevice.AppEntry.WAITING_SETUP, p.f.repo.entry(hasServer = true))
+        // A second tap asks nothing more of the server.
+        val asked = p.approval.calls.size
+        p.removal.run(activity)
+        assertEquals(asked, p.approval.calls.size)
+    }
+
+    /**
+     * The server accepted this provisional key's sign-in (so it is a key device for good now) and
+     * then says its key device is gone during the removal: that answer is about this record as it is
+     * now, and the phone forgets it.
+     */
+    @Test fun `an answer after the accepted sign-in is settled on the record as it is now`() = runTest {
+        val p = Phone(this)
+        p.f.store.stored = p.f.store.stored!!.copy(provisionalFrom = io.wolftown.kaiku.data.keydevice.KeyDevicePhase.CLAIMED)
+        p.f.repo.reload()
+        p.api.failures["remove:$KEY_DEVICE"] = io.wolftown.kaiku.testutil.apiError(403, "KEY_DEVICE_REVOKED")
+        assertEquals(RemovalResult.KeyGone(invalidated = false), p.removal.run(activity))
+        assertNull(p.f.repo.record.value)
+        assertFalse(p.f.keyStore.hasKey())
+    }
 }
