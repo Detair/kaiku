@@ -85,6 +85,12 @@ export type ServerEvent =
       webcams?: import("./voice").WebcamServerInfo[];
     }
   | { type: "voice_error"; code: string; message: string }
+  /**
+   * C31: this socket's voice peer was removed by the server (not by an own
+   * leave). `reason`: kicked, banned, permission_lost, channel_deleted,
+   * session_replaced; unknown values count as kicked. Never auto-rejoin.
+   */
+  | { type: "voice_removed"; channel_id: string; reason: string }
   // Screen share events
   | {
       type: "screen_share_started";

@@ -176,6 +176,19 @@ flowchart TD
     I --> J[attachStream ref callback sets srcObject]
 ```
 
+A stop can overtake the first track: someone switches the camera (or a
+share) on and off within a second, before the subscriber's renegotiation
+delivered the track. When `screen_share_stopped` or `webcam_stopped`
+arrives for the joined channel and no track of that share or camera is held
+yet, the viewer stores remember the stopped share id (or the person's
+camera) for 10 seconds and refuse a track that arrives for it in that time;
+a viewer waiting for that share stops waiting. The memory belongs to the
+voice session: joining a channel forgets everything remembered before, and
+stops of other channels (for example a late one from the channel just left)
+are not remembered. In the same channel a new `webcam_started` of the same
+person ends the camera's memory at once, so a new start is never affected,
+and a camera that already runs in a channel joined later is shown.
+
 The stream ID format used in WebRTC track naming:
 ```
 "{user_id}:{source_type}"

@@ -75,6 +75,8 @@ vi.mock("@/stores/threads", () => ({
   threadsState: { activeThreadId: null },
 }));
 vi.mock("@/stores/call", () => ({
+  declinedElsewhere: vi.fn(),
+  handleCallVoiceRemoved: vi.fn().mockResolvedValue(false),
   receiveIncomingCall: vi.fn(),
   callConnected: vi.fn(),
   callEndedExternally: vi.fn(),
@@ -284,6 +286,84 @@ describe("session lifecycle with the real service stores", () => {
     listenGates = [];
     await logout();
     await flush();
+  });
+
+  describe("voice ends with the signed-in session", () => {
+    /** A voice session held by the voice owner, as if the user were in a channel. */
+    async function inVoice() {
+      const { voiceOwner } = await import("../voiceOwner");
+      const userWhenEnded: unknown[] = [];
+      const adapter = {
+        join: vi.fn(async (session: unknown) => ({ ok: true, value: session })),
+        leave: vi.fn(async () => {
+          userWhenEnded.push(authState.user);
+          return { ok: true };
+        }),
+        teardown: vi.fn(async () => ({ ok: true })),
+        setEventHandlers: vi.fn(),
+      };
+      voiceOwner.useAdapter(async () => adapter as never);
+      const wish = voiceOwner.wish("channel", "ch-voice", {});
+      await voiceOwner.request(wish);
+      return { voiceOwner, adapter, wish, userWhenEnded };
+    }
+
+    it("sign-out ends voice before the account is cleared, and nothing rejoins", async () => {
+      setAuthState({ user: { id: "u1", username: "anna" } as User });
+      const { voiceOwner, adapter, wish, userWhenEnded } = await inVoice();
+
+      const signingOut = logout();
+      // Synchronously with the sign-out, while the account is still there.
+      expect(adapter.leave).toHaveBeenCalledTimes(1);
+      expect(userWhenEnded).toEqual([expect.objectContaining({ id: "u1" })]);
+      expect(voiceOwner.wants(wish)).toBe(false);
+      await expectSettled(signingOut, "logout");
+      expect(authState.user).toBeNull();
+      expect(adapter.join).toHaveBeenCalledTimes(1);
+    });
+
+    it("another account takes the place of the signed-in one: voice ends before it is installed", async () => {
+      setAuthState({ user: { id: "u1", username: "anna" } as User });
+      const { voiceOwner, adapter, wish, userWhenEnded } = await inVoice();
+
+      // A sign-in result for someone else arrives (sign-in over the session,
+      // account switch, a refresh that answers with another user).
+      setAuthState({ user: { id: "u2", username: "ben" } as User, isLoading: false });
+
+      expect(adapter.leave).toHaveBeenCalledTimes(1);
+      // The microphone was released while the previous user was still set.
+      expect(userWhenEnded).toEqual([expect.objectContaining({ id: "u1" })]);
+      expect(voiceOwner.wants(wish)).toBe(false);
+      expect(authState.user?.id).toBe("u2");
+      setAuthState({ user: null });
+    });
+
+    it("the same user again (a refresh, a profile change) does not touch voice", async () => {
+      setAuthState({ user: { id: "u1", username: "anna" } as User });
+      const { voiceOwner, adapter, wish } = await inVoice();
+
+      setAuthState({ user: { id: "u1", username: "anna", display_name: "Anna" } as User });
+      setAuthState("user", (prev) => (prev ? { ...prev, display_name: "A." } : null));
+      setAuthState({ isLoading: false });
+
+      expect(adapter.leave).not.toHaveBeenCalled();
+      expect(voiceOwner.wants(wish)).toBe(true);
+      await voiceOwner.drop(wish);
+      setAuthState({ user: null });
+    });
+
+    it("an ended session (expired, revoked) ends voice at once too", async () => {
+      await expectSettled(initAuth(), "initAuth");
+      setAuthState({ user: { id: "u1", username: "anna" } as User });
+      const { adapter, voiceOwner, wish } = await inVoice();
+
+      window.dispatchEvent(
+        new CustomEvent("kaiku:session-ended", { detail: { reason: "revoked" } }),
+      );
+      expect(adapter.leave).toHaveBeenCalledTimes(1);
+      expect(voiceOwner.wants(wish)).toBe(false);
+      await flush();
+    });
   });
 
   it("logout while the WebSocket listeners register leaves no Tauri listener behind", async () => {

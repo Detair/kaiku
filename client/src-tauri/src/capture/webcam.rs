@@ -7,8 +7,8 @@ use nokhwa::pixel_format::RgbFormat;
 use nokhwa::utils::{CameraIndex, RequestedFormat, RequestedFormatType};
 use nokhwa::Camera;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{mpsc, watch};
-use tracing::{debug, error, info, warn};
+use tokio::sync::watch;
+use tracing::{error, info, warn};
 
 use super::convert::{I420Converter, PixelLayout};
 use super::I420Frame;
@@ -47,6 +47,10 @@ pub fn enumerate_webcam_devices() -> Result<Vec<WebcamDevice>, String> {
         .collect())
 }
 
+/// Failed frame reads in a row (50 ms apart) after which the camera counts
+/// as gone (about 5 s).
+const MAX_FAILURES_IN_A_ROW: u32 = 100;
+
 /// Webcam capturer that produces I420 frames from a camera device.
 pub struct WebcamCapturer {
     device_index: u32,
@@ -77,7 +81,7 @@ impl WebcamCapturer {
     /// Returns when `shutdown_rx` receives `true` or the camera disconnects.
     pub fn start(
         self,
-        frame_tx: mpsc::Sender<I420Frame>,
+        frame_tx: std::sync::mpsc::SyncSender<I420Frame>,
         shutdown_rx: watch::Receiver<bool>,
     ) -> Result<tokio::task::JoinHandle<()>, String> {
         let device_index = self.device_index;
@@ -124,6 +128,9 @@ impl WebcamCapturer {
 
             // Calculate frame interval for target FPS
             let frame_interval = std::time::Duration::from_millis(1000 / u64::from(fps));
+            // A camera that keeps failing (unplugged, taken by another app)
+            // ends the capture, so the share's normal stop runs.
+            let mut failures_in_a_row = 0u32;
 
             loop {
                 if *shutdown_rx.borrow() {
@@ -142,8 +149,13 @@ impl WebcamCapturer {
                             let stride = frame_w as usize * PixelLayout::RGB.bytes_per_pixel();
                             match converter.convert(decoded.as_raw(), frame_w, frame_h, stride) {
                                 Some(i420) => {
-                                    if frame_tx.try_send(i420).is_err() {
-                                        debug!("Webcam frame dropped (receiver behind)");
+                                    // Dropped when the encoder is behind; gone: end.
+                                    if !crate::video::publication::offer_frame(&frame_tx, i420) {
+                                        info!(
+                                            device = device_index,
+                                            "Encoder gone; webcam capture ends"
+                                        );
+                                        break;
                                     }
                                 }
                                 None => {
@@ -159,12 +171,18 @@ impl WebcamCapturer {
                         }
                     },
                     Err(e) => {
+                        failures_in_a_row += 1;
+                        if failures_in_a_row >= MAX_FAILURES_IN_A_ROW {
+                            warn!(error = %e, "Webcam keeps failing; ending capture");
+                            break;
+                        }
                         warn!(error = %e, "Failed to capture webcam frame");
                         // Brief sleep before retrying on error
                         std::thread::sleep(std::time::Duration::from_millis(50));
                         continue;
                     }
                 }
+                failures_in_a_row = 0;
 
                 // Pace to target FPS
                 let elapsed = frame_start.elapsed();

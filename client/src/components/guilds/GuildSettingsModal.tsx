@@ -156,7 +156,8 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
       props.guildId,
       authState.user?.id || "",
       isOwner(),
-      PermissionBits.MANAGE_EMOJIS_AND_STICKERS,
+      // Emoji administration is MANAGE_GUILD on the server.
+      PermissionBits.MANAGE_GUILD,
     );
 
   const canManageGuild = () =>

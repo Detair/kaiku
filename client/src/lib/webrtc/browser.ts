@@ -16,11 +16,13 @@ import type {
   ScreenShareQuality,
   WebcamOptions,
   ConnectionMetrics,
+  CapturedScreen,
 } from "./types";
 import { buildConnectionMetrics, deltaLossPercent } from "./types";
+import { VOICE_JOIN_CANCELLED, type VoiceSessionHandle } from "./voiceSession";
 import * as Sentry from "@sentry/browser";
 
-/** Bitrate for the highest simulcast layer, keyed by screen-share quality. */
+/** Bitrate of a sent video, keyed by quality tier. */
 const QUALITY_BITRATES: Record<ScreenShareQuality, number> = {
   low: 1_000_000, // 480p
   medium: 2_500_000, // 720p
@@ -29,16 +31,25 @@ const QUALITY_BITRATES: Record<ScreenShareQuality, number> = {
 };
 
 
-/** Build 3-layer simulcast encodings (high / medium / low). */
-function simulcastEncodings(
-  highBitrate: number,
-  highFramerate: number = 30,
-): RTCRtpEncodingParameters[] {
-  return [
-    { rid: "h", maxBitrate: highBitrate, scaleResolutionDownBy: 1.0, maxFramerate: highFramerate },
-    { rid: "m", maxBitrate: 800_000, scaleResolutionDownBy: 2.0, maxFramerate: Math.min(24, highFramerate) },
-    { rid: "l", maxBitrate: 200_000, scaleResolutionDownBy: 4.0, maxFramerate: 15 },
-  ];
+/**
+ * The camera is sent as one stream (no layers): the server does not
+ * forward simulcast layers yet. Simulcast returns with its layer forwarding.
+ */
+function webcamEncodings(bitrate: number, framerate: number = 30): RTCRtpEncodingParameters[] {
+  return [{ maxBitrate: bitrate, scaleResolutionDownBy: 1.0, maxFramerate: framerate }];
+}
+
+/** A published video, as the owner names it (`streamId` null: the camera). */
+interface SentVideo {
+  kind: "screen" | "webcam";
+  streamId: string | null;
+}
+
+/** A screen capture; senders are set once it is published. */
+interface ScreenShareEntry {
+  stream: MediaStream;
+  videoSender: RTCRtpSender | null;
+  audioSender: RTCRtpSender | null;
 }
 
 /** HTMLAudioElement extended with the non-standard setSinkId API (Chrome/Edge). */
@@ -52,6 +63,39 @@ type AudioElementWithSinkId = HTMLAudioElement & {
  * growth from a misbehaving or malicious server.
  */
 const MAX_PENDING_CANDIDATES = 100;
+
+/** How long a publisher offer waits for its answer (the native client's deadline too). */
+const OFFER_ANSWER_TIMEOUT_MS = 10_000;
+/**
+ * How long the one retry after a failed offer waits. Long enough that a
+ * server which answers late still gets the retry through: its late answer
+ * to the withdrawn offer is recognised and the retry keeps waiting.
+ */
+const OFFER_RETRY_TIMEOUT_MS = 20_000;
+
+/**
+ * Adapter state for a publisher `connectionState` (A8). A short ICE outage
+ * (`disconnected`) keeps every media element and reports `reconnecting`;
+ * only `closed` ends the call. `failed` also reports `reconnecting`, with
+ * `lost` set so the store starts the rejoin flow (C32).
+ */
+export function mapPublisherState(state: RTCPeerConnectionState): {
+  state: VoiceConnectionState;
+  lost: boolean;
+} {
+  switch (state) {
+    case "connected":
+      return { state: "connected", lost: false };
+    case "disconnected":
+      return { state: "reconnecting", lost: false };
+    case "failed":
+      return { state: "reconnecting", lost: true };
+    case "closed":
+      return { state: "disconnected", lost: false };
+    default:
+      return { state: "connecting", lost: false };
+  }
+}
 
 /**
  * Bundled peer-connection state: the PC itself plus the flag/queue needed to
@@ -68,9 +112,42 @@ interface PcState {
   pendingCandidates: RTCIceCandidateInit[];
 }
 
+/**
+ * One voice session of the adapter: what the join with `handle` acquired.
+ * Only that join adds to it, and only `leave`/`teardown` with the same
+ * handle (or a failing join itself) releases it.
+ */
+interface BrowserSession {
+  readonly handle: VoiceSessionHandle;
+  stream: MediaStream | null;
+  publisher: PcState | null;
+  subscriber: PcState | null;
+  /** `voice_join` was handed to the socket: ending it owes a `voice_leave`. */
+  joinSent: boolean;
+  /** Ended: a join step that resumes now releases what it got and stops. */
+  ended: boolean;
+  /** Deadline of this session's outstanding publisher offer. */
+  offerDeadline: ReturnType<typeof setTimeout> | null;
+  /** Publisher offers that failed in a row (refused, no answer, not sent). */
+  failedOffers: number;
+  /**
+   * An offer was withdrawn at its deadline: its answer may still come and
+   * meet the retry. One refused answer is taken as that one and ignored.
+   */
+  lateAnswerOwed: boolean;
+  /** The retry failed too: the connection was reported lost, nothing more is offered. */
+  givenUp: boolean;
+}
+
 export class BrowserVoiceAdapter implements VoiceAdapter {
   private state: VoiceConnectionState = "disconnected";
   private channelId: string | null = null;
+  /**
+   * The open session. The fields below (`localStream`, the peer
+   * connections, VAD, shares, webcam) are this session's and are only
+   * installed while it is open.
+   */
+  private session: BrowserSession | null = null;
   private muted = false;
   private deafened = false;
   private noiseSuppression = true;
@@ -82,15 +159,14 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
   private remoteStreams = new Map<string, MediaStream>();
 
   // Screen share state — keyed by streamId for multi-stream support
-  private screenShares: Map<string, {
-    stream: MediaStream;
-    videoSender: RTCRtpSender;
-    audioSender: RTCRtpSender | null;
-  }> = new Map();
+  // A capture is held from `captureScreen` on; its senders exist only once
+  // it is published (after the server accepted the share, C30).
+  private screenShares: Map<string, ScreenShareEntry> = new Map();
 
   // Webcam state
   private webcamStream: MediaStream | null = null;
   private webcamSender: RTCRtpSender | null = null;
+  private webcamQuality: ScreenShareQuality = "medium";
 
   // Mic test
   private micTestStream: MediaStream | null = null;
@@ -132,6 +208,10 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
   // Negotiation lock to prevent concurrent offers on the publisher PC
   private isNegotiating = false;
   private pendingNegotiation = false;
+  /** Published videos no offer has carried yet. */
+  private unsentVideos: SentVideo[] = [];
+  /** Published videos the outstanding offer carries (ended if its answer is refused). */
+  private videosInOffer: SentVideo[] = [];
 
   constructor() {
     console.log("[BrowserVoiceAdapter] Initialized");
@@ -139,55 +219,89 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
 
   // Lifecycle methods
 
-  async join(channelId: string): Promise<VoiceResult<void>> {
+  async join(handle: VoiceSessionHandle): Promise<VoiceResult<VoiceSessionHandle>> {
+    const channelId = handle.channelId;
     console.log(`[BrowserVoiceAdapter] Joining channel: ${channelId}`);
 
-    // Clean up any stale connection (e.g., from WebSocket reconnect)
-    if (this.publisherState || this.subscriberState) {
-      console.log("[BrowserVoiceAdapter] Cleaning up stale connection");
-      this.cleanup();
+    // A session that is still open is not this join's to reuse or clobber:
+    // it ends first, by its own handle, without a message to the server.
+    if (this.session) {
+      console.log("[BrowserVoiceAdapter] Ending the previous session first");
+      this.endSession(this.session);
     }
+
+    const session: BrowserSession = {
+      handle,
+      stream: null,
+      publisher: null,
+      subscriber: null,
+      joinSent: false,
+      ended: false,
+      offerDeadline: null,
+      failedOffers: 0,
+      lateAnswerOwed: false,
+      givenUp: false,
+    };
+    this.session = session;
+    const cancelled = (): VoiceResult<VoiceSessionHandle> => {
+      console.log("[BrowserVoiceAdapter] Join cancelled (session ended)");
+      return { ok: false, error: { ...VOICE_JOIN_CANCELLED } };
+    };
 
     try {
       this.joinStartTime = Date.now();
       this.channelId = channelId;
-      this.setState("requesting_media");
+      this.setState("requesting_media", handle);
 
-      // Get microphone access
+      // Get microphone access. The prompt can stay open for any length of
+      // time: a stream granted after the session ended is stopped at once.
+      let stream: MediaStream;
       try {
-        this.localStream = await this.getMicStream(this.inputDeviceId);
+        stream = await this.getMicStream(this.inputDeviceId);
       } catch (err) {
+        if (session.ended) return cancelled();
         if (!this.inputDeviceId || !this.isDeviceGoneError(err)) throw err;
         // The remembered device is unplugged or its id rotated: forget it
         // and use the system default so the call still has a microphone.
         console.warn("[BrowserVoiceAdapter] Input device unavailable, using default:", err);
         this.inputDeviceId = null;
-        this.localStream = await this.getMicStream(null);
+        stream = await this.getMicStream(null);
       }
+      if (session.ended) {
+        stream.getTracks().forEach((track) => track.stop());
+        return cancelled();
+      }
+      session.stream = stream;
+      this.localStream = stream;
       console.log("[BrowserVoiceAdapter] Got local stream");
       // The adapter is reused across calls and keeps its mute state (and
       // push-to-talk rests muted); a fresh track starts enabled, so apply the
       // gating before the track is published.
       this.updateTrackEnabled();
 
-      this.setState("connecting");
+      this.setState("connecting", handle);
 
       // Fetch ICE servers (STUN + TURN) from the API
       const config = await this.fetchIceConfig();
+      if (session.ended) return cancelled();
 
       // Create dual PeerConnections with bundled state for ICE buffering
-      this.publisherState = {
+      const publisher: PcState = {
         pc: new RTCPeerConnection(config),
         remoteDescriptionSet: false,
         pendingCandidates: [],
       };
-      this.subscriberState = {
+      const subscriber: PcState = {
         pc: new RTCPeerConnection(config),
         remoteDescriptionSet: false,
         pendingCandidates: [],
       };
-      this.setupPublisherPC(channelId);
-      this.setupSubscriberPC(channelId);
+      session.publisher = publisher;
+      session.subscriber = subscriber;
+      this.publisherState = publisher;
+      this.subscriberState = subscriber;
+      this.setupPublisherPC(session);
+      this.setupSubscriberPC(session);
 
       console.log(
         "[BrowserVoiceAdapter] Dual PeerConnections created, sending voice_join",
@@ -195,9 +309,11 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
 
       // Ensure WebSocket is connected before sending
       const { wsSend, wsStatus, wsConnect } = await import("@/lib/tauri");
+      if (session.ended) return cancelled();
 
       // Check WebSocket status
       let status = await wsStatus();
+      if (session.ended) return cancelled();
       console.log("[BrowserVoiceAdapter] WebSocket status:", status);
 
       // If disconnected, try to connect
@@ -210,6 +326,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
           status = await wsStatus();
           console.log("[BrowserVoiceAdapter] WebSocket reconnected:", status);
         } catch (err) {
+          if (session.ended) return cancelled();
           console.error(
             "[BrowserVoiceAdapter] Failed to connect WebSocket:",
             err,
@@ -219,6 +336,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
             { cause: err },
           );
         }
+        if (session.ended) return cancelled();
       }
 
       // Wait for WebSocket to be connected (with timeout)
@@ -229,7 +347,9 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
           throw new Error("WebSocket disconnected unexpectedly.");
         }
         await new Promise((resolve) => setTimeout(resolve, 100));
+        if (session.ended) return cancelled();
         status = await wsStatus();
+        if (session.ended) return cancelled();
         attempts++;
       }
 
@@ -237,58 +357,125 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
         throw new Error("WebSocket connection timeout. Status: " + status.type);
       }
 
+      // Last check before anything reaches the server: no voice_join may
+      // leave this window for a session that was ended.
+      if (session.ended) return cancelled();
       console.log("[BrowserVoiceAdapter] WebSocket ready, sending voice_join");
 
-      // Send voice_join message to server
+      // Send voice_join message to server. Marked before the send, so a
+      // session ended while it is on its way still owes the server a leave.
+      session.joinSent = true;
       await wsSend({
         type: "voice_join",
         channel_id: channelId,
       });
+      // Ended while sending: the leave that ended it follows the join on
+      // the same socket, and it already released the local resources.
+      if (session.ended) return cancelled();
 
       // Add mic track to publisherPC — this triggers onnegotiationneeded
       // which creates and sends the publisher offer automatically
-      this.localStream.getTracks().forEach((track) => {
-        this.publisherState!.pc.addTrack(track, this.localStream!);
+      stream.getTracks().forEach((track) => {
+        publisher.pc.addTrack(track, stream);
       });
 
       console.log("[BrowserVoiceAdapter] Mic tracks added, publisher offer will be sent via onnegotiationneeded");
 
-      return { ok: true, value: undefined };
+      return { ok: true, value: handle };
     } catch (err) {
+      if (session.ended) return cancelled();
       console.error("[BrowserVoiceAdapter] Error during join:", err);
-      this.cleanup();
-      this.setState("disconnected");
-      this.channelId = null;
+      // The join failed: its own session ends here, nothing is left of it.
+      this.endSession(session);
       return { ok: false, error: this.mapMediaError(err) };
     }
   }
 
-  async leave(): Promise<VoiceResult<void>> {
+  async leave(handle: VoiceSessionHandle): Promise<VoiceResult<void>> {
     console.log("[BrowserVoiceAdapter] Leaving voice");
+    const session = this.sessionOf(handle);
+    if (!session) return { ok: true, value: undefined };
 
-    // Clean up all screen shares and webcam first
-    if (this.screenShares.size > 0) {
-      await this.stopAllScreenShares();
+    // Everything local is released first and in one go; what follows only
+    // tells the server and reads nothing but the ended session's own data.
+    const owesLeave = session.joinSent;
+    this.endSession(session);
+    if (owesLeave) {
+      try {
+        // Best effort: with the socket down the server already dropped the
+        // peer with the old socket.
+        const { wsSend } = await import("@/lib/tauri");
+        await wsSend({
+          type: "voice_leave",
+          channel_id: handle.channelId,
+        });
+      } catch (err) {
+        console.warn("[BrowserVoiceAdapter] voice_leave not sent:", err);
+      }
     }
-    if (this.webcamStream) {
-      this.cleanupWebcamState();
-    }
-
-    // Send voice_leave message to server
-    if (this.channelId) {
-      const { wsSend } = await import("@/lib/tauri");
-      await wsSend({
-        type: "voice_leave",
-        channel_id: this.channelId,
-      });
-    }
-
-    this.cleanup();
-    this.setState("disconnected");
-    this.channelId = null;
-    this.prevStats = null;
-
     return { ok: true, value: undefined };
+  }
+
+  async teardown(handle: VoiceSessionHandle): Promise<VoiceResult<void>> {
+    console.log("[BrowserVoiceAdapter] Tearing down voice without signalling");
+    const session = this.sessionOf(handle);
+    if (session) this.endSession(session);
+    return { ok: true, value: undefined };
+  }
+
+  async probePublisher(handle: VoiceSessionHandle): Promise<boolean> {
+    const pc = this.sessionOf(handle)?.publisher?.pc;
+    if (!pc) return false;
+    // The object's own state, not the last event this adapter saw.
+    const ice = pc.iceConnectionState as RTCIceConnectionState | undefined;
+    return (
+      pc.connectionState === "connected" &&
+      (ice === undefined || ice === "connected" || ice === "completed")
+    );
+  }
+
+  /** Whether `session` is still the adapter's open session. */
+  private holds(session: BrowserSession): boolean {
+    return !session.ended && this.session === session;
+  }
+
+  /** The open session `handle` names, if this adapter still has it. */
+  private sessionOf(handle: VoiceSessionHandle): BrowserSession | null {
+    const session = this.session;
+    return session && !session.ended && session.handle.token === handle.token
+      ? session
+      : null;
+  }
+
+  /**
+   * End `session`: release exactly what it holds, synchronously. A join
+   * step of this session that is still waiting stops when it resumes.
+   * Reports `disconnected` for this session only.
+   */
+  private endSession(session: BrowserSession): void {
+    if (session.ended) return;
+    session.ended = true;
+    this.clearOfferDeadline(session);
+    if (this.session === session) {
+      // The adapter-wide fields (stream, connections, VAD, shares, webcam)
+      // are this session's: they go with it.
+      if (this.webcamStream) this.cleanupWebcamState();
+      this.cleanup();
+      this.session = null;
+      this.channelId = null;
+      this.prevStats = null;
+      this.state = "disconnected";
+    } else {
+      // Not installed in the adapter (never the case for an open session,
+      // kept so a session can always release what it recorded).
+      session.stream?.getTracks().forEach((track) => track.stop());
+      session.publisher?.pc.close();
+      session.subscriber?.pc.close();
+    }
+    session.stream = null;
+    session.publisher = null;
+    session.subscriber = null;
+    this.eventHandlers.onStateChange?.("disconnected", session.handle);
   }
 
   // Audio control
@@ -425,6 +612,17 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
       };
     }
 
+    const session = this.session;
+
+    // No offer is outstanding (for example its deadline passed and it was
+    // withdrawn, or the next offer is still being made): the answer belongs
+    // to no offer and changes nothing.
+    if (state.pc.signalingState === "stable") {
+      if (session) session.lateAnswerOwed = false;
+      console.warn("[BrowserVoiceAdapter] Publisher answer without an outstanding offer ignored");
+      return { ok: true, value: undefined };
+    }
+
     // Reset buffering flags for this negotiation — any candidates queued from
     // a prior session or stale renegotiation must not be reused.
     state.remoteDescriptionSet = false;
@@ -455,8 +653,16 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
         );
       }
 
+      // The offer is answered: its deadline and the row of failures end.
+      if (session) {
+        this.clearOfferDeadline(session);
+        session.failedOffers = 0;
+        session.lateAnswerOwed = false;
+      }
+
       // Release negotiation lock
       this.isNegotiating = false;
+      this.videosInOffer = [];
 
       // Drain pending negotiation
       if (this.pendingNegotiation) {
@@ -466,7 +672,15 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
 
       return { ok: true, value: undefined };
     } catch (err) {
-      this.isNegotiating = false;
+      if (session?.lateAnswerOwed) {
+        // The late answer to the offer withdrawn at its deadline met the
+        // retry and was refused: the retry keeps waiting for its own.
+        session.lateAnswerOwed = false;
+        console.warn("[BrowserVoiceAdapter] Late answer to a withdrawn offer ignored");
+        return { ok: true, value: undefined };
+      }
+      if (session) await this.offerFailed(state, session, false);
+      else await this.withdrawRefusedOffer(state);
       return {
         ok: false,
         error: {
@@ -476,6 +690,100 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
         },
       };
     }
+  }
+
+  /**
+   * The server's answer could not be applied: withdraw the local offer so
+   * the connection is usable again, end the videos that offer carried
+   * through the owner's stop path (`not_sent`: the server is told, the
+   * person sees why), then send what is still queued.
+   */
+  private async withdrawRefusedOffer(state: PcState): Promise<void> {
+    if (state.pc.signalingState === "have-local-offer") {
+      try {
+        await state.pc.setLocalDescription({ type: "rollback" });
+      } catch (err) {
+        console.warn("[BrowserVoiceAdapter] Publisher offer could not be withdrawn:", err);
+      }
+    }
+    this.isNegotiating = false;
+    const failed = this.videosInOffer;
+    this.videosInOffer = [];
+    for (const video of failed) {
+      const stillSent =
+        video.kind === "webcam"
+          ? this.webcamSender !== null
+          : !!(video.streamId && this.screenShares.get(video.streamId)?.videoSender);
+      if (stillSent) this.eventHandlers.onLocalMediaEnded?.(video.kind, video.streamId, "not_sent");
+    }
+    if (this.pendingNegotiation && this.publisherState === state && !this.session?.givenUp) {
+      this.pendingNegotiation = false;
+      state.pc.dispatchEvent(new Event("negotiationneeded"));
+    }
+  }
+
+  /**
+   * An offer of `session` failed: its answer was refused, its deadline
+   * passed, or it could not be sent. The first failure withdraws it; the
+   * browser then offers again by itself, and that offer is the one retry
+   * (with the longer deadline). A second failure in a row gives the
+   * connection up: it is withdrawn, reported lost, and nothing more is
+   * offered on this session.
+   */
+  private async offerFailed(
+    state: PcState,
+    session: BrowserSession,
+    answerMayFollow: boolean,
+  ): Promise<void> {
+    this.clearOfferDeadline(session);
+    session.failedOffers += 1;
+    if (session.failedOffers < 2) {
+      session.lateAnswerOwed = answerMayFollow;
+      await this.withdrawRefusedOffer(state);
+      return;
+    }
+    session.givenUp = true;
+    session.lateAnswerOwed = false;
+    await this.withdrawRefusedOffer(state);
+    if (!this.holds(session)) return;
+    console.warn("[BrowserVoiceAdapter] Publisher offers failed twice in a row; connection lost");
+    this.eventHandlers.onError?.(
+      {
+        type: "connection_failed",
+        reason: "Publisher offer got no usable answer",
+        retriable: true,
+      },
+      session.handle,
+    );
+    this.eventHandlers.onConnectionLost?.(session.handle);
+  }
+
+  /** Start the deadline of the offer `session` just made on `state`. */
+  private armOfferDeadline(state: PcState, session: BrowserSession): void {
+    this.clearOfferDeadline(session);
+    const ms = session.failedOffers === 0 ? OFFER_ANSWER_TIMEOUT_MS : OFFER_RETRY_TIMEOUT_MS;
+    const timer = setTimeout(() => {
+      // A deadline of an earlier offer or of an ended session does nothing.
+      if (session.offerDeadline !== timer || !this.holds(session) || this.publisherState !== state) {
+        return;
+      }
+      session.offerDeadline = null;
+      console.warn("[BrowserVoiceAdapter] Publisher offer got no answer in time; withdrawn");
+      void this.offerFailed(state, session, true);
+    }, ms);
+    session.offerDeadline = timer;
+  }
+
+  private clearOfferDeadline(session: BrowserSession): void {
+    if (session.offerDeadline !== null) clearTimeout(session.offerDeadline);
+    session.offerDeadline = null;
+  }
+
+  /** A video left the connection: no offer reports it any more. */
+  private forgetSentVideo(kind: SentVideo["kind"], streamId: string | null): void {
+    const other = (v: SentVideo) => v.kind !== kind || v.streamId !== streamId;
+    this.unsentVideos = this.unsentVideos.filter(other);
+    this.videosInOffer = this.videosInOffer.filter(other);
   }
 
   async handleSubscriberOffer(
@@ -860,11 +1168,18 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
 
     // If already in a call, restart the stream with the new device
     if (this.localStream && this.publisherState) {
+      const session = this.session;
       try {
         // Open the new microphone BEFORE touching the current one, so a
         // stale device id leaves the working microphone (and the remembered
         // id) untouched.
         const newStream = await this.getMicStream(deviceId);
+        // The call ended (or another began) while the device opened: the
+        // new stream belongs to nobody and is released again.
+        if (!session || !this.holds(session) || !this.localStream) {
+          newStream.getTracks().forEach((track) => track.stop());
+          return { ok: false, error: { type: "not_connected" } };
+        }
 
         // Stop VAD before replacing the stream — the cloned monitor track
         // references the old mic and would go stale (deliver silence).
@@ -874,6 +1189,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
         // Stop old tracks
         this.localStream.getTracks().forEach((track) => track.stop());
         this.localStream = newStream;
+        session.stream = newStream;
         this.inputDeviceId = deviceId;
         // New tracks start enabled: apply mute/VAD gating before the track
         // reaches the peer, or a muted user would be audible after switching.
@@ -1060,112 +1376,111 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     return result;
   }
 
-  async startScreenShare(
-    options?: ScreenShareOptions,
-  ): Promise<VoiceResult<void>> {
-    const publisher = this.publisherState;
-    if (!publisher) {
+  /**
+   * Open the capture (browser picker) for a screen share. Nothing is sent
+   * yet: the track is added only by `publishScreenShare` once the server
+   * accepted the share (C30). If the capture ends by itself (the browser's
+   * own "Stop sharing" bar, the window closes, permission is revoked),
+   * `onLocalMediaEnded("screen", id)` asks the owner to run its normal stop.
+   */
+  async captureScreen(
+    options: ScreenShareOptions & { streamId: string },
+  ): Promise<VoiceResult<CapturedScreen>> {
+    const session = this.session;
+    if (!this.publisherState || !session) {
       return { ok: false, error: { type: "not_connected" } };
     }
+    const streamId = options.streamId;
+    if (this.screenShares.has(streamId)) {
+      return { ok: false, error: { type: "unknown", message: "Stream already exists" } };
+    }
 
+    let stream: MediaStream;
     try {
-      const streamId = options?.streamId ?? crypto.randomUUID();
-
-      // Capture screen with quality constraints
-      const constraints = this.getDisplayMediaConstraints(
-        options?.quality ?? "medium",
-      );
-      const stream = await navigator.mediaDevices.getDisplayMedia({
+      const constraints = this.getDisplayMediaConstraints(options.quality ?? "medium");
+      stream = await navigator.mediaDevices.getDisplayMedia({
         video: constraints.video,
-        audio: options?.withAudio ?? false,
+        audio: options.withAudio ?? false,
       });
-
-      // Add video track to publisher PC
-      const videoTrack = stream.getVideoTracks()[0];
-      const videoSender = publisher.pc.addTrack(videoTrack, stream);
-
-      // Add audio track if present
-      let audioSender: RTCRtpSender | null = null;
-      const audioTrack = stream.getAudioTracks()[0];
-      if (audioTrack) {
-        audioSender = publisher.pc.addTrack(audioTrack, stream);
-      }
-
-      // onnegotiationneeded fires automatically -> creates offer -> server answers -> RTP flows
-
-      // Handle user stopping share via browser UI
-      videoTrack.onended = () => {
-        console.log("[BrowserVoiceAdapter] Screen share track ended by user, streamId:", streamId);
-        this.stopScreenShare(streamId);
-      };
-
-      // Store for cleanup
-      this.screenShares.set(streamId, { stream, videoSender, audioSender });
-
-      console.log("[BrowserVoiceAdapter] Screen share started, streamId:", streamId);
-
-      return { ok: true, value: undefined };
     } catch (err) {
-      console.error("[BrowserVoiceAdapter] Failed to start screen share:", err);
+      console.error("[BrowserVoiceAdapter] Failed to capture screen:", err);
       return { ok: false, error: this.mapScreenShareError(err) };
     }
+    // The picker can stay open for any length of time: a capture granted
+    // after the call ended (or another began) is stopped at once.
+    const videoTrack = stream.getVideoTracks()[0];
+    if (!this.holds(session) || !videoTrack) {
+      stream.getTracks().forEach((track) => track.stop());
+      return {
+        ok: false,
+        error: videoTrack ? { type: "not_connected" } : { type: "not_found", message: "No video" },
+      };
+    }
+
+    const entry: ScreenShareEntry = { stream, videoSender: null, audioSender: null };
+    videoTrack.addEventListener("ended", () => {
+      // Only the capture this entry still holds counts.
+      if (this.screenShares.get(streamId) !== entry) return;
+      this.eventHandlers.onLocalMediaEnded?.("screen", streamId);
+    });
+    this.screenShares.set(streamId, entry);
+    return {
+      ok: true,
+      value: {
+        hasAudio: stream.getAudioTracks().length > 0,
+        sourceLabel: videoTrack.label || "Screen",
+      },
+    };
   }
 
-  async stopScreenShare(streamId?: string): Promise<VoiceResult<void>> {
+  /**
+   * Add the tracks of a captured screen share to the publisher connection
+   * (renegotiation follows through `onnegotiationneeded`).
+   */
+  async publishScreenShare(streamId: string): Promise<VoiceResult<void>> {
     const publisher = this.publisherState;
-    if (!publisher) {
-      return { ok: false, error: { type: "not_connected" } };
+    const entry = this.screenShares.get(streamId);
+    if (!publisher) return { ok: false, error: { type: "not_connected" } };
+    if (!entry) {
+      return { ok: false, error: { type: "unknown", message: "No capture for stream" } };
     }
+    if (entry.videoSender) return { ok: true, value: undefined };
+    const videoTrack = entry.stream.getVideoTracks()[0];
+    if (!videoTrack || videoTrack.readyState === "ended") {
+      return { ok: false, error: { type: "cancelled", message: "Capture ended" } };
+    }
+    entry.videoSender = publisher.pc.addTrack(videoTrack, entry.stream);
+    const audioTrack = entry.stream.getAudioTracks()[0];
+    if (audioTrack) entry.audioSender = publisher.pc.addTrack(audioTrack, entry.stream);
+    this.unsentVideos.push({ kind: "screen", streamId });
+    return { ok: true, value: undefined };
+  }
 
+  /**
+   * Stop a screen share, published or only captured: its senders leave the
+   * publisher connection (renegotiation follows) and the capture stops.
+   */
+  async stopScreenShare(streamId?: string): Promise<VoiceResult<void>> {
     const targetId = streamId || this.screenShares.keys().next().value;
-    if (!targetId) {
-      return {
-        ok: false,
-        error: { type: "unknown", message: "No active screen share" },
-      };
+    const share = targetId ? this.screenShares.get(targetId) : undefined;
+    if (!targetId || !share) {
+      return { ok: false, error: { type: "unknown", message: "No such screen share" } };
     }
-
-    const share = this.screenShares.get(targetId);
-    if (!share) {
-      return {
-        ok: false,
-        error: { type: "unknown", message: `Screen share ${targetId} not found` },
-      };
-    }
-
-    // Remove tracks from publisher PC
-    publisher.pc.removeTrack(share.videoSender);
-    if (share.audioSender) {
-      publisher.pc.removeTrack(share.audioSender);
-    }
-
-    // Stop media tracks
-    share.stream.getTracks().forEach((t) => t.stop());
-
-    // onnegotiationneeded fires automatically -> renegotiates
-
     this.screenShares.delete(targetId);
-
-    // Notify listeners
-    this.eventHandlers.onScreenShareStopped?.("", targetId, "user_stopped");
-
-    console.log("[BrowserVoiceAdapter] Screen share stopped:", targetId);
-
+    this.forgetSentVideo("screen", targetId);
+    const publisher = this.publisherState;
+    if (publisher && publisher.pc.signalingState !== "closed") {
+      if (share.videoSender) publisher.pc.removeTrack(share.videoSender);
+      if (share.audioSender) publisher.pc.removeTrack(share.audioSender);
+    }
+    share.stream.getTracks().forEach((t) => t.stop());
     return { ok: true, value: undefined };
   }
 
   async stopAllScreenShares(): Promise<VoiceResult<void>> {
-    if (this.screenShares.size === 0) {
-      return { ok: true, value: undefined };
-    }
-
-    // Collect IDs first to avoid mutating map during iteration
-    const streamIds = [...this.screenShares.keys()];
-    for (const id of streamIds) {
+    for (const id of [...this.screenShares.keys()]) {
       await this.stopScreenShare(id);
     }
-
-    console.log("[BrowserVoiceAdapter] All screen shares stopped");
     return { ok: true, value: undefined };
   }
 
@@ -1175,88 +1490,87 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     return this.webcamStream !== null;
   }
 
-  async startWebcam(options?: WebcamOptions): Promise<VoiceResult<void>> {
-    const publisher = this.publisherState;
-    if (!publisher) {
+  /**
+   * Open the camera. Nothing is sent until `publishWebcam` (after the
+   * server's `webcam_started`, C30). A camera that ends by itself reports
+   * `onLocalMediaEnded("webcam", null)`.
+   */
+  async captureWebcam(options?: WebcamOptions): Promise<VoiceResult<void>> {
+    const session = this.session;
+    if (!this.publisherState || !session) {
       return { ok: false, error: { type: "not_connected" } };
     }
-
     if (this.webcamStream) {
-      return {
-        ok: false,
-        error: { type: "unknown", message: "Webcam already active" },
-      };
+      return { ok: false, error: { type: "unknown", message: "Webcam already active" } };
     }
-
+    let stream: MediaStream;
     try {
-      const constraints: MediaStreamConstraints = {
+      stream = await navigator.mediaDevices.getUserMedia({
         video: {
           deviceId: options?.deviceId ? { exact: options.deviceId } : undefined,
           width: { ideal: 640 },
           height: { ideal: 480 },
           frameRate: { ideal: 30 },
         },
-      };
-
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      const videoTrack = stream.getVideoTracks()[0];
-      if (!videoTrack) {
-        stream.getTracks().forEach((t) => t.stop());
-        return {
-          ok: false,
-          error: {
-            type: "unknown",
-            message: "No video track in webcam stream",
-          },
-        };
-      }
-
-      // Listen for track ending (e.g., user revokes camera permission)
-      videoTrack.onended = () => {
-        console.log("[BrowserVoiceAdapter] Webcam track ended by user/system");
-        this.cleanupWebcamState();
-      };
-
-      // Add video track to publisher peer connection with simulcast encodings
-      const webcamBitrate = QUALITY_BITRATES[options?.quality ?? "medium"];
-      const webcamTransceiver = publisher.pc.addTransceiver(videoTrack, {
-        direction: "sendonly",
-        streams: [stream],
-        sendEncodings: simulcastEncodings(webcamBitrate),
       });
-      this.webcamSender = webcamTransceiver.sender;
-      this.webcamStream = stream;
-
-      console.log("[BrowserVoiceAdapter] Webcam started");
-      return { ok: true, value: undefined };
     } catch (err) {
       console.error("[BrowserVoiceAdapter] Failed to start webcam:", err);
       return { ok: false, error: this.mapMediaError(err) };
     }
+    const videoTrack = stream.getVideoTracks()[0];
+    // A camera granted after the call ended (or another began) is stopped.
+    if (!this.holds(session) || !videoTrack) {
+      stream.getTracks().forEach((track) => track.stop());
+      return {
+        ok: false,
+        error: videoTrack
+          ? { type: "not_connected" }
+          : { type: "unknown", message: "No video track in webcam stream" },
+      };
+    }
+    videoTrack.addEventListener("ended", () => {
+      if (this.webcamStream !== stream) return;
+      this.eventHandlers.onLocalMediaEnded?.("webcam", null);
+    });
+    this.webcamStream = stream;
+    this.webcamQuality = options?.quality ?? "medium";
+    return { ok: true, value: undefined };
+  }
+
+  /** Add the captured camera to the publisher connection (one stream). */
+  async publishWebcam(): Promise<VoiceResult<void>> {
+    const publisher = this.publisherState;
+    const stream = this.webcamStream;
+    if (!publisher) return { ok: false, error: { type: "not_connected" } };
+    if (!stream) return { ok: false, error: { type: "unknown", message: "Webcam not active" } };
+    if (this.webcamSender) return { ok: true, value: undefined };
+    const videoTrack = stream.getVideoTracks()[0];
+    if (!videoTrack || videoTrack.readyState === "ended") {
+      return { ok: false, error: { type: "cancelled", message: "Camera ended" } };
+    }
+    const transceiver = publisher.pc.addTransceiver(videoTrack, {
+      direction: "sendonly",
+      streams: [stream],
+      sendEncodings: webcamEncodings(QUALITY_BITRATES[this.webcamQuality]),
+    });
+    this.webcamSender = transceiver.sender;
+    this.unsentVideos.push({ kind: "webcam", streamId: null });
+    return { ok: true, value: undefined };
   }
 
   async stopWebcam(): Promise<VoiceResult<void>> {
     if (!this.webcamStream) {
-      return {
-        ok: false,
-        error: { type: "unknown", message: "Webcam not active" },
-      };
+      return { ok: false, error: { type: "unknown", message: "Webcam not active" } };
     }
-
-    try {
-      this.cleanupWebcamState();
-      console.log("[BrowserVoiceAdapter] Webcam stopped");
-      return { ok: true, value: undefined };
-    } catch (err) {
-      console.error("[BrowserVoiceAdapter] Failed to stop webcam:", err);
-      return { ok: false, error: { type: "unknown", message: String(err) } };
-    }
+    this.cleanupWebcamState();
+    return { ok: true, value: undefined };
   }
 
   // Cleanup
 
   dispose(): void {
     console.log("[BrowserVoiceAdapter] Disposing");
+    if (this.session) this.endSession(this.session);
     this.cleanup();
   }
 
@@ -1325,9 +1639,11 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     }
   }
 
-  private setState(state: VoiceConnectionState) {
+  /** Report `state` for `session` (ignored once that session has ended). */
+  private setState(state: VoiceConnectionState, session: VoiceSessionHandle) {
+    if (this.session?.handle.token !== session.token) return;
     this.state = state;
-    this.eventHandlers.onStateChange?.(state);
+    this.eventHandlers.onStateChange?.(state, session);
   }
 
   private getDisplayMediaConstraints(
@@ -1359,10 +1675,12 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     if (err instanceof DOMException) {
       switch (err.name) {
         case "NotAllowedError":
-          return {
-            type: "permission_denied",
-            message: "Screen share permission denied. Please allow screen sharing in your browser.",
-          };
+          // Chrome and Firefox report "Cancel" in their picker as
+          // NotAllowedError; only a block by the system or a policy is a
+          // real permission problem ("Permission denied by system").
+          return /system|policy/i.test(err.message)
+            ? { type: "permission_denied", message: err.message }
+            : { type: "cancelled", message: "Screen share cancelled" };
         case "AbortError":
           return { type: "cancelled", message: "Screen share cancelled" };
         case "NotFoundError":
@@ -1390,7 +1708,11 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
 
   private cleanupWebcamState(): void {
     // Remove track from publisher peer connection
-    if (this.publisherState && this.webcamSender) {
+    if (
+      this.publisherState &&
+      this.webcamSender &&
+      this.publisherState.pc.signalingState !== "closed"
+    ) {
       this.publisherState.pc.removeTrack(this.webcamSender);
     }
 
@@ -1402,18 +1724,22 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     // Clear state
     this.webcamStream = null;
     this.webcamSender = null;
+    this.forgetSentVideo("webcam", null);
   }
 
-  private setupPublisherPC(channelId: string) {
-    const publisher = this.publisherState;
+  private setupPublisherPC(session: BrowserSession) {
+    const publisher = session.publisher;
     if (!publisher) return;
+    const channelId = session.handle.channelId;
 
     // Client-initiated negotiation: create offer and send to server
     // Uses a negotiation lock to prevent concurrent offers when multiple
     // tracks are added in quick succession (e.g., mic + screen share).
     publisher.pc.onnegotiationneeded = async () => {
       const current = this.publisherState;
-      if (!current) return;
+      if (!current || session.ended) return;
+      // Given up (reported lost): nothing more is offered on this session.
+      if (session.givenUp) return;
 
       if (this.isNegotiating) {
         this.pendingNegotiation = true;
@@ -1424,6 +1750,9 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
       try {
         const offer = await current.pc.createOffer();
         await current.pc.setLocalDescription(offer);
+        // What this offer carries (ended if its answer is refused).
+        this.videosInOffer.push(...this.unsentVideos.splice(0));
+        this.armOfferDeadline(current, session);
 
         const { wsSend } = await import("@/lib/tauri");
         await wsSend({
@@ -1433,7 +1762,15 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
         });
       } catch (err) {
         console.error("[BrowserVoiceAdapter] Publisher negotiation failed:", err);
-        this.isNegotiating = false;
+        // A negotiation of an ended session changes nothing of the current one.
+        if (!this.holds(session) || this.publisherState !== current) return;
+        if (current.pc.signalingState === "have-local-offer") {
+          // Set locally but not sent: withdrawn like an offer whose answer was refused.
+          await this.offerFailed(current, session, false);
+        } else {
+          this.clearOfferDeadline(session);
+          this.isNegotiating = false;
+        }
       }
     };
 
@@ -1459,44 +1796,41 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
 
     // Connection state change — publisher PC determines connected state
     publisher.pc.onconnectionstatechange = () => {
-      const state = this.publisherState?.pc.connectionState;
+      // A connection of an ended session has nothing to report any more.
+      if (session.ended) return;
+      const state = publisher.pc.connectionState;
       console.log(`[BrowserVoiceAdapter] Publisher connection state: ${state}`);
 
-      switch (state) {
-        case "connected":
-          this.setState("connected");
+      const next = mapPublisherState(state);
+      this.setState(next.state, session.handle);
+      if (state === "connected") {
+        const elapsed = Date.now() - this.joinStartTime;
+        Sentry.addBreadcrumb({ category: "voice", message: "voice_connected", data: { channel_id: this.channelId ?? "", duration_ms: elapsed }, level: "info" });
+        // After a short ICE outage the VAD is still running.
+        if (this.vadInterval === null) this.startVAD();
+      }
+      if (next.lost) {
+        this.eventHandlers.onError?.(
           {
-            const elapsed = Date.now() - this.joinStartTime;
-            Sentry.addBreadcrumb({ category: "voice", message: "voice_connected", data: { channel_id: this.channelId ?? "", duration_ms: elapsed }, level: "info" });
-          }
-          this.startVAD(); // Start Voice Activity Detection
-          break;
-        case "disconnected":
-        case "closed":
-          this.setState("disconnected");
-          break;
-        case "failed":
-          this.setState("disconnected");
-          this.eventHandlers.onError?.({
             type: "connection_failed",
             reason: "Publisher peer connection failed",
             retriable: true,
-          });
-          break;
-        case "connecting":
-        case "new":
-          this.setState("connecting");
-          break;
+          },
+          session.handle,
+        );
+        this.eventHandlers.onConnectionLost?.(session.handle);
       }
     };
   }
 
-  private setupSubscriberPC(channelId: string) {
-    const subscriber = this.subscriberState;
+  private setupSubscriberPC(session: BrowserSession) {
+    const subscriber = session.subscriber;
     if (!subscriber) return;
+    const channelId = session.handle.channelId;
 
     // Remote track handler — all remote tracks arrive on subscriberPC
     subscriber.pc.ontrack = (event) => {
+      if (session.ended) return;
       const track = event.track;
       const stream = event.streams[0];
 
@@ -1546,20 +1880,28 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
           };
         }
       } else {
-        // Audio track = voice (Microphone) or screen audio (ScreenAudio)
-        this.remoteStreams.set(userId, stream);
+        // Audio track = voice (Microphone) or screen audio (ScreenAudio).
+        // It plays from a stream of its own that holds exactly this track:
+        // the event's stream object can hold another track of the same
+        // person for a moment (for example while they switch devices).
+        const played = new MediaStream([track]);
+        this.remoteStreams.set(userId, played);
+        // Tracks that arrive while deafened (e.g. after a rejoin) stay silent.
+        track.enabled = !this.deafened;
 
         const remoteTrack: RemoteTrack = {
           trackId: track.id,
           userId,
-          stream,
+          stream: played,
           muted: false,
         };
 
-        this.eventHandlers.onRemoteTrack?.(remoteTrack);
+        this.eventHandlers.onRemoteTrack?.(remoteTrack, session.handle);
 
         track.onended = () => {
           console.log("[BrowserVoiceAdapter] Remote audio track ended");
+          // A newer track of this person plays now: it stays.
+          if (this.remoteStreams.get(userId) !== played) return;
           this.remoteStreams.delete(userId);
           this.eventHandlers.onRemoteTrackRemoved?.(userId);
         };
@@ -1587,15 +1929,19 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
 
     // Subscriber connection state (log only, publisher determines main state)
     subscriber.pc.onconnectionstatechange = () => {
-      const state = this.subscriberState?.pc.connectionState;
+      if (session.ended) return;
+      const state = subscriber.pc.connectionState;
       console.log(`[BrowserVoiceAdapter] Subscriber connection state: ${state}`);
 
       if (state === "failed") {
-        this.eventHandlers.onError?.({
-          type: "connection_failed",
-          reason: "Subscriber connection failed — you may not hear other participants",
-          retriable: true,
-        });
+        this.eventHandlers.onError?.(
+          {
+            type: "connection_failed",
+            reason: "Subscriber connection failed — you may not hear other participants",
+            retriable: true,
+          },
+          session.handle,
+        );
       }
     };
   }
@@ -1741,6 +2087,8 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     // Reset negotiation lock
     this.isNegotiating = false;
     this.pendingNegotiation = false;
+    this.unsentVideos = [];
+    this.videosInOffer = [];
 
     // Stop mic test if running
     this.stopMicTest();

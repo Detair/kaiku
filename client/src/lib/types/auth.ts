@@ -57,6 +57,8 @@ export interface ServerSettings {
   features?: ServerFeatures;
   /** Public server browser on (ENABLE_GUILD_DISCOVERY). Absent on older servers: on. */
   guild_discovery?: boolean;
+  /** Lowest client version the server wants per platform; absent on older servers. */
+  min_client_version?: { web?: string | null; desktop?: string | null; android?: string | null } | null;
 }
 
 /** Admin auth settings response. */

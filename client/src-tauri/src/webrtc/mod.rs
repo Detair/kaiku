@@ -33,15 +33,12 @@ use crate::video::rtp::VP8_PAYLOAD_TYPE;
 
 /// Build 3-layer simulcast encoding parameters (high / medium / low).
 ///
-/// **Limitation:** webrtc-rs 0.11 `add_transceiver_from_track` accepts
-/// `send_encodings` but only uses the `rid` field to annotate the SDP.
-/// It does **not** actually produce multiple encoded streams at different
-/// resolutions/bitrates — the Tauri client sends a single RTP stream from
-/// its capture + VP9-encode pipeline. True simulcast requires feeding
-/// three separately encoded streams, which is tracked as future work.
-///
-/// The RID values ("h", "m", "l") are set so the SDP matches the browser
-/// simulcast offer, allowing the SFU to parse the layers correctly.
+/// **Not applied:** webrtc-rs (0.17) `add_transceiver_from_track` reads
+/// only the direction from its init and ignores `send_encodings`, so no
+/// RID appears in the SDP and the desktop app sends one plain (non-
+/// simulcast) VP8 stream; the SFU handles that like a browser without
+/// simulcast. Kept so the intent is in one place if real simulcast (three
+/// separately encoded streams) is added later.
 fn simulcast_encodings() -> Vec<RTCRtpEncodingParameters> {
     vec![
         RTCRtpEncodingParameters {
@@ -57,6 +54,181 @@ fn simulcast_encodings() -> Vec<RTCRtpEncodingParameters> {
             ..Default::default()
         },
     ]
+}
+
+/// What a published video track carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VideoKind {
+    Screen,
+    Webcam,
+}
+
+impl VideoKind {
+    const fn track_prefix(self) -> &'static str {
+        match self {
+            Self::Screen => "screen-video",
+            Self::Webcam => "webcam-video",
+        }
+    }
+
+    const fn stream_prefix(self) -> &'static str {
+        match self {
+            Self::Screen => "screen-share-stream",
+            Self::Webcam => "webcam-stream",
+        }
+    }
+
+    /// Name used in events to the frontend.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Screen => "screen",
+            Self::Webcam => "webcam",
+        }
+    }
+}
+
+/// Publisher negotiation: never two offers out at once, and never stuck.
+///
+/// Every offer (the join's first one included) gets an id. A change while
+/// an offer waits for its answer is sent as one new offer right after it.
+/// An offer that gets no usable answer (deadline, a rejected or failing
+/// answer, a failed send) is offered again once; if that fails too the
+/// caller gives up visibly ([`OfferFailure::GiveUp`]).
+///
+/// Answers carry no offer id on the wire. Each sent offer keeps its media
+/// section ids (`a=mid`), and an answer is taken as the outstanding
+/// offer's only when it names the same sections ([`Self::answer_matches`]):
+/// a late answer of an earlier offer with other sections is not applied.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct PublisherNegotiation {
+    outstanding: Option<Outstanding>,
+    pending: bool,
+}
+
+/// Offer ids are unique for the whole process, so a deadline of an older
+/// session can never match an offer of a newer one.
+static NEXT_OFFER_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Outstanding {
+    id: u64,
+    retried: bool,
+    /// The offer's media section ids, once it was created (`None`: any
+    /// answer is taken, as for the join's offer).
+    mids: Option<Vec<String>>,
+}
+
+impl Outstanding {
+    const fn new(id: u64, retried: bool) -> Self {
+        Self {
+            id,
+            retried,
+            mids: None,
+        }
+    }
+}
+
+/// The media section ids (`a=mid:`) of an SDP, in order.
+pub fn sdp_mids(sdp: &str) -> Vec<String> {
+    sdp.lines()
+        .filter_map(|l| l.trim_end().strip_prefix("a=mid:"))
+        .map(str::to_string)
+        .collect()
+}
+
+/// What to do after an offer failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OfferFailure {
+    /// Not the outstanding offer (already answered or replaced): nothing.
+    Stale,
+    /// Offer again under this id (the only retry).
+    Retry(u64),
+    /// The retry failed too: the changes waiting for it must fail.
+    /// `reoffer`: a change was queued meanwhile and still needs an offer.
+    GiveUp { reoffer: bool },
+}
+
+impl PublisherNegotiation {
+    fn take_id() -> u64 {
+        NEXT_OFFER_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
+    }
+
+    /// A track was added or removed (or the join's first offer).
+    /// `Some(id)`: create and send an offer with this id now.
+    pub fn request(&mut self) -> Option<u64> {
+        if self.outstanding.is_some() {
+            self.pending = true;
+            None
+        } else {
+            let id = Self::take_id();
+            self.outstanding = Some(Outstanding::new(id, false));
+            Some(id)
+        }
+    }
+
+    /// Offer `id` was created with these media section ids.
+    pub fn sent(&mut self, id: u64, mids: Vec<String>) {
+        if let Some(o) = self.outstanding.as_mut().filter(|o| o.id == id) {
+            o.mids = Some(mids);
+        }
+    }
+
+    /// Whether an answer naming `mids` answers the outstanding offer.
+    pub fn answer_matches(&self, mids: &[String]) -> bool {
+        self.outstanding
+            .as_ref()
+            .is_some_and(|o| o.mids.as_deref().is_none_or(|m| m == mids))
+    }
+
+    /// The answer to the outstanding offer was applied. `Some(id)`: send
+    /// the queued change now under this id.
+    pub fn answered(&mut self) -> Option<u64> {
+        if self.pending {
+            self.pending = false;
+            let id = Self::take_id();
+            self.outstanding = Some(Outstanding::new(id, false));
+            Some(id)
+        } else {
+            self.outstanding = None;
+            None
+        }
+    }
+
+    /// Offer `id` got no usable answer (or could not be sent).
+    pub fn offer_failed(&mut self, id: u64) -> OfferFailure {
+        match &self.outstanding {
+            Some(o) if o.id == id && !o.retried => {
+                let id = Self::take_id();
+                // A queued change is part of the new offer.
+                self.pending = false;
+                self.outstanding = Some(Outstanding::new(id, true));
+                OfferFailure::Retry(id)
+            }
+            Some(o) if o.id == id => {
+                self.outstanding = None;
+                // A change queued while the retry was out (a stopped share)
+                // still has to reach the server.
+                let reoffer = std::mem::take(&mut self.pending);
+                OfferFailure::GiveUp { reoffer }
+            }
+            _ => OfferFailure::Stale,
+        }
+    }
+
+    /// The id of the offer that waits for its answer.
+    pub fn outstanding_id(&self) -> Option<u64> {
+        self.outstanding.as_ref().map(|o| o.id)
+    }
+
+    /// Whether the outstanding offer is already the retry.
+    pub fn is_retry(&self) -> bool {
+        self.outstanding.as_ref().is_some_and(|o| o.retried)
+    }
+
+    /// Whether an offer of ours is out.
+    pub const fn is_awaiting_answer(&self) -> bool {
+        self.outstanding.is_some()
+    }
 }
 
 /// WebRTC errors
@@ -84,7 +256,25 @@ pub enum ConnectionState {
     Disconnected,
     Connecting,
     Connected,
+    /// Short ICE outage (`disconnected`): media keeps running and may come
+    /// back by itself; the UI shows "reconnecting" and keeps everything.
+    Reconnecting,
     Failed,
+}
+
+/// Map the publisher peer connection's state to the voice state the UI sees.
+///
+/// `Disconnected` is a short ICE outage, not the end of the call: it becomes
+/// `Reconnecting` so the UI keeps its state (A8). Only `Closed` (own leave)
+/// ends the call; `Failed` lets the UI run its rejoin flow.
+pub const fn publisher_state(state: RTCPeerConnectionState) -> ConnectionState {
+    match state {
+        RTCPeerConnectionState::Connected => ConnectionState::Connected,
+        RTCPeerConnectionState::Disconnected => ConnectionState::Reconnecting,
+        RTCPeerConnectionState::Closed => ConnectionState::Disconnected,
+        RTCPeerConnectionState::Failed => ConnectionState::Failed,
+        _ => ConnectionState::Connecting,
+    }
 }
 
 /// ICE server configuration
@@ -169,13 +359,8 @@ pub struct WebRtcClient {
     state: Arc<RwLock<ConnectionState>>,
     channel_id: Arc<RwLock<Option<String>>>,
 
-    // Video track for screen sharing (always added at connect time to avoid SDP renegotiation)
-    video_sender: Arc<RwLock<Option<Arc<RTCRtpSender>>>>,
-    video_track: Arc<RwLock<Option<Arc<TrackLocalStaticRTP>>>>,
-
-    // Video track for webcam (separate from screen share, both can be active simultaneously)
-    webcam_sender: Arc<RwLock<Option<Arc<RTCRtpSender>>>>,
-    webcam_track: Arc<RwLock<Option<Arc<TrackLocalStaticRTP>>>>,
+    // Video senders are added per publication (screen share, webcam) and
+    // removed at its end: see `add_video_sender` / `remove_video_sender`.
 
     // Subscriber PeerConnection — receives remote tracks
     subscriber_pc: Arc<RwLock<Option<Arc<RTCPeerConnection>>>>,
@@ -282,10 +467,6 @@ impl WebRtcClient {
             local_track: Arc::new(RwLock::new(None)),
             state: Arc::new(RwLock::new(ConnectionState::Disconnected)),
             channel_id: Arc::new(RwLock::new(None)),
-            video_sender: Arc::new(RwLock::new(None)),
-            video_track: Arc::new(RwLock::new(None)),
-            webcam_sender: Arc::new(RwLock::new(None)),
-            webcam_track: Arc::new(RwLock::new(None)),
             subscriber_pc: Arc::new(RwLock::new(None)),
             publisher_ice: Arc::new(Mutex::new(IceCandidateQueue::default())),
             subscriber_ice: Arc::new(Mutex::new(IceCandidateQueue::default())),
@@ -442,7 +623,7 @@ impl WebRtcClient {
         let pc = Arc::new(peer_connection);
 
         // Set up event handlers
-        self.setup_event_handlers(pc.clone()).await?;
+        self.setup_event_handlers(pc.clone())?;
 
         // Create local audio track
         let local_track = Arc::new(TrackLocalStaticRTP::new(
@@ -463,63 +644,6 @@ impl WebRtcClient {
             .await
             .map_err(|e| WebRtcError::TrackError(e.to_string()))?;
 
-        // Create video track for screen sharing (always added to avoid SDP renegotiation)
-        // Uses add_transceiver_from_track with simulcast RID encodings (h/m/l)
-        // so the SDP advertises simulcast layers matching the browser path.
-        // TODO(simulcast): webrtc-rs 0.11 only uses the RID from send_encodings
-        // for SDP generation — it does not produce multiple encoded streams.
-        // True 3-layer simulcast requires feeding 3 separately encoded RTP
-        // streams from the capture pipeline (future work).
-        let video_track = Arc::new(TrackLocalStaticRTP::new(
-            RTCRtpCodecCapability {
-                mime_type: "video/VP8".to_string(),
-                clock_rate: 90000,
-                channels: 0,
-                sdp_fmtp_line: String::new(),
-                rtcp_feedback: vec![],
-            },
-            "screen-video".to_string(),
-            "screen-share-stream".to_string(),
-        ));
-
-        let video_transceiver = pc
-            .add_transceiver_from_track(
-                video_track.clone() as Arc<dyn TrackLocal + Send + Sync>,
-                Some(RTCRtpTransceiverInit {
-                    direction: RTCRtpTransceiverDirection::Sendonly,
-                    send_encodings: simulcast_encodings(),
-                }),
-            )
-            .await
-            .map_err(|e| WebRtcError::TrackError(e.to_string()))?;
-        let video_sender = video_transceiver.sender().await;
-
-        // Create webcam video track (separate from screen share, both can be active)
-        // Same simulcast RID setup as screen share — see TODO above.
-        let webcam_track = Arc::new(TrackLocalStaticRTP::new(
-            RTCRtpCodecCapability {
-                mime_type: "video/VP8".to_string(),
-                clock_rate: 90000,
-                channels: 0,
-                sdp_fmtp_line: String::new(),
-                rtcp_feedback: vec![],
-            },
-            "webcam-video".to_string(),
-            "webcam-stream".to_string(),
-        ));
-
-        let webcam_transceiver = pc
-            .add_transceiver_from_track(
-                webcam_track.clone() as Arc<dyn TrackLocal + Send + Sync>,
-                Some(RTCRtpTransceiverInit {
-                    direction: RTCRtpTransceiverDirection::Sendonly,
-                    send_encodings: simulcast_encodings(),
-                }),
-            )
-            .await
-            .map_err(|e| WebRtcError::TrackError(e.to_string()))?;
-        let webcam_sender = webcam_transceiver.sender().await;
-
         // Create subscriber PeerConnection (receives remote tracks from SFU)
         let sub_config = Self::create_rtc_config(ice_servers);
         let subscriber_connection = self
@@ -530,16 +654,12 @@ impl WebRtcClient {
         let sub_pc = Arc::new(subscriber_connection);
 
         // Wire subscriber event handlers
-        self.setup_subscriber_event_handlers(sub_pc.clone()).await?;
+        self.setup_subscriber_event_handlers(sub_pc.clone())?;
 
         // Store references
         *self.peer_connection.write().await = Some(pc);
         *self.audio_sender.write().await = Some(sender);
         *self.local_track.write().await = Some(local_track);
-        *self.video_sender.write().await = Some(video_sender);
-        *self.video_track.write().await = Some(video_track);
-        *self.webcam_sender.write().await = Some(webcam_sender);
-        *self.webcam_track.write().await = Some(webcam_track);
         *self.subscriber_pc.write().await = Some(sub_pc);
 
         info!(
@@ -550,7 +670,7 @@ impl WebRtcClient {
     }
 
     /// Set up peer connection event handlers
-    async fn setup_event_handlers(&self, pc: Arc<RTCPeerConnection>) -> Result<(), WebRtcError> {
+    fn setup_event_handlers(&self, pc: Arc<RTCPeerConnection>) -> Result<(), WebRtcError> {
         // ICE candidate handler
         let on_ice_candidate = self.on_ice_candidate.clone();
         pc.on_ice_candidate(Box::new(move |candidate: Option<RTCIceCandidate>| {
@@ -585,14 +705,7 @@ impl WebRtcClient {
             let state = state.clone();
             let on_state_change = on_state_change.clone();
             Box::pin(async move {
-                let new_state = match s {
-                    RTCPeerConnectionState::Connected => ConnectionState::Connected,
-                    RTCPeerConnectionState::Disconnected | RTCPeerConnectionState::Closed => {
-                        ConnectionState::Disconnected
-                    }
-                    RTCPeerConnectionState::Failed => ConnectionState::Failed,
-                    _ => ConnectionState::Connecting,
-                };
+                let new_state = publisher_state(s);
 
                 *state.write().await = new_state;
 
@@ -629,7 +742,7 @@ impl WebRtcClient {
     }
 
     /// Set up subscriber peer connection event handlers
-    async fn setup_subscriber_event_handlers(
+    fn setup_subscriber_event_handlers(
         &self,
         pc: Arc<RTCPeerConnection>,
     ) -> Result<(), WebRtcError> {
@@ -893,14 +1006,71 @@ impl WebRtcClient {
         (*self.local_track.read().await).clone()
     }
 
-    /// Get the video track for screen sharing
-    pub async fn get_video_track(&self) -> Option<Arc<TrackLocalStaticRTP>> {
-        (*self.video_track.read().await).clone()
+    /// Add a fresh video sender for one publication (one screen share or the
+    /// webcam) to the publisher connection. Each publication gets its own
+    /// track and m-line, so the server sees a new track per share and a
+    /// later webcam is never taken for an old share. Renegotiation follows
+    /// (see [`PublisherNegotiation`]).
+    pub async fn add_video_sender(
+        &self,
+        kind: VideoKind,
+        publication_id: &str,
+    ) -> Result<(Arc<TrackLocalStaticRTP>, Arc<RTCRtpSender>), WebRtcError> {
+        let pc = self
+            .peer_connection
+            .read()
+            .await
+            .clone()
+            .ok_or(WebRtcError::NotConnected)?;
+        let track = Arc::new(TrackLocalStaticRTP::new(
+            RTCRtpCodecCapability {
+                mime_type: "video/VP8".to_string(),
+                clock_rate: 90000,
+                channels: 0,
+                sdp_fmtp_line: String::new(),
+                rtcp_feedback: vec![],
+            },
+            format!("{}-{publication_id}", kind.track_prefix()),
+            format!("{}-{publication_id}", kind.stream_prefix()),
+        ));
+        // `send_encodings` is ignored by webrtc-rs (see `simulcast_encodings`).
+        let transceiver = pc
+            .add_transceiver_from_track(
+                track.clone() as Arc<dyn TrackLocal + Send + Sync>,
+                Some(RTCRtpTransceiverInit {
+                    direction: RTCRtpTransceiverDirection::Sendonly,
+                    send_encodings: simulcast_encodings(),
+                }),
+            )
+            .await
+            .map_err(|e| WebRtcError::TrackError(e.to_string()))?;
+        Ok((track, transceiver.sender().await))
     }
 
-    /// Get the video track for webcam
-    pub async fn get_webcam_track(&self) -> Option<Arc<TrackLocalStaticRTP>> {
-        (*self.webcam_track.read().await).clone()
+    /// Remove a publication's sender (its m-line goes inactive with the next
+    /// offer, and its RTCP reader ends).
+    pub async fn remove_video_sender(&self, sender: &Arc<RTCRtpSender>) -> Result<(), WebRtcError> {
+        let Some(pc) = self.peer_connection.read().await.clone() else {
+            return Ok(()); // the connection is gone and its senders with it
+        };
+        pc.remove_track(sender)
+            .await
+            .map_err(|e| WebRtcError::TrackError(e.to_string()))
+    }
+
+    /// Ask the subscriber connection's sender of `media_ssrc` for a key frame
+    /// (a viewer that subscribed late).
+    pub async fn request_subscriber_keyframe(&self, media_ssrc: u32) {
+        let Some(pc) = self.subscriber_pc.read().await.clone() else {
+            return;
+        };
+        let pli = webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication {
+            sender_ssrc: 0,
+            media_ssrc,
+        };
+        if let Err(e) = pc.write_rtcp(&[Box::new(pli)]).await {
+            debug!("Key frame request on the subscriber connection failed: {e}");
+        }
     }
 
     /// Disconnect and clean up
@@ -922,10 +1092,6 @@ impl WebRtcClient {
         // Clear state
         *self.audio_sender.write().await = None;
         *self.local_track.write().await = None;
-        *self.video_sender.write().await = None;
-        *self.video_track.write().await = None;
-        *self.webcam_sender.write().await = None;
-        *self.webcam_track.write().await = None;
         *self.state.write().await = ConnectionState::Disconnected;
         *self.channel_id.write().await = None;
         *self.publisher_ice.lock().await = IceCandidateQueue::default();
@@ -950,6 +1116,34 @@ impl Default for WebRtcClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn short_ice_outage_is_reconnecting_not_disconnected() {
+        assert_eq!(
+            publisher_state(RTCPeerConnectionState::Disconnected),
+            ConnectionState::Reconnecting
+        );
+        assert_eq!(
+            publisher_state(RTCPeerConnectionState::Connected),
+            ConnectionState::Connected
+        );
+    }
+
+    #[test]
+    fn only_closed_ends_and_failed_stays_failed() {
+        assert_eq!(
+            publisher_state(RTCPeerConnectionState::Closed),
+            ConnectionState::Disconnected
+        );
+        assert_eq!(
+            publisher_state(RTCPeerConnectionState::Failed),
+            ConnectionState::Failed
+        );
+        assert_eq!(
+            publisher_state(RTCPeerConnectionState::New),
+            ConnectionState::Connecting
+        );
+    }
 
     #[test]
     fn test_webrtc_client_creation() {
@@ -1052,5 +1246,192 @@ mod tests {
 
         client.disconnect().await.unwrap();
         sfu.close().await.unwrap();
+    }
+
+    #[test]
+    fn negotiation_never_has_two_offers_out() {
+        let mut n = PublisherNegotiation::default();
+        let first = n.request().expect("first change: offer now");
+        assert_eq!(n.request(), None, "second change while waiting: queued");
+        assert_eq!(n.request(), None, "third change: still one queued offer");
+        let next = n.answered().expect("answer arrives: send the queued offer");
+        assert_ne!(first, next);
+        assert_eq!(n.outstanding_id(), Some(next));
+        assert_eq!(n.answered(), None, "its answer: nothing more to send");
+        assert!(!n.is_awaiting_answer());
+    }
+
+    #[test]
+    fn a_lost_answer_is_offered_once_more_then_given_up() {
+        let mut n = PublisherNegotiation::default();
+        let id = n.request().unwrap();
+        assert_eq!(n.request(), None, "a change waits behind the lost offer");
+        let OfferFailure::Retry(retry) = n.offer_failed(id) else {
+            panic!("first failure retries")
+        };
+        assert_eq!(
+            n.offer_failed(id),
+            OfferFailure::Stale,
+            "the old id is gone"
+        );
+        assert_eq!(
+            n.offer_failed(retry),
+            OfferFailure::GiveUp { reoffer: false },
+            "the queued change rode on the retry"
+        );
+        assert!(!n.is_awaiting_answer(), "nothing stays stuck");
+        assert!(n.request().is_some(), "the next change offers at once");
+    }
+
+    #[test]
+    fn a_change_queued_behind_the_retry_survives_the_give_up() {
+        let mut n = PublisherNegotiation::default();
+        let id = n.request().unwrap();
+        let OfferFailure::Retry(retry) = n.offer_failed(id) else {
+            panic!("retry")
+        };
+        // A share is stopped while the retry is out: its removal is queued.
+        assert_eq!(n.request(), None);
+        assert_eq!(
+            n.offer_failed(retry),
+            OfferFailure::GiveUp { reoffer: true },
+            "the stop still needs its own offer"
+        );
+    }
+
+    #[test]
+    fn an_answer_is_taken_only_for_the_offer_with_its_sections() {
+        let mut n = PublisherNegotiation::default();
+        let id = n.request().unwrap();
+        assert!(n.answer_matches(&[]), "before it was created: any answer");
+        n.sent(
+            id,
+            sdp_mids("v=0\r\nm=audio 9\r\na=mid:0\r\nm=video 9\r\na=mid:1\r\n"),
+        );
+        assert!(n.answer_matches(&["0".into(), "1".into()]));
+        // A late answer of an earlier offer that had one section less.
+        assert!(!n.answer_matches(&["0".into()]));
+        n.answered();
+        assert!(!n.answer_matches(&["0".into(), "1".into()]), "nothing out");
+    }
+
+    #[test]
+    fn offer_ids_never_repeat_across_sessions() {
+        let mut first = PublisherNegotiation::default();
+        let a = first.request().unwrap();
+        // The next session starts a fresh guard: its offer has a new id, so
+        // the old session's deadline (id `a`) cannot match it.
+        let mut second = PublisherNegotiation::default();
+        let b = second.request().unwrap();
+        assert_ne!(a, b);
+        assert_eq!(second.offer_failed(a), OfferFailure::Stale);
+    }
+
+    #[test]
+    fn a_retry_that_gets_its_answer_clears_the_guard() {
+        let mut n = PublisherNegotiation::default();
+        let id = n.request().unwrap();
+        let OfferFailure::Retry(retry) = n.offer_failed(id) else {
+            panic!("retry")
+        };
+        assert_eq!(n.outstanding_id(), Some(retry));
+        assert_eq!(n.answered(), None);
+        assert_eq!(
+            n.offer_failed(retry),
+            OfferFailure::Stale,
+            "answered: deadline is moot"
+        );
+    }
+
+    /// (stream id, direction) of each media section that names a stream.
+    fn sections(sdp: &str) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        for section in sdp.split("m=").skip(1) {
+            let stream = section
+                .lines()
+                .find_map(|l| l.strip_prefix("a=msid:"))
+                .and_then(|l| l.split_whitespace().next());
+            let dir = section.lines().find(|l| {
+                matches!(
+                    *l,
+                    "a=sendonly" | "a=recvonly" | "a=inactive" | "a=sendrecv"
+                )
+            });
+            if let (Some(stream), Some(dir)) = (stream, dir) {
+                out.push((stream.to_string(), dir.trim_start_matches("a=").to_string()));
+            }
+        }
+        out
+    }
+
+    fn msid_streams(sdp: &str) -> Vec<String> {
+        sdp.lines()
+            .filter_map(|l| l.strip_prefix("a=msid:"))
+            .map(|l| l.split_whitespace().next().unwrap_or("").to_string())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn share_stop_share_again_gets_a_new_track_each_time() {
+        let client = WebRtcClient::new().unwrap();
+        client.connect("ch", &[]).await.unwrap();
+        let offer = client.create_offer().await.unwrap();
+        assert!(
+            !offer.contains("m=video"),
+            "no video m-line before anything is published"
+        );
+
+        let (first, first_sender) = client
+            .add_video_sender(VideoKind::Screen, "a")
+            .await
+            .unwrap();
+        let offer = client.create_offer().await.unwrap();
+        assert!(msid_streams(&offer).contains(&"screen-share-stream-a".to_string()));
+
+        client.remove_video_sender(&first_sender).await.unwrap();
+        let (second, _) = client
+            .add_video_sender(VideoKind::Screen, "b")
+            .await
+            .unwrap();
+        assert_ne!(first.id(), second.id());
+        let offer = client.create_offer().await.unwrap();
+        let sections = sections(&offer);
+        assert!(sections.contains(&("screen-share-stream-b".into(), "sendonly".into())));
+        assert!(
+            sections.contains(&("screen-share-stream-a".into(), "inactive".into())),
+            "the stopped share's m-line is inactive: nothing of it is sent"
+        );
+        client.disconnect().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn share_then_webcam_are_separate_tracks_of_the_right_kind() {
+        let client = WebRtcClient::new().unwrap();
+        client.connect("ch", &[]).await.unwrap();
+        let (screen, _) = client
+            .add_video_sender(VideoKind::Screen, "s1")
+            .await
+            .unwrap();
+        let (cam, _) = client
+            .add_video_sender(VideoKind::Webcam, "c1")
+            .await
+            .unwrap();
+        assert_eq!(screen.id(), "screen-video-s1");
+        assert_eq!(cam.id(), "webcam-video-c1");
+        let offer = client.create_offer().await.unwrap();
+        let streams = msid_streams(&offer);
+        assert!(streams.contains(&"screen-share-stream-s1".to_string()));
+        assert!(streams.contains(&"webcam-stream-c1".to_string()));
+        assert_eq!(offer.matches("m=video").count(), 2);
+        client.disconnect().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn no_video_sender_without_a_connection() {
+        let client = WebRtcClient::new().unwrap();
+        assert!(matches!(
+            client.add_video_sender(VideoKind::Screen, "x").await,
+            Err(WebRtcError::NotConnected)
+        ));
     }
 }

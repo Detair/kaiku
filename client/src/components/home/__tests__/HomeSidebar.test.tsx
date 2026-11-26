@@ -5,7 +5,11 @@ import { cleanup, render, screen } from "@solidjs/testing-library";
 
 const state = vi.hoisted(() => ({
   incoming: 0,
-  voice: { channelId: null as string | null },
+  voice: {
+    state: "disconnected",
+    channelId: null as string | null,
+    lostChannelId: null as string | null,
+  },
   dms: [] as { id: string }[],
 }));
 
@@ -36,7 +40,9 @@ describe("HomeSidebar", () => {
   beforeEach(() => {
     cleanup();
     state.incoming = 0;
+    state.voice.state = "disconnected";
     state.voice.channelId = null;
+    state.voice.lostChannelId = null;
     state.dms = [];
   });
 
@@ -52,6 +58,20 @@ describe("HomeSidebar", () => {
     state.dms = [{ id: "dm-call" }];
     render(() => <HomeSidebar />);
     expect(screen.queryByTestId("voice-panel-slot")).toBeNull();
+  });
+
+  it("keeps the voice panel on Home while reconnecting", () => {
+    state.voice.state = "reconnecting";
+    state.voice.channelId = "server-voice";
+    render(() => <HomeSidebar />);
+    expect(screen.getByTestId("voice-panel-slot")).toBeTruthy();
+  });
+
+  it("keeps the voice panel on Home to offer Rejoin after voice was lost", () => {
+    state.voice.state = "disconnected";
+    state.voice.lostChannelId = "server-voice";
+    render(() => <HomeSidebar />);
+    expect(screen.getByTestId("voice-panel-slot")).toBeTruthy();
   });
 
   it("shows no voice panel when not in a call", () => {

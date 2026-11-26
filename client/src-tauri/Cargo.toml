@@ -142,6 +142,9 @@ sentry-tracing = "0.48"
 # Secret Service (libsecret/D-Bus); kernel keyutils evicts on session end.
 dbus-secret-service-keyring-store = { version = "1", features = ["crypto-rust", "vendored"] }
 zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
+# Screen capture from the ScreenCast portal (capture/pipewire_capture.rs).
+# Already in the tree via scap (MIT); safe API only.
+pipewire = "0.8"
 
 [dev-dependencies]
 tempfile.workspace = true

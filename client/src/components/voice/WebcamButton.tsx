@@ -1,4 +1,4 @@
-import { Component, Show, createSignal } from "solid-js";
+import { Component, Show, createSignal, onCleanup } from "solid-js";
 import { Camera, CameraOff } from "lucide-solid";
 import { voiceState, startWebcam, stopWebcam } from "@/stores/voice";
 import { t } from "@/i18n";
@@ -9,6 +9,8 @@ import { t } from "@/i18n";
 const WebcamButton: Component = () => {
   const [loading, setLoading] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
+  let errorTimer: ReturnType<typeof setTimeout> | undefined;
+  onCleanup(() => clearTimeout(errorTimer));
 
   const handleClick = async () => {
     setError(null);
@@ -25,8 +27,9 @@ const WebcamButton: Component = () => {
       try {
         const result = await startWebcam("medium");
         if (!result.ok) {
-          setError(result.error || "Failed to start webcam");
-          setTimeout(() => setError(null), 3000);
+          if (result.error) setError(result.error);
+          clearTimeout(errorTimer);
+          errorTimer = setTimeout(() => setError(null), 3000);
         }
       } finally {
         setLoading(false);
@@ -34,19 +37,24 @@ const WebcamButton: Component = () => {
     }
   };
 
+  // Starting needs a connected call; switching the camera off never waits
+  // for one (it keeps capturing while the call reconnects).
+  const disabled = () =>
+    loading() || (!voiceState.webcamActive && voiceState.state !== "connected");
+
   return (
     <div class="relative">
       <button
         type="button"
         aria-label={voiceState.webcamActive ? t("voice.webcam.stop") : t("voice.webcam.start")}
         onClick={handleClick}
-        disabled={voiceState.state !== "connected" || loading()}
+        disabled={disabled()}
         class={`p-2 rounded-full transition-colors ${
           voiceState.webcamActive
             ? "bg-success/20 text-success hover:bg-danger/20 hover:text-danger"
             : "bg-background-secondary text-text-secondary hover:bg-background-primary hover:text-text-primary"
         } ${loading() ? "opacity-50 cursor-wait" : ""} state-disabled`}
-        title={voiceState.webcamActive ? "Stop Camera" : "Start Camera"}
+        title={voiceState.webcamActive ? t("voice.webcam.stop") : t("voice.webcam.start")}
       >
         {voiceState.webcamActive ? (
           <CameraOff class="w-5 h-5" />
@@ -56,7 +64,10 @@ const WebcamButton: Component = () => {
       </button>
 
       <Show when={error()}>
-        <div class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 bg-danger text-white text-xs rounded whitespace-nowrap">
+        <div
+          role="alert"
+          class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 bg-danger text-white text-xs rounded whitespace-nowrap"
+        >
           {error()}
         </div>
       </Show>

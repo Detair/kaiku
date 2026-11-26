@@ -30,4 +30,9 @@ export const notifications = {
   "notifications.toast.eventReminderTitle": "Event starting soon",
   "notifications.toast.commandTimeoutTitle": "Command Timeout",
   "notifications.toast.commandTimeoutMessage": "Command /{{name}} did not respond within 30 seconds.",
+  "notifications.update.title": "Please update Kaiku",
+  "notifications.update.web": "This server works best with version {{version}} or newer. Reload the page to get it.",
+  "notifications.update.desktop": "This server works best with version {{version}} or newer. You can keep using Kaiku while the update installs.",
+  "notifications.update.reload": "Reload",
+  "notifications.update.check": "Check for updates",
 } as const satisfies Record<`notifications.${string}`, string>;

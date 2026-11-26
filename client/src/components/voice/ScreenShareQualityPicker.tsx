@@ -1,161 +1,143 @@
-import { Component, createSignal, For } from "solid-js";
-import { X, Monitor } from "lucide-solid";
-import { startScreenShare } from "@/stores/voice";
+import { Component, createSignal, For, Show } from "solid-js";
+import DialogShell from "@/components/auth/DialogShell";
+import { startScreenShare, cancelMediaStart } from "@/stores/voice";
 import type { ScreenShareQuality } from "@/lib/webrtc/types";
+import { t, type MessageKey } from "@/i18n";
 
 interface ScreenShareQualityPickerProps {
-  /** Native capture source ID (passed from ScreenShareSourcePicker). */
+  /** Native capture source ID (from ScreenShareSourcePicker; none on Linux). */
   sourceId?: string;
+  /** Linux desktop: the system dialog (portal) chooses the screen. */
+  systemPicker?: boolean;
   onClose: () => void;
 }
 
-const qualityOptions: {
-  value: ScreenShareQuality;
-  label: string;
-  description: string;
-  premium?: boolean;
-}[] = [
+/** Three plain tiers; the server still accepts "premium" from older clients. */
+const TIERS: { value: ScreenShareQuality; label: MessageKey; hint: MessageKey }[] = [
+  { value: "low", label: "voice.screenShare.tier.low", hint: "voice.screenShare.tier.lowHint" },
   {
-    value: "low",
-    label: "480p 15fps",
-    description: "Best for slow connections",
+    value: "medium",
+    label: "voice.screenShare.tier.medium",
+    hint: "voice.screenShare.tier.mediumHint",
   },
-  { value: "medium", label: "720p 30fps", description: "Recommended" },
-  { value: "high", label: "1080p 30fps", description: "Good connections" },
-  {
-    value: "premium",
-    label: "1080p 60fps",
-    description: "Premium only",
-    premium: true,
-  },
+  { value: "high", label: "voice.screenShare.tier.high", hint: "voice.screenShare.tier.highHint" },
 ];
 
 /**
- * Quality selection dialog shown before starting screen share.
+ * Quality choice before a screen share starts. A cancelled browser picker
+ * closes quietly; a refusal or error stays visible here.
  */
-const ScreenShareQualityPicker: Component<ScreenShareQualityPickerProps> = (
-  props,
-) => {
-  const [selectedQuality, setSelectedQuality] =
-    createSignal<ScreenShareQuality>("medium");
+const ScreenShareQualityPicker: Component<ScreenShareQualityPickerProps> = (props) => {
+  const [quality, setQuality] = createSignal<ScreenShareQuality>("medium");
   const [loading, setLoading] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
+  const [note, setNote] = createSignal<string | null>(null);
+
+  /** Closing while a start runs aborts it (no share after Cancel). */
+  const close = () => {
+    if (loading()) void cancelMediaStart();
+    props.onClose();
+  };
 
   const handleStart = async () => {
     setError(null);
+    setNote(null);
     setLoading(true);
-
     try {
-      const result = await startScreenShare(selectedQuality(), props.sourceId);
-
-      if (!result.ok) {
-        setError(result.error ?? "Failed to start screen share");
-        return;
+      const result = await startScreenShare(quality(), props.sourceId);
+      if (result.ok) {
+        props.onClose();
+      } else if (result.error) {
+        setError(result.error);
+      } else if (result.note) {
+        setNote(result.note);
+      } else {
+        // Cancelled in the browser's own picker: nothing to say.
+        props.onClose();
       }
-
-      props.onClose();
     } finally {
       setLoading(false);
     }
   };
 
-  const handleBackdropClick = (e: MouseEvent) => {
-    if (e.target === e.currentTarget) {
-      props.onClose();
-    }
-  };
-
   return (
-    <div
-      class="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
-      onClick={handleBackdropClick}
+    <DialogShell
+      title={t("voice.screenShare.dialogTitle")}
+      onClose={close}
+      testId="screen-share-quality"
     >
-      <div class="bg-background-secondary rounded-lg shadow-xl w-full max-w-sm mx-4">
-        {/* Header */}
-        <div class="flex items-center justify-between p-4 border-b border-background-primary">
-          <div class="flex items-center gap-2">
-            <Monitor class="w-5 h-5 text-primary" />
-            <h2 class="text-lg font-semibold text-text-primary">
-              Share Screen
-            </h2>
-          </div>
-          <button
-            onClick={props.onClose}
-            class="p-1 text-text-muted hover:text-text-primary transition-colors"
-          >
-            <X class="w-5 h-5" />
-          </button>
-        </div>
+      <fieldset class="space-y-2">
+        <legend class="text-sm text-text-secondary mb-2">
+          {t("voice.screenShare.chooseQuality")}
+        </legend>
+        <For each={TIERS}>
+          {(tier) => (
+            <label
+              class="flex items-start gap-3 p-3 rounded-lg cursor-pointer transition-colors border"
+              classList={{
+                "bg-accent-primary/20 border-accent-primary": quality() === tier.value,
+                "border-white/10 hover:bg-white/5": quality() !== tier.value,
+              }}
+            >
+              <input
+                type="radio"
+                name="screen-share-quality"
+                value={tier.value}
+                checked={quality() === tier.value}
+                onChange={() => setQuality(tier.value)}
+                class="mt-1 w-4 h-4"
+              />
+              <span class="flex-1">
+                <span class="block text-sm font-medium text-text-primary">{t(tier.label)}</span>
+                <span class="block text-xs text-text-secondary">{t(tier.hint)}</span>
+              </span>
+            </label>
+          )}
+        </For>
+      </fieldset>
 
-        {/* Quality options */}
-        <div class="p-4 space-y-2">
-          <p class="text-sm text-text-secondary mb-3">Select quality:</p>
+      <Show when={props.systemPicker}>
+        <p class="text-sm text-text-secondary">{t("voice.screenShare.portalHint")}</p>
+      </Show>
+      <Show when={note()}>
+        <p role="status" class="text-sm text-text-primary">
+          {note()}
+        </p>
+      </Show>
+      <Show when={error()}>
+        <p
+          role="alert"
+          class="text-sm rounded-lg p-2"
+          style={{
+            "background-color": "var(--color-error-bg)",
+            border: "1px solid var(--color-error-border)",
+            color: "var(--color-error-text)",
+          }}
+        >
+          {error()}
+        </p>
+      </Show>
 
-          <For each={qualityOptions}>
-            {(option) => (
-              <label
-                class={`flex items-center gap-3 p-3 rounded-lg cursor-pointer transition-colors ${
-                  selectedQuality() === option.value
-                    ? "bg-primary/20 border border-primary"
-                    : "bg-background-primary hover:bg-background-tertiary border border-transparent"
-                } ${option.premium ? "state-unavailable" : ""}`}
-              >
-                <input
-                  type="radio"
-                  name="quality"
-                  value={option.value}
-                  checked={selectedQuality() === option.value}
-                  onChange={() =>
-                    !option.premium && setSelectedQuality(option.value)
-                  }
-                  disabled={option.premium}
-                  class="w-4 h-4 text-primary"
-                />
-                <div class="flex-1">
-                  <div class="flex items-center gap-2">
-                    <span class="text-sm font-medium text-text-primary">
-                      {option.label}
-                    </span>
-                    {option.premium && (
-                      <span class="text-xs px-1.5 py-0.5 bg-warning/20 text-warning rounded">
-                        Premium
-                      </span>
-                    )}
-                  </div>
-                  <span class="text-xs text-text-muted">
-                    {option.description}
-                  </span>
-                </div>
-              </label>
-            )}
-          </For>
-        </div>
-
-        {/* Error message */}
-        {error() && (
-          <div class="px-4 pb-2">
-            <p class="text-sm text-danger">{error()}</p>
-          </div>
-        )}
-
-        {/* Actions */}
-        <div class="flex justify-end gap-2 p-4 border-t border-background-primary">
-          <button
-            onClick={props.onClose}
-            class="px-4 py-2 text-sm text-text-secondary hover:text-text-primary transition-colors"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={handleStart}
-            disabled={loading()}
-            class="px-4 py-2 text-sm bg-accent-primary text-on-accent rounded-lg hover:bg-accent-primary/90 transition-colors state-disabled"
-          >
-            {loading() ? "Starting..." : "Start Sharing"}
-          </button>
-        </div>
+      <div class="flex justify-end gap-2 pt-2">
+        <button
+          type="button"
+          onClick={close}
+          class="px-4 py-2 text-sm text-text-secondary hover:text-text-primary transition-colors"
+        >
+          {t("common.cancel")}
+        </button>
+        <button
+          type="button"
+          data-testid="screen-share-start"
+          onClick={handleStart}
+          disabled={loading()}
+          aria-busy={loading()}
+          class="px-4 py-2 text-sm bg-accent-primary text-on-accent rounded-lg hover:bg-accent-primary/90 transition-colors state-disabled"
+        >
+          {loading() ? t("voice.screenShare.starting") : t("voice.screenShare.startButton")}
+        </button>
       </div>
-    </div>
+    </DialogShell>
   );
 };
 

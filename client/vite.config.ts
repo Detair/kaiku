@@ -3,6 +3,7 @@ import solidPlugin from "vite-plugin-solid";
 import UnoCSS from "unocss/vite";
 import basicSsl from "@vitejs/plugin-basic-ssl";
 import path from "path";
+import pkg from "./package.json";
 
 export default defineConfig(({ mode }) => ({
   plugins: [
@@ -44,12 +45,13 @@ export default defineConfig(({ mode }) => ({
   build: {
     target: "esnext",
   },
-  ...(mode === "production" && {
-    define: {
+  define: {
+    __KAIKU_VERSION__: JSON.stringify(pkg.version),
+    ...(mode === "production" && {
       "console.log": "(() => {})",
       "console.debug": "(() => {})",
-    },
-  }),
+    }),
+  },
   // Prevent vite from obscuring rust errors
   clearScreen: false,
 }));

@@ -90,6 +90,10 @@ pub enum AudioError {
         "Audio device is busy: another program or the sound server is using it. Choose the system default instead."
     )]
     DeviceInUse,
+    /// An earlier stream was told to stop but has not released its device
+    /// yet; opening it again now would open the device twice.
+    #[error("The audio device is still in use by the previous call. Try again in a moment.")]
+    StillReleasing,
     /// A switch failed and the previous device could not be reopened, so
     /// capture now runs on the system default.
     #[error(

@@ -6,15 +6,19 @@ import {
   onMount,
   onCleanup,
 } from "solid-js";
-import { PhoneOff, Signal, MonitorUp } from "lucide-solid";
+import { PhoneOff, Signal, MonitorUp, X } from "lucide-solid";
 import {
   voiceState,
   leaveVoice,
+  joinVoice,
+  dismissVoiceRejoin,
   getParticipants,
   getLocalMetrics,
 } from "@/stores/voice";
 import { getChannel, selectChannel } from "@/stores/channels";
-import { startViewing } from "@/stores/screenShareViewer";
+import { guildsState, selectGuild } from "@/stores/guilds";
+import { startViewing, requestTileFocus } from "@/stores/screenShareViewer";
+import { isTauri } from "@/lib/tauri/common";
 import { formatElapsedTime, getParticipantDisplayName } from "@/lib/utils";
 import { QualityIndicator } from "./QualityIndicator";
 import { QualityTooltip } from "./QualityTooltip";
@@ -33,13 +37,43 @@ const VoicePanel: Component = () => {
   };
 
   const participants = () => getParticipants();
+  const channelName = () =>
+    channel()?.name || voiceState.channelName || t("voice.panel.fallbackChannel");
+
+  /** Back to the call's channel, from Home or another server too. */
+  const openVoiceChannel = async () => {
+    const chId = voiceState.channelId;
+    if (!chId) return;
+    const guildId = voiceState.guildId;
+    if (guildId && guildsState.activeGuildId !== guildId) await selectGuild(guildId);
+    selectChannel(chId);
+  };
+
+  /**
+   * Browser: the full-screen viewer. Desktop: there is no browser track, so
+   * the channel view opens with the share as the focused tile.
+   */
+  const openShare = (streamId: string) => {
+    if (isTauri()) {
+      requestTileFocus(streamId);
+      void openVoiceChannel();
+    } else {
+      startViewing(streamId);
+    }
+  };
 
   const handleDisconnect = () => {
     leaveVoice();
   };
 
   const isConnected = () => voiceState.state === "connected";
-  const isConnecting = () => voiceState.state === "connecting";
+  const isConnecting = () =>
+    voiceState.state === "connecting" || voiceState.state === "reconnecting";
+  const statusText = () => {
+    if (voiceState.state === "connected") return t("voice.panel.connected");
+    if (voiceState.state === "reconnecting") return t("voice.status.reconnecting");
+    return t("voice.status.connecting");
+  };
 
   // Elapsed timer — uses the store's authoritative connectedAt timestamp
   const [elapsedTime, setElapsedTime] = createSignal("00:00");
@@ -59,7 +93,49 @@ const VoicePanel: Component = () => {
     return typeof m === "object" && m !== null ? m : null;
   };
 
+  const lostChannel = () =>
+    voiceState.lostChannelId ? getChannel(voiceState.lostChannelId) : null;
+  const rejoin = () => {
+    const id = voiceState.lostChannelId;
+    if (id) void joinVoice(id).catch((err) => console.error("[Voice] Rejoin failed:", err));
+  };
+
   return (
+    <>
+    {/* The rejoin flow gave up (C32): offer to join again. */}
+    <Show when={voiceState.state === "disconnected" && voiceState.lostChannelId}>
+      <div
+        data-testid="voice-rejoin"
+        role="status"
+        class="bg-surface-base/50 border-t border-white/10 px-3 py-2 flex items-center justify-between gap-2"
+      >
+        <div class="min-w-0">
+          <div class="text-xs font-semibold text-text-primary">{t("voice.rejoin.lost")}</div>
+          <div class="text-xs text-text-secondary truncate">
+            {lostChannel()?.name || t("voice.panel.fallbackChannel")}
+          </div>
+        </div>
+        <div class="flex items-center gap-1 shrink-0">
+          <button
+            type="button"
+            data-testid="voice-rejoin-button"
+            class="px-2 py-1 rounded text-xs text-text-primary bg-accent-primary/20 hover:bg-accent-primary/30 transition-colors"
+            onClick={rejoin}
+          >
+            {t("voice.rejoin.button")}
+          </button>
+          <button
+            type="button"
+            class="p-1.5 text-text-secondary hover:text-text-primary hover:bg-white/10 rounded transition-colors"
+            title={t("common.dismiss")}
+            aria-label={t("common.dismiss")}
+            onClick={() => dismissVoiceRejoin()}
+          >
+            <X class="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+    </Show>
     <Show when={(isConnected() || isConnecting()) && voiceState.channelId}>
       <div
         data-testid="voice-panel"
@@ -82,22 +158,21 @@ const VoicePanel: Component = () => {
             />
             <div
               class="min-w-0 cursor-pointer"
-              onClick={() => {
-                const chId = voiceState.channelId;
-                if (chId) selectChannel(chId);
-              }}
+              data-testid="voice-panel-open-channel"
+              onClick={() => void openVoiceChannel()}
             >
               <div
                 class="text-xs font-semibold hover:underline"
                 classList={{
                   "text-accent-success": isConnected(),
-                  "text-amber-400 animate-pulse": isConnecting(),
+                  // Readable text keeps the text colour; the icon carries the amber.
+                  "text-text-primary animate-pulse": isConnecting(),
                 }}
               >
-                {isConnected() ? t("voice.panel.connected") : t("voice.status.connecting")}
+                {statusText()}
               </div>
               <div class="text-xs text-text-secondary truncate flex items-center gap-1.5">
-                <span class="hover:text-text-primary transition-colors">{channel()?.name || t("voice.panel.fallbackChannel")}</span>
+                <span class="hover:text-text-primary transition-colors">{channelName()}</span>
                 <Show when={isConnected()}>
                   <span class="text-text-muted">&middot;</span>
                   <span class="font-mono">{elapsedTime()}</span>
@@ -158,9 +233,7 @@ const VoicePanel: Component = () => {
                           const share = voiceState.screenShares.find(
                             (s) => s.user_id === participant.user_id,
                           );
-                          if (share) {
-                            startViewing(share.stream_id);
-                          }
+                          if (share) openShare(share.stream_id);
                         }}
                         class="p-0.5 hover:bg-accent-success/30 rounded transition-colors"
                         title={t("voice.panel.viewScreenShare")}
@@ -183,7 +256,8 @@ const VoicePanel: Component = () => {
               {(share) => (
                 <div
                   class="flex items-center gap-2 px-2 py-1.5 rounded bg-white/5 hover:bg-white/10 cursor-pointer transition-colors"
-                  onClick={() => startViewing(share.stream_id)}
+                  data-testid="voice-panel-share"
+                  onClick={() => openShare(share.stream_id)}
                 >
                   <MonitorUp class="w-4 h-4 text-accent-success" />
                   <div class="flex-1 min-w-0">
@@ -202,12 +276,13 @@ const VoicePanel: Component = () => {
           </div>
         </Show>
 
-        {/* Voice controls - only when fully connected */}
-        <Show when={isConnected()}>
+        {/* Voice controls: mute/deafen stay usable while reconnecting */}
+        <Show when={isConnected() || voiceState.state === "reconnecting"}>
           <VoiceControls />
         </Show>
       </div>
     </Show>
+    </>
   );
 };
 

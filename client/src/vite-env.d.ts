@@ -10,3 +10,6 @@ interface ImportMetaEnv {
 interface ImportMeta {
   readonly env: ImportMetaEnv;
 }
+
+/** The client version from package.json (vite `define`). */
+declare const __KAIKU_VERSION__: string;

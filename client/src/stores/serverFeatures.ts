@@ -34,6 +34,11 @@ async function attempt(gen: number, retry: number): Promise<void> {
     if (gen !== generation) return; // reset while in flight
     setFeatures(settings.features ?? "all");
     setGuildDiscovery(settings.guild_discovery ?? true);
+    // Only a server that names a minimum loads the (small) version check.
+    const min = settings.min_client_version;
+    if (min && (min.web || min.desktop)) {
+      void import("@/lib/minClientVersion").then((m) => m.checkMinClientVersion(min));
+    }
   } catch (err) {
     if (gen !== generation) return;
     if (retry < RETRY_DELAYS_MS.length) {

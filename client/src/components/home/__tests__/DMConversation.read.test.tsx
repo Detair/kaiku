@@ -13,7 +13,6 @@ vi.mock("@/lib/tauri", () => ({
   getDMList: vi.fn(),
   createDM: vi.fn(),
   startDMCall: vi.fn(),
-  joinVoice: vi.fn(),
   uploadDMAvatar: vi.fn(),
   updateDMName: vi.fn(),
   validateFileSize: vi.fn(),
@@ -23,8 +22,8 @@ vi.mock("@/stores/websocket", () => ({ subscribeChannel: vi.fn(), waitForConnect
 vi.mock("@/stores/auth", () => ({ currentUser: () => ({ id: "me" }) }));
 vi.mock("@/stores/call", () => ({
   callState: { currentCall: { status: "idle" } },
-  startCall: vi.fn(),
-  endCall: vi.fn(),
+  startOutgoingCall: vi.fn(),
+  abortOutgoingCall: vi.fn(),
   isInCallForChannel: () => false,
 }));
 vi.mock("@/stores/messages", () => ({

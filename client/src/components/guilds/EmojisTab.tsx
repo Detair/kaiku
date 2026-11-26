@@ -35,14 +35,18 @@ const EmojisTab: Component<EmojisTabProps> = (props) => {
 
   const emojis = () => emojiState.guildEmojis[props.guildId] || [];
   const isOwner = () => isGuildOwner(props.guildId, authState.user?.id || "");
+  // The server lets every member upload; editing and deleting an emoji
+  // needs MANAGE_GUILD unless it is your own upload.
   const canManageEmojis = () =>
     isOwner() ||
     memberHasPermission(
       props.guildId,
       authState.user?.id || "",
       isOwner(),
-      PermissionBits.MANAGE_EMOJIS_AND_STICKERS,
+      PermissionBits.MANAGE_GUILD,
     );
+  const canDelete = (emoji: GuildEmoji) =>
+    canManageEmojis() || emoji.uploaded_by === authState.user?.id;
 
   const handleFileSelect = async (e: Event) => {
     const input = e.target as HTMLInputElement;
@@ -143,7 +147,7 @@ const EmojisTab: Component<EmojisTabProps> = (props) => {
                 </div>
               </div>
 
-              <Show when={canManageEmojis()}>
+              <Show when={canDelete(emoji)}>
                 <button
                   onClick={() => setDeleting(emoji)}
                   class="absolute top-2 right-2 p-1.5 rounded-lg opacity-0 group-hover:opacity-100 focus-visible:opacity-100 touch:opacity-100 transition-opacity bg-black/50 text-white hover:bg-accent-danger-fill"

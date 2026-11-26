@@ -40,7 +40,9 @@ export const PermissionBits = {
 
   // Pages (bit 21)
   MANAGE_PAGES: 1 << 21,
-  MANAGE_EMOJIS_AND_STICKERS: 1 << 22,
+  // Screen sharing (bit 22). Was mislabelled "manage emojis" here; the
+  // server has always checked bit 22 as SCREEN_SHARE.
+  SCREEN_SHARE: 1 << 22,
 
   // Mentions (bit 23)
   MENTION_EVERYONE: 1 << 23,
@@ -97,6 +99,7 @@ export const CHANNEL_OVERRIDE_PERMISSION_KEYS = [
   "VOICE_MUTE_OTHERS",
   "VOICE_DEAFEN_OTHERS",
   "VOICE_MOVE_MEMBERS",
+  "SCREEN_SHARE",
   "CREATE_INVITE",
 ] as const;
 
@@ -298,10 +301,34 @@ export const PERMISSIONS: PermissionDefinition[] = [
     forbiddenForEveryone: true,
   },
   {
-    key: "MANAGE_EMOJIS_AND_STICKERS",
-    bit: PermissionBits.MANAGE_EMOJIS_AND_STICKERS,
-    name: "Manage Emojis",
-    description: "Allows managing custom guild emojis",
+    key: "SCREEN_SHARE",
+    bit: PermissionBits.SCREEN_SHARE,
+    name: "Share Screen",
+    description: "Allows sharing the screen in voice channels",
+    category: "voice",
+    forbiddenForEveryone: false,
+  },
+  {
+    key: "MANAGE_POSTS",
+    bit: PermissionBits.MANAGE_POSTS,
+    name: "Manage Posts",
+    description: "Allows pinning, locking and deleting other people's forum posts and managing tags",
+    category: "moderation",
+    forbiddenForEveryone: true,
+  },
+  {
+    key: "SEND_ANNOUNCEMENTS",
+    bit: PermissionBits.SEND_ANNOUNCEMENTS,
+    name: "Send Announcements",
+    description: "Allows publishing in announcement channels",
+    category: "content",
+    forbiddenForEveryone: true,
+  },
+  {
+    key: "MANAGE_EVENTS",
+    bit: PermissionBits.MANAGE_EVENTS,
+    name: "Manage Events",
+    description: "Allows creating, editing and cancelling scheduled events",
     category: "guild_management",
     forbiddenForEveryone: true,
   },
@@ -358,17 +385,57 @@ export function getPermissionsByCategory(
   return PERMISSIONS.filter((p) => p.category === category);
 }
 
+// Permission masks are u64 on the server and arrive as JS numbers. The
+// bitwise operators of JS work on 32 bits only, so the helpers below split a
+// mask into a high and a low 32-bit half; bits up to 52 are kept exactly.
+const TWO_32 = 2 ** 32;
+
+/**
+ * A negative mask is one that went through 32-bit math (`|`, `&`) with bit
+ * 31 set: it stands for its unsigned 32 bits, never for bits 31..63.
+ */
+const unsigned = (mask: number) => (mask < 0 ? mask >>> 0 : mask);
+
+function maskOp(
+  a: number,
+  b: number,
+  op: (x: number, y: number) => number,
+): number {
+  a = unsigned(a);
+  b = unsigned(b);
+  const high = op(Math.floor(a / TWO_32) >>> 0, Math.floor(b / TWO_32) >>> 0);
+  const low = op(a >>> 0, b >>> 0);
+  return (high >>> 0) * TWO_32 + (low >>> 0);
+}
+
+const and = (a: number, b: number) => maskOp(a, b, (x, y) => x & y);
+const or = (a: number, b: number) => maskOp(a, b, (x, y) => x | y);
+const andNot = (a: number, b: number) => maskOp(a, b, (x, y) => x & ~y);
+
 // Permission helper functions
 export function hasPermission(permissions: number, bit: number): boolean {
-  return (permissions & bit) === bit;
+  // `and` returns the unsigned value; a bit written as `1 << 31` is negative.
+  return and(permissions, bit) === unsigned(bit);
 }
 
 export function addPermission(permissions: number, bit: number): number {
-  return permissions | bit;
+  return or(permissions, bit);
 }
 
 export function removePermission(permissions: number, bit: number): number {
-  return permissions & ~bit;
+  return andNot(permissions, bit);
+}
+
+/**
+ * The mask an editor saves: the bits it shows come from `edited`, every other
+ * bit stays as stored. `(stored & ~shown) | (edited & shown)`.
+ */
+export function mergeShownBits(
+  stored: number,
+  shown: number,
+  edited: number,
+): number {
+  return or(andNot(stored, shown), and(edited, shown));
 }
 
 export function togglePermission(permissions: number, bit: number): number {
@@ -377,6 +444,7 @@ export function togglePermission(permissions: number, bit: number): number {
 
 // Default permission presets (matching server)
 export const EVERYONE_DEFAULT =
+  PermissionBits.VIEW_CHANNEL |
   PermissionBits.SEND_MESSAGES |
   PermissionBits.EMBED_LINKS |
   PermissionBits.ATTACH_FILES |
@@ -384,7 +452,8 @@ export const EVERYONE_DEFAULT =
   PermissionBits.ADD_REACTIONS |
   PermissionBits.VOICE_CONNECT |
   PermissionBits.VOICE_SPEAK |
-  PermissionBits.CREATE_INVITE;
+  PermissionBits.CREATE_INVITE |
+  PermissionBits.SCREEN_SHARE;
 
 export const MODERATOR_DEFAULT =
   EVERYONE_DEFAULT |
@@ -422,7 +491,11 @@ export const EVERYONE_FORBIDDEN =
   PermissionBits.MANAGE_INVITES |
   PermissionBits.MANAGE_PAGES |
   PermissionBits.MENTION_EVERYONE |
-  PermissionBits.PIN_MESSAGES;
+  PermissionBits.PIN_MESSAGES |
+  PermissionBits.MANAGE_POSTS |
+  PermissionBits.SEND_ANNOUNCEMENTS |
+  PermissionBits.MANAGE_EVENTS |
+  PermissionBits.MANAGE_WEBHOOKS;
 
 // Check if a permission is valid for @everyone role
 export function isValidForEveryone(permissions: number): boolean {

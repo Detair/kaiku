@@ -5,6 +5,9 @@
  */
 
 import type { QualityLevel } from "../types";
+import type { VoiceSessionHandle } from "./voiceSession";
+
+export type { VoiceSessionHandle } from "./voiceSession";
 
 /**
  * Voice connection states
@@ -67,10 +70,15 @@ export interface AudioStreamError {
  * Voice adapter events
  */
 export interface VoiceAdapterEvents {
-  onStateChange: (state: VoiceConnectionState) => void;
-  onError: (error: VoiceError) => void;
+  /**
+   * State of the media connection of `session` (the handle its join was
+   * given). Ending a session reports `disconnected` for that session only;
+   * a listener ignores states of sessions it does not hold.
+   */
+  onStateChange: (state: VoiceConnectionState, session: VoiceSessionHandle | null) => void;
+  onError: (error: VoiceError, session?: VoiceSessionHandle | null) => void;
   onWarning?: (warning: { type: string; message: string }) => void;
-  onRemoteTrack: (track: RemoteTrack) => void;
+  onRemoteTrack: (track: RemoteTrack, session?: VoiceSessionHandle | null) => void;
   onRemoteTrackRemoved: (userId: string) => void;
   onLocalMuteChange: (muted: boolean) => void;
   onSpeakingChange: (speaking: boolean) => void;
@@ -78,12 +86,33 @@ export interface VoiceAdapterEvents {
   onAudioError?: (error: AudioStreamError) => void;
   /** Native only: audio of `error.kind` works again (withdraws onAudioError). */
   onAudioRecovered?: (error: AudioStreamError) => void;
+  /**
+   * The media connection of `session` failed for good (ICE `failed`). The
+   * owner of that session starts the rejoin (C32); a short `disconnected`
+   * is reported as `reconnecting` through onStateChange instead.
+   */
+  onConnectionLost?: (session: VoiceSessionHandle | null) => void;
 
   // Screen share events
   onScreenShareStarted?: (info: ScreenShareInfo) => void;
   onScreenShareStopped?: (userId: string, streamId: string, reason: string) => void;
   onScreenShareTrack?: (userId: string, streamId: string, track: MediaStreamTrack | null) => void;
   onScreenShareTrackRemoved?: (userId: string, streamId: string) => void;
+
+  /**
+   * A local capture ended by itself (the browser's "Stop sharing" bar, the
+   * shared window closed, permission revoked, the portal session ended):
+   * the owner runs its normal stop for it. `streamId` is null for the webcam.
+   */
+  onLocalMediaEnded?: (
+    kind: "screen" | "webcam",
+    streamId: string | null,
+    /**
+     * Why (`ended`, `no_frames`, `encoder_failed`, `not_sent`); the browser
+     * reports `not_sent` when its offer's answer could not be applied.
+     */
+    reason?: string,
+  ) => void;
 
   // Webcam events
   onWebcamTrack?: (userId: string, track: MediaStreamTrack | null) => void;
@@ -139,6 +168,12 @@ export interface ScreenShareOptions {
   withAudio?: boolean;
   /** Unique stream identifier. Auto-generated if not provided. */
   streamId?: string;
+}
+
+/** What a screen capture brings before it is published. */
+export interface CapturedScreen {
+  hasAudio: boolean;
+  sourceLabel: string;
 }
 
 /**
@@ -297,8 +332,36 @@ export interface ParticipantMetrics {
  */
 export interface VoiceAdapter {
   // Lifecycle
-  join(channelId: string): Promise<VoiceResult<void>>;
-  leave(): Promise<VoiceResult<void>>;
+  /**
+   * Join `session.channelId` as the voice session `session` (see
+   * `voiceSession.ts`). Everything the join acquires belongs to that
+   * session. If the session is ended (`leave` / `teardown` with the same
+   * handle) while the join is still waiting somewhere, the join releases
+   * what it got when it resumes and returns a `cancelled` error. A session
+   * of this adapter that is still open is ended first, by its own handle.
+   */
+  join(session: VoiceSessionHandle): Promise<VoiceResult<VoiceSessionHandle>>;
+  /**
+   * End `session` and tell the server (`voice_leave`, only if its
+   * `voice_join` went out). Releases exactly what that session holds, at
+   * once and before anything is awaited; a session the adapter no longer
+   * knows is a no-op. Never touches another session.
+   */
+  leave(session: VoiceSessionHandle): Promise<VoiceResult<void>>;
+  /**
+   * End `session` without telling the server (no `voice_leave`): the
+   * server already removed this peer (C31) or the socket was replaced
+   * (C32); a `voice_leave` here could remove the user's peer on another
+   * device. Otherwise like `leave`.
+   */
+  teardown(session: VoiceSessionHandle): Promise<VoiceResult<void>>;
+
+  /**
+   * Whether the publisher connection of `session` is alive right now, read
+   * from the connection itself (not from the last state event). False for a
+   * session the adapter does not hold.
+   */
+  probePublisher?(session: VoiceSessionHandle): Promise<boolean>;
 
   // Audio control
   setMute(muted: boolean): Promise<VoiceResult<void>>;
@@ -360,8 +423,13 @@ export interface VoiceAdapter {
    */
   setUserVolume?(userId: string, volume: number): Promise<VoiceResult<void>>;
 
-  // Screen sharing
-  startScreenShare(options?: ScreenShareOptions): Promise<VoiceResult<void>>;
+  // Screen sharing. A share is captured first and published (tracks added,
+  // renegotiated) only after the server accepted it (C30).
+  /** Open the capture; nothing is sent. Cancelling the picker gives `cancelled`. */
+  captureScreen(options: ScreenShareOptions & { streamId: string }): Promise<VoiceResult<CapturedScreen>>;
+  /** Send the captured share (after `screen_share_started`). */
+  publishScreenShare(streamId: string): Promise<VoiceResult<void>>;
+  /** Stop a share, published or only captured. */
   stopScreenShare(streamId?: string): Promise<VoiceResult<void>>;
   stopAllScreenShares(): Promise<VoiceResult<void>>;
   isScreenSharing(): boolean;
@@ -374,8 +442,9 @@ export interface VoiceAdapter {
   /** Enumerate native capture sources (Tauri only). Returns null if not supported. */
   enumerateCaptureSources?(): Promise<CaptureSource[] | null>;
 
-  // Webcam
-  startWebcam(options?: WebcamOptions): Promise<VoiceResult<void>>;
+  // Webcam: captured first, published after `webcam_started` (C30).
+  captureWebcam(options?: WebcamOptions): Promise<VoiceResult<void>>;
+  publishWebcam(): Promise<VoiceResult<void>>;
   stopWebcam(): Promise<VoiceResult<void>>;
   isWebcamActive(): boolean;
 

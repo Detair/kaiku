@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, fireEvent, cleanup } from "@solidjs/testing-library";
+import { render, screen, fireEvent, cleanup, waitFor } from "@solidjs/testing-library";
 import { createSignal } from "solid-js";
 import { createStore } from "solid-js/store";
 import type { GuildRole } from "@/lib/types";
@@ -18,6 +18,8 @@ vi.mock("@/stores/serverFeatures", () => ({ isPermissionVisible: () => true }));
 vi.mock("@/components/ui/Toast", () => ({ showToast: vi.fn() }));
 
 import RoleEditor from "../RoleEditor";
+import { updateRole } from "@/stores/permissions";
+import { PermissionBits } from "@/lib/permissionConstants";
 
 function role(id: string, name: string): GuildRole {
   return {
@@ -73,5 +75,36 @@ describe("RoleEditor", () => {
     setState("role", role("r2", "Helpers"));
 
     expect(input.value).toBe("Helpers");
+  });
+
+  it("@everyone shows screen sharing (on by default) and hides no-longer-emoji bit 22", () => {
+    const everyone = { ...role("e", "@everyone"), is_default: true, permissions: (1 << 22) | (1 << 5) };
+    render(() => <RoleEditor guildId="g1" role={everyone} onBack={() => {}} onSave={() => {}} />);
+    const box = screen.getByTestId("role-editor-perm-screen-share") as HTMLInputElement;
+    expect(box.checked).toBe(true);
+    expect(screen.queryByText(/Manage Emojis/)).toBeNull();
+    // Moderation-only permissions stay off the @everyone editor.
+    expect(screen.queryByTestId("role-editor-perm-manage-posts")).toBeNull();
+  });
+
+  it("a normal role offers forum, announcement and event permissions", () => {
+    render(() => <RoleEditor guildId="g1" role={role("r1", "Mods")} onBack={() => {}} onSave={() => {}} />);
+    expect(screen.getByTestId("role-editor-perm-manage-posts")).toBeTruthy();
+    expect(screen.getByTestId("role-editor-perm-send-announcements")).toBeTruthy();
+    expect(screen.getByTestId("role-editor-perm-manage-events")).toBeTruthy();
+  });
+
+  it("keeps every stored bit it does not list, also above bit 31, on save", async () => {
+    // Bits no editor lists (the server's mask is 64 bits wide).
+    const unlisted = 2 ** 40 + 2 ** 41;
+    const stored = { ...role("r1", "Mods"), permissions: unlisted + PermissionBits.SEND_MESSAGES };
+    vi.mocked(updateRole).mockResolvedValue(undefined as never);
+    render(() => <RoleEditor guildId="g1" role={stored} onBack={() => {}} onSave={() => {}} />);
+
+    fireEvent.click(screen.getByTestId("role-editor-perm-send-messages"));
+    fireEvent.click(screen.getByTestId("role-editor-save"));
+
+    await waitFor(() => expect(updateRole).toHaveBeenCalled());
+    expect(vi.mocked(updateRole).mock.calls[0][2].permissions).toBe(unlisted);
   });
 });

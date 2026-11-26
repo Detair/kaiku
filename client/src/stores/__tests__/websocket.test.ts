@@ -88,7 +88,17 @@ vi.mock("@/stores/preferences", () => ({
   handlePreferencesUpdated: vi.fn(),
 }));
 
+vi.mock("@/stores/voice", () => ({
+  handleVoiceRemoved: vi.fn().mockResolvedValue(false),
+  voiceRemovedText: vi.fn(() => "Removed"),
+  noteSignallingLost: vi.fn(),
+  noteSignallingUp: vi.fn(),
+  rejoinVoiceAfterReconnect: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock("@/stores/call", () => ({
+  declinedElsewhere: vi.fn(),
+  handleCallVoiceRemoved: vi.fn().mockResolvedValue(false),
   receiveIncomingCall: vi.fn(),
   callConnected: vi.fn(),
   callEndedExternally: vi.fn(),
@@ -97,6 +107,8 @@ vi.mock("@/stores/call", () => ({
   setChannelCallId: vi.fn(),
   participantJoined: vi.fn(),
   participantLeft: vi.fn(),
+  answeredElsewhere: vi.fn(),
+  resyncCallAfterReconnect: vi.fn(),
 }));
 
 vi.mock("@/stores/friends", () => ({
@@ -736,6 +748,112 @@ describe("websocket store", () => {
         username: "bob",
       });
       expect(call.connectOnFirstJoin).toHaveBeenCalledWith("dm-y", "u2", "c1");
+    });
+
+    it("call_participant_joined naming the own user stops the ring (C2)", async () => {
+      const call = await import("@/stores/call");
+      await fire("ws:server_event", {
+        type: "call_participant_joined",
+        channel_id: "dm-y",
+        call_id: "c1",
+        user_id: "me",
+        username: "me",
+      });
+      expect(call.answeredElsewhere).toHaveBeenCalledWith("dm-y", "c1");
+      vi.mocked(call.answeredElsewhere).mockClear();
+      await fire("ws:server_event", {
+        type: "call_participant_joined",
+        channel_id: "dm-y",
+        call_id: "c1",
+        user_id: "u2",
+        username: "bob",
+      });
+      expect(call.answeredElsewhere).not.toHaveBeenCalled();
+    });
+
+    it("call_declined by the own user stops the ring here", async () => {
+      const call = await import("@/stores/call");
+      await fire("ws:server_event", {
+        type: "call_declined",
+        channel_id: "dm-y",
+        call_id: "c1",
+        user_id: "me",
+      });
+      expect(call.declinedElsewhere).toHaveBeenCalledWith("dm-y", "c1");
+      vi.mocked(call.declinedElsewhere).mockClear();
+      await fire("ws:server_event", {
+        type: "call_declined",
+        channel_id: "dm-y",
+        call_id: "c1",
+        user_id: "u2",
+      });
+      expect(call.declinedElsewhere).not.toHaveBeenCalled();
+    });
+
+    it("voice_removed not for channel voice goes to the DM call", async () => {
+      const call = await import("@/stores/call");
+      await fire("ws:server_event", {
+        type: "voice_removed",
+        channel_id: "dm-y",
+        reason: "session_replaced",
+      });
+      await vi.waitFor(() =>
+        expect(call.handleCallVoiceRemoved).toHaveBeenCalledWith("dm-y", "Removed"),
+      );
+    });
+
+    it("start answers and voice errors reach the screen share flow (C30)", async () => {
+      const { setMediaAnswerListener } = await import("@/stores/mediaAckHook");
+      const seen: string[] = [];
+      setMediaAnswerListener((a) => seen.push(a.type === "voice_error" ? a.code : a.type));
+      try {
+        await fire("ws:server_event", {
+          type: "screen_share_started",
+          channel_id: "x",
+          user_id: "u",
+          stream_id: "s",
+          username: "n",
+          source_label: "l",
+          has_audio: false,
+          quality: "medium",
+        });
+        await fire("ws:server_event", {
+          type: "webcam_started",
+          channel_id: "x",
+          user_id: "u",
+          username: "n",
+          quality: "medium",
+        });
+        await fire("ws:server_event", {
+          type: "voice_error",
+          code: "SCREEN_SHARE_FORBIDDEN",
+          message: "m",
+        });
+        await fire("ws:server_event", {
+          type: "screen_share_stopped",
+          channel_id: "x",
+          user_id: "u",
+          stream_id: "s",
+          reason: "no_media",
+        });
+        await fire("ws:server_event", {
+          type: "webcam_stopped",
+          channel_id: "x",
+          user_id: "u",
+          reason: "no_media",
+        });
+        await vi.waitFor(() =>
+          expect(seen).toEqual([
+            "screen_share_started",
+            "webcam_started",
+            "SCREEN_SHARE_FORBIDDEN",
+            "screen_share_stopped",
+            "webcam_stopped",
+          ]),
+        );
+      } finally {
+        setMediaAnswerListener(null);
+      }
     });
 
     it("call_ended passes the call_id to the store", async () => {

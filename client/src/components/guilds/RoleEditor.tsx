@@ -328,10 +328,9 @@ const RoleEditor: Component<RoleEditorProps> = (props) => {
                       <For each={perms}>
                         {(perm) => {
                           const canEdit = canEditPermission(perm.bit);
-                          const isEnabled = hasPermission(
-                            permissions(),
-                            perm.bit,
-                          );
+                          // Read in the binding: the form is filled after the
+                          // rows are created (and on every toggle).
+                          const isEnabled = () => hasPermission(permissions(), perm.bit);
 
                           return (
                             <label
@@ -342,7 +341,7 @@ const RoleEditor: Component<RoleEditorProps> = (props) => {
                             >
                               <input
                                 type="checkbox"
-                                checked={isEnabled}
+                                checked={isEnabled()}
                                 data-testid={`role-editor-perm-${perm.key.toLowerCase().replace(/_/g, "-")}`}
                                 disabled={!canEdit}
                                 onChange={() =>

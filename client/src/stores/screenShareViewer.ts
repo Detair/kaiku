@@ -8,6 +8,7 @@
  * per user.
  */
 
+import { createSignal } from "solid-js";
 import { createStore } from "solid-js/store";
 
 /** View mode for the screen share viewer */
@@ -84,6 +85,10 @@ export function addAvailableTrack(
   username: string,
   sourceLabel: string,
 ): void {
+  if (stoppedStreams.has(streamId)) {
+    console.log("[ScreenShareViewer] Late track of a stopped share ignored:", streamId);
+    return;
+  }
   // Auto-cleanup when track ends (only for browser MediaStreamTrack)
   if (track) {
     track.onended = () => {
@@ -97,6 +102,16 @@ export function addAvailableTrack(
 
   // Don't auto-open the viewer — let VoiceChannelView handle display.
   // Users click to view from VoiceChannelView's screen share section.
+}
+
+/**
+ * Remove every track of `userId` (the own self-preview when the voice
+ * session ends: a stopped local track fires no `ended`).
+ */
+export function removeTracksOfUser(userId: string): void {
+  for (const [streamId, info] of viewerState.availableTracks) {
+    if (info.userId === userId) removeAvailableTrack(streamId);
+  }
 }
 
 /**
@@ -115,38 +130,87 @@ export function removeAvailableTrack(streamId: string): void {
     });
   }
 
-  // If we were viewing this stream, auto-switch to next available
+  // The watched stream is gone: the viewer closes. It does not open
+  // another share (or the own preview) the person did not choose.
   if (viewerState.viewingStreamId === streamId) {
-    const remaining = Array.from(newTracks.keys());
-    if (remaining.length > 0) {
-      const nextStreamId = remaining[0];
-      const nextInfo = newTracks.get(nextStreamId)!;
-      setViewerState({
-        viewingStreamId: nextStreamId,
-        videoTrack: nextInfo.track,
-      });
-    } else {
-      setViewerState({
-        viewingStreamId: null,
-        videoTrack: null,
-      });
-    }
+    setViewerState({
+      viewingStreamId: null,
+      videoTrack: null,
+    });
   }
+}
+
+/** A start that waits for its track; dropped by any later start or stop. */
+let pendingStart: ReturnType<typeof setTimeout> | null = null;
+/** The share that start waits for. */
+let pendingStreamId: string | null = null;
+
+function dropPendingStart(): void {
+  if (pendingStart !== null) clearTimeout(pendingStart);
+  pendingStart = null;
+  pendingStreamId = null;
+}
+
+/**
+ * How long a share that stopped before its first track arrived keeps that
+ * late track out (share ids are new per share, so nothing else is refused).
+ */
+export const STOPPED_STREAM_MEMORY_MS = 10_000;
+
+/** Shares that stopped before their first track arrived. */
+const stoppedStreams = new Map<string, ReturnType<typeof setTimeout>>();
+
+/** The voice channel the memory belongs to (set when a channel is joined). */
+let memoryChannel: string | null = null;
+
+/**
+ * A voice session in `channelId` begins: nothing remembered from an earlier
+ * session refuses a track of this one, and stops of other channels are not
+ * remembered.
+ */
+export function beginStopMemory(channelId: string): void {
+  for (const timer of stoppedStreams.values()) clearTimeout(timer);
+  stoppedStreams.clear();
+  memoryChannel = channelId;
+}
+
+/**
+ * A share stopped in `channelId`. If it is the joined channel and no track
+ * of it is held yet, its first track may still be on the way: it is
+ * refused, and a viewer waiting for it stops waiting.
+ */
+export function noteStreamStopped(streamId: string, channelId: string): void {
+  if (channelId !== memoryChannel) return;
+  if (pendingStreamId === streamId) dropPendingStart();
+  if (viewerState.availableTracks.has(streamId)) return;
+  clearTimeout(stoppedStreams.get(streamId));
+  stoppedStreams.set(
+    streamId,
+    setTimeout(() => stoppedStreams.delete(streamId), STOPPED_STREAM_MEMORY_MS),
+  );
 }
 
 /**
  * Start viewing a specific screen share stream.
- * Sets the stream as the primary view. If the stream is already registered
- * as available, uses the existing track; otherwise this is a no-op
- * (use addAvailableTrack first).
+ * Sets the stream as the primary view. If the stream's track has not
+ * arrived yet, waits for it for a few seconds; closing the viewer or
+ * viewing another share ends that wait.
  */
-export function startViewing(streamId: string, retries = 0): void {
+export function startViewing(streamId: string): void {
+  dropPendingStart();
+  tryStartViewing(streamId, 0);
+}
+
+function tryStartViewing(streamId: string, retries: number): void {
+  pendingStart = null;
+  pendingStreamId = null;
   const info = viewerState.availableTracks.get(streamId);
   if (!info) {
     // The WebSocket broadcast arrives before the WebRTC track.
     // Retry a few times to wait for addAvailableTrack to register it.
     if (retries < 10) {
-      setTimeout(() => startViewing(streamId, retries + 1), 500);
+      pendingStart = setTimeout(() => tryStartViewing(streamId, retries + 1), 500);
+      pendingStreamId = streamId;
       return;
     }
     console.warn(
@@ -176,6 +240,7 @@ export function startViewing(streamId: string, retries = 0): void {
  * Stop viewing the current screen share (clear primary view).
  */
 export function stopViewing(): void {
+  dropPendingStart();
   setViewerState({
     viewingStreamId: null,
     videoTrack: null,
@@ -261,6 +326,7 @@ export function swapPrimary(streamId: string): void {
     return;
   }
 
+  dropPendingStart();
   setViewerState({
     viewingStreamId: streamId,
     videoTrack: info.track,
@@ -315,3 +381,31 @@ export function isViewingStream(streamId: string): boolean {
 }
 
 export { viewerState };
+
+/**
+ * A request to show a share as the focused tile of the voice channel view
+ * (desktop: there is no browser track for the full-screen viewer).
+ */
+const [tileFocusRequest, setTileFocusRequest] = createSignal<string | null>(null);
+export { tileFocusRequest };
+
+/** A focus request not taken within this time is dropped (it would surprise later). */
+export const TILE_FOCUS_REQUEST_TTL_MS = 10_000;
+let tileFocusTimer: ReturnType<typeof setTimeout> | undefined;
+
+/**
+ * Ask the voice channel view to focus `streamId`. The request waits until
+ * the view shows that share (its tile may come a moment later) or until
+ * `TILE_FOCUS_REQUEST_TTL_MS` passed.
+ */
+export function requestTileFocus(streamId: string): void {
+  clearTimeout(tileFocusTimer);
+  setTileFocusRequest(streamId);
+  tileFocusTimer = setTimeout(() => setTileFocusRequest(null), TILE_FOCUS_REQUEST_TTL_MS);
+}
+
+/** The view has taken the request. */
+export function clearTileFocusRequest(): void {
+  clearTimeout(tileFocusTimer);
+  setTileFocusRequest(null);
+}

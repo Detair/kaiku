@@ -17,21 +17,19 @@ mod video;
 mod voice;
 mod webrtc;
 
-use std::collections::HashMap;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
 use audio::AudioHandle;
 use commands::clipboard::ClipboardGuard;
-use commands::screen_share::ScreenSharePipeline;
+use commands::screen_share::{LiveShare, PreparedShare, ShareSlot};
 use commands::settings::UiState;
-use commands::webcam::WebcamPipeline;
+use commands::webcam::{PreparedWebcam, WebcamPipeline};
 use network::WebSocketManager;
 use reqwest::Client as HttpClient;
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
 use tokio::sync::{mpsc, Mutex, RwLock};
-use uuid::Uuid;
 use webrtc::WebRtcClient;
 
 /// Run the Tauri application.
@@ -157,6 +155,7 @@ pub fn run() {
             commands::passkey::passkey_step_up,
             commands::passkey::passkey_cancel,
             // Voice commands
+            commands::voice::begin_voice_session,
             commands::voice::join_voice,
             commands::voice::leave_voice,
             commands::voice::set_mute,
@@ -176,16 +175,21 @@ pub fn run() {
             commands::voice::is_in_voice,
             commands::voice::get_voice_channel,
             commands::voice::voice_connection_stats,
+            commands::voice::voice_probe,
             commands::voice::subscribe_video_frames,
+            commands::voice::unsubscribe_video_frames,
+            commands::voice::ack_video_frame,
             // Tray commands
             commands::tray::tray_set_unread,
             commands::tray::set_tray_voice_state,
             // Screen share commands
             commands::screen_share::enumerate_capture_sources,
+            commands::screen_share::prepare_screen_share,
             commands::screen_share::start_screen_share,
             commands::screen_share::stop_screen_share,
             commands::screen_share::get_screen_share_status,
             // Webcam commands
+            commands::webcam::prepare_webcam,
             commands::webcam::start_webcam,
             commands::webcam::stop_webcam,
             commands::webcam::enumerate_webcam_devices_cmd,
@@ -301,24 +305,30 @@ pub struct VoiceState {
     pub audio: AudioHandle,
     /// Current channel ID if connected.
     pub channel_id: Option<String>,
+    /// Epoch of the voice session that holds the WebRTC connection (set by
+    /// the join that created it): a leave for an older session leaves it.
+    pub session_epoch: Option<u64>,
     /// Sender for encoded audio to WebRTC.
     pub audio_tx: Option<mpsc::Sender<Vec<u8>>>,
-    /// Active screen share pipelines, keyed by stream ID. Max 3 concurrent.
-    pub screen_shares: HashMap<Uuid, ScreenSharePipeline>,
+    /// The one screen share (prepared until the server accepts it, then live).
+    pub shares: ShareSlot<PreparedShare, LiveShare>,
+    /// Camera prepared but not yet accepted by the server.
+    pub prepared_webcam: Option<PreparedWebcam>,
     /// Active webcam pipeline, if any.
     pub webcam: Option<WebcamPipeline>,
+    /// Publisher negotiation (one offer at a time, with a deadline).
+    pub negotiation: webrtc::PublisherNegotiation,
+    /// Publications whose track waits for an applied answer.
+    pub unconfirmed: Vec<commands::video_negotiation::Waiting>,
     /// Audio mixer for combining remote subscriber tracks.
     pub audio_mixer: Option<voice::audio_mixer::AudioMixer>,
     /// Handles for active video decode tasks (aborted on leave).
     pub video_tasks: Arc<tokio::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
     /// Number of currently active video decode streams.
     pub active_video_count: Arc<AtomicUsize>,
-    /// Per-stream `FrameBuffer` handles registered by `subscribe_video_frames`
-    /// (called from the frontend when mounting a video tile). The video decode
-    /// task removes the matching entry by `stream_id` when the track arrives
-    /// and uses it to construct a `Vp8VideoDecoder`.
-    pub video_frame_sinks:
-        Arc<tokio::sync::Mutex<HashMap<String, voice::frame_buffer::FrameBuffer>>>,
+    /// Open views of decoded video per stream (`subscribe_video_frames` /
+    /// `unsubscribe_video_frames`), looked up by the decode tasks per packet.
+    pub video_frame_sinks: voice::frame_buffer::FrameSinks,
     /// Per-track receive jitter estimates, fed by audio decode tasks and read
     /// by the `voice_connection_stats` command.
     pub connection_stats: voice::connection_stats::ConnectionStatsRegistry,
@@ -334,13 +344,17 @@ impl VoiceState {
             webrtc,
             audio,
             channel_id: None,
+            session_epoch: None,
             audio_tx: None,
-            screen_shares: HashMap::new(),
+            shares: ShareSlot::default(),
+            prepared_webcam: None,
             webcam: None,
+            negotiation: webrtc::PublisherNegotiation::default(),
+            unconfirmed: Vec::new(),
             audio_mixer: None,
             video_tasks: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             active_video_count: Arc::new(AtomicUsize::new(0)),
-            video_frame_sinks: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            video_frame_sinks: voice::frame_buffer::FrameSinks::default(),
             connection_stats: voice::connection_stats::ConnectionStatsRegistry::new(),
             user_gains: voice::audio_mixer::UserGains::default(),
         })
@@ -359,6 +373,8 @@ pub struct AppState {
     pub websocket: Arc<RwLock<Option<WebSocketManager>>>,
     /// Voice state.
     pub voice: Arc<RwLock<Option<VoiceState>>>,
+    /// Cancels voice joins of sessions the frontend already ended (C32).
+    pub voice_gate: Arc<commands::voice::VoiceEpochGate>,
     /// E2EE crypto manager.
     /// Uses `Mutex` instead of `RwLock` because `rusqlite::Connection` is `Send` but not `Sync`.
     pub crypto: Arc<Mutex<Option<crypto::CryptoManager>>>,
@@ -386,6 +402,7 @@ impl AppState {
             session,
             websocket: Arc::new(RwLock::new(None)),
             voice: Arc::new(RwLock::new(None)),
+            voice_gate: Arc::new(commands::voice::VoiceEpochGate::default()),
             crypto: Arc::new(Mutex::new(None)),
             ui_state: Arc::new(Mutex::new(None)),
         }

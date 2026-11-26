@@ -5,6 +5,10 @@
 
 pub mod capturer;
 pub mod convert;
+#[cfg(target_os = "linux")]
+pub mod pipewire_capture;
+#[cfg(target_os = "linux")]
+pub mod portal;
 pub mod source;
 pub mod webcam;
 

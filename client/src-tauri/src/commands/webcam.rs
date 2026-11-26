@@ -1,205 +1,229 @@
 //! Webcam Commands
 //!
-//! Tauri commands for native webcam capture and sharing via WebRTC.
+//! Like a screen share, the camera is prepared first (`prepare_webcam`:
+//! device checked, nothing sent) and published only after the server's
+//! `webcam_started` (`start_webcam`: fresh video sender, capture → encode →
+//! RTP, renegotiation). A camera that ends by itself emits
+//! `voice:local_capture_ended` with kind `webcam`.
 
-use tauri::{command, State};
-use tokio::sync::{mpsc, watch};
-use tracing::{error, info, warn};
+use tauri::{command, AppHandle, Emitter, State};
+use tracing::{info, warn};
 
+use super::screen_share::{LocalCaptureEnded, LOCAL_CAPTURE_ENDED_EVENT};
+use super::video_negotiation::{renegotiate, NegotiationCtx, Unconfirmed};
 use crate::capture::webcam::{enumerate_webcam_devices, WebcamCapturer, WebcamDevice};
-use crate::video::encoder::{VideoEncoder, Vp8Encoder};
-use crate::video::rtp::VideoRtpSender;
-use crate::video::{EncodedPacket, QualityParams};
+use crate::video::publication::VideoPublication;
+use crate::video::QualityParams;
+use crate::webrtc::VideoKind;
 use crate::AppState;
 
-/// Active webcam pipeline (stored in `VoiceState`).
+/// A camera chosen but not yet accepted by the server.
+pub struct PreparedWebcam {
+    /// Identity of this camera publication (events and commands name it).
+    pub publication_id: String,
+    pub quality: String,
+    pub device_index: u32,
+    pub device_name: String,
+}
+
+/// The running camera.
 pub struct WebcamPipeline {
+    pub publication_id: String,
     pub quality: String,
     pub device_name: String,
-    pub shutdown_tx: watch::Sender<bool>,
-    pub capturer_handle: tokio::task::JoinHandle<()>,
-    pub encoder_handle: tokio::task::JoinHandle<()>,
-    pub rtp_handle: tokio::task::JoinHandle<()>,
+    pub publication: VideoPublication,
 }
 
 impl WebcamPipeline {
     /// Shut down the pipeline gracefully.
     pub async fn shutdown(self) {
-        info!("Shutting down webcam pipeline");
-        let _ = self.shutdown_tx.send(true);
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(3), async {
-            let _ = self.capturer_handle.await;
-            let _ = self.encoder_handle.await;
-            let _ = self.rtp_handle.await;
-        })
-        .await;
-        info!("Webcam pipeline shut down");
+        self.publication.shutdown().await;
     }
 }
 
-/// Start native webcam capture.
-///
-/// Creates the capture -> encode -> RTP pipeline and begins sending
-/// video frames via the WebRTC webcam track.
+/// Check the camera and remember the choice; nothing is sent. Returns the
+/// publication id that `start_webcam` and the end event use.
 #[command]
 #[tracing::instrument(skip(state))]
-pub async fn start_webcam(
+pub async fn prepare_webcam(
     quality: String,
     device_id: Option<u32>,
     state: State<'_, AppState>,
-) -> Result<(), String> {
-    info!(quality = %quality, device_id = ?device_id, "Starting webcam");
-
+) -> Result<String, String> {
+    QualityParams::from_webcam_tier(&quality)?;
+    let device_index = device_id.unwrap_or(0);
+    let devices = tokio::task::spawn_blocking(enumerate_webcam_devices)
+        .await
+        .map_err(|e| e.to_string())??;
+    let device_name = devices
+        .into_iter()
+        .find(|d| d.index == device_index)
+        .map(|d| d.name)
+        .ok_or_else(|| format!("NO_DEVICE: camera {device_index} not found"))?;
     let mut voice = state.voice.write().await;
-    let voice_state = voice.as_mut().ok_or("Voice not initialized")?;
-
-    if voice_state.webcam.is_some() {
-        return Err("Webcam already active".into());
-    }
-
-    if voice_state.channel_id.is_none() {
+    let v = voice.as_mut().ok_or("Voice not initialized")?;
+    if v.channel_id.is_none() {
         return Err("Not in a voice channel".into());
     }
+    if v.webcam.is_some() || v.prepared_webcam.is_some() {
+        return Err("Webcam already active".into());
+    }
+    let publication_id = uuid::Uuid::new_v4().to_string();
+    v.prepared_webcam = Some(PreparedWebcam {
+        publication_id: publication_id.clone(),
+        quality,
+        device_index,
+        device_name,
+    });
+    Ok(publication_id)
+}
 
-    let params = QualityParams::from_webcam_tier(&quality)?;
+/// Start the prepared camera `publication_id` and send it (after
+/// `webcam_started`).
+#[command]
+#[tracing::instrument(skip(state, app))]
+pub async fn start_webcam(
+    publication_id: String,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<(), String> {
+    let mut voice = state.voice.write().await;
+    let v = voice.as_mut().ok_or("Voice not initialized")?;
+    // Only the camera this window prepared (not an older session's).
+    if v.prepared_webcam
+        .as_ref()
+        .is_none_or(|p| p.publication_id != publication_id)
+    {
+        return Err("Not in a voice channel: camera not prepared".into());
+    }
+    let Some(prepared) = v.prepared_webcam.take() else {
+        return Err("Not in a voice channel: camera not prepared".into());
+    };
+    let params = QualityParams::from_webcam_tier(&prepared.quality)?;
+    let device_index = prepared.device_index;
 
-    let device_index = device_id.unwrap_or(0);
-
-    // Determine device name for logging
-    let device_name = enumerate_webcam_devices()
-        .ok()
-        .and_then(|devices| {
-            devices
-                .into_iter()
-                .find(|d| d.index == device_index)
-                .map(|d| d.name)
-        })
-        .unwrap_or_else(|| format!("Camera {device_index}"));
-
-    // Get webcam track from WebRTC
-    let webcam_track = voice_state
+    let (track, sender) = v
         .webrtc
-        .get_webcam_track()
+        .add_video_sender(VideoKind::Webcam, &publication_id)
         .await
-        .ok_or("No webcam track available (not connected?)")?;
-
-    // Create shutdown signal
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let shutdown_rx2 = shutdown_tx.subscribe();
-
-    // Create frame channel (bounded to avoid memory buildup)
-    let (frame_tx, mut frame_rx) = mpsc::channel(2);
-
-    // Start capturer on blocking thread
-    let capturer = WebcamCapturer::new(device_index, params.fps, params.width, params.height);
-
-    let capturer_handle = capturer.start(frame_tx, shutdown_rx)?;
-
-    // Channel for encoded packets (encoder thread -> RTP sender task)
-    let (pkt_tx, mut pkt_rx) = mpsc::channel::<Vec<EncodedPacket>>(4);
-
-    // Encoder runs on a blocking thread (vpx_encode::Encoder is not Send)
-    let encoder_handle = {
-        let quality_str = quality.clone();
-        let shutdown_rx = shutdown_rx2;
-
-        tokio::task::spawn_blocking(move || {
-            let mut encoder = match Vp8Encoder::new(&params) {
-                Ok(e) => e,
-                Err(e) => {
-                    error!("Failed to create VP8 encoder for webcam: {e}");
-                    return;
-                }
-            };
-
-            info!(quality = %quality_str, "Webcam encoder started");
-
-            loop {
-                if *shutdown_rx.borrow() {
-                    info!("Webcam encoder shutdown requested");
-                    break;
-                }
-
-                match frame_rx.try_recv() {
-                    Ok(i420) => match encoder.encode(&i420) {
-                        Ok(packets) => {
-                            if !packets.is_empty() && pkt_tx.blocking_send(packets).is_err() {
-                                info!("Webcam packet channel closed, stopping encoder");
-                                break;
-                            }
-                        }
-                        Err(e) => {
-                            warn!("Webcam encode error: {e}");
-                        }
-                    },
-                    Err(mpsc::error::TryRecvError::Empty) => {
-                        std::thread::sleep(std::time::Duration::from_millis(1));
-                    }
-                    Err(mpsc::error::TryRecvError::Disconnected) => {
-                        info!("Webcam frame channel closed, stopping encoder");
-                        break;
-                    }
-                }
-            }
-
-            info!("Webcam encoder stopped");
+        .map_err(|e| e.to_string())?;
+    let on_end = {
+        let app = app.clone();
+        let id = publication_id.clone();
+        Box::new(move |reason: &'static str| {
+            let _ = app.emit(
+                LOCAL_CAPTURE_ENDED_EVENT,
+                LocalCaptureEnded {
+                    kind: VideoKind::Webcam.as_str(),
+                    stream_id: Some(id),
+                    reason,
+                },
+            );
         })
     };
-
-    // RTP sender runs as async task
-    let rtp_handle = tokio::spawn(async move {
-        let rtp_sender = VideoRtpSender::new(webcam_track);
-
-        info!("Webcam RTP sender started");
-
-        while let Some(packets) = pkt_rx.recv().await {
-            for pkt in &packets {
-                if let Err(e) = rtp_sender.send_packet(pkt).await {
-                    warn!("Webcam RTP send error: {e}");
-                }
+    let start_capture = Box::new(move |frames, shutdown, _reason| {
+        WebcamCapturer::new(device_index, params.fps, params.width, params.height)
+            .start(frames, shutdown)
+    });
+    let publication =
+        match VideoPublication::start(params, track, sender.clone(), start_capture, on_end) {
+            Ok(p) => p,
+            Err(e) => {
+                let _ = v.webrtc.remove_video_sender(&sender).await;
+                return Err(e);
             }
-        }
-
-        info!("Webcam RTP sender stopped");
+        };
+    v.webcam = Some(WebcamPipeline {
+        publication_id: publication_id.clone(),
+        quality: prepared.quality,
+        device_name: prepared.device_name,
+        publication,
     });
-
-    voice_state.webcam = Some(WebcamPipeline {
-        quality,
-        device_name,
-        shutdown_tx,
-        capturer_handle,
-        encoder_handle,
-        rtp_handle,
-    });
-
+    let ctx = NegotiationCtx::from_state(&state, &app);
+    renegotiate(v, &ctx, Some(Unconfirmed::Webcam(publication_id))).await;
     info!("Webcam started");
     Ok(())
 }
 
-/// Stop webcam capture.
+/// Whether a stop for `wanted` (`None`: every camera, for a teardown)
+/// means the camera publication `current`.
+pub fn stop_names(wanted: Option<&str>, current: &str) -> bool {
+    wanted.is_none_or(|w| w == current)
+}
+
+/// Stop the camera `publication_id`, prepared or live (shut down outside
+/// the voice lock). A stop for another publication (a late stop of an
+/// earlier camera) changes nothing; `None` stops whatever camera there is.
 #[command]
-#[tracing::instrument(skip(state))]
-pub async fn stop_webcam(state: State<'_, AppState>) -> Result<(), String> {
-    info!("Stopping webcam");
-
-    let mut voice = state.voice.write().await;
-    let voice_state = voice.as_mut().ok_or("Voice not initialized")?;
-
-    let pipeline = voice_state.webcam.take().ok_or("Webcam not active")?;
-
+#[tracing::instrument(skip(state, app))]
+pub async fn stop_webcam(
+    publication_id: Option<String>,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<(), String> {
+    let wanted = publication_id.as_deref();
+    let (pipeline, epoch) = {
+        let mut voice = state.voice.write().await;
+        let v = voice.as_mut().ok_or("Voice not initialized")?;
+        if v.prepared_webcam
+            .as_ref()
+            .is_some_and(|p| stop_names(wanted, &p.publication_id))
+        {
+            v.prepared_webcam = None;
+        }
+        if !v
+            .webcam
+            .as_ref()
+            .is_some_and(|w| stop_names(wanted, &w.publication_id))
+        {
+            return Ok(());
+        }
+        let Some(pipeline) = v.webcam.take() else {
+            return Ok(());
+        };
+        let id = pipeline.publication_id.clone();
+        v.unconfirmed
+            .retain(|w| w.item != Unconfirmed::Webcam(id.clone()));
+        (pipeline, v.session_epoch)
+    };
+    let sender = pipeline.publication.sender.clone();
     pipeline.shutdown().await;
-
-    info!("Webcam stopped");
+    let mut voice = state.voice.write().await;
+    let Some(v) = voice.as_mut() else {
+        return Ok(());
+    };
+    if v.session_epoch != epoch {
+        return Ok(());
+    }
+    if let Err(e) = v.webrtc.remove_video_sender(&sender).await {
+        warn!("Removing the camera's sender failed: {e}");
+    }
+    let ctx = NegotiationCtx::from_state(&state, &app);
+    renegotiate(v, &ctx, None).await;
     Ok(())
 }
 
-/// Enumerate available webcam devices.
 #[command]
 #[tracing::instrument]
 pub async fn enumerate_webcam_devices_cmd() -> Result<Vec<WebcamDevice>, String> {
-    info!("Enumerating webcam devices");
-
-    let devices = enumerate_webcam_devices()?;
+    let devices = tokio::task::spawn_blocking(enumerate_webcam_devices)
+        .await
+        .map_err(|e| e.to_string())??;
     info!(count = devices.len(), "Found webcam devices");
     Ok(devices)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_stop_names_its_own_camera_only() {
+        assert!(stop_names(Some("cam-2"), "cam-2"));
+        assert!(
+            !stop_names(Some("cam-1"), "cam-2"),
+            "a late stop of an earlier camera"
+        );
+        assert!(stop_names(None, "cam-2"), "teardown stops any camera");
+    }
 }
