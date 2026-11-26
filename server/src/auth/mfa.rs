@@ -161,8 +161,8 @@ pub async fn mfa_verify(
             "Start the authenticator setup first".to_string(),
         ));
     };
-    // Flash r5: a missing grant answers before the code is spent. This early
-    // answer decides nothing; the transaction below checks again.
+    // A missing grant answers before the code is spent. This early answer
+    // decides nothing; the transaction below checks again.
     {
         let mut tx = state.db.begin().await?;
         let by = step_up::peek_tx(
