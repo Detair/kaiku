@@ -175,7 +175,7 @@ async fn counter_holds_something(
 }
 
 /// A CLI reset starts a new epoch on each counter instead of deleting it,
-/// so effects scheduled before it never match again (Fable r4 b). Called
+/// so effects scheduled before it never match again. Called
 /// inside the command's transaction under the account lock; `generation`
 /// is the TOTP generation read there (no second pool connection).
 async fn reset_counters(
