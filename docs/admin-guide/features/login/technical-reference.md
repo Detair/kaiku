@@ -792,7 +792,11 @@ never rests on one failed request:
   server answer; it is checked again by what is stored when it is confirmed, and the storage layer
   refuses it for every other kind of record.
 - "Confirm it's you" notes the same for an active key (the probe at each open of the screen) and,
-  once the silence has lasted, names the last resort in words. Nothing there deletes the key.
+  once the silence has lasted, names the last resort in words. Nothing there deletes the key. The
+  device sign-in and the removal take the notes back whenever the server answered itself (an accepted
+  sign-in, or a refusal with the server's own code), and the words stay exactly while the notes
+  count: what the phone decides by itself (no connection, its own time limit, a stop, another
+  server, a lost install id, a challenge it refused) leaves them.
 
 The signed claim and the final device-key sign-in are not interrupted by a link, Back or Cancel. The
 claim's answer counts as not known after 30 s; the screen leaves the final sign-in after 180 s
@@ -817,7 +821,10 @@ the server's word about this install is noted as one for good once the server ac
 if that note cannot be stored, nothing is removed (no step-up, no removal request), the session ends,
 and the screen says the phone is still a key. If the server removed the phone but the phone cannot
 clear its record, the screen says the phone is no longer a key; the next "Use another account" is
-answered as for a removed key, and the phone forgets the record then. The server drops the phone's push
+answered as for a removed key, and the phone forgets the record then. If the server says the key
+device of such a provisional key is gone (or refuses its signature), the record goes back to the
+setup it came from, as after the device sign-in, and the phone belongs to that setup's waiting
+screen. The server drops the phone's push
 subscription with the removal; the operation then drops what the phone itself keeps of that
 registration, without a request, only for the removed account and only while no session is current.
 However it ends (removed, refused, cancelled, its screen gone), nothing of it is stored, so there is
