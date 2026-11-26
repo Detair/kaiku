@@ -61,7 +61,7 @@ pub async fn factor_reset(
     // The counter is reset before the commit, while the account lock is
     // held: effects of an earlier failure that wait for this lock then see
     // the new epoch and do not apply.
-    reset_counters(ctx, username, user, before.totp.generation, Some(factor)).await;
+    reset_counters(ctx, username, user, before.totp.generation, Some(factor)).await?;
     tx.commit().await?;
     deliver(ctx, events).await;
     io.print(&if changed {
@@ -123,7 +123,7 @@ pub async fn throttle_reset(
         );
     }
     // Before the commit, under the account lock (see `factor_reset`).
-    reset_counters(ctx, username, user, st.totp.generation, None).await;
+    reset_counters(ctx, username, user, st.totp.generation, None).await?;
     tx.commit().await?;
     deliver(ctx, events).await;
     io.print(&format!(
@@ -177,29 +177,34 @@ async fn counter_holds_something(
 /// A CLI reset starts a new epoch on each counter instead of deleting it,
 /// so effects scheduled before it never match again. Called
 /// inside the command's transaction under the account lock; `generation`
-/// is the TOTP generation read there (no second pool connection).
+/// is the TOTP generation read there (no second pool connection). If the
+/// store does not answer, the command fails before its commit: nothing is
+/// changed and it says so.
 async fn reset_counters(
     ctx: &CliCtx,
     username: &str,
     user: Uuid,
     generation: i64,
     only: Option<Factor>,
-) {
+) -> anyhow::Result<()> {
     use crate::ratelimit::account::{AccountLimiter, CounterKey};
     let limiter = AccountLimiter::new(&ctx.redis);
+    let mut keys = Vec::new();
     if only.is_none_or(|f| f == Factor::Password) {
-        if let Err(e) = limiter.reset_epoch(&CounterKey::password(username)).await {
-            tracing::warn!(error = %e, user_id = %user, "the password counter could not be reset");
-        }
+        keys.push(CounterKey::password(username));
     }
     if only.is_none_or(|f| f == Factor::Totp) {
-        if let Err(e) = limiter
-            .reset_epoch(&CounterKey::totp(user, generation))
-            .await
-        {
-            tracing::warn!(error = %e, user_id = %user, "the TOTP counter could not be reset");
+        keys.push(CounterKey::totp(user, generation));
+    }
+    for key in &keys {
+        if let Err(e) = limiter.reset_epoch(key).await {
+            tracing::warn!(error = %e, user_id = %user, "a sign-in counter could not be reset");
+            anyhow::bail!(
+                "The sign-in counter store did not answer, so nothing was changed for {username}."
+            );
         }
     }
+    Ok(())
 }
 
 /// Turn phone confirmations (`may_approve`) on or off.

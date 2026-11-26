@@ -893,7 +893,9 @@ and `ratelimit:acct:totp:{user_id}:{generation}`.
 - Counters expire after 24 h without failures. Valkey down → 503.
 - The CLI resets (`throttle reset`, `factor reset`) call `reset_epoch` on their counters inside
   their transaction, under the account lock and before the commit, so effects of an earlier
-  failure that wait for that lock see the new epoch and do not apply.
+  failure that wait for that lock see the new epoch and do not apply. If Valkey does not answer,
+  the command stops before its commit, changes nothing, says that the store did not answer and
+  exits with 1.
 
 ## 14. What is deliberately not a security signal
 

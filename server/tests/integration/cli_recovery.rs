@@ -326,3 +326,79 @@ async fn a_cleared_counter_is_no_reset_event(pool: PgPool) {
     .unwrap();
     assert_eq!(resets, 0);
 }
+
+/// A reset whose counter store does not answer changes nothing and fails:
+/// the factor stays blocked, the counters and their wait time stay, no
+/// audit row or event is written, and the command says so.
+#[sqlx::test]
+async fn a_reset_without_the_store_changes_nothing(pool: PgPool) {
+    use fred::interfaces::HashesInterface;
+    use vc_server::ratelimit::account::CounterKey;
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, name) = create_test_user(&pool).await;
+    sqlx::query(
+        "UPDATE users SET password_hash = 'x', mfa_secret = 'y', password_state = 'throttled',
+                totp_state = 'throttled'
+          WHERE id = $1",
+    )
+    .bind(user)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let next = chrono::Utc::now().timestamp() + 3600;
+    let keys = [CounterKey::password(&name), CounterKey::totp(user, 1)];
+    for key in &keys {
+        let _: () = app
+            .state
+            .redis
+            .hset(key.redis_key(), [("count", 7), ("next", next)])
+            .await
+            .unwrap();
+    }
+    let broken = CliCtx {
+        db: app.pool.clone(),
+        redis: super::helpers::login::failing_valkey(&app.config).await,
+        config: (*app.config).clone(),
+    };
+    for args in [
+        vec!["throttle", "reset", name.as_str()],
+        vec!["factor", "reset", name.as_str(), "password"],
+        vec!["factor", "reset", name.as_str(), "totp"],
+    ] {
+        let owned: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
+        let cmd = Command::parse(&owned).unwrap();
+        let mut out = Out::default();
+        let err = run(&broken, cmd, &mut out)
+            .await
+            .expect_err("a reset without the store must fail");
+        assert!(
+            err.to_string().contains("nothing was changed"),
+            "{args:?}: {err}"
+        );
+        assert!(out.0.is_empty(), "{args:?}: {:?}", out.0);
+    }
+    let (pw, totp): (String, String) =
+        sqlx::query_as("SELECT password_state, totp_state FROM users WHERE id = $1")
+            .bind(user)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!((pw.as_str(), totp.as_str()), ("throttled", "throttled"));
+    for key in &keys {
+        let (count, at): (Option<i64>, Option<i64>) = app
+            .state
+            .redis
+            .hmget(key.redis_key(), vec!["count", "next"])
+            .await
+            .unwrap();
+        assert_eq!((count, at), (Some(7), Some(next)), "{key:?}");
+    }
+    assert!(audit_actions(&pool, user).await.is_empty());
+    let events: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM security_events WHERE subject_id = $1")
+            .bind(user)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(events, 0);
+}
