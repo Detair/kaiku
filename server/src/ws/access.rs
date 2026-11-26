@@ -163,7 +163,10 @@
 //!    attempted for this socket, whatever goes away or comes back meanwhile (an `admin_unsubscribe`
 //!    and a new `admin_subscribe`, a voice peer that left and rejoined). It ends when the database
 //!    answers, or when no failure renewed it for [`FAILURE_CLOSE_AFTER`] after its retry time: a
-//!    failure that old says nothing about now, and the next one counts from itself.
+//!    failure that old says nothing about now, and the next one counts from itself. An attempt
+//!    renews it when it begins (is planned, before it waits for a permit) within that time, however
+//!    long it then takes; the socket closes when a failure completes [`FAILURE_CLOSE_AFTER`] or
+//!    more after the run of failures began.
 //! 2. **Only a scope that is not current waits for the retry.** A socket with nothing left to
 //!    revalidate has no retry time to wake for ([`SocketAccess::retry_at`] is `None`) and is not
 //!    failing ([`SocketAccess::failing_for`]), also while its backoff still runs; a revalidation
@@ -2509,12 +2512,9 @@ impl SocketAccess {
             }
         }
         let now = Instant::now();
-        // An earlier failure that expired while this attempt ran is not
-        // carried forward: this one counts from itself.
         let (since, attempts) = inner
             .failure
             .as_ref()
-            .filter(|f| now < f.retry_at + FAILURE_CLOSE_AFTER)
             .map_or((now, 0), |f| (f.since, f.attempts));
         let delay = RETRY_BASE
             .saturating_mul(1 << attempts.min(5))
@@ -4017,30 +4017,69 @@ mod tests {
         }
     }
 
-    /// A failure that nothing renewed for [`FAILURE_CLOSE_AFTER`] after its
-    /// retry time is over also when that time passes while the next read
-    /// runs: a read that fails then counts from itself and does not end the
-    /// socket. Here the subscribe's read begins 29 s after the first
-    /// failure (the failure still stands) and times out 5 s later.
+    /// Revalidations that keep failing reach the close also when every
+    /// attempt takes longer than [`FAILURE_CLOSE_AFTER`]: each one begins
+    /// (is planned) at its retry time, waits 26 s for one of the general
+    /// permits and then times out after 5 s. An attempt that begins while
+    /// the failure stands continues it, however long it takes.
     #[tokio::test(start_paused = true)]
-    async fn a_failure_that_expires_during_a_read_does_not_end_the_socket() {
-        for wait in [29, 31] {
-            let u = Uuid::new_v4();
-            let access = SocketAccess::new(u, lazy_pool());
-            install(&access, &[FAILS], true, None);
-            let reply = reply_code(crate::ws::handlers::admin_subscribe_reply(&access).await);
-            assert_eq!(reply, Some(UNAVAILABLE));
-            access.unsubscribe_admin();
-            tokio::time::advance(Duration::from_secs(wait)).await;
-            // This read never returns: it times out.
-            let _seams = park_reads(&access);
-            let reply = reply_code(crate::ws::handlers::admin_subscribe_reply(&access).await);
-            assert_eq!(
-                reply,
-                Some(UNAVAILABLE),
-                "wait={wait}s: an expired failure ended the socket"
-            );
+    async fn slow_failing_attempts_reach_the_close() {
+        let access = SocketAccess::new(Uuid::new_v4(), lazy_pool());
+        access.force_full();
+        for attempt in 1..=2 {
+            if let Some(retry_at) = access.retry_at() {
+                tokio::time::advance(retry_at.saturating_duration_since(Instant::now())).await;
+            }
+            let Planned::Run(plan) = access.plan(false) else {
+                panic!("attempt {attempt}: nothing planned");
+            };
+            tokio::time::advance(Duration::from_secs(26) + REFRESH_TIMEOUT).await;
+            access.fail(&plan);
         }
+        assert!(
+            access
+                .failing_for()
+                .is_some_and(|failing| failing >= FAILURE_CLOSE_AFTER),
+            "the socket is not closed after failing for {:?}",
+            access.failing_for()
+        );
+    }
+
+    /// What the handler answers an `admin_subscribe` whose read times out,
+    /// `wait` after a first one failed (the client withdrew in between).
+    async fn subscribe_failing_again_after(wait: Duration) -> Option<&'static str> {
+        let access = SocketAccess::new(Uuid::new_v4(), lazy_pool());
+        install(&access, &[FAILS], true, None);
+        let reply = reply_code(crate::ws::handlers::admin_subscribe_reply(&access).await);
+        assert_eq!(reply, Some(UNAVAILABLE));
+        access.unsubscribe_admin();
+        tokio::time::advance(wait).await;
+        // This read never returns: it times out.
+        let _seams = park_reads(&access);
+        reply_code(crate::ws::handlers::admin_subscribe_reply(&access).await)
+    }
+
+    /// An attempt that begins before the failure is forgotten continues
+    /// it: a read begun 29 s after the first failure that times out 5 s
+    /// later completes a failure 34 s after the run began, and the socket
+    /// ends.
+    #[tokio::test(start_paused = true)]
+    async fn an_attempt_that_begins_within_the_window_continues_the_failure() {
+        assert_eq!(
+            subscribe_failing_again_after(Duration::from_secs(29)).await,
+            Some(ENDED)
+        );
+    }
+
+    /// An attempt that begins after the failure was forgotten
+    /// ([`FAILURE_CLOSE_AFTER`] after its retry time) starts a fresh run:
+    /// its failure does not end the socket.
+    #[tokio::test(start_paused = true)]
+    async fn an_attempt_that_begins_after_the_window_starts_afresh() {
+        assert_eq!(
+            subscribe_failing_again_after(Duration::from_secs(31)).await,
+            Some(UNAVAILABLE)
+        );
     }
 
     /// A subscribe whose own attempt failed, or met the backoff, answers
