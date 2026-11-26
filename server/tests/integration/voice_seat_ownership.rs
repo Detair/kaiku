@@ -516,3 +516,89 @@ async fn a_takeover_frees_the_replaced_share_once(pool: PgPool) {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
+
+/// A socket that holds seats in two rooms leaves both when it closes: no
+/// seat stays behind that the others see and that takes a place.
+#[sqlx::test]
+async fn a_closing_socket_leaves_every_seat_it_holds(pool: PgPool) {
+    let mut r = room(pool).await;
+    let guild: Uuid = sqlx::query_scalar("SELECT guild_id FROM channels WHERE id = $1")
+        .bind(r.voice)
+        .fetch_one(&r.app.pool)
+        .await
+        .expect("guild of the channel");
+    let second = create_voice_channel(&r.app.pool, guild, "voice 2").await;
+    let mut ws = joined(&r.server, &r.token, r.voice).await;
+    next_ws_event(&mut r.viewer, "voice_user_joined", WAIT).await;
+    send(
+        &mut ws,
+        serde_json::json!({ "type": "voice_join", "channel_id": second }),
+    )
+    .await;
+    next_ws_event(&mut ws, "voice_room_state", WAIT).await;
+    let sfu = r.app.state.sfu.clone();
+    for channel in [r.voice, second] {
+        let room = sfu.get_room(channel).await.expect("room");
+        assert!(room.get_peer(r.user).await.is_some(), "seat in {channel}");
+    }
+
+    ws.close(None).await.expect("close the socket");
+    drop(ws);
+    let deadline = tokio::time::Instant::now() + WAIT;
+    for channel in [r.voice, second] {
+        loop {
+            let seated = match sfu.get_room(channel).await {
+                Some(room) => room.get_peer(r.user).await.is_some(),
+                None => false,
+            };
+            if !seated {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the closed socket's seat in {channel} stayed"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+}
+
+/// The two connections of a replaced seat are closed independently: a
+/// publisher close that does not finish leaves the subscriber connection
+/// to be closed all the same.
+#[sqlx::test]
+async fn a_replaced_seats_connections_close_independently(pool: PgPool) {
+    use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
+    let mut r = room(pool).await;
+    let _old = joined(&r.server, &r.token, r.voice).await;
+    next_ws_event(&mut r.viewer, "voice_user_joined", WAIT).await;
+    let room = r.app.state.sfu.get_room(r.voice).await.expect("room");
+    let old_seat = room.get_peer(r.user).await.expect("old seat");
+    drop(room);
+
+    let pause = pause_voice_step(r.user, "close_publisher");
+    let _new = r.take_over().await;
+    Room::reached(&pause).await;
+
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while old_seat.subscriber_pc.connection_state() != RTCPeerConnectionState::Closed {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the subscriber connection waited for the publisher close"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_ne!(
+        old_seat.publisher_pc.connection_state(),
+        RTCPeerConnectionState::Closed,
+        "the publisher close was held"
+    );
+    pause.release.notify_one();
+    while old_seat.publisher_pc.connection_state() != RTCPeerConnectionState::Closed {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the publisher connection was not closed"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}

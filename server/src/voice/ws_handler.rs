@@ -507,14 +507,8 @@ async fn retire_replaced_peer(
     room.detach_media(&old).await;
 
     super::leave::end_session_records(pool, &old, guild_id);
-    tokio::spawn(async move {
-        if tokio::time::timeout(REPLACED_PEER_CLOSE_TIMEOUT, old.close())
-            .await
-            .is_err()
-        {
-            warn!(user_id = %old.user_id, "Closing a replaced voice peer timed out");
-        }
-    });
+    // Each connection on its own task with its own time limit.
+    old.close_in_background(REPLACED_PEER_CLOSE_TIMEOUT);
 }
 
 /// End the screen shares and webcam of a peer that a new join of the same

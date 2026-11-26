@@ -1288,22 +1288,24 @@ impl SfuServer {
         })
     }
 
-    /// Find the voice peer of `user_id` whose signaling queue is `tx`, i.e. the
-    /// peer that belongs to that WebSocket. Returns `(channel_id, session_id)`.
-    pub async fn find_peer_owned_by(
+    /// Find the voice seats of `user_id` whose signaling queue is `tx`, i.e.
+    /// the seats that belong to that WebSocket (one per room at most).
+    /// Returns `(channel_id, session_id)` for each.
+    pub async fn find_peers_owned_by(
         &self,
         user_id: Uuid,
         tx: &mpsc::Sender<OutboundMsg>,
-    ) -> Option<(Uuid, Uuid)> {
+    ) -> Vec<(Uuid, Uuid)> {
         let rooms: Vec<Arc<Room>> = self.rooms.read().await.values().cloned().collect();
+        let mut owned = Vec::new();
         for room in rooms {
             if let Some(peer) = room.get_peer(user_id).await {
                 if peer.signal_tx.same_channel(tx) {
-                    return Some((room.channel_id, peer.session_id));
+                    owned.push((room.channel_id, peer.session_id));
                 }
             }
         }
-        None
+        owned
     }
 
     /// Start background cleanup task for voice stats rate limiter.

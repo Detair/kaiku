@@ -773,11 +773,43 @@ impl Peer {
         *self.self_muted.read().await || *self.server_muted.read().await
     }
 
-    /// Close both peer connections.
+    /// Close both peer connections (concurrently).
     pub async fn close(&self) {
+        tokio::join!(self.close_publisher(), self.close_subscriber());
+    }
+
+    /// Close both peer connections in the background, each on its own task
+    /// with its own time limit `limit`: a close that hangs never keeps the
+    /// other connection open.
+    pub fn close_in_background(self: &Arc<Self>, limit: std::time::Duration) {
+        let publisher = self.clone();
+        tokio::spawn(async move {
+            if tokio::time::timeout(limit, publisher.close_publisher())
+                .await
+                .is_err()
+            {
+                tracing::warn!(user_id = %publisher.user_id, "Closing a voice publisher connection timed out");
+            }
+        });
+        let subscriber = self.clone();
+        tokio::spawn(async move {
+            if tokio::time::timeout(limit, subscriber.close_subscriber())
+                .await
+                .is_err()
+            {
+                tracing::warn!(user_id = %subscriber.user_id, "Closing a voice subscriber connection timed out");
+            }
+        });
+    }
+
+    async fn close_publisher(&self) {
+        crate::ws::test_hooks::voice_step(self.user_id, "close_publisher").await;
         if let Err(e) = self.publisher_pc.close().await {
             tracing::warn!(user_id = %self.user_id, error = %e, "failed to close publisher PC");
         }
+    }
+
+    async fn close_subscriber(&self) {
         if let Err(e) = self.subscriber_pc.close().await {
             tracing::warn!(user_id = %self.user_id, error = %e, "failed to close subscriber PC");
         }

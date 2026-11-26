@@ -276,11 +276,12 @@ pub async fn leave_all(
     removed
 }
 
-/// Remove the voice peer that belongs to a closing WebSocket.
+/// Remove every voice seat that belongs to a closing WebSocket.
 ///
-/// Only the peer whose signaling queue is `tx` is removed, so closing one of
+/// Only seats whose signaling queue is `tx` are removed, so closing one of
 /// several sockets of the same user does not end a call running on another.
-/// Errors are logged; socket cleanup always continues.
+/// A socket may hold seats in several rooms; each is removed with its own
+/// session. Errors are logged; socket cleanup always continues.
 pub async fn leave_voice_on_socket_close(
     sfu: &Arc<SfuServer>,
     pool: &PgPool,
@@ -288,22 +289,21 @@ pub async fn leave_voice_on_socket_close(
     tx: &mpsc::Sender<OutboundMsg>,
     limiter: Option<&ScreenShareLimiter>,
 ) {
-    let Some((channel_id, session_id)) = sfu.find_peer_owned_by(user_id, tx).await else {
-        return;
-    };
-    info!(
-        user_id = %user_id,
-        channel_id = %channel_id,
-        "Removing voice peer of closed socket"
-    );
-    if let Err(e) =
-        leave_voice_internal(sfu, pool, user_id, channel_id, limiter, Some(session_id)).await
-    {
-        warn!(
+    for (channel_id, session_id) in sfu.find_peers_owned_by(user_id, tx).await {
+        info!(
             user_id = %user_id,
             channel_id = %channel_id,
-            error = %e,
-            "Failed to remove voice peer on socket close"
+            "Removing voice peer of closed socket"
         );
+        if let Err(e) =
+            leave_voice_internal(sfu, pool, user_id, channel_id, limiter, Some(session_id)).await
+        {
+            warn!(
+                user_id = %user_id,
+                channel_id = %channel_id,
+                error = %e,
+                "Failed to remove voice peer on socket close"
+            );
+        }
     }
 }
