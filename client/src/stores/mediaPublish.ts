@@ -12,7 +12,9 @@
  * A start that does not end in a live share always ends with a stop to the
  * server (a `voice_error` names no stream, so it may belong to something
  * else, and the server may still accept the start). A publish that
- * completes after its capture ended is taken down, not shown.
+ * completes after its capture ended, or after the held session changed or
+ * started to reconnect, is taken down, not shown. A publish that throws
+ * counts as a failed one, and the start's reservation is always released.
  *
  * Webcam answers carry no id. One camera attempt at a time: after a
  * camera start was given up, the next one waits until that attempt's late
@@ -22,7 +24,8 @@
  * Every way a share ends — the button, the tile, the browser's own "Stop
  * sharing" bar, a closed window, a revoked permission, a dropped video —
  * goes through the same stop: senders removed, capture stopped, the server
- * told, the local state reset.
+ * told, the local state reset. A stop always ends by syncing the
+ * sharing/camera flags, so a stale "on" is cleared by pressing Stop.
  *
  * Loaded on the first share or camera action (not in the startup payload).
  */
