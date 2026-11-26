@@ -348,15 +348,16 @@ These buttons ask for a confirmation (a passkey or your screen lock). If your ac
 phone and no passkey at all, Kaiku asks instead for a fresh code from your authenticator app or one
 recovery code (*Confirm with a code*).
 
-What happens to the sign-in you use for this, when the password or authenticator app is marked
-unsafe:
+A report you confirm with your phone or a passkey keeps the sign-in you make it from. When you
+confirm with a code instead, what happens to that sign-in, when the password or authenticator app is
+marked unsafe:
 
 - with a **recovery code**, this sign-in stays;
 - with a code from your **authenticator app**, this sign-in ends too if it used the password or
   authenticator app that is now blocked, like every other sign-in that used them. Sign-ins that
-  used neither stay. To get back in, sign in with your phone or a passkey; without one, start a
-  recovery with a recovery code (see [Lost phone, forgotten password](#lost-phone-forgotten-password-recovery)),
-  which takes at least the waiting period of your server (a day or more), or ask your admin.
+  used neither stay. To get back in, start a recovery with a recovery code (see
+  [Lost phone, forgotten password](#lost-phone-forgotten-password-recovery)), which takes at least
+  the waiting period of your server (a day or more), or ask your admin.
 
 So if you have a recovery code at hand, use it to confirm the report: then you stay signed in where
 you are. Kaiku cannot tell from an authenticator code whether it is you, because anyone who signed
