@@ -15,7 +15,11 @@ vi.mock("@/components/voice/TauriVideoFrame", () => ({ default: () => null }));
 
 import VoiceTile from "@/components/voice/VoiceTile";
 import { setVoiceState } from "@/stores/voice";
-import { handleScreenShareStopped, handleWebcamStopped } from "@/stores/websocket/mediaEvents";
+import {
+  handleScreenShareStopped,
+  handleWebcamStarted,
+  handleWebcamStopped,
+} from "@/stores/websocket/mediaEvents";
 import * as webcams from "@/stores/webcamViewer";
 import * as shares from "@/stores/screenShareViewer";
 
@@ -157,5 +161,41 @@ describe("stop events and the stored pictures (exact)", () => {
     shares.addAvailableTrack("s1", v, "u2", "bea", "Screen");
     await handleScreenShareStopped({ channel_id: "other", user_id: "u2", stream_id: "s1", reason: "user" } as never);
     expect(shares.viewerState.availableTracks.get("s1")?.track).toBe(v);
+  });
+});
+
+describe("a first track that arrives after its stop", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("a camera switched off before its track came leaves no still tile; its next start shows", async () => {
+    const { container } = render(() => <VoiceTile tile={participant} onClick={() => {}} />);
+    // The stop overtakes the first track of that camera.
+    await handleWebcamStopped(camStop("u2"));
+    webcams.addAvailableTrack("u2", track("cam-late"));
+    expect(webcams.getTrack("u2")).toBeUndefined();
+    expect(container.querySelector("video")).toBeNull();
+
+    // A new start of the same person is not affected.
+    await handleWebcamStarted({ channel_id: CH, user_id: "u2", username: "bea", quality: "medium" } as never);
+    const fresh = track("cam-new");
+    webcams.addAvailableTrack("u2", fresh);
+    expect(webcams.getTrack("u2")).toBe(fresh);
+  });
+
+  it("a viewer waiting for a share that stops does not open when its track comes late", async () => {
+    vi.useFakeTimers();
+    shares.startViewing("late-s1"); // clicked before the track arrived
+    await handleScreenShareStopped(shareStop("u2", "late-s1"));
+    shares.addAvailableTrack("late-s1", track("v-late"), "u2", "bea", "Screen");
+    vi.advanceTimersByTime(1000);
+    expect(shares.viewerState.viewingStreamId).toBeNull();
+    expect(shares.viewerState.availableTracks.has("late-s1")).toBe(false);
+  });
+
+  it("the stopped share's memory does not touch another share of the same person", async () => {
+    await handleScreenShareStopped(shareStop("u2", "late-s2"));
+    const next = track("v-next");
+    shares.addAvailableTrack("late-s3", next, "u2", "bea", "Screen");
+    expect(shares.viewerState.availableTracks.get("late-s3")?.track).toBe(next);
   });
 });

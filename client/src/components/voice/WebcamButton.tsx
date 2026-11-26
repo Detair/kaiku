@@ -37,13 +37,18 @@ const WebcamButton: Component = () => {
     }
   };
 
+  // Starting needs a connected call; switching the camera off never waits
+  // for one (it keeps capturing while the call reconnects).
+  const disabled = () =>
+    loading() || (!voiceState.webcamActive && voiceState.state !== "connected");
+
   return (
     <div class="relative">
       <button
         type="button"
         aria-label={voiceState.webcamActive ? t("voice.webcam.stop") : t("voice.webcam.start")}
         onClick={handleClick}
-        disabled={voiceState.state !== "connected" || loading()}
+        disabled={disabled()}
         class={`p-2 rounded-full transition-colors ${
           voiceState.webcamActive
             ? "bg-success/20 text-success hover:bg-danger/20 hover:text-danger"

@@ -28,7 +28,7 @@
  */
 
 import type { MessageKey } from "@/i18n";
-import type { VoiceAdapter, VoiceError, ScreenShareQuality } from "@/lib/webrtc/types";
+import type { VoiceAdapter, VoiceError, VoiceResult, ScreenShareQuality } from "@/lib/webrtc/types";
 import { isSameSession, type VoiceSessionHandle } from "@/lib/webrtc/voiceSession";
 import { setMediaAnswerListener, type MediaAnswer } from "./mediaAckHook";
 
@@ -537,11 +537,7 @@ export function createMediaPublisher(ctx: MediaContext) {
     const run: Publishing = { cancelled: false };
     publishing = run;
     inFlightIdPublishing = streamId;
-    const published = await adapter.publishScreenShare(streamId);
-    if (publishing === run) {
-      publishing = null;
-      inFlightIdPublishing = null;
-    }
+    const published = await publishStep(run, "screen", () => adapter.publishScreenShare(streamId));
     if (published.ok && run.cancelled) {
       // The dialog was closed, the capture ended, the server dropped the
       // track or ended the share during the publish step: stop it again.
@@ -556,11 +552,41 @@ export function createMediaPublisher(ctx: MediaContext) {
       const key = captureErrorKey("screen", published.error);
       return key ? { ok: false, error: ctx.t(key) } : { ok: false };
     }
+    if (!held(session)) {
+      // Published for a session that is no longer the held one (or is
+      // reconnecting): a stale success is taken back, never shown.
+      await adapter.stopScreenShare(streamId);
+      if (mayStop(session)) sendStop("screen", channelId, streamId);
+      return { ok: false, error: ctx.t("voice.error.notConnected") };
+    }
     screens.set(streamId, { session: session!, publishedAt: Date.now(), announced: true });
     const track = adapter.getScreenShareTrack(streamId);
     if (track) ctx.addPreview(streamId, track, captured.value.sourceLabel);
     syncFlags();
     return { ok: true };
+  }
+
+  /**
+   * Run the publish step of `run`. A throw (the browser refusing to add the
+   * track) counts as a failed publish, and the start's reservation is
+   * released either way.
+   */
+  async function publishStep(
+    run: Publishing,
+    kind: MediaKind,
+    publish: () => Promise<VoiceResult<void>>,
+  ): Promise<VoiceResult<void>> {
+    try {
+      return await publish();
+    } catch (err) {
+      console.error(`[MediaPublish] ${kind} could not be published:`, err);
+      return { ok: false, error: { type: "unknown", message: String(err) } };
+    } finally {
+      if (publishing === run) {
+        publishing = null;
+        inFlightIdPublishing = null;
+      }
+    }
   }
 
   /** Result of a start whose publish step was cancelled (see `Publishing`). */
@@ -586,7 +612,11 @@ export function createMediaPublisher(ctx: MediaContext) {
   async function stopScreenShare(streamId?: string): Promise<void> {
     prune();
     const ids = streamId ? [streamId] : [...screens.keys()];
-    if (ids.length === 0) return;
+    if (ids.length === 0) {
+      // Nothing of the held session is left: a stale "sharing" flag ends here.
+      syncFlags();
+      return;
+    }
     const channelId = ctx.channelId();
     const adapter = await ctx.adapter();
     for (const id of ids) {
@@ -670,11 +700,7 @@ export function createMediaPublisher(ctx: MediaContext) {
     const run: Publishing = { cancelled: false };
     publishing = run;
     inFlightIdPublishing = WEBCAM_ID;
-    const published = await adapter.publishWebcam();
-    if (publishing === run) {
-      publishing = null;
-      inFlightIdPublishing = null;
-    }
+    const published = await publishStep(run, "webcam", () => adapter.publishWebcam());
     if (published.ok && run.cancelled) {
       await adapter.stopWebcam();
       if (!run.serverEnded && mayStop(session)) sendStop("webcam", channelId, null);
@@ -687,6 +713,11 @@ export function createMediaPublisher(ctx: MediaContext) {
       const key = captureErrorKey("webcam", published.error);
       return key ? { ok: false, error: ctx.t(key) } : { ok: false };
     }
+    if (!held(session)) {
+      await adapter.stopWebcam();
+      if (mayStop(session)) sendStop("webcam", channelId, null);
+      return { ok: false, error: ctx.t("voice.error.notConnected") };
+    }
     webcam = { session: session!, publishedAt: Date.now(), announced: true };
     syncFlags();
     return { ok: true };
@@ -695,7 +726,10 @@ export function createMediaPublisher(ctx: MediaContext) {
   async function stopWebcam(): Promise<void> {
     prune();
     const live = webcam;
-    if (!live) return;
+    if (!live) {
+      syncFlags(); // a stale "camera on" flag ends here
+      return;
+    }
     webcam = null;
     const channelId = ctx.channelId();
     const adapter = await ctx.adapter();
@@ -779,13 +813,27 @@ export function createMediaPublisher(ctx: MediaContext) {
 
 export type MediaPublisher = ReturnType<typeof createMediaPublisher>;
 
-let instance: MediaPublisher | null = null;
+/** One publisher per loader, created on the first call (a seam for tests). */
+export function publisherLoader(
+  loadContext: () => Promise<MediaContext>,
+): () => Promise<MediaPublisher> {
+  let instance: Promise<MediaPublisher> | null = null;
+  return () => {
+    // Cached before the first await: concurrent first callers share it.
+    instance ??= (async () => {
+      const publisher = createMediaPublisher(await loadContext());
+      setMediaAnswerListener(publisher.handleAnswer);
+      return publisher;
+    })().catch((err: unknown) => {
+      instance = null; // a failed load is tried again by the next caller
+      throw err;
+    });
+    return instance;
+  };
+}
 
 /** The app's publisher over the channel voice session. */
-export async function mediaPublisher(): Promise<MediaPublisher> {
-  if (instance) return instance;
+export const mediaPublisher = publisherLoader(async () => {
   const { voiceMediaContext } = await import("./voiceMediaContext");
-  instance ??= createMediaPublisher(await voiceMediaContext());
-  setMediaAnswerListener(instance.handleAnswer);
-  return instance;
-}
+  return voiceMediaContext();
+});

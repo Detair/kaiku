@@ -43,6 +43,8 @@ export async function handleScreenShareStopped(event: Omit<Extract<ServerEvent, 
   // the stop removes it (a browser track only; the desktop app removes its
   // own when the stream ends).
   const shown = screenShareViewer.viewerState.availableTracks.get(event.stream_id)?.track ?? null;
+  // A first track still on the way for this share is not shown.
+  screenShareViewer.noteStreamStopped(event.stream_id);
   const { voiceState, setVoiceState } = await import("@/stores/voice");
   const { produce } = await import("solid-js/store");
 
@@ -102,6 +104,8 @@ export async function handleScreenShareQualityChanged(
 // Webcam event handlers
 
 export async function handleWebcamStarted(event: Omit<Extract<ServerEvent, { type: "webcam_started" }>, "type">): Promise<void> {
+  // A new start: its tracks are shown, even right after a stop.
+  webcamViewer.noteCameraStarted(event.user_id);
   const { voiceState, setVoiceState } = await import("@/stores/voice");
   const { produce } = await import("solid-js/store");
 
@@ -131,6 +135,8 @@ export async function handleWebcamStopped(event: Omit<Extract<ServerEvent, { typ
   // that one goes, so a track of a camera started right after this stop
   // stays (a browser track only; the desktop app removes its own).
   const shown = webcamViewer.getTrack(event.user_id) ?? null;
+  // A first track of this camera still on the way is not shown.
+  webcamViewer.noteCameraStopped(event.user_id);
   const { voiceState, setVoiceState } = await import("@/stores/voice");
   const { produce } = await import("solid-js/store");
 

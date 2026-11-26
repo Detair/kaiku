@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@solidjs/testing-library";
 
-const { voiceState, startWebcam, stopWebcam } = await vi.hoisted(async () => {
+const { voiceState, setVoiceState, startWebcam, stopWebcam } = await vi.hoisted(async () => {
   const { createStore } = await import("solid-js/store");
-  const [voiceState] = createStore({ state: "connected", webcamActive: false });
-  return { voiceState, startWebcam: vi.fn(), stopWebcam: vi.fn() };
+  const [voiceState, setVoiceState] = createStore({ state: "connected", webcamActive: false });
+  return { voiceState, setVoiceState, startWebcam: vi.fn(), stopWebcam: vi.fn() };
 });
 
 vi.mock("@/stores/voice", () => ({
@@ -19,6 +19,7 @@ afterEach(() => {
   cleanup();
   vi.clearAllMocks();
   vi.useRealTimers();
+  setVoiceState({ state: "connected", webcamActive: false });
 });
 
 describe("WebcamButton", () => {
@@ -37,5 +38,23 @@ describe("WebcamButton", () => {
     await vi.waitFor(() => expect(screen.queryByRole("alert")).not.toBeNull());
     unmount();
     expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe("WebcamButton while the call reconnects", () => {
+  it("the camera can be switched off while the call reconnects", () => {
+    stopWebcam.mockResolvedValue(undefined);
+    setVoiceState({ state: "reconnecting", webcamActive: true });
+    render(() => <WebcamButton />);
+    const button = screen.getByRole("button") as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
+    fireEvent.click(button);
+    expect(stopWebcam).toHaveBeenCalledTimes(1);
+  });
+
+  it("the camera cannot be switched on while the call reconnects", () => {
+    setVoiceState({ state: "reconnecting", webcamActive: false });
+    render(() => <WebcamButton />);
+    expect((screen.getByRole("button") as HTMLButtonElement).disabled).toBe(true);
   });
 });

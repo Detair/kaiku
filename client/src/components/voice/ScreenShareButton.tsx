@@ -35,6 +35,11 @@ const ScreenShareButton: Component<ScreenShareButtonProps> = (props) => {
     }
   };
 
+  // Starting needs a connected call; stopping a running share never waits
+  // for one (the capture stays on while the call reconnects).
+  const disabled = () =>
+    stopping() || (!voiceState.screenSharing && voiceState.state !== "connected");
+
   const label = () =>
     voiceState.screenSharing ? t("voice.screenShare.stop") : t("voice.screenShare.start");
 
@@ -47,7 +52,7 @@ const ScreenShareButton: Component<ScreenShareButtonProps> = (props) => {
         data-testid="screen-share-toggle"
         aria-label={label()}
         onClick={handleClick}
-        disabled={voiceState.state !== "connected" || stopping()}
+        disabled={disabled()}
         class={`p-2 rounded-full transition-colors ${
           voiceState.screenSharing
             ? "bg-accent-danger/20 text-text-primary hover:bg-accent-danger/30"

@@ -85,6 +85,10 @@ export function addAvailableTrack(
   username: string,
   sourceLabel: string,
 ): void {
+  if (stoppedStreams.has(streamId)) {
+    console.log("[ScreenShareViewer] Late track of a stopped share ignored:", streamId);
+    return;
+  }
   // Auto-cleanup when track ends (only for browser MediaStreamTrack)
   if (track) {
     track.onended = () => {
@@ -138,10 +142,37 @@ export function removeAvailableTrack(streamId: string): void {
 
 /** A start that waits for its track; dropped by any later start or stop. */
 let pendingStart: ReturnType<typeof setTimeout> | null = null;
+/** The share that start waits for. */
+let pendingStreamId: string | null = null;
 
 function dropPendingStart(): void {
   if (pendingStart !== null) clearTimeout(pendingStart);
   pendingStart = null;
+  pendingStreamId = null;
+}
+
+/**
+ * How long a share that stopped before its first track arrived keeps that
+ * late track out (share ids are new per share, so nothing else is refused).
+ */
+export const STOPPED_STREAM_MEMORY_MS = 10_000;
+
+/** Shares that stopped before their first track arrived. */
+const stoppedStreams = new Map<string, ReturnType<typeof setTimeout>>();
+
+/**
+ * A share stopped. If no track of it is held yet, its first track may
+ * still be on the way: it is refused, and a viewer waiting for it stops
+ * waiting.
+ */
+export function noteStreamStopped(streamId: string): void {
+  if (pendingStreamId === streamId) dropPendingStart();
+  if (viewerState.availableTracks.has(streamId)) return;
+  clearTimeout(stoppedStreams.get(streamId));
+  stoppedStreams.set(
+    streamId,
+    setTimeout(() => stoppedStreams.delete(streamId), STOPPED_STREAM_MEMORY_MS),
+  );
 }
 
 /**
@@ -157,12 +188,14 @@ export function startViewing(streamId: string): void {
 
 function tryStartViewing(streamId: string, retries: number): void {
   pendingStart = null;
+  pendingStreamId = null;
   const info = viewerState.availableTracks.get(streamId);
   if (!info) {
     // The WebSocket broadcast arrives before the WebRTC track.
     // Retry a few times to wait for addAvailableTrack to register it.
     if (retries < 10) {
       pendingStart = setTimeout(() => tryStartViewing(streamId, retries + 1), 500);
+      pendingStreamId = streamId;
       return;
     }
     console.warn(

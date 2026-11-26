@@ -5,6 +5,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createMediaPublisher,
+  publisherLoader,
   isStartRefusal,
   refusalKey,
   MEDIA_START_TIMEOUT_MS,
@@ -989,5 +990,161 @@ describe("a start that does not end live ends with a stop", () => {
     await flush();
     expect(s.ctx.warnStopFailed).toHaveBeenCalled();
     vi.useRealTimers();
+  });
+});
+
+describe("a publish that throws is a failed publish", () => {
+  it("screen: the capture ends, the server is told, and the next start is not busy", async () => {
+    const s = setup();
+    s.adapter.publishScreenShare.mockImplementationOnce(async (id: string) => {
+      s.log.push(`publish:${id}`);
+      throw new DOMException("closed", "InvalidStateError");
+    });
+    const start = s.pub.startScreenShare();
+    await flush();
+    s.pub.handleAnswer(started("s1"));
+    expect(await start).toEqual({ ok: false, error: "voice.screenShare.error.failed" });
+    expect(s.log).toEqual(["capture:s1", "sendStart:s1", "publish:s1", "adapterStop:s1", "sendStop:s1"]);
+    expect(s.flags.screenSharing).toBeFalsy();
+    const next = s.pub.startScreenShare();
+    await flush();
+    s.pub.handleAnswer(started("s2"));
+    expect(await next).toEqual({ ok: true });
+  });
+
+  it("camera: the capture ends, the server is told, and the next start is not busy", async () => {
+    const s = setup();
+    s.adapter.publishWebcam.mockImplementationOnce(async () => {
+      s.log.push("publishWebcam");
+      throw new DOMException("closed", "InvalidStateError");
+    });
+    const start = s.pub.startWebcam();
+    await flush();
+    s.pub.handleAnswer({ type: "webcam_started", channel_id: CH, user_id: ME });
+    expect(await start).toEqual({ ok: false, error: "voice.webcam.error.failed" });
+    expect(s.log).toEqual([
+      "captureWebcam",
+      "sendWebcamStart",
+      "publishWebcam",
+      "adapterStopWebcam",
+      "sendWebcamStop",
+    ]);
+    expect(s.flags.webcamActive).toBeFalsy();
+    const next = s.pub.startWebcam();
+    await flush();
+    s.pub.handleAnswer({ type: "webcam_started", channel_id: CH, user_id: ME });
+    expect(await next).toEqual({ ok: true });
+  });
+});
+
+describe("what the UI says follows the held session", () => {
+  /** A publish step that resolves (ok) when `finish` is called. */
+  function heldPublish(s: ReturnType<typeof setup>, kind: "screen" | "webcam") {
+    let finish!: () => void;
+    const impl = (id?: string) =>
+      new Promise((resolve) => {
+        finish = () => {
+          s.log.push(kind === "screen" ? `publish:${id}` : "publishWebcam");
+          resolve({ ok: true, value: undefined });
+        };
+      }) as never;
+    if (kind === "screen") s.adapter.publishScreenShare.mockImplementationOnce(impl);
+    else s.adapter.publishWebcam.mockImplementationOnce(impl);
+    return () => finish();
+  }
+
+  it("a share published after the session changed is discarded, not shown as sharing", async () => {
+    const s = setup();
+    const finish = heldPublish(s, "screen");
+    const start = s.pub.startScreenShare();
+    await flush();
+    s.pub.handleAnswer(started("s1"));
+    await flush();
+    // A recovery attempt began: new session, flags reset by the voice store.
+    s.session.current = { token: 2, channelId: CH };
+    s.ctx.setFlags({ screenSharing: false, webcamActive: false });
+    finish();
+    expect(await start).toEqual({ ok: false, error: "voice.error.notConnected" });
+    expect(s.flags.screenSharing).toBe(false);
+    expect(s.log.slice(-2)).toEqual(["publish:s1", "adapterStop:s1"]);
+    // The old session is not the held one: nothing is sent for it.
+    expect(s.log).not.toContain("sendStop:s1");
+    expect(s.ctx.addPreview).not.toHaveBeenCalled();
+  });
+
+  it("a camera published after the session changed is discarded, not shown as on", async () => {
+    const s = setup();
+    const finish = heldPublish(s, "webcam");
+    const start = s.pub.startWebcam();
+    await flush();
+    s.pub.handleAnswer({ type: "webcam_started", channel_id: CH, user_id: ME });
+    await flush();
+    s.session.current = { token: 2, channelId: CH };
+    s.ctx.setFlags({ screenSharing: false, webcamActive: false });
+    finish();
+    expect(await start).toEqual({ ok: false, error: "voice.error.notConnected" });
+    expect(s.flags.webcamActive).toBe(false);
+    expect(s.log.slice(-2)).toEqual(["publishWebcam", "adapterStopWebcam"]);
+    expect(s.log).not.toContain("sendWebcamStop");
+  });
+
+  it("a share published while the same session reconnects is taken back with its stop", async () => {
+    const s = setup();
+    const finish = heldPublish(s, "screen");
+    const start = s.pub.startScreenShare();
+    await flush();
+    s.pub.handleAnswer(started("s1"));
+    await flush();
+    s.voice.state = "reconnecting";
+    finish();
+    expect(await start).toEqual({ ok: false, error: "voice.error.notConnected" });
+    expect(s.log.slice(-3)).toEqual(["publish:s1", "adapterStop:s1", "sendStop:s1"]);
+    expect(s.flags.screenSharing).toBeFalsy();
+  });
+
+  it("Stop clears a stale sharing flag when nothing of the held session is left", async () => {
+    const s = setup();
+    s.ctx.setFlags({ screenSharing: true });
+    await s.pub.stopScreenShare();
+    expect(s.flags.screenSharing).toBe(false);
+  });
+
+  it("Stop clears a stale camera flag when nothing of the held session is left", async () => {
+    const s = setup();
+    s.ctx.setFlags({ webcamActive: true });
+    await s.pub.stopWebcam();
+    expect(s.flags.webcamActive).toBe(false);
+  });
+});
+
+describe("one publisher", () => {
+  it("two callers during the first load get the same publisher", async () => {
+    let resolveCtx!: (ctx: MediaContext) => void;
+    const ctxReady = new Promise<MediaContext>((resolve) => {
+      resolveCtx = resolve;
+    });
+    const loadContext = vi.fn(() => ctxReady);
+    const get = publisherLoader(loadContext);
+    const a = get();
+    const b = get();
+    await flush();
+    resolveCtx(setup().ctx);
+    const [pa, pb] = await Promise.all([a, b]);
+    expect(pa).toBe(pb);
+    expect(await get()).toBe(pa);
+    expect(loadContext).toHaveBeenCalledTimes(1);
+  });
+
+  it("a failed first load is tried again by the next caller", async () => {
+    const s = setup();
+    const loadContext = vi
+      .fn<() => Promise<MediaContext>>()
+      .mockRejectedValueOnce(new Error("chunk"))
+      .mockResolvedValueOnce(s.ctx);
+    const get = publisherLoader(loadContext);
+    await expect(get()).rejects.toThrow("chunk");
+    const p = await get();
+    expect(p).toBe(await get());
+    expect(loadContext).toHaveBeenCalledTimes(2);
   });
 });
