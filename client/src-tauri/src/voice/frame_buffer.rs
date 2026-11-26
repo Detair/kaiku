@@ -13,13 +13,17 @@
 //! - at most [`MAX_EMIT_FPS`] frames per second per view;
 //! - at most [`MAX_VIEWS_PER_STREAM`] views of one stream and [`MAX_VIEWS`] in total;
 //! - a view without any acknowledgement for [`ACK_TIMEOUT`] gets its slots back and the latest
-//!   frame once more; a second such silence in a row stops sending until the page acknowledges
-//!   again, and after [`VIEW_SILENCE_END`] without any the view ends;
+//!   frame once more; a second such silence in a row stops sending until the page acknowledges a
+//!   frame sent after that reset (a late acknowledgement of a frame the reset forgot shows the page
+//!   is alive but frees nothing), and after [`VIEW_SILENCE_END`] without any acknowledgement the
+//!   view ends;
+//! - a view that ends here leaves the registry before the page is told, so its place is free;
 //! - every subscription of an older page instance ends when a new page instance subscribes.
 //!
-//! So a stalled page has at most four frames per view queued towards it
-//! (two, then two after the one reset), ~13 MB per view at 1080p (~3.2 MB
-//! per frame with decoder padding), and at most [`MAX_VIEWS`] views.
+//! So a stalled or slow page has at most four frames per view queued
+//! towards it (two, then two after the one reset), ~13 MB per view at
+//! 1080p (~3.2 MB per frame with decoder padding), and at most
+//! [`MAX_VIEWS`] views.
 //!
 //! A view that ends here (leave, a newer page instance, a long silence)
 //! gets [`FRAME_END_MAGIC`] as its last message, so the tile does not
@@ -298,15 +302,20 @@ impl FrameSinks {
                 .and_then(|at| q.remove(at))
                 .is_some()
         });
-        if freed {
-            update_u32(&self.total_in_flight, |n| n.checked_sub(1));
-            self.global_freed.notify_waiters();
-        }
         let now = tokio::time::Instant::now();
-        for at in [&view.flow.last_ack, &view.flow.last_life] {
-            if let Ok(mut at) = at.lock() {
-                *at = now;
-            }
+        if let Ok(mut at) = view.flow.last_life.lock() {
+            *at = now;
+        }
+        if !freed {
+            // A late acknowledgement (of a frame the window reset forgot) or
+            // an unknown one: the page is alive, but it frees nothing, opens
+            // no new window and does not end a pause.
+            return;
+        }
+        update_u32(&self.total_in_flight, |n| n.checked_sub(1));
+        self.global_freed.notify_waiters();
+        if let Ok(mut at) = view.flow.last_ack.lock() {
+            *at = now;
         }
         view.flow.reset_unanswered.store(false, Ordering::Release);
         view.flow.stalled.store(false, Ordering::Release);
@@ -392,7 +401,9 @@ impl FrameSinks {
             // A silence while frames are out (GC pause, slow render, sleep,
             // a lost acknowledgement): the window resets and the latest
             // frame is offered again, once. A second silence in a row
-            // stops sending until the page answers.
+            // stops sending until the page acknowledges a frame sent after
+            // the reset; those frames stay charged meanwhile, so at most
+            // two frames are forgotten per acknowledged one.
             let waiting = flow.in_flight() > 0;
             if waiting
                 && flow
@@ -400,7 +411,6 @@ impl FrameSinks {
                     .lock()
                     .is_ok_and(|at| at.elapsed() >= ACK_TIMEOUT)
             {
-                self.release(&flow);
                 if let Ok(mut at) = flow.last_ack.lock() {
                     *at = tokio::time::Instant::now();
                 }
@@ -409,6 +419,7 @@ impl FrameSinks {
                     flow.stalled.store(true, Ordering::Release);
                 } else {
                     debug!("No frame acknowledgement for a while; window reset");
+                    self.release(&flow);
                     if unsent.is_none() {
                         unsent.clone_from(&last_sent);
                     }
@@ -437,9 +448,22 @@ impl FrameSinks {
         flow.dead.store(true, Ordering::Release);
         self.release(&flow);
         if !flow.ended_by_page.load(Ordering::Acquire) {
-            // Ended here: the tile learns it (best effort).
+            // Ended here: the view leaves the registry before the page is
+            // told, so the page's next subscribe has its place again.
+            self.remove_view(&flow);
             let _ = send(FRAME_END_MAGIC.to_vec());
         }
+    }
+
+    /// Remove the view whose flow state is `flow` (if it is still listed).
+    fn remove_view(&self, flow: &Arc<ViewFlow>) {
+        let Ok(mut map) = self.inner.lock() else {
+            return;
+        };
+        for views in map.values_mut() {
+            views.retain(|v| !Arc::ptr_eq(&v.flow, flow));
+        }
+        map.retain(|_, views| !views.is_empty());
     }
 
     #[cfg(test)]
@@ -930,6 +954,91 @@ mod tests {
         );
         // A new page instance starts fresh (the old views end).
         assert!(sinks.subscribe("x", "p2", FrameBuffer::new().0).is_ok());
+    }
+
+    /// A page that is alive but slow: it takes one frame every 4 s and
+    /// acknowledges each when it takes it (acknowledgements of frames the
+    /// window reset forgot arrive late). It never has more than four frames
+    /// on the way, and it keeps getting pictures.
+    #[tokio::test(start_paused = true)]
+    async fn a_slow_page_never_has_more_than_four_frames_on_the_way() {
+        let sinks = FrameSinks::default();
+        let (fb, rx) = FrameBuffer::new();
+        let (id, flow) = sinks.subscribe("s1", "p", FrameBuffer::new().0).unwrap();
+        let inbox: Arc<Mutex<VecDeque<u32>>> = Arc::default();
+        let task = tokio::spawn({
+            let sinks = sinks.clone();
+            let flow = flow.clone();
+            let inbox = inbox.clone();
+            async move {
+                sinks
+                    .run_emitter(rx, flow, 1000, move |b| {
+                        if b.len() >= FRAME_HEADER_LEN {
+                            inbox.lock().unwrap().push_back(seq_of(&b));
+                        }
+                        true
+                    })
+                    .await;
+            }
+        });
+        let (mut consumed, mut most_on_the_way) = (0usize, 0usize);
+        // A moving picture (a frame every 100 ms) for two minutes.
+        for tick in 1..=1200u32 {
+            fb.push(frame(2, 2, u64::from(tick)));
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            most_on_the_way = most_on_the_way.max(inbox.lock().unwrap().len());
+            if tick % 40 == 0 {
+                let taken = inbox.lock().unwrap().pop_front();
+                if let Some(seq) = taken {
+                    consumed += 1;
+                    sinks.ack("s1", id, seq);
+                }
+            }
+        }
+        assert!(
+            most_on_the_way <= 4,
+            "at most four frames on the way, saw {most_on_the_way}"
+        );
+        assert!(
+            consumed >= 25,
+            "the slow page keeps getting pictures ({consumed})"
+        );
+        assert!(!flow.is_dead(), "an answering page keeps its view");
+        sinks.unsubscribe("s1", id);
+        task.await.unwrap();
+    }
+
+    /// Views that end here (a page that stopped answering) free their
+    /// places: the page can open the stream again.
+    #[tokio::test(start_paused = true)]
+    async fn views_ended_here_free_their_places() {
+        let sinks = FrameSinks::default();
+        let mut tasks = Vec::new();
+        let mut buffers = Vec::new();
+        for _ in 0..MAX_VIEWS_PER_STREAM {
+            let (fb, rx) = FrameBuffer::new();
+            let (_, flow) = sinks.subscribe("s", "p", FrameBuffer::new().0).unwrap();
+            let s2 = sinks.clone();
+            tasks.push(tokio::spawn(async move {
+                s2.run_emitter(rx, flow, 1000, |_| true).await;
+            }));
+            buffers.push(fb);
+        }
+        for pts in 0..10 {
+            for fb in &buffers {
+                fb.push(frame(2, 2, pts));
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        // Nobody acknowledges anything: every view ends after its silence.
+        for task in tasks {
+            task.await.unwrap();
+        }
+        assert!(!sinks.has_sinks("s"));
+        assert!(
+            sinks.subscribe("s", "p", FrameBuffer::new().0).is_ok(),
+            "the ended views hold no place"
+        );
     }
 
     /// Frame transport measurement: one 1080p frame through the JSON path
