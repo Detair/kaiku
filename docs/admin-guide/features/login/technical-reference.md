@@ -657,10 +657,11 @@ never refused. A producer that is not an active authenticator of the account is 
 grant (`STEP_UP_REQUIRED`), never treated as old. Ages by origin: a phone or passkey added from a full
 session or a key phone, at registration, by an admin for a new account or by `kaiku-admin enroll` is
 active at once and young for one delay. A device that waited as `pending` (an account request, an admin
-setup of an existing account) counts from when it was staged; when the request's delay ran from the
-staging it is settled on activation, a phone staged later in the request's waiting time stays young for
-the rest of the delay after the request completes. A phone set up again on the same install (a new key)
-is a new row and is young again.
+setup of an existing account) counts from when it was staged. An admin's set-up of an existing account
+is staged when its request starts, so it is settled on activation. A phone added through a request the
+person started themself is staged only once the request is `ready` (after the wait), so it counts as new
+for one delay from then, while an older phone or passkey that was not named lost stays active. A phone
+set up again on the same install (a new key) is a new row and is young again.
 
 "That wasn't me" (`event.repudiate`, owner-rule part 1) follows the same rule: when carrying out the
 report would revoke a key device or passkey that is not yet revoked (a `sign_in` by a passkey or key
@@ -671,9 +672,8 @@ ended, no factor marked, the grant unused). Reports that only end sessions, mark
 generations compromised, or revoke a younger authenticator are carried out as before.
 
 **Setting up a phone that replaces an older key.** An `own` set-up (issued from a key phone or from a
-full PC session) whose claim names the install id of a live key device replaces that key when it
-completes (section 8). The install id is the claiming phone's own statement, so the replacement counts
-as acting against that key: `ensure_settled` runs with the issuing phone or passkey as the acting
+full PC session) that replaces a live key device of the account when it completes (as when a phone is
+set up again, section 8) acts against that key: `ensure_settled` runs with the issuing phone or passkey as the acting
 authenticator and the key to be replaced as the target, once when the claimant asks for its challenge
 (`POST /auth/enrollments/pop-challenge`, before a code is shown) and again in the confirming
 transaction before anything is revoked. A refusal (403 `AUTHENTICATOR_TOO_NEW {allowed_at}`) revokes
@@ -976,9 +976,8 @@ Residual risks (spec B.6, as implemented):
     removal (a new contact counts as a canceller only one delay after confirming; a linked identity
     gives at most a chat-only first factor), so after removing an unknown device the owner checks the
     recovery contact and the linked sign-in methods. Two more things stay as they are: a set-up that
-    the owner confirms on one of their phones replaces the key of *another* phone of the account when
-    the new device presents that phone's installation (the confirmation shows the new device, not that
-    an existing one is replaced; the confirming phone stays and can remove the new device at once), and
+    the owner confirms can replace the key of another phone of the account (after confirming a set-up,
+    check the phone list; the confirming phone can remove the new device at once), and
     on *other* members' accounts an admin's actions are not held back by this rule, also when the
     admin's own phone or passkey is new. An **old device in the wrong
     hands is not limited** by this rule: a stolen phone that has been a key for longer than the delay

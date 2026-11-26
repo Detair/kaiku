@@ -212,8 +212,9 @@ phone of their own: your older devices stay in your hands long enough to see the
 it. To retire the old phone now, use **Sign out and remove this phone** on the old phone; that always
 works at once. If the old phone is lost or stolen, do not wait for the new one: remove the old phone
 from another device you have had for longer (an older phone, or a computer signed in with an older
-passkey), or ask your admin to **Remove device now**. From the new phone it works only after the
-waiting time.
+passkey), or ask your admin to **Remove device now**. If you are an admin yourself, another admin
+cannot do that for you: use an older device of yours or ask the person who runs the server. From the
+new phone it works only after the waiting time.
 
 If you do not see **Add a phone**, your account may not confirm sign-ins (see above). Ask your
 admin: they can turn it on for a moment while you do this, or set up the new phone for you.

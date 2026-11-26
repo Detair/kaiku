@@ -379,9 +379,10 @@ What to tell a member who replaces a phone: remove the old phone **on the old ph
 and remove this phone**, which works at once. From the new phone, removing the old one works after the
 delay. When the old phone is lost, remove it from another device that is older, ask an admin
 (**Remove device now**) or use `kaiku-admin devices remove`; these are not held back. A phone that is
-set up again on the same install (new key) counts as new. A phone added through an account request
-counts from when it was set up during the request, so one set up late in the waiting time stays new for
-the rest of the delay after the request completes.
+set up again on the same install (new key) counts as new. A phone that an admin sets up for an existing
+account counts from the start of its request, so it is settled when it becomes active. A phone added
+through a request the member started themself can be set up only once the request is ready, so it counts
+as new for one delay from then, as long as an older phone or passkey that was not named lost remains.
 
 **Order for a stolen phone:** remove it **first**, then start the recovery. A thief who knows the
 screen lock holds a full key and could cancel the recovery. Removing a request's only recorded

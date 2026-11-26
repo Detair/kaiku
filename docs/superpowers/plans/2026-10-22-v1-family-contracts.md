@@ -920,10 +920,11 @@ not sign in someone else by mistake. Additive; absent means no check.
   one, and every action of an account whose only strong authenticators are as young or younger, stay allowed.
   The refusal changes nothing: the grant stays unused (it expires as usual after 300 s); a new confirmation after
   `allowed_at` is carried out. A device
-  that waited as `pending` counts from when it was added: settled on activation when it was staged at the
-  start of the request's wait, young for the rest of the delay when it was staged later. A key set up again on
-  the same install is a new authenticator and young again.
-- C26 enrolment: an `own` set-up whose claim names the install id of a live key device replaces that key only
+  that waited as `pending` counts from when it was added: an admin's set-up of an existing account is staged
+  when its request starts and is settled on activation; a phone staged through the person's own request is
+  staged once the request is `ready` and counts as new for one delay from then, while an older authenticator
+  not named lost stays active. A key set up again on the same install is a new authenticator and young again.
+- C26 enrolment: an `own` set-up that would replace a live key device of the account replaces that key only
   when the issuing phone or passkey is settled, or the key is not older than it, or the account has no older
   active phone or passkey (so an older key that is still `pending` can be replaced then, as before); otherwise
   `POST /auth/enrollments/pop-challenge` and the confirming step (`enroll` answer, `POST
