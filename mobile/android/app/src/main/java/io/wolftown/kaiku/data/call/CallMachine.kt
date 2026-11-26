@@ -1120,7 +1120,8 @@ object CallMachine {
          */
         fun handledElsewhere(channelId: String, callId: String) {
             if (callId.isEmpty()) return
-            if (state.channelId == channelId && (shownCallId() == null || shownCallId() == callId)) return
+            // An ended call's line shows no call: a decline or answer of another call is remembered then too.
+            if (state !is CallState.Ended && state.channelId == channelId && (shownCallId() == null || shownCallId() == callId)) return
             undecided = undecided - callId
             rememberEnded(channelId, callId)
         }

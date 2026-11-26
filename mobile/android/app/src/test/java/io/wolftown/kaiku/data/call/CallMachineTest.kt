@@ -916,6 +916,21 @@ class CallMachineTest {
     }
 
     @Test
+    fun `this user's decline of a call before its ring is remembered also while an earlier call's end is shown`() {
+        connectedAsCallee()
+        assertEquals(CallState.Ended(dm, CallEndReason.Left), send(hangUp()))
+        // A group call in the same chat, declined on another device; the decline comes before its ring.
+        send(Declined(dm, "c-2", me))
+        send(ServerEnded(dm, "c-2", "cancelled", rungHere = true, callerId = "anna", callerName = "Anna"))
+        assertTrue("a call this user declined shows as missed: $effects", effects.none { it is Missed })
+        // Same from nothing shown.
+        model = CallModel()
+        send(Declined(dm, "c-3", me))
+        send(ServerEnded(dm, "c-3", "cancelled", rungHere = true, callerId = "anna", callerName = "Anna"))
+        assertTrue(effects.none { it is Missed })
+    }
+
+    @Test
     fun `an ended wake ends the shown ring like the socket's event`() {
         incoming()
         assertEquals(CallState.Idle, send(ServerEnded(dm, "c-1", "cancelled", rungHere = true, callerId = "anna", callerName = "Anna")))
