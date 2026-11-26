@@ -80,6 +80,20 @@ impl EndReason {
             Self::AbsoluteCap => "absolute_cap",
         }
     }
+
+    /// Whether a key-device session that ends for this reason leaves the rows
+    /// of its own install to the device's revocation.
+    ///
+    /// Only an ended session whose key device was just revoked: the revocation
+    /// deletes them after the removed phone's last notice, at once when revoked
+    /// for cause, and keeps them when the same install is set up again. No
+    /// reason keeps a session's other push subscriptions; a key phone's row
+    /// (install of an active or pending key device) is never a session's to
+    /// lose.
+    #[must_use]
+    pub const fn leaves_device_rows_to_revocation(self) -> bool {
+        matches!(self, Self::AuthenticatorRevoked)
+    }
 }
 
 /// Internal notice on `user:{id}`, consumed by the WebSocket loop and never
@@ -126,7 +140,7 @@ pub async fn end_sessions_tx(
     .bind(reason.as_str())
     .fetch_all(&mut *conn)
     .await?;
-    after_update(conn, ctx, user_id, &ended, false).await?;
+    after_update(conn, ctx, user_id, &ended, false, reason).await?;
     Ok(ended)
 }
 
@@ -150,7 +164,7 @@ pub async fn end_all_sessions_tx(
     .bind(reason.as_str())
     .fetch_all(&mut *conn)
     .await?;
-    after_update(conn, ctx, user_id, &ended, keep.is_none()).await?;
+    after_update(conn, ctx, user_id, &ended, keep.is_none(), reason).await?;
     Ok(ended)
 }
 
@@ -162,6 +176,7 @@ async fn after_update(
     user_id: Uuid,
     ended: &[Uuid],
     all: bool,
+    reason: EndReason,
 ) -> AuthResult<()> {
     if ended.is_empty() && !all {
         return Ok(());
@@ -195,7 +210,7 @@ async fn after_update(
             .await?;
     }
     // B.7 rule 2: what the ended sessions issued or hold.
-    crate::approvals::cascade::on_sessions_ended(conn, ctx, ended).await?;
+    crate::approvals::cascade::on_sessions_ended(conn, ctx, ended, reason).await?;
     Ok(())
 }
 
@@ -286,6 +301,43 @@ async fn listen(pool: &PgPool, redis: &Client) -> Result<(), sqlx::Error> {
         }
         for sid in &p.session_ids {
             crate::admin::clear_elevated_cache(redis, *sid).await;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::EndReason;
+
+    /// No end reason keeps a session's push subscriptions; only a revoked
+    /// key device's own install is left to its revocation. A reason added
+    /// later deletes them too.
+    #[test]
+    fn no_end_reason_keeps_push_subscriptions() {
+        let all = [
+            EndReason::Logout,
+            EndReason::Revoked,
+            EndReason::OthersRevoked,
+            EndReason::PasswordChanged,
+            EndReason::Ban,
+            EndReason::AccountDeleted,
+            EndReason::RefreshReuse,
+            EndReason::Limit,
+            EndReason::AuthenticatorRevoked,
+            EndReason::Superseded,
+            EndReason::Repudiated,
+            EndReason::RequestCompleted,
+            EndReason::Upgrade,
+            EndReason::Cli,
+            EndReason::AbsoluteCap,
+        ];
+        for r in all {
+            assert_eq!(
+                r.leaves_device_rows_to_revocation(),
+                r == EndReason::AuthenticatorRevoked,
+                "{}",
+                r.as_str()
+            );
         }
     }
 }

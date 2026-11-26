@@ -548,6 +548,7 @@ async fn platform_codes_are_upper_snake() {
             PushError::NotFound,
             PushError::Validation(s()),
             PushError::ProviderUnavailable,
+            PushError::Auth(crate::auth::AuthError::FullSessionRequired),
             PushError::Database(db()),
         ],
     )

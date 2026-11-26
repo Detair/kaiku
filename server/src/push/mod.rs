@@ -172,8 +172,11 @@ pub enum Delivery {
 // Dispatch
 // ============================================================================
 
-/// Deliver a wake signal to every subscription of `user_id`. Subscriptions that
-/// report `Gone` are pruned; successful ones get `last_used_at` updated.
+/// Deliver a wake signal to every subscription of `user_id`.
+///
+/// Subscriptions that report `Gone` are pruned; successful ones get
+/// `last_used_at` updated (both only while the row still has the provider and
+/// address the send went to).
 ///
 /// # Errors
 /// Loading the user's subscriptions failed.
@@ -215,19 +218,30 @@ pub async fn deliver_with<P: PushPayload>(
                 Delivery::Failed => "failed",
             },
         );
+        // The answer is about this provider and address only: a row that
+        // moved to a new address meanwhile (same install, same row) is left
+        // alone.
         match delivery {
             Delivery::Gone => {
-                let _ = sqlx::query("DELETE FROM push_subscriptions WHERE id = $1")
-                    .bind(sub.id)
-                    .execute(db)
-                    .await;
+                let _ = sqlx::query(
+                    "DELETE FROM push_subscriptions WHERE id = $1 AND provider = $2 AND endpoint = $3",
+                )
+                .bind(sub.id)
+                .bind(&sub.provider)
+                .bind(&sub.endpoint)
+                .execute(db)
+                .await;
             }
             Delivery::Sent => {
-                let _ =
-                    sqlx::query("UPDATE push_subscriptions SET last_used_at = NOW() WHERE id = $1")
-                        .bind(sub.id)
-                        .execute(db)
-                        .await;
+                let _ = sqlx::query(
+                    "UPDATE push_subscriptions SET last_used_at = NOW()
+                      WHERE id = $1 AND provider = $2 AND endpoint = $3",
+                )
+                .bind(sub.id)
+                .bind(&sub.provider)
+                .bind(&sub.endpoint)
+                .execute(db)
+                .await;
             }
             Delivery::Failed => {}
         }
@@ -344,12 +358,19 @@ pub enum PushError {
     Validation(String),
     #[error("Push provider unavailable")]
     ProviderUnavailable,
+    /// A sign-in rule (`FULL_SESSION_REQUIRED`, or `INVALID_TOKEN` when the
+    /// caller's session ended meanwhile), answered exactly as the auth module does.
+    #[error(transparent)]
+    Auth(#[from] crate::auth::AuthError),
     #[error("Database error")]
     Database(#[from] sqlx::Error),
 }
 
 impl IntoResponse for PushError {
     fn into_response(self) -> Response {
+        if let Self::Auth(e) = self {
+            return e.into_response();
+        }
         if let Self::Database(e) = &self {
             tracing::error!(error = %e, "Push subscription database operation failed");
         }
@@ -369,7 +390,7 @@ impl IntoResponse for PushError {
                 "PUSH_PROVIDER_UNAVAILABLE",
                 self.to_string(),
             ),
-            Self::Database(_) => (
+            Self::Database(_) | Self::Auth(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "INTERNAL_ERROR",
                 "Database error".to_string(),
@@ -399,6 +420,41 @@ pub struct CreateSubscriptionRequest {
 
 /// Maximum push subscriptions kept per user; least recently used are pruned.
 pub const MAX_SUBSCRIPTIONS_PER_USER: i64 = 10;
+
+/// Maximum push subscriptions one chat-only session holds; its least
+/// recently used are pruned.
+pub const MAX_SUBSCRIPTIONS_PER_CHAT_ONLY_SESSION: i64 = 2;
+
+/// SQL condition (alias `p`): the row is a key phone's, i.e. its install id is
+/// the install of an active or pending key device of the same account. Such a
+/// row belongs to the device: no session end touches it, it goes with the
+/// device's revocation, and only a full session may register, overwrite or
+/// delete it.
+macro_rules! key_phone_row {
+    () => {
+        "(p.device_id IS NOT NULL AND EXISTS (SELECT 1 FROM approval_devices kd
+            WHERE kd.user_id = p.user_id AND kd.device_id = p.device_id
+              AND kd.state IN ('active', 'pending')))"
+    };
+}
+
+/// SQL condition (alias `p`): the row may be overwritten or deleted by the
+/// chat-only session `$sid`: it is not a key phone's row, and it is that
+/// session's own row, has no owner, or its owning session is no longer live.
+/// Takes the session id as the placeholder given in `sid`.
+macro_rules! takeable_by {
+    ($sid:literal) => {
+        concat!(
+            "(NOT ",
+            key_phone_row!(),
+            " AND (p.session_id IS NULL OR p.session_id = ",
+            $sid,
+            " OR NOT EXISTS (SELECT 1 FROM sessions s WHERE s.id = p.session_id AND ",
+            crate::live_clause!(),
+            ")))"
+        )
+    };
+}
 
 /// FCM registration token shape (C19).
 fn is_valid_fcm_token(token: &str) -> bool {
@@ -441,6 +497,10 @@ pub async fn get_config(
 }
 
 /// `POST /api/me/push-subscriptions` — register (upsert) a device.
+///
+/// The row belongs to the caller's session. A chat-only caller may not
+/// overwrite or (through the same endpoint) delete another live session's
+/// row: 403 `FULL_SESSION_REQUIRED`, nothing changed.
 pub async fn create_subscription(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -493,6 +553,64 @@ pub async fn create_subscription(
         .bind(&body.endpoint)
         .execute(&mut *tx)
         .await?;
+    // The caller's session must still be live, and stays so until commit: a
+    // session that is being ended either waits for this registration (and
+    // then deletes the row with its other rows) or has ended already.
+    let sid = auth
+        .session_id
+        .ok_or(crate::auth::AuthError::InvalidToken)?;
+    let live: Option<Uuid> = sqlx::query_scalar(concat!(
+        "SELECT s.id FROM sessions s WHERE s.id = $1 AND s.user_id = $2 AND ",
+        crate::live_clause!(),
+        " FOR SHARE"
+    ))
+    .bind(sid)
+    .bind(auth.id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if live.is_none() {
+        return Err(crate::auth::AuthError::InvalidToken.into());
+    }
+    let chat_only = auth.assurance() != crate::auth::assurance::Assurance::Full;
+    if chat_only {
+        // A key phone's install id is out of reach, also before its row
+        // exists: only a full session registers for a key phone.
+        if let Some(device_id) = body.device_id {
+            let key_phone: bool = sqlx::query_scalar(concat!(
+                "SELECT EXISTS (SELECT 1 FROM (SELECT $1::uuid AS user_id, $2::uuid AS device_id) p
+                  WHERE ",
+                key_phone_row!(),
+                ")"
+            ))
+            .bind(auth.id)
+            .bind(device_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            if key_phone {
+                return Err(crate::auth::AuthError::FullSessionRequired.into());
+            }
+        }
+        // Rows of this user that the upsert would overwrite or delete: the
+        // same install id, or the same endpoint. Another live session's row
+        // is out of reach; nothing is changed.
+        let foreign: bool = sqlx::query_scalar(concat!(
+            "SELECT EXISTS (SELECT 1 FROM push_subscriptions p
+              WHERE p.user_id = $1
+                AND (p.endpoint = $2 OR ($3::uuid IS NOT NULL AND p.device_id = $3))
+                AND NOT ",
+            takeable_by!("$4"),
+            ")"
+        ))
+        .bind(auth.id)
+        .bind(&body.endpoint)
+        .bind(body.device_id)
+        .bind(sid)
+        .fetch_one(&mut *tx)
+        .await?;
+        if foreign {
+            return Err(crate::auth::AuthError::FullSessionRequired.into());
+        }
+    }
     // A handed-down phone: the same (provider, endpoint) under other users is
     // removed. Matching only on the endpoint proves possession; a device_id is
     // client-asserted and never triggers cross-user deletes.
@@ -518,12 +636,13 @@ pub async fn create_subscription(
         .await?;
         sqlx::query_as(
             "INSERT INTO push_subscriptions
-                 (user_id, provider, endpoint, public_key, auth_key, device_label, device_id)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)
+                 (user_id, provider, endpoint, public_key, auth_key, device_label, device_id,
+                  session_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
              ON CONFLICT (user_id, device_id) WHERE device_id IS NOT NULL DO UPDATE SET
                  provider = EXCLUDED.provider, endpoint = EXCLUDED.endpoint,
                  public_key = EXCLUDED.public_key, auth_key = EXCLUDED.auth_key,
-                 device_label = EXCLUDED.device_label
+                 device_label = EXCLUDED.device_label, session_id = EXCLUDED.session_id
              RETURNING id, user_id, provider, endpoint, public_key, auth_key, device_label,
                        created_at, last_used_at, device_id",
         )
@@ -534,15 +653,18 @@ pub async fn create_subscription(
         .bind(&body.auth_key)
         .bind(&body.device_label)
         .bind(device_id)
+        .bind(sid)
         .fetch_one(&mut *tx)
         .await?
     } else {
         sqlx::query_as(
-            "INSERT INTO push_subscriptions (user_id, provider, endpoint, public_key, auth_key, device_label)
-             VALUES ($1, $2, $3, $4, $5, $6)
+            "INSERT INTO push_subscriptions
+                 (user_id, provider, endpoint, public_key, auth_key, device_label, session_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
              ON CONFLICT (user_id, endpoint) DO UPDATE SET
                  provider = EXCLUDED.provider, public_key = EXCLUDED.public_key,
-                 auth_key = EXCLUDED.auth_key, device_label = EXCLUDED.device_label
+                 auth_key = EXCLUDED.auth_key, device_label = EXCLUDED.device_label,
+                 session_id = EXCLUDED.session_id
              RETURNING id, user_id, provider, endpoint, public_key, auth_key, device_label,
                        created_at, last_used_at, device_id",
         )
@@ -552,20 +674,50 @@ pub async fn create_subscription(
         .bind(&body.public_key)
         .bind(&body.auth_key)
         .bind(&body.device_label)
+        .bind(sid)
         .fetch_one(&mut *tx)
         .await?
     };
 
-    // Keep the most recently used rows; the row just written is never pruned.
-    sqlx::query(
+    if chat_only {
+        // A chat-only session holds at most a few rows: its most recently
+        // used ones and the row just written.
+        sqlx::query(concat!(
+            "DELETE FROM push_subscriptions WHERE id IN (
+                 SELECT p.id FROM push_subscriptions p
+                  WHERE p.user_id = $1 AND p.session_id = $2 AND p.id <> $3 AND NOT ",
+            key_phone_row!(),
+            "
+                  ORDER BY COALESCE(p.last_used_at, p.created_at) DESC, p.id
+                 OFFSET $4)"
+        ))
+        .bind(auth.id)
+        .bind(sid)
+        .bind(sub.id)
+        .bind(MAX_SUBSCRIPTIONS_PER_CHAT_ONLY_SESSION - 1)
+        .execute(&mut *tx)
+        .await?;
+    }
+    // Keep the most recently used rows; the row just written is never pruned,
+    // and a chat-only caller never prunes another live session's row (it then
+    // takes the least recently used of the rest, or leaves the user over the
+    // cap for a while: each chat-only session holds at most a few rows).
+    sqlx::query(concat!(
         "DELETE FROM push_subscriptions WHERE id IN (
-             SELECT id FROM push_subscriptions WHERE user_id = $1 AND id <> $2
-             ORDER BY COALESCE(last_used_at, created_at) DESC, id
-             OFFSET $3)",
-    )
+             SELECT p.id FROM push_subscriptions p
+              WHERE p.user_id = $1 AND p.id <> $2 AND (NOT $4 OR ",
+        takeable_by!("$5"),
+        ")
+              ORDER BY COALESCE(p.last_used_at, p.created_at) ASC, p.id DESC
+              LIMIT GREATEST(
+                  (SELECT COUNT(*) FROM push_subscriptions WHERE user_id = $1 AND id <> $2) - $3,
+                  0))"
+    ))
     .bind(auth.id)
     .bind(sub.id)
     .bind(MAX_SUBSCRIPTIONS_PER_USER - 1)
+    .bind(chat_only)
+    .bind(sid)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -573,7 +725,7 @@ pub async fn create_subscription(
     Ok((StatusCode::CREATED, Json(sub)))
 }
 
-/// `GET /api/me/push-subscriptions` — list the caller's devices.
+/// `GET /api/me/push-subscriptions` — list the caller's devices (full session).
 pub async fn list_subscriptions(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -589,7 +741,8 @@ pub async fn list_subscriptions(
     Ok(Json(subs))
 }
 
-/// `DELETE /api/me/push-subscriptions/{id}` — unregister (own device only).
+/// `DELETE /api/me/push-subscriptions/{id}` — unregister (own device only, full
+/// session).
 pub async fn delete_subscription(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -607,18 +760,29 @@ pub async fn delete_subscription(
     Ok(Json(serde_json::json!({ "deleted": true, "id": sub_id })))
 }
 
-/// `DELETE /api/me/push-subscriptions/device/{device_id}` — unregister a device
-/// (own rows only). Always 204, also when nothing matched.
+/// `DELETE /api/me/push-subscriptions/device/{device_id}` — unregister a device.
+///
+/// Own rows only; always 204, also when nothing matched. A chat-only caller
+/// deletes only rows it may take (its own, without owner, or of a session that
+/// is no longer live); another live session's row is skipped.
 pub async fn delete_device(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(device_id): Path<Uuid>,
 ) -> Result<StatusCode, PushError> {
-    sqlx::query("DELETE FROM push_subscriptions WHERE device_id = $1 AND user_id = $2")
-        .bind(device_id)
-        .bind(auth.id)
-        .execute(&state.db)
-        .await?;
+    let chat_only = auth.assurance() != crate::auth::assurance::Assurance::Full;
+    sqlx::query(concat!(
+        "DELETE FROM push_subscriptions p
+          WHERE p.device_id = $1 AND p.user_id = $2 AND (NOT $3 OR ",
+        takeable_by!("$4"),
+        ")"
+    ))
+    .bind(device_id)
+    .bind(auth.id)
+    .bind(chat_only)
+    .bind(auth.session_id)
+    .execute(&state.db)
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -642,14 +806,142 @@ pub async fn delete_device_subscriptions(
     )
 }
 
+/// Delete the push subscriptions owned by `sids`, which just ended (in the
+/// transaction that ends them, for every end reason).
+///
+/// A key phone's row (install of an active or pending key device of the
+/// account) is never touched: it belongs to the device and goes with the
+/// device's revocation. With `device_revoked` (the sessions ended because an
+/// authenticator was revoked, and that device is already marked revoked), a
+/// key-device session's rows of its own install stay as well: the revocation
+/// decides about them (deleted after the removed phone's last notice, or at
+/// once when revoked for cause; kept when the same install is set up again).
+///
+/// # Errors
+/// The delete failed.
+pub async fn delete_for_ended_sessions(
+    conn: &mut sqlx::PgConnection,
+    sids: &[Uuid],
+    device_revoked: bool,
+) -> Result<u64, sqlx::Error> {
+    Ok(sqlx::query(concat!(
+        "DELETE FROM push_subscriptions p
+          WHERE p.session_id = ANY($1)
+            AND NOT ",
+        key_phone_row!(),
+        "
+            AND NOT ($2 AND p.device_id IS NOT NULL AND EXISTS (
+                SELECT 1 FROM sessions s
+                  JOIN approval_devices d ON d.id = s.authenticator_id
+                 WHERE s.id = p.session_id AND s.authenticator_type = 'key_device'
+                   AND d.user_id = p.user_id AND d.device_id = p.device_id))"
+    ))
+    .bind(sids)
+    .bind(device_revoked)
+    .execute(&mut *conn)
+    .await?
+    .rows_affected())
+}
+
+/// "End all other sessions": delete every row of `user_id` that is neither a
+/// key phone's row nor owned by `keep` (the acting session), whoever owns it,
+/// in the caller's transaction.
+///
+/// # Errors
+/// The delete failed.
+pub async fn delete_all_but_session_tx(
+    conn: &mut sqlx::PgConnection,
+    user_id: Uuid,
+    keep: Uuid,
+) -> Result<u64, sqlx::Error> {
+    Ok(sqlx::query(concat!(
+        "DELETE FROM push_subscriptions p
+          WHERE p.user_id = $1 AND p.session_id IS DISTINCT FROM $2 AND NOT ",
+        key_phone_row!()
+    ))
+    .bind(user_id)
+    .bind(keep)
+    .execute(&mut *conn)
+    .await?
+    .rows_affected())
+}
+
+/// A device-key sign-in on `install` takes over the install's rows.
+///
+/// The rows of `user_id` that belonged to an earlier session of a key device
+/// of that install (or to no session) now belong to `sid`. The app does not
+/// register again while its local record is fresh, so the rows must follow
+/// the new session. A row another session registered under that install id
+/// stays with it.
+///
+/// # Errors
+/// The update failed.
+pub async fn adopt_install_rows(
+    conn: &mut sqlx::PgConnection,
+    user_id: Uuid,
+    install: Uuid,
+    sid: Uuid,
+) -> Result<u64, sqlx::Error> {
+    Ok(sqlx::query(
+        "UPDATE push_subscriptions p SET session_id = $3
+          WHERE p.user_id = $1 AND p.device_id = $2
+            AND (p.session_id IS NULL OR EXISTS (
+                SELECT 1 FROM sessions s
+                  JOIN approval_devices d ON d.id = s.authenticator_id
+                 WHERE s.id = p.session_id AND s.authenticator_type = 'key_device'
+                   AND d.user_id = $1 AND d.device_id = $2))",
+    )
+    .bind(user_id)
+    .bind(install)
+    .bind(sid)
+    .execute(&mut *conn)
+    .await?
+    .rows_affected())
+}
+
+/// Delete every push subscription of one install of `user_id` in the
+/// caller's transaction (a key device revoked for cause).
+///
+/// # Errors
+/// The delete failed.
+pub async fn delete_device_subscriptions_tx(
+    conn: &mut sqlx::PgConnection,
+    user_id: Uuid,
+    device_id: Uuid,
+) -> Result<u64, sqlx::Error> {
+    Ok(
+        sqlx::query("DELETE FROM push_subscriptions WHERE device_id = $1 AND user_id = $2")
+            .bind(device_id)
+            .bind(user_id)
+            .execute(&mut *conn)
+            .await?
+            .rows_affected(),
+    )
+}
+
 /// Router mounted at `/api/me/push-subscriptions`.
+///
+/// Listing and deleting by id need a full session (C27): a chat-only session
+/// neither learns nor removes the other installs' rows. Registering and
+/// deleting by install id stay open to every session, under the ownership
+/// rules of [`create_subscription`] and [`delete_device`].
 pub fn router() -> axum::Router<AppState> {
+    use axum::handler::Handler;
+    use axum::middleware::from_fn;
     use axum::routing::{delete, get};
+
+    use crate::auth::guards::require_full_session;
     axum::Router::new()
-        .route("/", get(list_subscriptions).post(create_subscription))
+        .route(
+            "/",
+            get(list_subscriptions.layer(from_fn(require_full_session))).post(create_subscription),
+        )
         .route("/config", get(get_config))
         .route("/device/{device_id}", delete(delete_device))
-        .route("/{id}", delete(delete_subscription))
+        .route(
+            "/{id}",
+            delete(delete_subscription.layer(from_fn(require_full_session))),
+        )
 }
 
 #[cfg(test)]

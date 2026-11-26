@@ -11,7 +11,8 @@ channel.
 
 - `mod.rs` - `WakeSignal`, the `PushPayload` trait (FCM data, UnifiedPush
   body, priority, collapse key, TTL), `deliver` / `deliver_with`, `send_one`
-  (provider dispatch), UnifiedPush transport, subscription CRUD.
+  (provider dispatch), UnifiedPush transport, subscription CRUD and ownership
+  (who may overwrite or delete a row, what happens when its session ends).
 - `call.rs` - `CallWake` (C20 addendum "call wake") and `CallPusher`, which the
   DM call service uses to send `ringing` and `ended`.
 - `fcm.rs` - FCM HTTP v1 transport: service-account loading, RS256 OAuth2
@@ -146,6 +147,9 @@ channel.
   errorCode `UNREGISTERED`, or 403 together with `SENDER_ID_MISMATCH`
   (UnifiedPush: 404/410). A bare 404 (wrong URL or project) and any 400 (even
   one carrying `UNREGISTERED`) keep the row, or every device would lose push.
+  The delete on `Gone` and the `last_used_at` update on success apply only
+  while the row still has the provider and endpoint the wake was sent to, so a
+  late answer for an old token never touches a row that moved to a new one.
 - A failed OAuth2 token fetch puts the client in a 30 s cooldown: sends fail
   fast without contacting Google, so an outage does not queue behind the
   single-flight lock.
@@ -180,13 +184,81 @@ possessing the token proves the phone changed hands. A `device_id` is
 client-asserted, so it never deletes another user's rows. A UnifiedPush endpoint
 on a guessable topic (e.g. ntfy) is a weaker possession proof than an FCM token;
 registering the same URL from another account evicts the first account's row
-(C19 mandates this).
+(C19 mandates this). Within an account, a full session may overwrite any row by
+naming its `device_id` (by design; chat-only sessions may not, see
+"Ownership").
 
 Endpoints (FCM tokens included) are capped at 2048 bytes: they sit in btree
 indexes, whose entries are limited to about 2.7 KB. Registration takes two
 advisory locks in a fixed order: the per-user lock (seed 65,
 `push_register_user`), then the (provider, endpoint) lock (seed 67,
 `push_register_endpoint`); both are in the `db/mod.rs` registry.
+
+## Ownership (C27, chat-only sessions)
+
+A subscription row belongs to the session that registered it
+(`push_subscriptions.session_id`, no foreign key; a missing or ended session
+counts as "no longer live").
+
+- `GET /` and `DELETE /{id}` need a full session (`require_full_session`
+  layer). `POST /` and `DELETE /device/{device_id}` are open to every session.
+- `create_subscription` locks the caller's session row (`FOR SHARE`, after the
+  two advisory locks) and refuses with 401 `INVALID_TOKEN` when it is no
+  longer live. Lock order with the session-end cascade: session row, then
+  push rows, on both sides.
+- Two kinds of rows. A key phone's notification registration lives as long
+  as its key device; every other registration lives as long as the sign-in
+  that made it.
+- *Key phone's row* (`key_phone_row!`): its install id is the install of an
+  active or pending key device of the account. No session end touches it
+  (`delete_for_ended_sessions` skips it for every reason); it goes with the
+  device's revocation (`RevokeReason::sends_last_notice` → `after_revoke`
+  after the last notice; any other reason in `revoke_tx`; a pending phone an
+  account request withdraws or replaces in `account_requests::core`, same
+  transaction) and with the account. The condition has one definition
+  (`key_phone_row!`), also used by the pre-registration check. Only a full caller may register, overwrite or delete it: a
+  chat-only registration naming such an install id → 403
+  `FULL_SESSION_REQUIRED`, also when no row exists yet; delete-by-device skips
+  it; the same-endpoint check and the pruning never take it.
+- *Every other row* belongs to the session that registered it and is deleted
+  in the transaction that ends that session, for every end reason (no keep
+  list). A key-device session ended with `authenticator_revoked` leaves the
+  rows of its own install to the revocation (the device is already marked
+  revoked at that point, so they are no longer a key phone's rows); a
+  re-enrolment of the same install keeps them (the new key is active).
+- A chat-only caller may overwrite (same `(user, device_id)` or same
+  `(user, endpoint)`) or delete only rows it may take (`takeable_by!`): not a
+  key phone's, and its own, without owner, or of a session that is no longer
+  live. Upsert otherwise → 403 `FULL_SESSION_REQUIRED` with nothing changed;
+  delete-by-device skips the row (still 204). A full caller may overwrite or
+  delete any row of the account and becomes its owner.
+- Pruning: a chat-only session holds at most
+  `MAX_SUBSCRIPTIONS_PER_CHAT_ONLY_SESSION` (2) rows; the per-account cap never
+  prunes a key phone's row or another live session's row when the caller is
+  chat-only (the account may then stay over the cap for a while; it is bounded
+  by the session limit).
+- A device-key sign-in (`approvals::device_login`) takes over the install's
+  rows that belonged to a key-device session of that install, or to none
+  (`adopt_install_rows`); a row another session registered under that install
+  id stays with it. It does not take the registration's advisory lock (that
+  would invert the lock order with the superseded session's row); with the
+  rules above the owner of a key phone's row only matters once the device is
+  revoked, and every revocation path removes the install's rows regardless of
+  the owner.
+- "End all other sessions" (`auth::sessions::revoke_all_other_sessions` →
+  `delete_all_but_session_tx`) deletes every row of the account that is not a
+  key phone's and not the acting session's, whoever owns it.
+  `db::cleanup_expired_sessions` deletes the removed sessions' rows (never a
+  key phone's) in its transaction.
+- Deliveries ignore the owner. A phone whose row went with an ended sign-in
+  asks again when its app next starts or its address changes, not earlier than
+  a day after its last registration (the released app keeps its local record
+  24 h).
+- Residual: an address registered under an install id before that install
+  became a key phone (first setup, a removed phone set up again, rows from
+  before the upgrade) counts as the key phone's row; session ends and "end all
+  other sessions" do not remove it. The phone's next own registration from its
+  full session replaces it, and removing the phone deletes it.
 
 ## Single replica
 

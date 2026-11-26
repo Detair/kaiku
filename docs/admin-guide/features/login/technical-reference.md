@@ -135,9 +135,64 @@ the committed `sessions` row, read by primary key:
 | Class | Allowed |
 |---|---|
 | any session, probation included | chat, DMs, voice and calls, WebSocket; `GET /auth/me`, profile name and avatar; notification and preference settings; own-account reads (`/api/me/security`, `/api/me/security-events`, `/api/approval-devices`, `/auth/passkeys`, `/auth/sessions`, `/api/me/account-requests`); `POST /auth/logout`; owner-rule part 2 actions (section 10) |
-| full | the recovery contact's confirmation; `/api/admin/*` except `/api/admin/status` (with elevation where it applies); bot token creation and reset, incoming-webhook creation |
+| full | the recovery contact's confirmation; `/api/admin/*` except `/api/admin/status` (with elevation where it applies); bot token creation and reset, incoming-webhook creation; `GET /api/me/push-subscriptions` and `DELETE /api/me/push-subscriptions/{id}`; `DELETE /api/guilds/{id}` (the owner still decides); `POST /api/keys/upload`; replacing an existing key backup with `POST /api/keys/backup` (a probation session may create the account's first backup, only as version 1 and in one statement, so two first uploads at once store exactly one; the backup remembers that, and a full session may replace it with any version, after which the version rule applies as before; reading keys and the backup, and claiming another user's prekey, stay open) |
 | full + step-up | every action of the step-up table (section 9) |
 | unchanged | every other route keeps its own permission checks and is open to probation |
+
+**Who a push subscription belongs to.** A key phone's notification registration lives as long as its
+key device; every other registration lives as long as the sign-in that made it.
+
+- *A key phone's row* is a row whose install id is the install of an active or pending key device of
+  the account. It belongs to the device: no session end touches it, whatever the reason; it goes when
+  the device is revoked (for cause in the revoking transaction, also when an account request
+  withdraws or replaces its pending phone; otherwise after the removed phone's last notice) and with
+  the account. Only a full session may register, overwrite or delete it. A
+  probation caller that names such an install id is refused (register: 403 `FULL_SESSION_REQUIRED`,
+  nothing changed, also when no row exists yet; delete-by-install: skipped, 204), and neither its
+  same-endpoint path nor its pruning touches such a row, whoever owns it. A revoked device's install
+  is not protected.
+- *Every other row* belongs to the session that registered it (`push_subscriptions.session_id`, no
+  foreign key; a missing or ended session counts as not live) and is deleted in the transaction
+  that ends that session, for every end reason (`approvals::cascade::on_sessions_ended`). A session
+  ended from another device loses its rows too; that phone asks again for notifications when its app next starts or its push address changes, and not earlier than a day after its last registration (the released Android app keeps its local record for 24 hours); a phone signed out from elsewhere whose app keeps running can be without notifications for longer than a day.
+- "End all other sessions" (`DELETE /auth/sessions`) also deletes, in the same transaction, every
+  registration of the account that is not a key phone's and not the acting session's, whoever owns
+  it (an ended, lapsed or already removed session, or none).
+- The routine that removes expired session rows (30 days after the end or the last expiry) deletes
+  their registrations in the same transaction, never a key phone's.
+- Registering stores the caller's `sid` as the owner, under the caller's session row lock (`FOR
+  SHARE`), so a session that is being ended either waits for the registration and then deletes the
+  row, or has ended and the registration answers 401 `INVALID_TOKEN`.
+- A probation caller may overwrite (same install id, or same endpoint) or delete a row that is not
+  a key phone's only if it is its own, has no owner, or its owner is no longer live; otherwise
+  registering answers 403 `FULL_SESSION_REQUIRED` and changes nothing, and delete-by-install skips
+  the row (still 204). Full sessions may overwrite and delete any row of the account, as before.
+- A probation session holds at most 2 rows (its most recently used are kept); the cap of 10 per
+  account never prunes a key phone's row or another live session's row when the caller is probation.
+- A device-key sign-in takes over the install's rows that belonged to a session of a key device of
+  that install, or to none (the released Android app does not register again while its local
+  record is younger than a day).
+- The upgrade gives rows of an active key device's install that device's newest live session; all
+  other rows start without owner. Nothing is deleted.
+
+What stays (residual):
+
+- The registration of a sign-in that lapsed without an end keeps receiving content-free wakes until
+  "end all other sessions" or until the clean-up removes the session row (30 days after its last
+  expiry). Any session of the account may take it over meanwhile.
+- A registration without an owner from before the upgrade keeps receiving wakes until its phone
+  registers again, "end all other sessions" is used, or the provider reports its address dead. Any
+  session of the account may take it over meanwhile.
+- Whoever holds a phone's exact endpoint (FCM token or UnifiedPush URL) can move it to another
+  account by registering it there, as before.
+- Any address registered under an install id before that install became a key phone counts as the
+  key phone's registration once it is one: at a first setup, when a removed phone is set up again,
+  and for rows that existed before the upgrade. Normally that is the phone's own address. If it is
+  another, the phone gets no notifications through it and that address receives the account's
+  content-free wakes, without a fixed time limit, until the phone's next own registration (from its
+  full session; the app registers again when it next starts, not earlier than a day after its last
+  registration) replaces it, or until the phone is removed as a key. Session ends and "end all other
+  sessions" do not remove it.
 
 ## 4. Sessions: refresh rotation and caps
 

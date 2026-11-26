@@ -245,17 +245,26 @@ async fn immediate_actions_on_other_admins_are_refused(pool: PgPool) {
 
 #[sqlx::test]
 async fn remove_device_now_notifies_the_removed_device_last(pool: PgPool) {
-    let app = TestApp::with_pool(pool.clone()).await;
+    use super::helpers::{spawn_fcm_mock, test_service_account, FcmMockResponse};
+    let mock = spawn_fcm_mock(FcmMockResponse::Ok).await;
+    let mut config = vc_server::config::Config::default_for_test();
+    config.fcm_service_account = Some(test_service_account(mock.token_uri()));
+    config.fcm_api_base.clone_from(&mock.base_url);
+    let app = TestApp::with_pool_and_config(pool.clone(), config).await;
+    let phone_token = "fcm-removed-phone-token:abcdefghij_0123456789";
     let (_, sid, token) = admin(&app).await;
     let (user, _) = create_test_user(&pool).await;
     // The account's only strong authenticator: no last-authenticator check.
     let dev = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    // Registered by the phone's own session (the row belongs to it).
     sqlx::query(
-        "INSERT INTO push_subscriptions (user_id, provider, endpoint, device_id)
-         VALUES ($1, 'unifiedpush', 'https://push.invalid/x', $2)",
+        "INSERT INTO push_subscriptions (user_id, provider, endpoint, device_id, session_id)
+         VALUES ($1, 'fcm', $4, $2, $3)",
     )
     .bind(user)
     .bind(dev.device_id)
+    .bind(dev.session_id)
+    .bind(phone_token)
     .execute(&pool)
     .await
     .unwrap();
@@ -327,6 +336,15 @@ async fn remove_device_now_notifies_the_removed_device_last(pool: PgPool) {
     .await
     .unwrap();
     assert_eq!(subs, 0);
+    // The removal notice was pushed to the removed phone's own address: the
+    // registration was still there when the notice went out.
+    let pushed = mock.received.lock().unwrap().clone();
+    assert!(
+        pushed.iter().any(|p| p["message"]["token"] == phone_token
+            && p["message"]["data"]["t"] == "security"
+            && p["message"]["data"]["event_type"] == "authenticator_removed"),
+        "{pushed:?}"
+    );
 }
 
 #[sqlx::test]

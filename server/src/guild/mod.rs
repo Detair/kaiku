@@ -20,6 +20,7 @@ pub mod types;
 
 // Re-export `limits` from `queries::limits` so existing call sites
 // (`guild::limits::*`) keep working without churn.
+use axum::handler::Handler;
 use axum::routing::{delete, get, patch, post, put};
 use axum::Router;
 pub use error::GuildError;
@@ -33,11 +34,14 @@ use crate::pages;
 pub fn router(state: &AppState) -> Router<AppState> {
     Router::new()
         .route("/", get(core::list_guilds).post(core::create_guild))
+        // C27: deleting a guild needs a full session.
         .route(
             "/{id}",
             get(core::get_guild)
                 .patch(core::update_guild)
-                .delete(core::delete_guild),
+                .delete(core::delete_guild.layer(axum::middleware::from_fn(
+                    crate::auth::guards::require_full_session,
+                ))),
         )
         .route("/{id}/leave", post(members::leave_guild))
         .route("/{id}/members", get(members::list_members))

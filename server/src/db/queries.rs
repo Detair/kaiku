@@ -454,16 +454,24 @@ pub async fn delete_all_user_sessions(pool: &PgPool, user_id: Uuid) -> sqlx::Res
 /// Clean up expired sessions (for background job).
 pub async fn cleanup_expired_sessions(pool: &PgPool) -> sqlx::Result<u64> {
     // Ended rows are kept 30 days (DC4: refresh-reuse recognition and
-    // audit); so are lapsed ones after their last expiry.
-    let result = sqlx::query(
+    // audit); so are lapsed ones after their last expiry. A removed session
+    // takes its push subscriptions with it (a lapsed one never ran the
+    // session-end cascade), never a key phone's row.
+    let mut tx = pool.begin().await?;
+    let ids: Vec<Uuid> = sqlx::query_scalar(
         "DELETE FROM sessions
           WHERE (ended_at IS NOT NULL AND ended_at < NOW() - INTERVAL '30 days')
              OR (ended_at IS NULL
-                 AND LEAST(expires_at, absolute_expires_at) < NOW() - INTERVAL '30 days')",
+                 AND LEAST(expires_at, absolute_expires_at) < NOW() - INTERVAL '30 days')
+          RETURNING id",
     )
-    .execute(pool)
+    .fetch_all(&mut *tx)
     .await?;
-    Ok(result.rows_affected())
+    if !ids.is_empty() {
+        crate::push::delete_for_ended_sessions(&mut tx, &ids, false).await?;
+    }
+    tx.commit().await?;
+    Ok(ids.len() as u64)
 }
 
 /// Delete finished challenges and ended enrolments after 30 days (for background job).

@@ -68,13 +68,15 @@ async fn delete_device_needs_full_and_grant(pool: PgPool) {
     let (user, _) = create_test_user(&pool).await;
     let dev = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
     let old = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
-    // The phone to be removed has a push subscription.
+    // The phone to be removed has a push subscription, registered by its
+    // own session.
     sqlx::query(
-        "INSERT INTO push_subscriptions (user_id, provider, endpoint, device_id)
-         VALUES ($1, 'fcm', 'fcm-old-phone', $2)",
+        "INSERT INTO push_subscriptions (user_id, provider, endpoint, device_id, session_id)
+         VALUES ($1, 'fcm', 'fcm-old-phone', $2, $3)",
     )
     .bind(user)
     .bind(old.device_id)
+    .bind(old.session_id)
     .execute(&pool)
     .await
     .unwrap();

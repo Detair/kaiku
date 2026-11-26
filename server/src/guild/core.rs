@@ -264,7 +264,10 @@ pub async fn update_guild(
     path = "/api/guilds/{id}",
     tag = "guilds",
     params(("id" = Uuid, Path, description = "Guild ID")),
-    responses((status = 204, description = "Guild deleted")),
+    responses(
+        (status = 204, description = "Guild deleted"),
+        (status = 403, description = "FULL_SESSION_REQUIRED, or not the owner"),
+    ),
     security(("bearer_auth" = []))
 )]
 #[tracing::instrument(skip(state))]
