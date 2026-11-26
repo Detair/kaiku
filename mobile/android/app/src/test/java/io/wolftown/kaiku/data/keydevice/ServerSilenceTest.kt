@@ -209,4 +209,41 @@ class ServerSilenceTest {
         assertEquals(1, anew.unanswered!!.occasions)
         assertFalse(s.lasting(anew))
     }
+
+    /**
+     * Once a reset after the server's answer was stored (by a later answer, or with the next
+     * unanswered question), the mark goes: silence counts again as it builds up, and can become
+     * lasting again.
+     */
+    @Test fun `a stored reset lets the silence count again`() = runTest {
+        for (byAnswer in listOf(true, false)) {
+            val (s, repo) = phone()
+            at(0)
+            for (h in listOf(0L, 12, 25)) {
+                at(h)
+                s.noteUnanswered(repo.record.value!!)
+            }
+            store.failWrites = true
+            s.noteAnswered(repo.record.value!!)
+            store.failWrites = false
+            at(26)
+            // The reset reaches storage: by the next answer, or with the next unanswered question.
+            if (byAnswer) s.noteAnswered(repo.record.value!!) else s.noteUnanswered(repo.record.value!!)
+            var rec = repo.record.value!!
+            for (h in listOf(27L, 39, 52)) {
+                at(h)
+                rec = s.noteUnanswered(repo.record.value!!)
+            }
+            assertTrue("byAnswer=$byAnswer", s.lasting(rec))
+        }
+    }
+
+    /**
+     * The note that the server answered lives in memory: the whole app must share one instance
+     * (the setup, its discard and "Confirm it's you"). The scope is declared on the class; the
+     * dependency graph itself is not built in these tests.
+     */
+    @Test fun `there is one instance for the whole app`() {
+        assertTrue(ServerSilence::class.java.isAnnotationPresent(javax.inject.Singleton::class.java))
+    }
 }
