@@ -608,15 +608,46 @@ async fn every_end_reason_drops_a_sessions_rows(pool: PgPool) {
         EndReason::Upgrade,
         EndReason::Cli,
     ];
+    let owner_of_id = |id: Uuid| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, Option<Uuid>>(
+                "SELECT session_id FROM push_subscriptions WHERE id = $1",
+            )
+            .bind(id)
+            .fetch_optional(&pool)
+            .await
+            .unwrap()
+        }
+    };
     for reason in all {
         let (sid, token) = create_probation_session_with_token(&pool, &app.config, user).await;
         let device = Uuid::new_v4();
-        let (s, b) = register(&app, &token, reason.as_str(), Some(device)).await;
-        assert_eq!(s, 201, "{b}");
+        let (s, a) = register(&app, &token, reason.as_str(), Some(device)).await;
+        assert_eq!(s, 201, "{a}");
         let (s, b) = register(&app, &token, &format!("{}-legacy", reason.as_str()), None).await;
         assert_eq!(s, 201, "{b}");
+        let ids: Vec<Uuid> = [&a, &b]
+            .iter()
+            .map(|r| r["id"].as_str().unwrap().parse().unwrap())
+            .collect();
+        for id in &ids {
+            assert_eq!(
+                owner_of_id(*id).await,
+                Some(Some(sid)),
+                "{}: owner",
+                reason.as_str()
+            );
+        }
         end_session(&app, user, sid, reason).await;
-        assert_eq!(rows_of_session(&pool, sid).await, 0, "{}", reason.as_str());
+        for id in &ids {
+            assert_eq!(
+                owner_of_id(*id).await,
+                None,
+                "{}: row gone",
+                reason.as_str()
+            );
+        }
     }
 }
 
