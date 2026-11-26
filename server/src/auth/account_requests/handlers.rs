@@ -204,10 +204,15 @@ async fn start_bootstrap(
     // Fable r2 m-d: before a one-time OIDC code is spent, the TOTP delay
     // and the start budget (neutral answers, as for every refusal here).
     // Only an early answer: the code itself is reserved before its check.
+    // A running delay is answered neutrally; a store or database error is
+    // not a wrong sign-in and is answered as the error it is (503 / 500).
     if let (Some(StartFactor::Oidc { .. }), Some(u)) = (&body.first, &user) {
-        if crate::auth::totp_guard::pre_check(ctx, u.id).await.is_err()
-            || starts_in_period(&state.db, ctx, u.id).await? >= super::recovery::STARTS_PER_PERIOD
-        {
+        match crate::auth::totp_guard::pre_check(ctx, u.id).await {
+            Ok(()) => {}
+            Err(AuthError::TooManyAttempts { .. }) => return Err(neutral()),
+            Err(e) => return Err(e),
+        }
+        if starts_in_period(&state.db, ctx, u.id).await? >= super::recovery::STARTS_PER_PERIOD {
             return Err(neutral());
         }
     }

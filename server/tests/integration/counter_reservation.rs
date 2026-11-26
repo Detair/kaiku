@@ -1267,3 +1267,34 @@ async fn totp_effects_skip_the_cli_reset(_: PgPoolOptions, db: PgConnectOptions)
         assert_eq!(s, 200, "{how:?}: {b}");
     }
 }
+
+/// A store outage on a bootstrap request that starts with single sign-on
+/// is answered 503, never as wrong credentials.
+#[sqlx::test]
+async fn bootstrap_oidc_first_valkey_down_fails_closed(pool: PgPool) {
+    use super::account_requests::{admin_with_device, bootstrap_user};
+    let app = TestApp::with_pool(pool.clone()).await;
+    admin_with_device(&app).await;
+    let (_, name, totp) = bootstrap_user(&app).await;
+    let broken = vc_server::api::create_router(state_with_redis(
+        pool.clone(),
+        (*app.config).clone(),
+        failing_valkey(&app.config).await,
+    ));
+    let req = peer_request(Method::POST, "/auth/account-requests")
+        .header("Content-Type", "application/json")
+        .header("X-Kaiku-Client", "android")
+        .body(Body::from(
+            json!({"username": name, "purpose": "bootstrap",
+                   "first": {"type": "oidc", "oidc_code": "an-unused-one-time-code"},
+                   "totp_code": totp.generate_current().unwrap()})
+            .to_string(),
+        ))
+        .unwrap();
+    let (s, b, _) = send(&broken, req).await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (503, Some("SERVICE_UNAVAILABLE")),
+        "{b}"
+    );
+}
