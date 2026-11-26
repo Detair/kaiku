@@ -709,3 +709,136 @@ async fn test_subscription_cap_prunes_oldest(pool: PgPool) {
         .iter()
         .all(|s| s["device_id"] != json!(first.to_string())));
 }
+
+// ============================================================================
+// A delivery's answer applies only to the address it was sent to
+// ============================================================================
+
+/// An FCM mock whose sends wait until the test opens the gate, then answer
+/// with `status`/`body`. Returns the base URL, the count of sends received
+/// and the gate.
+async fn gated_fcm_mock(
+    status: u16,
+    body: &'static str,
+) -> (
+    String,
+    std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    std::sync::Arc<tokio::sync::Semaphore>,
+) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    use axum::extract::State;
+    use axum::routing::post;
+
+    type St = (Arc<AtomicUsize>, Arc<tokio::sync::Semaphore>);
+    let received = Arc::new(AtomicUsize::new(0));
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let app = axum::Router::new()
+        .route(
+            "/token",
+            post(|| async {
+                axum::Json(json!({
+                    "access_token": "mock-access-token", "expires_in": 3599, "token_type": "Bearer"
+                }))
+            }),
+        )
+        .route(
+            "/v1/projects/{project}/{action}",
+            post(move |State((n, g)): State<St>| async move {
+                n.fetch_add(1, Ordering::SeqCst);
+                g.acquire().await.unwrap().forget();
+                (StatusCode::from_u16(status).unwrap(), body.to_string())
+            }),
+        )
+        .with_state((received.clone(), gate.clone()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (format!("http://{addr}"), received, gate)
+}
+
+/// Register an FCM token for `device` from a full session; returns the row id.
+async fn register_fcm(app: &TestApp, token: &str, endpoint: &str, device: Uuid) -> Uuid {
+    let resp = app
+        .oneshot(req(
+            Method::POST,
+            "/api/me/push-subscriptions",
+            token,
+            Some(json!({"provider": "fcm", "endpoint": endpoint, "device_id": device})),
+        ))
+        .await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    body_to_json(resp).await["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap()
+}
+
+/// A delivery to an old address that answers late (the phone registered a new
+/// address under the same row meanwhile) neither deletes nor touches the row
+/// with the new address: "gone" and "sent" apply only to the address they
+/// were sent to.
+#[sqlx::test]
+async fn late_answer_for_an_old_address_leaves_the_new_one(pool: PgPool) {
+    use std::sync::atomic::Ordering;
+
+    const GONE: &str = r#"{"error":{"code":404,"status":"NOT_FOUND","details":[{"@type":"type.googleapis.com/google.firebase.fcm.v1.FcmError","errorCode":"UNREGISTERED"}]}}"#;
+    for (status, body, what) in [(404, GONE, "gone"), (200, r#"{"name":"m/1"}"#, "sent")] {
+        let (base, received, gate) = gated_fcm_mock(status, body).await;
+        let mut config = Config::default_for_test();
+        config.fcm_service_account = Some(test_service_account(format!("{base}/token")));
+        config.fcm_api_base = base;
+        let app = std::sync::Arc::new(TestApp::with_pool_and_config(pool.clone(), config).await);
+        let (user, _) = create_test_user(&pool).await;
+        let token = generate_access_token(&app.config, user);
+        let device = Uuid::new_v4();
+        let old = "fcm-old-address-token:abcdefghij_0123456789";
+        let new = "fcm-new-address-token:abcdefghij_0123456789";
+        let row = register_fcm(&app, &token, old, device).await;
+
+        // A delivery to the old address is under way ...
+        let delivery = {
+            let app = std::sync::Arc::clone(&app);
+            tokio::spawn(async move {
+                deliver(&app.state, user, &WakeSignal::dm(Uuid::now_v7(), 1))
+                    .await
+                    .unwrap();
+            })
+        };
+        for _ in 0..250 {
+            if received.load(Ordering::SeqCst) >= 1 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(
+            received.load(Ordering::SeqCst),
+            1,
+            "{what}: the send started"
+        );
+        // ... while the phone registers its new address under the same row.
+        assert_eq!(
+            register_fcm(&app, &token, new, device).await,
+            row,
+            "{what}: same row"
+        );
+        // The old address's answer arrives.
+        gate.add_permits(1);
+        delivery.await.unwrap();
+
+        let (endpoint, last_used): (String, Option<chrono::DateTime<chrono::Utc>>) =
+            sqlx::query_as("SELECT endpoint, last_used_at FROM push_subscriptions WHERE id = $1")
+                .bind(row)
+                .fetch_optional(&pool)
+                .await
+                .unwrap()
+                .unwrap_or_else(|| panic!("{what}: the row with the new address is gone"));
+        assert_eq!(endpoint, new, "{what}");
+        assert!(
+            last_used.is_none(),
+            "{what}: the old address's answer set last_used_at"
+        );
+    }
+}

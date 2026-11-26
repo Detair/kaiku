@@ -173,7 +173,8 @@ pub enum Delivery {
 // ============================================================================
 
 /// Deliver a wake signal to every subscription of `user_id`. Subscriptions that
-/// report `Gone` are pruned; successful ones get `last_used_at` updated.
+/// report `Gone` are pruned; successful ones get `last_used_at` updated (both
+/// only while the row still has the provider and address the send went to).
 ///
 /// # Errors
 /// Loading the user's subscriptions failed.
@@ -215,19 +216,30 @@ pub async fn deliver_with<P: PushPayload>(
                 Delivery::Failed => "failed",
             },
         );
+        // The answer is about this provider and address only: a row that
+        // moved to a new address meanwhile (same install, same row) is left
+        // alone.
         match delivery {
             Delivery::Gone => {
-                let _ = sqlx::query("DELETE FROM push_subscriptions WHERE id = $1")
-                    .bind(sub.id)
-                    .execute(db)
-                    .await;
+                let _ = sqlx::query(
+                    "DELETE FROM push_subscriptions WHERE id = $1 AND provider = $2 AND endpoint = $3",
+                )
+                .bind(sub.id)
+                .bind(&sub.provider)
+                .bind(&sub.endpoint)
+                .execute(db)
+                .await;
             }
             Delivery::Sent => {
-                let _ =
-                    sqlx::query("UPDATE push_subscriptions SET last_used_at = NOW() WHERE id = $1")
-                        .bind(sub.id)
-                        .execute(db)
-                        .await;
+                let _ = sqlx::query(
+                    "UPDATE push_subscriptions SET last_used_at = NOW()
+                      WHERE id = $1 AND provider = $2 AND endpoint = $3",
+                )
+                .bind(sub.id)
+                .bind(&sub.provider)
+                .bind(&sub.endpoint)
+                .execute(db)
+                .await;
             }
             Delivery::Failed => {}
         }
