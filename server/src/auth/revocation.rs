@@ -56,6 +56,9 @@ pub enum EndReason {
     Upgrade,
     Cli,
     AbsoluteCap,
+    /// The password or TOTP generation the session signed in with ended
+    /// (replaced, removed or marked compromised).
+    FactorEnded,
 }
 
 impl EndReason {
@@ -78,6 +81,7 @@ impl EndReason {
             Self::Upgrade => "upgrade",
             Self::Cli => "cli",
             Self::AbsoluteCap => "absolute_cap",
+            Self::FactorEnded => "factor_ended",
         }
     }
 }

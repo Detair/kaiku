@@ -153,6 +153,24 @@ it. If that ever happens, the stranger can at most read and write chats until yo
 tells you about the new sign-in) and end it. They can never change your sign-in methods or lock
 you out. A passkey cannot be tricked this way, so it gives a full sign-in.
 
+**When a chat-only sign-in ends by itself.** Besides signing out or ending it in your session
+list:
+
+- when the phone that confirmed it is removed (by you, an admin or a recovery), every computer or
+  browser that this phone let in by scanning or by confirming your password ends at once. The same
+  happens when the phone's key stops working on its own (for example after you change its screen
+  lock or fingerprints) and when you set the same phone up again;
+- when you change or remove your password or authenticator app, or it is marked unsafe, every
+  sign-in that used the old one ends at once. The sign-in you make the change from stays when it
+  is a passkey or key-phone sign-in; for "That wasn't me" with a code, see
+  [Security notices](#security-notices-and-that-wasnt-me).
+
+So if one of your phones was stolen, removing it also signs out every PC it let in. Phones or
+passkeys that were added with the stolen phone are not removed with it: check your list of phones
+and passkeys, and end your other sessions. Old phones you
+replace properly do the same: if a computer was signed in by scanning with the old phone, sign in
+on it again afterwards.
+
 **Confirmations.** Even in a full sign-in, important changes need one more confirmation right
 before you do them: a passkey on a PC, or your screen lock on your key phone. Each confirmation
 covers exactly one action (for example "Remove the device Pixel 8") and is valid for 5 minutes.
@@ -329,6 +347,21 @@ Under some notices you find buttons. They only appear where they can work:
 These buttons ask for a confirmation (a passkey or your screen lock). If your account has no key
 phone and no passkey at all, Kaiku asks instead for a fresh code from your authenticator app or one
 recovery code (*Confirm with a code*).
+
+A report you confirm with your phone or a passkey keeps the sign-in you make it from. When you
+confirm with a code instead, what happens to that sign-in, when the password or authenticator app is
+marked unsafe:
+
+- with a **recovery code**, this sign-in stays;
+- with a code from your **authenticator app**, this sign-in ends too if it used the password or
+  authenticator app that is now blocked, like every other sign-in that used them. Sign-ins that
+  used neither stay. To get back in, start a recovery with a recovery code (see
+  [Lost phone, forgotten password](#lost-phone-forgotten-password-recovery)), which takes at least
+  the waiting period of your server (a day or more), or ask your admin.
+
+So if you have a recovery code at hand, use it to confirm the report: then you stay signed in where
+you are. Kaiku cannot tell from an authenticator code whether it is you, because anyone who signed
+in with it knows it too.
 
 If "That wasn't me" would also stop your own request to secure your account, Kaiku warns you
 first: *This also stops your own request to secure your account.* Read it before you continue.

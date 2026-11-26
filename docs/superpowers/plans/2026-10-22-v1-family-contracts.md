@@ -908,3 +908,32 @@ not sign in someone else by mistake. Additive; absent means no check.
 **C27 amendment (2026-11-03, L1b review round 2; behaviour, no new code):**
 - A TOTP step on a QR login attempt answers 403 `TOTP_UNAVAILABLE`, as listed for the TOTP step; it no longer answers 409 `LOGIN_ATTEMPT_NOT_READY`.
 - The bootstrap request start answers the neutral 401 while its per-account TOTP counter is delayed, so a correct password is not revealed. The recovery start still answers 429 with `Retry-After` before consumption. Only a holder of a valid recovery code can reach that answer, so it reveals nothing.
+
+**C26/C27/C28 amendment (2026-11-21, sessions end with the phone and the factor that made them;
+behaviour and additive fields, no new code):**
+- C27 "Sessions and assurance": a probation session confirmed by a key device (`["qr"]`,
+  `["password","phone_confirm"]`, `["oidc","phone_confirm"]`) ends (`authenticator_revoked`) when that
+  key device is revoked, for any reason (owner, "Sign out and remove this phone", key invalidated,
+  "That wasn't me", admin, CLI, a completed request, re-enrolment of the same install). A session
+  from before this amendment whose confirming device is not known ends when **any** key device of
+  the account that had been active (`activated_at` set) is revoked; a device that was only ever
+  pending confirmed nothing. A TOTP sign-in has no confirming device, also when a phone had claimed the
+  attempt.
+- C27 "Sessions and assurance": a session that signed in with a password or TOTP generation ends
+  (`factor_ended`) when that generation ends (replaced, removed or marked compromised by its owner,
+  an admin, the CLI, a completed or cancelled request, "I didn't start this" or "That wasn't me").
+  The acting session survives: own-account changes come from a full session, which used no password
+  or TOTP; owner-rule part 2 keeps the acting session only when it proved a recovery code (with a
+  TOTP code it ends like every other session that used an ended generation).
+- At the upgrade, a live session whose recorded confirming key device is no longer active, whose
+  confirming key device is unknown while a once-active key device of the account was revoked since
+  the session was created, or whose recorded password or TOTP generation is older than the
+  account's current one, ends (`authenticator_revoked` / `factor_ended`). Every other session stays.
+- An ended session answers as before: WebSocket `error SESSION_REVOKED` and close 1008, 401
+  `INVALID_TOKEN` on `/auth/refresh` and on every bearer request. No response shape changes.
+- C26 `DELETE /api/approval-devices/{id}` (and every other key-device removal): the sessions above
+  end in the same transaction.
+- C28 `details` gain `ended_sessions` (int, the sessions this event's change ended): on
+  `authenticator_removed` for a key device (its own sessions and those it confirmed) and for TOTP,
+  `key_invalidated`, `authenticator_added {type: totp}`, `password_set`, `password_changed`,
+  `password_removed`, `password_compromised`, `totp_compromised`. Clients ignore unknown fields.

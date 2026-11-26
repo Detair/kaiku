@@ -171,6 +171,8 @@ pub async fn signed_in(
             client: &client,
             client_class: vc_server::auth::client_class::ClientClass::Web,
             authenticator: None,
+            approved_by: None,
+            factors: &[],
         },
     )
     .await

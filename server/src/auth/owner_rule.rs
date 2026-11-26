@@ -45,6 +45,8 @@ pub enum OwnerAuthority {
     },
     Part2 {
         factor: &'static str,
+        /// The acting session ([`OwnerAuthority::keep_session`]).
+        session_id: Option<Uuid>,
     },
     Contact {
         grant: ConsumedGrant,
@@ -58,6 +60,24 @@ pub enum OwnerAuthority {
 }
 
 impl OwnerAuthority {
+    /// The session that survives the factor generations the action ends:
+    /// only the acting session of part 2 when it proved a **recovery code**.
+    /// A TOTP code is no evidence of who owns the account (anyone who signed
+    /// in with it knows it), so with a TOTP proof the acting session ends like
+    /// every other session that used an ended generation, and stays only if it
+    /// used none of them. Part 1 acts from a full session, which used no
+    /// factor.
+    #[must_use]
+    pub fn keep_session(&self) -> Option<Uuid> {
+        match self {
+            Self::Part2 {
+                factor: "recovery_code",
+                session_id,
+            } => *session_id,
+            _ => None,
+        }
+    }
+
     /// `cancelled_by.kind` / the event actor.
     #[must_use]
     pub const fn kind(&self) -> &'static str {
@@ -144,12 +164,16 @@ pub async fn authorize(
                 {
                     return Err(AuthError::InvalidMfaCode);
                 }
-                Ok(OwnerAuthority::Part2 { factor: "totp" })
+                Ok(OwnerAuthority::Part2 {
+                    factor: "totp",
+                    session_id: auth.session_id,
+                })
             }
             Part2Factor::RecoveryCode(code) => {
                 if super::recovery_codes::consume_tx(conn, t.subject, &code).await? {
                     Ok(OwnerAuthority::Part2 {
                         factor: "recovery_code",
+                        session_id: auth.session_id,
                     })
                 } else {
                     Err(AuthError::InvalidCredentials)

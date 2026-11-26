@@ -60,6 +60,9 @@ pub async fn end(
     let auth = ctx.auth();
     let mut tx = ctx.db.begin().await?;
     let user_id = account(&mut tx, username).await?;
+    // The account lock first (B.7 lock order: accounts before sessions), as
+    // every other transaction that ends sessions of the account.
+    crate::approvals::transition::lock_accounts(&mut tx, &[user_id]).await?;
     let ended = match session {
         Some(sid) => end_sessions_tx(&mut tx, &auth, user_id, &[sid], EndReason::Cli).await?,
         None => end_all_sessions_tx(&mut tx, &auth, user_id, None, EndReason::Cli).await?,

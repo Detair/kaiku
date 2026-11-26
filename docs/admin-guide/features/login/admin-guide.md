@@ -99,6 +99,7 @@ new server. Read this section **before** you deploy.
 | A user named `kaiku` | Renamed to `kaiku_` plus hex digits of its id (the name is reserved for the system account); the audit log records `system.username_reserved`. Tell the owner. |
 | Every account | `first_activity_at` is set, so every pre-existing account counts as *existing* (not new) for admin setups. |
 | Refresh tokens | Rotate into the new format at their first refresh. A token copied before the upgrade is only recognised as reused from the second refresh after the upgrade on. |
+| Sessions confirmed by a phone, or signed in with a password or TOTP code (upgrading from a 1.0 release candidate) | Remember the phone that confirmed them and the password and TOTP they used, so that later removals and changes end them. A session a phone confirmed ends with the upgrade when that phone was removed, set up again or reported its key as no longer usable since that sign-in; where the server does not know which phone confirmed it (most sessions older than a day), any phone of the account that had been in use counts (a phone that was only being set up counts for nothing), and a removal within a minute before the sign-in counts as after it. A session ends too when the server recorded which password or authenticator app it used and that one was changed, removed or marked unsafe since; where no such record can be read (sign-ins from before the 1.0 sign-in), the account's current password and authenticator app are taken, the session stays, and it ends at their next change or with its normal lifetime (`authenticator_revoked` / `factor_ended`). The person signs in on that computer once more. Every other session stays signed in. The server reads the session row on every request, so such a session is refused from the first request after the restart; nothing else needs to be done. |
 
 ### The one rule that decides day 1
 
@@ -322,8 +323,8 @@ disabled factor gets the neutral sign-in answer.
 The panel buttons (`PUT /api/admin/users/{id}/factors`, step-up `admin.factor.set_state`):
 
 - **Mark the password / authenticator app as unsafe** (`compromised`): offered while `active` or
-  `throttled`. It starts a new generation: every open sign-in attempt and account request that used
-  the old one ends.
+  `throttled`. It starts a new generation: every sign-in made with the old one ends at once, and so
+  does every open sign-in attempt and account request that used it.
 - **Allow the password / authenticator app again** (`active`): offered only while `throttled`. A
   `compromised` factor cannot be allowed again by an admin (`400 VALIDATION_ERROR`); the panel says
   the person must replace it. Only `kaiku-admin factor reset` restores a compromised factor without
@@ -357,6 +358,33 @@ allowed, so a stolen admin phone cannot lock the other admins out. Your own acco
 Removing an authenticator ends its sessions at once, voids its open challenges, its step-up grants,
 the setup codes it issued and the admin requests it started, and records `authenticator_removed`
 (high). A removed phone gets one last notice, then its push subscription is deleted.
+
+Removing a key phone, by any of the ways above, also ends at once every sign-in that phone
+confirmed: computers and browsers signed in by scanning a QR code with it, or with a password or an
+identity provider and a confirmation on it. The same happens when the phone itself reports its key
+as no longer usable (for example after its screen lock or fingerprints changed) and when the same
+phone is set up again: both remove its old key. A sign-in confirmed before the server recorded which
+phone confirmed it (sign-ins from before this version) ends when **any** key phone of the account that had
+been in use is removed. Sign-ins that no phone confirmed (password and authenticator code, a passkey, another
+phone) are not affected. The notice's `details.ended_sessions` counts the sessions that ended, the
+phone's own included.
+
+What these rules do not reach: sessions of a phone or passkey that was added *through* the removed
+phone (remove those separately or end all sessions), and sessions from before the 1.0 sign-in
+(`auth_methods` `legacy`). Those end on a password or TOTP change of the account; on an account
+with neither a password nor TOTP they end only with their normal lifetime (at most 30 days from
+their creation), or with `kaiku-admin sessions end --all`.
+
+**Changing a password or authenticator app** works the same way: when a password or TOTP secret is
+replaced, removed or marked unsafe (by its owner, an admin, a completed request, "I didn't start
+this" or "That wasn't me"), every session that signed in with the old one ends at once
+(`end_reason` `factor_ended`). The session that makes the change stays when it is a passkey or
+key-phone session. "That wasn't me" (or cancelling one's own request) without a strong
+authenticator is made from a chat-only session with a fresh code. With a **recovery code** that
+session stays. With a code from the **authenticator app** it gets no exception: it ends like every
+other sign-in if it used the password or authenticator app being blocked, and stays only if it used
+neither. The person then signs in again with a phone or passkey, or, without one, gets back in
+through a recovery with a recovery code (section 8). A QR sign-in used no password and stays.
 
 **Order for a stolen phone:** remove it **first**, then start the recovery. A thief who knows the
 screen lock holds a full key and could cancel the recovery. Removing a request's only recorded
@@ -483,8 +511,8 @@ Examples:
 ```bash
 # A family member lost their only phone and the thief may know the PIN
 docker compose exec server kaiku-admin devices list oma
-docker compose exec server kaiku-admin devices remove oma 0d3c…-…
-docker compose exec server kaiku-admin sessions end oma --all
+docker compose exec server kaiku-admin devices remove oma 0d3c…-…  # also ends what it confirmed
+docker compose exec server kaiku-admin sessions end oma --all      # recommended: also what it added
 docker compose exec server kaiku-admin enroll oma        # new phone, active at once
 
 # Someone hammered a password and it is throttled

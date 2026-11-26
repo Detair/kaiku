@@ -625,17 +625,20 @@ pub async fn cancel_locked_tx(
     // `self`: the generations it used are compromised (a factor replaced
     // since is untouched); `admin`: nothing more.
     if row.kind == "self" {
+        // The acting part-2 session stays only when it proved a recovery code.
+        let keep = by.keep_session();
         for f in row.factor_refs() {
             if f.factor == Factor::RecoveryCodes {
                 continue;
             }
-            factors::mark_compromised_tx(
+            factors::mark_compromised_except_tx(
                 conn,
                 ctx,
                 row.user_id,
                 f,
                 StateCause::Cancel,
                 actor_of(by, actor_id, row.user_id),
+                keep,
             )
             .await?;
         }

@@ -196,7 +196,7 @@ async fn compromise_starts_a_generation_and_records_an_event(pool: PgPool) {
     let ev = events_of(&pool, user, "password_compromised").await;
     assert_eq!(ev.len(), 1);
     assert_eq!(ev[0].0, "high");
-    assert_eq!(ev[0].1, json!({"cause": "report"}));
+    assert_eq!(ev[0].1, json!({"cause": "report", "ended_sessions": 0}));
 }
 
 #[sqlx::test]

@@ -739,6 +739,63 @@ async fn finish_mints_no_session(pool: PgPool) {
     assert_eq!(live_sessions(&pool, r.user).await.len(), before);
 }
 
+/// A staged password replaces the old one: a session that signed in with
+/// the old password ends because its password generation ended.
+#[sqlx::test]
+async fn request_completion_with_new_password_ends(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    admin_with_device(&app).await;
+    let (user, name, totp) = bootstrap_user(&app).await;
+    let resp = super::helpers::login::f4_sign_in(
+        &app,
+        user,
+        &name,
+        PASSWORD,
+        &totp,
+        &[("X-Kaiku-Client", "desktop")],
+    )
+    .await;
+    assert_eq!(resp.status().as_u16(), 200);
+    let pc: Uuid = body_to_json_lenient(resp).await["session_id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let (s, b) = start_bootstrap(&app, user, &name, &totp).await;
+    assert_eq!(s, 201, "{b}");
+    let r = Req {
+        user,
+        id: b["request"]["id"].as_str().unwrap().parse().unwrap(),
+        secret: b["request_secret"].as_str().unwrap().to_string(),
+    };
+    sqlx::query("UPDATE account_requests SET ready_at = NOW() - INTERVAL '1 second' WHERE id = $1")
+        .bind(r.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    vc_server::auth::timers::run_once(&app.state).await.unwrap();
+    assert_eq!(state_of(&pool, r.id).await, "ready");
+    own_phone(&app, &r).await;
+    let (s, _) = rc(
+        &app,
+        Method::PUT,
+        "/auth/account-requests/current/password",
+        Some(&r.secret),
+        json!({"password": "a perfectly fine passphrase 9"}),
+    )
+    .await;
+    assert_eq!(s, 200);
+    let (s, b) = finish(&app, &r).await;
+    assert_eq!(s, 200, "{b}");
+    let (live, reason): (bool, Option<String>) =
+        sqlx::query_as("SELECT ended_at IS NULL, end_reason FROM sessions WHERE id = $1")
+            .bind(pc)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!((live, reason.as_deref()), (false, Some("factor_ended")));
+}
+
 #[sqlx::test]
 async fn finish_retry_does_not_reapply(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;

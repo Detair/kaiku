@@ -228,7 +228,7 @@ async fn report_compromises_the_password(pool: PgPool) {
     assert_eq!((state.as_str(), g2), ("compromised", g + 1));
     assert_eq!(
         events(&pool, user, "password_compromised").await,
-        vec![json!({"cause": "report"})]
+        vec![json!({"cause": "report", "ended_sessions": 0})]
     );
     let (s, body, _) = login_native(&app, &name, PASSWORD).await;
     assert_eq!(

@@ -1,8 +1,9 @@
 //! Creating sessions: the single place every sign-in mints tokens
 //! (spec B.4, C27; L1a owns it, LP calls it for passkey sign-in).
 //!
-//! The session's assurance, client class, sign-in methods and authenticator
-//! are recorded at creation and never change. The absolute cap is fixed
+//! The session's assurance, client class, sign-in methods, authenticator,
+//! approving key device and the factor generations it used are recorded at
+//! creation and never change. The absolute cap is fixed
 //! from `created_at` by client class; the sliding refresh expiry never
 //! passes it. IP and User-Agent are stored for display and audit only (no
 //! `GeoIP` lookup, DC17).
@@ -18,8 +19,9 @@ use super::assurance::Assurance;
 use super::client_class::ClientClass;
 use super::ctx::AuthCtx;
 use super::error::{AuthError, AuthResult};
+use super::factors::{Factor, FactorRef};
 use super::jwt::TokenPair;
-use super::strong::AuthenticatorRef;
+use super::strong::{AuthenticatorKind, AuthenticatorRef};
 use super::types::AuthResponse;
 use crate::config::Config;
 
@@ -125,6 +127,14 @@ pub struct NewSession<'a> {
     /// The passkey or key device that created a `full` session; `Some` iff
     /// the method's assurance is `full`.
     pub authenticator: Option<AuthenticatorRef>,
+    /// The key device that confirmed a probation sign-in (QR, password or
+    /// OIDC + phone confirmation). The session ends when that device is
+    /// revoked (`cascade::on_authenticator_revoked`). Only a key device,
+    /// only for a probation session.
+    pub approved_by: Option<AuthenticatorRef>,
+    /// The password and TOTP generations the sign-in used. The session
+    /// ends when one of them ends (`cascade::on_generation_ended`).
+    pub factors: &'a [FactorRef],
 }
 
 /// A created session and its tokens.
@@ -189,6 +199,35 @@ pub async fn issue_session_tx(
     if (assurance == Assurance::Full) != new.authenticator.is_some() {
         return Err(AuthError::Internal(
             "a full session needs exactly its authenticator".to_string(),
+        ));
+    }
+    if new
+        .approved_by
+        .is_some_and(|a| assurance == Assurance::Full || a.kind != AuthenticatorKind::KeyDevice)
+    {
+        return Err(AuthError::Internal(
+            "only a probation session has an approving key device".to_string(),
+        ));
+    }
+    let generation_of = |factor: Factor| -> AuthResult<Option<i64>> {
+        let mut found = new.factors.iter().filter(|f| f.factor == factor);
+        let first = found.next().map(|f| f.generation);
+        if found.next().is_some() {
+            return Err(AuthError::Internal(
+                "a sign-in uses one generation per factor".to_string(),
+            ));
+        }
+        Ok(first)
+    };
+    let password_generation = generation_of(Factor::Password)?;
+    let totp_generation = generation_of(Factor::Totp)?;
+    if new
+        .factors
+        .iter()
+        .any(|f| f.factor == Factor::RecoveryCodes)
+    {
+        return Err(AuthError::Internal(
+            "recovery codes never sign in".to_string(),
         ));
     }
     if crate::system_account::is_system_user(new.user_id) {
@@ -273,9 +312,10 @@ pub async fn issue_session_tx(
                                assurance, auth_methods, auth_time, client_class,
                                authenticator_type, authenticator_id, absolute_expires_at,
                                last_used_at, created_at, refresh_generation, refresh_jti,
-                               refresh_issued_at)
+                               refresh_issued_at, approved_by_type, approved_by_id,
+                               password_generation, totp_generation)
          VALUES ($1, $2, $3, $4, $5::inet, $6, $7, $8, $9, $10, $11, $12, $13, $9, $9, 0, $14,
-                 to_timestamp($15))",
+                 to_timestamp($15), $16, $17, $18, $19)",
     )
     .bind(session_id)
     .bind(new.user_id)
@@ -292,6 +332,10 @@ pub async fn issue_session_tx(
     .bind(absolute)
     .bind(tokens.refresh_jti)
     .bind(tokens.refresh_iat as f64)
+    .bind(new.approved_by.map(|a| a.as_str()))
+    .bind(new.approved_by.map(|a| a.id))
+    .bind(password_generation)
+    .bind(totp_generation)
     .execute(&mut *conn)
     .await?;
 
