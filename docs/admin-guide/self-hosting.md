@@ -149,25 +149,28 @@ When you update an existing compose installation:
 7. **The server no longer starts without its rate limiter.** With rate
    limiting on (the default), a server whose limiter cannot load its scripts
    into Valkey now exits at start, before it changes the database. Check
-   before upgrading:
+   before upgrading, in this order:
 
-   ```bash
-   docker logs canis-server 2>&1 | grep -E 'Rate limiter (initialization failed|initialized)|Rate limiting disabled by configuration' | tail -n 1
-   ```
+   1. Run `infra/scripts/upgrade-preflight.sh` (bundled compose file). Its
+      check 7 reads the log of the server's last start (from the last
+      `Starting Kaiku Server` line on) and tests script loading on the
+      Valkey container as its default user, the one the compose file gives
+      the server. It passes only when the last start shows the limiter
+      loaded (or switched off) and the test works, or, with a warning, when
+      the log no longer reaches back to the last start but the test works.
+      When it cannot run the test, it does not report the limiter as
+      checked.
+   2. With a Valkey of your own, or a restricted Valkey user for the server,
+      test by hand as that user: `valkey-cli SCRIPT LOAD "return 1"` must
+      print a hash. The log only shows the state at the last start; a Valkey
+      changed since then (its users, renamed commands, another image or
+      configuration) is only seen by this test.
 
-   It must print `Rate limiter initialized`, or `Rate limiting disabled by
-   configuration` if you switched rate limiting off (that server starts as
-   before). `initialization failed` means your server
-   runs without per-address limits today; fix Valkey first, see the
+   `Rate limiter initialization failed` or `the server does not start: rate
+   limiter not loaded` at the last start means the new version will not
+   start until Valkey allows the scripts; see the
    [rate-limiting troubleshooting](configuration/rate-limiting.md#the-server-does-not-start).
-   No line at all means the log no longer reaches back to the last start:
-   then test Valkey directly as the server's user,
-   `valkey-cli SCRIPT LOAD "return 1"` must print a hash. The log shows the
-   state at the last start: if you changed Valkey since then (its users,
-   renamed commands, another image or configuration), test directly as well.
-   `infra/scripts/upgrade-preflight.sh` runs these checks for the bundled
-   compose file; with a Valkey of your own, test by hand as the server's
-   user. If you switched rate
+   If you switched rate
    limiting off, write exactly `RATE_LIMIT_ENABLED=false`: other spellings
    such as `0`, `False` or `no` mean "on".
 

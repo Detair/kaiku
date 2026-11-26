@@ -251,25 +251,44 @@ rate limiter could not load its scripts into Valkey: …` with the cause. Look f
 
 1. **Valkey not reachable at start**: Valkey stopped or restarted while the server started. Start
    Valkey first (the compose file in `infra/compose/` waits for its health check) and start the server again.
-2. **Valkey refuses scripts**: the server's Valkey user lacks `SCRIPT LOAD` or `EVALSHA` (ACL), or those
-   commands are renamed or disabled. Allow them for the server's user. A proxy or managed service without
-   script support is not supported with rate limiting on.
+2. **Valkey refuses to load scripts**: the server's Valkey user lacks `SCRIPT LOAD` (ACL), or the command
+   is renamed or disabled. Allow it for the server's user. A proxy or managed service without script
+   support is not supported with rate limiting on.
 3. **An unexpected spelling of `RATE_LIMIT_ENABLED`**: only `false` switches rate limiting off. A value such
    as `0`, `False` or `no` keeps it on; the server logs a warning naming the value, and the start error
    names it too.
 
 `RATE_LIMIT_ENABLED=false` lets the server start without rate limiting; it is meant only for tests.
 
-Before upgrading from a version that started without its limiter: the last of these lines in
-`docker logs canis-server 2>&1 | grep -E 'Rate limiter (initialization failed|initialized)|Rate limiting disabled by configuration'`
-must be `Rate limiter initialized`, or `Rate limiting disabled by configuration` on a server whose rate
-limiting is switched off (it starts as before). `initialization failed` means that server runs without
-per-address limits today and will not start after the upgrade until Valkey allows the scripts. No line
-at all means the log no longer reaches back to the last start; then test directly as the server's
-Valkey user: `valkey-cli SCRIPT LOAD "return 1"` must print a hash. The log shows the state at the last
-start: if Valkey was changed since then (its users, renamed commands, another image or configuration),
-test directly as well. `infra/scripts/upgrade-preflight.sh` runs these checks for the bundled compose
-file; with a Valkey of your own, test by hand as the server's user.
+### A Script Cannot Be Run Later
+
+Loading the scripts (`SCRIPT LOAD`) is checked at start; running them (`EVALSHA`) happens on every
+limited request. A Valkey user that may load but not run scripts lets the server start, and then every
+check fails like a Valkey outage (see [When Valkey is unavailable](#when-valkey-is-unavailable)):
+general limits let requests through, sign-in limits refuse them with 503 unless
+`RATE_LIMIT_FAIL_OPEN=true`, and the warnings say so once a minute. Allow `EVALSHA` for the server's
+user as well. A Valkey that lost its scripts (restart, `SCRIPT FLUSH`) is fine: the server loads them
+again by itself.
+
+### Before Upgrading
+
+Before upgrading from a version that started without its limiter, look at the log of the server's
+**last** start (from its last `Starting Kaiku Server` line on):
+
+- `Rate limiter initialized`: the limiter loaded at that start.
+- `Rate limiting disabled by configuration`: rate limiting is switched off; the server starts as before.
+- `Rate limiter initialization failed` (earlier versions) or `the server does not start: rate limiter not
+  loaded`: that server runs without per-address limits, or did not start; the new version will not start
+  until Valkey allows the scripts.
+- None of these (the log no longer reaches back to that start): the log cannot tell.
+
+The log only shows the state at that start. If Valkey was changed since then (its users, renamed
+commands, another image or configuration), test now as the server's Valkey user:
+`valkey-cli SCRIPT LOAD "return 1"` must print a hash. `infra/scripts/upgrade-preflight.sh` does both for
+the bundled compose file: it reads the last start from the log and runs that test on the Valkey container
+as its default user, the one the compose file gives the server. It cannot know about another, restricted
+Valkey user, and it does not report the limiter as checked when it cannot run that test. With a Valkey of
+your own, test by hand as the server's user.
 
 ### Rate Limiting Not Working
 

@@ -798,20 +798,26 @@ always high priority, collapse key `security-<notice_id>`, TTL 86400 s, at most 
 `push_due_at`, and the minute sweep sends one follow-up push with the count at that moment and the
 same collapse key once the 60 s have passed, so 60–120 s after the first push (row lock with
 `SKIP LOCKED`, so concurrent sweeps send it once; after downtime each due notice gets one). The
-sweep records the push as sent and commits before it hands the sends to a background task, so a
-push service that does not answer never delays the sweep's other steps. One run claims at most 100
-notices, and only when the previous batch has finished sending (otherwise the notices stay due for
-a later run); a batch sends for 8 recipients at a time, each recipient's pushes one after another
-for at most 30 s, so a recipient whose push addresses never answer delays only its own pushes,
-unless many such recipients fill all slots: then the batch can outlast the minute and other
-accounts' follow-ups (never an immediate push) wait for a later run. When more than 100 notices
-fall due within a minute (a large server, or after downtime), they queue up, oldest first, and are
-worked off at 100 a minute; immediate pushes and the notice in the Kaiku DM are not affected. The
-order is deliberate: first record the push as sent, then send it. A crash or stop in between loses
-at most that one push and never sends one twice. A push recorded as sent that then fails, or is cut
-off by the 30 s limit or a server stop, is logged and not sent again; this holds for the immediate push too. The notice in the Kaiku DM stays correct. "Push now", "due" and
+minute sweep never waits for a push service on any of its steps: the pushes of events it delivers
+from the outbox and its follow-ups are recorded and committed first and then handed to a background
+task, so challenge, set-up and sign-in attempt expiry and every later step run on time. One run
+claims at most 100 follow-ups, and only when the previous follow-up batch has finished sending
+(otherwise they stay due for a later run). The background task sends for at most 8 recipients at a
+time, each recipient's pushes one after another for at most 30 s, so a recipient whose push
+addresses never answer delays only its own pushes, unless many such recipients fill all slots: then
+a batch can take up to 13 rounds of 30 s and other accounts' follow-ups (never an immediate push)
+wait for a later run. When more than 100 follow-ups fall due within a minute (a large server, or
+after downtime), they queue up, oldest first, and are worked off at most 100 a minute; immediate
+pushes and the notice in the Kaiku DM are not affected. The order is deliberate: first record the
+push as sent, then send it, so a push is never sent twice. A stop after a claim loses the pushes of
+that batch not yet sent (at most 100 follow-ups). A push recorded as sent that then fails, times
+out, is cut off by the 30 s limit or by a server stop is not sent again; this holds for the
+immediate push too. A refused or timed-out push leaves a WARN line with the notice id and the
+provider kind (never the address or the content). The notice in the Kaiku DM stays correct. "Push now", "due" and
 "dealt with" are decided on the database clock at the moment of the statement; an event's
-`delivered_at` is the moment it joined its notices. No follow-up when the owner reported one of the
+`delivered_at` is the moment it joined its notices. The time of the owner's report is the start of
+the report's transaction, on purpose: an event that joined while the report was under way is news
+the owner had not seen, and its follow-up is still sent. No follow-up when the owner reported one of the
 notice's events ("That wasn't me") after its newest event joined (also for the admin and
 recovery-contact copies); the read position in the Kaiku DM
 does not count, since any session of the account can move it. IP and place only in the owner's own copy and the admin log.
