@@ -492,29 +492,37 @@ async fn a_new_room_counts_its_shares_from_zero(pool: PgPool) {
 }
 
 /// Takeover with a share: the others get the share's stop once, and the
-/// replaced seat's slot is free afterwards (freed beside the new join).
+/// replaced seat's slot is freed exactly once (beside the new join). The
+/// viewer's own share stays live as a sentinel: a second release would
+/// take its slot too.
 #[sqlx::test]
 async fn a_takeover_frees_the_replaced_share_once(pool: PgPool) {
     let mut r = room(pool).await;
     let mut old = joined(&r.server, &r.token, r.voice).await;
     next_ws_event(&mut r.viewer, "voice_user_joined", WAIT).await;
+    send(&mut r.viewer, share_start(r.voice, Uuid::new_v4())).await;
+    next_ws_event(&mut r.viewer, "screen_share_started", WAIT).await;
+    next_ws_event(&mut old, "screen_share_started", WAIT).await;
     send(&mut old, share_start(r.voice, Uuid::new_v4())).await;
     next_ws_event(&mut old, "screen_share_started", WAIT).await;
     next_ws_event(&mut r.viewer, "screen_share_started", WAIT).await;
-    assert_eq!(r.slots().await, 1);
+    assert_eq!(r.slots().await, 2);
 
     let _new = joined(&r.server, &r.token, r.voice).await;
     let stopped = next_ws_event(&mut r.viewer, "screen_share_stopped", WAIT).await;
     assert_eq!(stopped["reason"], "replaced", "{stopped}");
     expect_no_ws_event(&mut r.viewer, "screen_share_stopped", QUIET).await;
     let deadline = tokio::time::Instant::now() + WAIT;
-    while r.slots().await != 0 {
+    while r.slots().await != 1 {
         assert!(
             tokio::time::Instant::now() < deadline,
-            "the replaced share's slot stayed"
+            "the slots are {} instead of the sentinel's one",
+            r.slots().await
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+    tokio::time::sleep(QUIET).await;
+    assert_eq!(r.slots().await, 1, "a slot was released twice");
 }
 
 /// A socket that holds seats in two rooms leaves both when it closes: no

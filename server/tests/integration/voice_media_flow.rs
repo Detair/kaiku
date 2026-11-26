@@ -641,7 +641,8 @@ async fn takeover_during_track_forwarding_leaves_no_ghost(pool: PgPool) {
 }
 
 /// A stop that races the share's first track wins: the track is not
-/// forwarded for a share that has ended.
+/// forwarded for a share that has ended. The viewer receives no packet of
+/// the share during the race, and nothing is left forwarded after it.
 #[sqlx::test]
 async fn stop_racing_the_first_track_forwards_nothing(pool: PgPool) {
     let f = fixture(pool).await;
@@ -663,8 +664,26 @@ async fn stop_racing_the_first_track_forwards_nothing(pool: PgPool) {
     }));
     tokio::time::sleep(Duration::from_millis(500)).await;
     pause.release.notify_one();
+
+    // While the race plays out (the track still sends), the viewer gets
+    // nothing of the share.
+    let share = format!("{}:screen_video:{stream}", a.user_id);
+    let watch_until = tokio::time::Instant::now() + Duration::from_millis(1500);
+    while tokio::time::Instant::now() < watch_until {
+        assert_eq!(
+            b.packets(&share),
+            0,
+            "the viewer received packets of the ended share: {:?}",
+            b.seen_tracks()
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        video_tracks_of(&b, a.user_id).is_empty(),
+        "the viewer got a track of the ended share: {:?}",
+        b.seen_tracks()
+    );
     b.next_event("screen_share_stopped", WAIT).await;
-    tokio::time::sleep(Duration::from_millis(500)).await;
 
     let (active, _) = subscriber_counts(&f.app, f.voice, b.user_id).await;
     assert_eq!(
