@@ -27,8 +27,10 @@ else
 fi
 
 status=0
+checked=0
 for bin in "${binaries[@]}"; do
   [[ -f "$bin" ]] || continue
+  checked=$((checked + 1))
   echo "== otool -L $bin"
   libs="$(otool -L "$bin")"
   echo "$libs"
@@ -37,6 +39,11 @@ for bin in "${binaries[@]}"; do
     status=1
   fi
 done
+# An empty or mispackaged bundle must not pass: nothing checked is a failure.
+if [[ $checked -eq 0 ]]; then
+  echo "ERROR: no binary found to check in '${target}'" >&2
+  exit 2
+fi
 if [[ $status -eq 0 ]]; then
   echo "OK: libvpx is not a dynamic dependency."
 fi
