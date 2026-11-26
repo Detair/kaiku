@@ -9,7 +9,9 @@ use vc_server::permissions::GuildPermissions;
 use vc_server::voice::ws_handler::ANNOUNCEMENT_TTL;
 use webrtc::peer_connection::signaling_state::RTCSignalingState;
 
-use super::helpers::voice_media::{media_app, mic_track, SimOptions, SimParticipant};
+use super::helpers::voice_media::{
+    media_app, mic_track, SimOptions, SimParticipant, DEFAULT_VIDEO_MARKER,
+};
 use super::helpers::{
     add_guild_member, create_guild_with_default_role, create_test_user, create_voice_channel,
     generate_access_token, spawn_test_server, TestApp, TestServer,
@@ -1124,5 +1126,55 @@ async fn webcam_started_first_after_a_refused_share_is_forwarded(pool: PgPool) {
         b.wait_for_packets(&cam, 5, WAIT).await,
         "the webcam after a refused share did not reach the viewer: {:?}",
         b.seen_tracks()
+    );
+}
+
+/// A sender that stops its webcam but keeps sending on the old track, then
+/// starts the webcam again on a new track: the viewer gets only the new
+/// track's packets under the webcam, nothing of the stopped capture.
+#[sqlx::test]
+async fn stopped_webcam_track_never_feeds_the_next_webcam(pool: PgPool) {
+    const NEW: u8 = 0x77;
+    let f = fixture(pool).await;
+    let (mut a, mut b) = two_in_call(&f).await;
+    let cam = format!("{}:webcam", a.user_id);
+
+    a.send(webcam_start(f.voice));
+    a.next_event("webcam_started", WAIT).await;
+    a.add_track(true, "cam-old").await;
+    a.publish().await;
+    assert!(
+        b.wait_for_packets(&cam, 5, WAIT).await,
+        "the first webcam did not reach the viewer: {:?}",
+        b.seen_tracks()
+    );
+
+    // Stopped, but the old capture keeps sending.
+    a.send(serde_json::json!({ "type": "voice_webcam_stop", "channel_id": f.voice }));
+    b.next_event("webcam_stopped", WAIT).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let old_before = b.marked_packets(&cam, DEFAULT_VIDEO_MARKER);
+
+    a.send(webcam_start(f.voice));
+    a.next_event("webcam_started", WAIT).await;
+    a.add_marked_video("cam-new", NEW).await;
+    a.publish().await;
+    let total_before = b.packets(&cam);
+    assert!(
+        b.wait_for_packets(&cam, total_before, WAIT).await,
+        "nothing arrived under the new webcam: {:?}",
+        b.seen_tracks()
+    );
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let old_after = b.marked_packets(&cam, DEFAULT_VIDEO_MARKER);
+    assert_eq!(
+        old_after - old_before,
+        0,
+        "packets of the stopped capture reached the viewer under the new webcam"
+    );
+    assert!(
+        b.marked_packets(&cam, NEW) > 5,
+        "the new webcam did not reach the viewer"
     );
 }

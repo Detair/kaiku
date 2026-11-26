@@ -507,6 +507,7 @@ impl Room {
         // now (it checked the seat before it was retired): afterwards the
         // forwarded list below is complete, and later callbacks see `retired`.
         let _media = departed.media.lock().await;
+        departed.end_bindings(&|_: &TrackSource| true);
         let user_id = departed.user_id;
         // Only this peer instance's media: a newer peer of the same user may
         // already be in the room and keeps its own.
@@ -1577,6 +1578,7 @@ impl SfuServer {
                         track.clone(),
                         room.track_router.clone(),
                         peer.clone(),
+                        peer.binding_end(source_type),
                     );
 
                     // Secondary layers share the primary layer's subscriber

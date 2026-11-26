@@ -110,6 +110,11 @@ pub struct Peer {
     /// When a key frame was last requested for each of this peer's video
     /// sources on behalf of its viewers.
     keyframe_requested: std::sync::Mutex<HashMap<TrackSource, tokio::time::Instant>>,
+    /// The "ended" mark of each source's current binding (its incoming
+    /// track and every layer of it). The forwarders of the binding check it
+    /// for every packet; ending the source sets it, and a later binding of
+    /// the same source gets a new mark.
+    binding_ends: std::sync::Mutex<HashMap<TrackSource, Arc<AtomicBool>>>,
     /// This seat's simulcast layers: `(source, layer, track)`.
     simulcast_layers: std::sync::Mutex<Vec<(TrackSource, Layer, Arc<TrackRemote>)>>,
     /// Media id of the microphone negotiated in the first publisher offer
@@ -209,6 +214,7 @@ impl Peer {
             retired: AtomicBool::new(false),
             microphone_claimed: AtomicBool::new(false),
             simulcast_layers: std::sync::Mutex::new(Vec::new()),
+            binding_ends: std::sync::Mutex::new(HashMap::new()),
             microphone_mid: std::sync::OnceLock::new(),
             offered_tracks: std::sync::Mutex::new(HashMap::new()),
             forwarded: std::sync::Mutex::new(Vec::new()),
@@ -505,6 +511,34 @@ impl Peer {
         let (taken, kept): (Vec<_>, Vec<_>) = list.drain(..).partition(|(_, s, _)| ended(s));
         *list = kept;
         taken
+    }
+
+    /// The "ended" mark of `source`'s current binding (created with the
+    /// binding's first track). The caller holds `media` and has checked that
+    /// the seat and the source are live.
+    pub fn binding_end(&self, source: TrackSource) -> Arc<AtomicBool> {
+        self.binding_ends
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(source)
+            .or_default()
+            .clone()
+    }
+
+    /// Mark the bindings of the sources matching `ended` as ended: their
+    /// forwarders stop at the next packet.
+    pub fn end_bindings(&self, ended: &impl Fn(&TrackSource) -> bool) {
+        self.binding_ends
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|source, mark| {
+                if ended(source) {
+                    mark.store(true, std::sync::atomic::Ordering::Release);
+                    false
+                } else {
+                    true
+                }
+            });
     }
 
     /// Record a simulcast layer this seat publishes for `source`.

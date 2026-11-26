@@ -53,6 +53,13 @@ pub async fn media_app(pool: sqlx::PgPool) -> TestApp {
 /// Packets received per remote track id.
 pub type Received = Arc<Mutex<HashMap<String, u64>>>;
 
+/// Packets received per remote track id and third payload byte (the
+/// marker a sender wrote, see [`SimParticipant::add_marked_video`]).
+pub type ReceivedMarked = Arc<Mutex<HashMap<(String, u8), u64>>>;
+
+/// Payload marker of video written by [`SimParticipant::add_track`].
+pub const DEFAULT_VIDEO_MARKER: u8 = 0x9d;
+
 /// Key-frame requests (PLI/FIR) the server sent to this participant's
 /// publisher, per local track id.
 pub type KeyframeRequests = Arc<Mutex<HashMap<String, u64>>>;
@@ -73,6 +80,8 @@ pub struct SimParticipant {
     pub subscriber: Arc<RTCPeerConnection>,
     /// Packets received on the subscriber PC, per track id.
     pub received: Received,
+    /// Packets received on the subscriber PC, per track id and marker.
+    pub received_marked: ReceivedMarked,
     /// SSRC of each remote track id (for sending feedback about it).
     pub ssrcs: Arc<Mutex<HashMap<String, u32>>>,
     /// Key-frame requests the server sent for this participant's tracks.
@@ -177,11 +186,14 @@ impl SimParticipant {
         );
 
         let received: Received = Arc::new(Mutex::new(HashMap::new()));
+        let received_marked: ReceivedMarked = Arc::new(Mutex::new(HashMap::new()));
         let ssrcs: Arc<Mutex<HashMap<String, u32>>> = Arc::new(Mutex::new(HashMap::new()));
         let counts = received.clone();
+        let marked = received_marked.clone();
         let ssrc_map = ssrcs.clone();
         subscriber.on_track(Box::new(move |track, _, _| {
             let counts = counts.clone();
+            let marked = marked.clone();
             let ssrc_map = ssrc_map.clone();
             Box::pin(async move {
                 // Person and source come from the stream id (each forwarded
@@ -190,8 +202,15 @@ impl SimParticipant {
                 ssrc_map.lock().unwrap().insert(id.clone(), track.ssrc());
                 counts.lock().unwrap().entry(id.clone()).or_insert(0);
                 tokio::spawn(async move {
-                    while track.read_rtp().await.is_ok() {
+                    while let Ok((packet, _)) = track.read_rtp().await {
                         *counts.lock().unwrap().entry(id.clone()).or_insert(0) += 1;
+                        if let Some(marker) = packet.payload.get(2) {
+                            *marked
+                                .lock()
+                                .unwrap()
+                                .entry((id.clone(), *marker))
+                                .or_insert(0) += 1;
+                        }
                     }
                 });
             })
@@ -216,6 +235,7 @@ impl SimParticipant {
             publisher,
             subscriber,
             received,
+            received_marked,
             ssrcs,
             keyframe_requests: Arc::new(Mutex::new(HashMap::new())),
             events: events_rx,
@@ -285,6 +305,22 @@ impl SimParticipant {
     /// Add a local track to the publisher PC and keep writing synthetic RTP
     /// to it every 20 ms.
     pub async fn add_track(&mut self, video: bool, id: &str) -> Arc<TrackLocalStaticRTP> {
+        self.add_track_marked(video, id, DEFAULT_VIDEO_MARKER).await
+    }
+
+    /// Like [`Self::add_track`] with video, but every packet carries
+    /// `marker` as its third payload byte (a viewer can tell two senders
+    /// apart that arrive under the same track id).
+    pub async fn add_marked_video(&mut self, id: &str, marker: u8) -> Arc<TrackLocalStaticRTP> {
+        self.add_track_marked(true, id, marker).await
+    }
+
+    async fn add_track_marked(
+        &mut self,
+        video: bool,
+        id: &str,
+        marker: u8,
+    ) -> Arc<TrackLocalStaticRTP> {
         let (mime, clock_rate, channels, pt) = if video {
             (MIME_TYPE_VP8, 90_000, 0, 96)
         } else {
@@ -336,12 +372,12 @@ impl SimParticipant {
                 tick.tick().await;
                 seq = seq.wrapping_add(1);
                 ts = ts.wrapping_add(if video { 3000 } else { 960 });
-                let payload: &'static [u8] = if video {
+                let payload = if video {
                     // A VP8 payload descriptor + a few bytes; the SFU forwards
                     // opaque payloads.
-                    &[0x10, 0x00, 0x9d, 0x01, 0x2a, 0, 0, 0, 0]
+                    bytes::Bytes::copy_from_slice(&[0x10, 0x00, marker, 0x01, 0x2a, 0, 0, 0, 0])
                 } else {
-                    &[0xf8, 0xff, 0xfe]
+                    bytes::Bytes::from_static(&[0xf8, 0xff, 0xfe])
                 };
                 let pkt = Packet {
                     header: Header {
@@ -352,7 +388,7 @@ impl SimParticipant {
                         marker: video,
                         ..Default::default()
                     },
-                    payload: bytes::Bytes::from_static(payload),
+                    payload,
                 };
                 let _ = writer.write_rtp(&pkt).await;
             }
@@ -561,6 +597,16 @@ impl SimParticipant {
             .lock()
             .unwrap()
             .get(track_id)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Packets received so far on track `track_id` carrying `marker`.
+    pub fn marked_packets(&self, track_id: &str, marker: u8) -> u64 {
+        self.received_marked
+            .lock()
+            .unwrap()
+            .get(&(track_id.to_owned(), marker))
             .copied()
             .unwrap_or(0)
     }

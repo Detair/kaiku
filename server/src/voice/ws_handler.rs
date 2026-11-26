@@ -1299,6 +1299,7 @@ async fn detach_sources(
     ended: impl Fn(&TrackSource) -> bool,
 ) {
     peer.incoming_tracks.write().await.retain(|s, _| !ended(s));
+    peer.end_bindings(&ended);
     peer.forget_video_mids(&ended);
     let layers = peer.take_simulcast_layers(&ended);
     room.track_router.remove_simulcast_tracks(&layers);

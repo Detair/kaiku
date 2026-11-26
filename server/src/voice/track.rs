@@ -504,6 +504,7 @@ pub fn spawn_rtp_forwarder(
     track: Arc<TrackRemote>,
     router: Arc<TrackRouter>,
     peer: Arc<Peer>,
+    ended: Arc<std::sync::atomic::AtomicBool>,
 ) {
     tokio::spawn(async move {
         // MTU size.
@@ -517,9 +518,12 @@ pub fn spawn_rtp_forwarder(
                 Ok((packet, _attributes)) => {
                     packet_count += 1;
 
-                    // The peer left or was replaced: its user's sources may
-                    // belong to a new peer now.
-                    if peer.is_retired() {
+                    // This forwarder serves only the binding it was started
+                    // for. When the source ended (stop, expiry, leave,
+                    // replacement) or the peer left or was replaced, the
+                    // same key may belong to a later source or a new peer of
+                    // the user.
+                    if ended.load(std::sync::atomic::Ordering::Acquire) || peer.is_retired() {
                         break;
                     }
 
@@ -527,6 +531,10 @@ pub fn spawn_rtp_forwarder(
                     // webcam) are not affected by mute state.
                     if source_type == TrackSource::Microphone && peer.is_effectively_muted().await {
                         continue;
+                    }
+                    // Again after the mute check, which may wait.
+                    if ended.load(std::sync::atomic::Ordering::Acquire) || peer.is_retired() {
+                        break;
                     }
 
                     if packet_count == 1 || packet_count.is_multiple_of(500) {
@@ -558,11 +566,9 @@ pub fn spawn_rtp_forwarder(
             }
         }
 
-        // The forwarder stops naturally when track.read() returns an error
-        // (publisher removed the track or PC closed). Between the stop signal
-        // and the read failure, some packets may be forwarded to removed
-        // subscriber tracks — this causes harmless write errors that are
-        // silently ignored by webrtc-rs.
+        // The forwarder stops at the first packet after its binding ended,
+        // or when track.read() returns an error (publisher removed the track
+        // or PC closed).
         debug!(
              source = %source_user_id,
              source_type = ?source_type,
