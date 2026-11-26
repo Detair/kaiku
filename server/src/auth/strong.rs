@@ -246,10 +246,11 @@ async fn settled_check(
     }
 }
 
-/// Whether some active strong authenticator of the account created before
-/// `before` (never the target itself) may act against `target` now, by the
-/// same rule as [`ensure_settled`] ("That wasn't me" is listed only where
-/// usable).
+/// Whether an older authenticator may act against `target` now.
+///
+/// Some active strong authenticator of the account created before `before`
+/// (never the target itself) passes the same rule as [`ensure_settled`]
+/// against `target` ("That wasn't me" is listed only where usable).
 pub async fn some_may_act_against(
     conn: &mut sqlx::PgConnection,
     user_id: Uuid,

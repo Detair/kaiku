@@ -61,10 +61,6 @@ fn authenticator_of(ev: &EventRow) -> Option<AuthenticatorRef> {
     })
 }
 
-fn methods(ev: &EventRow) -> Vec<String> {
-    methods_of(&ev.details)
-}
-
 fn methods_of(details: &serde_json::Value) -> Vec<String> {
     details["auth_methods"]
         .as_array()
