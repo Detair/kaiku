@@ -13,12 +13,19 @@ import android.os.Build
 import android.os.IBinder
 import androidx.annotation.RequiresApi
 import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import dagger.hilt.android.AndroidEntryPoint
 import io.wolftown.kaiku.R
+import io.wolftown.kaiku.data.repository.VoiceRepository
 import io.wolftown.kaiku.data.voice.VoiceServiceEvent
 import io.wolftown.kaiku.data.voice.VoiceServiceEvents
 import io.wolftown.kaiku.push.NotificationChannels
+import io.wolftown.kaiku.ui.call.CallIntents
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import java.util.logging.Logger
 import javax.inject.Inject
 
@@ -39,6 +46,36 @@ import javax.inject.Inject
 class VoiceCallService : Service() {
 
     @Inject lateinit var voiceServiceEvents: VoiceServiceEvents
+    @Inject lateinit var voiceRepository: VoiceRepository
+
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var channelName: String = ""
+
+    /** A DM call: a tap on the notification opens the call screen instead of the app. */
+    private var forCall: Boolean = false
+
+    /**
+     * Keeps the ongoing-call notification in step with the voice link
+     * ("Reconnecting…") by re-posting it under the same id, and makes sure
+     * none is left when the call is over. The service is neither stopped nor
+     * restarted while the call reconnects: Android 12+ restricts starting a
+     * foreground service from the background.
+     */
+    private val ongoingNotification by lazy {
+        OngoingCallNotification(
+            scope = serviceScope,
+            callIsOn = { voiceRepository.currentChannelId.value != null },
+            gate = notificationGate,
+            linkState = voiceRepository.linkState,
+            post = ::postNotification,
+            cancel = { NotificationManagerCompat.from(this).cancel(NOTIFICATION_ID) },
+            callOn = OngoingCallNotification.callOn(voiceRepository),
+            callUp = OngoingCallNotification.callUp(voiceRepository),
+        )
+    }
+
+    /** The start this service runs for (its notification's actions carry it). */
+    private var startGeneration = 0L
 
     override fun onCreate() {
         super.onCreate()  // REQUIRED: Hilt injects fields here
@@ -48,9 +85,17 @@ class VoiceCallService : Service() {
         private val logger = Logger.getLogger("VoiceCallService")
         private const val NOTIFICATION_ID = 1001
 
+        /** Closed before every stop request, so no update is posted after it (see [OngoingCallNotification]). */
+        internal val notificationGate = CallNotificationGate()
+
+        /** Opens the gate before every start and closes it before every stop. */
+        private val startStop = ServiceStartStop(notificationGate)
+
         private const val EXTRA_CHANNEL_ID = "channel_id"
         private const val EXTRA_CHANNEL_NAME = "channel_name"
         private const val EXTRA_ACTION = "extra_action"
+        private const val EXTRA_FOR_CALL = "for_call"
+        private const val EXTRA_GENERATION = "generation"
         const val ACTION_MUTE_TOGGLE = "io.wolftown.kaiku.MUTE_TOGGLE"
         const val ACTION_DISCONNECT = "io.wolftown.kaiku.DISCONNECT"
 
@@ -61,19 +106,23 @@ class VoiceCallService : Service() {
          * @param channelId Voice channel ID
          * @param channelName Display name for the notification
          */
-        fun start(context: Context, channelId: String, channelName: String) {
+        fun start(context: Context, channelId: String, channelName: String, forCall: Boolean = false) {
             val intent = Intent(context, VoiceCallService::class.java).apply {
                 putExtra(EXTRA_CHANNEL_ID, channelId)
                 putExtra(EXTRA_CHANNEL_NAME, channelName)
+                putExtra(EXTRA_FOR_CALL, forCall)
             }
-            context.startForegroundService(intent)
+            startStop.start { generation ->
+                intent.putExtra(EXTRA_GENERATION, generation)
+                context.startForegroundService(intent)
+            }
         }
 
         /**
          * Stops the foreground voice call service.
          */
         fun stop(context: Context) {
-            context.stopService(Intent(context, VoiceCallService::class.java))
+            startStop.stop { context.stopService(Intent(context, VoiceCallService::class.java)) }
         }
     }
 
@@ -81,19 +130,24 @@ class VoiceCallService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         // Handle notification action intents
+        // An action acts only on the start whose notification showed it.
+        val actionGeneration = intent?.getLongExtra(EXTRA_GENERATION, -1L) ?: -1L
         when (intent?.getStringExtra(EXTRA_ACTION)) {
             ACTION_MUTE_TOGGLE -> {
-                voiceServiceEvents.emit(VoiceServiceEvent.MuteToggle)
+                if (notificationGate.actionApplies(actionGeneration)) voiceServiceEvents.emit(VoiceServiceEvent.MuteToggle)
                 return START_NOT_STICKY
             }
             ACTION_DISCONNECT -> {
-                voiceServiceEvents.emit(VoiceServiceEvent.Disconnect)
+                if (notificationGate.actionApplies(actionGeneration)) voiceServiceEvents.emit(VoiceServiceEvent.Disconnect)
                 return START_NOT_STICKY
             }
         }
+        startGeneration = actionGeneration
 
         val channelName = intent?.getStringExtra(EXTRA_CHANNEL_NAME)
             ?: getString(R.string.voice_default_channel_name)
+        this.channelName = channelName
+        this.forCall = intent?.getBooleanExtra(EXTRA_FOR_CALL, false) ?: false
 
         // A microphone foreground service may only start with RECORD_AUDIO granted
         // (Android 14 throws SecurityException otherwise).
@@ -104,8 +158,10 @@ class VoiceCallService : Service() {
             return START_NOT_STICKY
         }
 
-        // Channel is created at app start (NotificationChannels.ensureCreated).
-        val notification = buildNotification(channelName)
+        // Channel is created at app start (NotificationChannels.ensureCreated). A call's service
+        // starts when the user answers, before its voice session exists: it is connecting.
+        val connecting = forCall && voiceRepository.holdsServiceForCall
+        val notification = buildNotification(channelName, status = if (connecting) R.string.voice_call_connecting else null)
 
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -130,7 +186,8 @@ class VoiceCallService : Service() {
             throw e
         }
 
-        logger.info("VoiceCallService started for channel: $channelName")
+        ongoingNotification.follow(startGeneration)
+        logger.info("VoiceCallService started")
         return START_NOT_STICKY
     }
 
@@ -141,15 +198,34 @@ class VoiceCallService : Service() {
         stopSelf()
     }
 
+    private fun postNotification(status: Int?) {
+        try {
+            NotificationManagerCompat.from(this)
+                .notify(NOTIFICATION_ID, buildNotification(channelName, status))
+        } catch (e: SecurityException) {
+            // POST_NOTIFICATIONS revoked: the call itself is unaffected.
+            logger.warning("Could not update the call notification")
+        }
+    }
+
     override fun onDestroy() {
+        // Android took the foreground notification away when the stop was
+        // requested; an update that was already on its way may have posted a
+        // new one since. Nothing may stay behind without a call.
+        ongoingNotification.destroy()
+        serviceScope.cancel()
         super.onDestroy()
         logger.info("VoiceCallService destroyed")
     }
 
-    private fun buildNotification(channelName: String): Notification {
-        // Tap notification to open the app
-        val launchIntent = packageManager.getLaunchIntentForPackage(packageName)?.apply {
-            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+    private fun buildNotification(channelName: String, status: Int?): Notification {
+        // Tap: the call screen for a DM call, the app otherwise
+        val launchIntent = if (forCall) {
+            CallIntents.screen(this)
+        } else {
+            packageManager.getLaunchIntentForPackage(packageName)?.apply {
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            }
         }
         val contentPendingIntent = PendingIntent.getActivity(
             this,
@@ -158,13 +234,15 @@ class VoiceCallService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        // Mute toggle action — delivered as a service intent
+        // Mute toggle action — delivered as a service intent, for this start only (its request
+        // code too, so the intent of an earlier start is not changed into this one's).
         val muteIntent = Intent(this, VoiceCallService::class.java).apply {
             putExtra(EXTRA_ACTION, ACTION_MUTE_TOGGLE)
+            putExtra(EXTRA_GENERATION, startGeneration)
         }
         val mutePendingIntent = PendingIntent.getService(
             this,
-            1,
+            (startGeneration * 2 + 1).toInt(),
             muteIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
@@ -172,16 +250,17 @@ class VoiceCallService : Service() {
         // Disconnect action — delivered as a service intent
         val disconnectIntent = Intent(this, VoiceCallService::class.java).apply {
             putExtra(EXTRA_ACTION, ACTION_DISCONNECT)
+            putExtra(EXTRA_GENERATION, startGeneration)
         }
         val disconnectPendingIntent = PendingIntent.getService(
             this,
-            2,
+            (startGeneration * 2 + 2).toInt(),
             disconnectIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
         return NotificationCompat.Builder(this, NotificationChannels.VOICE)
-            .setContentTitle(getString(R.string.voice_in_channel))
+            .setContentTitle(getString(status ?: if (forCall) R.string.voice_call_in_call else R.string.voice_in_channel))
             .setContentText(channelName)
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .setContentIntent(contentPendingIntent)

@@ -35,6 +35,11 @@ class ApiRecorder(
     var bearer: String? = "stored-access-token",
     extraHeaders: Map<String, String> = emptyMap(),
 ) {
+    companion object {
+        /** The id of the session that is signed in by default. */
+        const val SESSION = 1L
+    }
+
     val requests = mutableListOf<Recorded>()
     var respond: ((Recorded) -> Pair<HttpStatusCode, String>)? = null
     private val extra = extraHeaders
@@ -43,7 +48,13 @@ class ApiRecorder(
         every { getServerUrl() } returns "https://chat.example.com"
         every { getAccessToken() } answers { bearer }
     }
-    private val authState: AuthState = mockk(relaxed = true)
+    /** The signed-in session the client sees (session-bound requests are checked against it). */
+    val session = kotlinx.coroutines.flow.MutableStateFlow<io.wolftown.kaiku.data.local.AuthSession>(
+        io.wolftown.kaiku.data.local.AuthSession.LoggedIn("me", SESSION)
+    )
+    private val authState: AuthState = mockk(relaxed = true) {
+        every { session } returns this@ApiRecorder.session
+    }
 
     val client: HttpClient = KaikuHttpClient.forTesting(
         tokenStorage,

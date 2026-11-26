@@ -1,6 +1,7 @@
 package io.wolftown.kaiku.domain.model
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.Transient
 
 /**
  * A direct-message conversation as returned by `GET /api/dm`.
@@ -29,6 +30,8 @@ data class DmConversation(
     val isSystem: Boolean = false,
     /** C28 `read_only`: true only for the Kaiku DM. */
     val readOnly: Boolean = false,
+    /** When the conversation was created; orders conversations without messages. */
+    val createdAt: String = "",
 )
 
 @Serializable
@@ -49,4 +52,6 @@ data class LastMessagePreview(
     val userId: String? = null,
     val username: String? = null,
     val createdAt: String = "",
+    /** Local only, from a live `message_new`: the content is ciphertext and is never shown. */
+    @Transient val encrypted: Boolean = false,
 )

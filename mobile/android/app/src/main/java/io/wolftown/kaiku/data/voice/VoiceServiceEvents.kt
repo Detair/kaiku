@@ -15,6 +15,13 @@ sealed class VoiceServiceEvent {
     data object StartFailed : VoiceServiceEvent()
 }
 
+/**
+ * Thrown by `VoiceRepository.joinChannel` when Android did not let the call
+ * service (the microphone foreground service) start, e.g. from the background.
+ */
+class VoiceServiceStartException(cause: Throwable) :
+    Exception("the voice call service could not be started", cause)
+
 @Singleton
 class VoiceServiceEvents @Inject constructor() {
     companion object {

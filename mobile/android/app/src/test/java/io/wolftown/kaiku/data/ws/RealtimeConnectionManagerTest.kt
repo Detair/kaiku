@@ -405,6 +405,18 @@ class RealtimeConnectionManagerTest {
     }
 
     @Test
+    fun `a dead socket reported by the voice call is dropped and reconnected at once`() = runManagerTest { h ->
+        connected(h)
+        val disconnectsBefore = h.socket.disconnects
+
+        h.manager.reportDeadSocket()
+        runCurrent()
+
+        assertEquals(disconnectsBefore + 1, h.socket.disconnects)
+        assertEquals(RealtimeStatus.Reconnecting, h.manager.status.value)
+    }
+
+    @Test
     fun `foreground probe answered by pong keeps the connection`() = runManagerTest { h ->
         connected(h)
         val disconnectsBefore = h.socket.disconnects

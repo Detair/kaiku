@@ -54,9 +54,12 @@ import io.wolftown.kaiku.ui.auth.RegisterScreen
 import io.wolftown.kaiku.ui.auth.ServerUrlScreen
 import io.wolftown.kaiku.ui.channel.TextChannelScreen
 import io.wolftown.kaiku.ui.dm.DmListScreen
+import io.wolftown.kaiku.ui.dm.NewMessageScreen
 import io.wolftown.kaiku.ui.home.HomeScreen
 import io.wolftown.kaiku.ui.settings.SettingsScreen
 import io.wolftown.kaiku.ui.voice.VoiceChannelScreen
+import io.wolftown.kaiku.data.voice.statusText
+import io.wolftown.kaiku.ui.voice.VoiceEndNoticeBar
 import io.wolftown.kaiku.ui.voice.VoiceOverlay
 import io.wolftown.kaiku.ui.voice.VoiceOverlayViewModel
 import io.wolftown.kaiku.ui.voice.VOICE_ROUTE
@@ -185,6 +188,10 @@ fun KaikuNavGraph(
     val voiceChannelId by voiceOverlayViewModel.currentChannelId.collectAsState()
     val voiceChannelName by voiceOverlayViewModel.channelName.collectAsState()
     val voiceIsMuted by voiceOverlayViewModel.isMuted.collectAsState()
+    val voiceLinkState by voiceOverlayViewModel.linkState.collectAsState()
+    val voiceEndNotice by voiceOverlayViewModel.endNotice.collectAsState()
+    val voiceIsCall by voiceOverlayViewModel.isCall.collectAsState()
+    val context = androidx.compose.ui.platform.LocalContext.current
     val showOverlay = shouldShowVoiceOverlay(voiceChannelId, currentRoute)
 
     Column(modifier = Modifier.fillMaxSize()) {
@@ -276,6 +283,17 @@ fun KaikuNavGraph(
                         },
                         onNavigateBack = { navController.popBackStack() },
                         onScan = { navController.navigate(SCAN_ROUTE) },
+                        onNewMessage = { navController.navigate(NEW_MESSAGE_ROUTE) { launchSingleTop = true } },
+                    )
+                }
+
+                composable(NEW_MESSAGE_ROUTE) {
+                    NewMessageScreen(
+                        // Back from the conversation returns to the chat list, not to the picker.
+                        onOpenDm = { channelId ->
+                            navController.navigate("channel/$channelId") { popUpTo(NEW_MESSAGE_ROUTE) { inclusive = true } }
+                        },
+                        onNavigateBack = { navController.popBackStack() },
                     )
                 }
 
@@ -437,15 +455,29 @@ fun KaikuNavGraph(
             }
         }
 
+        // Why a call ended on its own (rejoin failed, removed): every screen, with Rejoin where it applies.
+        voiceEndNotice?.let { notice ->
+            VoiceEndNoticeBar(
+                notice = notice,
+                onRejoin = { voiceOverlayViewModel.onRejoin() },
+                onDismiss = { voiceOverlayViewModel.onDismissNotice() }
+            )
+        }
+
         // Voice overlay bar — visible on non-voice screens when in a voice channel
         if (showOverlay) {
             VoiceOverlay(
                 channelName = voiceChannelName,
                 isMuted = voiceIsMuted,
+                status = voiceLinkState.statusText(),
                 onMuteToggle = { voiceOverlayViewModel.onToggleMute() },
                 onTap = {
-                    voiceChannelId?.let { channelId ->
-                        navController.navigate("voice/$channelId") { launchSingleTop = true }
+                    if (voiceIsCall) {
+                        context.startActivity(io.wolftown.kaiku.ui.call.CallIntents.screen(context))
+                    } else {
+                        voiceChannelId?.let { channelId ->
+                            navController.navigate("voice/$channelId") { launchSingleTop = true }
+                        }
                     }
                 },
                 onDisconnect = { voiceOverlayViewModel.onDisconnect() }
@@ -453,6 +485,9 @@ fun KaikuNavGraph(
         }
     }
 }
+
+/** "New message": pick a person to write to. */
+const val NEW_MESSAGE_ROUTE = "dms/new"
 
 /** L2-A11: the lapsed key device's sign-in screen. */
 const val CONFIRM_ROUTE = "confirm_its_you"

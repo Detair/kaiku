@@ -1,10 +1,16 @@
 package io.wolftown.kaiku.ui.voice
 
+import io.wolftown.kaiku.data.call.CallController
+import io.wolftown.kaiku.data.call.CallDirectory
+import io.wolftown.kaiku.data.call.CallState
+
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.wolftown.kaiku.data.repository.GuildRepository
 import io.wolftown.kaiku.data.repository.VoiceRepository
+import io.wolftown.kaiku.data.voice.VoiceEndNotice
+import io.wolftown.kaiku.data.voice.VoiceLinkState
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
@@ -32,19 +38,41 @@ internal fun shouldShowVoiceOverlay(voiceChannelId: String?, currentRoute: Strin
 class VoiceOverlayViewModel @Inject constructor(
     private val voiceRepository: VoiceRepository,
     guildRepository: GuildRepository,
+    callController: CallController,
+    callDirectory: CallDirectory,
 ) : ViewModel() {
+
+    /** The voice session is a DM call: the bar leads to the call screen instead of the voice screen. */
+    val isCall: StateFlow<Boolean> =
+        combine(voiceRepository.currentChannelId, callController.state) { id, call ->
+            id != null && call.channelId == id && call !is CallState.Ended && call !is CallState.Idle
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
 
     val currentChannelId: StateFlow<String?> = voiceRepository.currentChannelId
     val isMuted: StateFlow<Boolean> = voiceRepository.isMuted
 
+    /** Stable, interrupted or rejoining: the bar says "Reconnecting…" unless stable. */
+    val linkState: StateFlow<VoiceLinkState> = voiceRepository.linkState
+
+    /** Why the last call ended on its own, with the Rejoin action, or null. */
+    val endNotice: StateFlow<VoiceEndNotice?> = voiceRepository.endNotice
+
     /** Name of the channel the call runs in, or null if it is not in the loaded channel list. */
     val channelName: StateFlow<String?> =
         combine(voiceRepository.currentChannelId, guildRepository.channels) { id, channels ->
-            id?.let { channelId -> channels.find { it.id == channelId }?.name }
+            id?.let { channelId -> channels.find { it.id == channelId }?.name ?: callDirectory.titleOf(channelId) }
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     fun onToggleMute() {
         voiceRepository.toggleMute()
+    }
+
+    fun onRejoin() {
+        voiceRepository.rejoin()
+    }
+
+    fun onDismissNotice() {
+        voiceRepository.dismissEndNotice()
     }
 
     fun onDisconnect() {

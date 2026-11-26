@@ -1,5 +1,13 @@
 package io.wolftown.kaiku.ui
 
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import io.wolftown.kaiku.data.call.CallController
+import io.wolftown.kaiku.data.call.CallState
+import io.wolftown.kaiku.ui.call.CallIntents
+import kotlinx.coroutines.launch
+
 import android.content.Intent
 import android.os.Bundle
 import android.widget.Toast
@@ -65,6 +73,9 @@ class MainActivity : FragmentActivity() {
     @Inject
     lateinit var keyDevices: KeyDeviceRepository
 
+    @Inject
+    lateinit var callController: CallController
+
     /** A route the running app should open next (the B.4 renewal prompt). */
     private val pendingRoute = MutableStateFlow<String?>(null)
 
@@ -85,6 +96,8 @@ class MainActivity : FragmentActivity() {
         }
         val appVersion = packageManager.getPackageInfo(packageName, 0).versionName ?: ""
 
+        openCallScreenWhenRinging()
+
         setContent {
             KaikuApp(
                 startDestination = startDestination,
@@ -95,6 +108,26 @@ class MainActivity : FragmentActivity() {
                 pendingRoute = pendingRoute,
                 onPendingRouteConsumed = { pendingRoute.value = null },
             )
+        }
+    }
+
+    /**
+     * While the app is open, a ring opens the call screen right away (also
+     * when notifications are off, so the call can still be answered).
+     */
+    private fun openCallScreenWhenRinging() {
+        // Outside the lifecycle loop: after Back from a ring the app stays open, the ring
+        // does not reopen the call screen (only a new call does).
+        var opened: String? = null
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                callController.state.collect { call ->
+                    if (call is CallState.Incoming && call.callId != opened) {
+                        opened = call.callId
+                        startActivity(CallIntents.screen(this@MainActivity))
+                    }
+                }
+            }
         }
     }
 

@@ -28,4 +28,11 @@ class AudioRouteSelectionTest {
         assertEquals(AudioRoute.Speaker, selectDefaultRoute(setOf(AudioRoute.Earpiece)))
         assertEquals(AudioRoute.Speaker, selectDefaultRoute(emptySet()))
     }
+
+    @Test
+    fun `a DM call starts on the earpiece unless a headset is connected`() {
+        assertEquals(AudioRoute.Earpiece, selectDefaultRoute(setOf(AudioRoute.Speaker, AudioRoute.Earpiece), preferEarpiece = true))
+        assertEquals(AudioRoute.Bluetooth, selectDefaultRoute(setOf(AudioRoute.Speaker, AudioRoute.Earpiece, AudioRoute.Bluetooth), preferEarpiece = true))
+        assertEquals(AudioRoute.WiredHeadset, selectDefaultRoute(setOf(AudioRoute.Speaker, AudioRoute.Earpiece, AudioRoute.WiredHeadset), preferEarpiece = true))
+    }
 }

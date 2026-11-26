@@ -98,6 +98,7 @@ class RealtimeConnectionManager internal constructor(
         data class Session(val session: AuthSession) : Input
         data class Socket(val state: ConnectionState) : Input
         data class Server(val event: ServerEvent) : Input
+        data object DeadSocket : Input
         data class Online(val online: Boolean) : Input
         data class NetworkChanged(val id: Long?) : Input
         data object Foreground : Input
@@ -205,6 +206,15 @@ class RealtimeConnectionManager internal constructor(
         inbox.trySend(Input.Foreground)
     }
 
+    /**
+     * The voice call found the socket dead (no answer to its ping after the
+     * phone slept): drop it and reconnect now instead of waiting for the
+     * pong watchdog. Ignored unless the connection is up.
+     */
+    fun reportDeadSocket() {
+        inbox.trySend(Input.DeadSocket)
+    }
+
     // -- Actor ----------------------------------------------------------------
 
     private suspend fun handle(input: Input) {
@@ -215,6 +225,9 @@ class RealtimeConnectionManager internal constructor(
             is Input.Online -> onOnline(input.online)
             is Input.NetworkChanged -> onNetworkChanged(input.id)
             Input.Foreground -> onForeground()
+            Input.DeadSocket -> if (_status.value == RealtimeStatus.Connected) {
+                dropSocketAndReconnect("the voice call found the socket dead, reconnecting")
+            }
             is Input.RetryDue -> if (input.generation == retryGeneration) {
                 retryJob = null
                 attemptConnect()

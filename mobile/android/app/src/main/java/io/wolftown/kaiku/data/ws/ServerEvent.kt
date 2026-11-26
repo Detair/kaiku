@@ -91,6 +91,16 @@ sealed class ServerEvent {
     @SerialName("dm_created")
     data class DmCreated(val channel: JsonObject) : ServerEvent()
 
+    /** This user blocked [userId] (on any of their devices): they can no longer be written to. */
+    @Serializable
+    @SerialName("user_blocked")
+    data class UserBlocked(val userId: String) : ServerEvent()
+
+    /** This user unblocked [userId]. */
+    @Serializable
+    @SerialName("user_unblocked")
+    data class UserUnblocked(val userId: String) : ServerEvent()
+
     // -- Login hints (C26–C28): refetch, never act on a hint alone -------------
 
     /** C26: an enrolment this user issued changed (claimed, done, …). */
@@ -196,6 +206,84 @@ sealed class ServerEvent {
     @SerialName("voice_error")
     data class VoiceError(val code: String, val message: String) : ServerEvent()
 
+    /**
+     * C31: the server removed this socket's voice peer (kick, ban, lost
+     * permission, deleted channel, same user joined elsewhere). [reason] is the
+     * wire string; read it with [removedReason]. Fields the server omits fall
+     * back to "kicked" / the current channel so a call is never left connected
+     * to nothing.
+     */
+    @Serializable
+    @SerialName("voice_removed")
+    data class VoiceRemoved(
+        val channelId: String? = null,
+        // Nullable: a JSON `null` must not drop the event (unknown/missing = kicked).
+        val reason: String? = null,
+    ) : ServerEvent() {
+        val removedReason: VoiceRemovedReason get() = VoiceRemovedReason.fromWire(reason)
+    }
+
+    // -- DM calls -------------------------------------------------------------
+    //
+    // Every call event carries the call's `call_id` (nil from very old
+    // servers: then it is matched by channel only). They go to every device
+    // of every DM participant, so a user's other devices see their own
+    // answer or decline.
+
+    /** A call rings this user (never sent to the caller). [initiatorName] is the caller's login name. */
+    @Serializable
+    @SerialName("incoming_call")
+    data class IncomingCall(
+        val channelId: String,
+        val callId: String = "",
+        val initiator: String,
+        val initiatorName: String = "",
+    ) : ServerEvent()
+
+    /** The caller's own devices learn the call's id. */
+    @Serializable
+    @SerialName("call_started")
+    data class CallStarted(
+        val channelId: String,
+        val callId: String = "",
+        val initiator: String = "",
+    ) : ServerEvent()
+
+    /** [reason]: `cancelled`, `all_declined`, `no_answer`, `last_left`. */
+    @Serializable
+    @SerialName("call_ended")
+    data class CallEnded(
+        val channelId: String,
+        val callId: String = "",
+        val reason: String = "",
+        val durationSecs: Long? = null,
+    ) : ServerEvent()
+
+    @Serializable
+    @SerialName("call_participant_joined")
+    data class CallParticipantJoined(
+        val channelId: String,
+        val callId: String = "",
+        val userId: String,
+        val username: String = "",
+    ) : ServerEvent()
+
+    @Serializable
+    @SerialName("call_participant_left")
+    data class CallParticipantLeft(
+        val channelId: String,
+        val callId: String = "",
+        val userId: String,
+    ) : ServerEvent()
+
+    @Serializable
+    @SerialName("call_declined")
+    data class CallDeclined(
+        val channelId: String,
+        val callId: String = "",
+        val userId: String,
+    ) : ServerEvent()
+
     // -- Screen Share ---------------------------------------------------------
 
     @Serializable
@@ -228,6 +316,21 @@ sealed class ServerEvent {
         val trackSource: String,
         val activeLayer: String
     ) : ServerEvent()
+}
+
+/** Why the server removed us from a voice channel (C31). Unknown wire values are [Kicked]. */
+enum class VoiceRemovedReason {
+    Kicked, Banned, PermissionLost, ChannelDeleted, SessionReplaced;
+
+    companion object {
+        fun fromWire(reason: String?): VoiceRemovedReason = when (reason) {
+            "banned" -> Banned
+            "permission_lost" -> PermissionLost
+            "channel_deleted" -> ChannelDeleted
+            "session_replaced" -> SessionReplaced
+            else -> Kicked
+        }
+    }
 }
 
 @Serializable

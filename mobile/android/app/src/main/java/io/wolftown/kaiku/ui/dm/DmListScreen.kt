@@ -7,12 +7,15 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -21,7 +24,14 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import coil3.compose.AsyncImage
 import io.wolftown.kaiku.R
 import io.wolftown.kaiku.data.repository.DmRepository
+import io.wolftown.kaiku.domain.PreviewBody
+import io.wolftown.kaiku.domain.PreviewSender
+import io.wolftown.kaiku.domain.formatListTime
 import io.wolftown.kaiku.domain.model.DmConversation
+import io.wolftown.kaiku.domain.previewBody
+import io.wolftown.kaiku.domain.previewSender
+import java.time.Instant
+import java.time.ZoneId
 import io.wolftown.kaiku.ui.shared.resolveServerUrl
 
 /**
@@ -38,6 +48,7 @@ fun DmListScreen(
     onOpenDm: (channelId: String) -> Unit,
     onNavigateBack: () -> Unit,
     onScan: () -> Unit = {},
+    onNewMessage: () -> Unit = {},
     viewModel: DmListViewModel = hiltViewModel()
 ) {
     val conversations by viewModel.conversations.collectAsState()
@@ -62,6 +73,14 @@ fun DmListScreen(
                         Text(stringResource(R.string.scan_action), color = MaterialTheme.colorScheme.onSurface)
                     }
                 }
+            )
+        },
+        // Labelled, not an icon alone: "New message" must be found without guessing.
+        floatingActionButton = {
+            ExtendedFloatingActionButton(
+                onClick = onNewMessage,
+                icon = { Icon(Icons.Filled.Edit, contentDescription = null) },
+                text = { Text(stringResource(R.string.dm_new_title)) },
             )
         }
     ) { paddingValues ->
@@ -102,11 +121,14 @@ fun DmListScreen(
                 }
 
                 else -> {
-                    LazyColumn(modifier = Modifier.fillMaxSize()) {
+                    // Bottom space so the "New message" button never covers the last row.
+                    val now = rememberMinuteClock()
+                    LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 88.dp)) {
                         items(conversations, key = { it.id }) { dm ->
                             DmConversationRow(
                                 dm = dm,
                                 currentUserId = currentUserId,
+                                now = now,
                                 onClick = {
                                     viewModel.onOpenConversation(dm.id)
                                     onOpenDm(dm.id)
@@ -125,6 +147,7 @@ fun DmListScreen(
 private fun DmConversationRow(
     dm: DmConversation,
     currentUserId: String,
+    now: Instant,
     onClick: () -> Unit
 ) {
     // C28: the Kaiku DM, recognised by its flags only, has a built-in icon and a fixed name.
@@ -136,6 +159,7 @@ private fun DmConversationRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .heightIn(min = 72.dp)
             .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -166,33 +190,79 @@ private fun DmConversationRow(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
-            val preview = if (isKaiku) stringResource(R.string.security_kaiku_dm_subtitle) else dm.lastMessage?.let { last ->
-                last.username?.let { sender ->
-                    stringResource(R.string.dm_last_message_preview, sender, last.content)
-                } ?: last.content
-            }
-            if (preview != null) {
-                Text(
-                    text = preview,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
+            val preview = if (isKaiku) stringResource(R.string.security_kaiku_dm_subtitle) else conversationPreview(dm, currentUserId)
+            Text(
+                text = preview,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
         }
 
-        if (hasUnread) {
-            Spacer(modifier = Modifier.width(8.dp))
-            Badge {
+        // Time above the unread badge; no fixed sizes, so a large font grows the row.
+        Spacer(modifier = Modifier.width(8.dp))
+        Column(horizontalAlignment = Alignment.End) {
+            val time = formatListTime(
+                dm.lastMessage?.createdAt ?: dm.createdAt,
+                ZoneId.systemDefault(),
+                now,
+                LocalConfiguration.current.locales[0],
+                use24Hour = android.text.format.DateFormat.is24HourFormat(LocalContext.current),
+            )
+            if (time.isNotEmpty()) {
                 Text(
-                    text = if (dm.unreadCount > 99) {
-                        stringResource(R.string.dm_unread_overflow)
-                    } else {
-                        dm.unreadCount.toString()
-                    }
+                    text = time,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (hasUnread) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    softWrap = false,
                 )
+            }
+            if (hasUnread) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Badge {
+                    Text(
+                        text = if (dm.unreadCount > 99) {
+                            stringResource(R.string.dm_unread_overflow)
+                        } else {
+                            dm.unreadCount.toString()
+                        }
+                    )
+                }
             }
         }
     }
+}
+
+/** "You: ok", "Anna: ok" (groups), "ok" (1:1), or the attachment's kind for a message without text. */
+@Composable
+internal fun conversationPreview(dm: DmConversation, currentUserId: String): String {
+    val last = dm.lastMessage ?: return stringResource(R.string.dm_preview_no_messages)
+    val body = when (val b = previewBody(last)) {
+        is PreviewBody.Text -> b.text
+        PreviewBody.SomeAttachment -> stringResource(R.string.dm_preview_attachment)
+        PreviewBody.Encrypted -> stringResource(R.string.dm_preview_encrypted)
+    }
+    return when (val sender = previewSender(dm, last, currentUserId)) {
+        PreviewSender.Own -> stringResource(R.string.dm_preview_own, body)
+        is PreviewSender.Named -> stringResource(R.string.dm_last_message_preview, sender.name, body)
+        PreviewSender.Hidden -> body
+    }
+}
+
+/**
+ * The current time, renewed at every full minute while the list is shown,
+ * so "today" (time) turns into a date after midnight without a reload.
+ */
+@Composable
+private fun rememberMinuteClock(): Instant {
+    val now by produceState(Instant.now()) {
+        while (true) {
+            val next = (System.currentTimeMillis() / 60_000L + 1) * 60_000L
+            kotlinx.coroutines.delay(next - System.currentTimeMillis())
+            value = Instant.now()
+        }
+    }
+    return now
 }

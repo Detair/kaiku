@@ -2,6 +2,8 @@ package io.wolftown.kaiku.data.voice
 
 import android.content.Context
 import dagger.hilt.android.qualifiers.ApplicationContext
+import org.webrtc.DefaultVideoDecoderFactory
+import org.webrtc.EglBase
 import org.webrtc.PeerConnectionFactory
 import org.webrtc.audio.JavaAudioDeviceModule
 import java.util.logging.Logger
@@ -28,7 +30,10 @@ class DefaultPeerConnectionFactoryProvider internal constructor(
 ) : PeerConnectionFactoryProvider {
 
     @Inject
-    constructor(@ApplicationContext context: Context) : this({ createFactory(context) })
+    constructor(
+        @ApplicationContext context: Context,
+        eglBaseProvider: EglBaseProvider,
+    ) : this({ createFactory(context, eglBaseProvider.get()) })
 
     @Volatile
     private var factory: PeerConnectionFactory? = null
@@ -41,7 +46,7 @@ class DefaultPeerConnectionFactoryProvider internal constructor(
     private companion object {
         private val logger = Logger.getLogger("PeerConnectionFactoryProvider")
 
-        fun createFactory(context: Context): PeerConnectionFactory {
+        fun createFactory(context: Context, eglBase: EglBase): PeerConnectionFactory {
             PeerConnectionFactory.initialize(
                 PeerConnectionFactory.InitializationOptions.builder(context)
                     .setEnableInternalTracer(false)
@@ -52,6 +57,11 @@ class DefaultPeerConnectionFactoryProvider internal constructor(
                 .createAudioDeviceModule()
             return PeerConnectionFactory.builder()
                 .setAudioDeviceModule(audioDeviceModule)
+                // Without a decoder factory the app negotiates no video codec and
+                // cannot show screen shares. It must share the EGL context of the
+                // SurfaceViewRenderers (EglBaseProvider). No encoder factory: the
+                // app sends no video.
+                .setVideoDecoderFactory(DefaultVideoDecoderFactory(eglBase.eglBaseContext))
                 .createPeerConnectionFactory()
                 .also { logger.info("PeerConnectionFactory initialized") }
         }

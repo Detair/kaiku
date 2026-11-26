@@ -11,6 +11,11 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Incoming DM calls ring full-screen, also over the lock screen (Android 14+: the user may turn it off;
+         the call then rings as a heads-up with Accept and Decline). -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <!-- The call screen turns the display off at the ear (proximity wake lock). Already merged from WorkManager. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.CAMERA" />
 
@@ -57,6 +62,20 @@
                       android:path="/auth/callback" />
             </intent-filter>
         </activity>
+
+        <!-- The call screen: incoming, outgoing and in-call; may show over the lock screen (set in code). -->
+        <activity
+            android:name=".ui.call.CallActivity"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:taskAffinity="${applicationId}.call"
+            android:excludeFromRecents="true"
+            android:theme="@style/Theme.Kaiku" />
+
+        <!-- Decline of an incoming-call notification. -->
+        <receiver
+            android:name=".ui.call.CallActionReceiver"
+            android:exported="false" />
 
         <service
             android:name=".service.VoiceCallService"

@@ -47,7 +47,13 @@ class DmRepositoryTest {
         every { currentUserId } returns MutableStateFlow<String?>("me")
     }
 
-    private fun TestScope.repository() = DmRepository(api, webSocket, KaikuJson, authState, backgroundScope)
+    private val sessions = io.wolftown.kaiku.data.session.FakeSessions("me")
+
+    private fun TestScope.repository() =
+        DmRepository(api, webSocket, KaikuJson, authState, backgroundScope, sessions.generation).also {
+            // The socket on the line is the signed-in account's: its Ready says so.
+            events.tryEmit(ServerEvent.Ready("me"))
+        }
 
     @Test
     fun `dm_created upserts conversation at top`() = runTest {

@@ -8,9 +8,6 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -60,6 +57,42 @@ class KaikuWebSocket @Inject constructor(
     /** Whether [webSocket] completed the upgrade (onOpen); guarded by [lock]. */
     private var socketOpen = false
 
+    /** Counts authenticated sockets: bumped with each socket's Ready. Guarded by [lock]. */
+    private var authenticatedSockets = 0L
+
+    private val _authenticatedSocket = MutableStateFlow<Long?>(null)
+
+    /**
+     * The id of the socket that is authenticated now (its Ready was received),
+     * or null while there is none. Every authenticated socket gets a new id
+     * and ids never repeat, so "is the socket I used still there?" is the
+     * plain comparison with the current value, and it never turns true again
+     * once it was false.
+     *
+     * Changes together with [connectionState], under the same lock: non-null
+     * exactly while that is Connected, for a reader that holds the lock. The
+     * two values are published one after the other, this one first: a reader
+     * of both without the lock can see the new id with the old state.
+     */
+    val authenticatedSocket: StateFlow<Long?> = _authenticatedSocket.asStateFlow()
+
+    /** Frames received on one authenticated socket so far. */
+    data class Inbound(val socket: Long?, val frames: Long)
+
+    private val _inbound = MutableStateFlow(Inbound(null, 0L))
+
+    /**
+     * Inbound frames of the authenticated socket, counted as they arrive:
+     * a fresh frame is the proof that the socket still carries.
+     */
+    val inbound: StateFlow<Inbound> = _inbound.asStateFlow()
+
+    /** Sets [connectionState] and, with it, [authenticatedSocket]. Call with [lock] held. */
+    private fun setState(state: ConnectionState) {
+        _authenticatedSocket.value = if (state == ConnectionState.Connected) ++authenticatedSockets else null
+        _connectionState.value = state
+    }
+
     /**
      * Opens a WebSocket connection to [serverUrl] and authenticates with
      * [accessToken] in the first frame. Does nothing while a socket is
@@ -80,11 +113,11 @@ class KaikuWebSocket @Inject constructor(
                 Request.Builder().url(toWsUrl(serverUrl)).build()
             } catch (e: IllegalArgumentException) {
                 logger.warning("connect failed: invalid server URL")
-                _connectionState.value = ConnectionState.Disconnected
+                setState(ConnectionState.Disconnected)
                 return
             }
 
-            _connectionState.value = ConnectionState.Connecting
+            setState(ConnectionState.Connecting)
             socketOpen = false
             webSocket = okHttpClient.newWebSocket(request, Listener(accessToken))
         }
@@ -100,7 +133,7 @@ class KaikuWebSocket @Inject constructor(
                 // A socket still upgrading is aborted; an open one gets a close handshake.
                 if (!open || !socket.close(NORMAL_CLOSURE, null)) socket.cancel()
             }
-            _connectionState.value = ConnectionState.Disconnected
+            setState(ConnectionState.Disconnected)
         }
     }
 
@@ -109,6 +142,34 @@ class KaikuWebSocket @Inject constructor(
         val sent = socket?.send(json.encodeToString<ClientEvent>(event)) ?: false
         if (!sent) {
             logger.warning("send failed (not connected): ${event::class.simpleName}")
+        }
+        return sent
+    }
+
+    /**
+     * Sends [event] on the authenticated socket [socketId] and on no other.
+     * Returns true if the frame went out on that socket, false (nothing was
+     * sent) if it is not the authenticated socket any more. The check and the
+     * send are one step under the socket lock, so the frame can never end up
+     * on a newer socket, or on one that is still authenticating.
+     *
+     * Voice signalling sends every frame this way, with the id it read from
+     * [authenticatedSocket]. Nothing voice-related goes out while a socket is
+     * still Connecting (such a frame is processed if it arrives after the
+     * Authenticate frame and dropped otherwise, so its effect would be
+     * unknown), and the caller knows which socket carried each frame.
+     *
+     * A socket that refuses the frame although it is still the authenticated
+     * one is closing; its close is reported next.
+     */
+    fun sendOn(socketId: Long, event: ClientEvent): Boolean {
+        val text = json.encodeToString<ClientEvent>(event)
+        val sent = synchronized(lock) {
+            if (_authenticatedSocket.value != socketId) return false
+            webSocket?.send(text) ?: false
+        }
+        if (!sent) {
+            logger.warning("send failed (socket closing): ${event::class.simpleName}")
         }
         return sent
     }
@@ -129,19 +190,13 @@ class KaikuWebSocket @Inject constructor(
             if (webSocket !== socket) return
             webSocket = null
             socketOpen = false
-            _connectionState.value = if (code == AUTH_REJECTED_CLOSE_CODE) {
-                ConnectionState.AuthRejected
-            } else {
-                ConnectionState.Disconnected
-            }
+            setState(
+                if (code == AUTH_REJECTED_CLOSE_CODE) ConnectionState.AuthRejected else ConnectionState.Disconnected
+            )
         }
     }
 
-    private fun eventTypeOf(text: String): String = try {
-        json.parseToJsonElement(text).jsonObject["type"]?.jsonPrimitive?.contentOrNull ?: "unknown"
-    } catch (_: Exception) {
-        "unparseable"
-    }
+    private val decoder = ServerEventDecoder(json)
 
     private inner class Listener(private val accessToken: String) : WebSocketListener() {
         override fun onOpen(webSocket: WebSocket, response: Response) {
@@ -155,17 +210,27 @@ class KaikuWebSocket @Inject constructor(
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
-            val event = try {
-                json.decodeFromString<ServerEvent>(text)
-            } catch (e: Exception) {
-                logger.warning("failed to parse server event: type=${eventTypeOf(text)} (${e.javaClass.simpleName})")
-                return
+            // Any frame counts as a sign of life of this socket, also one this app does not model.
+            synchronized(lock) {
+                if (this@KaikuWebSocket.webSocket === webSocket) {
+                    val id = _authenticatedSocket.value
+                    val previous = _inbound.value
+                    _inbound.value = Inbound(id, if (previous.socket == id) previous.frames + 1 else 1L)
+                }
+            }
+            val event = when (val decoded = decoder.decode(text)) {
+                is ServerEventDecoder.Result.Event -> decoded.event
+                is ServerEventDecoder.Result.Skipped -> return
+                is ServerEventDecoder.Result.Broken -> {
+                    logger.warning("failed to parse server event: type=${decoded.type} (${decoded.error.javaClass.simpleName})")
+                    return
+                }
             }
             synchronized(lock) {
                 if (this@KaikuWebSocket.webSocket !== webSocket) return
                 if (event is ServerEvent.Ready && _connectionState.value == ConnectionState.Connecting) {
                     logger.info("ready received, state=Connected")
-                    _connectionState.value = ConnectionState.Connected
+                    setState(ConnectionState.Connected)
                 }
                 if (!_events.tryEmit(event)) {
                     logger.warning("event buffer full, dropped: ${event::class.simpleName}")

@@ -128,6 +128,7 @@ fun TextChannelScreen(
         topBar = {
             TopAppBar(
                 title = { Text(titleText) },
+                actions = { io.wolftown.kaiku.ui.dm.DmCallAction() },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
                         Icon(
