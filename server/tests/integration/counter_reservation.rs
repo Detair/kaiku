@@ -1120,6 +1120,10 @@ async fn hold_account_lock(
     tx
 }
 
+async fn block(pool: &PgPool, user: Uuid, sql: &'static str) {
+    sqlx::query(sql).bind(user).execute(pool).await.unwrap();
+}
+
 /// `(password_state, totp_state)`.
 async fn factor_states(pool: &PgPool, user: Uuid) -> (String, String) {
     sqlx::query_as("SELECT password_state::text, totp_state::text FROM users WHERE id = $1")
@@ -1150,8 +1154,9 @@ fn cli_args<'a>(how: NewEpoch, name: &'a str, factor: &'a str) -> Vec<&'a str> {
 }
 
 /// The 100th wrong password's effects wait for the account lock while a
-/// success or an administrator's reset starts a new epoch: the password is
-/// not throttled, and the right password signs in.
+/// success or an administrator's reset (of a blocked password) starts a new
+/// epoch: the password is not throttled (again), and the right password
+/// signs in.
 #[sqlx::test]
 async fn password_effects_skip_a_newer_epoch(_: PgPoolOptions, db: PgConnectOptions) {
     let pool = wide_pool(db).await;
@@ -1165,6 +1170,15 @@ async fn password_effects_skip_a_newer_epoch(_: PgPoolOptions, db: PgConnectOpti
         enable_totp(&pool, &app.config, user, &name).await;
         let key = CounterKey::password(&name);
         set_count(&app, &key, 99).await;
+        if !matches!(how, NewEpoch::Success) {
+            // The administrator clears a blocked password.
+            block(
+                &pool,
+                user,
+                "UPDATE users SET password_state = 'throttled' WHERE id = $1",
+            )
+            .await;
+        }
         let hold = hold_account_lock(&pool, user).await;
         let wrong = {
             let router = app.router.clone();
@@ -1220,8 +1234,8 @@ async fn password_effects_skip_a_newer_epoch(_: PgPoolOptions, db: PgConnectOpti
 }
 
 /// The 100th wrong sign-in code's effects wait for the account lock behind
-/// an administrator's reset: the code is not throttled afterwards, and the
-/// right code signs in.
+/// an administrator's reset of the blocked code: the code is not throttled
+/// again afterwards, and the right code signs in.
 #[sqlx::test]
 async fn totp_effects_skip_the_cli_reset(_: PgPoolOptions, db: PgConnectOptions) {
     use vc_server::auth::totp_guard::{after, Used};
@@ -1237,6 +1251,13 @@ async fn totp_effects_skip_the_cli_reset(_: PgPoolOptions, db: PgConnectOptions)
             .await
             .unwrap();
         set_count(&app, &key, 99).await;
+        // The administrator clears a blocked sign-in code.
+        block(
+            &pool,
+            user,
+            "UPDATE users SET totp_state = 'throttled' WHERE id = $1",
+        )
+        .await;
         let hold = hold_account_lock(&pool, user).await;
         let args = cli_args(how, &name, "totp");
         let reset = super::cli_recovery::cli(&app, &args);
