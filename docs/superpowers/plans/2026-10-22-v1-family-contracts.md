@@ -946,9 +946,10 @@ Media of a participant reaches others only under a source the server accepted.
   refusal while no announcement is queued. That track is dropped as an unannounced one
   (`VIDEO_SOURCE_UNANNOUNCED`) and never binds to a later start. A client that adds its track only after the
   acknowledgement is not affected.
-- Share limit and store failures: if a stop or an expiry could not release its slot in the store, the next start
-  that would be refused for the channel limit compares the store's count with the shares the room really has,
-  corrects it and tries once more. A room really at its limit is still refused.
+- Share limit and store failures: if a release did not reach the store (a store error at a stop, an expiry, a
+  leave or a replacement), the next start that would be refused for the channel limit compares the store's count
+  with the slots the room itself holds (live shares plus starts and releases under way), corrects it and tries
+  once more. A room really at its limit is still refused.
 - An accepted start whose track has not arrived 10 s after the acknowledgement ends by itself: the slot is
   released and the room gets the normal `screen_share_stopped` / `webcam_stopped` with `reason: "no_media"`.
 - `voice_screen_share_stop` and `voice_webcam_stop` are never rate-limited: a stop is always applied.
@@ -969,9 +970,13 @@ Media of a participant reaches others only under a source the server accepted.
 - Compatibility: rc.5 clients add the track right before they send the start and do not wait. An accepted
   start still binds that track (it waits for the announcement); a refused start leaves the track dropped and
   the client gets the refusal and then `VIDEO_SOURCE_UNANNOUNCED` (plus `AUDIO_SOURCE_UNANNOUNCED` when it also
-  added share audio). Known price of the rule on refused starts above: the previous release's desktop app also
-  adds its webcam track before it sends the start, so a webcam it starts within 3 s after a refused share is
-  dropped too (`VIDEO_SOURCE_UNANNOUNCED`, then `webcam_stopped` with `no_media`); starting it again works.
+  added share audio). A webcam such a client starts after a refused share is forwarded as usual: the refused
+  share's own track uses the refusal up. Two limits remain for clients that send a track before its start. If
+  a webcam's track arrives before its own start and within 3 s after a refused share whose track has not
+  arrived, the webcam's track is the one dropped (`VIDEO_SOURCE_UNANNOUNCED`, then `webcam_stopped` with
+  `no_media`); the previous release's desktop app then needs a rejoin to start its webcam again. And if the
+  refused share's track arrives only after a later webcam start was accepted, it takes that announcement
+  (accepted announcements are served first) and viewers get it as the webcam until the webcam is stopped.
 
 ### `voice_error` codes (all voice requests)
 
