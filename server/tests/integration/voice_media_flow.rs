@@ -1197,3 +1197,67 @@ async fn stopped_webcam_track_never_feeds_the_next_webcam(pool: PgPool) {
         "the new webcam did not reach the viewer"
     );
 }
+
+/// A share's first track resolves its announcement while the seat's media
+/// lock is held elsewhere (here: an expiring webcam whose stop is being
+/// announced), and the share is stopped before the track gets the lock:
+/// the track must not be forwarded for the ended share.
+#[sqlx::test]
+async fn share_stopped_while_its_track_waits_for_the_seat_is_not_forwarded(pool: PgPool) {
+    use std::sync::Arc;
+    use webrtc::api::media_engine::MIME_TYPE_VP8;
+    use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
+    use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
+    use webrtc::track::track_local::TrackLocal;
+
+    let f = fixture(pool).await;
+    let (mut a, mut b) = two_in_call(&f).await;
+    // A webcam without a track: it expires after ANNOUNCEMENT_TTL, and its
+    // expiry holds the seat's media lock while it announces the stop.
+    a.send(webcam_start(f.voice));
+    a.next_event("webcam_started", WAIT).await;
+    let stream = Uuid::new_v4();
+    a.send(share_start(f.voice, stream));
+    a.next_event("screen_share_started", WAIT).await;
+    // The share's track is negotiated but sends nothing yet.
+    let screen = Arc::new(TrackLocalStaticRTP::new(
+        RTCRtpCodecCapability {
+            mime_type: MIME_TYPE_VP8.to_owned(),
+            clock_rate: 90_000,
+            ..Default::default()
+        },
+        "screen".to_owned(),
+        "stream-screen".to_owned(),
+    ));
+    let sender = a
+        .publisher
+        .add_track(screen.clone() as Arc<dyn TrackLocal + Send + Sync>)
+        .await
+        .expect("add track");
+    tokio::spawn(async move { while sender.read_rtcp().await.is_ok() {} });
+    a.publish().await;
+
+    let pause = vc_server::ws::test_hooks::pause_voice_step(a.user_id, "stop_decided");
+    tokio::time::timeout(ANNOUNCEMENT_TTL + WAIT, pause.reached.notified())
+        .await
+        .expect("the webcam expiry announces its stop");
+    // The stop waits for the seat; then the track resolves the share (still
+    // live) and waits behind the stop.
+    a.send(serde_json::json!({
+        "type": "voice_screen_share_stop", "channel_id": f.voice, "stream_id": stream,
+    }));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    a.start_writing(screen, true);
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    pause.release.notify_one();
+
+    b.next_event("screen_share_stopped", WAIT).await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let share = format!("{}:screen_video:{stream}", a.user_id);
+    assert_eq!(
+        b.packets(&share),
+        0,
+        "the ended share's track was forwarded: {:?}",
+        b.seen_tracks()
+    );
+}
