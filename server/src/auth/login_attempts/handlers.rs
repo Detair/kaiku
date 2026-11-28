@@ -238,8 +238,8 @@ pub async fn totp(
         .to_string();
     let client = SessionClient::from_request(&state, &headers, addr);
     let ctx = AuthCtx::from(&state);
-    // C27: the collection secret first (unknown id or wrong secret → 404),
-    // then the account's TOTP counter (B.5; Flash r5).
+    // C27: the collection secret first (unknown id or wrong secret → 404);
+    // the account's TOTP counter reserves the try inside the step (B.5).
     let seen = {
         let mut conn = state.db.acquire().await?;
         core::authenticate(&mut conn, &ctx, id, &secret).await?
@@ -252,9 +252,6 @@ pub async fn totp(
             factor: crate::auth::factors::Factor::Password,
             generation,
         });
-    if let Some(user) = account {
-        crate::auth::totp_guard::pre_check(&ctx, user).await?;
-    }
     let mut tries = 0;
     let outcome = loop {
         let mut tx = state.db.begin().await?;
@@ -264,9 +261,9 @@ pub async fn totp(
         }
     };
     match outcome {
-        core::TotpOutcome::Signed(collected, checked) => {
+        core::TotpOutcome::Signed(collected, checked, reserved) => {
             if let Some(user) = account {
-                crate::auth::totp_guard::after(
+                crate::auth::totp_guard::settle(
                     &ctx,
                     Some(&state),
                     user,
@@ -275,14 +272,15 @@ pub async fn totp(
                         totp_generation: checked,
                         password: None,
                     },
+                    reserved,
                 )
                 .await;
             }
             Ok(session_response(&state, &headers, jar, collected))
         }
-        core::TotpOutcome::WrongCode(events, checked) => {
+        core::TotpOutcome::WrongCode(events, checked, reserved) => {
             if let Some(user) = account {
-                crate::auth::totp_guard::after(
+                crate::auth::totp_guard::settle(
                     &ctx,
                     Some(&state),
                     user,
@@ -291,6 +289,7 @@ pub async fn totp(
                         totp_generation: checked,
                         password: password_generation,
                     },
+                    reserved,
                 )
                 .await;
             }

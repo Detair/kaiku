@@ -514,6 +514,42 @@ use is notified to the account, its recovery contact and all admins.
 | every 20th | `guessing` notice to the account (coalesced) |
 | 100 | the factor becomes `throttled` (once per counter epoch). 100 wrong TOTP codes after a correct password also mark that password generation `compromised` |
 
+A try is counted **before** it is checked: the counter is raised in the same atomic step that
+looks at the delay. So tries sent in parallel, from one address or from many, never share a count:
+after the 5th try of a burst every further one is refused without being checked, with 429 and a
+wait time. Two exceptions: on the bootstrap request a refused sign-in **code** is answered
+neutrally without a wait time (a password try that has to wait gets 429 with a wait time there
+too), and on a recovery request an exhausted start budget answers first.
+
+When a try resets its counter:
+
+- **Password** (`/auth/login`, bootstrap request, recovery request): exactly when `/auth/login`
+  would answer that password with a next step for that account. Every other try stays counted
+  with all its effects — also a right password while the password is `throttled` or
+  `compromised`, or on an account without a usable second step. On the bootstrap request a right
+  password of an account with a next step resets the password counter even when the request as a
+  whole is refused (for example because the code was wrong). A banned account is no exception: a
+  right password resets its counter, `/auth/login` then answers 403 `ACCOUNT_BANNED` and the
+  bootstrap request answers neutrally.
+- **Sign-in code**: on the sign-in step, the recovery request and a part-2 action when it is
+  right; on the bootstrap request when the request goes on past the code — it is accepted, or it
+  is refused with 409 because a request is already open or no canceller is left.
+
+The effects of the 20th and the 100th failure (the notice, the block) apply only while the counter
+is still in the epoch that failure was counted in: if the owner signs in or an administrator
+resets the counter while those effects are still pending, they no longer apply.
+
+If the server cannot complete a check, it answers with a server error: 503 when Valkey is
+unavailable, 500 for a database or other internal error. A try whose check could not run because
+the user lookup, the stored secret or the record of used codes failed is given back (only while
+nothing else has touched the counter since); a wait time that try started stays unless the count
+falls below five. Not every failed check is given back: a database error after the password was
+checked, or a stored password hash that cannot be read, leaves the try counted. A try that hit a
+server error never resets the counter. If Valkey fails exactly when a success resets its counter,
+the success still stands, the try stays counted until the next success and the server logs a
+warning with the account id (`kaiku-admin throttle reset` clears it). The per-IP limits below stay
+in front, unchanged.
+
 Counters live in Valkey and expire after 24 h without failures. If Valkey is down, password and
 TOTP steps answer 503 `SERVICE_UNAVAILABLE`. Passkeys, QR sign-in, device-key sign-in and existing
 sessions are never affected, so a guesser cannot lock anyone out of the strong paths.

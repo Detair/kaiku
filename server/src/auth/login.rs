@@ -97,26 +97,23 @@ pub async fn login(
     let binding =
         super::login_attempts::handlers::binding(&headers, body.client_challenge.as_deref())?;
 
-    // B.5: the per-account counter (unknown usernames count alike, DC15).
+    // B.5: the per-account counter (unknown usernames count alike, DC15)
+    // reserves this try before the password is checked.
     let counter = crate::ratelimit::account::CounterKey::password(&body.username);
     let limiter = crate::ratelimit::account::AccountLimiter::new(&state.redis);
-    match limiter.check(&counter).await {
-        Ok(Ok(())) => {}
-        Ok(Err(d)) => {
-            tracing::warn!(
-                retry_after = d.retry_after,
-                "password sign-in delayed (B.5)"
-            );
-            return Err(AuthError::TooManyAttempts {
-                retry_after: d.retry_after,
-            });
-        }
-        Err(_) => return Err(AuthError::ServiceUnavailable),
-    }
+    let reserved = reserve_password(&state.redis, &counter).await?;
 
     // Always one Argon2 verify (a dummy hash for unknown users, the system
     // account and passwordless accounts), so the work is the same.
-    let user_opt = find_user_by_username(&state.db, &body.username).await?;
+    let user_opt = match find_user_by_username(&state.db, &body.username).await {
+        Ok(u) => u,
+        Err(e) => {
+            // Nothing was checked: the try goes back (while nothing else
+            // touched the counter since).
+            let _ = limiter.give_back(&counter, &reserved).await;
+            return Err(e.into());
+        }
+    };
     let stored_hash = user_opt
         .as_ref()
         .and_then(|u| u.password_hash.clone())
@@ -133,39 +130,27 @@ pub async fn login(
         Some(u) if u.password_hash.is_some() && !u.is_system && password_valid => Some(u),
         _ => None,
     };
-    let mut conn = state.db.acquire().await?;
     let step = match &user {
         Some(u) => {
-            super::login_attempts::core::next_step(
+            let mut conn = state.db.acquire().await?;
+            password_next_step(
                 &mut conn,
                 u.id,
-                super::login_attempts::core::AttemptKind::Password,
+                u.is_system,
+                u.password_hash.as_deref(),
+                password_valid,
             )
             .await?
         }
         None => None,
     };
-    drop(conn);
-    if !password_valid {
-        account_failure(&state, &counter, typed_account).await?;
+    // The reserved try settles: only a try answered with a next step resets
+    // the counter; a neutral answer stays counted with a failure's effects,
+    // whatever the password was.
+    match (&user, &step) {
+        (Some(u), Some(_)) => password_success(&state.redis, &counter, u.id).await,
+        _ => account_failure(&state, &counter, typed_account, reserved).await?,
     }
-    // Codex B2: the verified hash must still be the account's, with the
-    // generation the attempt records (a replacement in between → neutral).
-    let step = match (&user, step) {
-        (Some(u), Some((step, generation))) => {
-            let same: bool = sqlx::query_scalar(
-                "SELECT password_hash = $2 AND password_generation = $3 FROM users WHERE id = $1",
-            )
-            .bind(u.id)
-            .bind(u.password_hash.as_deref())
-            .bind(generation)
-            .fetch_optional(&state.db)
-            .await?
-            .unwrap_or(false);
-            same.then_some((step, generation))
-        }
-        _ => None,
-    };
     let (Some(user), Some((step, generation))) = (user, step) else {
         record_failed_auth!();
         crate::observability::metrics::record_auth_login_attempt(false);
@@ -196,25 +181,110 @@ pub async fn login(
     if let (Some(ref rl), Some(Extension(ref nip))) = (&state.rate_limiter, &normalized_ip) {
         let _ = rl.clear_failed_auth(&nip.0).await;
     }
-    let _ = limiter.record_success(&counter).await;
     tracing::info!(user_id = %user.id, step = step.status, "Password correct; confirmation pending");
     Ok((status, jar, Json(step)))
 }
 
-/// B.5: count a wrong password for `counter`; at every 20th a coalesced
-/// `guessing` notice; the first failure at or past the 100th in an epoch
-/// throttles the password (its claim is given back if this fails, Flash r5).
+/// The next step `/auth/login` gives `user_id` for a password checked
+/// against `checked_hash` (`valid`), or `None`: the neutral answer (a wrong
+/// password, the system account, a password factor that is not active, no
+/// usable second step, or a password replaced since `checked_hash` was
+/// read). Every route that checks a password resets its counter only when
+/// this returns a step; any other try stays counted as a failure.
+pub async fn password_next_step(
+    conn: &mut sqlx::PgConnection,
+    user_id: Uuid,
+    is_system: bool,
+    checked_hash: Option<&str>,
+    valid: bool,
+) -> AuthResult<Option<(super::login_attempts::core::NextStep, i64)>> {
+    let Some(hash) = checked_hash.filter(|_| valid && !is_system) else {
+        return Ok(None);
+    };
+    let Some((step, generation)) = super::login_attempts::core::next_step(
+        conn,
+        user_id,
+        super::login_attempts::core::AttemptKind::Password,
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    // The checked hash must still be the account's, with the generation the
+    // attempt records (a replacement in between → neutral).
+    let same: bool = sqlx::query_scalar(
+        "SELECT password_hash = $2 AND password_generation = $3 FROM users WHERE id = $1",
+    )
+    .bind(user_id)
+    .bind(hash)
+    .bind(generation)
+    .fetch_optional(&mut *conn)
+    .await?
+    .unwrap_or(false);
+    Ok(same.then_some((step, generation)))
+}
+
+/// B.5: reserve one password try on `counter` before the password is
+/// checked: 429 `TOO_MANY_ATTEMPTS` while its delay runs (nothing counted),
+/// 503 when Valkey fails, else the try is counted as a failure until a
+/// success resets the counter.
+pub async fn reserve_password(
+    redis: &fred::clients::Client,
+    counter: &crate::ratelimit::account::CounterKey,
+) -> AuthResult<crate::ratelimit::account::Failure> {
+    match crate::ratelimit::account::AccountLimiter::new(redis)
+        .reserve(counter)
+        .await
+    {
+        Ok(Ok(reserved)) => Ok(reserved),
+        Ok(Err(d)) => {
+            tracing::warn!(retry_after = d.retry_after, "password check delayed (B.5)");
+            Err(AuthError::TooManyAttempts {
+                retry_after: d.retry_after,
+            })
+        }
+        Err(_) => Err(AuthError::ServiceUnavailable),
+    }
+}
+
+/// B.5: a password try of `user` succeeded: reset `counter` (a new epoch).
+/// If the store fails here the sign-in still goes on and the try stays
+/// counted until the next success; the failure is logged so an
+/// administrator can reset the counter.
+pub async fn password_success(
+    redis: &fred::clients::Client,
+    counter: &crate::ratelimit::account::CounterKey,
+    user: Uuid,
+) {
+    if let Err(e) = crate::ratelimit::account::AccountLimiter::new(redis)
+        .record_success(counter)
+        .await
+    {
+        tracing::warn!(
+            error = %e,
+            user_id = %user,
+            factor = "password",
+            "the sign-in counter could not be reset after a success"
+        );
+    }
+}
+
+/// B.5: the effects of a wrong password whose try `failure` reserved (and
+/// so counted): at every 20th a coalesced `guessing` notice; the first
+/// failure at or past the 100th in an epoch throttles the password (its
+/// claim is given back if this fails, so the next failure throttles).
+/// Under the account lock the effects apply only while the counter is
+/// still in the epoch the try was counted in and its count has not fallen
+/// below this try's: a success or an administrator's reset since then
+/// means none of it applies.
 pub async fn account_failure(
     state: &AppState,
     counter: &crate::ratelimit::account::CounterKey,
     account: Option<Uuid>,
+    failure: crate::ratelimit::account::Failure,
 ) -> AuthResult<()> {
     use crate::ratelimit::account::{AccountLimiter, NOTICE_EVERY};
     let limiter = AccountLimiter::new(&state.redis);
-    let failure = limiter
-        .count_failure(counter)
-        .await
-        .map_err(|_| AuthError::ServiceUnavailable)?;
     let Some(user) = account else {
         return Ok(());
     };
@@ -222,7 +292,7 @@ pub async fn account_failure(
     if !n.is_multiple_of(NOTICE_EVERY) && !failure.throttle {
         return Ok(());
     }
-    let result = failure_effects(state, user, n, failure.throttle).await;
+    let result = failure_effects(state, counter, user, &failure).await;
     if failure.throttle {
         let _ = if result.is_ok() {
             limiter.confirm_throttle(counter, &failure).await
@@ -233,11 +303,28 @@ pub async fn account_failure(
     result
 }
 
-async fn failure_effects(state: &AppState, user: Uuid, n: u32, throttle: bool) -> AuthResult<()> {
-    use crate::ratelimit::account::NOTICE_EVERY;
+async fn failure_effects(
+    state: &AppState,
+    counter: &crate::ratelimit::account::CounterKey,
+    user: Uuid,
+    failure: &crate::ratelimit::account::Failure,
+) -> AuthResult<()> {
+    use crate::ratelimit::account::{AccountLimiter, NOTICE_EVERY};
+    let (n, throttle) = (failure.count, failure.throttle);
     let ctx = AuthCtx::from(state);
     let mut tx = state.db.begin().await?;
     crate::approvals::transition::lock_accounts(&mut tx, &[user]).await?;
+    // Under the lock: still the epoch this try was counted in, and the
+    // count still there (an unreadable counter is an error, so the claim
+    // is given back).
+    let (count_now, epoch_now) = AccountLimiter::new(&state.redis)
+        .read(counter)
+        .await
+        .map_err(|_| AuthError::ServiceUnavailable)?;
+    if !(epoch_now == failure.epoch && count_now >= i64::from(n)) {
+        tx.commit().await?;
+        return Ok(());
+    }
     let mut events = Vec::new();
     if n.is_multiple_of(NOTICE_EVERY) {
         events.push(

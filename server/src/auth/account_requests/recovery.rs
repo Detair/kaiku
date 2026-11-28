@@ -66,27 +66,9 @@ pub async fn start_recovery(
     let Some((code_id, code_generation)) = found else {
         return Err(neutral());
     };
-    // The second factor's counter waits before the code is consumed (B.5).
-    match &body.second {
-        Some(StartFactor::Totp { .. }) => crate::auth::totp_guard::pre_check(ctx, user.id).await?,
-        Some(StartFactor::Password { .. }) => {
-            match crate::ratelimit::account::AccountLimiter::new(ctx.redis)
-                .check(&crate::ratelimit::account::CounterKey::password(
-                    &user.username,
-                ))
-                .await
-            {
-                Ok(Ok(())) => {}
-                Ok(Err(d)) => {
-                    return Err(AuthError::TooManyAttempts {
-                        retry_after: d.retry_after,
-                    })
-                }
-                Err(_) => return Err(AuthError::ServiceUnavailable),
-            }
-        }
-        _ => {}
-    }
+    // B.5: the second factor's try is reserved inside the transaction,
+    // right before its check; a refusal rolls back, so the code is not
+    // consumed and the start not counted.
     let mut tx = state.db.begin().await?;
     // The subject with every possible canceller (Codex M7).
     crate::approvals::transition::lock_for_start(&mut tx, user.id, &[])
@@ -133,15 +115,25 @@ pub async fn start_recovery(
     let mut oidc = false;
     let ok = match &body.second {
         Some(StartFactor::Password { password }) => {
-            let hash = st.has_password.then(|| hash_now.clone()).flatten();
-            let valid = password_ok(hash, password).await?;
             let key = crate::ratelimit::account::CounterKey::password(&user.username);
-            if valid {
-                let _ = crate::ratelimit::account::AccountLimiter::new(ctx.redis)
-                    .record_success(&key)
-                    .await;
+            let reserved = crate::auth::login::reserve_password(ctx.redis, &key).await?;
+            let hash = st.has_password.then(|| hash_now.clone()).flatten();
+            let valid = password_ok(hash.clone(), password).await?;
+            // B.5: reset only when `/auth/login` would answer this password
+            // with a next step; anything else counts as a failure.
+            let right = crate::auth::login::password_next_step(
+                &mut tx,
+                user.id,
+                false,
+                hash.as_deref(),
+                valid,
+            )
+            .await?
+            .is_some();
+            if right {
+                crate::auth::login::password_success(ctx.redis, &key, user.id).await;
             } else {
-                count_failure(state, &key, user.id);
+                failure_effects(state, &key, user.id, reserved);
             }
             used.push(FactorRef {
                 factor: Factor::Password,
@@ -153,15 +145,16 @@ pub async fn start_recovery(
             // Any state (B.1: a throttled or compromised TOTP still proves
             // possession for a delayed request); the replay store applies.
             Some(secret) => {
-                let valid = crate::auth::reauth::accept_totp_ctx(
+                let (valid, reserved) = crate::auth::totp_guard::check_reserved(
                     ctx,
                     user.id,
                     secret,
                     &user.username,
                     code.trim(),
+                    st.totp.generation,
                 )
                 .await?;
-                crate::auth::totp_guard::after(
+                crate::auth::totp_guard::settle(
                     ctx,
                     Some(state),
                     user.id,
@@ -170,6 +163,7 @@ pub async fn start_recovery(
                         totp_generation: st.totp.generation,
                         password: None,
                     },
+                    reserved,
                 )
                 .await;
                 used.push(FactorRef {
@@ -254,13 +248,19 @@ async fn password_ok(hash: Option<String>, password: &str) -> AuthResult<bool> {
     .map_err(|e| AuthError::Internal(format!("password check failed: {e}")))
 }
 
-/// A failed password counts on its per-account counter with its 20/100
-/// effects (Task 26; spawned: the caller holds the account lock).
-fn count_failure(state: &AppState, key: &crate::ratelimit::account::CounterKey, user: Uuid) {
+/// The 20/100 effects of a failed password whose try was reserved (Task 26;
+/// spawned: the caller holds the account lock).
+fn failure_effects(
+    state: &AppState,
+    key: &crate::ratelimit::account::CounterKey,
+    user: Uuid,
+    failure: crate::ratelimit::account::Failure,
+) {
     let state = state.clone();
     let key = key.clone();
     tokio::spawn(async move {
-        if let Err(e) = crate::auth::login::account_failure(&state, &key, Some(user)).await {
+        if let Err(e) = crate::auth::login::account_failure(&state, &key, Some(user), failure).await
+        {
             tracing::warn!(error = %e, "password failure effects failed");
         }
     });
