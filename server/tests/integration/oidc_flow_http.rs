@@ -731,8 +731,9 @@ fn install_capture_subscriber() {
 }
 
 /// Run `f` (on this thread; `#[sqlx::test]` uses a current-thread runtime)
-/// and return everything it logged.
-async fn capture<F: std::future::Future<Output = ()>>(f: F) -> String {
+/// and return everything it logged. Shared with other test modules: the
+/// capture subscriber is global to the test binary.
+pub(crate) async fn capture<F: std::future::Future<Output = ()>>(f: F) -> String {
     install_capture_subscriber();
     let out = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     CAPTURE.with(|c| *c.borrow_mut() = Some(out.clone()));

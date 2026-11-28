@@ -33,7 +33,7 @@ use axum::Json;
 pub use call::CallWake;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-pub use service::PushService;
+pub use service::{FollowUpBatch, PushService};
 use sqlx::FromRow;
 pub use targets::{spawn_wake_for_new_message, wake_targets};
 use uuid::Uuid;
@@ -196,10 +196,40 @@ pub async fn deliver_with<P: PushPayload>(
     user_id: Uuid,
     signal: &P,
 ) -> Result<(), sqlx::Error> {
+    deliver_with_report(db, push, user_id, signal)
+        .await
+        .map(|_| ())
+}
+
+/// The provider kinds of the subscriptions a [`deliver_with_report`] could
+/// not reach (refused, failed or timed out; a dead subscription that was
+/// removed is not counted). No addresses, no payload.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct DeliveryReport {
+    pub failed_providers: Vec<&'static str>,
+}
+
+/// [`deliver_with`], also saying which providers failed.
+///
+/// Subscriptions are tried most recently used first (`last_used_at`, else
+/// the time of registration): one that keeps failing is never marked used
+/// and falls behind, so a time limit on the whole send reaches the working
+/// device first.
+///
+/// # Errors
+/// Loading the user's subscriptions failed.
+pub async fn deliver_with_report<P: PushPayload>(
+    db: &sqlx::PgPool,
+    push: &PushService,
+    user_id: Uuid,
+    signal: &P,
+) -> Result<DeliveryReport, sqlx::Error> {
+    let mut report = DeliveryReport::default();
     let subs: Vec<PushSubscription> = sqlx::query_as(
         "SELECT id, user_id, provider, endpoint, public_key, auth_key, device_label,
                 created_at, last_used_at, device_id
-         FROM push_subscriptions WHERE user_id = $1",
+         FROM push_subscriptions WHERE user_id = $1
+         ORDER BY COALESCE(last_used_at, created_at) DESC, id",
     )
     .bind(user_id)
     .fetch_all(db)
@@ -229,10 +259,10 @@ pub async fn deliver_with<P: PushPayload>(
                         .execute(db)
                         .await;
             }
-            Delivery::Failed => {}
+            Delivery::Failed => report.failed_providers.push(provider_label(&sub.provider)),
         }
     }
-    Ok(())
+    Ok(report)
 }
 
 /// Bounded metric label for a provider string read from the database.

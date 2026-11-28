@@ -3,6 +3,10 @@
 # container's `exec ... sh -c '<cmd>'` just enough for the ops-script tests.
 #   FAKE_DOCKER_LOG   file that receives one line per invocation
 #   FAKE_DOCKER_MODE  "fail" => print nothing, exit 1 for `exec`
+#   FAKE_DOCKER_SERVER_LOG  text that `docker logs` prints
+#   FAKE_DOCKER_LOGS_FAIL   "1" => `docker logs` fails
+#   FAKE_DOCKER_SCRIPT_LOAD  what `valkey-cli SCRIPT LOAD` prints (default: a hash)
+#   FAKE_DOCKER_VALKEY_EXEC_FAIL  "1" => `exec` into the Valkey container fails
 set -u
 [ -n "${FAKE_DOCKER_LOG:-}" ] && echo "$*" >> "$FAKE_DOCKER_LOG"
 
@@ -20,6 +24,21 @@ case "${1:-}" in
             shift
         done
         case "$cmd" in
+            *valkey-cli*'SCRIPT LOAD'*)
+                if [ "${FAKE_DOCKER_VALKEY_EXEC_FAIL:-0}" = "1" ]; then
+                    echo "Error response from daemon: No such container: canis-valkey" >&2
+                    exit 1
+                fi
+                case "$cmd" in
+                    *REDISCLI_AUTH=*'$VALKEY_PASSWORD'*) ;;
+                    *)
+                        echo "fake-docker: valkey-cli without REDISCLI_AUTH=\$VALKEY_PASSWORD" >&2
+                        exit 2
+                        ;;
+                esac
+                printf '%s\n' "${FAKE_DOCKER_SCRIPT_LOAD:-e0e1f9fabfc9d4800c877a703b823ac0578ff8db}"
+                exit 0
+                ;;
             *PGPASSWORD=*'$POSTGRESQL_PASSWORD'*) ;;
             *)
                 echo "fake-docker: exec without PGPASSWORD=\$POSTGRESQL_PASSWORD (cmd: '$cmd')" >&2
@@ -42,6 +61,10 @@ case "${1:-}" in
                 printf '%s\n' ${FAKE_DOCKER_MIGRATIONS:-1 2}
                 ;;
         esac
+        ;;
+    logs)
+        [ "${FAKE_DOCKER_LOGS_FAIL:-0}" = "1" ] && exit 1
+        printf '%s\n' "${FAKE_DOCKER_SERVER_LOG:-}"
         ;;
     volume) exit 1 ;;
     inspect) echo "fake-container" ;;

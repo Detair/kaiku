@@ -276,6 +276,9 @@ pub async fn repudiate_tx(
             compromised.push(f.factor.as_str().to_string());
         }
     }
+    // The start of this transaction, on purpose: an event that joined the
+    // notice while the report was under way is news the owner had not seen,
+    // so its follow-up push is still sent (a later stamp would hide it).
     sqlx::query("UPDATE security_events SET repudiated_at = NOW() WHERE id = $1")
         .bind(ev.id)
         .execute(&mut *conn)

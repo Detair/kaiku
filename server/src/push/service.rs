@@ -22,6 +22,40 @@ pub struct PushService {
     coalescer: Coalescer,
     /// Per-call locks ordering `ringing` before `ended` ([`super::call`]).
     call_locks: std::sync::Mutex<HashMap<Uuid, Arc<tokio::sync::Mutex<()>>>>,
+    /// Set while a batch of notice follow-up pushes is being sent: at most
+    /// one batch is in flight per process.
+    follow_ups_in_flight: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// Held while a batch of follow-up pushes is in flight; dropping it (also
+/// on a panic in the sending task) lets the next sweep claim again.
+#[derive(Debug)]
+pub struct FollowUpBatch(Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for FollowUpBatch {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
+impl PushService {
+    /// Start a batch of follow-up pushes, or `None` while the previous batch
+    /// is still being sent.
+    #[must_use]
+    pub fn begin_follow_up_batch(&self) -> Option<FollowUpBatch> {
+        use std::sync::atomic::Ordering;
+        self.follow_ups_in_flight
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| FollowUpBatch(self.follow_ups_in_flight.clone()))
+    }
+
+    /// Whether a batch of follow-up pushes is being sent.
+    #[must_use]
+    pub fn follow_up_batch_in_flight(&self) -> bool {
+        self.follow_ups_in_flight
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
 }
 
 impl PushService {

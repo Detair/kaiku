@@ -48,6 +48,31 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Initialize Redis (two clients: one for the app, one for the webhook
+    // delivery worker whose BRPOP blocks the connection)
+    let redis =
+        db::create_redis_client_with_timeout(&config.redis_url, config.valkey_command_timeout)
+            .await?;
+    let redis_webhook =
+        db::create_redis_client_with_timeout(&config.redis_url, config.valkey_command_timeout)
+            .await?;
+
+    // Initialize rate limiter (before the SFU, which gets it). Runs before
+    // the migrations: enabled but not loadable, the server does not start,
+    // and it has not changed the database yet.
+    let rate_limiter = {
+        let rl_config = vc_server::ratelimit::RateLimitConfig::from_env();
+        let rl_value = vc_server::ratelimit::EnabledValue::from_env();
+        let limiter =
+            vc_server::ratelimit::start_rate_limiter(redis.clone(), rl_config, &rl_value).await?;
+        if rl_value.is_enabled() {
+            info!("Rate limiter initialized");
+        } else {
+            info!("Rate limiting disabled by configuration");
+        }
+        limiter
+    };
+
     // Initialize database
     let db_pool = db::create_pool(&config.database_url).await?;
     db::run_migrations(&db_pool).await?;
@@ -77,15 +102,6 @@ async fn main() -> Result<()> {
     let cpu_sampler_handle = vc_server::observability::sysinfo::spawn_cpu_sampler(
         vc_server::observability::sysinfo::CPU_SAMPLE_INTERVAL,
     );
-
-    // Initialize Redis (two clients: one for the app, one for the webhook
-    // delivery worker whose BRPOP blocks the connection)
-    let redis =
-        db::create_redis_client_with_timeout(&config.redis_url, config.valkey_command_timeout)
-            .await?;
-    let redis_webhook =
-        db::create_redis_client_with_timeout(&config.redis_url, config.valkey_command_timeout)
-            .await?;
 
     // Passkeys are bound to the RP ID (DC5): a changed `PUBLIC_URL` host with
     // live passkeys refuses to start unless PASSKEY_ALLOW_RP_ID_CHANGE names it.
@@ -131,34 +147,6 @@ async fn main() -> Result<()> {
     } else {
         info!("AWS credentials not configured. File uploads disabled.");
         None
-    };
-
-    // Initialize rate limiter (optional)
-    // Needs to be initialized before SFU to be passed to it
-    let rate_limiter = {
-        use vc_server::ratelimit::{RateLimitConfig, RateLimiter};
-
-        let rl_config = RateLimitConfig::from_env();
-        if rl_config.enabled {
-            // Clone redis for rate limiter
-            let mut limiter = RateLimiter::new(redis.clone(), rl_config);
-            match limiter.init().await {
-                Ok(()) => {
-                    info!("Rate limiter initialized");
-                    Some(limiter)
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "Rate limiter initialization failed: {}. Rate limiting disabled.",
-                        e
-                    );
-                    None
-                }
-            }
-        } else {
-            info!("Rate limiting disabled by configuration");
-            None
-        }
     };
 
     // Initialize screen share limiter

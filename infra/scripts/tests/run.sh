@@ -106,6 +106,55 @@ printf -- '-- PostgreSQL database dump\nSELECT 1;\n--\n-- PostgreSQL database du
 out=$(PATH="$WORK/slowtail:$PATH" pf)
 check "preflight sigpipe: complete backup passes check 4" grep -q "dump complete (" <<<"$out"
 
+# --- preflight: rate limiter loaded (check 7) ----------------------------------
+# Log lines as the server writes them (one JSON object per line).
+START='{"level":"INFO","fields":{"message":"Starting Kaiku Server","version":"1.0.0"}}'
+LOADED='{"level":"INFO","fields":{"message":"Rate limiter initialized"}}'
+FAILED_LINE='{"level":"WARN","fields":{"message":"Rate limiter initialization failed: NOPERM. Rate limiting disabled."}}'
+FATAL='{"level":"ERROR","fields":{"message":"the server does not start: rate limiter not loaded","error":"rate limiting is enabled, but …"}}'
+OFF='{"level":"INFO","fields":{"message":"Rate limiting disabled by configuration"}}'
+LISTEN='{"level":"INFO","fields":{"message":"Server listening","address":"0.0.0.0:8080"}}'
+REFUSED="NOPERM User default has no permissions to run the 'script|load' command"
+log() { printf '%s\n' "$@"; }
+
+out=$(FAKE_DOCKER_SERVER_LOG="$(log "$START" "$LOADED" "$LISTEN")" pf)
+check "preflight 7: clean start, live test ok: passes" grep -q "✓ the rate limiter loaded at the server's last start" <<<"$out"
+for answer in "$REFUSED" "NOAUTH Authentication required." "AUTH failed: WRONGPASS invalid username-password pair or user is disabled."; do
+    out=$(FAKE_DOCKER_SERVER_LOG="$(log "$START" "$LOADED" "$LISTEN")" FAKE_DOCKER_SCRIPT_LOAD="$answer" pf)
+    check "preflight 7: clean start, default user refused (${answer%% *}): warns" grep -q "! WARNING: the rate limiter loaded at the server's last start, but the live test was refused for canis-valkey's default user" <<<"$out"
+    check "preflight 7: clean start, default user refused (${answer%% *}): conditional" grep -q "if the server uses that user, the new version will not start" <<<"$out"
+    check "preflight 7: clean start, default user refused (${answer%% *}): names the server's user" grep -q "valkey-cli --user <user>" <<<"$out"
+    check "preflight 7: clean start, default user refused (${answer%% *}): no ✗" bash -c '! grep -q "✗.*rate limiter\|✗.*will not start" <<<"$1"' _ "$out"
+done
+out=$(FAKE_DOCKER_SERVER_LOG="$(log "$START" "$LOADED" "$LISTEN")" FAKE_DOCKER_VALKEY_EXEC_FAIL=1 pf)
+check "preflight 7: clean start, no live test: warns, not checked" grep -q "! WARNING: the rate limiter loaded at the server's last start; the live test on canis-valkey could not run" <<<"$out"
+check "preflight 7: clean start, no live test: never claims a check" bash -c '! grep -q "✓ the rate limiter loaded" <<<"$1"' _ "$out"
+out=$(FAKE_DOCKER_SERVER_LOG="$(log "$START" "$FAILED_LINE")" pf)
+check "preflight 7: earlier version without limiter: fails" grep -q "✗ the server's last start logged 'Rate limiter initialization failed'" <<<"$out"
+out=$(FAKE_DOCKER_SERVER_LOG="$(log "$START" "$LOADED" "$LISTEN" "$START" "$FATAL")" pf)
+check "preflight 7: earlier success, then a refused start: fails" grep -q "✗ the server's last start was refused" <<<"$out"
+check "preflight 7: earlier success, then a refused start: no ✓" bash -c '! grep -q "✓ the rate limiter loaded" <<<"$1"' _ "$out"
+out=$(FAKE_DOCKER_SERVER_LOG="$(log "$START" "$LOADED" "$LISTEN" "$START")" pf)
+check "preflight 7: an earlier start's success does not count" grep -q "! WARNING: the server's last start logged nothing about the rate limiter" <<<"$out"
+check "preflight 7: an earlier start's success: no ✓" bash -c '! grep -q "✓ the rate limiter loaded" <<<"$1"' _ "$out"
+out=$(FAKE_DOCKER_SERVER_LOG="$(log "$START" "$FAILED_LINE" "$START" "$LOADED" "$LISTEN")" pf)
+check "preflight 7: only the last start counts" grep -q "✓ the rate limiter loaded at the server's last start" <<<"$out"
+out=$(FAKE_DOCKER_SERVER_LOG="$(log "$START" "$FAILED_LINE" '{"level":"INFO","fields":{"message":"note","text":"Rate limiter initialized"}}')" pf)
+check "preflight 7: the words in another field do not count" grep -q "✗ the server's last start logged 'Rate limiter initialization failed'" <<<"$out"
+out=$(FAKE_DOCKER_SERVER_LOG="$(log "$START" "$OFF" "$LISTEN")" pf)
+check "preflight 7: switched off: passes" grep -q "✓ rate limiting is switched off" <<<"$out"
+out=$(FAKE_DOCKER_SERVER_LOG="$(log "$LISTEN")" pf)
+check "preflight 7: last start not in the log, live test ok: warns" grep -q "! WARNING: the server's log no longer shows its last start" <<<"$out"
+check "preflight 7: last start not in the log, live test ok: names the other user" grep -q "valkey-cli --user <user>" <<<"$out"
+check "preflight 7: last start not in the log, live test ok: no ✗" bash -c '! grep -q "✗.*rate limiter\|✗.*last start" <<<"$1"' _ "$out"
+out=$(FAKE_DOCKER_SERVER_LOG='' FAKE_DOCKER_SCRIPT_LOAD="$REFUSED" pf)
+check "preflight 7: empty log, Valkey refuses: fails" grep -q "✗ cannot tell from the server's log" <<<"$out"
+check "preflight 7: empty log, Valkey refuses: names the answer" grep -q "did not accept SCRIPT LOAD: NOPERM" <<<"$out"
+out=$(FAKE_DOCKER_SERVER_LOG='' FAKE_DOCKER_VALKEY_EXEC_FAIL=1 pf)
+check "preflight 7: empty log, no live test: fails" grep -q "✗ cannot tell from the server's log" <<<"$out"
+out=$(FAKE_DOCKER_LOGS_FAIL=1 pf)
+check "preflight 7: unreadable log fails" grep -q "✗ could not read the canis-server logs" <<<"$out"
+
 if [ "$FAILED" -gt 0 ]; then
     echo "$FAILED check(s) failed"
     exit 1

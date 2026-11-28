@@ -3,7 +3,8 @@
 //! One task runs [`run_once`] every 60 s. Its steps run in a fixed order;
 //! later tasks append steps (expiring challenges, enrolments, …). A failing
 //! step is logged and the loop continues; every step is idempotent, so the
-//! next tick retries.
+//! next tick retries. No step waits for a push service: the pushes of the
+//! notice steps are sent by background tasks after their commits.
 
 use std::time::Duration;
 
@@ -38,6 +39,16 @@ pub async fn run_once(state: &AppState) -> anyhow::Result<()> {
         Ok(_) => {}
         Err(e) => {
             tracing::warn!(error = %e, "sweep: notice delivery failed");
+            first_err.get_or_insert(e);
+        }
+    }
+
+    // 1b. One follow-up push per notice whose push was held back.
+    match crate::security_events::notices::push_due_follow_ups(state).await {
+        Ok(n) if n > 0 => tracing::debug!(count = n, "sweep sent follow-up notice pushes"),
+        Ok(_) => {}
+        Err(e) => {
+            tracing::warn!(error = %e, "sweep: follow-up notice pushes failed");
             first_err.get_or_insert(e);
         }
     }

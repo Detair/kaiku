@@ -794,7 +794,37 @@ recipient, subject and event type, events within 600 s of a notice's first event
 (count, up to 50 events, `events_truncated`). Push `t=security` (FCM data or UnifiedPush JSON),
 always high priority, collapse key `security-<notice_id>`, TTL 86400 s, at most one per notice per
 60 s, to every push subscription (lapsed key devices, devices named lost, and once to a device that
-"Remove device now" just removed). IP and place only in the owner's own copy and the admin log.
+"Remove device now" just removed). An update within the 60 s is not pushed at once: it sets
+`push_due_at`, and the minute sweep sends one follow-up push with the count at that moment and the
+same collapse key once the 60 s have passed, so 60–120 s after the first push (row lock with
+`SKIP LOCKED`, so concurrent sweeps send it once; after downtime each due notice gets one). The
+minute sweep never waits for a push service on any of its steps: the pushes of events it delivers
+from the outbox and its follow-ups are recorded and committed first and then handed to a background
+task, so challenge, set-up and sign-in attempt expiry and every later step run on time. One run
+claims at most 100 follow-ups, and only when the previous follow-up batch has finished sending
+(otherwise they stay due for a later run). The background task sends for at most 8 recipients at a
+time, each recipient's pushes one after another for at most 30 s, so a recipient whose push
+addresses never answer delays only its own pushes, unless many such recipients fill all slots: then
+a batch can take up to 13 rounds of 30 s and other accounts' follow-ups (never an immediate push)
+wait for a later run. When more than 100 follow-ups fall due within a minute (a large server, or
+after downtime), they queue up, oldest first, and are worked off at most 100 a minute; immediate
+pushes and the notice in the Kaiku DM are not affected. The order is deliberate: first record the
+push as sent, then send it, so a push is never sent twice. A stop after a sweep run committed loses
+the pushes of that run not yet sent: up to 100 follow-ups and the pushes of every event it delivered
+from the outbox (up to 500 events). The 30 s limit per recipient applies to the pushes the sweep
+sends (follow-ups and outbox); the ordinary delivery right after an event has no such limit. A
+recipient's subscriptions are tried most recently used first (`last_used_at`, else the time of
+registration), so a working phone is not stuck behind addresses that keep timing out (those are
+never marked used). A push recorded as sent that then fails, times out, is cut off by the limit or
+by a server stop is not sent again; this holds for the immediate push too. A refused or timed-out push leaves a WARN line with the notice id and the
+provider kind (never the address or the content). The notice in the Kaiku DM stays correct. "Push now", "due" and
+"dealt with" are decided on the database clock at the moment of the statement; an event's
+`delivered_at` is the moment it joined its notices. The time of the owner's report is the start of
+the report's transaction, on purpose: an event that joined while the report was under way is news
+the owner had not seen, and its follow-up is still sent. No follow-up when the owner reported one of the
+notice's events ("That wasn't me") after its newest event joined (also for the admin and
+recovery-contact copies); the read position in the Kaiku DM
+does not count, since any session of the account can move it. IP and place only in the owner's own copy and the admin log.
 
 **Actions** are computed per reader on every read and listed only where usable: `repudiate`
 (`via: step_up|part2`, with the warning), `cancel_request`, `remove_device`, `confirm_contact`.

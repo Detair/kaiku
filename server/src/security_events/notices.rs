@@ -7,6 +7,10 @@
 //! re-drives anything left over (a crash, a CLI action). Each event is
 //! delivered under its own row lock (`FOR UPDATE SKIP LOCKED`), so a
 //! concurrent sweep never delivers it twice.
+//!
+//! A notice is pushed at most once per [`PUSH_INTERVAL_SECS`]; an update
+//! inside that interval is held back and sent once afterwards by the sweep
+//! ([`push_due_follow_ups`]) with the count at that moment.
 
 use std::collections::HashMap;
 
@@ -19,6 +23,7 @@ use super::push::SecurityPush;
 use super::queries::{events_of_notices, EventRow};
 use super::types::{EventType, SecurityEvent, Severity};
 use crate::api::AppState;
+use crate::push::FollowUpBatch;
 use crate::system_account::{kaiku_dm_created_tx, SYSTEM_USER_ID};
 use crate::ws::{broadcast_to_user, ServerEvent};
 
@@ -182,7 +187,6 @@ struct NoticeRow {
     id: Uuid,
     message_id: Uuid,
     count: i32,
-    last_pushed_at: Option<DateTime<Utc>>,
 }
 
 /// Deliver these events (idempotent: an event already delivered, or being
@@ -193,6 +197,21 @@ struct NoticeRow {
 /// returned at the end (so one bad event never holds back the sweep).
 #[tracing::instrument(skip(state, event_ids), fields(count = event_ids.len()))]
 pub async fn deliver(state: &AppState, event_ids: &[Uuid]) -> anyhow::Result<()> {
+    deliver_then(state, event_ids, PushMode::Inline).await
+}
+
+/// How the pushes of a delivery are sent.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PushMode {
+    /// After each event, in this task (the delivery itself runs in the
+    /// background or in a test).
+    Inline,
+    /// Handed to a background task after the last event (the minute sweep,
+    /// which must not wait for a push service).
+    Detached,
+}
+
+async fn deliver_then(state: &AppState, event_ids: &[Uuid], mode: PushMode) -> anyhow::Result<()> {
     let mut ordered: Vec<(DateTime<Utc>, Uuid)> =
         sqlx::query_as("SELECT created_at, id FROM security_events WHERE id = ANY($1)")
             .bind(event_ids)
@@ -200,14 +219,28 @@ pub async fn deliver(state: &AppState, event_ids: &[Uuid]) -> anyhow::Result<()>
             .await?;
     ordered.sort();
     let mut first_err: Option<anyhow::Error> = None;
+    let mut detached: Vec<(Uuid, SecurityPush)> = Vec::new();
     for (_, id) in ordered {
         match deliver_one(state, id).await {
-            Ok(outcomes) => after_commit(state, outcomes).await,
+            Ok(outcomes) => {
+                let pushes = after_commit(state, outcomes).await;
+                match mode {
+                    PushMode::Inline => {
+                        for (recipient, push) in pushes {
+                            send_security_push(state, recipient, &push).await;
+                        }
+                    }
+                    PushMode::Detached => detached.extend(pushes),
+                }
+            }
             Err(e) => {
                 tracing::warn!(event_id = %id, error = %e, "notice delivery of one event failed");
                 first_err.get_or_insert(e);
             }
         }
+    }
+    if !detached.is_empty() {
+        spawn_bounded_sends(state, detached, None);
     }
     first_err.map_or(Ok(()), Err)
 }
@@ -271,7 +304,7 @@ async fn deliver_one(state: &AppState, id: Uuid) -> anyhow::Result<Vec<Outcome>>
         // Within the window around the notice's first event, both ways: an
         // event delivered late joins only a notice near its own time.
         let existing = sqlx::query_as::<_, NoticeRow>(
-            "SELECT id, message_id, count, last_pushed_at FROM security_notices
+            "SELECT id, message_id, count FROM security_notices
               WHERE recipient_id = $1 AND subject_id = $2 AND event_type = $3
                 AND first_at > $4 - make_interval(secs => $5)
                 AND first_at < $4 + make_interval(secs => $5)
@@ -287,24 +320,40 @@ async fn deliver_one(state: &AppState, id: Uuid) -> anyhow::Result<Vec<Outcome>>
         .fetch_optional(&mut *tx)
         .await?;
         let (notice_id, message_id, count, push_now, created_message) = if let Some(n) = existing {
-            let push_now = n
-                .last_pushed_at
-                .is_none_or(|t| Utc::now() - t >= chrono::Duration::seconds(PUSH_INTERVAL_SECS));
             let count = n.count + 1;
-            sqlx::query(
-                "UPDATE security_notices
-                    SET count = count + 1,
-                        severity = CASE WHEN $2 = 'high' THEN 'high' ELSE severity END,
-                        first_at = LEAST(first_at, $3),
-                        last_at = GREATEST(last_at, $3),
-                        last_pushed_at = CASE WHEN $4 THEN NOW() ELSE last_pushed_at END
-                  WHERE id = $1",
+            // Push now when the interval since the last push has passed,
+            // decided on the database clock at this statement (the same clock
+            // that sets `last_pushed_at` and serves `push_due_at`). A
+            // held-back push becomes due when the interval has passed (an
+            // earlier due time is kept); a push sent now carries the full
+            // count and covers any held-back one.
+            let push_now: bool = sqlx::query_scalar(
+                "WITH d AS (
+                     SELECT clock_timestamp() AS at,
+                            (last_pushed_at IS NULL
+                             OR last_pushed_at <= clock_timestamp() - make_interval(secs => $4))
+                                AS push_now
+                       FROM security_notices WHERE id = $1
+                 )
+                 UPDATE security_notices n
+                    SET count = n.count + 1,
+                        severity = CASE WHEN $2 = 'high' THEN 'high' ELSE n.severity END,
+                        first_at = LEAST(n.first_at, $3),
+                        last_at = GREATEST(n.last_at, $3),
+                        last_pushed_at = CASE WHEN d.push_now THEN d.at ELSE n.last_pushed_at END,
+                        push_due_at = CASE WHEN d.push_now THEN NULL
+                                           ELSE COALESCE(n.push_due_at,
+                                                         n.last_pushed_at + make_interval(secs => $4))
+                                      END
+                   FROM d
+                  WHERE n.id = $1
+              RETURNING d.push_now",
             )
             .bind(n.id)
             .bind(severity.as_str())
             .bind(ev.created_at)
-            .bind(push_now)
-            .execute(&mut *tx)
+            .bind(PUSH_INTERVAL_SECS as f64)
+            .fetch_one(&mut *tx)
             .await?;
             sqlx::query("UPDATE messages SET content = $2, edited_at = NOW() WHERE id = $1")
                 .bind(n.message_id)
@@ -329,7 +378,7 @@ async fn deliver_one(state: &AppState, id: Uuid) -> anyhow::Result<Vec<Outcome>>
                 "INSERT INTO security_notices
                     (id, recipient_id, subject_id, event_type, severity, channel_id, message_id,
                      count, first_at, last_at, last_pushed_at)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, 1, $8, $8, NOW())",
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, 1, $8, $8, clock_timestamp())",
             )
             .bind(notice_id)
             .bind(r.user_id)
@@ -372,7 +421,9 @@ async fn deliver_one(state: &AppState, id: Uuid) -> anyhow::Result<Vec<Outcome>>
             push,
         });
     }
-    sqlx::query("UPDATE security_events SET delivered_at = NOW() WHERE id = $1")
+    // The moment the event joined its notices (statement time, not the
+    // start of this transaction, which may have waited for the notice).
+    sqlx::query("UPDATE security_events SET delivered_at = clock_timestamp() WHERE id = $1")
         .bind(ev.id)
         .execute(&mut *tx)
         .await?;
@@ -380,9 +431,10 @@ async fn deliver_one(state: &AppState, id: Uuid) -> anyhow::Result<Vec<Outcome>>
     Ok(outcomes)
 }
 
-/// WebSocket hints and pushes, after the delivery committed. Failures are
-/// logged; the notice itself is durable.
-async fn after_commit(state: &AppState, outcomes: Vec<Outcome>) {
+/// WebSocket hints after the delivery committed; returns the pushes to send.
+/// Failures are logged; the notice itself is durable.
+async fn after_commit(state: &AppState, outcomes: Vec<Outcome>) -> Vec<(Uuid, SecurityPush)> {
+    let mut pushes = Vec::new();
     for o in outcomes {
         if o.created_dm {
             match crate::chat::dm::dm_list_entry_by_id(&state.db, o.recipient, o.channel_id).await {
@@ -415,13 +467,76 @@ async fn after_commit(state: &AppState, outcomes: Vec<Outcome>) {
             }
         }
         if let Some(push) = o.push {
-            if let Err(e) =
-                crate::push::deliver_with(&state.db, &state.push, o.recipient, &push).await
-            {
-                tracing::warn!(error = %e, "notice: push failed");
-            }
+            pushes.push((o.recipient, push));
         }
     }
+    pushes
+}
+
+/// Send one security push to every subscription of `recipient`. A
+/// subscription that refuses it, fails or times out leaves one WARN line
+/// with the notice and the provider kind (never the address or the
+/// payload); the push is not sent again.
+async fn send_security_push(state: &AppState, recipient: Uuid, push: &SecurityPush) {
+    match crate::push::deliver_with_report(&state.db, &state.push, recipient, push).await {
+        Ok(report) if !report.failed_providers.is_empty() => tracing::warn!(
+            notice_id = %push.notice_id,
+            providers = ?report.failed_providers,
+            "notice: security push not delivered"
+        ),
+        Ok(_) => {}
+        Err(e) => tracing::warn!(
+            notice_id = %push.notice_id,
+            error = %e,
+            "notice: security push failed"
+        ),
+    }
+}
+
+/// Send `pushes` in a background task: [`FOLLOW_UP_PARALLEL`] recipients at
+/// a time, each recipient's pushes one after another within
+/// [`FOLLOW_UP_RECIPIENT_LIMIT`]. `batch` (the follow-up guard) is held
+/// until the last send ended.
+fn spawn_bounded_sends(
+    state: &AppState,
+    pushes: Vec<(Uuid, SecurityPush)>,
+    batch: Option<FollowUpBatch>,
+) {
+    let mut by_recipient: Vec<(Uuid, Vec<SecurityPush>)> = Vec::new();
+    for (recipient, push) in pushes {
+        match by_recipient.iter_mut().find(|(r, _)| *r == recipient) {
+            Some((_, list)) => list.push(push),
+            None => by_recipient.push((recipient, vec![push])),
+        }
+    }
+    let state = state.clone();
+    tokio::spawn(async move {
+        use futures::StreamExt as _;
+        futures::stream::iter(by_recipient)
+            .for_each_concurrent(FOLLOW_UP_PARALLEL, |(recipient, list)| {
+                let state = &state;
+                async move {
+                    let send = async {
+                        for push in &list {
+                            send_security_push(state, recipient, push).await;
+                        }
+                    };
+                    if tokio::time::timeout(FOLLOW_UP_RECIPIENT_LIMIT, send)
+                        .await
+                        .is_err()
+                    {
+                        let notice_ids: Vec<Uuid> = list.iter().map(|p| p.notice_id).collect();
+                        tracing::warn!(
+                            recipient = %recipient,
+                            notice_ids = ?notice_ids,
+                            "notice: security pushes cut off after the time limit"
+                        );
+                    }
+                }
+            })
+            .await;
+        drop(batch);
+    });
 }
 
 async fn message_event(
@@ -528,8 +643,147 @@ pub async fn deliver_pending_bounded(state: &AppState, batch: i64) -> anyhow::Re
         }
     }
     let n = ids.len();
-    deliver(state, &ids).await?;
+    deliver_then(state, &ids, PushMode::Detached).await?;
     Ok(n)
+}
+
+/// Follow-up pushes one sweep run claims at most.
+pub const FOLLOW_UP_BATCH: i64 = 100;
+/// Recipients whose follow-ups are sent at the same time.
+pub const FOLLOW_UP_PARALLEL: usize = 8;
+/// Time one recipient's follow-ups may take in a batch.
+///
+/// All of that recipient's subscriptions are sent one after another; what
+/// is left at the limit is dropped and logged, so a recipient whose
+/// addresses never answer holds only its own slot, and only this long.
+pub const FOLLOW_UP_RECIPIENT_LIMIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The sweep step: one follow-up push for each notice whose push was held
+/// back and whose push interval has passed (`push_due_at`). Returns how many
+/// pushes were sent.
+///
+/// The push carries the notice's count at this moment and the same collapse
+/// key as the first one, so the phone replaces it. Each due notice is
+/// claimed under its row lock (`FOR UPDATE SKIP LOCKED`) and its due time
+/// cleared in the same transaction, so concurrent sweeps send it once, and
+/// after downtime each notice gets one push however long ago it fell due.
+/// The Kaiku DM message and the WebSocket hint were already updated when the
+/// event joined; nothing else is sent.
+///
+/// No follow-up when the owner reported one of the notice's events ("That
+/// wasn't me") after the notice's newest event joined: the owner acted on
+/// the notice as it stands. The DM read position is not used, since any
+/// session of the account can move it.
+pub async fn push_due_follow_ups(state: &AppState) -> anyhow::Result<usize> {
+    push_due_follow_ups_bounded(state, FOLLOW_UP_BATCH).await
+}
+
+/// [`push_due_follow_ups`] with the claim bound given (tests).
+///
+/// At most one batch is in flight per process: while the previous batch is
+/// still being sent, nothing is claimed (the notices stay due for a later
+/// run). The batch is sent in the background, [`FOLLOW_UP_PARALLEL`]
+/// recipients at a time, each recipient's pushes one after another within
+/// [`FOLLOW_UP_RECIPIENT_LIMIT`]. A push recorded as sent that then fails
+/// (or is cut off by a server stop) is logged and not sent again.
+pub async fn push_due_follow_ups_bounded(state: &AppState, limit: i64) -> anyhow::Result<usize> {
+    #[derive(sqlx::FromRow)]
+    struct Due {
+        id: Uuid,
+        recipient_id: Uuid,
+        subject_id: Uuid,
+        event_type: String,
+        severity: String,
+        count: i32,
+        actor_kind: Option<String>,
+        actor_user_id: Option<Uuid>,
+        dealt_with: bool,
+    }
+    let Some(batch) = state.push.begin_follow_up_batch() else {
+        tracing::debug!("sweep: previous follow-up batch still sending; nothing claimed");
+        return Ok(0);
+    };
+    let mut tx = state.db.begin().await?;
+    let due: Vec<Due> = sqlx::query_as(
+        "WITH due AS (
+             SELECT id, recipient_id, subject_id, event_type, severity, count
+               FROM security_notices
+              WHERE push_due_at IS NOT NULL AND push_due_at <= statement_timestamp()
+              ORDER BY push_due_at
+              LIMIT $1
+              FOR UPDATE SKIP LOCKED
+         )
+         SELECT d.id, d.recipient_id, d.subject_id, d.event_type, d.severity, d.count,
+                newest.actor_kind, newest.actor_user_id,
+                EXISTS (
+                    SELECT 1 FROM security_notice_events ne
+                      JOIN security_events e ON e.id = ne.event_id
+                     WHERE ne.notice_id = d.id
+                       AND e.repudiated_at IS NOT NULL
+                       AND e.repudiated_at >= (
+                           SELECT MAX(e2.delivered_at) FROM security_notice_events ne2
+                             JOIN security_events e2 ON e2.id = ne2.event_id
+                            WHERE ne2.notice_id = d.id)
+                ) AS dealt_with
+           FROM due d
+           LEFT JOIN LATERAL (
+               SELECT e.actor_kind, e.actor_user_id
+                 FROM security_notice_events ne
+                 JOIN security_events e ON e.id = ne.event_id
+                WHERE ne.notice_id = d.id
+                ORDER BY e.created_at DESC, e.id DESC
+                LIMIT 1
+           ) newest ON TRUE",
+    )
+    .bind(limit)
+    .fetch_all(&mut *tx)
+    .await?;
+    if due.is_empty() {
+        tx.commit().await?;
+        return Ok(0);
+    }
+    let mut pushes: Vec<(Uuid, SecurityPush)> = Vec::new();
+    for d in due {
+        let event_type = EventType::parse(&d.event_type);
+        let send = !d.dealt_with && event_type.is_some();
+        sqlx::query(
+            "UPDATE security_notices
+                SET push_due_at = NULL,
+                    last_pushed_at = CASE WHEN $2 THEN clock_timestamp() ELSE last_pushed_at END
+              WHERE id = $1",
+        )
+        .bind(d.id)
+        .bind(send)
+        .execute(&mut *tx)
+        .await?;
+        let Some(event_type) = event_type.filter(|_| send) else {
+            continue;
+        };
+        let actor_id = match d.actor_kind.as_deref() {
+            Some("admin" | "recovery_contact") => d.actor_user_id,
+            _ => None,
+        };
+        pushes.push((
+            d.recipient_id,
+            SecurityPush {
+                notice_id: d.id,
+                event_type,
+                severity: Severity::parse(&d.severity).unwrap_or(Severity::High),
+                count: u32::try_from(d.count).unwrap_or(u32::MAX),
+                subject_id: d.subject_id,
+                actor_id,
+            },
+        ));
+    }
+    tx.commit().await?;
+    // Sent in the background, like the immediate pushes: a push service or
+    // endpoint that does not answer never holds up the sweep's other steps.
+    let sent = pushes.len();
+    if sent == 0 {
+        return Ok(0);
+    }
+    spawn_bounded_sends(state, pushes, Some(batch));
+    Ok(sent)
 }
 
 /// `system_settings` key of the notice sweep's rotating cursor.

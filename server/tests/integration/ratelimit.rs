@@ -809,3 +809,259 @@ async fn test_all_categories_work() {
 
     println!("All categories test passed");
 }
+
+// --- Start: an enabled limiter must load --------------------------------
+
+fn start_config(enabled: bool) -> RateLimitConfig {
+    RateLimitConfig {
+        enabled,
+        redis_key_prefix: format!("test:rl:{}", uuid::Uuid::new_v4()),
+        ..RateLimitConfig::default()
+    }
+}
+
+/// A Valkey client for an address nobody listens on (connecting is started,
+/// not awaited, as the server would find a Valkey that went away).
+fn unreachable_redis() -> fred::clients::Client {
+    use fred::interfaces::ClientLike;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let client = db::build_redis_client(
+        &format!("redis://127.0.0.1:{port}"),
+        std::time::Duration::from_millis(500),
+    )
+    .unwrap();
+    let _ = client.connect();
+    client
+}
+
+#[tokio::test]
+async fn start_refuses_an_enabled_limiter_without_valkey() {
+    let err = vc_server::ratelimit::start_rate_limiter(
+        unreachable_redis(),
+        start_config(true),
+        &vc_server::ratelimit::EnabledValue::On,
+    )
+    .await
+    .err()
+    .expect("an enabled limiter that cannot load is an error");
+    let text = err.to_string();
+    assert!(text.contains("could not load its scripts"), "{text}");
+    assert!(text.contains("RATE_LIMIT_ENABLED=false"), "{text}");
+}
+
+#[tokio::test]
+async fn start_without_rate_limiting_needs_no_valkey() {
+    let got = vc_server::ratelimit::start_rate_limiter(
+        unreachable_redis(),
+        start_config(false),
+        &vc_server::ratelimit::EnabledValue::Off,
+    )
+    .await
+    .unwrap();
+    assert!(got.is_none());
+}
+
+#[tokio::test]
+async fn start_loads_the_limiter_from_valkey() {
+    let redis = create_test_redis().await;
+    let limiter = vc_server::ratelimit::start_rate_limiter(
+        redis,
+        start_config(true),
+        &vc_server::ratelimit::EnabledValue::Unset,
+    )
+    .await
+    .unwrap()
+    .expect("enabled and loaded");
+    let result = limiter
+        .check(RateLimitCategory::AuthLogin, "203.0.113.9")
+        .await
+        .unwrap();
+    assert!(result.allowed);
+}
+
+#[tokio::test]
+async fn start_refuses_when_valkey_refuses_script_loading() {
+    use fred::interfaces::{ClientLike, KeysInterface};
+    let admin = create_test_redis().await;
+    let user = format!("noscript-{}", uuid::Uuid::new_v4().simple());
+    let password = uuid::Uuid::new_v4().simple().to_string();
+    let _: fred::types::Value = admin
+        .custom(
+            fred::types::CustomCommand::new_static("ACL", None::<u16>, false),
+            vec![
+                "SETUSER".to_string(),
+                user.clone(),
+                "on".into(),
+                format!(">{password}"),
+                "~*".into(),
+                "+@all".into(),
+                "-script".into(),
+                "-eval".into(),
+                "-evalsha".into(),
+            ],
+        )
+        .await
+        .unwrap();
+    let base = Config::default_for_test().redis_url;
+    let host = base.trim_start_matches("redis://");
+    let host = host.rsplit_once('@').map_or(host, |(_, h)| h);
+    let restricted = db::create_redis_client(&format!("redis://{user}:{password}@{host}"))
+        .await
+        .unwrap();
+    // The restricted user works otherwise.
+    let _: Option<String> = restricted.get("test:rl:probe").await.unwrap();
+    let result = vc_server::ratelimit::start_rate_limiter(
+        restricted.clone(),
+        start_config(true),
+        &vc_server::ratelimit::EnabledValue::On,
+    )
+    .await;
+    let _ = restricted.quit().await;
+    let _: fred::types::Value = admin
+        .custom(
+            fred::types::CustomCommand::new_static("ACL", None::<u16>, false),
+            vec!["DELUSER".to_string(), user],
+        )
+        .await
+        .unwrap();
+    let err = result
+        .err()
+        .expect("a Valkey that refuses script loading stops the start");
+    assert!(
+        err.to_string().contains("could not load its scripts"),
+        "{err}"
+    );
+}
+
+#[tokio::test]
+async fn start_warns_about_an_unexpected_value_and_names_it_in_the_error() {
+    let value = vc_server::ratelimit::EnabledValue::read(Some("0"));
+    let mut result = None;
+    let logs = super::oidc_flow_http::capture(async {
+        result = Some(
+            vc_server::ratelimit::start_rate_limiter(
+                unreachable_redis(),
+                start_config(true),
+                &value,
+            )
+            .await,
+        );
+    })
+    .await;
+    let warnings: Vec<&str> = logs
+        .lines()
+        .filter(|l| l.contains("WARN") && l.contains("RATE_LIMIT_ENABLED is \"0\""))
+        .collect();
+    assert_eq!(warnings.len(), 1, "one warning naming the value: {logs}");
+    assert!(warnings[0].contains("true, false"), "{logs}");
+    let err = result
+        .unwrap()
+        .err()
+        .expect("an enabled limiter that cannot load is an error");
+    let text = err.to_string();
+    assert!(
+        text.contains("RATE_LIMIT_ENABLED is \"0\", which is read as enabled"),
+        "{text}"
+    );
+}
+
+/// A Valkey user that may not load scripts, and the URL to connect as it.
+/// Returns (admin client, user name, URL).
+async fn valkey_user_without_scripts() -> (fred::clients::Client, String, String) {
+    use fred::interfaces::ClientLike;
+    let admin = create_test_redis().await;
+    let user = format!("noscript-{}", uuid::Uuid::new_v4().simple());
+    let password = uuid::Uuid::new_v4().simple().to_string();
+    let _: fred::types::Value = admin
+        .custom(
+            fred::types::CustomCommand::new_static("ACL", None::<u16>, false),
+            vec![
+                "SETUSER".to_string(),
+                user.clone(),
+                "on".into(),
+                format!(">{password}"),
+                "~*".into(),
+                "&*".into(),
+                "+@all".into(),
+                "-script".into(),
+                "-eval".into(),
+                "-evalsha".into(),
+            ],
+        )
+        .await
+        .unwrap();
+    let base = Config::default_for_test().redis_url;
+    let host = base.trim_start_matches("redis://");
+    let host = host.rsplit_once('@').map_or(host, |(_, h)| h);
+    let url = format!("redis://{user}:{password}@{host}");
+    (admin, user, url)
+}
+
+/// The server binary started against a Valkey that refuses script loading
+/// exits with an error before it touches the database: no migration ran.
+#[sqlx::test(migrations = false)]
+async fn the_server_refuses_to_start_before_it_changes_the_database(pool: sqlx::PgPool) {
+    use fred::interfaces::ClientLike;
+    let db_name: String = sqlx::query_scalar("SELECT current_database()")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let base = std::env::var("DATABASE_URL").expect("DATABASE_URL is set for the tests");
+    let (server_part, _) = base.rsplit_once('/').expect("a database URL with a path");
+    let database_url = format!("{server_part}/{db_name}");
+    let (admin, user, redis_url) = valkey_user_without_scripts().await;
+    let config = Config::default_for_test();
+
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_vc-server"));
+    command
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("DATABASE_URL", &database_url)
+        .env("REDIS_URL", &redis_url)
+        .env("JWT_PRIVATE_KEY", &config.jwt_private_key)
+        .env("JWT_PUBLIC_KEY", &config.jwt_public_key)
+        .env("PUBLIC_URL", "https://kaiku.test")
+        .env("BIND_ADDRESS", "127.0.0.1:0")
+        .env("RUST_LOG", "info")
+        // No `.env` file of a checkout may add settings.
+        .current_dir(std::env::temp_dir())
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(std::time::Duration::from_secs(60), command.output())
+        .await
+        .expect("the server exits instead of starting")
+        .expect("the server binary runs");
+
+    let _: fred::types::Value = admin
+        .custom(
+            fred::types::CustomCommand::new_static("ACL", None::<u16>, false),
+            vec!["DELUSER".to_string(), user],
+        )
+        .await
+        .unwrap();
+    let _ = admin.quit().await;
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!output.status.success(), "exit status: {:?}", output.status);
+    assert!(
+        stderr.contains("rate limiter could not load its scripts"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("the server does not start: rate limiter not loaded"),
+        "log: {stdout}"
+    );
+    let ledger: Option<String> = sqlx::query_scalar("SELECT to_regclass('_sqlx_migrations')::text")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(ledger.is_none(), "no migration ran");
+    let tables: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM pg_tables WHERE schemaname = 'public'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(tables, 0, "the database is untouched");
+}
