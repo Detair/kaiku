@@ -156,10 +156,12 @@ When you update an existing compose installation:
       `Starting Kaiku Server` line on) and tests script loading on the
       Valkey container as its default user, the one the compose file gives
       the server. It passes only when the last start shows the limiter
-      loaded (or switched off) and the test works, or, with a warning, when
-      the log no longer reaches back to the last start but the test works.
+      loaded (or switched off) and the test works. It passes with a warning
+      when the log no longer reaches back to the last start but the test
+      works, and when the last start loaded the limiter but the default user
+      is refused (the server may use another Valkey user: test as that one).
       When it cannot run the test, it does not report the limiter as
-      checked.
+      checked. A refused start in the log is always a failure.
    2. With a Valkey of your own, or a restricted Valkey user for the server,
       test by hand as that user: `valkey-cli SCRIPT LOAD "return 1"` must
       print a hash. The log only shows the state at the last start; a Valkey

@@ -287,7 +287,9 @@ commands, another image or configuration), test now as the server's Valkey user:
 `valkey-cli SCRIPT LOAD "return 1"` must print a hash. `infra/scripts/upgrade-preflight.sh` does both for
 the bundled compose file: it reads the last start from the log and runs that test on the Valkey container
 as its default user, the one the compose file gives the server. It cannot know about another, restricted
-Valkey user, and it does not report the limiter as checked when it cannot run that test. With a Valkey of
+Valkey user: after a logged success, a test refused for the default user is a warning that tells you to
+test as the server's user, not a failure. It does not report the limiter as checked when it cannot run
+that test. With a Valkey of
 your own, test by hand as the server's user.
 
 ### Rate Limiting Not Working

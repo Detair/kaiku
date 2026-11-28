@@ -809,10 +809,14 @@ a batch can take up to 13 rounds of 30 s and other accounts' follow-ups (never a
 wait for a later run. When more than 100 follow-ups fall due within a minute (a large server, or
 after downtime), they queue up, oldest first, and are worked off at most 100 a minute; immediate
 pushes and the notice in the Kaiku DM are not affected. The order is deliberate: first record the
-push as sent, then send it, so a push is never sent twice. A stop after a claim loses the pushes of
-that batch not yet sent (at most 100 follow-ups). A push recorded as sent that then fails, times
-out, is cut off by the 30 s limit or by a server stop is not sent again; this holds for the
-immediate push too. A refused or timed-out push leaves a WARN line with the notice id and the
+push as sent, then send it, so a push is never sent twice. A stop after a sweep run committed loses
+the pushes of that run not yet sent: up to 100 follow-ups and the pushes of every event it delivered
+from the outbox (up to 500 events). The 30 s limit per recipient applies to the pushes the sweep
+sends (follow-ups and outbox); the ordinary delivery right after an event has no such limit. A
+recipient's subscriptions are tried most recently used first (`last_used_at`, else the time of
+registration), so a working phone is not stuck behind addresses that keep timing out (those are
+never marked used). A push recorded as sent that then fails, times out, is cut off by the limit or
+by a server stop is not sent again; this holds for the immediate push too. A refused or timed-out push leaves a WARN line with the notice id and the
 provider kind (never the address or the content). The notice in the Kaiku DM stays correct. "Push now", "due" and
 "dealt with" are decided on the database clock at the moment of the statement; an event's
 `delivered_at` is the moment it joined its notices. The time of the owner's report is the start of
