@@ -20,6 +20,7 @@ mod peer;
 mod quality;
 mod queries;
 pub mod rate_limit;
+pub mod revoke;
 pub mod screen_share;
 pub mod sfu;
 mod stats;
@@ -33,11 +34,8 @@ use axum::Router;
 // Re-exports
 pub use error::VoiceError;
 pub use quality::Quality;
-pub use screen_share::{
-    ScreenShareCheckResponse, ScreenShareError, ScreenShareInfo, ScreenShareLimiter,
-    ScreenShareStartRequest, ScreenShareStopRequest,
-};
-pub use sfu::{ParticipantInfo, Room, SfuServer, StalePeer, PEER_FAILED_GRACE};
+pub use screen_share::{ScreenShareError, ScreenShareInfo, ScreenShareLimiter, ShareCounter};
+pub use sfu::{ParticipantInfo, ReplacedMedia, Room, SfuServer, StalePeer, PEER_FAILED_GRACE};
 pub use stats::{UserStats, VoiceStats};
 pub use track_types::{Layer, LayerPreference, TrackInfo, TrackKind, TrackSource};
 pub use webcam::WebcamInfo;
@@ -56,9 +54,8 @@ pub fn router() -> Router<AppState> {
 /// (`use-auth-secret`): username is `"{expiry_unix}:{subject}"`, credential is
 /// `base64(HMAC-SHA1(secret, username))`.
 ///
-/// Used for client-facing ICE config (subject = user id) and for the SFU's
-/// own peer connections (subject = "sfu") — coturn accepts any subject as
-/// long as the HMAC matches.
+/// Used for the client-facing ICE config (subject = user id); coturn accepts
+/// any subject as long as the HMAC matches.
 pub(crate) fn turn_rest_credentials(
     secret: &str,
     ttl_secs: u64,

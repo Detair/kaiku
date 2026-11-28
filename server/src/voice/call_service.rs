@@ -292,15 +292,13 @@ impl CallService {
             .await
             .map_err(|e| CallError::Redis(e.to_string()))?;
 
-        let Some(((_, first), (last_id, _))) = events.first().zip(events.last()) else {
+        let Some(((first_id, first), (last_id, _))) = events.first().zip(events.last()) else {
             return Ok(None);
         };
 
-        let started_at = first
-            .get("started_ms")
-            .and_then(|ms| ms.parse::<i64>().ok())
-            .and_then(|ms| Utc.timestamp_millis_opt(ms).single())
-            .unwrap_or_else(Utc::now);
+        // The start time, or (missing or unreadable) the time of the
+        // stream's first entry, which Valkey stamps into its id.
+        let started_at = call_start_time(first.get("started_ms").map(String::as_str), first_id);
         let targets: HashSet<Uuid> = first
             .get("targets")
             .and_then(|t| serde_json::from_str(t).ok())
@@ -868,6 +866,166 @@ pub async fn last_voice_peer_left(
         .is_some())
 }
 
+/// A call that a previous server process left in the store, still active
+/// (answered) when this process started.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeftCall {
+    pub channel_id: Uuid,
+    pub call_id: String,
+}
+
+/// How long after start-up an answered call of the previous process waits
+/// for a participant to rejoin its room (clients rejoin within 60 s of a
+/// lost connection, contract C32) before it is ended.
+pub const RESTART_REJOIN_GRACE: Duration = Duration::from_mins(1);
+
+/// Channels that have a call stream in Valkey (start-up clean-up).
+pub async fn channels_with_calls(redis: &Client) -> Result<Vec<Uuid>, CallError> {
+    use futures::TryStreamExt;
+
+    let keys: Vec<fred::types::Key> = redis
+        .scan_buffered("call_events:*", Some(100), None)
+        .try_collect()
+        .await
+        .map_err(|e| CallError::Redis(e.to_string()))?;
+    Ok(keys
+        .iter()
+        .filter_map(|k| k.as_str()?.strip_prefix("call_events:")?.parse().ok())
+        .collect())
+}
+
+/// Start-up clean-up, step 1: end the calls in `channels` that still ring.
+///
+/// They end as unanswered (`no_answer`, published as `call_ended`, phones
+/// woken with `ended` when the service has push): their ring timer died with
+/// the previous process. Answered calls are returned for step 2 and kept for
+/// now: their participants may rejoin the room (C32).
+///
+/// Kaiku runs one server process (v1, deployed with `Recreate`), so every
+/// call started before `started_before` (this process's start) belongs to a
+/// process that is gone. Calls started later are left alone.
+pub async fn end_calls_left_ringing(
+    calls: &CallService,
+    channels: impl IntoIterator<Item = Uuid>,
+    started_before: DateTime<Utc>,
+) -> Result<Vec<LeftCall>, CallError> {
+    let mut active = Vec::new();
+    for channel_id in channels {
+        // One unreadable entry must not stop the clean-up of the others.
+        let loaded = match calls.get_call(channel_id).await {
+            Ok(loaded) => loaded,
+            Err(e) => {
+                tracing::warn!(%channel_id, error = %e, "Skipping an unreadable call left by the previous process");
+                continue;
+            }
+        };
+        let Some((state, meta)) = loaded else {
+            continue;
+        };
+        // A call this process started meanwhile is not left over.
+        if meta.started_at >= started_before {
+            continue;
+        }
+        match state {
+            CallState::Ringing { .. } => {
+                let ended = calls
+                    .end_call_when(channel_id, Some(&meta.call_id), |state, _| {
+                        matches!(state, CallState::Ringing { .. }).then_some(EndReason::NoAnswer)
+                    })
+                    .await;
+                match ended {
+                    Ok(Some(_)) => {
+                        tracing::info!(%channel_id, "Ended a call left ringing by the previous process");
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        tracing::warn!(%channel_id, error = %e, "Failed to end a call left ringing");
+                    }
+                }
+            }
+            CallState::Active { .. } => active.push(LeftCall {
+                channel_id,
+                call_id: meta.call_id,
+            }),
+            CallState::Ended { .. } => {}
+        }
+    }
+    Ok(active)
+}
+
+/// Start-up clean-up, step 2: end the answered calls nobody came back to.
+///
+/// Runs after [`RESTART_REJOIN_GRACE`]: each answered call of the previous
+/// process whose room is still empty ends as `last_left`. Pinned to the
+/// call's id, so a newer call is never touched. Returns how many ended.
+pub async fn end_abandoned_calls(
+    calls: &CallService,
+    sfu: &crate::voice::SfuServer,
+    left: &[LeftCall],
+) -> usize {
+    let mut ended = 0;
+    for call in left {
+        let occupied = match sfu.get_room(call.channel_id).await {
+            Some(room) => !room.is_empty().await,
+            None => false,
+        };
+        if occupied {
+            continue;
+        }
+        match calls
+            .end_call_when(call.channel_id, Some(&call.call_id), |state, _| {
+                matches!(state, CallState::Active { .. }).then_some(EndReason::LastLeft)
+            })
+            .await
+        {
+            Ok(Some(_)) => ended += 1,
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!(channel_id = %call.channel_id, error = %e, "Failed to end an abandoned call");
+            }
+        }
+    }
+    ended
+}
+
+/// The start-up clean-up of DM calls.
+///
+/// Ringing calls of the previous process end before this returns (call it before the server accepts
+/// connections); answered ones are checked in the returned background task
+/// after [`RESTART_REJOIN_GRACE`] and end if nobody rejoined their room.
+pub async fn restart_cleanup(
+    calls: CallService,
+    sfu: std::sync::Weak<crate::voice::SfuServer>,
+) -> tokio::task::JoinHandle<()> {
+    let process_start = Utc::now();
+    let left = match channels_with_calls(&calls.redis).await {
+        Ok(channels) => end_calls_left_ringing(&calls, channels, process_start)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "Could not end calls left by the previous process");
+                Vec::new()
+            }),
+        Err(e) => {
+            tracing::warn!(error = %e, "Could not list calls left by the previous process");
+            Vec::new()
+        }
+    };
+    tokio::spawn(async move {
+        if left.is_empty() {
+            return;
+        }
+        tokio::time::sleep(RESTART_REJOIN_GRACE).await;
+        if let Some(sfu) = sfu.upgrade() {
+            let ended = end_abandoned_calls(&calls, &sfu, &left).await;
+            tracing::info!(
+                ended,
+                kept = left.len() - ended,
+                "Checked answered calls of the previous process"
+            );
+        }
+    })
+}
+
 /// Whether `user_id` may have a ringing call (cheap pre-check before
 /// [`caller_socket_closed`]).
 pub async fn may_have_ringing_calls(redis: &Client, user_id: Uuid) -> bool {
@@ -960,9 +1118,43 @@ pub enum CallError {
     Internal(String),
 }
 
+/// The start time of a call stream: its `started_ms`, or (missing,
+/// unreadable or out of range) the time of the stream's first entry, which
+/// Valkey stamps into its id.
+fn call_start_time(started_ms: Option<&str>, first_id: &str) -> DateTime<Utc> {
+    // Each candidate is converted before it is chosen, so one out of range
+    // falls through to the next.
+    let to_time = |ms: &str| {
+        ms.parse::<i64>()
+            .ok()
+            .and_then(|ms| Utc.timestamp_millis_opt(ms).single())
+    };
+    started_ms
+        .and_then(to_time)
+        .or_else(|| first_id.split('-').next().and_then(to_time))
+        // Neither readable: old (start-up clean-up ends it), not "now".
+        .unwrap_or(DateTime::UNIX_EPOCH)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A start time out of range falls back to the stream entry's time
+    /// (so start-up clean-up sees how old the call is).
+    #[test]
+    fn an_out_of_range_start_time_uses_the_entry_time() {
+        let entry = Utc
+            .timestamp_millis_opt(1_700_000_000_000)
+            .single()
+            .unwrap();
+        assert_eq!(
+            call_start_time(Some("9223372036854775807"), "1700000000000-0"),
+            entry
+        );
+        assert_eq!(call_start_time(Some("x"), "1700000000000-0"), entry);
+        assert_eq!(call_start_time(None, "1700000000000-0"), entry);
+    }
 
     #[test]
     fn test_stream_key_format() {

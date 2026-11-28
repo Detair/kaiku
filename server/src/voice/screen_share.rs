@@ -1,9 +1,10 @@
 //! Screen sharing data types and state.
 
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 
 use fred::clients::Client;
-use fred::interfaces::LuaInterface;
+use fred::interfaces::{KeysInterface, LuaInterface};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tracing::{error, warn};
@@ -48,6 +49,10 @@ pub struct ScreenShareInfo {
     pub quality: Quality,
     /// When the screen share session started
     pub started_at: chrono::DateTime<chrono::Utc>,
+    /// The voice seat (peer session) the share belongs to. Server-side
+    /// only: a seat changes or removes only its own shares.
+    #[serde(skip)]
+    pub owner: Uuid,
 }
 
 impl ScreenShareInfo {
@@ -68,41 +73,9 @@ impl ScreenShareInfo {
             has_audio,
             quality,
             started_at: chrono::Utc::now(),
+            owner: Uuid::nil(),
         }
     }
-}
-
-/// Request to start a screen share.
-#[derive(Clone, Debug, Deserialize, utoipa::ToSchema)]
-pub struct ScreenShareStartRequest {
-    /// Client-generated stream identifier for this screen share
-    pub stream_id: Uuid,
-    /// Requested quality tier
-    pub quality: Quality,
-    /// Include system audio
-    pub has_audio: bool,
-    /// Source label for display
-    pub source_label: String,
-}
-
-/// Request to stop a specific screen share stream.
-#[derive(Clone, Debug, Deserialize, utoipa::ToSchema)]
-pub struct ScreenShareStopRequest {
-    /// Stream identifier of the screen share to stop
-    pub stream_id: Uuid,
-}
-
-/// Response to screen share check/start request.
-#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
-pub struct ScreenShareCheckResponse {
-    /// Whether screen sharing is allowed
-    pub allowed: bool,
-    /// Quality tier granted (may be lower than requested)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub granted_quality: Option<Quality>,
-    /// Error message if not allowed
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<ScreenShareError>,
 }
 
 /// Screen share error reasons.
@@ -143,28 +116,28 @@ impl ScreenShareError {
     }
 }
 
-impl ScreenShareCheckResponse {
-    /// Create an allowed response.
-    pub const fn allowed(quality: Quality) -> Self {
-        Self {
-            allowed: true,
-            granted_quality: Some(quality),
-            error: None,
-        }
-    }
+/// Embedded Lua script for atomic screen share limit management.
+const SCREEN_SHARE_LIMIT_SCRIPT: &str = include_str!("screen_share_limit.lua");
 
-    /// Create a denied response.
-    pub const fn denied(error: ScreenShareError) -> Self {
-        Self {
-            allowed: false,
-            granted_quality: None,
-            error: Some(error),
-        }
+/// Name of one room's share counter in the store: the channel plus a value
+/// made when the room is created, so a room that is gone (and its late
+/// calls) never changes a newer room's count.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShareCounter(String);
+
+impl ShareCounter {
+    /// The counter of a new room of `channel_id`.
+    #[must_use]
+    pub fn for_new_room(channel_id: Uuid) -> Self {
+        Self(format!("{channel_id}:{}", Uuid::new_v4()))
     }
 }
 
-/// Embedded Lua script for atomic screen share limit management.
-const SCREEN_SHARE_LIMIT_SCRIPT: &str = include_str!("screen_share_limit.lua");
+impl std::fmt::Display for ShareCounter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
 
 /// Atomic screen share limit manager backed by a Redis Lua script.
 ///
@@ -174,15 +147,55 @@ const SCREEN_SHARE_LIMIT_SCRIPT: &str = include_str!("screen_share_limit.lua");
 pub struct ScreenShareLimiter {
     redis: Client,
     script_sha: Arc<RwLock<String>>,
+    /// Prefix of the counter keys (`{prefix}{counter}`, `counter` being a
+    /// room's [`crate::voice::sfu::Room::share_counter`]).
+    key_prefix: Arc<str>,
 }
+
+/// Prefix of the slot counters (one per room) in Valkey.
+pub const SCREEN_SHARE_KEY_PREFIX: &str = "screenshare:limit:";
+
+/// Keys deleted per `DEL` when clearing counters.
+const CLEAR_BATCH: usize = 100;
 
 impl ScreenShareLimiter {
     /// Create a new limiter. Call [`init`] before use to load the script.
     pub fn new(redis: Client) -> Self {
+        Self::with_key_prefix(redis, SCREEN_SHARE_KEY_PREFIX)
+    }
+
+    /// A limiter whose counters live under `prefix` instead of
+    /// [`SCREEN_SHARE_KEY_PREFIX`] (tests isolate their counters this way).
+    #[doc(hidden)]
+    pub fn with_key_prefix(redis: Client, prefix: impl Into<String>) -> Self {
         Self {
             redis,
             script_sha: Arc::new(RwLock::new(String::new())),
+            key_prefix: Arc::from(prefix.into()),
         }
+    }
+
+    /// Delete every slot counter (all channels). Returns how many were
+    /// deleted.
+    ///
+    /// Run at startup: the server is a single node and its voice rooms live
+    /// in memory, so after a restart no share is running and any counter left
+    /// by the previous process is stale. Uses `SCAN`, never `KEYS`.
+    pub async fn clear_all(&self) -> Result<usize, fred::error::Error> {
+        use futures::TryStreamExt;
+
+        let pattern = format!("{}*", self.key_prefix);
+        let keys: Vec<fred::types::Key> = self
+            .redis
+            .scan_buffered(pattern, Some(CLEAR_BATCH as u32), None)
+            .try_collect()
+            .await?;
+        let mut deleted = 0;
+        for batch in keys.chunks(CLEAR_BATCH) {
+            let n: i64 = self.redis.del(batch.to_vec()).await?;
+            deleted += usize::try_from(n).unwrap_or(0);
+        }
+        Ok(deleted)
     }
 
     /// Load the Lua script into Redis. Must be called at startup.
@@ -203,23 +216,23 @@ impl ScreenShareLimiter {
     /// Run the Lua script with retry on NOSCRIPT.
     async fn run_script(
         &self,
-        channel_id: Uuid,
+        counter: &ShareCounter,
         max_shares: u32,
         op: &str,
     ) -> Result<(bool, i64), ScreenShareError> {
-        self.run_script_with_extra(channel_id, max_shares, op, &[])
+        self.run_script_with_extra(counter, max_shares, op, &[])
             .await
     }
 
     /// Run the Lua script with optional extra ARGV arguments and retry on NOSCRIPT.
     async fn run_script_with_extra(
         &self,
-        channel_id: Uuid,
+        counter: &ShareCounter,
         max_shares: u32,
         op: &str,
         extra_args: &[String],
     ) -> Result<(bool, i64), ScreenShareError> {
-        let key = format!("screenshare:limit:{channel_id}");
+        let key = format!("{}{counter}", self.key_prefix);
         let sha = self.script_sha.read().await.clone();
         let mut args: Vec<String> = vec![max_shares.to_string(), op.to_string()];
         args.extend_from_slice(extra_args);
@@ -232,7 +245,7 @@ impl ScreenShareLimiter {
             Ok(result) => Self::parse_result(&result),
             Err(e) if e.to_string().contains("NOSCRIPT") => {
                 warn!(
-                    channel_id = %channel_id,
+                    counter = %counter,
                     "NOSCRIPT error, reloading screen share limit script"
                 );
                 let new_sha = self.reload_script().await.map_err(|e| {
@@ -245,7 +258,7 @@ impl ScreenShareLimiter {
                     .await
                     .map_err(|e| {
                         error!(
-                            channel_id = %channel_id,
+                            counter = %counter,
                             error = %e,
                             "EVALSHA failed after reload"
                         );
@@ -255,7 +268,7 @@ impl ScreenShareLimiter {
             }
             Err(e) => {
                 error!(
-                    channel_id = %channel_id,
+                    counter = %counter,
                     error = %e,
                     "Redis EVALSHA failed"
                 );
@@ -273,8 +286,12 @@ impl ScreenShareLimiter {
     }
 
     /// Check if a screen share slot is available (does not reserve it).
-    pub async fn check(&self, channel_id: Uuid, max_shares: u32) -> Result<(), ScreenShareError> {
-        let (allowed, _) = self.run_script(channel_id, max_shares, "check").await?;
+    pub async fn check(
+        &self,
+        counter: &ShareCounter,
+        max_shares: u32,
+    ) -> Result<(), ScreenShareError> {
+        let (allowed, _) = self.run_script(counter, max_shares, "check").await?;
         if allowed {
             Ok(())
         } else {
@@ -283,8 +300,12 @@ impl ScreenShareLimiter {
     }
 
     /// Atomically reserve a screen share slot. Returns error if limit reached.
-    pub async fn start(&self, channel_id: Uuid, max_shares: u32) -> Result<(), ScreenShareError> {
-        let (allowed, _) = self.run_script(channel_id, max_shares, "start").await?;
+    pub async fn start(
+        &self,
+        counter: &ShareCounter,
+        max_shares: u32,
+    ) -> Result<(), ScreenShareError> {
+        let (allowed, _) = self.run_script(counter, max_shares, "start").await?;
         if allowed {
             Ok(())
         } else {
@@ -292,12 +313,74 @@ impl ScreenShareLimiter {
         }
     }
 
+    /// Reserve a slot for a room whose own count of the slots it holds is
+    /// `held` (see [`crate::voice::sfu::Room::held_share_slots`]).
+    ///
+    /// The slot counts as held before the store is asked. When the store
+    /// refuses for the limit, its counter is compared with the slots the
+    /// room holds: a release that never reached the store (a store error
+    /// at a stop) left it higher, so it is lowered to the room's count and
+    /// the start is tried once more. Never lowered below what the room
+    /// holds, so a room really at its limit is still refused.
+    pub async fn reserve(
+        &self,
+        counter: &ShareCounter,
+        held: &AtomicI64,
+        max_shares: u32,
+    ) -> Result<(), ScreenShareError> {
+        held.fetch_add(1, Ordering::AcqRel);
+        let result = match self.start(counter, max_shares).await {
+            Err(ScreenShareError::LimitReached) => {
+                // This start is not in the store; every other slot the room
+                // counts may be (starts and stops in flight included).
+                let others = held.load(Ordering::Acquire) - 1;
+                match self
+                    .run_script_with_extra(counter, 0, "lower", &[others.max(0).to_string()])
+                    .await
+                {
+                    Ok((_, before_retry)) if before_retry < i64::from(max_shares) => {
+                        warn!(
+                            counter = %counter,
+                            count = before_retry,
+                            "Screen share counter compared with the room's shares; trying the start again"
+                        );
+                        self.start(counter, max_shares).await
+                    }
+                    Ok(_) => Err(ScreenShareError::LimitReached),
+                    Err(e) => {
+                        warn!(counter = %counter, error = ?e, "Could not compare the screen share counter");
+                        Err(ScreenShareError::LimitReached)
+                    }
+                }
+            }
+            other => other,
+        };
+        if result.is_err() {
+            held.fetch_sub(1, Ordering::AcqRel);
+        }
+        result
+    }
+
+    /// Release `count` slots of a room whose own count is `held`. The slots
+    /// stop counting as held once the store was asked, whatever it answered.
+    pub async fn release(&self, counter: &ShareCounter, held: &AtomicI64, count: usize) {
+        if count == 0 {
+            return;
+        }
+        if count == 1 {
+            self.stop(counter).await;
+        } else {
+            self.stop_n(counter, count).await;
+        }
+        held.fetch_sub(i64::try_from(count).unwrap_or(i64::MAX), Ordering::AcqRel);
+    }
+
     /// Release a screen share slot (decrements if count > 0).
-    pub async fn stop(&self, channel_id: Uuid) {
+    pub async fn stop(&self, counter: &ShareCounter) {
         // max_shares arg is unused by "stop" op, pass 0
-        if let Err(e) = self.run_script(channel_id, 0, "stop").await {
+        if let Err(e) = self.run_script(counter, 0, "stop").await {
             warn!(
-                channel_id = %channel_id,
+                counter = %counter,
                 error = ?e,
                 "Failed to decrement screen share counter"
             );
@@ -308,17 +391,17 @@ impl ScreenShareLimiter {
     ///
     /// Used when a user with multiple active screen shares leaves.
     /// Clamps to zero if `count` exceeds the current counter value.
-    pub async fn stop_n(&self, channel_id: Uuid, count: usize) {
+    pub async fn stop_n(&self, counter: &ShareCounter, count: usize) {
         if count == 0 {
             return;
         }
         // max_shares arg is unused by "stop_n" op, pass 0
         if let Err(e) = self
-            .run_script_with_extra(channel_id, 0, "stop_n", &[count.to_string()])
+            .run_script_with_extra(counter, 0, "stop_n", &[count.to_string()])
             .await
         {
             warn!(
-                channel_id = %channel_id,
+                counter = %counter,
                 count = count,
                 error = ?e,
                 "Failed to batch-decrement screen share counter"
@@ -403,82 +486,6 @@ mod tests {
         assert_eq!(deserialized.stream_id, stream_id);
         assert_eq!(deserialized.user_id, user_id);
         assert_eq!(deserialized.username, "alice");
-    }
-
-    // =========================================================================
-    // ScreenShareCheckResponse Tests
-    // =========================================================================
-
-    #[test]
-    fn test_check_response_allowed() {
-        let resp = ScreenShareCheckResponse::allowed(Quality::High);
-        assert!(resp.allowed);
-        assert_eq!(resp.granted_quality, Some(Quality::High));
-        assert!(resp.error.is_none());
-    }
-
-    #[test]
-    fn test_check_response_denied() {
-        let resp = ScreenShareCheckResponse::denied(ScreenShareError::LimitReached);
-        assert!(!resp.allowed);
-        assert!(resp.granted_quality.is_none());
-        assert_eq!(resp.error, Some(ScreenShareError::LimitReached));
-    }
-
-    #[test]
-    fn test_check_response_all_quality_tiers() {
-        for quality in [
-            Quality::Low,
-            Quality::Medium,
-            Quality::High,
-            Quality::Premium,
-        ] {
-            let resp = ScreenShareCheckResponse::allowed(quality);
-            assert!(resp.allowed);
-            assert_eq!(resp.granted_quality, Some(quality));
-        }
-    }
-
-    #[test]
-    fn test_check_response_all_error_types() {
-        let errors = [
-            ScreenShareError::NoPermission,
-            ScreenShareError::LimitReached,
-            ScreenShareError::NotInChannel,
-            ScreenShareError::QualityNotAllowed,
-            ScreenShareError::RenegotiationFailed,
-            ScreenShareError::InternalError,
-            ScreenShareError::InvalidSourceLabel,
-            ScreenShareError::AlreadySharing,
-        ];
-
-        for error in errors {
-            let resp = ScreenShareCheckResponse::denied(error.clone());
-            assert!(!resp.allowed);
-            assert_eq!(resp.error, Some(error));
-        }
-    }
-
-    #[test]
-    fn test_check_response_serialization_allowed() {
-        let resp = ScreenShareCheckResponse::allowed(Quality::High);
-        let json = serde_json::to_string(&resp).unwrap();
-
-        assert!(json.contains("\"allowed\":true"));
-        assert!(json.contains("\"granted_quality\""));
-        // error should be skipped when None
-        assert!(!json.contains("\"error\""));
-    }
-
-    #[test]
-    fn test_check_response_serialization_denied() {
-        let resp = ScreenShareCheckResponse::denied(ScreenShareError::NoPermission);
-        let json = serde_json::to_string(&resp).unwrap();
-
-        assert!(json.contains("\"allowed\":false"));
-        assert!(json.contains("\"error\":\"NO_PERMISSION\""));
-        // granted_quality should be skipped when None
-        assert!(!json.contains("\"granted_quality\""));
     }
 
     // =========================================================================
@@ -602,56 +609,5 @@ mod tests {
             ScreenShareError::NoPermission,
             ScreenShareError::LimitReached
         );
-    }
-
-    // =========================================================================
-    // ScreenShareStartRequest Tests
-    // =========================================================================
-
-    #[test]
-    fn test_start_request_deserialization() {
-        let stream_id = Uuid::new_v4();
-        let json = format!(
-            r#"{{"stream_id":"{stream_id}","quality":"high","has_audio":true,"source_label":"Display 1"}}"#
-        );
-        let req: ScreenShareStartRequest = serde_json::from_str(&json).unwrap();
-
-        assert_eq!(req.stream_id, stream_id);
-        assert_eq!(req.quality, Quality::High);
-        assert!(req.has_audio);
-        assert_eq!(req.source_label, "Display 1");
-    }
-
-    #[test]
-    fn test_start_request_deserialization_all_qualities() {
-        let qualities = ["low", "medium", "high", "premium"];
-        let expected = [
-            Quality::Low,
-            Quality::Medium,
-            Quality::High,
-            Quality::Premium,
-        ];
-
-        let stream_id = Uuid::new_v4();
-        for (quality_str, expected_quality) in qualities.iter().zip(expected.iter()) {
-            let json = format!(
-                r#"{{"stream_id":"{stream_id}","quality":"{quality_str}","has_audio":false,"source_label":"test"}}"#
-            );
-            let req: ScreenShareStartRequest = serde_json::from_str(&json).unwrap();
-            assert_eq!(req.quality, *expected_quality);
-        }
-    }
-
-    // =========================================================================
-    // ScreenShareStopRequest Tests
-    // =========================================================================
-
-    #[test]
-    fn test_stop_request_deserialization() {
-        let stream_id = Uuid::new_v4();
-        let json = format!(r#"{{"stream_id":"{stream_id}"}}"#);
-        let req: ScreenShareStopRequest = serde_json::from_str(&json).unwrap();
-
-        assert_eq!(req.stream_id, stream_id);
     }
 }

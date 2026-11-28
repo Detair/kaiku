@@ -30,6 +30,11 @@ pub struct ServerSettingsResponse {
     /// Clients hide discovery options when it is off; a response without
     /// this field (older server) means it is on.
     pub guild_discovery: bool,
+    /// Oldest client version this server supports, per platform (`web`,
+    /// `desktop`, `android`); `null` where none is set. Clients below it ask
+    /// the user to update. A response without this field (older server)
+    /// means no minimum.
+    pub min_client_version: crate::config::MinClientVersions,
 }
 
 /// Optional features in [`ServerSettingsResponse`] (C22 wire form).
@@ -61,7 +66,7 @@ impl From<crate::features::OptionalFeatures> for FeaturesResponse {
     path = "/api/settings",
     tag = "settings",
     responses(
-        (status = 200, description = "Server settings"),
+        (status = 200, description = "Server settings", body = ServerSettingsResponse),
     ),
 )]
 pub async fn get_server_settings(State(state): State<AppState>) -> Json<ServerSettingsResponse> {
@@ -93,6 +98,7 @@ pub async fn get_server_settings(State(state): State<AppState>) -> Json<ServerSe
         registration_policy,
         features: state.config.optional_features.into(),
         guild_discovery: state.config.enable_guild_discovery,
+        min_client_version: state.config.min_client_version.clone(),
     })
 }
 

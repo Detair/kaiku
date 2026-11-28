@@ -55,28 +55,30 @@ pub async fn get_ice_servers(
         credential: None,
     }];
 
-    // Prefer HMAC time-limited credentials when shared secret is configured
-    if let (Some(turn), Some(secret)) =
-        (&state.config.turn_server, &state.config.turn_shared_secret)
-    {
-        let (username, credential) = super::turn_rest_credentials(
-            secret,
-            state.config.turn_credential_ttl,
-            &auth_user.id.to_string(),
-        );
-
-        servers.push(IceServer {
-            urls: vec![turn.clone()],
-            username: Some(username),
-            credential: Some(credential),
-        });
-    } else if let Some(turn) = &state.config.turn_server {
-        // Fallback: static credentials for dev environments
-        servers.push(IceServer {
-            urls: vec![turn.clone()],
-            username: state.config.turn_username.clone(),
-            credential: state.config.turn_credential.clone(),
-        });
+    // One entry with every TURN URL (`TURN_SERVER` may list several, e.g.
+    // UDP and TCP of the same server); one set of credentials for all.
+    if !state.config.turn_servers.is_empty() {
+        let urls = state.config.turn_servers.clone();
+        // Prefer HMAC time-limited credentials when a shared secret is set.
+        if let Some(secret) = &state.config.turn_shared_secret {
+            let (username, credential) = super::turn_rest_credentials(
+                secret,
+                state.config.turn_credential_ttl,
+                &auth_user.id.to_string(),
+            );
+            servers.push(IceServer {
+                urls,
+                username: Some(username),
+                credential: Some(credential),
+            });
+        } else {
+            // Fallback: static credentials for dev environments
+            servers.push(IceServer {
+                urls,
+                username: state.config.turn_username.clone(),
+                credential: state.config.turn_credential.clone(),
+            });
+        }
     }
 
     Json(IceServersResponse {

@@ -317,6 +317,20 @@ pub async fn create(
                     }
 
                     if let Some(bot_user_id) = command.bot_user_id {
+                        // The bot must be installed and see this channel;
+                        // otherwise neither its gateway nor its webhooks
+                        // learn about the invocation.
+                        let usable = crate::permissions::bot_can_use_channel(
+                            &state.db,
+                            bot_user_id,
+                            channel_id,
+                            crate::permissions::GuildPermissions::empty(),
+                        )
+                        .await?;
+                        if !usable {
+                            return Err(ChatError::BotNotAllowedInChannel);
+                        }
+
                         let mut option_map = serde_json::Map::new();
                         let args: Vec<String> = parts.map(str::to_string).collect();
 
@@ -899,10 +913,17 @@ pub async fn delete(
     let channel_id = message.channel_id;
     let parent_id = message.parent_id;
 
+    // Its files' keys, to delete the objects right after the commit.
+    let keys = super::storage_cleanup::attachment_keys_of_message(&state.db, id).await?;
+
     // Delete message
     let deleted = db::delete_message(&state.db, id, auth_user.id).await?;
 
     if deleted {
+        // The delete removed the attachment rows and queued their objects
+        // (database trigger); delete exactly these objects now.
+        super::storage_cleanup::spawn_drain(&state, keys);
+
         // Clean up channel pin if message was pinned
         if matches!(
             queries::delete_channel_pin(&state.db, channel_id, id).await,

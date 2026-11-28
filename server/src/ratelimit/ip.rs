@@ -100,11 +100,13 @@ pub fn extract_client_ip(
 
 /// Normalize IP address for rate limiting.
 ///
-/// IPv4 addresses are kept as-is.
+/// IPv4 addresses are kept as-is; IPv4-mapped IPv6 addresses
+/// (`::ffff:a.b.c.d`, as seen on a dual-stack listener) count as that IPv4
+/// address.
 /// IPv6 addresses are normalized to /64 prefix to prevent circumvention
 /// by using multiple addresses within the same allocation.
 pub fn normalize_ip(ip: IpAddr) -> String {
-    match ip {
+    match ip.to_canonical() {
         IpAddr::V4(v4) => v4.to_string(),
         IpAddr::V6(v6) => {
             let seg = v6.segments();
@@ -132,6 +134,14 @@ mod tests {
     fn test_normalize_ipv6() {
         let ip = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0x85a3, 0x1234, 0, 0, 0, 1));
         assert_eq!(normalize_ip(ip), "2001:db8:85a3:1234::/64");
+    }
+
+    #[test]
+    fn test_normalize_ipv4_mapped_ipv6() {
+        let a: IpAddr = "::ffff:192.0.2.1".parse().unwrap();
+        let b: IpAddr = "::ffff:198.51.100.2".parse().unwrap();
+        assert_eq!(normalize_ip(a), "192.0.2.1");
+        assert_ne!(normalize_ip(a), normalize_ip(b));
     }
 
     fn peer(ip: &str) -> ConnectInfo<SocketAddr> {

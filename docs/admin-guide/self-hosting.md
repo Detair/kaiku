@@ -56,6 +56,14 @@ The fastest way to get a node online. We will provide a pre-configured `docker-c
 ### 2. The "Esports Org" (Kubernetes)
 For massive communities. Detailed Helm charts and documentation for deploying scalable replicas of the Signaling server behind a load balancer, with dedicated external TURN clusters.
 
+> **Run exactly one server process.** Voice rooms, connection limits and
+> access changes on open connections are kept inside the server process, and
+> a starting server resets the screen-share slot counters in Valkey. On
+> Kubernetes use one replica with the `Recreate` deployment strategy (not
+> `RollingUpdate`, which starts the new pod while the old one still serves).
+> On stop the server closes every WebSocket with code 1012 and clients
+> reconnect on their own; give the container at least 10 seconds to stop.
+
 ## <span style="color: #88C0D0;">Voice NAT Traversal & Sovereignty (STUN/TURN)</span>
 
 WebRTC needs a **STUN** server (to discover each client's public address) and,
@@ -74,6 +82,11 @@ STUN_SERVER=stun:<your-domain>:3478
 TURN_SERVER=turn:<your-domain>:3478
 TURN_SHARED_SECRET=<random 32+ byte hex>   # coturn use-auth-secret mode
 ```
+
+`TURN_SERVER` takes several URLs separated by commas. Add a TCP (or TLS)
+URL of the same coturn for clients in networks that block UDP, e.g.
+`TURN_SERVER=turn:<your-domain>:3478,turn:<your-domain>:3478?transport=tcp`.
+The voice server itself never uses STUN or TURN; only clients do.
 
 `infra/scripts/setup-beta.sh` does this automatically (rewrites `STUN_SERVER`
 to your domain and generates the shared secret). If you configure TURN but
@@ -109,7 +122,8 @@ The bundled `infra/compose/docker-compose.yml` ships with these settings:
   `VOICE_UDP_PORT_MIN`/`VOICE_UDP_PORT_MAX`, so voice media binds only inside
   it. Forward exactly this UDP range 1:1 (same port numbers) on your router
   and firewall. Size it for at least 2 x concurrent voice participants x
-  local addresses of the host, plus headroom; see
+  local addresses of the host, plus headroom (the server gathers host
+  candidates only: one port per peer connection and local address); see
   [environment variables](configuration/environment.md).
 - **Isolated TURN server.** `coturn` runs on its own `turn` network, cannot
   reach the application services, and refuses to relay to private, loopback,

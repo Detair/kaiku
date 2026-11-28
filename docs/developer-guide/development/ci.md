@@ -17,17 +17,17 @@ The CI pipeline runs on every push to `main`/`develop` and on pull requests to `
 
 ### Rust Tests
 
-The `rust-test` job runs with PostgreSQL and Valkey service containers. It includes two test steps:
+The `rust-test` job runs with PostgreSQL, Valkey and RustFS service containers. It includes two test steps:
 
-1. **Regular tests** -- `cargo nextest run --all-features --workspace --exclude vc-client -j 1`
-2. **Ignored security tests** -- Runs the `@everyone` permission security test specifically:
+1. **Regular tests** -- `cargo nextest run --all-features --workspace --exclude vc-client -j 4`
+2. **Ignored tests** -- every test marked `#[ignore]`, all of them:
    ```bash
-   cargo nextest run --all-features -p vc-server \
-     -E 'test(test_cannot_grant_dangerous_permissions_to_everyone)' \
-     --run-ignored ignored-only
+   cargo nextest run --all-features --workspace --exclude vc-client -j 2 \
+     --run-ignored ignored-only --no-fail-fast
    ```
 
-> **Warning:** Do not use `--run-ignored ignored-only` without a filter expression (`-E`). Many ignored tests across the workspace will fail due to database state conflicts from the first test run.
+`#[ignore]` marks a test that needs this infrastructure (a database, Valkey, a WebRTC stack), not a test
+that is expected to fail: CI runs it in the second step, and it must pass there.
 
 ### Docker Build
 
@@ -85,12 +85,11 @@ cargo +nightly fmt --all -- --check
 SQLX_OFFLINE=true cargo clippy --all-features --workspace --exclude vc-client -- -D warnings
 
 # Tests (requires PostgreSQL and Valkey running)
-cargo nextest run --all-features --workspace --exclude vc-client -j 1
+cargo nextest run --all-features --workspace --exclude vc-client -j 4
 
-# Ignored security test
-cargo nextest run --all-features -p vc-server \
-  -E 'test(test_cannot_grant_dangerous_permissions_to_everyone)' \
-  --run-ignored ignored-only
+# Ignored tests (the second CI step)
+cargo nextest run --all-features --workspace --exclude vc-client -j 2 \
+  --run-ignored ignored-only --no-fail-fast
 
 # License check
 cargo deny check licenses

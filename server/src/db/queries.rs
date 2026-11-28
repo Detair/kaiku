@@ -1688,46 +1688,26 @@ pub async fn delete_file_attachments_by_message(
     .await
 }
 
-/// Check if a user has access to an attachment.
+/// Channel of an attachment whose message is not deleted.
 ///
-/// Returns true only if the user has access to the channel containing the attachment:
-/// - For guild channels: user must be a guild member
-/// - For DM channels: user must be a DM participant
-pub async fn check_attachment_access(
+/// `None` for an unknown attachment and for one on a soft-deleted message.
+/// Callers decide access with `permissions::require_channel_access` on the
+/// returned channel, so attachments follow the channel's read rights.
+pub async fn find_attachment_channel(
     pool: &PgPool,
     attachment_id: Uuid,
-    user_id: Uuid,
-) -> sqlx::Result<bool> {
-    let result: (bool,) = sqlx::query_as(
+) -> sqlx::Result<Option<Uuid>> {
+    sqlx::query_scalar(
         r"
-        SELECT EXISTS(
-            SELECT 1
-            FROM file_attachments fa
-            JOIN messages m ON fa.message_id = m.id
-            JOIN channels c ON m.channel_id = c.id
-            WHERE fa.id = $1
-              AND (
-                -- Guild channel: user is guild member
-                (c.guild_id IS NOT NULL AND EXISTS(
-                    SELECT 1 FROM guild_members gm
-                    WHERE gm.guild_id = c.guild_id AND gm.user_id = $2
-                ))
-                OR
-                -- DM channel: user is participant
-                (c.channel_type = 'dm' AND EXISTS(
-                    SELECT 1 FROM dm_participants dp
-                    WHERE dp.channel_id = c.id AND dp.user_id = $2
-                ))
-              )
-        )
+        SELECT m.channel_id
+        FROM file_attachments fa
+        JOIN messages m ON m.id = fa.message_id
+        WHERE fa.id = $1 AND m.deleted_at IS NULL
         ",
     )
     .bind(attachment_id)
-    .bind(user_id)
-    .fetch_one(pool)
-    .await?;
-
-    Ok(result.0)
+    .fetch_optional(pool)
+    .await
 }
 
 // ============================================================================

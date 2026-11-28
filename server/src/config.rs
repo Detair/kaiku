@@ -83,7 +83,12 @@ pub struct Config {
     /// S3 bucket name
     pub s3_bucket: String,
 
-    /// S3 presigned URL expiry in seconds (default: 3600 = 1 hour)
+    /// S3 presigned URL expiry in seconds (default: 300 = 5 minutes).
+    ///
+    /// A presigned URL keeps working until it expires, even after the
+    /// viewer lost access to the channel; clients fetch it right before
+    /// use (the response carries `expires_in`), so a short lifetime costs
+    /// nothing. A download that started in time is not cut off.
     pub s3_presign_expiry: i64,
 
     /// Public S3 base URL for client-facing file URLs (e.g., avatar images).
@@ -111,7 +116,9 @@ pub struct Config {
 
     /// Maximum file upload size in bytes (default: 50MB)
     ///
-    /// Used by `DefaultBodyLimit` middleware as final safety net for all uploads.
+    /// Request body limit (`DefaultBodyLimit`) of the routes that accept files
+    /// (message uploads, DM icon, guild banner, emoji); all other routes use
+    /// `api::DEFAULT_BODY_LIMIT` (1 MiB).
     /// Should be ≥ all specific upload limits (avatar, emoji).
     pub max_upload_size: usize,
 
@@ -130,8 +137,10 @@ pub struct Config {
     /// WebRTC STUN server
     pub stun_server: String,
 
-    /// WebRTC TURN server (optional)
-    pub turn_server: Option<String>,
+    /// WebRTC TURN server URLs given to clients (`TURN_SERVER`, comma
+    /// separated, e.g. a UDP and a TCP URL of the same coturn). Empty: no
+    /// TURN. The SFU itself does not use TURN or STUN (host candidates only).
+    pub turn_servers: Vec<String>,
 
     /// WebRTC TURN username (optional)
     pub turn_username: Option<String>,
@@ -252,6 +261,11 @@ pub struct Config {
     /// Defaults to `true`. Override via `ENABLE_GUILD_DISCOVERY` env var.
     pub enable_guild_discovery: bool,
 
+    /// Oldest client version per platform the server still supports
+    /// (`MIN_CLIENT_VERSION_WEB` / `_DESKTOP` / `_ANDROID`), published in
+    /// `GET /api/settings`. Unset: no minimum for that platform.
+    pub min_client_version: MinClientVersions,
+
     // ========================================================================
     // Resource Limits
     // ========================================================================
@@ -315,6 +329,14 @@ pub struct Config {
 
     /// WebSocket session re-check interval in seconds (≤ 60, B.4).
     pub session_recheck_secs: u64,
+
+    /// At most this many concurrent WebSocket connections per user
+    /// (`WS_MAX_CONNECTIONS_PER_USER`, default 10, at least 1).
+    pub ws_max_connections_per_user: usize,
+
+    /// At most this many concurrent WebSocket connections per client IP, IPv6
+    /// per /64 (`WS_MAX_CONNECTIONS_PER_IP`, default 30, at least 1).
+    pub ws_max_connections_per_ip: usize,
 
     /// Account-request delay in hours (`ACCOUNT_REQUEST_DELAY_HOURS`,
     /// default 24, 24..=72; SM3, Q1). A recovery contact counts as a
@@ -394,6 +416,21 @@ impl Config {
         )?;
         let voice_ice_interfaces =
             parse_voice_ice_interfaces(env_opt("VOICE_ICE_INTERFACES").as_deref());
+        let turn_servers = parse_turn_servers(env_opt("TURN_SERVER").as_deref())?;
+        let min_client_version = MinClientVersions {
+            web: parse_min_client_version(
+                "MIN_CLIENT_VERSION_WEB",
+                env_opt("MIN_CLIENT_VERSION_WEB").as_deref(),
+            )?,
+            desktop: parse_min_client_version(
+                "MIN_CLIENT_VERSION_DESKTOP",
+                env_opt("MIN_CLIENT_VERSION_DESKTOP").as_deref(),
+            )?,
+            android: parse_min_client_version(
+                "MIN_CLIENT_VERSION_ANDROID",
+                env_opt("MIN_CLIENT_VERSION_ANDROID").as_deref(),
+            )?,
+        };
         let voice_ice_ip_family =
             parse_voice_ice_ip_family(env_opt("VOICE_ICE_IP_FAMILY").as_deref())?;
         let fcm_service_account = crate::push::fcm::load_service_account(
@@ -444,7 +481,7 @@ impl Config {
             s3_presign_expiry: env::var("S3_PRESIGN_EXPIRY")
                 .ok()
                 .and_then(|v| v.parse().ok())
-                .unwrap_or(3600) // 1 hour
+                .unwrap_or(300) // 5 minutes
                 .max(1),
             s3_access_key: env_opt("AWS_ACCESS_KEY_ID"),
             s3_secret_key: env_opt("AWS_SECRET_ACCESS_KEY"),
@@ -471,7 +508,7 @@ impl Config {
                 .unwrap_or(256 * 1024), // 256KB
             stun_server: env::var("STUN_SERVER")
                 .unwrap_or_else(|_| "stun:stun.l.google.com:19302".into()),
-            turn_server: env::var("TURN_SERVER").ok().filter(|s| !s.is_empty()),
+            turn_servers,
             turn_username: env::var("TURN_USERNAME").ok().filter(|s| !s.is_empty()),
             turn_credential: env::var("TURN_CREDENTIAL").ok().filter(|s| !s.is_empty()),
             turn_shared_secret: env::var("TURN_SHARED_SECRET")
@@ -543,6 +580,7 @@ impl Config {
                 .ok()
                 .map(|v| v.to_lowercase() == "true" || v == "1")
                 .unwrap_or(true),
+            min_client_version,
             max_guilds_per_user: env::var("MAX_GUILDS_PER_USER")
                 .ok()
                 .and_then(|v| v.parse().ok())
@@ -609,6 +647,16 @@ impl Config {
                 env_opt("ACCOUNT_REQUEST_DELAY_HOURS").as_deref(),
             )?,
             session_recheck_secs: DEFAULT_SESSION_RECHECK_SECS,
+            ws_max_connections_per_user: parse_ws_cap(
+                "WS_MAX_CONNECTIONS_PER_USER",
+                env_opt("WS_MAX_CONNECTIONS_PER_USER").as_deref(),
+                crate::ws::connection_limit::DEFAULT_MAX_CONNECTIONS_PER_USER,
+            )?,
+            ws_max_connections_per_ip: parse_ws_cap(
+                "WS_MAX_CONNECTIONS_PER_IP",
+                env_opt("WS_MAX_CONNECTIONS_PER_IP").as_deref(),
+                crate::ws::connection_limit::DEFAULT_MAX_CONNECTIONS_PER_IP,
+            )?,
             fcm_service_account,
             fcm_api_base,
             optional_features,
@@ -629,7 +677,10 @@ impl Config {
         // coturn serves STUN on the same host/port as TURN, so the operator
         // can almost always point STUN at it. Warn loudly rather than fail,
         // since some operators deliberately use a public STUN.
-        if stun_leaks_with_self_hosted_turn(&config.stun_server, config.turn_server.as_deref()) {
+        if stun_leaks_with_self_hosted_turn(
+            &config.stun_server,
+            config.turn_servers.first().map(String::as_str),
+        ) {
             tracing::warn!(
                 stun_server = %config.stun_server,
                 "TURN is self-hosted but STUN still points at Google's public \
@@ -661,7 +712,7 @@ impl Config {
     /// Check if TURN is configured.
     #[must_use]
     pub const fn has_turn(&self) -> bool {
-        self.turn_server.is_some()
+        !self.turn_servers.is_empty()
     }
 
     /// Create a default configuration for testing.
@@ -700,7 +751,7 @@ impl Config {
             oidc_client_id: None,
             oidc_client_secret: None,
             stun_server: "stun:stun.l.google.com:19302".into(),
-            turn_server: None,
+            turn_servers: Vec::new(),
             turn_username: None,
             turn_credential: None,
             turn_shared_secret: None,
@@ -736,6 +787,7 @@ impl Config {
             smtp_tls: "starttls".into(),
             enable_api_docs: true,
             enable_guild_discovery: true,
+            min_client_version: MinClientVersions::default(),
             max_guilds_per_user: 100,
             max_members_per_guild: 1000,
             max_channels_per_guild: 200,
@@ -762,6 +814,9 @@ impl Config {
             max_sessions_per_user: DEFAULT_MAX_SESSIONS_PER_USER,
             account_request_delay_hours: DEFAULT_ACCOUNT_REQUEST_DELAY_HOURS,
             session_recheck_secs: DEFAULT_SESSION_RECHECK_SECS,
+            ws_max_connections_per_user:
+                crate::ws::connection_limit::DEFAULT_MAX_CONNECTIONS_PER_USER,
+            ws_max_connections_per_ip: crate::ws::connection_limit::DEFAULT_MAX_CONNECTIONS_PER_IP,
             fcm_service_account: None,
             fcm_api_base: crate::push::fcm::FCM_API_BASE.into(),
             optional_features: crate::features::OptionalFeatures::default(),
@@ -788,6 +843,17 @@ fn parse_request_delay(raw: Option<&str>) -> Result<i64> {
     match raw.parse::<i64>() {
         Ok(n) if (24..=72).contains(&n) => Ok(n),
         _ => anyhow::bail!("ACCOUNT_REQUEST_DELAY_HOURS must be an integer from 24 to 72"),
+    }
+}
+
+/// A WebSocket connection cap: a positive integer, `default` when unset.
+fn parse_ws_cap(name: &str, raw: Option<&str>, default: usize) -> Result<usize> {
+    let Some(raw) = raw.map(str::trim) else {
+        return Ok(default);
+    };
+    match raw.parse::<usize>() {
+        Ok(n) if n >= 1 => Ok(n),
+        _ => anyhow::bail!("{name} must be a positive integer"),
     }
 }
 
@@ -1095,6 +1161,229 @@ mod env_opt_tests {
     }
 }
 
+/// Minimum supported client version per platform (see
+/// [`Config::min_client_version`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, utoipa::ToSchema)]
+pub struct MinClientVersions {
+    /// Web client.
+    pub web: Option<String>,
+    /// Desktop app.
+    pub desktop: Option<String>,
+    /// Android app.
+    pub android: Option<String>,
+}
+
+/// `TURN_SERVER`: one URL or several separated by commas, each a TURN URI
+/// as in RFC 7065: `turn:` or `turns:`, a host (name, IPv4 or `[IPv6]`), an
+/// optional port 1–65535 and an optional `?transport=udp|tcp`. Anything
+/// else (including a list of only separators) stops the start with an
+/// error, because browsers refuse to create a connection with it.
+fn parse_turn_servers(raw: Option<&str>) -> Result<Vec<String>> {
+    let Some(raw) = raw.filter(|r| !r.trim().is_empty()) else {
+        return Ok(Vec::new());
+    };
+    let urls: Vec<String> = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+        .enumerate()
+        .map(|(i, url)| {
+            // Named by position: the entry itself may hold a credential.
+            anyhow::ensure!(
+                is_turn_uri(url),
+                "TURN_SERVER: non-empty entry {} is not a valid turn: or turns: URL \
+                 (host[:port][?transport=udp|tcp], no user info; list several URLs separated \
+                 by commas)",
+                i + 1
+            );
+            Ok(url.to_owned())
+        })
+        .collect::<Result<_>>()?;
+    anyhow::ensure!(!urls.is_empty(), "TURN_SERVER contains no URL");
+    Ok(urls)
+}
+
+/// RFC 7065 `turnURI` (scheme, host, port, transport) without user info.
+fn is_turn_uri(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    let Some(rest) = lower
+        .strip_prefix("turn:")
+        .or_else(|| lower.strip_prefix("turns:"))
+    else {
+        return false;
+    };
+    let (authority, query) = match rest.split_once('?') {
+        Some((a, q)) => (a, Some(q)),
+        None => (rest, None),
+    };
+    if let Some(query) = query {
+        if !matches!(query, "transport=udp" | "transport=tcp") {
+            return false;
+        }
+    }
+    let (host, port, bracketed) = if let Some(v6) = authority.strip_prefix('[') {
+        let Some((addr, after)) = v6.split_once(']') else {
+            return false;
+        };
+        if addr.parse::<std::net::Ipv6Addr>().is_err() {
+            return false;
+        }
+        match after {
+            "" => (addr, None, true),
+            p => match p.strip_prefix(':') {
+                Some(port) => (addr, Some(port), true),
+                None => return false,
+            },
+        }
+    } else {
+        match authority.rsplit_once(':') {
+            Some((h, p)) => (h, Some(p), false),
+            None => (authority, None, false),
+        }
+    };
+    let host_ok = bracketed
+        || !host.is_empty()
+            && host
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-'));
+    let port_ok = port.is_none_or(|p| p.parse::<u16>().is_ok_and(|n| n > 0) && !p.starts_with('+'));
+    host_ok && port_ok
+}
+
+/// A minimum client version in `SemVer` 2.0 syntax without build metadata:
+/// `MAJOR.MINOR.PATCH` (numbers without leading zeros) with an optional
+/// pre-release of dot-separated identifiers (`[0-9A-Za-z-]`, numeric ones
+/// without leading zeros), e.g. `1.0.0`, `1.0.0-rc.6`, `1.0.0-beta-1`.
+/// Unset or empty: `None`.
+fn parse_min_client_version(name: &str, raw: Option<&str>) -> Result<Option<String>> {
+    let Some(raw) = raw.map(str::trim).filter(|v| !v.is_empty()) else {
+        return Ok(None);
+    };
+    let numeric = |n: &str| {
+        !n.is_empty()
+            && n.bytes().all(|b| b.is_ascii_digit())
+            && (n.len() == 1 || !n.starts_with('0'))
+            && n.parse::<u64>().is_ok()
+    };
+    let (core, pre) = match raw.split_once('-') {
+        Some((core, pre)) => (core, Some(pre)),
+        None => (raw, None),
+    };
+    let numbers: Vec<&str> = core.split('.').collect();
+    let core_ok = numbers.len() == 3 && numbers.iter().all(|n| numeric(n));
+    let pre_ok = pre.is_none_or(|p| {
+        p.split('.').all(|id| {
+            !id.is_empty()
+                && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                && (!id.bytes().all(|b| b.is_ascii_digit()) || numeric(id))
+        })
+    });
+    anyhow::ensure!(
+        core_ok && pre_ok,
+        "{name} must be a version like 1.0.0 or 1.0.0-rc.6, got {raw:?}"
+    );
+    Ok(Some(raw.to_owned()))
+}
+
+#[cfg(test)]
+mod client_facing_voice_config_tests {
+    use super::{parse_min_client_version, parse_turn_servers};
+
+    #[test]
+    fn turn_server_accepts_one_url_or_a_list() {
+        assert!(parse_turn_servers(None).unwrap().is_empty());
+        assert!(parse_turn_servers(Some(" ")).unwrap().is_empty());
+        assert_eq!(
+            parse_turn_servers(Some("turn:turn.example.test:3478")).unwrap(),
+            ["turn:turn.example.test:3478"]
+        );
+        assert_eq!(
+            parse_turn_servers(Some(
+                "turn:t.example.test:3478, turn:t.example.test:3478?transport=tcp,,turns:t.example.test:443"
+            ))
+            .unwrap(),
+            [
+                "turn:t.example.test:3478",
+                "turn:t.example.test:3478?transport=tcp",
+                "turns:t.example.test:443"
+            ]
+        );
+    }
+
+    #[test]
+    fn turn_server_rejects_other_urls() {
+        for bad in [
+            "stun:t.example.test:3478",
+            "t.example.test:3478",
+            "turn:",
+            "turn:?transport=tcp",
+            "turns::443",
+            "https://t.example.test",
+            "turn://t.example.test:3478",
+            "turn:t.example.test:99999",
+            "turn:t.example.test:3478?transport=sctp",
+            "turn:t example.test",
+        ] {
+            let err = parse_turn_servers(Some(bad)).unwrap_err().to_string();
+            assert!(err.contains("TURN_SERVER"), "{bad}: {err}");
+        }
+        assert!(parse_turn_servers(Some("turn:ok.example.test,stun:x")).is_err());
+        assert!(parse_turn_servers(Some(" , ")).is_err(), "only separators");
+        assert_eq!(
+            parse_turn_servers(Some("turn:[2001:db8::1]:3478?transport=udp")).unwrap(),
+            ["turn:[2001:db8::1]:3478?transport=udp"]
+        );
+    }
+
+    /// A rejected entry is named by its position, never echoed (it may hold
+    /// a pasted credential).
+    #[test]
+    fn turn_server_error_does_not_echo_the_entry() {
+        let err = parse_turn_servers(Some(
+            "turn:ok.example.test,turn:user:hunter2@t.example.test",
+        ))
+        .unwrap_err()
+        .to_string();
+        assert!(!err.contains("hunter2"), "{err}");
+        assert!(err.contains("TURN_SERVER") && err.contains('2'), "{err}");
+    }
+
+    #[test]
+    fn min_client_version_is_a_plain_version() {
+        let p = |v| parse_min_client_version("MIN_CLIENT_VERSION_WEB", v);
+        assert_eq!(p(None).unwrap(), None);
+        assert_eq!(p(Some("")).unwrap(), None);
+        assert_eq!(p(Some("1.0.0")).unwrap().as_deref(), Some("1.0.0"));
+        assert_eq!(
+            p(Some("1.0.0-beta-1")).unwrap().as_deref(),
+            Some("1.0.0-beta-1")
+        );
+        assert_eq!(
+            p(Some("1.0.0-rc.0.x-y")).unwrap().as_deref(),
+            Some("1.0.0-rc.0.x-y")
+        );
+        assert_eq!(
+            p(Some("1.0.0-rc.6")).unwrap().as_deref(),
+            Some("1.0.0-rc.6")
+        );
+        for bad in [
+            "1.0",
+            "v1.0.0",
+            "1.0.0-",
+            "1.0.0-rc..1",
+            "1.0.x",
+            "latest",
+            "01.0.0",
+            "1.00.0",
+            "1.0.0-rc.01",
+            "99999999999999999999.0.0",
+        ] {
+            let err = p(Some(bad)).unwrap_err().to_string();
+            assert!(err.contains("MIN_CLIENT_VERSION_WEB"), "{bad}: {err}");
+        }
+    }
+}
+
 /// Returns true when a self-hosted TURN server is configured but STUN still
 /// points at Google's public server — a sovereignty leak (client IP
 /// discovery goes to a third party). Pure helper so the condition is unit
@@ -1216,6 +1505,30 @@ mod valkey_command_timeout_tests {
                 .unwrap_err()
                 .to_string();
             assert!(err.contains("VALKEY_COMMAND_TIMEOUT_MS"), "{raw}: {err}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod ws_cap_tests {
+    use super::{parse_ws_cap, Config};
+
+    #[test]
+    fn defaults_are_ten_per_user_and_thirty_per_ip() {
+        let config = Config::default_for_test();
+        assert_eq!(config.ws_max_connections_per_user, 10);
+        assert_eq!(config.ws_max_connections_per_ip, 30);
+        assert_eq!(parse_ws_cap("X", None, 10).unwrap(), 10);
+    }
+
+    #[test]
+    fn accepts_positive_and_refuses_zero_or_garbage() {
+        assert_eq!(parse_ws_cap("X", Some(" 4 "), 10).unwrap(), 4);
+        for raw in ["0", "-1", "ten", ""] {
+            let err = parse_ws_cap("WS_MAX_CONNECTIONS_PER_IP", Some(raw), 30)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("WS_MAX_CONNECTIONS_PER_IP"), "{raw}: {err}");
         }
     }
 }

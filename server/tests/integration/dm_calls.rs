@@ -732,3 +732,187 @@ async fn test_leave_hook_compares_start_time_in_ms(pool: PgPool) {
         .unwrap());
     assert!(call_state(&fx).await.is_null());
 }
+
+// ---------------------------------------------------------------------------
+// Calls left behind by a previous server process
+// ---------------------------------------------------------------------------
+
+/// A "restarted" server finds the ringing call of the previous process in
+/// Valkey and ends it as unanswered: `call_ended` is published and
+/// `GET /api/dm/{id}/call` answers "no call" (contract C33).
+#[sqlx::test]
+async fn restart_ends_calls_left_ringing(pool: PgPool) {
+    use vc_server::voice::call_service::{channels_with_calls, end_calls_left_ringing};
+
+    let fx = setup(&pool).await;
+    let mut callee_ws = connect_ready(&fx.server, &fx.callee_token).await;
+    assert_eq!(start(&fx, &fx.caller_token).await, StatusCode::CREATED);
+    next_ws_event(&mut callee_ws, "incoming_call", EVENT_TIMEOUT).await;
+
+    // The start-up clean-up of a new process, against the same Valkey.
+    let calls = CallService::new(fx.app.state.redis.clone(), pool.clone());
+    let found = channels_with_calls(&fx.app.state.redis)
+        .await
+        .expect("scan call streams");
+    assert!(found.contains(&fx.dm), "the ringing call was not found");
+    let left_active = end_calls_left_ringing(&calls, [fx.dm], chrono::Utc::now())
+        .await
+        .expect("end ringing calls");
+    assert!(left_active.is_empty(), "{left_active:?}");
+
+    let ended = next_ws_event(&mut callee_ws, "call_ended", EVENT_TIMEOUT).await;
+    assert_eq!(ended["channel_id"], fx.dm.to_string());
+    assert_eq!(ended["reason"], "no_answer");
+    assert!(
+        call_state(&fx).await.is_null(),
+        "the call survived the restart"
+    );
+    // The caller can call again at once.
+    assert_eq!(start(&fx, &fx.caller_token).await, StatusCode::CREATED);
+}
+
+/// An answered call survives the restart clean-up while its room is
+/// occupied again (a participant rejoined within the grace).
+#[sqlx::test]
+async fn restart_keeps_active_call_that_was_rejoined(pool: PgPool) {
+    use vc_server::voice::call_service::{end_abandoned_calls, end_calls_left_ringing};
+
+    let fx = setup(&pool).await;
+    let mut caller_ws = connect_ready(&fx.server, &fx.caller_token).await;
+    assert_eq!(start(&fx, &fx.caller_token).await, StatusCode::CREATED);
+    assert_eq!(
+        call_post(&fx, &fx.callee_token, "join").await.status(),
+        StatusCode::OK
+    );
+    assert_eq!(call_state(&fx).await["status"], "active");
+
+    let calls = CallService::new(fx.app.state.redis.clone(), pool.clone());
+    let left_active = end_calls_left_ringing(&calls, [fx.dm], chrono::Utc::now())
+        .await
+        .expect("restart clean-up");
+    assert_eq!(left_active.len(), 1, "the active call is kept for rejoins");
+    assert_eq!(call_state(&fx).await["status"], "active");
+
+    // A participant rejoined the room: the call stays.
+    send_json(
+        &mut caller_ws,
+        serde_json::json!({ "type": "voice_join", "channel_id": fx.dm }),
+    )
+    .await;
+    next_ws_event(&mut caller_ws, "voice_room_state", EVENT_TIMEOUT).await;
+    assert_eq!(
+        end_abandoned_calls(&calls, &fx.app.state.sfu, &left_active).await,
+        0
+    );
+    assert_eq!(call_state(&fx).await["status"], "active");
+}
+
+/// An answered call whose room nobody rejoined ends as `last_left` after
+/// the grace.
+#[sqlx::test]
+async fn restart_ends_active_call_without_rejoin(pool: PgPool) {
+    use vc_server::voice::call_service::{end_abandoned_calls, end_calls_left_ringing};
+
+    let fx = setup(&pool).await;
+    let mut callee_ws = connect_ready(&fx.server, &fx.callee_token).await;
+    assert_eq!(start(&fx, &fx.caller_token).await, StatusCode::CREATED);
+    assert_eq!(
+        call_post(&fx, &fx.callee_token, "join").await.status(),
+        StatusCode::OK
+    );
+    let calls = CallService::new(fx.app.state.redis.clone(), pool.clone());
+    let left_active = end_calls_left_ringing(&calls, [fx.dm], chrono::Utc::now())
+        .await
+        .expect("restart clean-up");
+    assert_eq!(
+        end_abandoned_calls(&calls, &fx.app.state.sfu, &left_active).await,
+        1
+    );
+    let ended = next_ws_event(&mut callee_ws, "call_ended", EVENT_TIMEOUT).await;
+    assert_eq!(ended["reason"], "last_left");
+    assert!(call_state(&fx).await.is_null());
+}
+
+/// One unreadable call entry does not stop the start-up clean-up: the
+/// ringing call after it still ends.
+#[sqlx::test]
+async fn restart_cleanup_continues_past_an_unreadable_entry(pool: PgPool) {
+    use vc_server::voice::call_service::end_calls_left_ringing;
+
+    let fx = setup(&pool).await;
+    assert_eq!(start(&fx, &fx.caller_token).await, StatusCode::CREATED);
+    let broken = Uuid::new_v4();
+    let key = format!("call_events:{broken}");
+    let _: () = fx
+        .app
+        .state
+        .redis
+        .set(&key, "not a stream", None, None, false)
+        .await
+        .expect("set");
+    let calls = CallService::new(fx.app.state.redis.clone(), pool.clone());
+    let result = end_calls_left_ringing(&calls, [broken, fx.dm], chrono::Utc::now()).await;
+    let _: i64 = fx.app.state.redis.del(&key).await.expect("del");
+    assert!(result.is_ok(), "{result:?}");
+    assert!(
+        call_state(&fx).await.is_null(),
+        "the ringing call after it survived"
+    );
+}
+
+/// A call started after this process started is not "left over": the
+/// start-up clean-up leaves it ringing.
+#[sqlx::test]
+async fn restart_cleanup_leaves_calls_of_this_process(pool: PgPool) {
+    use vc_server::voice::call_service::end_calls_left_ringing;
+
+    let fx = setup(&pool).await;
+    let process_start = chrono::Utc::now() - chrono::Duration::hours(1);
+    assert_eq!(start(&fx, &fx.caller_token).await, StatusCode::CREATED);
+    let calls = CallService::new(fx.app.state.redis.clone(), pool.clone());
+    end_calls_left_ringing(&calls, [fx.dm], process_start)
+        .await
+        .expect("restart clean-up");
+    assert_eq!(call_state(&fx).await["status"], "ringing");
+}
+
+/// A left-over ringing call whose start time is missing (an older or
+/// partly written entry) still ends at start-up: its age is read from the
+/// stream entry itself.
+#[sqlx::test]
+async fn restart_ends_a_ringing_call_without_a_start_time(pool: PgPool) {
+    use vc_server::voice::call_service::end_calls_left_ringing;
+
+    let fx = setup(&pool).await;
+    let redis = fx.app.state.redis.clone();
+    let key = format!("call_events:{}", fx.dm);
+    let old_ms = chrono::Utc::now().timestamp_millis() - 60_000;
+    let started = serde_json::json!({ "type": "started", "initiator": fx.caller }).to_string();
+    let targets = serde_json::json!([fx.callee]).to_string();
+    let call_id = Uuid::new_v4().to_string();
+    let _: String = redis
+        .xadd(
+            &key,
+            false,
+            None,
+            format!("{old_ms}-0"),
+            vec![
+                ("call_id", call_id.as_str()),
+                ("data", started.as_str()),
+                ("targets", targets.as_str()),
+            ],
+        )
+        .await
+        .unwrap();
+    let _: bool = redis.expire(&key, 600, None).await.unwrap();
+    assert_eq!(call_state(&fx).await["status"], "ringing");
+
+    let calls = CallService::new(redis.clone(), pool.clone());
+    end_calls_left_ringing(&calls, [fx.dm], chrono::Utc::now())
+        .await
+        .expect("restart clean-up");
+    assert!(
+        call_state(&fx).await.is_null(),
+        "the left-over call survived"
+    );
+}

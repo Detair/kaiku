@@ -908,3 +908,196 @@ not sign in someone else by mistake. Additive; absent means no check.
 **C27 amendment (2026-11-03, L1b review round 2; behaviour, no new code):**
 - A TOTP step on a QR login attempt answers 403 `TOTP_UNAVAILABLE`, as listed for the TOTP step; it no longer answers 409 `LOGIN_ATTEMPT_NOT_READY`.
 - The bootstrap request start answers the neutral 401 while its per-account TOTP counter is delayed, so a correct password is not revealed. The recovery start still answers 429 with `Retry-After` before consumption. Only a holder of a valid recovery code can reach that answer, so it reveals nothing.
+
+## C30 — Screen share start is a request with an answer (server → web, desktop, Android; added 2026-11-20)
+
+Media of a participant reaches others only under a source the server accepted.
+
+- Client: send `voice_screen_share_start` (`channel_id`, `stream_id`, `quality`, `has_audio`, `source_label`)
+  and add **no** video track yet. Wait for the answer:
+  - **Accepted:** the `screen_share_started` broadcast (it goes to everyone in the room, the sender included)
+    whose `stream_id` is the client's own. Only then add the video (and screen-audio) track and renegotiate the
+    publisher connection.
+  - **Refused:** `voice_error` with `code` `SCREEN_SHARE_FORBIDDEN` (no `SCREEN_SHARE` permission in this
+    channel), `SCREEN_SHARE_LIMIT` (3 own shares, or the channel's `max_screen_shares`), `RATE_LIMITED` (more
+    than 5 starts/stops in a burst, refilled 1 per second) or another voice code (`PARTICIPANT_NOT_FOUND`,
+    `DUPLICATE_STREAM_ID`, `SIGNALING_ERROR`). `message` stays human-readable. Stop the capture and show the
+    error. Others are told nothing.
+  - **No answer within 5 s:** stop the capture and show an error.
+- Webcam: `voice_webcam_start` announces the webcam the same way; `webcam_started` (to everyone, the sender
+  included) is the acknowledgement. Add the camera track only after it.
+- Server: a video track is matched to the oldest accepted, not yet used announcement (screen share or webcam)
+  by arrival order. A video track that arrives before its announcement waits up to 3 s for it (so a start sent
+  right after the track still works); without an announcement by then it is dropped: never forwarded, no
+  `incoming_tracks` entry. The sender gets `voice_error` `VIDEO_SOURCE_UNANNOUNCED`.
+- Audio follows the same rule: the seat's microphone is the audio section that its first publisher offer
+  negotiates first (announced by `voice_join`; there is exactly one; a first offer without audio leaves the seat
+  without a microphone). Any other audio track is forwarded only as the audio of an accepted start with
+  `has_audio: true`, matched the same way (arrival order, 3 s wait); otherwise it is dropped and the sender gets
+  `voice_error` `AUDIO_SOURCE_UNANNOUNCED`. Changing the microphone device must replace the track on the existing
+  sender (`replaceTrack`), not add a second audio track.
+- An announcement dies with its share or webcam: a stop (or the end of the share) removes it, and a track never
+  binds to a share or webcam that has ended.
+- A forwarded track serves only the share or webcam it was bound to: when that source ends (stop, expiry, leave,
+  replacement) the server stops forwarding the track at its next packet, also if the sender keeps sending on it.
+  A later share or webcam of the same seat reaches viewers only with its own track.
+- A refused share start (any refusal code) uses up the next video track of that seat that has no announcement:
+  one already waiting for its announcement when the refusal is sent, or one that arrives within 3 s after the
+  refusal while no announcement is queued. That track is dropped as an unannounced one
+  (`VIDEO_SOURCE_UNANNOUNCED`) and never binds to a later start. A client that adds its track only after the
+  acknowledgement is not affected.
+- Share limit and store failures: if a release did not reach the store (a store error at a stop, an expiry, a
+  leave or a replacement), the next start that would be refused for the channel limit compares the store's count
+  with the slots the room itself holds (live shares plus starts and releases under way), corrects it and tries
+  once more. A room really at its limit is still refused.
+- An accepted start whose track has not arrived 10 s after the acknowledgement ends by itself: the slot is
+  released and the room gets the normal `screen_share_stopped` / `webcam_stopped` with `reason: "no_media"`.
+- `voice_screen_share_stop` and `voice_webcam_stop` are never rate-limited: a stop is always applied.
+- A `stream_id` is unique in a room: a start with an id that is in use (by anyone) answers `DUPLICATE_STREAM_ID`.
+- Simulcast: further layers (`rid`) of a video track belong to that track's transceiver and its announcement;
+  they never bind to another announcement. The first layer of a track to arrive (whichever `rid`) takes the
+  announcement and counts as the track's media for the 10 s expiry; the other layers forward under it. If the
+  first layer is refused, so are the others.
+- An expiry belongs to the start it was set for: switching a webcam off and on again (or reusing a `stream_id`)
+  starts a new 10 s period. A stop or expiry that races the first track wins: the track is not forwarded.
+- Key frames: a viewer's PLI or FIR for a forwarded video track is passed to the publisher as a PLI, at most once
+  per second per track across all viewers (the server also asks for one every 3 s); with simulcast it goes to
+  the layer that viewer receives. Simulcast is not negotiated in v1.0 (a sender offering several encodings gets
+  one stream). Viewers may send PLI/FIR
+  freely when they need a key frame (late join, decoder error).
+- Permission: `SCREEN_SHARE` is part of the @everyone default (since 2026-11-20, existing servers migrated).
+  Admins can deny it per channel with an override.
+- Compatibility: rc.5 clients add the track right before they send the start and do not wait. An accepted
+  start still binds that track (it waits for the announcement); a refused start leaves the track dropped and
+  the client gets the refusal and then `VIDEO_SOURCE_UNANNOUNCED` (plus `AUDIO_SOURCE_UNANNOUNCED` when it also
+  added share audio). A webcam such a client starts after a refused share is forwarded as usual: the refused
+  share's own track uses the refusal up. Two limits remain for clients that send a track before its start. If
+  a webcam's track arrives before its own start and within 3 s after a refused share whose track has not
+  arrived, the webcam's track is the one dropped (`VIDEO_SOURCE_UNANNOUNCED`, then `webcam_stopped` with
+  `no_media`); the previous release's desktop app then needs a rejoin to start its webcam again. And if the
+  refused share's track arrives only after a later webcam start was accepted, it takes that announcement
+  (accepted announcements are served first) and viewers get it as the webcam until the webcam is stopped.
+
+### `voice_error` codes (all voice requests)
+
+`voice_error` is `{ "type": "voice_error", "code": "<UPPER_SNAKE>", "message": "<text>" }`. Before 2026-11-20
+every code was `VOICE_ERROR`; clients that only log it keep working. The message text "Already in voice channel"
+is unchanged (C32 retry).
+
+| code | when |
+|---|---|
+| `SCREEN_SHARE_FORBIDDEN`, `SCREEN_SHARE_LIMIT`, `VIDEO_SOURCE_UNANNOUNCED`, `AUDIO_SOURCE_UNANNOUNCED` | screen share, video and audio (above) |
+| `CHANNEL_FULL` | `voice_join` into a channel whose `user_limit` (or the server cap of 25) is reached. A user who is already in the room (another device, a stale session) may always join again: the new session replaces the old one (C31 `session_replaced`). No role bypasses the limit |
+| `JOIN_REFUSED` | `voice_join` into a DM call when the user and another participant of the DM blocked each other (either direction). The message does not say who. A failed lookup answers `INTERNAL_ERROR` (the join is refused too) |
+| `UNAUTHORIZED` | no `VIEW_CHANNEL` / `VOICE_CONNECT` |
+| `RATE_LIMITED` | join, share start or webcam start over its limit (other voice events over their limit are dropped silently) |
+| `PARTICIPANT_NOT_FOUND` | the request needs a seat in that room and this socket holds none (also after the seat moved to another device, C31) |
+| `ROOM_NOT_FOUND`, `SIGNALING_ERROR`, `WEBRTC_ERROR`, `DUPLICATE_STREAM_ID`, `INTERNAL_ERROR`, `DATABASE_ERROR` | as named; no internal detail in `message` |
+| `ALREADY_JOINED`, `NOT_IN_CHANNEL`, `CHANNEL_NOT_FOUND`, `ICE_FAILED` | defined for completeness; the current server does not send them on the WebSocket |
+
+### Subscriber renegotiation (server behaviour clients can rely on)
+
+- At most one `voice_subscriber_offer` per participant is outstanding. Changes made while it waits for its
+  `voice_subscriber_answer` are sent as one new offer right after the answer. An offer without an answer after
+  10 s is sent once more (a fresh offer); if that one is not answered either, the server stops waiting and the
+  next change offers at once. Answer the newest offer: an answer that does not fit the open offer (another
+  number of media sections) or comes when no offer is open is ignored; one that the connection rejects is
+  followed by a fresh offer.
+- When a participant leaves (or is replaced, C31), their tracks are removed from everyone else's subscriber
+  connection with a new offer (the m-line becomes inactive). A participant who comes back gets a new m-line.
+
+## C31 — Forced voice leave `voice_removed` (server → web, desktop, Android; added 2026-11-12)
+
+Server → client event, sent only to the socket that owned the removed voice peer:
+
+```json
+{ "type": "voice_removed", "channel_id": "<uuid>", "reason": "kicked" }
+```
+
+`reason` is one of `kicked`, `banned`, `permission_lost`, `channel_deleted`, `session_replaced`.
+
+- Server: sent when a user is removed from a voice room by something other than their own leave or their own
+  socket closing (kick → `kicked`; ban → `banned`; leaving the server, a role or permission change that takes
+  `VIEW_CHANNEL` or `VOICE_CONNECT` away → `permission_lost`; channel or server deleted → `channel_deleted`).
+  The other participants get the normal `voice_user_left`. `session_replaced` goes to the old socket when the
+  same user joins the same room from another socket (sent since 2026-11-20): only that socket gets it, the old
+  peer's connections are closed and its tracks, screen shares and webcam leave the room (others get
+  `screen_share_stopped` / `webcam_stopped` with reason `replaced`, then a subscriber offer without the old
+  tracks). The others see one participant throughout: no `voice_user_left`, a fresh `voice_user_joined` for
+  the same `user_id` (upsert). A second `voice_join` on the **same** socket also replaces the peer but sends no
+  `voice_removed`. The new join's answer is not delayed by closing the old connections; the old seat's media
+  leaves the room before it.
+- Server: every voice event other than `voice_join` acts only on the seat of the socket that sends it. After a
+  replacement the old socket holds none: its `voice_leave` is a silent no-op, its publisher offers, subscriber
+  answers, ICE candidates, share/webcam starts and stops answer `voice_error` `PARTICIPANT_NOT_FOUND`, its mute
+  and stats are ignored, and its disconnect removes nothing. Media the old connections still send is not
+  forwarded.
+- Server: a socket that closes removes every seat it holds (a socket that sent `voice_join` for two rooms holds
+  one seat in each), each only while it is still that socket's seat.
+- Client: after `voice_removed` with `session_replaced`, a client sends neither `voice_leave` nor a REST
+  `/call/leave` or `/call/decline` for that call. Server guard for older clients: `POST /api/dm/{id}/call/leave`
+  and `/call/decline` answer 200 with the unchanged call state, and change nothing, while the user's seat in that
+  DM's voice room belongs to another login session (the user is in the call on another device). From the
+  session that holds the seat, or when the user holds no seat, they work as before. The guard tells devices apart by
+  their login session (the `sid` of the access token): two tabs or devices that share one login session count
+  as the same one, so an old tab of the session that holds the seat can still leave the call.
+- Client: tear down both peer connections, stop capture, clear voice state, show one line of text for the
+  reason. The client must not rejoin on its own (C32) after `voice_removed`. For `session_replaced` the text
+  says that the call continues on another device; a ringing UI for that call stops too.
+- Unknown `reason` values are treated like `kicked`. Clients that do not know the event ignore it.
+
+## C32 — Voice rejoin after a WebSocket reconnect (clients; no new wire messages)
+
+Binding for all clients (amended 2026-11-11).
+
+- Trigger: the WebSocket was re-established and the text re-subscription finished, and the local voice state
+  still names a channel the user did not leave themselves and no `voice_removed` arrived for it.
+- Action: discard the old peer connections, send `voice_join` for that channel, restore the local mute/deafen
+  state. Screen share and webcam are not restarted automatically.
+- Success: an attempt has succeeded when the publisher connection is connected. The subscriber connection is
+  not required (in a room without other publishers the server sends no subscriber offer at all).
+- Attempt timeout: an attempt that has not reached "publisher connected" after 15 s has failed.
+- Attempts: at most 3, spaced 1 s, 3 s, 9 s. While trying, the voice UI shows a "reconnecting" state. After the
+  third failure the client clears voice state and offers "rejoin".
+- Socket loss during an attempt: the attempt is cancelled and its connections are discarded without using up
+  one of the three attempts; the client waits for the next authenticated socket and resumes with the remaining
+  attempts.
+- Overall cap while offline: if no authenticated socket comes back within 60 s of the loss, the client gives up
+  exactly as after the third failed attempt (clear voice state, release the microphone and any foreground
+  service, offer "rejoin").
+- Leave and `voice_removed` win: both cancel the recovery and wait for a running attempt to finish cancelling
+  before tearing down; after them no `voice_join` is sent and no connection is created for that session.
+- "Already in voice channel": the current server replaces a stale peer of the same user on `voice_join` and
+  does not send this `voice_error`. A client may still answer it with `voice_leave` then `voice_join` once
+  (optional).
+- DM calls: rejoin only if C33 says the call is still active and this user is a participant.
+
+## C33 — Call state resync and local ring cap (clients, existing endpoints)
+
+- After every WebSocket re-establishment, for each DM whose local call state is incoming-ringing,
+  outgoing-ringing or connected: `GET /api/dm/{id}/call` and apply the answer. "No call" clears the local state
+  silently; an incoming ring that vanished this way is shown as a missed call.
+- Local ring cap: an incoming or outgoing ring ends locally 100 s after it started, whatever the server said
+  (server ring timeout is 90 s). An incoming ring that ends this way counts as missed.
+- A client stops ringing as soon as `call_participant_joined` names its own user (answered on another device).
+- Server restart (since 2026-11-20): at start the server ends every call that was still ringing
+  (`call_ended`, `reason: "no_answer"`), so the resync above finds no call. An answered call stays open for up
+  to 60 s after the start so its participants can rejoin the room (C32); if its room is still empty then, it ends
+  as `last_left`. Starting a new call in that DM ends it earlier. The 60 s are counted from each start, so
+  every further restart starts them anew (not a hard bound over several restarts). Live
+  `call_ended` events from the start-up reach only sockets that are already connected, so the resync is what
+  clients rely on.
+
+## Minimum client version in `GET /api/settings` (added 2026-11-20)
+
+```json
+{ "min_client_version": { "web": "1.0.0", "desktop": null, "android": "1.0.0-rc.6" } }
+```
+
+- The object is always present on servers since 2026-11-20 and always has the three keys. A value is a version
+  `MAJOR.MINOR.PATCH` with an optional pre-release (`-rc.6`), compared by semantic-versioning precedence
+  (`1.0.0-rc.6` < `1.0.0`); `null` means no minimum for that platform. A response without the field (older
+  server) means no minimum.
+- Configured by `MIN_CLIENT_VERSION_WEB`, `MIN_CLIENT_VERSION_DESKTOP`, `MIN_CLIENT_VERSION_ANDROID`.
+- Client: compare its own version for its platform; when lower, show "please update" with a link. The server
+  does not refuse old clients.

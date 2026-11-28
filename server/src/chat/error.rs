@@ -66,6 +66,9 @@ pub enum ChatError {
     #[error("No file provided")]
     NoFile,
 
+    #[error("A message can carry at most {max} files")]
+    TooManyAttachments { max: i64 },
+
     #[error("Invalid filename")]
     InvalidFilename,
 
@@ -78,6 +81,10 @@ pub enum ChatError {
 
     #[error("Not a member of this guild")]
     NotMember,
+
+    /// A slash command whose bot is not installed or cannot see the channel.
+    #[error("This bot can't be used in this channel")]
+    BotNotAllowedInChannel,
 
     #[error("{0}")]
     Permission(#[from] PermissionError),
@@ -140,20 +147,33 @@ impl IntoResponse for ChatError {
                 self.to_string(),
             ),
             Self::NoFile => (StatusCode::BAD_REQUEST, "NO_FILE", self.to_string()),
+            Self::TooManyAttachments { .. } => (
+                StatusCode::BAD_REQUEST,
+                "TOO_MANY_ATTACHMENTS",
+                self.to_string(),
+            ),
             Self::InvalidFilename => (
                 StatusCode::BAD_REQUEST,
                 "INVALID_FILENAME",
                 self.to_string(),
             ),
-            Self::Storage(_) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "STORAGE_ERROR",
-                "Storage operation failed".to_string(),
-            ),
+            Self::Storage(detail) => {
+                tracing::error!(error = %detail, "Chat storage error");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "STORAGE_ERROR",
+                    "Storage operation failed".to_string(),
+                )
+            }
 
             // Override
             Self::RoleNotFound => (StatusCode::NOT_FOUND, "ROLE_NOT_FOUND", self.to_string()),
             Self::NotMember => (StatusCode::FORBIDDEN, "NOT_MEMBER", self.to_string()),
+            Self::BotNotAllowedInChannel => (
+                StatusCode::FORBIDDEN,
+                "BOT_NOT_ALLOWED_IN_CHANNEL",
+                self.to_string(),
+            ),
             Self::Permission(e) => (StatusCode::FORBIDDEN, "PERMISSION_DENIED", e.to_string()),
 
             // DM Search
