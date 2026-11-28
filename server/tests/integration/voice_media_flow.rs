@@ -1205,6 +1205,7 @@ async fn stopped_webcam_track_never_feeds_the_next_webcam(pool: PgPool) {
 #[sqlx::test]
 async fn share_stopped_while_its_track_waits_for_the_seat_is_not_forwarded(pool: PgPool) {
     use std::sync::Arc;
+
     use webrtc::api::media_engine::MIME_TYPE_VP8;
     use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
     use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
