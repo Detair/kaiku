@@ -85,7 +85,11 @@ channel.
   per run, `FOLLOW_UP_PARALLEL` = 8 recipients at a time, 30 s per recipient
   (`FOLLOW_UP_RECIPIENT_LIMIT`). The pushes of events the sweep delivers from
   the outbox go to a background task with the same bounds (the sweep never
-  waits for a push service on any step). A push recorded as sent that then
+  waits for a push service on any step). A recipient's subscriptions are
+  tried most recently used first (`last_used_at`, else `created_at`), so the
+  30 s limit reaches a working phone before addresses that keep timing out.
+  The limit applies only to the sweep's pushes, not to the ordinary
+  delivery right after an event. A push recorded as sent that then
   fails is not retried (same for the immediate push); a refused or timed-out
   one leaves a WARN with the notice id and provider kind
   (`deliver_with_report`), never the address or the payload. FCM data (strings):

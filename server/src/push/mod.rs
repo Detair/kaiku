@@ -211,6 +211,11 @@ pub struct DeliveryReport {
 
 /// [`deliver_with`], also saying which providers failed.
 ///
+/// Subscriptions are tried most recently used first (`last_used_at`, else
+/// the time of registration): one that keeps failing is never marked used
+/// and falls behind, so a time limit on the whole send reaches the working
+/// device first.
+///
 /// # Errors
 /// Loading the user's subscriptions failed.
 pub async fn deliver_with_report<P: PushPayload>(
@@ -223,7 +228,8 @@ pub async fn deliver_with_report<P: PushPayload>(
     let subs: Vec<PushSubscription> = sqlx::query_as(
         "SELECT id, user_id, provider, endpoint, public_key, auth_key, device_label,
                 created_at, last_used_at, device_id
-         FROM push_subscriptions WHERE user_id = $1",
+         FROM push_subscriptions WHERE user_id = $1
+         ORDER BY COALESCE(last_used_at, created_at) DESC, id",
     )
     .bind(user_id)
     .fetch_all(db)

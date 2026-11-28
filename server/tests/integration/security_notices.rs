@@ -1626,3 +1626,50 @@ async fn a_follow_up_the_provider_refuses_is_logged_without_the_address(pool: Pg
     assert!(!lines[0].contains(&token), "never the address: {logs}");
     assert!(!lines[0].contains("\"count\""), "never the content: {logs}");
 }
+
+#[sqlx::test]
+async fn the_recently_used_phone_is_tried_before_silent_addresses(pool: PgPool) {
+    let mock = spawn_fcm_mock(FcmMockResponse::Ok).await;
+    let app = TestApp::with_pool_and_config(pool.clone(), fcm_config(&mock)).await;
+    let (u, _) = user_with_token(&app).await;
+    // Three addresses that never answer, stored first and registered an hour
+    // ago; the working phone was registered a day ago and used a minute ago.
+    for _ in 0..3 {
+        add_silent_fcm_device(&pool, u).await;
+    }
+    let phone = add_fcm_device(&pool, u).await;
+    sqlx::query(
+        "UPDATE push_subscriptions
+            SET created_at = NOW() - INTERVAL '1 hour'
+          WHERE user_id = $1 AND endpoint LIKE 'silent-%'",
+    )
+    .bind(u)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE push_subscriptions
+            SET created_at = NOW() - INTERVAL '1 day',
+                last_used_at = NOW() - INTERVAL '1 minute'
+          WHERE endpoint = $1",
+    )
+    .bind(&phone)
+    .execute(&pool)
+    .await
+    .unwrap();
+    // An event left in the outbox: the sweep's push goes through the bounded
+    // sender, whose time limit per recipient the silent addresses would use up.
+    record_one(&pool, event(u, EventType::SignIn, Actor::User(u))).await;
+    sweep_within(&app, Duration::from_secs(5)).await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while !pushes(&mock)
+        .iter()
+        .any(|p| p["message"]["token"] == phone.as_str())
+    {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the working phone got no push"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
