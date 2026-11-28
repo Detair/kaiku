@@ -184,7 +184,10 @@ else
                 ok)
                     pass "the rate limiter loaded at the server's last start, and a live test on canis-valkey with its default user accepts SCRIPT LOAD now" ;;
                 refused:*)
-                    fail "the rate limiter loaded at the server's last start, but Valkey now refuses SCRIPT LOAD for its default user (${live#refused:}): the new version will not start — allow it first $see_docs" ;;
+                    # The logged success proves the server's own Valkey user
+                    # could load scripts; the test ran as the default user,
+                    # which may not be the server's.
+                    warn_pass "the rate limiter loaded at the server's last start, but the live test was refused for canis-valkey's default user (${live#refused:}): if the server uses that user, the new version will not start — allow SCRIPT LOAD for it first $see_docs. $other_user" ;;
                 *)
                     warn_pass "the rate limiter loaded at the server's last start; the live test on canis-valkey could not run (${live#unavailable:}), so Valkey settings changed since that start are not checked. $other_user" ;;
             esac ;;

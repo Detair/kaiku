@@ -119,8 +119,13 @@ log() { printf '%s\n' "$@"; }
 
 out=$(FAKE_DOCKER_SERVER_LOG="$(log "$START" "$LOADED" "$LISTEN")" pf)
 check "preflight 7: clean start, live test ok: passes" grep -q "✓ the rate limiter loaded at the server's last start" <<<"$out"
-out=$(FAKE_DOCKER_SERVER_LOG="$(log "$START" "$LOADED" "$LISTEN")" FAKE_DOCKER_SCRIPT_LOAD="$REFUSED" pf)
-check "preflight 7: clean start, Valkey refuses now: fails" grep -q "✗ the rate limiter loaded at the server's last start, but Valkey now refuses" <<<"$out"
+for answer in "$REFUSED" "NOAUTH Authentication required." "AUTH failed: WRONGPASS invalid username-password pair or user is disabled."; do
+    out=$(FAKE_DOCKER_SERVER_LOG="$(log "$START" "$LOADED" "$LISTEN")" FAKE_DOCKER_SCRIPT_LOAD="$answer" pf)
+    check "preflight 7: clean start, default user refused (${answer%% *}): warns" grep -q "! WARNING: the rate limiter loaded at the server's last start, but the live test was refused for canis-valkey's default user" <<<"$out"
+    check "preflight 7: clean start, default user refused (${answer%% *}): conditional" grep -q "if the server uses that user, the new version will not start" <<<"$out"
+    check "preflight 7: clean start, default user refused (${answer%% *}): names the server's user" grep -q "valkey-cli --user <user>" <<<"$out"
+    check "preflight 7: clean start, default user refused (${answer%% *}): no ✗" bash -c '! grep -q "✗.*rate limiter\|✗.*will not start" <<<"$1"' _ "$out"
+done
 out=$(FAKE_DOCKER_SERVER_LOG="$(log "$START" "$LOADED" "$LISTEN")" FAKE_DOCKER_VALKEY_EXEC_FAIL=1 pf)
 check "preflight 7: clean start, no live test: warns, not checked" grep -q "! WARNING: the rate limiter loaded at the server's last start; the live test on canis-valkey could not run" <<<"$out"
 check "preflight 7: clean start, no live test: never claims a check" bash -c '! grep -q "✓ the rate limiter loaded" <<<"$1"' _ "$out"
